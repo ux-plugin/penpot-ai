@@ -5,15 +5,33 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && yarn build:main",
+    "build:main": "esbuild lib/code.ts --bundle --outfile=dist/code.js",
     "preview": "vite preview"
   },
   "dependencies": {
-    "solid-js": "^1.8.20"
+    "@kobalte/core": "^0.13.6",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.1",
+    "solid-js": "^1.8.20",
+    "tailwind-merge": "^2.5.2",
+    "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@figma/eslint-plugin-figma-plugins": "^0.15.0",
+    "@figma/plugin-typings": "^1.99.0",
+    "@types/node": "^22.5.4",
+    "@typescript-eslint/eslint-plugin": "^8.4.0",
+    "@typescript-eslint/parser": "^8.4.0",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.10.0",
+    "postcss": "^8.4.45",
+    "prettier": "^3.3.3",
+    "prettier-plugin-tailwindcss": "^0.6.6",
+    "tailwindcss": "^3.4.10",
     "typescript": "^5.5.3",
     "vite": "^5.4.1",
+    "vite-plugin-singlefile": "^2.0.2",
     "vite-plugin-solid": "^2.10.2"
   }
 }
