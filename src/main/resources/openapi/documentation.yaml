@@ -1,0 +1,192 @@
+openapi: "3.0.3"
+info:
+  title: "Figma Plugin API"
+  description: "API for Figma Plugin with completions and user configuration features"
+  version: "1.0.0"
+servers:
+  - url: "http://0.0.0.0:8080"
+paths:
+  /completions/create:
+    post:
+      summary: "Create a new completion"
+      description: "Creates a new component completion based on a prompt"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromptRequest"
+      responses:
+        "200":
+          description: "Successfully created completion"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FrameNode"
+        "400":
+          description: "Bad request"
+        "500":
+          description: "Internal server error"
+
+  /completions/{userId}:
+    get:
+      summary: "Get all completions for a user"
+      description: "Returns all completions for the specified user"
+      parameters:
+        - name: "userId"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "List of completions"
+          content:
+            application/json:
+              schema:
+                type: "array"
+                items:
+                  $ref: "#/components/schemas/ComponentCompletion"
+        "400":
+          description: "Bad request"
+        "500":
+          description: "Internal server error"
+
+  /completions/{userId}/{completionId}:
+    get:
+      summary: "Get a specific completion"
+      description: "Returns a specific completion for the specified user"
+      parameters:
+        - name: "userId"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+        - name: "completionId"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "Completion details"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentCompletion"
+        "400":
+          description: "Bad request"
+        "404":
+          description: "Completion not found"
+        "500":
+          description: "Internal server error"
+
+  /config/{userId}:
+    get:
+      summary: "Get user configuration"
+      description: "Returns the configuration for the specified user"
+      parameters:
+        - name: "userId"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "User configuration"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: "User configuration not found"
+        "500":
+          description: "Internal server error"
+
+  /config:
+    post:
+      summary: "Update user configuration"
+      description: "Creates or updates a user configuration"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+      responses:
+        "200":
+          description: "Updated user configuration"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: "Bad request"
+        "500":
+          description: "Internal server error"
+
+components:
+  schemas:
+    PromptRequest:
+      type: "object"
+      required:
+        - "prompt"
+        - "userId"
+      properties:
+        prompt:
+          type: "string"
+          description: "The prompt for generating a component"
+        userId:
+          type: "string"
+          description: "The ID of the user making the request"
+
+    FrameNode:
+      type: "object"
+      description: "A Figma frame node"
+      properties:
+        id:
+          type: "string"
+          description: "The ID of the frame node"
+        type:
+          type: "string"
+          description: "The type of the node"
+        children:
+          type: "array"
+          items:
+            type: "object"
+          description: "Child nodes"
+
+    ComponentCompletion:
+      type: "object"
+      properties:
+        id:
+          type: "string"
+          description: "The ID of the completion"
+        userId:
+          type: "string"
+          description: "The ID of the user who created the completion"
+        prompt:
+          type: "string"
+          description: "The prompt used to generate the completion"
+        completion:
+          type: "string"
+          description: "The generated completion"
+        createdAt:
+          type: "string"
+          format: "date-time"
+          description: "When the completion was created"
+
+    User:
+      type: "object"
+      required:
+        - "id"
+      properties:
+        id:
+          type: "string"
+          description: "The ID of the user"
+        settings:
+          type: "object"
+          description: "User settings"
+        preferences:
+          type: "object"
+          description: "User preferences"
