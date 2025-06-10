@@ -1,0 +1,33 @@
+## Stage 1 : Build with Maven builder image with native requirements
+FROM quay.io/quarkus/ubi-quarkus-mandrel-builder-image:jdk-21 AS build
+COPY --chown=quarkus:quarkus mvnw /code/mvnw
+COPY --chown=quarkus:quarkus .mvn /code/.mvn
+COPY --chown=quarkus:quarkus pom.xml /code/
+COPY --chown=quarkus:quarkus gradle /code/gradle
+COPY --chown=quarkus:quarkus gradlew /code/
+COPY --chown=quarkus:quarkus build.gradle.kts /code/
+COPY --chown=quarkus:quarkus settings.gradle.kts /code/
+
+WORKDIR /code
+RUN ./gradlew build -x test
+
+# Copy source code and build the application
+COPY --chown=quarkus:quarkus . /code
+RUN ./gradlew build -x test
+
+## Stage 2 : Create the runtime image
+FROM quay.io/quarkus/quarkus-distroless-image:2.0
+WORKDIR /work/
+
+# Copy the runner
+COPY --from=build --chown=1001 /code/build/*-runner /work/application
+
+# Set up the application
+RUN chmod 775 /work /work/application
+
+# Configure the runtime
+EXPOSE 8080
+USER 1001
+
+# Set the entrypoint
+ENTRYPOINT ["./application", "-Dquarkus.http.host=0.0.0.0"]
