@@ -68,12 +68,21 @@ dependencies {
 
     // AI dependencies
     implementation("com.openai:openai-java:2.2.1")
-    implementation(project(":baml_client"))
+    implementation("dev.langchain4j:langchain4j:1.1.0")
+    implementation("dev.langchain4j:langchain4j-open-ai:1.1.0")
+
+    // Security
+    implementation("io.quarkus:quarkus-security-jpa-reactive")
+    implementation("io.quarkus:quarkus-smallrye-jwt")
+
+    // Redis
+    implementation("io.quarkus:quarkus-redis-client")
 
     // Testing
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.rest-assured:rest-assured")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlinVersion")
+    testImplementation("io.quarkus:quarkus-test-security-jwt")
 
     // Pact for consumer-driven contract testing
     testImplementation("au.com.dius.pact.consumer:junit5:4.6.2")

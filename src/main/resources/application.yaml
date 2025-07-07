@@ -39,7 +39,7 @@ quarkus:
       url: "jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5430}/${DB_NAME:figma_plugin}"
       driver: org.postgresql.Driver
 
-  
+
   # Hibernate ORM configuration
   hibernate-orm:
     database:
@@ -54,10 +54,26 @@ quarkus:
     change-log: db/changelog/master.yaml
 
   rest-client:
-    ai-server-client:
+    ai-server:
       url: "${AI_SERVER_URL:http://localhost:8002}"
+    logging:
+      scope: request-response
+
+  # Logging configuration
+  log:
+    category:
+      "org.jboss.resteasy.reactive.client":
+        level: "${LOG_LEVEL:DEBUG}"
+
 
 openai:
   api.key: "${OPENAI_API_KEY}"
   project.id: "${OPENAI_PROJECT_ID}"
   org.id: "${OPENAI_ORG_ID}"
+
+# Redis configuration
+redis:
+  hosts: "${REDIS_HOST:redis://localhost:6379}"
+  timeout: 5000
+  access-token-expiration: 900  # 15 minutes
+  refresh-token-expiration: 2592000  # 30 days

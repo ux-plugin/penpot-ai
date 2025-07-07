@@ -4,7 +4,7 @@ import io.quarkus.test.common.QuarkusTestResourceLifecycleManager
 import org.testcontainers.containers.PostgreSQLContainer
 import java.net.URI
 
-class MyPostgresTestResource : QuarkusTestResourceLifecycleManager {
+class PostgresTestResourceManager : QuarkusTestResourceLifecycleManager {
 
     private val postgres = PostgreSQLContainer("postgres:15").apply {
         withDatabaseName("testdb")

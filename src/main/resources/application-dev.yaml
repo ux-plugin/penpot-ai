@@ -1,0 +1,16 @@
+quarkus:
+  liquibase:
+    migrate-at-start: true
+    clean-at-start: true
+mp:
+  jwt:
+    verify:
+      issuer: ux-plugin
+      publickey:
+        location: classpath:META-INF/resources/publicKey-dev.pem
+
+smallrye:
+  jwt:
+    sign:
+      key:
+        location: classpath:META-INF/resources/privateKey-dev.pem

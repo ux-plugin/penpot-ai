@@ -1,12 +1,18 @@
 package com.plugin.features.user
 
-import com.plugin.shared.MyPostgresTestResource
+import com.plugin.shared.PostgresTestResourceManager
+import com.plugin.shared.RedisTestResourceManager
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
+import io.quarkus.test.security.TestSecurity
+import io.quarkus.test.security.jwt.Claim
+import io.quarkus.test.security.jwt.JwtSecurity
 import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
+import io.smallrye.jwt.build.Jwt
 import jakarta.inject.Inject
-import org.hamcrest.CoreMatchers.containsString
+import org.hamcrest.CoreMatchers.equalTo
+import org.hamcrest.CoreMatchers.notNullValue
 import org.hibernate.reactive.mutiny.Mutiny
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -15,7 +21,8 @@ import org.junit.jupiter.api.Test
  * Integration test for the User service using Quarkus testing framework
  */
 @QuarkusTest
-@QuarkusTestResource(MyPostgresTestResource::class)
+@QuarkusTestResource(PostgresTestResourceManager::class)
+@QuarkusTestResource(RedisTestResourceManager::class)
 class UserServiceIntegrationTest {
     @Inject
     lateinit var sessionFactory: Mutiny.SessionFactory
@@ -39,85 +46,204 @@ class UserServiceIntegrationTest {
         }.await().indefinitely()
     }
 
-
     @Test
-    fun `test POST config endpoint`() {
+    fun testCreateUser() {
+        val createUserRequest = CreateUserRequest(
+            name = "Test User",
+            username = "testuser",
+            password = "password123"
+        )
+
+        // Test successful user creation
         given()
             .contentType(ContentType.JSON)
-            .body("""{"userId": "test-user", "companionAppConnected": true, "companionAppPort": 12345}""")
+            .body(createUserRequest)
             .`when`()
             .post("/user/create")
             .then()
             .statusCode(201)
-            .body(containsString("test-user"))
-            .body(containsString("true"))
-            .body(containsString("12345"))
+            .body("id", notNullValue())
+
+        // Test duplicate user creation (should fail)
+        given()
+            .contentType(ContentType.JSON)
+            .body(createUserRequest)
+            .`when`()
+            .post("/user/create")
+            .then()
+            .statusCode(409)
     }
 
     @Test
-    fun `test GET config-userId endpoint`() {
-        // First, create a user config
+    fun testGetUserUnauthorized() {
+        // First create a user
+        val userId = createTestUser("Test User", "testuser", "password123")
+
+        // Test without authentication
+        given()
+            .`when`()
+            .get("/user/$userId")
+            .then()
+            .statusCode(401) // Unauthorized because no JWT token
+    }
+
+    @Test
+    fun testGetUserAuthorized() {
+        // Create a user with a specific username for testing
+        // We'll use the same username as the JWT subject
+        val userId = createTestUser("Test User", "test-user-id", "password123")
+
+        val token = Jwt.claims()
+            .issuer("ux-plugin")
+            .claim("sub", userId)
+            .claim("role", UserRoles.USER.value)
+            .expiresAt(System.currentTimeMillis() + 600000)
+            .sign()
+
+        given()
+            .`when`()
+            .header("Authorization", "Bearer $token")
+            .get(
+                "/user/$userId"
+            )
+            .then()
+            .statusCode(200)
+            .body("name", equalTo("Test User"))
+            .body("username", equalTo("test-user-id"))
+    }
+
+    @Test
+    @TestSecurity(user = "testuser", roles = [])
+    @JwtSecurity(
+        claims = [
+            Claim(key = "sub", value = "wrong-user-id")
+        ]
+    )
+    fun testGetUserForbidden() {
+        // First create a user
+        val userId = createTestUser("Test User", "testuser", "password123")
+
+        // Test unauthorized access with wrong user ID in JWT
+        given()
+            .`when`()
+            .get("/user/$userId")
+            .then()
+            .statusCode(403)
+    }
+
+    @Test
+    fun testUpdateUserUnauthorized() {
+        // First create a user
+        val userId = createTestUser("Test User", "testuser", "password123")
+
+        val updateRequest = UpdateUserRequest(
+            name = "Updated Name",
+            username = null,
+            password = null,
+            companionAppConnected = true,
+            companionAppPort = 8080
+        )
+
+        // Test without authentication
         given()
             .contentType(ContentType.JSON)
-            .body("""{"userId": "test-user", "companionAppConnected": true, "companionAppPort": 12345}""")
+            .body(updateRequest)
+            .`when`()
+            .post("/user/$userId/update")
+            .then()
+            .statusCode(401) // Unauthorized because no JWT token
+    }
+
+    @Test
+    fun testUpdateUserAuthorized() {
+        // Create a user with a specific username for testing
+        val userId = createTestUser("Test User", "test-user-id", "password123")
+
+        val token = Jwt.claims()
+            .issuer("ux-plugin")
+            .claim("sub", userId)
+            .claim("role", UserRoles.USER.value)
+            .expiresAt(System.currentTimeMillis() + 600000)
+            .sign()
+
+        val updateRequest = UpdateUserRequest(
+            name = "Updated Name",
+            username = null,
+            password = null,
+            companionAppConnected = true,
+            companionAppPort = 8080
+        )
+
+        // Test successful update with correct user ID
+        given()
+            .contentType(ContentType.JSON)
+            .header("Authorization", "Bearer $token")
+            .body(updateRequest)
+            .`when`()
+            .post("/user/$userId/update")
+            .then()
+            .statusCode(200)
+
+        // Verify the update was successful
+        given()
+            .`when`()
+            .header("Authorization", "Bearer $token")
+            .get("/user/$userId")
+            .then()
+            .statusCode(200)
+            .body("name", equalTo("Updated Name"))
+            .body("companionAppConnected", equalTo(true))
+            .body("companionAppPort", equalTo(8080))
+    }
+
+    @Test
+    @TestSecurity(user = "testuser", roles = [])
+    @JwtSecurity(
+        claims = [
+            Claim(key = "sub", value = "wrong-user-id")
+        ]
+    )
+    fun testUpdateUserForbidden() {
+        // First create a user
+        val userId = createTestUser("Test User", "testuser", "password123")
+
+        val updateRequest = UpdateUserRequest(
+            name = "Updated Name",
+            username = null,
+            password = null,
+            companionAppConnected = true,
+            companionAppPort = 8080
+        )
+
+        // Test unauthorized update with wrong user ID in JWT
+        given()
+            .contentType(ContentType.JSON)
+            .body(updateRequest)
+            .`when`()
+            .post("/user/$userId/update")
+            .then()
+            .statusCode(403)
+    }
+
+    /**
+     * Helper method to create a test user directly in the database
+     */
+    private fun createTestUser(name: String, username: String, password: String): String {
+        val createUserRequest = CreateUserRequest(
+            name = name,
+            username = username,
+            password = password
+        )
+
+        return given()
+            .contentType(ContentType.JSON)
+            .body(createUserRequest)
             .`when`()
             .post("/user/create")
             .then()
             .statusCode(201)
-
-        // Test GET /config/{userId} endpoint
-        given()
-            .`when`()
-            .get("/user/test-user")
-            .then()
-            .statusCode(200)
-            .body(containsString("test-user"))
-            .body(containsString("true"))
-            .body(containsString("12345"))
+            .extract()
+            .path("id")
     }
 
-    @Test
-    fun `test GET config-userId endpoint with non-existent user`() {
-        // Test GET /config/{userId} endpoint with a non-existent user
-        given()
-            .`when`()
-            .get("/user/non-existent-user")
-            .then()
-            .statusCode(404)
-            .body(containsString("User configuration not found"))
-    }
-
-    @Test
-    fun `test update existing user config`() {
-        // First, create a user config
-        given()
-            .contentType(ContentType.JSON)
-            .body("""{"userId": "test-user", "companionAppConnected": true, "companionAppPort": 12345}""")
-            .`when`()
-            .post("/user/create")
-            .then()
-            .statusCode(201)
-
-        // Update the user config
-        given()
-            .contentType(ContentType.JSON)
-            .body("""{"userId": "test-user", "companionAppConnected": false, "companionAppPort": 54321}""")
-            .`when`()
-            .post("/user/update")
-            .then()
-            .statusCode(200)
-            .body(containsString("test-user"))
-            .body(containsString("false"))
-            .body(containsString("54321"))
-
-        // Verify the updated config can be retrieved
-        given()
-            .`when`()
-            .get("/user/test-user")
-            .then()
-            .statusCode(200)
-            .body(containsString("test-user"))
-            .body(containsString("false"))
-            .body(containsString("54321"))
-    }
 }

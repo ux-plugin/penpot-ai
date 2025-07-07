@@ -4,17 +4,22 @@
 -- Create the table for UserEntity
 CREATE TABLE Users
 (
-    userId                VARCHAR PRIMARY KEY,
-    companionAppConnected BOOLEAN NOT NULL DEFAULT FALSE,
-    companionAppPort      INT     NOT NULL DEFAULT 64032
+    id                    VARCHAR PRIMARY KEY,
+    username              VARCHAR   NOT NULL UNIQUE,
+    password              VARCHAR   NOT NULL,
+    name                  VARCHAR   NOT NULL,
+    role                  Varchar   NOT NULL,
+    createdAt             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    companionAppConnected BOOLEAN   NOT NULL DEFAULT FALSE,
+    companionAppPort      INT       NOT NULL DEFAULT 64032
 );
 
 -- Create the table for ComponentCompletionEntity
 CREATE TABLE ComponentCompletions
 (
     userId       VARCHAR,
-    CONSTRAINT fk_component_user FOREIGN KEY (userId) REFERENCES Users (userId),
-    completionId VARCHAR PRIMARY KEY,
+    CONSTRAINT fk_component_user FOREIGN KEY (userId) REFERENCES Users (id),
+    id           VARCHAR PRIMARY KEY,
     prompt       TEXT      NOT NULL,
     aiCompletion TEXT      NOT NULL,
     createdAt    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -22,4 +27,4 @@ CREATE TABLE ComponentCompletions
 
 
 -- Add any necessary indexes (if required for constraints or optimization)
-CREATE INDEX idx_component_completions_userId_completionId ON ComponentCompletions (userId, completionId);
+CREATE INDEX idx_component_completions_userId_completionId ON ComponentCompletions (userId, id);

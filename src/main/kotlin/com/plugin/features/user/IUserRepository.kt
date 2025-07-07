@@ -13,26 +13,23 @@ interface IUserRepository {
      * @return The user configuration
      * @throws NotFoundException if the user configuration is not found
      */
-    fun getUser(userId: String): Uni<User>
+    fun getUser(userId: String): Uni<GetUserResponse>
 
     /**
-     * Check if a user configuration exists
-     * @param userId The ID of the user
-     * @return True if the user configuration exists, false otherwise
-     */
-    fun hasUser(userId: String): Uni<Boolean>
-
-    /**
-     * Create or update user configuration
-     * @param user The user configuration to create or update
+     * Update user configuration
+     *
+     * @param userId The ID of the user whose configuration to update
+     * @param userUpdate The new configuration to update the user with
+     *
      * @return The updated user configuration
+     * @throws NotFoundException if the user configuration is not found
      */
-    fun updateUser(user: User): Uni<User>
+    fun updateUser(userId: String, userUpdate: UpdateUserRequest): Uni<Unit>
 
     /**
      * Create user configuration (fails if user exists)
      * @param user The user configuration to create
      * @return The created user configuration
      */
-    fun createUser(user: User): Uni<User>
+    fun createUser(user: CreateUserRequest): Uni<CreateUserResponse>
 }

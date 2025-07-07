@@ -1,10 +1,11 @@
 package com.plugin.features.user
 
+import io.quarkus.hibernate.reactive.panache.kotlin.PanacheCompanion
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheEntityBase
-import jakarta.persistence.Column
-import jakarta.persistence.Entity
-import jakarta.persistence.Id
-import jakarta.persistence.Table
+import io.quarkus.security.jpa.Password
+import io.quarkus.security.jpa.Username
+import jakarta.persistence.*
+import java.time.Instant
 
 /**
  * Database entity for user configuration
@@ -14,8 +15,19 @@ import jakarta.persistence.Table
 class UserEntity : PanacheEntityBase {
 
     @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    lateinit var id: String
+
     @Column(nullable = false, unique = true)
-    lateinit var userId: String
+    @Username
+    lateinit var username: String
+
+    @Column(nullable = false)
+    @Password
+    lateinit var password: String
+
+    @Column(nullable = false)
+    lateinit var name: String
 
     @Column(nullable = false)
     var companionAppConnected: Boolean = false
@@ -23,4 +35,16 @@ class UserEntity : PanacheEntityBase {
     @Column(nullable = false)
     var companionAppPort: Int = 64032
 
+    @Column(nullable = false)
+    @Enumerated(EnumType.STRING)
+    lateinit var role: UserRoles
+
+    @Column(nullable = false)
+    var createdAt: Instant = Instant.now()
+
+    companion object : PanacheCompanion<UserEntity> {}
+}
+
+enum class UserRoles(val value: String) {
+    ADMIN("admin"), USER("user")
 }

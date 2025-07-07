@@ -1,15 +1,17 @@
 package com.plugin.features.user
 
+import io.quarkus.hibernate.reactive.panache.common.WithSession
+import io.quarkus.security.Authenticated
 import io.smallrye.mutiny.Uni
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
+import org.eclipse.microprofile.jwt.JsonWebToken
 import org.eclipse.microprofile.openapi.annotations.Operation
 import org.eclipse.microprofile.openapi.annotations.media.Content
 import org.eclipse.microprofile.openapi.annotations.media.Schema
-import org.eclipse.microprofile.openapi.annotations.parameters.Parameter
 import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponses
@@ -26,17 +28,17 @@ class UserService @Inject constructor(
      * @param userId The ID of the user
      * @return The user configuration
      */
-    override fun getUser(userId: String): Uni<User> {
+    override fun getUser(userId: String): Uni<GetUserResponse> {
         return userRepository.getUser(userId)
     }
 
     /**
      * Create or update user configuration
-     * @param user The user configuration to create or update
+     * @param userId The user configuration to create or update
      * @return The updated user configuration
      */
-    override fun updateUser(user: User): Uni<User> {
-        return userRepository.updateUser(user)
+    override fun updateUser(userId: String, userUpdate: UpdateUserRequest): Uni<Unit> {
+        return userRepository.updateUser(userId, userUpdate)
     }
 
     /**
@@ -44,56 +46,35 @@ class UserService @Inject constructor(
      * @param user The user configuration to create
      * @return The created user configuration
      */
-    override fun createUser(user: User): Uni<User> {
+    override fun createUser(user: CreateUserRequest): Uni<CreateUserResponse> {
         return userRepository.createUser(user)
     }
 }
 
-/**
- * REST resource for user configuration endpoints.
- * Uses CDI for dependency injection of services.
- */
 @Path("/user")
 @Produces(MediaType.APPLICATION_JSON)
 @ApplicationScoped
-class ConfigResource @Inject constructor(
-    private val userService: IUserService
+class UserResource @Inject constructor(
+    private val userService: IUserService,
+    private val jwt: JsonWebToken  // Inject the JWT
 ) {
-    /**
-     * Get user configuration
-     */
+
     @GET
     @Path("/{userId}")
-    @Operation(
-        summary = "Get user configuration",
-        description = "Returns the configuration for the specified user"
-    )
-    @APIResponses(
-        value = [
-            APIResponse(
-                responseCode = "200",
-                description = "User configuration",
-                content = [Content(schema = Schema(implementation = User::class))]
-            ),
-            APIResponse(responseCode = "404", description = "User configuration not found"),
-            APIResponse(responseCode = "500", description = "Internal server error")
-        ]
-    )
+    @Authenticated
+    @WithSession
     fun getUser(
-        @Parameter(
-            description = "The ID of the user",
-            required = true
-        )
-        @PathParam("userId")
-        userId: String
+        @PathParam("userId") userId: String
     ): Uni<Response> {
+        // Enforce user identity by comparing JWT "sub" (subject) to the path param
+        if (jwt.subject != userId) {
+            return Uni.createFrom().item(Response.status(Response.Status.FORBIDDEN).build())
+        }
         return userService.getUser(userId)
-            .map { user -> Response.ok(user).build() }
-            .onFailure().recoverWithItem { e ->
-                Response.status(Response.Status.NOT_FOUND)
-                    .entity("User configuration not found for user: $userId")
-                    .build()
+            .onItem().transform { user ->
+                Response.ok(user).build()
             }
+            .onFailure().recoverWithItem { _: Throwable -> Response.status(Response.Status.NOT_FOUND).build() }
     }
 
     /**
@@ -110,52 +91,47 @@ class ConfigResource @Inject constructor(
             APIResponse(
                 responseCode = "201",
                 description = "User created",
-                content = [Content(schema = Schema(implementation = User::class))]
+                content = [Content(schema = Schema(implementation = CreateUserResponse::class))]
             ),
             APIResponse(responseCode = "409", description = "User already exists"),
             APIResponse(responseCode = "500", description = "Internal server error")
         ]
     )
+    @WithSession
     fun createUser(
         @RequestBody(
             required = true,
-            content = [Content(schema = Schema(implementation = User::class))]
+            content = [Content(schema = Schema(implementation = CreateUserRequest::class))]
         )
-        user: User
+        user: CreateUserRequest
     ): Uni<Response> {
         return userService.createUser(user)
             .map { created -> Response.status(Response.Status.CREATED).entity(created).build() }
+            .onFailure().recoverWithItem { e ->
+                Response.status(Response.Status.CONFLICT)
+                    .entity("${user.username} already exists")
+                    .build()
+            }
     }
 
     /**
      * Update user configuration
      */
     @POST
-    @Path("/update")
-    @Operation(
-        summary = "Update user configuration",
-        description = "Creates or updates a user configuration"
-    )
-    @APIResponses(
-        value = [
-            APIResponse(
-                responseCode = "200",
-                description = "Updated user configuration",
-                content = [Content(schema = Schema(implementation = User::class))]
-            ),
-            APIResponse(responseCode = "400", description = "Bad request"),
-            APIResponse(responseCode = "500", description = "Internal server error")
-        ]
-    )
-    @Consumes(MediaType.APPLICATION_JSON)
+    @Path("/{userId}/update")
+    @Authenticated
+    @WithSession
     fun updateUser(
-        @RequestBody(
-            required = true,
-            content = [Content(schema = Schema(implementation = User::class))]
-        )
-        user: User
+        @PathParam("userId") userId: String,
+        userUpdate: UpdateUserRequest
     ): Uni<Response> {
-        return userService.updateUser(user)
-            .map { updatedConfig -> Response.ok(updatedConfig).build() }
+        if (jwt.subject != userId) {
+            return Uni.createFrom().item(Response.status(Response.Status.FORBIDDEN).build())
+        }
+        return userService.updateUser(userId, userUpdate)
+            .onItem().transform {
+                Response.ok().build()
+            }
+            .onFailure().recoverWithItem { _: Throwable -> Response.status(Response.Status.NOT_FOUND).build() }
     }
 }

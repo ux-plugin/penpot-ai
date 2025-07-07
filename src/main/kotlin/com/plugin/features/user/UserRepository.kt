@@ -18,50 +18,39 @@ class UserRepository : PanacheRepository<UserEntity>, IUserRepository {
      * @return The user configuration
      * @throws NotFoundException if the user configuration is not found
      */
-    override fun getUser(userId: String): Uni<User> {
-        return withTransaction {
-            find("userId", userId)
-                .firstResult()
-                .onItem().ifNull().failWith {
-                    NotFoundException("User configuration not found for user: $userId")
-                }
-                .map { it?.toModel() }
-        }
+    override fun getUser(userId: String): Uni<GetUserResponse> {
+        return UserEntity.find("id", userId)
+            .project(GetUserResponse::class.java)
+            .firstResult()
+            .onItem().ifNull().failWith(NotFoundException("User $userId not found"))
+            .map { it }
     }
 
     /**
-     * Check if a user configuration exists
-     * @param userId The ID of the user
-     * @return True if the user configuration exists, false otherwise
-     */
-    override fun hasUser(userId: String): Uni<Boolean> {
-        return withTransaction {
-            find("userId", userId)
-                .firstResult()
-                .map { it != null }
-        }
-    }
-
-    /**
-     * Create or update user configuration
-     * @param user The user configuration to create or update
+     * Update user configuration
+     * @param userId The id of the user
+     * @param userUpdate The user configuration to update
      * @return The updated user configuration
+     * @throws NotFoundException if the user configuration is not found
      */
-    override fun updateUser(user: User): Uni<User> {
+    override fun updateUser(userId: String, userUpdate: UpdateUserRequest): Uni<Unit> {
         return withTransaction {
-            find("userId", user.userId)
+            find("id", userId)
                 .firstResult()
+                .onItem().ifNull().failWith(NotFoundException("User $userId not found"))
                 .chain { existingUser ->
-                    if (existingUser != null) {
-                        existingUser.companionAppConnected = user.companionAppConnected
-                        existingUser.companionAppPort = user.companionAppPort
-                        persistAndFlush(existingUser)
-                            .map { it.toModel() }
-                    } else {
-                        persistAndFlush(user.toEntity())
-                            .map { it.toModel() }
-                    }
+                    val newUserEntity = existingUser as UserEntity
+
+                    userUpdate.username?.let { newUserEntity.username = it }
+                    userUpdate.name?.let { newUserEntity.name = it }
+                    userUpdate.password?.let { newUserEntity.password = it }
+                    userUpdate.companionAppConnected?.let { newUserEntity.companionAppConnected = it }
+                    userUpdate.companionAppPort?.let { newUserEntity.companionAppPort = it }
+
+                    persistAndFlush(newUserEntity)
                 }
+                .map { it }.replaceWith(Unit)
+
         }
     }
 
@@ -70,16 +59,20 @@ class UserRepository : PanacheRepository<UserEntity>, IUserRepository {
      * @param user The user configuration to create
      * @return The created user configuration
      */
-    override fun createUser(user: User): Uni<User> {
+    override fun createUser(user: CreateUserRequest): Uni<CreateUserResponse> {
         return withTransaction {
-            find("userId", user.userId)
+            find("username", user.username)
                 .firstResult()
                 .flatMap { existingUser ->
                     if (existingUser != null) {
                         Uni.createFrom().failure(IllegalArgumentException("User already exists"))
                     } else {
-                        persistAndFlush(user.toEntity())
-                            .map { it.toModel() }
+                        persistAndFlush(UserEntity().apply {
+                            this.username = user.username
+                            this.name = user.name
+                            this.password = user.password
+                            this.role = UserRoles.USER
+                        }).map { it -> CreateUserResponse(it.id) }
                     }
                 }
         }

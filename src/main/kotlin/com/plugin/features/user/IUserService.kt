@@ -11,19 +11,19 @@ interface IUserService {
      * @param userId The ID of the user
      * @return The user configuration
      */
-    fun getUser(userId: String): Uni<User>
+    fun getUser(userId: String): Uni<GetUserResponse>
 
     /**
      * Create or update user configuration
-     * @param user The user configuration to create or update
+     * @param userId The user configuration to create or update
      * @return The updated user configuration
      */
-    fun updateUser(user: User): Uni<User>
+    fun updateUser(userId: String, userUpdate: UpdateUserRequest): Uni<Unit>
 
     /**
      * Create user configuration (fails if user exists)
      * @param user The user configuration to create
      * @return The created user configuration
      */
-    fun createUser(user: User): Uni<User>
+    fun createUser(user: CreateUserRequest): Uni<CreateUserResponse>
 }

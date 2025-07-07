@@ -13,6 +13,3 @@ pluginManagement {
 
 rootProject.name = "figma_plugin_api"
 
-// Include the baml_client module
-include(":baml_client")
-project(":baml_client").projectDir = file("baml_client")

@@ -14,9 +14,12 @@ services:
       - QUARKUS_DATASOURCE_USERNAME=postgres
       - QUARKUS_DATASOURCE_PASSWORD=postgres
       - QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION=update
+      - REDIS_HOST=redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
     networks:
       - app-network
@@ -41,8 +44,25 @@ services:
     networks:
       - app-network
 
+  # Redis service
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   app-network:
