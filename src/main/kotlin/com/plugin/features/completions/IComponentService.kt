@@ -6,22 +6,17 @@ import io.smallrye.mutiny.Uni
  * Service interface for component-related operations.
  */
 interface IComponentService {
-    /**
-     * Get a component based on a prompt
-     * @param prompt The prompt to generate the component from
-     * @param userId The ID of the user
-     * @return A Uni that emits the generated FrameNode
-     */
-    fun getComponent(prompt: String, userId: String): Uni<FrameNode>
+
+    fun createComponentLangChain(prompt: String, userId: String): Uni<FrameNode>
 
     /**
      * Save a completion
      * @param userId The ID of the user
      * @param prompt The prompt used to generate the component
-     * @param aiCompletion The generated component as a string
+     * @param aiCompletion The generated component
      * @return A Uni that emits the saved ComponentCompletion
      */
-    fun saveCompletion(userId: String, prompt: String, aiCompletion: String): Uni<ComponentCompletion>
+    fun saveCompletion(userId: String, prompt: String, aiCompletion: FrameNode): Uni<Unit>
 
 
     /**

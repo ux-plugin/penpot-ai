@@ -1,9 +1,10 @@
 package com.plugin.features.completions
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.jsonSchema.JsonSchemaGenerator
-import com.fasterxml.jackson.module.jsonSchema.factories.SchemaFactoryWrapper
-import com.fasterxml.jackson.module.kotlin.KotlinModule
+import io.quarkus.hibernate.reactive.panache.common.WithSession
+import io.quarkus.logging.Log
+import io.quarkus.security.Authenticated
+import io.quarkus.security.identity.SecurityIdentity
 import io.smallrye.mutiny.Uni
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -24,13 +25,19 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses
 @ApplicationScoped
 class ComponentService @Inject constructor(
     private val componentRepository: IComponentRepository,
-    private val aiServerRepository: IAiServerRepository
 ) : IComponentService {
-    override fun getComponent(prompt: String, userId: String): Uni<FrameNode> {
-        return aiServerRepository.createCompletion(prompt)
+
+    @LangChain4JServer
+    private lateinit var aiServerRepositoryLangChain: IAiServerRepository
+
+    override fun createComponentLangChain(prompt: String, userId: String): Uni<FrameNode> {
+        return aiServerRepositoryLangChain.createCompletion(prompt)
+            .flatMap { completion ->
+                saveCompletion(userId, prompt, completion).map { completion }
+            }
     }
 
-    override fun saveCompletion(userId: String, prompt: String, aiCompletion: String): Uni<ComponentCompletion> {
+    override fun saveCompletion(userId: String, prompt: String, aiCompletion: FrameNode): Uni<Unit> {
         return componentRepository.saveCompletion(userId, prompt, aiCompletion)
     }
 
@@ -51,8 +58,11 @@ class ComponentService @Inject constructor(
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @ApplicationScoped
+@Authenticated
 class ComponentResource @Inject constructor(
-    private val componentService: IComponentService
+    private val componentService: IComponentService,
+    private val securityIdentity: SecurityIdentity,
+    private val objectMapper: ObjectMapper
 ) {
     /**
      * Create a new completion
@@ -60,8 +70,7 @@ class ComponentResource @Inject constructor(
     @POST
     @Path("/create")
     @Operation(
-        summary = "Create a new completion",
-        description = "Creates a new component completion based on a prompt"
+        summary = "Create a new completion", description = "Creates a new component completion based on a prompt"
     )
     @APIResponses(
         value = [
@@ -70,23 +79,32 @@ class ComponentResource @Inject constructor(
                 description = "Successfully created completion",
                 content = [Content(schema = Schema(implementation = FrameNode::class))]
             ),
-            APIResponse(responseCode = "400", description = "Bad request"),
-            APIResponse(responseCode = "500", description = "Internal server error")
-        ]
+            APIResponse(
+                responseCode = "400",
+                description = "Bad request"
+            ),
+            APIResponse(
+                responseCode = "500",
+                description = "Internal server error"
+            )]
     )
+    @WithSession
     fun createCompletion(
         @RequestBody(
-            required = true,
-            content = [Content(schema = Schema(implementation = PromptRequest::class))]
-        )
-        request: PromptRequest
+            required = true, content = [Content(schema = Schema(implementation = PromptRequest::class))]
+        ) request: PromptRequest
     ): Uni<Response> {
-        return componentService.getComponent(request.prompt, request.userId)
-            .map { component -> Response.ok(component).build() }
-            .onFailure().recoverWithItem { throwable ->
-                throwable.printStackTrace()
+        val userId = securityIdentity.principal.name
+        return componentService.createComponentLangChain(request.prompt, userId)
+            .map { component ->
+                Response.ok(component)
+                    .build()
+            }
+            .onFailure()
+            .recoverWithItem { throwable ->
+                Log.error("Failed to create completion", throwable)
                 Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity(mapOf("error" to throwable.message))
+                    .entity(CreationFailedResponse())
                     .build()
             }
     }
@@ -95,90 +113,96 @@ class ComponentResource @Inject constructor(
      * Get all completions for a user
      */
     @GET
-    @Path("/{userId}")
+    @Path("/")
     @Operation(
-        summary = "Get all completions for a user",
-        description = "Returns all completions for the specified user"
+        summary = "Get all completions for a user", description = "Returns all completions for the specified user"
     )
     @APIResponses(
-        value = [
-            APIResponse(
-                responseCode = "200",
-                description = "List of completions",
-                content = [Content(schema = Schema(implementation = Array<ComponentCompletion>::class))]
-            ),
-            APIResponse(responseCode = "400", description = "Bad request"),
-            APIResponse(responseCode = "500", description = "Internal server error")
-        ]
+        value = [APIResponse(
+            responseCode = "200",
+            description = "List of completions",
+            content = [Content(schema = Schema(implementation = Array<ComponentCompletionResponse>::class))]
+        ), APIResponse(responseCode = "400", description = "Bad request"), APIResponse(
+            responseCode = "500", description = "Internal server error"
+        )]
     )
+    @WithSession
     fun getCompletions(
-        @Parameter(
-            description = "The ID of the user",
-            required = true
-        )
-        @PathParam("userId")
-        userId: String
     ): Uni<Response> {
+        val userId = securityIdentity.principal.name
         return componentService.getCompletions(userId)
-            .map { completions -> Response.ok(completions).build() }
+            .map { completions ->
+                val response = completions.map { completion ->
+                    ComponentCompletionResponse(
+                        id = completion.id,
+                        prompt = completion.prompt,
+                        aiCompletion = objectMapper.readValue(
+                            completion.aiCompletion,
+                            FrameNode::class.java
+                        ),
+                        createdAt = completion.createdAt,
+                    )
+                }
+                Response.ok(response)
+                    .build()
+            }
+            .onFailure()
+            .recoverWithItem { throwable ->
+                Log.error("Failed to load completions", throwable)
+                Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity(CompletionsLoadFailedResponse())
+                    .build()
+            }
     }
 
     /**
      * Get a specific completion
      */
     @GET
-    @Path("/{userId}/{completionId}")
+    @Path("/{completionId}")
     @Operation(
-        summary = "Get a specific completion",
-        description = "Returns a specific completion for the specified user"
+        summary = "Get a specific completion", description = "Returns a specific completion for the specified user"
     )
     @APIResponses(
-        value = [
-            APIResponse(
-                responseCode = "200",
-                description = "Completion details",
-                content = [Content(schema = Schema(implementation = ComponentCompletion::class))]
-            ),
-            APIResponse(responseCode = "400", description = "Bad request"),
-            APIResponse(responseCode = "404", description = "Completion not found"),
-            APIResponse(responseCode = "500", description = "Internal server error")
-        ]
+        value = [APIResponse(
+            responseCode = "200",
+            description = "Completion details",
+            content = [Content(schema = Schema(implementation = ComponentCompletionResponse::class))]
+        ), APIResponse(responseCode = "400", description = "Bad request"), APIResponse(
+            responseCode = "404", description = "Completion not found"
+        ), APIResponse(responseCode = "500", description = "Internal server error")]
     )
+    @WithSession
     fun getCompletion(
         @Parameter(
-            description = "The ID of the user",
-            required = true
-        )
-        @PathParam("userId")
-        userId: String,
-
-        @Parameter(
-            description = "The ID of the completion",
-            required = true
-        )
-        @PathParam("completionId")
-        completionId: String
+            description = "The ID of the completion", required = true
+        ) @PathParam("completionId") completionId: String
     ): Uni<Response> {
+        val userId = securityIdentity.principal.name
         return componentService.getCompletion(userId, completionId)
-            .map { completion -> Response.ok(completion).build() }
-    }
+            .map { completion ->
+                val response = ComponentCompletionResponse(
+                    id = completion.id,
+                    prompt = completion.prompt,
+                    aiCompletion = objectMapper.readValue(completion.aiCompletion, FrameNode::class.java),
+                    createdAt = completion.createdAt,
+                )
+                Response.ok(response)
+                    .build()
+            }
+            .onFailure()
+            .recoverWithItem { throwable ->
+                if (throwable is NotFoundException) {
+                    Response.status(Response.Status.NOT_FOUND)
+                        .entity(CompletionNotFoundResponse())
+                        .build()
+                } else {
+                    Log.error("Failed to get completion with ID: $completionId", throwable)
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(CompletionsLoadFailedResponse())
+                        .build()
+                }
 
-    @GET
-    @Path("/test")
-    fun test(): String {
-        val kotlinModule = KotlinModule.Builder().build()
-
-        // Create an ObjectMapper and register the Kotlin module
-        val objectMapper = ObjectMapper().registerModule(kotlinModule)
-
-        // Create a custom SchemaFactoryWrapper to handle polymorphic types
-        val schemaFactoryWrapper = SchemaFactoryWrapper()
-
-        // Generate the JSON Schema
-        val schemaGenerator = JsonSchemaGenerator(objectMapper)
-        val schema = schemaGenerator.generateSchema(FrameNode::class.java)
-
-        // Serialize the schema to a JSON string
-        return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(schema)
+            }
     }
 }

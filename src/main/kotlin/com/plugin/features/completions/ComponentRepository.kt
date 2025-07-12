@@ -1,34 +1,52 @@
 package com.plugin.features.completions
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
 import io.smallrye.mutiny.Uni
+import io.smallrye.mutiny.replaceWithUnit
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.ws.rs.NotFoundException
-import java.util.*
+import java.time.Instant
 
 /**
  * Repository implementation for component completions using Panache
  */
 @ApplicationScoped
-class ComponentRepository : PanacheRepository<ComponentCompletionEntity>, IComponentRepository {
+class ComponentRepository(private val objectMapper: ObjectMapper) : PanacheRepository<ComponentCompletionEntity>,
+    IComponentRepository {
 
     /**
-     * Save a component completion
-     * @param userId The ID of the user
-     * @param prompt The prompt used to generate the component
-     * @param aiCompletion The generated component as a string
-     * @return The saved component completion
+     * Save a component completion.
+     * @param userId The ID of the user.
+     * @param prompt The prompt used to generate the component.
+     * @param aiCompletion The generated component as a string.
+     * @return A Uni representing the async save operation.
      */
-    override fun saveCompletion(userId: String, prompt: String, aiCompletion: String): Uni<ComponentCompletion> {
-        val completion = ComponentCompletion().apply {
-            this.userId = userId
-            this.completionId = UUID.randomUUID().toString()
-            this.prompt = prompt
-            this.aiCompletion = aiCompletion
+    override fun saveCompletion(userId: String, prompt: String, aiCompletion: FrameNode): Uni<Unit> {
+        return withTransaction {
+            UserPermissions.find("id", userId)
+                .firstResult()
+                .onItem()
+                .ifNull()
+                .failWith {
+                    NotFoundException("User not found: $userId")
+                }
+                .flatMap { permissions ->
+                    if (permissions?.allowSavingCompletions == true) {
+                        persistAndFlush(ComponentCompletionEntity().apply {
+                            this.userId = userId
+                            this.prompt = prompt
+                            this.aiCompletion = objectMapper.writeValueAsString(aiCompletion)
+                            this.createdAt = Instant.now()
+                        })
+                    } else {
+                        Uni.createFrom()
+                            .voidItem()
+                    }
+                }
+                .replaceWithUnit()
         }
-
-        return persistAndFlush(completion.toEntity())
-            .map { it.toModel() }
     }
 
     /**
@@ -37,8 +55,9 @@ class ComponentRepository : PanacheRepository<ComponentCompletionEntity>, ICompo
      * @return List of component completions for the user
      */
     override fun getCompletions(userId: String): Uni<List<ComponentCompletion>> {
-        return ComponentCompletionEntity.findByUserId(userId)
-            .map { it.toModels() }
+        return ComponentCompletionEntity.find("userId", userId)
+            .project(ComponentCompletion::class.java)
+            .list()
     }
 
     /**
@@ -49,12 +68,15 @@ class ComponentRepository : PanacheRepository<ComponentCompletionEntity>, ICompo
      * @throws NotFoundException if the completion is not found
      */
     override fun getCompletion(userId: String, completionId: String): Uni<ComponentCompletion> {
-        return find("userId = ?1 and completionId = ?2", userId, completionId)
+        return ComponentCompletionEntity.find("userId = ?1 and id = ?2", userId, completionId)
+            .project(ComponentCompletion::class.java)
             .firstResult()
-            .onItem().ifNull().failWith {
+            .onItem()
+            .ifNull()
+            .failWith {
                 NotFoundException("Completion not found for user: $userId and completion: $completionId")
             }
-            .map { it?.toModel() }
+            .map { it }
     }
 
     /**

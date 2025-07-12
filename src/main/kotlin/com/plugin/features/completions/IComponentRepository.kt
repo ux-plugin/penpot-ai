@@ -14,7 +14,7 @@ interface IComponentRepository {
      * @param aiCompletion The generated component as a string
      * @return The saved component completion
      */
-    fun saveCompletion(userId: String, prompt: String, aiCompletion: String): Uni<ComponentCompletion>
+    fun saveCompletion(userId: String, prompt: String, aiCompletion: FrameNode): Uni<Unit>
 
     /**
      * Get all completions for a user
