@@ -54,7 +54,10 @@ dependencies {
     implementation("io.quarkus:quarkus-logging-json")
 
     // Swagger
-    implementation("io.swagger.codegen.v3:swagger-codegen-generators:$swaggerCodegenVersion")
+    implementation("io.swagger.codegen.v3:swagger-codegen-generators:1.0.56") {
+        exclude(group = "ch.qos.logback", module = "logback-classic")
+        exclude(group = "ch.qos.logback", module = "logback-core")
+    }
 
     // Kotlin coroutines support
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
@@ -64,6 +67,7 @@ dependencies {
     implementation("io.quarkus:quarkus-hibernate-reactive-panache-kotlin")
     implementation("io.quarkus:quarkus-reactive-pg-client")
     implementation("io.quarkus:quarkus-liquibase")
+    implementation("io.quarkus:quarkus-mailer")
     runtimeOnly("io.quarkus:quarkus-jdbc-postgresql")
 
     // AI dependencies
@@ -96,9 +100,6 @@ dependencies {
     // JUnit 5 dependencies
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.10.0")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.10.0")
-
-    // Mockk for mocking in tests
-    testImplementation("io.mockk:mockk:1.13.8")
 }
 
 tasks.test {

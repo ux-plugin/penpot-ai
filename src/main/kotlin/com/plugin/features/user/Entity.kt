@@ -40,7 +40,25 @@ class UserEntity : PanacheEntityBase {
     lateinit var role: UserRoles
 
     @Column(nullable = false)
+    var allowSavingCompletions: Boolean = false
+
+    @Column(nullable = false)
     var createdAt: Instant = Instant.now()
+
+    @Column(nullable = false)
+    var verified: Boolean = false
+
+    @Column(nullable = false)
+    var emailVerificationFailedAttempts: Int = 0
+
+    @Column(nullable = false)
+    var numberOfEmailVerificationCodeGenerated: Int = 0
+
+    @Column(nullable = true)
+    var emailVerificationCodeExpiresAt: Instant? = null
+
+    @Column(nullable = true)
+    var emailVerificationCode: String? = null
 
     companion object : PanacheCompanion<UserEntity> {}
 }

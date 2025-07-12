@@ -2,16 +2,22 @@ package com.plugin.features.user
 
 import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
+import io.quarkus.logging.Log
 import io.smallrye.mutiny.Uni
+import io.smallrye.mutiny.replaceWithUnit
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.ws.rs.NotFoundException
+import org.eclipse.microprofile.config.inject.ConfigProperty
+import java.time.Instant
 
 /**
  * Repository implementation for user configurations using Panache
  */
 @ApplicationScoped
-class UserRepository : PanacheRepository<UserEntity>, IUserRepository {
-
+class UserRepository(
+    @ConfigProperty(name = "user.email-verification.code.max-generation-attempts", defaultValue = "5")
+    private val maxEmailVerificationCodeGenerationAttempts: Int,
+) : PanacheRepository<UserEntity>, IUserRepository {
     /**
      * Get user configuration by user ID
      * @param userId The ID of the user
@@ -46,6 +52,7 @@ class UserRepository : PanacheRepository<UserEntity>, IUserRepository {
                     userUpdate.password?.let { newUserEntity.password = it }
                     userUpdate.companionAppConnected?.let { newUserEntity.companionAppConnected = it }
                     userUpdate.companionAppPort?.let { newUserEntity.companionAppPort = it }
+                    userUpdate.allowSavingCompletions?.let { newUserEntity.allowSavingCompletions = it }
 
                     persistAndFlush(newUserEntity)
                 }
@@ -73,6 +80,56 @@ class UserRepository : PanacheRepository<UserEntity>, IUserRepository {
                             this.password = user.password
                             this.role = UserRoles.USER
                         }).map { it -> CreateUserResponse(it.id) }
+                    }
+                }
+        }
+    }
+
+    override fun saveNewEmailVerificationCode(userId: String, verificationCode: String, expiredAt: Instant): Uni<Unit> {
+        return withTransaction {
+            find("id", userId).firstResult()
+                .map { existingUser ->
+                    if (existingUser == null) {
+                        Log.warn("User $userId not found while saving email verification code.")
+                        Uni.createFrom().failure(
+                            NotFoundException(
+                                "Maximum number of email verification code generation attempts reached"
+                            )
+                        )
+                    } else {
+                        if (existingUser.numberOfEmailVerificationCodeGenerated > maxEmailVerificationCodeGenerationAttempts) {
+                            Log.warn("Maximum number of email verification code generation attempts reached for user $userId.")
+                            Uni.createFrom().failure(
+                                IllegalStateException(
+                                    "Maximum number of email verification code generation attempts reached"
+                                )
+                            )
+                        } else {
+                            existingUser.numberOfEmailVerificationCodeGenerated++
+                            existingUser.emailVerificationCode = verificationCode
+                            existingUser.emailVerificationCodeExpiresAt = expiredAt
+                            existingUser.emailVerificationFailedAttempts = 0
+                            persist(existingUser)
+                        }
+                    }
+                }.replaceWithUnit()
+        }
+    }
+
+    override fun isVerificationCodeValid(userId: String, code: String): Uni<Boolean> {
+        return withTransaction {
+            find("id", userId).firstResult()
+                .onItem().transformToUni { existingUser ->
+                    if (existingUser == null) {
+                        Uni.createFrom().failure(
+                            NotFoundException("User not found")
+                        )
+                    } else if (existingUser.emailVerificationCode != code) {
+                        Log.info("User $userId submitted $code while it should be ${existingUser.emailVerificationCode}.")
+                        existingUser.emailVerificationFailedAttempts++
+                        persist(existingUser).replaceWith(false)
+                    } else {
+                        Uni.createFrom().item(true)
                     }
                 }
         }

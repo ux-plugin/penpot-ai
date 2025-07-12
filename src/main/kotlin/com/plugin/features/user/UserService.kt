@@ -2,13 +2,13 @@ package com.plugin.features.user
 
 import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.security.Authenticated
+import io.quarkus.security.identity.SecurityIdentity
 import io.smallrye.mutiny.Uni
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
-import org.eclipse.microprofile.jwt.JsonWebToken
 import org.eclipse.microprofile.openapi.annotations.Operation
 import org.eclipse.microprofile.openapi.annotations.media.Content
 import org.eclipse.microprofile.openapi.annotations.media.Schema
@@ -56,7 +56,7 @@ class UserService @Inject constructor(
 @ApplicationScoped
 class UserResource @Inject constructor(
     private val userService: IUserService,
-    private val jwt: JsonWebToken  // Inject the JWT
+    private val securityIdentity: SecurityIdentity
 ) {
 
     @GET
@@ -66,8 +66,7 @@ class UserResource @Inject constructor(
     fun getUser(
         @PathParam("userId") userId: String
     ): Uni<Response> {
-        // Enforce user identity by comparing JWT "sub" (subject) to the path param
-        if (jwt.subject != userId) {
+        if (securityIdentity.principal.name != userId) {
             return Uni.createFrom().item(Response.status(Response.Status.FORBIDDEN).build())
         }
         return userService.getUser(userId)
@@ -125,7 +124,7 @@ class UserResource @Inject constructor(
         @PathParam("userId") userId: String,
         userUpdate: UpdateUserRequest
     ): Uni<Response> {
-        if (jwt.subject != userId) {
+        if (securityIdentity.principal.name != userId) {
             return Uni.createFrom().item(Response.status(Response.Status.FORBIDDEN).build())
         }
         return userService.updateUser(userId, userUpdate)

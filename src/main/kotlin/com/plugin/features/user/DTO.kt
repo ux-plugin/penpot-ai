@@ -15,7 +15,8 @@ data class GetUserResponse(
     val name: String,
     val username: String,
     val companionAppConnected: Boolean,
-    val companionAppPort: Int
+    val companionAppPort: Int,
+    val allowSavingCompletions: Boolean
 )
 
 data class UpdateUserRequest(
@@ -23,5 +24,6 @@ data class UpdateUserRequest(
     val username: String?,
     val password: String?,
     val companionAppConnected: Boolean?,
-    val companionAppPort: Int?
+    val companionAppPort: Int?,
+    val allowSavingCompletions: Boolean?
 )

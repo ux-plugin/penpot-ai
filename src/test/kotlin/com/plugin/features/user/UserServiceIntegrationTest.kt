@@ -141,7 +141,8 @@ class UserServiceIntegrationTest {
             username = null,
             password = null,
             companionAppConnected = true,
-            companionAppPort = 8080
+            companionAppPort = 8080,
+            allowSavingCompletions = false
         )
 
         // Test without authentication
@@ -171,7 +172,8 @@ class UserServiceIntegrationTest {
             username = null,
             password = null,
             companionAppConnected = true,
-            companionAppPort = 8080
+            companionAppPort = 8080,
+            allowSavingCompletions = true
         )
 
         // Test successful update with correct user ID
@@ -194,6 +196,7 @@ class UserServiceIntegrationTest {
             .body("name", equalTo("Updated Name"))
             .body("companionAppConnected", equalTo(true))
             .body("companionAppPort", equalTo(8080))
+            .body("allowSavingCompletions", equalTo(true))
     }
 
     @Test
@@ -212,7 +215,8 @@ class UserServiceIntegrationTest {
             username = null,
             password = null,
             companionAppConnected = true,
-            companionAppPort = 8080
+            companionAppPort = 8080,
+            allowSavingCompletions = false
         )
 
         // Test unauthorized update with wrong user ID in JWT

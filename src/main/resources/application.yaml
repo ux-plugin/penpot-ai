@@ -65,7 +65,6 @@ quarkus:
       "org.jboss.resteasy.reactive.client":
         level: "${LOG_LEVEL:DEBUG}"
 
-
 openai:
   api.key: "${OPENAI_API_KEY}"
   project.id: "${OPENAI_PROJECT_ID}"

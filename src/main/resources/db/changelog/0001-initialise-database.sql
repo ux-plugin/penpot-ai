@@ -4,14 +4,20 @@
 -- Create the table for UserEntity
 CREATE TABLE Users
 (
-    id                    VARCHAR PRIMARY KEY,
-    username              VARCHAR   NOT NULL UNIQUE,
-    password              VARCHAR   NOT NULL,
-    name                  VARCHAR   NOT NULL,
-    role                  Varchar   NOT NULL,
-    createdAt             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    companionAppConnected BOOLEAN   NOT NULL DEFAULT FALSE,
-    companionAppPort      INT       NOT NULL DEFAULT 64032
+    id                              VARCHAR PRIMARY KEY,
+    username                        VARCHAR   NOT NULL UNIQUE,
+    password                        VARCHAR   NOT NULL,
+    name                            VARCHAR   NOT NULL,
+    role                            VARCHAR   NOT NULL,
+    createdAt                       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    companionAppConnected           BOOLEAN   NOT NULL DEFAULT FALSE,
+    companionAppPort                INT       NOT NULL DEFAULT 64032,
+    allowSavingCompletions          BOOLEAN   NOT NULL DEFAULT FALSE,
+    verified                        BOOLEAN   NOT NULL DEFAULT FALSE,
+    emailVerificationFailedAttempts INT       NOT NULL DEFAULT 0,
+    emailVerificationCodeGenerated  INT       NOT NULL DEFAULT 0,
+    emailVerificationCodeExpiresAt  TIMESTAMP,
+    emailVerificationCode           VARCHAR
 );
 
 -- Create the table for ComponentCompletionEntity
@@ -24,7 +30,6 @@ CREATE TABLE ComponentCompletions
     aiCompletion TEXT      NOT NULL,
     createdAt    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
 
 -- Add any necessary indexes (if required for constraints or optimization)
 CREATE INDEX idx_component_completions_userId_completionId ON ComponentCompletions (userId, id);
