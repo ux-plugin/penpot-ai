@@ -1,6 +1,7 @@
 package com.plugin.features.auth
 
 import com.plugin.features.user.UserRoles
+import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
 import io.quarkus.redis.datasource.ReactiveRedisDataSource
 import io.quarkus.redis.datasource.value.ReactiveValueCommands
@@ -26,6 +27,7 @@ class AuthRepository(
     private val accessTokenPrefix = "access_token:"
     private val refreshTokenPrefix = "refresh_token:"
 
+    @WithSession
     override fun authenticate(username: String, password: String): Uni<LoginCredentials> {
         return AuthEntity.find("username", username)
             .firstResult()
@@ -43,6 +45,7 @@ class AuthRepository(
             }
     }
 
+    @WithSession
     override fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
         return validateRefreshToken(refreshTokenRequest)
             .onItem().transformToUni { token ->

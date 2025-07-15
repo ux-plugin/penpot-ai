@@ -1,8 +1,7 @@
 package com.plugin.features.auth
 
-import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.logging.Log
-import io.smallrye.mutiny.Uni
+import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.*
@@ -29,8 +28,8 @@ class AuthService @Inject constructor(
      * @param loginRequest The authentication request containing a username and password
      * @return The authentication response containing access and refresh tokens
      */
-    override fun authenticate(loginRequest: LoginRequest): Uni<LoginCredentials> {
-        return authRepository.authenticate(loginRequest.username, loginRequest.password)
+    override suspend fun authenticate(loginRequest: LoginRequest): LoginCredentials {
+        return authRepository.authenticate(loginRequest.username, loginRequest.password).awaitSuspending()
     }
 
     /**
@@ -38,8 +37,8 @@ class AuthService @Inject constructor(
      * @param refreshTokenRequest The request containing the refresh token
      * @return A new access token
      */
-    override fun refreshToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
-        return authRepository.refreshAccessToken(refreshTokenRequest)
+    override suspend fun refreshToken(refreshTokenRequest: RefreshTokenRequest): String {
+        return authRepository.refreshAccessToken(refreshTokenRequest).awaitSuspending()
     }
 }
 
@@ -69,47 +68,46 @@ class AuthResource @Inject constructor(
             APIResponse(responseCode = "401", description = "Authentication failed")
         ]
     )
-    @WithSession
-    fun login(
+    suspend fun login(
         @RequestBody(
             required = true,
             content = [Content(schema = Schema(implementation = LoginRequest::class))]
         )
         loginRequest: LoginRequest
-    ): Uni<Response> {
-        return authService.authenticate(loginRequest)
-            .map { authResponse ->
-                // Create an HTTP-only cookie for refresh token
-                val refreshTokenCookie = NewCookie.Builder("refresh_token")
-                    .value(authResponse.refreshToken)
-                    .path("/")
-                    .maxAge(30 * 24 * 60 * 60) // 30 days in seconds
-                    .httpOnly(true)
-                    .secure(true) // Requires HTTPS
-                    .build()
+    ): Response {
+        return try {
+            val authResponse = authService.authenticate(loginRequest)
 
-                // Return only the access token in the response body
-                Response.ok()
-                    .entity(LoginResponse(authResponse.accessToken))
-                    .cookie(refreshTokenCookie)
-                    .build()
-            }
-            .onFailure().recoverWithItem { e ->
-                when (e) {
-                    is NotFoundException, is SecurityException -> {
-                        Response.status(Response.Status.UNAUTHORIZED)
-                            .entity(AuthErrorResponse())
-                            .build()
-                    }
+            // Create an HTTP-only cookie for refresh token
+            val refreshTokenCookie = NewCookie.Builder("refresh_token")
+                .value(authResponse.refreshToken)
+                .path("/")
+                .maxAge(30 * 24 * 60 * 60) // 30 days in seconds
+                .httpOnly(true)
+                .secure(true) // Requires HTTPS
+                .build()
 
-                    else -> {
-                        Log.error("Authentication error", e)
-                        Response.status(Response.Status.UNAUTHORIZED)
-                            .entity(AuthErrorResponse())
-                            .build()
-                    }
+            // Return only the access token in the response body
+            Response.ok()
+                .entity(LoginResponse(authResponse.accessToken))
+                .cookie(refreshTokenCookie)
+                .build()
+        } catch (e: Exception) {
+            when (e) {
+                is NotFoundException, is SecurityException -> {
+                    Response.status(Response.Status.UNAUTHORIZED)
+                        .entity(AuthErrorResponse())
+                        .build()
+                }
+
+                else -> {
+                    Log.error("Authentication error", e)
+                    Response.status(Response.Status.UNAUTHORIZED)
+                        .entity(AuthErrorResponse())
+                        .build()
                 }
             }
+        }
     }
 
     /**
@@ -131,44 +129,40 @@ class AuthResource @Inject constructor(
             APIResponse(responseCode = "401", description = "Invalid refresh token")
         ]
     )
-    @WithSession
-    fun refreshToken(
+    suspend fun refreshToken(
         @CookieParam("refresh_token") refreshTokenCookie: Cookie?,
         @QueryParam("userId") userId: String,
-    ): Uni<Response> {
+    ): Response {
         // Check if a refresh token cookie exists
         if (refreshTokenCookie == null || refreshTokenCookie.value.isNullOrEmpty()) {
-            return Uni.createFrom().item(
-                Response.status(Response.Status.UNAUTHORIZED)
-                    .entity(AuthErrorResponse("Missing refresh token"))
-                    .build()
-            )
+            return Response.status(Response.Status.UNAUTHORIZED)
+                .entity(AuthErrorResponse("Missing refresh token"))
+                .build()
         }
 
         val refreshTokenRequest = RefreshTokenRequest(refreshTokenCookie.value, userId)
 
-        return authService.refreshToken(refreshTokenRequest)
-            .map { accessToken ->
-                Response.ok()
-                    .entity(RefreshTokenResponse(accessToken))
-                    .build()
-            }
-            .onFailure().recoverWithItem { e ->
-                when (e) {
-                    is SecurityException -> {
-                        Log.debug(e)
-                        Response.status(Response.Status.UNAUTHORIZED)
-                            .entity(AuthErrorResponse())
-                            .build()
-                    }
+        return try {
+            val accessToken = authService.refreshToken(refreshTokenRequest)
+            Response.ok()
+                .entity(RefreshTokenResponse(accessToken))
+                .build()
+        } catch (e: Exception) {
+            when (e) {
+                is SecurityException -> {
+                    Log.debug(e)
+                    Response.status(Response.Status.UNAUTHORIZED)
+                        .entity(AuthErrorResponse())
+                        .build()
+                }
 
-                    else -> {
-                        Log.error("Token refresh error", e)
-                        Response.status(Response.Status.UNAUTHORIZED)
-                            .entity(AuthErrorResponse())
-                            .build()
-                    }
+                else -> {
+                    Log.error("Token refresh error", e)
+                    Response.status(Response.Status.UNAUTHORIZED)
+                        .entity(AuthErrorResponse())
+                        .build()
                 }
             }
+        }
     }
 }
