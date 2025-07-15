@@ -2,6 +2,7 @@ package com.plugin.features.completions
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
+import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
 import io.smallrye.mutiny.Uni
 import io.smallrye.mutiny.replaceWithUnit
@@ -54,6 +55,7 @@ class ComponentRepository(private val objectMapper: ObjectMapper) : PanacheRepos
      * @param userId The ID of the user
      * @return List of component completions for the user
      */
+    @WithSession
     override fun getCompletions(userId: String): Uni<List<ComponentCompletion>> {
         return ComponentCompletionEntity.find("userId", userId)
             .project(ComponentCompletion::class.java)
@@ -67,6 +69,7 @@ class ComponentRepository(private val objectMapper: ObjectMapper) : PanacheRepos
      * @return The component completion
      * @throws NotFoundException if the completion is not found
      */
+    @WithSession
     override fun getCompletion(userId: String, completionId: String): Uni<ComponentCompletion> {
         return ComponentCompletionEntity.find("userId = ?1 and id = ?2", userId, completionId)
             .project(ComponentCompletion::class.java)
@@ -83,6 +86,7 @@ class ComponentRepository(private val objectMapper: ObjectMapper) : PanacheRepos
      * Delete all completions from the database
      * Primarily used for testing purposes
      */
+    @WithSession
     override fun deleteAllCompletions(): Uni<Long> {
         return deleteAll()
     }

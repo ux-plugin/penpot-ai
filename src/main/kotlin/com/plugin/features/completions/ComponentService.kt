@@ -6,6 +6,7 @@ import io.quarkus.logging.Log
 import io.quarkus.security.Authenticated
 import io.quarkus.security.identity.SecurityIdentity
 import io.smallrye.mutiny.Uni
+import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.*
@@ -28,25 +29,24 @@ class ComponentService @Inject constructor(
 ) : IComponentService {
 
     @LangChain4JServer
-    private lateinit var aiServerRepositoryLangChain: IAiServerRepository
+    private lateinit var aiServerRepositoryLangChain: IAiServerService
 
-    override fun createComponentLangChain(prompt: String, userId: String): Uni<FrameNode> {
-        return aiServerRepositoryLangChain.createCompletion(prompt)
-            .flatMap { completion ->
-                saveCompletion(userId, prompt, completion).map { completion }
-            }
+    override suspend fun createComponentLangChain(prompt: String, userId: String): FrameNode {
+        val completion = aiServerRepositoryLangChain.createCompletion(prompt)
+        saveCompletion(userId, prompt, completion)
+        return completion
     }
 
-    override fun saveCompletion(userId: String, prompt: String, aiCompletion: FrameNode): Uni<Unit> {
-        return componentRepository.saveCompletion(userId, prompt, aiCompletion)
+    override suspend fun saveCompletion(userId: String, prompt: String, aiCompletion: FrameNode) {
+        componentRepository.saveCompletion(userId, prompt, aiCompletion).awaitSuspending()
     }
 
-    override fun getCompletions(userId: String): Uni<List<ComponentCompletion>> {
-        return componentRepository.getCompletions(userId)
+    override suspend fun getCompletions(userId: String): List<ComponentCompletion> {
+        return componentRepository.getCompletions(userId).awaitSuspending()
     }
 
-    override fun getCompletion(userId: String, completionId: String): Uni<ComponentCompletion> {
-        return componentRepository.getCompletion(userId, completionId)
+    override suspend fun getCompletion(userId: String, completionId: String): ComponentCompletion {
+        return componentRepository.getCompletion(userId, completionId).awaitSuspending()
     }
 }
 
@@ -88,25 +88,21 @@ class ComponentResource @Inject constructor(
                 description = "Internal server error"
             )]
     )
-    @WithSession
-    fun createCompletion(
+    suspend fun createCompletion(
         @RequestBody(
             required = true, content = [Content(schema = Schema(implementation = PromptRequest::class))]
         ) request: PromptRequest
-    ): Uni<Response> {
+    ): Response {
         val userId = securityIdentity.principal.name
-        return componentService.createComponentLangChain(request.prompt, userId)
-            .map { component ->
-                Response.ok(component)
-                    .build()
-            }
-            .onFailure()
-            .recoverWithItem { throwable ->
-                Log.error("Failed to create completion", throwable)
-                Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity(CreationFailedResponse())
-                    .build()
-            }
+        return try {
+            val component = componentService.createComponentLangChain(request.prompt, userId)
+            Response.ok(component).build()
+        } catch (throwable: Throwable) {
+            Log.error("Failed to create completion", throwable)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(CreationFailedResponse())
+                .build()
+        }
     }
 
     /**
@@ -126,33 +122,28 @@ class ComponentResource @Inject constructor(
             responseCode = "500", description = "Internal server error"
         )]
     )
-    @WithSession
-    fun getCompletions(
-    ): Uni<Response> {
+    suspend fun getCompletions(): Response {
         val userId = securityIdentity.principal.name
-        return componentService.getCompletions(userId)
-            .map { completions ->
-                val response = completions.map { completion ->
-                    ComponentCompletionResponse(
-                        id = completion.id,
-                        prompt = completion.prompt,
-                        aiCompletion = objectMapper.readValue(
-                            completion.aiCompletion,
-                            FrameNode::class.java
-                        ),
-                        createdAt = completion.createdAt,
-                    )
-                }
-                Response.ok(response)
-                    .build()
+        return try {
+            val completions = componentService.getCompletions(userId)
+            val response = completions.map { completion ->
+                ComponentCompletionResponse(
+                    id = completion.id,
+                    prompt = completion.prompt,
+                    aiCompletion = objectMapper.readValue(
+                        completion.aiCompletion,
+                        FrameNode::class.java
+                    ),
+                    createdAt = completion.createdAt,
+                )
             }
-            .onFailure()
-            .recoverWithItem { throwable ->
-                Log.error("Failed to load completions", throwable)
-                Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity(CompletionsLoadFailedResponse())
-                    .build()
-            }
+            Response.ok(response).build()
+        } catch (throwable: Throwable) {
+            Log.error("Failed to load completions", throwable)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(CompletionsLoadFailedResponse())
+                .build()
+        }
     }
 
     /**
@@ -172,37 +163,32 @@ class ComponentResource @Inject constructor(
             responseCode = "404", description = "Completion not found"
         ), APIResponse(responseCode = "500", description = "Internal server error")]
     )
-    @WithSession
-    fun getCompletion(
+    suspend fun getCompletion(
         @Parameter(
             description = "The ID of the completion", required = true
         ) @PathParam("completionId") completionId: String
-    ): Uni<Response> {
+    ): Response {
         val userId = securityIdentity.principal.name
-        return componentService.getCompletion(userId, completionId)
-            .map { completion ->
-                val response = ComponentCompletionResponse(
-                    id = completion.id,
-                    prompt = completion.prompt,
-                    aiCompletion = objectMapper.readValue(completion.aiCompletion, FrameNode::class.java),
-                    createdAt = completion.createdAt,
-                )
-                Response.ok(response)
+        return try {
+            val completion = componentService.getCompletion(userId, completionId)
+            val response = ComponentCompletionResponse(
+                id = completion.id,
+                prompt = completion.prompt,
+                aiCompletion = objectMapper.readValue(completion.aiCompletion, FrameNode::class.java),
+                createdAt = completion.createdAt,
+            )
+            Response.ok(response).build()
+        } catch (throwable: Throwable) {
+            if (throwable is NotFoundException) {
+                Response.status(Response.Status.NOT_FOUND)
+                    .entity(CompletionNotFoundResponse())
+                    .build()
+            } else {
+                Log.error("Failed to get completion with ID: $completionId", throwable)
+                Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity(CompletionsLoadFailedResponse())
                     .build()
             }
-            .onFailure()
-            .recoverWithItem { throwable ->
-                if (throwable is NotFoundException) {
-                    Response.status(Response.Status.NOT_FOUND)
-                        .entity(CompletionNotFoundResponse())
-                        .build()
-                } else {
-                    Log.error("Failed to get completion with ID: $completionId", throwable)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                        .entity(CompletionsLoadFailedResponse())
-                        .build()
-                }
-
-            }
+        }
     }
 }
