@@ -1,9 +1,8 @@
 package com.plugin.features.user
 
-import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.security.Authenticated
 import io.quarkus.security.identity.SecurityIdentity
-import io.smallrye.mutiny.Uni
+import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.*
@@ -28,17 +27,16 @@ class UserService @Inject constructor(
      * @param userId The ID of the user
      * @return The user configuration
      */
-    override fun getUser(userId: String): Uni<GetUserResponse> {
-        return userRepository.getUser(userId)
+    override suspend fun getUser(userId: String): GetUserResponse {
+        return userRepository.getUser(userId).awaitSuspending()
     }
 
     /**
      * Create or update user configuration
      * @param userId The user configuration to create or update
-     * @return The updated user configuration
      */
-    override fun updateUser(userId: String, userUpdate: UpdateUserRequest): Uni<Unit> {
-        return userRepository.updateUser(userId, userUpdate)
+    override suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
+        userRepository.updateUser(userId, userUpdate).awaitSuspending()
     }
 
     /**
@@ -46,8 +44,8 @@ class UserService @Inject constructor(
      * @param user The user configuration to create
      * @return The created user configuration
      */
-    override fun createUser(user: CreateUserRequest): Uni<CreateUserResponse> {
-        return userRepository.createUser(user)
+    override suspend fun createUser(user: CreateUserRequest): CreateUserResponse {
+        return userRepository.createUser(user).awaitSuspending()
     }
 }
 
@@ -62,18 +60,18 @@ class UserResource @Inject constructor(
     @GET
     @Path("/{userId}")
     @Authenticated
-    @WithSession
-    fun getUser(
+    suspend fun getUser(
         @PathParam("userId") userId: String
-    ): Uni<Response> {
+    ): Response {
         if (securityIdentity.principal.name != userId) {
-            return Uni.createFrom().item(Response.status(Response.Status.FORBIDDEN).build())
+            return Response.status(Response.Status.FORBIDDEN).build()
         }
-        return userService.getUser(userId)
-            .onItem().transform { user ->
-                Response.ok(user).build()
-            }
-            .onFailure().recoverWithItem { _: Throwable -> Response.status(Response.Status.NOT_FOUND).build() }
+        return try {
+            val user = userService.getUser(userId)
+            Response.ok(user).build()
+        } catch (e: NotFoundException) {
+            Response.status(Response.Status.NOT_FOUND).build()
+        }
     }
 
     /**
@@ -96,21 +94,19 @@ class UserResource @Inject constructor(
             APIResponse(responseCode = "500", description = "Internal server error")
         ]
     )
-    @WithSession
-    fun createUser(
+    suspend fun createUser(
         @RequestBody(
             required = true,
             content = [Content(schema = Schema(implementation = CreateUserRequest::class))]
         )
         user: CreateUserRequest
-    ): Uni<Response> {
-        return userService.createUser(user)
-            .map { created -> Response.status(Response.Status.CREATED).entity(created).build() }
-            .onFailure().recoverWithItem { e ->
-                Response.status(Response.Status.CONFLICT)
-                    .entity("${user.username} already exists")
-                    .build()
-            }
+    ): Response {
+        return try {
+            val created = userService.createUser(user)
+            Response.status(Response.Status.CREATED).entity(created).build()
+        } catch (e: IllegalArgumentException) {
+            Response.status(Response.Status.CONFLICT).entity("${user.username} already exists").build()
+        }
     }
 
     /**
@@ -119,18 +115,18 @@ class UserResource @Inject constructor(
     @POST
     @Path("/{userId}/update")
     @Authenticated
-    @WithSession
-    fun updateUser(
+    suspend fun updateUser(
         @PathParam("userId") userId: String,
         userUpdate: UpdateUserRequest
-    ): Uni<Response> {
+    ): Response {
         if (securityIdentity.principal.name != userId) {
-            return Uni.createFrom().item(Response.status(Response.Status.FORBIDDEN).build())
+            return Response.status(Response.Status.FORBIDDEN).build()
         }
-        return userService.updateUser(userId, userUpdate)
-            .onItem().transform {
-                Response.ok().build()
-            }
-            .onFailure().recoverWithItem { _: Throwable -> Response.status(Response.Status.NOT_FOUND).build() }
+        return try {
+            userService.updateUser(userId, userUpdate)
+            Response.ok().build()
+        } catch (e: NotFoundException) {
+            Response.status(Response.Status.NOT_FOUND).build()
+        }
     }
 }

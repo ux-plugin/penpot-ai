@@ -42,6 +42,7 @@ dependencies {
     implementation("io.quarkus:quarkus-config-yaml")
     implementation("io.quarkus:quarkus-smallrye-openapi")
     implementation("io.quarkus:quarkus-smallrye-context-propagation")
+    implementation("io.smallrye.reactive:mutiny-kotlin:2.9.3")
     implementation("io.quarkus:quarkus-arc")
 
     // HTTP client
@@ -67,7 +68,6 @@ dependencies {
     implementation("io.quarkus:quarkus-hibernate-reactive-panache-kotlin")
     implementation("io.quarkus:quarkus-reactive-pg-client")
     implementation("io.quarkus:quarkus-liquibase")
-    implementation("io.quarkus:quarkus-mailer")
     runtimeOnly("io.quarkus:quarkus-jdbc-postgresql")
 
     // AI dependencies

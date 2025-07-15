@@ -1,6 +1,7 @@
 package com.plugin.features.user
 
 import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
+import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
 import io.quarkus.logging.Log
 import io.smallrye.mutiny.Uni
@@ -24,6 +25,7 @@ class UserRepository(
      * @return The user configuration
      * @throws NotFoundException if the user configuration is not found
      */
+    @WithSession
     override fun getUser(userId: String): Uni<GetUserResponse> {
         return UserEntity.find("id", userId)
             .project(GetUserResponse::class.java)
