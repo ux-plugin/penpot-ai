@@ -51,7 +51,6 @@ class UserRepository(
 
                     userUpdate.username?.let { newUserEntity.username = it }
                     userUpdate.name?.let { newUserEntity.name = it }
-                    userUpdate.password?.let { newUserEntity.password = it }
                     userUpdate.companionAppConnected?.let { newUserEntity.companionAppConnected = it }
                     userUpdate.companionAppPort?.let { newUserEntity.companionAppPort = it }
                     userUpdate.allowSavingCompletions?.let { newUserEntity.allowSavingCompletions = it }
@@ -79,7 +78,6 @@ class UserRepository(
                         persistAndFlush(UserEntity().apply {
                             this.username = user.username
                             this.name = user.name
-                            this.password = user.password
                             this.role = UserRoles.USER
                         }).map { it -> CreateUserResponse(it.id) }
                     }

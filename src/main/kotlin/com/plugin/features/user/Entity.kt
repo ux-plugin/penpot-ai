@@ -2,7 +2,6 @@ package com.plugin.features.user
 
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheCompanion
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheEntityBase
-import io.quarkus.security.jpa.Password
 import io.quarkus.security.jpa.Username
 import jakarta.persistence.*
 import java.time.Instant
@@ -21,10 +20,6 @@ class UserEntity : PanacheEntityBase {
     @Column(nullable = false, unique = true)
     @Username
     lateinit var username: String
-
-    @Column(nullable = false)
-    @Password
-    lateinit var password: String
 
     @Column(nullable = false)
     lateinit var name: String
