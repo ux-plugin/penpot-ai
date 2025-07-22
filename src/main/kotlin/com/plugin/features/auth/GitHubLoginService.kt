@@ -67,7 +67,7 @@ data class GitHubOAuthTokenResponse(
     @JsonProperty("access_token")
     val accessToken: String,
     @JsonProperty("expires_in")
-    val expiresIn: Int? = null,
+    val expiresIn: Int,
     @JsonProperty("refresh_token")
     val refreshToken: String,
     @JsonProperty("refresh_token_expires_in")
@@ -262,9 +262,16 @@ class GitHubAuthService @Inject constructor(
         val username = userInfo.email ?: userInfo.login
         val user = authRepository.getOrAddUser(username = username).awaitSuspending()
 
+        val refreshTokenExpiresAt = Instant.now().plusSeconds(githubOAuthTokenResponse.expiresIn.toLong())
+
         // GitHub doesn't provide a refresh token, so we store the access token as the refresh token
         try {
-            authRepository.upsertSocialLogin(SocialProvider.GITHUB, githubOAuthTokenResponse.refreshToken, user.id)
+            authRepository.upsertSocialLogin(
+                SocialProvider.GITHUB,
+                githubOAuthTokenResponse.refreshToken,
+                user.id,
+                refreshTokenExpiresAt
+            )
                 .awaitSuspending()
         } catch (e: Exception) {
             Log.error("Failed to upsert social login", e)

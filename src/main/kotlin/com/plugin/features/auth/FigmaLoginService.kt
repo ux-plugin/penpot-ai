@@ -236,8 +236,15 @@ class FigmaAuthService @Inject constructor(
         )
             .awaitSuspending()
 
+        val refreshTokenExpiresAt = figmaOAuthTokenResponse.expiresIn.let { Instant.now().plusSeconds(it) }
+
         try {
-            authRepository.upsertSocialLogin(SocialProvider.FIGMA, figmaOAuthTokenResponse.refreshToken, user.id)
+            authRepository.upsertSocialLogin(
+                SocialProvider.FIGMA,
+                figmaOAuthTokenResponse.refreshToken,
+                user.id,
+                refreshTokenExpiresAt
+            )
                 .awaitSuspending()
         } catch (e: Exception) {
             Log.error("Failed to upsert social login", e)
