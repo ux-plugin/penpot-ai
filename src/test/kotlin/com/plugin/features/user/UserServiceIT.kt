@@ -12,18 +12,14 @@ import io.restassured.http.ContentType
 import io.smallrye.jwt.build.Jwt
 import jakarta.inject.Inject
 import org.hamcrest.CoreMatchers.equalTo
-import org.hamcrest.CoreMatchers.notNullValue
 import org.hibernate.reactive.mutiny.Mutiny
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
-/**
- * Integration test for the User service using Quarkus testing framework
- */
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResourceManager::class)
 @QuarkusTestResource(RedisTestResourceManager::class)
-class UserServiceIntegrationTest {
+class UserServiceIT {
     @Inject
     lateinit var sessionFactory: Mutiny.SessionFactory
 
@@ -47,37 +43,9 @@ class UserServiceIntegrationTest {
     }
 
     @Test
-    fun testCreateUser() {
-        val createUserRequest = CreateUserRequest(
-            name = "Test User",
-            username = "testuser",
-            password = "password123"
-        )
-
-        // Test successful user creation
-        given()
-            .contentType(ContentType.JSON)
-            .body(createUserRequest)
-            .`when`()
-            .post("/user/create")
-            .then()
-            .statusCode(201)
-            .body("id", notNullValue())
-
-        // Test duplicate user creation (should fail)
-        given()
-            .contentType(ContentType.JSON)
-            .body(createUserRequest)
-            .`when`()
-            .post("/user/create")
-            .then()
-            .statusCode(409)
-    }
-
-    @Test
     fun testGetUserUnauthorized() {
         // First create a user
-        val userId = createTestUser("Test User", "testuser", "password123")
+        val userId = createTestUser("Test User", "testuser")
 
         // Test without authentication
         given()
@@ -91,12 +59,12 @@ class UserServiceIntegrationTest {
     fun testGetUserAuthorized() {
         // Create a user with a specific username for testing
         // We'll use the same username as the JWT subject
-        val userId = createTestUser("Test User", "test-user-id", "password123")
+        val userId = createTestUser("Test User", "test-user-id")
 
         val token = Jwt.claims()
             .issuer("ux-plugin")
             .claim("sub", userId)
-            .claim("role", UserRoles.USER.value)
+            .claim("role", UserRole.USER)
             .expiresAt(System.currentTimeMillis() + 600000)
             .sign()
 
@@ -121,7 +89,7 @@ class UserServiceIntegrationTest {
     )
     fun testGetUserForbidden() {
         // First create a user
-        val userId = createTestUser("Test User", "testuser", "password123")
+        val userId = createTestUser("Test User", "testuser")
 
         // Test unauthorized access with wrong user ID in JWT
         given()
@@ -134,12 +102,11 @@ class UserServiceIntegrationTest {
     @Test
     fun testUpdateUserUnauthorized() {
         // First create a user
-        val userId = createTestUser("Test User", "testuser", "password123")
+        val userId = createTestUser("Test User", "testuser")
 
         val updateRequest = UpdateUserRequest(
             name = "Updated Name",
             username = null,
-            password = null,
             companionAppConnected = true,
             companionAppPort = 8080,
             allowSavingCompletions = false
@@ -158,19 +125,18 @@ class UserServiceIntegrationTest {
     @Test
     fun testUpdateUserAuthorized() {
         // Create a user with a specific username for testing
-        val userId = createTestUser("Test User", "test-user-id", "password123")
+        val userId = createTestUser("Test User", "test-user-id")
 
         val token = Jwt.claims()
             .issuer("ux-plugin")
             .claim("sub", userId)
-            .claim("role", UserRoles.USER.value)
+            .claim("role", UserRole.USER)
             .expiresAt(System.currentTimeMillis() + 600000)
             .sign()
 
         val updateRequest = UpdateUserRequest(
             name = "Updated Name",
             username = null,
-            password = null,
             companionAppConnected = true,
             companionAppPort = 8080,
             allowSavingCompletions = true
@@ -207,13 +173,12 @@ class UserServiceIntegrationTest {
         ]
     )
     fun testUpdateUserForbidden() {
-        // First create a user
-        val userId = createTestUser("Test User", "testuser", "password123")
+        // First, create a user
+        val userId = createTestUser("Test User", "testuser")
 
         val updateRequest = UpdateUserRequest(
             name = "Updated Name",
             username = null,
-            password = null,
             companionAppConnected = true,
             companionAppPort = 8080,
             allowSavingCompletions = false
@@ -232,22 +197,32 @@ class UserServiceIntegrationTest {
     /**
      * Helper method to create a test user directly in the database
      */
-    private fun createTestUser(name: String, username: String, password: String): String {
-        val createUserRequest = CreateUserRequest(
-            name = name,
-            username = username,
-            password = password
-        )
+    private fun createTestUser(name: String, username: String): String {
 
-        return given()
-            .contentType(ContentType.JSON)
-            .body(createUserRequest)
-            .`when`()
-            .post("/user/create")
-            .then()
-            .statusCode(201)
-            .extract()
-            .path("id")
+        return sessionFactory.withTransaction { session, _ ->
+            // Define and execute the insertion query with RETURNING id to fetch the generated ID
+            val sql = """
+            INSERT INTO Users (id, username, name, role, createdAt, companionAppConnected, companionAppPort, allowSavingCompletions)
+            VALUES (
+                gen_random_uuid(), -- Generates a UUID for the `id` column
+                :username,         -- Replace with the provided username
+                :name,             -- Replace with the provided name
+                'USER',            -- Default role ('admin', 'user', 'guest')
+                CURRENT_TIMESTAMP, -- Use the current timestamp for `createdAt`
+                FALSE,             -- Whether the companion app is connected
+                64032,             -- Default port for companion app
+                TRUE               -- Whether the user is allowed to save completions
+            )
+            RETURNING id;         -- Return the generated ID
+        """.trimIndent()
+
+            session.createNativeQuery<String>(sql)
+                .setParameter("username", username)
+                .setParameter("name", name)
+                .singleResult // Fetch the resulting ID
+        }.await().indefinitely()
+
+
     }
 
 }

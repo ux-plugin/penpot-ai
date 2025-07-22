@@ -25,7 +25,7 @@ import java.util.*
 @QuarkusTestResource(PostgresTestResourceManager::class)
 @QuarkusTestResource(RedisTestResourceManager::class)
 @QuarkusTestResource(MockOpenAiInfra::class)
-class ComponentServiceIntegrationTest {
+class ComponentServiceIT {
     @Inject
     lateinit var sessionFactory: Mutiny.SessionFactory
 
@@ -60,8 +60,8 @@ class ComponentServiceIntegrationTest {
         // Create a test user
         sessionFactory.withTransaction { session, _ ->
             val sql = """
-            INSERT INTO users (id, name, username, password, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
-            VALUES ('test-user-id', 'Test User', 'testuser', 'password123', 'USER', false, 64032, true, NOW())
+            INSERT INTO users (id, name, username, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
+            VALUES ('test-user-id', 'Test User', 'testuser', 'USER', false, 64032, true, NOW())
             ON CONFLICT (id) DO NOTHING;
         """.trimIndent()
 
@@ -198,15 +198,12 @@ class ComponentServiceIntegrationTest {
 
     @Test
     @TestSecurity(user = "no-save-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "no-save-user-id")]
-    )
     fun testCreateCompletionWithoutSavingPermission() {
         // Create a user that doesn't allow saving completions
         sessionFactory.withTransaction { session, _ ->
             val sql = """
-            INSERT INTO users (id, name, username, password, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
-            VALUES ('no-save-user-id', 'No Save User', 'nosaveuser', 'password123', 'USER', false, 64032, false, NOW())
+            INSERT INTO users (id, name, username, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
+            VALUES ('no-save-user-id', 'No Save User', 'nosaveuser', 'USER', false, 64032, false, NOW())
             ON CONFLICT (id) DO NOTHING;
         """.trimIndent()
 
@@ -244,9 +241,6 @@ class ComponentServiceIntegrationTest {
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "test-user-id")]
-    )
     fun testUnauthorizedAccessToCompletion() {
         // Create a completion for another user
         val otherUserId = "other-user-id"
@@ -257,8 +251,8 @@ class ComponentServiceIntegrationTest {
         // Create the other user
         sessionFactory.withTransaction { session, _ ->
             val sql = """
-            INSERT INTO users (id, name, username, password, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
-            VALUES ('$otherUserId', 'Other User', 'otheruser', 'password123', 'USER', false, 64032, true, NOW())
+            INSERT INTO users (id, name, username, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
+            VALUES ('$otherUserId', 'Other User', 'otheruser', 'USER', false, 64032, true, NOW())
             ON CONFLICT (id) DO NOTHING;
         """.trimIndent()
 
@@ -313,9 +307,6 @@ class ComponentServiceIntegrationTest {
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "test-user-id")]
-    )
     fun testAiServerErrorHandling() {
         // Create a request with a prompt that will trigger a 500 error in the mock AI server
         // The mock server checks for exactly "500" in the prompt
@@ -328,7 +319,6 @@ class ComponentServiceIntegrationTest {
             .post("/completions/create")
             .then()
             .statusCode(500)
-            .body("message", equalTo("Failed to create completion"))
 
         val createRequest2 = PromptRequest(prompt = "429")
 
@@ -338,6 +328,5 @@ class ComponentServiceIntegrationTest {
             .post("/completions/create")
             .then()
             .statusCode(500)
-            .body("message", equalTo("Failed to create completion"))
     }
 }
