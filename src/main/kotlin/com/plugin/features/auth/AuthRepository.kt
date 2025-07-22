@@ -1,8 +1,10 @@
 package com.plugin.features.auth
 
-import com.plugin.features.user.UserRoles
+import com.plugin.features.user.UserRole
+import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
 import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
+import io.quarkus.logging.Log
 import io.quarkus.redis.datasource.ReactiveRedisDataSource
 import io.quarkus.redis.datasource.value.ReactiveValueCommands
 import io.smallrye.jwt.build.Jwt
@@ -16,67 +18,32 @@ import java.util.*
 @ApplicationScoped
 class AuthRepository(
     reactiveRedisDataSource: ReactiveRedisDataSource,
-    @ConfigProperty(name = "redis.access-token-expiration", defaultValue = "900")
+    @ConfigProperty(name = "auth.access-token-ttl-s", defaultValue = "900")
     private val accessTokenExpirationSeconds: Long,
-    @ConfigProperty(name = "redis.refresh-token-expiration", defaultValue = "2592000")
-    private val refreshTokenExpirationSeconds: Long
-) : PanacheRepository<AuthEntity>, IAuthRepository {
+) : PanacheRepository<AuthUserEntity>, IAuthRepository {
 
     private val redis: ReactiveValueCommands<String, String> =
         reactiveRedisDataSource.value(String::class.java)
     private val accessTokenPrefix = "access_token:"
-    private val refreshTokenPrefix = "refresh_token:"
+
 
     @WithSession
-    override fun authenticate(username: String, password: String): Uni<LoginCredentials> {
-        return AuthEntity.find("username", username)
-            .firstResult()
-            .onItem().ifNull().failWith(NotFoundException("User not found with username: $username"))
-            .onItem().transformToUni { entity ->
-                if (entity == null || entity.password != password) {
-                    Uni.createFrom().failure(SecurityException("Invalid password"))
+    override fun getRefreshToken(userId: String): Uni<String> {
+        return AuthUserEntity.find("id", userId).firstResult()
+            .onItem().ifNull().failWith(NotFoundException("User not found with ID: $userId"))
+            .onItem().transform { entity ->
+                if (entity != null && entity.refreshToken.isNotEmpty()) {
+                    entity.refreshToken
                 } else {
-                    createTokensForUser(
-                        id = entity.id,
-                        username = entity.username,
-                        role = entity.role
-                    )
+                    throw SecurityException("Invalid or expired refresh token")
                 }
             }
-    }
-
-    @WithSession
-    override fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
-        return validateRefreshToken(refreshTokenRequest)
-            .onItem().transformToUni { token ->
-                AuthEntity.find("id", refreshTokenRequest.userId)
-                    .firstResult()
-                    .onItem().ifNull()
-                    .failWith(NotFoundException("User not found with ID: ${refreshTokenRequest.userId}"))
-                    .onItem().transformToUni { entity ->
-                        if (entity == null) {
-                            Uni.createFrom().failure(SecurityException("Invalid refresh token"))
-                        } else {
-                            createAccessToken(
-                                id = entity.id,
-                                username = entity.username,
-                                role = entity.role
-                            )
-                        }
-                    }
-            }
-    }
-
-    override fun validateRefreshToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
-        val refreshTokenKey = refreshTokenPrefix + refreshTokenRequest.userId
-        return redis.get(refreshTokenKey)
-            .onItem().ifNull().failWith(SecurityException("Invalid or expired refresh token"))
     }
 
     /**
      * Creates both access and refresh tokens for a user
      */
-    private fun createTokensForUser(id: String, username: String, role: UserRoles): Uni<LoginCredentials> {
+    override fun createTokensForUser(id: String, username: String, role: UserRole): Uni<LoginCredentials> {
         return createAccessToken(id, username, role)
             .flatMap { accessToken ->
                 createRefreshToken(id)
@@ -92,7 +59,7 @@ class AuthRepository(
     /**
      * Creates an access token for a user
      */
-    private fun createAccessToken(id: String, username: String, role: UserRoles): Uni<String> {
+    private fun createAccessToken(id: String, username: String, role: UserRole): Uni<String> {
         val accessTokenKey = accessTokenPrefix + username
 
         // Attempt to get an existing token first
@@ -107,7 +74,7 @@ class AuthRepository(
                 val token = Jwt.issuer("ux-plugin")
                     .subject(id)
                     .upn(username)
-                    .claim("role", role.value)
+                    .claim("role", role)
                     .issuedAt(now.epochSecond)
                     .expiresAt(exp.epochSecond)
                     .sign()
@@ -118,22 +85,111 @@ class AuthRepository(
         }
     }
 
-    /**
-     * Creates a refresh token for a user
-     */
-    private fun createRefreshToken(userId: String): Uni<String> {
+    @WithSession
+    fun createRefreshToken(userId: String): Uni<String> {
         val refreshToken = UUID.randomUUID().toString()
-        val refreshTokenKey = refreshTokenPrefix + userId
 
-        // Store the refresh token with the user ID
-        return redis.get(refreshTokenKey).flatMap { existingToken ->
-            if (existingToken != null) {
-                Uni.createFrom().item(existingToken)
-            } else {
-                redis.setex(refreshTokenKey, refreshTokenExpirationSeconds, refreshToken)
-                    .replaceWith(refreshToken)
-            }
+        return withTransaction {
+            AuthUserEntity.find("id", userId).firstResult()
+                .onItem().ifNull().failWith(NotFoundException("User not found with ID: $userId"))
+                .onItem().transformToUni { entity ->
+                    if (entity != null) {
+                        entity.refreshToken = refreshToken
+                        AuthUserEntity.persist(entity).map { refreshToken }
+                    } else {
+                        Log.error("User not found with ID: $userId")
+                        Uni.createFrom().failure(NotFoundException("User not found with ID: $userId"))
+                    }
+                }
         }
+    }
 
+    @WithSession
+    override fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
+        return getRefreshToken(refreshTokenRequest.userId) // Fetch stored refresh token
+            .onItem().transformToUni { token ->
+                if (token == refreshTokenRequest.refreshToken) { // Validate refresh token
+                    AuthUserEntity.find("id", refreshTokenRequest.userId)
+                        .firstResult()
+                        .onItem().ifNull()
+                        .failWith(NotFoundException("User not found with ID: ${refreshTokenRequest.userId}"))
+                        .onItem().transformToUni { entity ->
+                            if (entity == null) {
+                                Log.error("User not found with ID: ${refreshTokenRequest.userId}")
+                                Uni.createFrom().failure(SecurityException("Invalid refresh token"))
+                            } else {
+                                createAccessToken(
+                                    id = entity.id,
+                                    username = entity.username,
+                                    role = entity.role
+                                )
+                            }
+                        }
+                } else {
+                    Uni.createFrom().failure(SecurityException("Invalid or expired refresh token"))
+                }
+            }
+    }
+
+    @WithSession
+    override fun getOrAddUser(username: String): Uni<AuthUserEntity> {
+        return withTransaction {
+            AuthUserEntity.find("username", username).firstResult()
+                .onItem().transformToUni { existingUser ->
+                    if (existingUser != null) {
+                        // User already exists, return the user ID
+                        Uni.createFrom().item(existingUser)
+                    } else {
+                        // Create a new user
+                        val newUser = AuthUserEntity().apply {
+                            this.username = username
+                            this.role = UserRole.USER // Default role
+                        }
+                        AuthUserEntity.persist(newUser).map { newUser }
+                    }
+                }
+        }
+    }
+
+    @WithSession
+    fun getUser(id: String): Uni<AuthUserEntity> {
+        return withTransaction {
+            AuthUserEntity.find("id", id).firstResult()
+                .onItem().ifNull().failWith(NotFoundException("User not found with ID: $id"))
+                .onItem().transform { it }
+        }
+    }
+
+    @WithSession
+    override fun upsertSocialLogin(
+        provider: SocialProvider,
+        refreshToken: String,
+        userId: String,
+        refreshTokenExpiresAt: Instant
+    ): Uni<Unit> {
+        return withTransaction {
+            AuthUserEntity.find("id", userId)
+                .firstResult().onItem().ifNull().failWith(NotFoundException("User not found with ID: $userId"))
+                .onItem().transformToUni { existingUser ->
+                    SocialLoginEntity.find("userId = ?1 and provider = ?2", userId, provider)
+                        .firstResult()
+                        .onItem().transformToUni { existingSocialLogin ->
+                            if (existingSocialLogin != null) {
+                                existingSocialLogin.refreshToken = refreshToken
+                                existingSocialLogin.refreshTokenExpiresAt = refreshTokenExpiresAt
+                                SocialLoginEntity.persist(existingSocialLogin)
+                            } else {
+                                val newSocialLoginEntity = SocialLoginEntity().apply {
+                                    this.provider = provider
+                                    this.refreshToken = refreshToken
+                                    this.userId = userId
+                                    this.refreshTokenExpiresAt = refreshTokenExpiresAt
+                                }
+                                SocialLoginEntity.persist(newSocialLoginEntity)
+                            }
+                        }.map { it }.replaceWith(Unit)
+                }
+
+        }.replaceWith(Unit)
     }
 }
