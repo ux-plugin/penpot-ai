@@ -8,12 +8,6 @@ import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
-import org.eclipse.microprofile.openapi.annotations.Operation
-import org.eclipse.microprofile.openapi.annotations.media.Content
-import org.eclipse.microprofile.openapi.annotations.media.Schema
-import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody
-import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
-import org.eclipse.microprofile.openapi.annotations.responses.APIResponses
 
 /**
  * Service for managing user configurations
@@ -37,15 +31,6 @@ class UserService @Inject constructor(
      */
     override suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
         userRepository.updateUser(userId, userUpdate).awaitSuspending()
-    }
-
-    /**
-     * Create user configuration (fails if user exists)
-     * @param user The user configuration to create
-     * @return The created user configuration
-     */
-    override suspend fun createUser(user: CreateUserRequest): CreateUserResponse {
-        return userRepository.createUser(user).awaitSuspending()
     }
 }
 
@@ -71,41 +56,6 @@ class UserResource @Inject constructor(
             Response.ok(user).build()
         } catch (e: NotFoundException) {
             Response.status(Response.Status.NOT_FOUND).build()
-        }
-    }
-
-    /**
-     * Create user configuration
-     */
-    @POST
-    @Path("/create")
-    @Operation(
-        summary = "Create user configuration",
-        description = "Creates a new user configuration; fails if user already exists"
-    )
-    @APIResponses(
-        value = [
-            APIResponse(
-                responseCode = "201",
-                description = "User created",
-                content = [Content(schema = Schema(implementation = CreateUserResponse::class))]
-            ),
-            APIResponse(responseCode = "409", description = "User already exists"),
-            APIResponse(responseCode = "500", description = "Internal server error")
-        ]
-    )
-    suspend fun createUser(
-        @RequestBody(
-            required = true,
-            content = [Content(schema = Schema(implementation = CreateUserRequest::class))]
-        )
-        user: CreateUserRequest
-    ): Response {
-        return try {
-            val created = userService.createUser(user)
-            Response.status(Response.Status.CREATED).entity(created).build()
-        } catch (e: IllegalArgumentException) {
-            Response.status(Response.Status.CONFLICT).entity("${user.username} already exists").build()
         }
     }
 

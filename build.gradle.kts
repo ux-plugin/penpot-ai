@@ -2,7 +2,6 @@ val kotlinVersion: String by project
 val quarkusPlatformGroupId: String by project
 val quarkusPlatformArtifactId: String by project
 val quarkusPlatformVersion: String by project
-val swaggerCodegenVersion: String by project
 
 plugins {
     kotlin("jvm") version "2.1.10"

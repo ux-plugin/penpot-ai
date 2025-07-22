@@ -6,7 +6,7 @@ DO
 $$
     BEGIN
         RAISE NOTICE 'Creating ENUM type user_roles';
-        CREATE TYPE user_roles AS ENUM ('admin', 'user', 'guest');
+        CREATE TYPE user_roles AS ENUM ('ADMIN', 'USER', 'GUEST');
     EXCEPTION
         WHEN duplicate_object THEN
             RAISE NOTICE 'Table Users already exists, skipping creation';
@@ -27,19 +27,16 @@ $$
         RAISE NOTICE 'Creating table Users';
         CREATE TABLE Users
         (
-            id                                     VARCHAR PRIMARY KEY,
-            username                               VARCHAR    NOT NULL UNIQUE,
-            name                                   VARCHAR    NOT NULL DEFAULT random_name(),
-            role                                   user_roles NOT NULL,
-            createdAt                              TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            companionAppConnected                  BOOLEAN    NOT NULL DEFAULT FALSE,
-            companionAppPort                       INT        NOT NULL DEFAULT 64032,
-            allowSavingCompletions                 BOOLEAN    NOT NULL DEFAULT FALSE,
-            verified                               BOOLEAN    NOT NULL DEFAULT FALSE,
-            emailVerificationFailedAttempts        INT        NOT NULL DEFAULT 0,
-            numberOfEmailVerificationCodeGenerated INT        NOT NULL DEFAULT 0,
-            emailVerificationCodeExpiresAt         TIMESTAMP,
-            emailVerificationCode                  VARCHAR
+            id                     VARCHAR PRIMARY KEY,
+            username               VARCHAR    NOT NULL UNIQUE,
+            name                   VARCHAR    NOT NULL DEFAULT random_name(),
+            role                   user_roles NOT NULL,
+            createdAt              TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            companionAppConnected  BOOLEAN    NOT NULL DEFAULT FALSE,
+            companionAppPort       INT        NOT NULL DEFAULT 64032,
+            allowSavingCompletions BOOLEAN    NOT NULL DEFAULT FALSE,
+            refreshToken           VARCHAR,
+            expiresAt              TIMESTAMP
         );
     Exception
         WHEN duplicate_object THEN
@@ -72,7 +69,7 @@ DO
 $$
     BEGIN
         RAISE NOTICE 'Creating ENUM type social_providers';
-        CREATE TYPE social_providers AS ENUM ('figma', 'github', 'google');
+        CREATE TYPE social_providers AS ENUM ('FIGMA', 'GITHUB', 'GOOGLE');
     Exception
         WHEN duplicate_object THEN
             RAISE NOTICE 'ENUM type social_providers already exists, skipping creation';
@@ -86,10 +83,11 @@ $$
         RAISE NOTICE 'Creating table SocialLogins';
         CREATE TABLE SocialLogins
         (
-            id           VARCHAR PRIMARY KEY,
-            userId       VARCHAR          NOT NULL,
-            provider     social_providers NOT NULL,
-            refreshToken VARCHAR,
+            id                    VARCHAR PRIMARY KEY,
+            userId                VARCHAR          NOT NULL,
+            provider              social_providers NOT NULL,
+            refreshToken          VARCHAR,
+            refreshTokenExpiresAt TIMESTAMP        Not NULL,
             CONSTRAINT fk_social_user FOREIGN KEY (userId) REFERENCES Users (id)
         );
     EXCEPTION

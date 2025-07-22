@@ -39,6 +39,10 @@ quarkus:
       url: "jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5430}/${DB_NAME:figma_plugin}"
       driver: org.postgresql.Driver
 
+  # Redis configuration
+  redis:
+    hosts: "${REDIS_HOST:redis://localhost:6379}"
+    timeout: 5000
 
   # Hibernate ORM configuration
   hibernate-orm:
@@ -56,6 +60,8 @@ quarkus:
   rest-client:
     ai-server:
       url: "${AI_SERVER_URL:http://localhost:8002}"
+    github-api:
+      url: "https://github.com"
     logging:
       scope: request-response
 
@@ -70,9 +76,49 @@ openai:
   project.id: "${OPENAI_PROJECT_ID}"
   org.id: "${OPENAI_ORG_ID}"
 
-# Redis configuration
-redis:
-  hosts: "${REDIS_HOST:redis://localhost:6379}"
-  timeout: 5000
-  access-token-expiration: 900  # 15 minutes
-  refresh-token-expiration: 2592000  # 30 days
+
+smallrye:
+  jwt:
+    new-token:
+      lifespan: 600
+    sign:
+      key:
+        location: classpath:META-INF/resources/privateKey-dev.pem
+
+auth:
+  access-token-ttl-s: 900  # 15 minutes
+  refresh-token-ttl-s: 2592000  # 30 days
+  figma:
+    client-id: client id
+    client-secret: client secret
+    auth-url: https://www.figma.com/oauth
+    token-url: https://api.figma.com/v1/oauth/token
+    redirect-uri: http://localhost:8080/auth/figma/callback
+    login:
+      random-key:
+        max-retries: 5
+      timeout-sec: 60
+    rest-client:
+      access-token:
+        redis-key-prefix: "figma-login:"
+    read-token:
+      redis-key-prefix: "figma-read-token:"
+    write-token:
+      redis-key-prefix: "figma-write-token:"
+  github:
+    client-id: github-client-id
+    client-secret: github-client-secret
+    auth-url: https://github.com/login/oauth/authorize
+    token-url: https://github.com/login/oauth/access_token
+    redirect-uri: http://localhost:8080/auth/github/callback
+    login:
+      random-key:
+        max-retries: 5
+      timeout-sec: 60
+    rest-client:
+      access-token:
+        redis-key-prefix: "github-login:"
+    read-token:
+      redis-key-prefix: "github-read-token:"
+    write-token:
+      redis-key-prefix: "github-write-token:"

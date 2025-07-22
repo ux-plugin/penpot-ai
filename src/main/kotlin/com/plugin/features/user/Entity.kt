@@ -32,7 +32,7 @@ class UserEntity : PanacheEntityBase {
 
     @Column(nullable = false)
     @Enumerated(EnumType.STRING)
-    lateinit var role: UserRoles
+    lateinit var role: UserRole
 
     @Column(nullable = false)
     var allowSavingCompletions: Boolean = false
@@ -40,24 +40,9 @@ class UserEntity : PanacheEntityBase {
     @Column(nullable = false)
     var createdAt: Instant = Instant.now()
 
-    @Column(nullable = false)
-    var verified: Boolean = false
-
-    @Column(nullable = false)
-    var emailVerificationFailedAttempts: Int = 0
-
-    @Column(nullable = false)
-    var numberOfEmailVerificationCodeGenerated: Int = 0
-
-    @Column(nullable = true)
-    var emailVerificationCodeExpiresAt: Instant? = null
-
-    @Column(nullable = true)
-    var emailVerificationCode: String? = null
-
     companion object : PanacheCompanion<UserEntity> {}
 }
 
-enum class UserRoles(val value: String) {
-    ADMIN("admin"), USER("user")
+enum class UserRole {
+    ADMIN, USER
 }

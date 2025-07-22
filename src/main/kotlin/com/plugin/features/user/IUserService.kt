@@ -16,11 +16,4 @@ interface IUserService {
      * @param userId The user configuration to create or update
      */
     suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest)
-
-    /**
-     * Create user configuration (fails if user exists)
-     * @param user The user configuration to create
-     * @return The created user configuration
-     */
-    suspend fun createUser(user: CreateUserRequest): CreateUserResponse
 }
