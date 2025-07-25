@@ -32,11 +32,9 @@ $$
             name                   VARCHAR    NOT NULL DEFAULT random_name(),
             role                   user_roles NOT NULL,
             createdAt              TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            companionAppConnected  BOOLEAN    NOT NULL DEFAULT FALSE,
-            companionAppPort       INT        NOT NULL DEFAULT 64032,
             allowSavingCompletions BOOLEAN    NOT NULL DEFAULT FALSE,
             refreshToken           VARCHAR,
-            expiresAt              TIMESTAMP
+            refreshTokenExpiresAt  TIMESTAMP
         );
     Exception
         WHEN duplicate_object THEN

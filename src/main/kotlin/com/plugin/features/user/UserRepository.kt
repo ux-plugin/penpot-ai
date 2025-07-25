@@ -48,8 +48,6 @@ class UserRepository(
 
                     userUpdate.username?.let { newUserEntity.username = it }
                     userUpdate.name?.let { newUserEntity.name = it }
-                    userUpdate.companionAppConnected?.let { newUserEntity.companionAppConnected = it }
-                    userUpdate.companionAppPort?.let { newUserEntity.companionAppPort = it }
                     userUpdate.allowSavingCompletions?.let { newUserEntity.allowSavingCompletions = it }
 
                     persistAndFlush(newUserEntity)

@@ -107,8 +107,6 @@ class UserServiceIT {
         val updateRequest = UpdateUserRequest(
             name = "Updated Name",
             username = null,
-            companionAppConnected = true,
-            companionAppPort = 8080,
             allowSavingCompletions = false
         )
 
@@ -137,8 +135,6 @@ class UserServiceIT {
         val updateRequest = UpdateUserRequest(
             name = "Updated Name",
             username = null,
-            companionAppConnected = true,
-            companionAppPort = 8080,
             allowSavingCompletions = true
         )
 
@@ -179,8 +175,6 @@ class UserServiceIT {
         val updateRequest = UpdateUserRequest(
             name = "Updated Name",
             username = null,
-            companionAppConnected = true,
-            companionAppPort = 8080,
             allowSavingCompletions = false
         )
 
@@ -202,15 +196,13 @@ class UserServiceIT {
         return sessionFactory.withTransaction { session, _ ->
             // Define and execute the insertion query with RETURNING id to fetch the generated ID
             val sql = """
-            INSERT INTO Users (id, username, name, role, createdAt, companionAppConnected, companionAppPort, allowSavingCompletions)
+            INSERT INTO Users (id, username, name, role, createdAt, allowSavingCompletions)
             VALUES (
                 gen_random_uuid(), -- Generates a UUID for the `id` column
                 :username,         -- Replace with the provided username
                 :name,             -- Replace with the provided name
                 'USER',            -- Default role ('admin', 'user', 'guest')
                 CURRENT_TIMESTAMP, -- Use the current timestamp for `createdAt`
-                FALSE,             -- Whether the companion app is connected
-                64032,             -- Default port for companion app
                 TRUE               -- Whether the user is allowed to save completions
             )
             RETURNING id;         -- Return the generated ID

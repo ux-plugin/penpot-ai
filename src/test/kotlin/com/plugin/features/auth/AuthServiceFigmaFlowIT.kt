@@ -1,5 +1,7 @@
 package com.plugin.features.auth
 
+import com.plugin.features.auth.core.AuthRepository
+import com.plugin.features.auth.figma.FigmaAccessScope
 import com.plugin.shared.PostgresTestResourceManager
 import com.plugin.shared.RedisTestResourceManager
 import io.quarkus.test.common.QuarkusTestResource
@@ -111,8 +113,9 @@ class AuthServiceFigmaFlowIT {
             }
         }
 
-        val user = sessionFactory.withSession {
-            authRepository.getUser(userId)
+        // Using sessionFactory directly since getUser is now a private method in AuthRepository
+        val user = sessionFactory.withSession { session ->
+            session.find(com.plugin.features.auth.core.AuthUserEntity::class.java, userId)
         }.await().indefinitely()
 
         assert(user != null) { "User ID of the token does not exist in the database." }

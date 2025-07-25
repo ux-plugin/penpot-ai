@@ -1,5 +1,5 @@
-from typing import Optional, List
 from pydantic import BaseModel, validator
+from typing import Optional, List
 
 # Valid GitHub API scopes
 VALID_SCOPES = [
@@ -39,6 +39,7 @@ VALID_SCOPES = [
     "read:audit_log"
 ]
 
+
 class TokenExchangeRequest(BaseModel):
     client_id: str
     client_secret: str
@@ -52,10 +53,15 @@ class TokenExchangeRequest(BaseModel):
             raise ValueError("This field is required")
         return v
 
+
 class GitHubOAuthTokenResponse(BaseModel):
-    access_token: str = "mock-github-access-token"
+    access_token: str = "ghu_exampleaccesstoken123"
+    expires_in: int = 28800
+    refresh_token: str = "ghr_examplerefreshtoken456"
+    refresh_token_expires_in: int = 15897600
+    scope: str = ""  # always an empty string
     token_type: str = "bearer"
-    scope: str = "user,user:email"
+
 
 class GitHubUser(BaseModel):
     id: int = 1

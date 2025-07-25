@@ -25,12 +25,6 @@ class UserEntity : PanacheEntityBase {
     lateinit var name: String
 
     @Column(nullable = false)
-    var companionAppConnected: Boolean = false
-
-    @Column(nullable = false)
-    var companionAppPort: Int = 64032
-
-    @Column(nullable = false)
     @Enumerated(EnumType.STRING)
     lateinit var role: UserRole
 

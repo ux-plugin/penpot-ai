@@ -72,4 +72,60 @@ class AuthFlowIT {
 
 
     }
+
+    @Test
+    fun testGitHubFullLoginFlowWithCallbackFunction() {
+        // Step 1: Initiate GitHub login
+        val response = given()
+            .`when`()
+            .get("/auth/github/login")
+            .then()
+            .statusCode(200)
+            .body("readTokenJwt", notNullValue())
+            .body("loginUrl", containsString("https://github.com/login/oauth/authorize"))
+            .body("loginUrl", containsString("client_id="))
+            .body("loginUrl", containsString("redirect_uri="))
+            .extract()
+            .response()
+
+        val loginUrl = response.jsonPath().getString("loginUrl")
+        val state = loginUrl.substringAfter("state=").substringBefore("&")
+        val readTokenJwt = response.jsonPath().getString("readTokenJwt")
+
+        runBlocking {
+            launch(Dispatchers.IO) {
+                // Step 3: User exchanges JWT for access token
+                val accessTokenResp = given()
+                    .header("Authorization", "Bearer $readTokenJwt")
+                    .`when`()
+                    .get("/auth/github/access-token")
+                    .then()
+                    .statusCode(200)
+                    .body("accessToken", notNullValue())
+                    .extract()
+                    .response()
+
+                val accessToken = accessTokenResp.jsonPath().getString("accessToken")
+
+                // Step 4: User exchanges access token for a refresh token
+                given()
+                    .header("Authorization", "Bearer $accessToken")
+                    .`when`()
+                    .get("/auth/refresh-token")
+                    .then()
+                    .statusCode(200)
+                    .cookie("refresh_token", notNullValue())
+            }
+            launch(Dispatchers.IO) {
+                // Step 2: Simulate GitHub OAuth callback (user comes back with code)
+                given()
+                    .queryParam("code", "test-github-code")
+                    .queryParam("state", state)
+                    .`when`()
+                    .get("/auth/github/callback")
+                    .then()
+                    .statusCode(200)
+            }
+        }
+    }
 }
