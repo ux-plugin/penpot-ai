@@ -1,4 +1,4 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.core
 
 import com.plugin.features.user.UserRole
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheCompanion
@@ -32,7 +32,7 @@ class AuthUserEntity : PanacheEntityBase {
     lateinit var refreshToken: String
 
     @Column(nullable = true)
-    lateinit var expiresAt: Instant
+    lateinit var refreshTokenExpiresAt: Instant
 
     companion object : PanacheCompanion<AuthUserEntity>
 }

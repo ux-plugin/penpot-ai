@@ -1,4 +1,4 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.figma
 
 import io.smallrye.mutiny.Uni
 import jakarta.ws.rs.*

@@ -1,4 +1,4 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.core
 
 import io.quarkus.redis.datasource.list.KeyValue
 import io.smallrye.mutiny.Uni

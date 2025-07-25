@@ -1,4 +1,4 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.core
 
 /**
  * Interface for the authentication service (business logic)

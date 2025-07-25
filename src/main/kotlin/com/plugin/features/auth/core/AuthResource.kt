@@ -1,8 +1,7 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.core
 
 import io.quarkus.logging.Log
 import io.quarkus.security.Authenticated
-import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.*
@@ -16,27 +15,6 @@ import org.eclipse.microprofile.openapi.annotations.media.Content
 import org.eclipse.microprofile.openapi.annotations.media.Schema
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponses
-
-/**
- * Service for authentication
- */
-@ApplicationScoped
-class AuthService @Inject constructor(
-    private val authRepository: IAuthRepository
-) : IAuthService {
-    /**
-     * Refresh an access token using a refresh token
-     * @param refreshTokenRequest The request containing the refresh token
-     * @return A new access token
-     */
-    override suspend fun refreshToken(refreshTokenRequest: RefreshTokenRequest): String {
-        return authRepository.refreshAccessToken(refreshTokenRequest).awaitSuspending()
-    }
-
-    override suspend fun getRefreshToken(userId: String): String {
-        return authRepository.getRefreshToken(userId).awaitSuspending()
-    }
-}
 
 @Path("/auth")
 @Produces(MediaType.APPLICATION_JSON)
@@ -93,7 +71,7 @@ class AuthResource @Inject constructor(
 
                 else -> {
                     Log.error("Token refresh error", e)
-                    Response.status(Response.Status.UNAUTHORIZED)
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                         .entity(AuthErrorResponse())
                         .build()
                 }
@@ -104,20 +82,31 @@ class AuthResource @Inject constructor(
     @GET
     @Path("/refresh-token")
     @Authenticated
-    open suspend fun refreshToken() {
+    open suspend fun refreshToken(): Response {
         val userId: String = jsonWebToken.subject
-        val refreshToken = authService.getRefreshToken(userId)
+        return try {
+            val refreshToken = authService.getRefreshToken(userId)
 
-        val refreshTokenCookie = NewCookie.Builder("refresh_token")
-            .value(refreshToken)
-            .path("/")
-            .maxAge(30 * 24 * 60 * 60) // 30 days in seconds
-            .httpOnly(true)
-            .secure(true) // Requires HTTPS
-            .build()
+            val refreshTokenCookie = NewCookie.Builder("refresh_token")
+                .value(refreshToken)
+                .path("/")
+                .maxAge(30 * 24 * 60 * 60) // 30 days in seconds
+                .httpOnly(true)
+                .secure(true) // Requires HTTPS
+                .build()
 
-        Response.ok()
-            .cookie(refreshTokenCookie)
-            .build()
+            Response.ok()
+                .cookie(refreshTokenCookie)
+                .build()
+        } catch (e: Exception) {
+            when (e) {
+                is NotFoundException, is SecurityException -> Response.status(Response.Status.UNAUTHORIZED).build()
+                else -> {
+                    Log.error("Failed to get refresh token", e)
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+                }
+            }
+        }
+
     }
 }

@@ -1,5 +1,9 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.github
 
+import com.plugin.features.auth.core.IAuthRepository
+import com.plugin.features.auth.core.IRedisRepository
+import com.plugin.features.auth.core.OAuthInitResponse
+import com.plugin.features.auth.core.SocialProvider
 import io.quarkus.logging.Log
 import io.quarkus.redis.datasource.list.KeyValue
 import io.smallrye.jwt.build.Jwt
@@ -12,37 +16,37 @@ import org.eclipse.microprofile.rest.client.inject.RestClient
 import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
-import java.util.*
 
 /**
- * Service responsible for managing Figma OAuth authentication.
+ * Service responsible for managing GitHub OAuth authentication.
  */
 @ApplicationScoped
-class FigmaAuthService @Inject constructor(
-    @RestClient private val figmaRestClient: FigmaRestClient,
+class GitHubAuthService @Inject constructor(
+    @RestClient private val githubRestClient: GithubApiRestClient,
+    @RestClient private val githubAuthClient: GitHubAuthClient,
 
-    @ConfigProperty(name = "auth.figma.client-id")
+    @ConfigProperty(name = "auth.github.client-id")
     private var clientId: String,
 
-    @ConfigProperty(name = "auth.figma.client-secret")
+    @ConfigProperty(name = "auth.github.client-secret")
     private var clientSecret: String,
 
-    @ConfigProperty(name = "auth.figma.redirect-uri")
+    @ConfigProperty(name = "auth.github.redirect-uri")
     private var redirectUri: String,
 
-    @ConfigProperty(name = "auth.figma.login.random-key.max-retries")
+    @ConfigProperty(name = "auth.github.login.random-key.max-retries")
     private var randomKeyGenerationMaxRetries: Int,
 
-    @ConfigProperty(name = "auth.figma.login.timeout-sec")
+    @ConfigProperty(name = "auth.github.login.timeout-sec")
     private var loginTimeout: Long,
 
-    @ConfigProperty(name = "auth.figma.rest-client.access-token.redis-key-prefix")
+    @ConfigProperty(name = "auth.github.rest-client.access-token.redis-key-prefix")
     private var restClientAccessTokenKeyPrefix: String,
 
-    @ConfigProperty(name = "auth.figma.read-token.redis-key-prefix")
+    @ConfigProperty(name = "auth.github.read-token.redis-key-prefix")
     private var readTokenPrefix: String,
 
-    @ConfigProperty(name = "auth.figma.write-token.redis-key-prefix")
+    @ConfigProperty(name = "auth.github.write-token.redis-key-prefix")
     private var writeTokenPrefix: String,
 
     private var authRepository: IAuthRepository,
@@ -75,43 +79,38 @@ class FigmaAuthService @Inject constructor(
 
         val redirectUri: String = generateLoginUrl(
             writeToken,
-            scopes = listOf(FigmaAccessScope.CURRENT_USER_READ, FigmaAccessScope.FILE_CONTENT_READ)
+            scopes = listOf(GitHubAccessScope.USER, GitHubAccessScope.USER_EMAIL)
         )
         return OAuthInitResponse(readTokenJwt, redirectUri)
     }
 
     /**
-     * Generates a login URL for the user to authenticate with Figma.
+     * Generates a login URL for the user to authenticate with GitHub.
      */
-    fun generateLoginUrl(state: String, scopes: List<FigmaAccessScope>): String {
-        val authUrl = "https://www.figma.com/oauth" +
+    fun generateLoginUrl(state: String, scopes: List<GitHubAccessScope>): String {
+        val authUrl = "https://github.com/login/oauth/authorize" +
                 "?client_id=${URLEncoder.encode(clientId, "UTF-8")}" +
                 "&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}" +
-                "&scope=${scopes.joinToString("%2C") { URLEncoder.encode(it.value, "UTF-8") }}" +
+                "&scope=${scopes.joinToString("%20") { URLEncoder.encode(it.value, "UTF-8") }}" +
                 "&state=${URLEncoder.encode(state, "UTF-8")}" +
-                "&response_type=code"
+                "&allow_signup=true"
         return authUrl
     }
 
     /**
-     * Exchanges the authorization code for a Figma access token.
-     * @param code The auth code received from Figma during the OAuth redirect.
+     * Exchanges the authorization code for a GitHub access token.
+     * @param code The auth code received from GitHub during the OAuth redirect.
      */
-    suspend fun exchangeCodeForToken(code: String): FigmaOAuthTokenResponse {
-        val credentials = "$clientId:$clientSecret"
-        val encodedCredentials = Base64.getEncoder().encodeToString(credentials.toByteArray())
-        val authHeader = "Basic $encodedCredentials"
-
-        val formData = listOf(
-            "redirect_uri" to redirectUri,
-            "code" to code,
-            "grant_type" to "authorization_code"
-        ).joinToString("&") { (key, value) ->
-            "${URLEncoder.encode(key, "UTF-8")}=${URLEncoder.encode(value, "UTF-8")}"
-        }
-
+    suspend fun exchangeCodeForToken(code: String, state: String): GitHubOAuthTokenResponse {
         return try {
-            figmaRestClient.exchangeToken(authHeader, formData).awaitSuspending()
+            // GitHub requires Accept header to return JSON
+            githubAuthClient.exchangeToken(
+                accept = "application/json",
+                clientId = clientId,
+                redirectUri = redirectUri,
+                code = code,
+                clientSecret = clientSecret
+            )
         } catch (e: Exception) {
             Log.error("Failed to exchange code for token", e)
             throw e
@@ -123,26 +122,20 @@ class FigmaAuthService @Inject constructor(
         val redisKey = writeTokenPrefix + state
         val readToken = redisRepository.getValue(redisKey) ?: throw NotFoundException("Invalid state")
 
-        val figmaOAuthTokenResponse = exchangeCodeForToken(code)
-        val userInfo = figmaRestClient.getMe("Bearer ${figmaOAuthTokenResponse.accessToken}")
-            .awaitSuspending()
+        val githubOAuthTokenResponse = exchangeCodeForToken(code = code, state = state)
+        val userInfo = githubRestClient.getUser("Bearer ${githubOAuthTokenResponse.accessToken}")
 
-        val user = authRepository.getOrAddUser(username = userInfo.email).awaitSuspending()
-        
-        // Store the access token in Redis
-        val accessTokenKey = restClientAccessTokenKeyPrefix + user.id
-        redisRepository.setValueWithExpiration(
-            accessTokenKey,
-            figmaOAuthTokenResponse.accessToken,
-            figmaOAuthTokenResponse.expiresIn.toInt()
-        )
+        // Use login as username if email is null
+        val username = userInfo.email ?: userInfo.login
+        val user = authRepository.getOrAddUser(username = username).awaitSuspending()
 
-        val refreshTokenExpiresAt = figmaOAuthTokenResponse.expiresIn.let { Instant.now().plusSeconds(it) }
+        val refreshTokenExpiresAt = Instant.now().plusSeconds(githubOAuthTokenResponse.expiresIn.toLong())
 
+        // GitHub doesn't provide a refresh token, so we store the access token as the refresh token
         try {
             authRepository.upsertSocialLogin(
-                SocialProvider.FIGMA,
-                figmaOAuthTokenResponse.refreshToken,
+                SocialProvider.GITHUB,
+                githubOAuthTokenResponse.refreshToken,
                 user.id,
                 refreshTokenExpiresAt
             )

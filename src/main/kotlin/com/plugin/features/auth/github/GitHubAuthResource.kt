@@ -1,5 +1,6 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.github
 
+import com.plugin.features.auth.core.ReadTokenResponse
 import io.quarkus.logging.Log
 import io.quarkus.security.Authenticated
 import io.quarkus.security.identity.SecurityIdentity

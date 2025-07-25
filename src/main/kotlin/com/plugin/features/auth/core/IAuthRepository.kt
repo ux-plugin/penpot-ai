@@ -1,4 +1,4 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.core
 
 import com.plugin.features.user.UserRole
 import io.smallrye.mutiny.Uni

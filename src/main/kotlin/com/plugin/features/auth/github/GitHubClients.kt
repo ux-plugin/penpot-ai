@@ -1,4 +1,4 @@
-package com.plugin.features.auth
+package com.plugin.features.auth.github
 
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
