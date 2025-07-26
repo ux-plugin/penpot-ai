@@ -122,3 +122,7 @@ auth:
       redis-key-prefix: "github-read-token:"
     write-token:
       redis-key-prefix: "github-write-token:"
+
+apps:
+  companion-app-key-prefix: "companion-app:"
+  plugin-key-prefix: "plugin:"
