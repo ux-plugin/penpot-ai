@@ -15,6 +15,7 @@ import org.hamcrest.CoreMatchers.equalTo
 import org.hibernate.reactive.mutiny.Mutiny
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.UUID
 
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResourceManager::class)
@@ -188,17 +189,66 @@ class UserServiceIT {
             .statusCode(403)
     }
 
+    @Test
+    fun testUserDelete(){
+        val userId = createTestUser("Test User", "testuser")
+
+        val token = Jwt.claims()
+                .issuer("ux-plugin")
+                .claim("sub", userId)
+                .claim("role", UserRole.USER)
+                .expiresAt(System.currentTimeMillis() + 600000)
+                .sign()
+
+        given()
+            .header("Authorization", "Bearer $token")
+            .`when`()
+            .delete("/user/$userId/delete")
+            .then()
+            .statusCode(200)
+
+        sessionFactory.withTransaction { session, _ ->
+            session.createNativeQuery(
+                "SELECT COUNT(*) FROM Users",
+                Long::class.java
+            )
+                .singleResult
+        }
+            .await()
+            .indefinitely()
+            .let { count ->
+                assert(count == 0L) { "Expected 0 rows in Users table, but found $count rows. Test failed." }
+            }
+    }
+
+    @Test
+    fun testUserDeleteForbidden() {
+        val userId = createTestUser("Test User", "testuser")
+        val token = Jwt.claims()
+            .issuer("ux-plugin")
+            .claim("sub", "different-user-id")
+            .claim("role", UserRole.USER)
+            .expiresAt(System.currentTimeMillis() + 600000)
+            .sign()
+        given()
+            .header("Authorization", "Bearer $token")
+            .`when`()
+            .delete("/user/right-user-id/delete")
+            .then()
+            .statusCode(403)
+    }
+
     /**
      * Helper method to create a test user directly in the database
      */
-    private fun createTestUser(name: String, username: String): String {
+    private fun createTestUser(name: String, username: String, id: String? = null): String {
 
         return sessionFactory.withTransaction { session, _ ->
             // Define and execute the insertion query with RETURNING id to fetch the generated ID
             val sql = """
             INSERT INTO Users (id, username, name, role, createdAt, allowSavingCompletions)
             VALUES (
-                gen_random_uuid(), -- Generates a UUID for the `id` column
+                :id, -- Generates a UUID for the `id` column
                 :username,         -- Replace with the provided username
                 :name,             -- Replace with the provided name
                 'USER',            -- Default role ('admin', 'user', 'guest')
@@ -209,6 +259,7 @@ class UserServiceIT {
         """.trimIndent()
 
             session.createNativeQuery<String>(sql)
+                .setParameter("id", id ?: UUID.randomUUID().toString())
                 .setParameter("username", username)
                 .setParameter("name", name)
                 .singleResult // Fetch the resulting ID
