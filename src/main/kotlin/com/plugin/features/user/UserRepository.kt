@@ -12,10 +12,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
  * Repository implementation for user configurations using Panache
  */
 @ApplicationScoped
-class UserRepository(
-    @ConfigProperty(name = "user.email-verification.code.max-generation-attempts", defaultValue = "5")
-    private val maxEmailVerificationCodeGenerationAttempts: Int,
-) : PanacheRepository<UserEntity>, IUserRepository {
+class UserRepository() : PanacheRepository<UserEntity>, IUserRepository {
     /**
      * Get user configuration by user ID
      * @param userId The ID of the user
@@ -38,6 +35,7 @@ class UserRepository(
      * @return The updated user configuration
      * @throws NotFoundException if the user configuration is not found
      */
+    @WithSession
     override fun updateUser(userId: String, userUpdate: UpdateUserRequest): Uni<Unit> {
         return withTransaction {
             find("id", userId)
@@ -54,5 +52,11 @@ class UserRepository(
                 }
                 .map { it }.replaceWith(Unit)
         }
+    }
+
+    @WithSession
+    override fun deleteUser(userId: String): Uni<Unit> {
+        return delete("id", userId)
+            .map { it }.replaceWith(Unit)
     }
 }

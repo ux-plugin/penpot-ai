@@ -16,4 +16,6 @@ interface IUserService {
      * @param userId The user configuration to create or update
      */
     suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest)
+
+    suspend fun deleteUser(userId: String)
 }

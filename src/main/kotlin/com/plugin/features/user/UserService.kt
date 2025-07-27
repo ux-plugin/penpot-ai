@@ -1,5 +1,6 @@
 package com.plugin.features.user
 
+import io.quarkus.logging.Log
 import io.quarkus.security.Authenticated
 import io.quarkus.security.identity.SecurityIdentity
 import io.smallrye.mutiny.coroutines.awaitSuspending
@@ -8,6 +9,7 @@ import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
+import org.eclipse.microprofile.jwt.JsonWebToken
 
 /**
  * Service for managing user configurations
@@ -32,23 +34,27 @@ class UserService @Inject constructor(
     override suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
         userRepository.updateUser(userId, userUpdate).awaitSuspending()
     }
+
+    override suspend fun deleteUser(userId: String) {
+        userRepository.deleteUser(userId).awaitSuspending()
+    }
 }
 
 @Path("/user")
 @Produces(MediaType.APPLICATION_JSON)
 @ApplicationScoped
+@Authenticated
 class UserResource @Inject constructor(
     private val userService: IUserService,
-    private val securityIdentity: SecurityIdentity
+    private val jsonWebToken: JsonWebToken
 ) {
 
     @GET
     @Path("/{userId}")
-    @Authenticated
     suspend fun getUser(
         @PathParam("userId") userId: String
     ): Response {
-        if (securityIdentity.principal.name != userId) {
+        if (jsonWebToken.subject != userId) {
             return Response.status(Response.Status.FORBIDDEN).build()
         }
         return try {
@@ -64,12 +70,11 @@ class UserResource @Inject constructor(
      */
     @POST
     @Path("/{userId}/update")
-    @Authenticated
     suspend fun updateUser(
         @PathParam("userId") userId: String,
         userUpdate: UpdateUserRequest
     ): Response {
-        if (securityIdentity.principal.name != userId) {
+        if (jsonWebToken.subject != userId) {
             return Response.status(Response.Status.FORBIDDEN).build()
         }
         return try {
@@ -77,6 +82,27 @@ class UserResource @Inject constructor(
             Response.ok().build()
         } catch (e: NotFoundException) {
             Response.status(Response.Status.NOT_FOUND).build()
+        }
+    }
+
+    @DELETE
+    @Path("/{userId}/delete")
+    suspend fun deleteUser(
+        @PathParam("userId") userId: String,
+    ): Response {
+        if (jsonWebToken.subject != userId) {
+            return Response.status(Response.Status.FORBIDDEN).build()
+        }
+        return try {
+            userService.deleteUser(userId)
+            Response.ok().build()
+        } catch (e: NotFoundException) {
+            Response.status(Response.Status.NOT_FOUND).build()
+        } catch (e: SecurityException) {
+            Response.status(Response.Status.UNAUTHORIZED).build()
+        } catch (e: Exception) {
+            Log.error("Failed to delete user", e)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
         }
     }
 }

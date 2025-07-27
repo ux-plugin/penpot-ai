@@ -25,4 +25,7 @@ interface IUserRepository {
      * @throws NotFoundException if the user configuration is not found
      */
     fun updateUser(userId: String, userUpdate: UpdateUserRequest): Uni<Unit>
+
+    fun deleteUser(userId: String): Uni<Unit>
+
 }
