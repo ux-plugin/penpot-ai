@@ -82,6 +82,7 @@ $$
         CREATE TABLE SocialLogins
         (
             id                    VARCHAR PRIMARY KEY,
+            providerUserId        VARCHAR UNIQUE   NOT NULL,
             userId                VARCHAR          NOT NULL,
             provider              social_providers NOT NULL,
             refreshToken          VARCHAR,

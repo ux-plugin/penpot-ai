@@ -1,5 +1,6 @@
 package com.plugin.features.completions
 
+import com.plugin.features.user.UserRole
 import com.plugin.shared.PostgresTestResourceManager
 import com.plugin.shared.RedisTestResourceManager
 import io.quarkus.test.common.QuarkusTestResource
@@ -9,6 +10,7 @@ import io.quarkus.test.security.jwt.Claim
 import io.quarkus.test.security.jwt.JwtSecurity
 import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
+import io.smallrye.jwt.build.Jwt
 import jakarta.inject.Inject
 import org.hamcrest.CoreMatchers.equalTo
 import org.hamcrest.CoreMatchers.notNullValue
@@ -60,8 +62,8 @@ class ComponentServiceIT {
         // Create a test user
         sessionFactory.withTransaction { session, _ ->
             val sql = """
-            INSERT INTO users (id, name, username, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
-            VALUES ('test-user-id', 'Test User', 'testuser', 'USER', false, 64032, true, NOW())
+            INSERT INTO users (id, name, username, role, allowSavingCompletions, createdAt)
+            VALUES ('test-user-id', 'Test User', 'testuser', 'USER', true, NOW())
             ON CONFLICT (id) DO NOTHING;
         """.trimIndent()
 
@@ -197,13 +199,16 @@ class ComponentServiceIT {
     }
 
     @Test
-    @TestSecurity(user = "no-save-user-id", roles = ["USER"])
+    @TestSecurity(user = "test-user-id", roles = ["USER"])
+    @JwtSecurity(
+        claims = [Claim(key = "sub", value = "no-save-user-id")]
+    )
     fun testCreateCompletionWithoutSavingPermission() {
         // Create a user that doesn't allow saving completions
         sessionFactory.withTransaction { session, _ ->
             val sql = """
-            INSERT INTO users (id, name, username, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
-            VALUES ('no-save-user-id', 'No Save User', 'nosaveuser', 'USER', false, 64032, false, NOW())
+            INSERT INTO users (id, name, username, role, allowSavingCompletions, createdAt)
+            VALUES ('no-save-user-id', 'No Save User', 'nosaveuser', 'USER', false, NOW())
             ON CONFLICT (id) DO NOTHING;
         """.trimIndent()
 
@@ -241,6 +246,9 @@ class ComponentServiceIT {
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
+    @JwtSecurity(
+        claims = [Claim(key = "sub", value = "no-save-user-id")]
+    )
     fun testUnauthorizedAccessToCompletion() {
         // Create a completion for another user
         val otherUserId = "other-user-id"
@@ -251,8 +259,8 @@ class ComponentServiceIT {
         // Create the other user
         sessionFactory.withTransaction { session, _ ->
             val sql = """
-            INSERT INTO users (id, name, username, role, companionAppConnected, companionAppPort, allowSavingCompletions, createdAt)
-            VALUES ('$otherUserId', 'Other User', 'otheruser', 'USER', false, 64032, true, NOW())
+            INSERT INTO users (id, name, username, role, allowSavingCompletions, createdAt)
+            VALUES ('$otherUserId', 'Other User', 'otheruser', 'USER', true, NOW())
             ON CONFLICT (id) DO NOTHING;
         """.trimIndent()
 
@@ -275,7 +283,8 @@ class ComponentServiceIT {
             .indefinitely()
 
         // Test that the current user cannot access the other user's completion
-        given().`when`()
+        given()
+            .`when`()
             .get("/completions/$completionId")
             .then()
             .statusCode(404)

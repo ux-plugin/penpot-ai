@@ -23,14 +23,12 @@ mp:
 
 smallrye:
   jwt:
-    new-token:
-      lifespan: 600
     sign:
       key:
         location: classpath:META-INF/resources/privateKey-dev.pem
 
 auth:
-  access-token-ttl-s: 900  # 15 minutes
+  access-token-ttl-s: 90000  # 15 minutes
   refresh-token-ttl-s: 2592000  # 30 days
   figma:
     client-id: client id

@@ -20,8 +20,8 @@ quarkus:
   # OpenAPI and Swagger UI
   swagger-ui:
     always-include: true
+    validator-url: none
   smallrye-openapi:
-    path: /openapi
     info-title: Figma Plugin API
     info-version: 0.0.1
     info-description: API for Figma Plugin

@@ -12,6 +12,7 @@ import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
+import org.eclipse.microprofile.jwt.JsonWebToken
 import org.eclipse.microprofile.openapi.annotations.Operation
 import org.eclipse.microprofile.openapi.annotations.media.Content
 import org.eclipse.microprofile.openapi.annotations.media.Schema
@@ -45,7 +46,7 @@ class ComponentService @Inject constructor(
         return componentRepository.getCompletions(userId).awaitSuspending()
     }
 
-    override suspend fun getCompletion(userId: String, completionId: String): ComponentCompletion {
+    override suspend fun getCompletion(userId: String, completionId: String): ComponentCompletion? {
         return componentRepository.getCompletion(userId, completionId).awaitSuspending()
     }
 }
@@ -61,7 +62,7 @@ class ComponentService @Inject constructor(
 @Authenticated
 class ComponentResource @Inject constructor(
     private val componentService: IComponentService,
-    private val securityIdentity: SecurityIdentity,
+    private val jsonWebToken: JsonWebToken,
     private val objectMapper: ObjectMapper
 ) {
     /**
@@ -93,7 +94,7 @@ class ComponentResource @Inject constructor(
             required = true, content = [Content(schema = Schema(implementation = PromptRequest::class))]
         ) request: PromptRequest
     ): Response {
-        val userId = securityIdentity.principal.name
+        val userId = jsonWebToken.subject
         return try {
             val component = componentService.createComponentLangChain(request.prompt, userId)
             Response.ok(component).build()
@@ -123,7 +124,7 @@ class ComponentResource @Inject constructor(
         )]
     )
     suspend fun getCompletions(): Response {
-        val userId = securityIdentity.principal.name
+        val userId = jsonWebToken.subject
         return try {
             val completions = componentService.getCompletions(userId)
             val response = completions.map { completion ->
@@ -168,9 +169,14 @@ class ComponentResource @Inject constructor(
             description = "The ID of the completion", required = true
         ) @PathParam("completionId") completionId: String
     ): Response {
-        val userId = securityIdentity.principal.name
+        val userId = jsonWebToken.subject
         return try {
             val completion = componentService.getCompletion(userId, completionId)
+            if (completion == null) {
+                return Response.status(Response.Status.NOT_FOUND)
+                    .entity(CompletionNotFoundResponse())
+                    .build()
+            }
             val response = ComponentCompletionResponse(
                 id = completion.id,
                 prompt = completion.prompt,
@@ -179,16 +185,10 @@ class ComponentResource @Inject constructor(
             )
             Response.ok(response).build()
         } catch (throwable: Throwable) {
-            if (throwable is NotFoundException) {
-                Response.status(Response.Status.NOT_FOUND)
-                    .entity(CompletionNotFoundResponse())
-                    .build()
-            } else {
                 Log.error("Failed to get completion with ID: $completionId", throwable)
                 Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity(CompletionsLoadFailedResponse())
                     .build()
             }
         }
-    }
 }

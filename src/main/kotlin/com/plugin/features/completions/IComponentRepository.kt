@@ -29,7 +29,7 @@ interface IComponentRepository {
      * @param completionId The ID of the completion
      * @return The component completion
      */
-    fun getCompletion(userId: String, completionId: String): Uni<ComponentCompletion>
+    fun getCompletion(userId: String, completionId: String): Uni<ComponentCompletion?>
 
     /**
      * Delete all completions from the database

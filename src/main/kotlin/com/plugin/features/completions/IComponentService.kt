@@ -29,5 +29,5 @@ interface IComponentService {
      * @param completionId The ID of the completion
      * @return The ComponentCompletion
      */
-    suspend fun getCompletion(userId: String, completionId: String): ComponentCompletion
+    suspend fun getCompletion(userId: String, completionId: String): ComponentCompletion?
 }

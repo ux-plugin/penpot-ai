@@ -70,16 +70,10 @@ class ComponentRepository(private val objectMapper: ObjectMapper) : PanacheRepos
      * @throws NotFoundException if the completion is not found
      */
     @WithSession
-    override fun getCompletion(userId: String, completionId: String): Uni<ComponentCompletion> {
+    override fun getCompletion(userId: String, completionId: String): Uni<ComponentCompletion?> {
         return ComponentCompletionEntity.find("userId = ?1 and id = ?2", userId, completionId)
             .project(ComponentCompletion::class.java)
             .firstResult()
-            .onItem()
-            .ifNull()
-            .failWith {
-                NotFoundException("Completion not found for user: $userId and completion: $completionId")
-            }
-            .map { it }
     }
 
     /**
