@@ -113,21 +113,17 @@ class AuthRepository(
 
     @WithSession
     override fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
-        return AuthUserEntity.find("id", refreshTokenRequest.userId).firstResult()
+        return AuthUserEntity.find("id = ?1 and refreshToken = ?2", refreshTokenRequest.userId,refreshTokenRequest.refreshToken).firstResult()
             .onItem().transformToUni { entity ->
-                if (entity == null) {
+                if (entity == null || entity.refreshTokenExpiresAt.isAfter(Instant.now())) {
                     Log.error("User not found with ID: ${refreshTokenRequest.userId}")
-                    Uni.createFrom().failure(NotFoundException("User not found with ID: ${refreshTokenRequest.userId}"))
-                } else if (entity.refreshToken == refreshTokenRequest.refreshToken
-                    && entity.refreshTokenExpiresAt.isAfter(Instant.now())
-                ) {
+                    Uni.createFrom().failure(SecurityException("Invalid or expired refresh token for user with ID: ${refreshTokenRequest.userId}"))
+                } else {
                     createAccessToken(
                         id = entity.id,
                         username = entity.username,
                         role = entity.role
                     )
-                } else {
-                    Uni.createFrom().failure(SecurityException("Invalid or expired refresh token"))
                 }
             }
     }
@@ -162,35 +158,121 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun upsertSocialLogin(
+    override fun getSocialLogin(providerUserId: String, provider: SocialProvider): Uni<SocialLoginEntity?>  {
+        return withTransaction {
+            SocialLoginEntity.find("providerUserId = ?1 and provider = ?2", providerUserId, provider).firstResult()
+                .onItem().transform { it }
+        }
+    }
+
+
+    @WithSession
+    override fun updateSocialLogin(
         provider: SocialProvider,
-        refreshToken: String,
-        userId: String,
-        refreshTokenExpiresAt: Instant
+        providerUserId: String,
+        refreshToken: String?,
+        refreshTokenExpiresAt: Instant?
     ): Uni<Unit> {
         return withTransaction {
-            AuthUserEntity.find("id", userId)
-                .firstResult().onItem().ifNull().failWith(NotFoundException("User not found with ID: $userId"))
-                .onItem().transformToUni { existingUser ->
-                    SocialLoginEntity.find("userId = ?1 and provider = ?2", userId, provider)
-                        .firstResult()
-                        .onItem().transformToUni { existingSocialLogin ->
-                            if (existingSocialLogin != null) {
-                                existingSocialLogin.refreshToken = refreshToken
-                                existingSocialLogin.refreshTokenExpiresAt = refreshTokenExpiresAt
-                                SocialLoginEntity.persist(existingSocialLogin)
-                            } else {
-                                val newSocialLoginEntity = SocialLoginEntity().apply {
-                                    this.provider = provider
-                                    this.refreshToken = refreshToken
-                                    this.userId = userId
-                                    this.refreshTokenExpiresAt = refreshTokenExpiresAt
-                                }
-                                SocialLoginEntity.persist(newSocialLoginEntity)
-                            }
-                        }.map { it }.replaceWith(Unit)
-                }
+            SocialLoginEntity.find("providerUserId = ?1 and provider = ?2", providerUserId, provider).firstResult()
+                .onItem().transform { entity ->
+                    if (entity != null) {
+                        // Update only the non-null fields
+                        if (refreshToken != null) {
+                            entity.refreshToken = refreshToken
+                        }
+                        if (refreshTokenExpiresAt != null) {
+                            entity.refreshTokenExpiresAt = refreshTokenExpiresAt
+                        }
 
+                        // Persist the updated entity
+                        SocialLoginEntity.persist(entity)
+                    } else {
+                        Uni.createFrom().failure(NotFoundException("Social login not found for user: $providerUserId"))
+                    }
+                }
+                .replaceWith(Unit)
+        }
+    }
+
+    @WithSession
+    override fun insertSocialLogin(provider: SocialProvider, providerUserId: String, refreshToken: String, refreshTokenExpiresAt: Instant, userId: String): Uni<SocialLoginEntity> {
+        return withTransaction {
+            AuthUserEntity.find("id", userId).firstResult().onItem().ifNull().failWith(NotFoundException("User $userId not found"))
+                .flatMap { user ->
+                    val socialLoginEntity = SocialLoginEntity().apply {
+                        this.userId = userId
+                        this.provider = provider
+                        this.providerUserId = providerUserId
+                        this.refreshToken = refreshToken
+                        this.refreshTokenExpiresAt = refreshTokenExpiresAt
+                    }
+                    SocialLoginEntity.persist(socialLoginEntity).map { socialLoginEntity }
+                }
+        }
+    }
+
+    @WithSession
+    override fun upsertSocialLogin(provider: SocialProvider, providerUserId: String, refreshToken: String, refreshTokenExpiresAt: Instant, userId: String): Uni<Unit> {
+        return withTransaction {
+            getSocialLogin(providerUserId,provider).flatMap { socialLoginEntity ->
+                if (socialLoginEntity == null) {
+                    insertSocialLogin(provider,providerUserId,refreshToken,refreshTokenExpiresAt,userId)
+                } else {
+                    updateSocialLogin(provider,providerUserId,refreshToken,refreshTokenExpiresAt)
+                }
+            }
         }.replaceWith(Unit)
+    }
+
+    @WithSession
+    override fun associateUserWithSocialProvider(
+        username: String,
+        provider: SocialProvider,
+        providerUserId: String,
+        refreshToken: String,
+        refreshTokenExpiresAt: Instant
+    ): Uni<AuthUserEntity> {
+        return withTransaction {
+            // First get or add the user
+            AuthUserEntity.find("username", username).firstResult()
+                .flatMap { existingUser ->
+                    val userUni = if (existingUser != null) {
+                        // User already exists, return the user
+                        Uni.createFrom().item(existingUser)
+                    } else {
+                        // Create a new user
+                        val newUser = AuthUserEntity().apply {
+                            this.username = username
+                            this.role = UserRole.USER // Default role
+                        }
+                        AuthUserEntity.persist(newUser).map { newUser }
+                    }
+
+                    // Once we have the user, handle the social login
+                    userUni.flatMap { user ->
+                        SocialLoginEntity.find("providerUserId = ?1 and provider = ?2", providerUserId, provider)
+                            .firstResult()
+                            .flatMap { socialLoginEntity ->
+                                if (socialLoginEntity == null) {
+                                    // Create new social login
+                                    val socialLogin = SocialLoginEntity().apply {
+                                        this.userId = user.id
+                                        this.provider = provider
+                                        this.providerUserId = providerUserId
+                                        this.refreshToken = refreshToken
+                                        this.refreshTokenExpiresAt = refreshTokenExpiresAt
+                                    }
+                                    SocialLoginEntity.persist(socialLogin).map { user }
+                                } else {
+                                    // Update existing social login
+                                    socialLoginEntity.refreshToken = refreshToken
+                                    socialLoginEntity.refreshTokenExpiresAt = refreshTokenExpiresAt
+                                    SocialLoginEntity.persist(socialLoginEntity).map { user }
+                                }
+                            }
+                    }
+                }
+        }
     }
 }

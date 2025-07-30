@@ -47,6 +47,9 @@ class SocialLoginEntity : PanacheEntityBase {
     @Column(nullable = false)
     lateinit var userId: String
 
+    @Column(nullable = false, unique = true)
+    lateinit var providerUserId: String
+
     @Column(nullable = false)
     @Enumerated(EnumType.STRING)
     lateinit var provider: SocialProvider
