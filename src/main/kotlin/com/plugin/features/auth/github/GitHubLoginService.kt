@@ -125,31 +125,35 @@ class GitHubAuthService @Inject constructor(
         val githubOAuthTokenResponse = exchangeCodeForToken(code = code, state = state)
         val userInfo = githubRestClient.getUser("Bearer ${githubOAuthTokenResponse.accessToken}")
 
-        // Use login as username if email is null
-        val username = userInfo.email ?: userInfo.login
-        val user = authRepository.getOrAddUser(username = username).awaitSuspending()
-
         val refreshTokenExpiresAt = Instant.now().plusSeconds(githubOAuthTokenResponse.expiresIn.toLong())
 
         // GitHub doesn't provide a refresh token, so we store the access token as the refresh token
         try {
-            authRepository.upsertSocialLogin(
+            val user = authRepository.associateUserWithSocialProvider(
+                userInfo.email?: "",
                 SocialProvider.GITHUB,
+                userInfo.id.toString(),
                 githubOAuthTokenResponse.refreshToken,
-                user.id,
                 refreshTokenExpiresAt
             )
                 .awaitSuspending()
+            // Store the access token in Redis
+            val accessTokenKey = restClientAccessTokenKeyPrefix + user.id
+            redisRepository.setValueWithExpiration(
+                accessTokenKey,
+                githubOAuthTokenResponse.accessToken,
+                githubOAuthTokenResponse.expiresIn
+            )
+
+            val appTokens =
+                authRepository.createTokensForUser(user.id, username = user.username, role = user.role).awaitSuspending()
+
+            val queueName = restClientAccessTokenKeyPrefix + readToken
+            redisRepository.pushAccessToken(queueName, appTokens.accessToken)
         } catch (e: Exception) {
             Log.error("Failed to upsert social login", e)
             throw e
         }
-
-        val appTokens =
-            authRepository.createTokensForUser(user.id, username = user.username, role = user.role).awaitSuspending()
-
-        val queueName = restClientAccessTokenKeyPrefix + readToken
-        redisRepository.pushAccessToken(queueName, appTokens.accessToken)
     }
 
     suspend fun readAccessToken(readToken: String): KeyValue<String, String>? {

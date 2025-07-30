@@ -8,6 +8,7 @@ import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
+import org.eclipse.microprofile.jwt.JsonWebToken
 
 /**
  * REST resource for handling GitHub OAuth authentication.
@@ -17,7 +18,7 @@ import jakarta.ws.rs.core.Response
 @Consumes(MediaType.APPLICATION_JSON)
 class GitHubAuthResource @Inject constructor(
     private val githubAuthService: GitHubAuthService,
-    private val securityIdentity: SecurityIdentity,
+    private val jsonWebToken: JsonWebToken
 ) {
 
     @GET
@@ -48,7 +49,7 @@ class GitHubAuthResource @Inject constructor(
     @Path("/access-token")
     @Authenticated
     open suspend fun getAppAccessToken(): Response {
-        val readToken = securityIdentity.principal.name
+        val readToken = jsonWebToken.subject
         val token = githubAuthService.readAccessToken(readToken)
         return if (token == null || token.value == null) {
             Log.error("Produced access token is null")
