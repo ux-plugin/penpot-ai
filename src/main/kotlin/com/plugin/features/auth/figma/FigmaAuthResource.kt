@@ -8,6 +8,7 @@ import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
+import org.eclipse.microprofile.jwt.JsonWebToken
 
 /**
  * REST resource for handling Figma OAuth authentication.
@@ -17,7 +18,7 @@ import jakarta.ws.rs.core.Response
 @Consumes(MediaType.APPLICATION_JSON)
 class FigmaAuthResource @Inject constructor(
     private val figmaAuthService: FigmaAuthService,
-    private val securityIdentity: SecurityIdentity,
+    private val jsonWebToken: JsonWebToken
 ) {
 
     @GET
@@ -48,7 +49,7 @@ class FigmaAuthResource @Inject constructor(
     @Path("/access-token")
     @Authenticated
     open suspend fun getAppAccessToken(): Response {
-        val readToken = securityIdentity.principal.name
+        val readToken = jsonWebToken.subject
         val token = figmaAuthService.readAccessToken(readToken)
         return if (token == null || token.value == null) {
             Log.error("Produced access token is null")

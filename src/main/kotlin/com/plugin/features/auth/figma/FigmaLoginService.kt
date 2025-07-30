@@ -131,36 +131,36 @@ class FigmaAuthService @Inject constructor(
         val userInfo = figmaRestClient.getMe("Bearer ${figmaOAuthTokenResponse.accessToken}")
             .awaitSuspending()
 
-        val user = authRepository.getOrAddUser(username = userInfo.email).awaitSuspending()
-        
-        // Store the access token in Redis
-        val accessTokenKey = restClientAccessTokenKeyPrefix + user.id
-        redisRepository.setValueWithExpiration(
-            accessTokenKey,
-            figmaOAuthTokenResponse.accessToken,
-            figmaOAuthTokenResponse.expiresIn.toInt()
-        )
+
 
         val refreshTokenExpiresAt = figmaOAuthTokenResponse.expiresIn.let { Instant.now().plusSeconds(it) }
 
         try {
-            authRepository.upsertSocialLogin(
+            val user = authRepository.associateUserWithSocialProvider(
+                userInfo.email,
                 SocialProvider.FIGMA,
+                userInfo.id,
                 figmaOAuthTokenResponse.refreshToken,
-                user.id,
-                refreshTokenExpiresAt
+                refreshTokenExpiresAt,
             )
                 .awaitSuspending()
+
+            // Store the access token in Redis
+            val accessTokenKey = restClientAccessTokenKeyPrefix + user.id
+            redisRepository.setValueWithExpiration(
+                accessTokenKey,
+                figmaOAuthTokenResponse.accessToken,
+                figmaOAuthTokenResponse.expiresIn.toInt()
+            )
+            val appTokens =
+                authRepository.createTokensForUser(user.id, username = user.username, role = user.role).awaitSuspending()
+
+            val queueName = restClientAccessTokenKeyPrefix + readToken
+            redisRepository.pushAccessToken(queueName, appTokens.accessToken)
         } catch (e: Exception) {
             Log.error("Failed to upsert social login", e)
             throw e
         }
-
-        val appTokens =
-            authRepository.createTokensForUser(user.id, username = user.username, role = user.role).awaitSuspending()
-
-        val queueName = restClientAccessTokenKeyPrefix + readToken
-        redisRepository.pushAccessToken(queueName, appTokens.accessToken)
     }
 
     suspend fun readAccessToken(readToken: String): KeyValue<String, String>? {
