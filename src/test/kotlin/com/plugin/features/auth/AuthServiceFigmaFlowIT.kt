@@ -101,7 +101,16 @@ class AuthServiceFigmaFlowIT {
                 val accessToken = response.jsonPath().getString("accessToken")
                 val claims = jwtParser.parse(accessToken)
                 userId = claims.getClaim(Claims.sub.name)
+
+                given()
+                    .header("Authorization", "Bearer $accessToken")
+                    .`when`()
+                    .get("/auth/refresh-token")
+                    .then()
+                    .statusCode(200)
+                    .cookie("refresh_token", notNullValue())
             }
+
             launch(Dispatchers.IO) {
                 given()
                     .queryParam("code", "test-code")

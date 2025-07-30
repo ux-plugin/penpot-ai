@@ -65,7 +65,8 @@ class AuthServiceGitHubFlowIT {
     }
 
     @Test
-    fun testGitHubLoginFlowWithCallbackFunction() {
+    fun testGitHubFullLoginFlowWithCallbackFunction() {
+        // Step 1: Initiate GitHub login
         val response = given()
             .`when`()
             .get("/auth/github/login")
@@ -86,7 +87,8 @@ class AuthServiceGitHubFlowIT {
 
         runBlocking {
             launch(Dispatchers.IO) {
-                val response = given()
+                // Step 3: User exchanges JWT for access token
+                val accessTokenResp = given()
                     .header("Authorization", "Bearer $readTokenJwt")
                     .`when`()
                     .get("/auth/github/access-token")
@@ -99,10 +101,20 @@ class AuthServiceGitHubFlowIT {
                 val accessToken = response.jsonPath().getString("accessToken")
                 val claims = jwtParser.parse(accessToken)
                 userId = claims.getClaim(Claims.sub.name)
+
+                // Step 4: User exchanges access token for a refresh token
+                given()
+                    .header("Authorization", "Bearer $accessToken")
+                    .`when`()
+                    .get("/auth/refresh-token")
+                    .then()
+                    .statusCode(200)
+                    .cookie("refresh_token", notNullValue())
             }
             launch(Dispatchers.IO) {
+                // Step 2: Simulate GitHub OAuth callback (user comes back with code)
                 given()
-                    .queryParam("code", "test-code")
+                    .queryParam("code", "test-github-code")
                     .queryParam("state", state)
                     .`when`()
                     .get("/auth/github/callback")

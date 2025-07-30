@@ -69,8 +69,8 @@ class AuthServiceGeneralAuthIT {
         val userId = java.util.UUID.randomUUID().toString()
         val result = sessionFactory.withTransaction { session, _ ->
             val sql = """
-                INSERT INTO Users (id, username, name, role, companionAppConnected, companionAppPort, createdAt)
-                VALUES ('$userId', '$username', '$name', 'USER', false, 64032, CURRENT_TIMESTAMP)
+                INSERT INTO Users (id, username, name, role, createdAt)
+                VALUES ('$userId', '$username', '$name', 'USER', CURRENT_TIMESTAMP)
             """.trimIndent()
 
             session.createNativeQuery<Void>(sql)
