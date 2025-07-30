@@ -15,8 +15,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import org.eclipse.microprofile.jwt.JsonWebToken
 
-data class AppState(val port: Int?, val publicKey: String?)
-data class PluginState(val publicKey: String)
+data class AppState(val id: String, val port: Int?, val publicKey: String?)
+data class PluginState(val id: String, val publicKey: String)
 
 @Path("/sync")
 @Produces(MediaType.APPLICATION_JSON)

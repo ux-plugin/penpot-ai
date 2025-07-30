@@ -79,14 +79,15 @@ class ConfigSyncResourceIT {
             redis.key().del(pluginQueueKey).awaitSuspending()
 
             // Initialize with empty values
-            appConfigQueue.rpush(appQueueKey, AppState(null, null)).awaitSuspending()
-            pluginConfigQueue.rpush(pluginQueueKey, PluginState("")).awaitSuspending()
+            appConfigQueue.rpush(appQueueKey, AppState(id = UUID.randomUUID().toString(), port = null, publicKey = null)).awaitSuspending()
+            pluginConfigQueue.rpush(pluginQueueKey, PluginState(id = UUID.randomUUID().toString(), publicKey = "")).awaitSuspending()
         }
     }
 
     @Test
     fun testAppConfigUpdateAndSSE() = runBlocking {
-        val newAppState = AppState(8080, "test-public-key")
+        val testId = UUID.randomUUID().toString()
+        val newAppState = AppState(id = testId, port = 8080, publicKey = "test-public-key")
         
         // First, make sure there's an initial value in the Redis list
         val appQueueKey = companionAppKeyPrefix + testUserId
@@ -105,13 +106,15 @@ class ConfigSyncResourceIT {
         // Verify the update was stored in Redis
         val storedState = appConfigQueue.lindex(appQueueKey, 0).awaitSuspending()
         assert(storedState != null) { "No app state was stored in Redis" }
+        assert(storedState?.id == newAppState.id) { "Stored id doesn't match" }
         assert(storedState?.port == newAppState.port) { "Stored port doesn't match" }
         assert(storedState?.publicKey == newAppState.publicKey) { "Stored publicKey doesn't match" }
     }
 
     @Test
     fun testPluginConfigUpdateAndSSE() = runBlocking {
-        val newPluginState = PluginState("plugin-public-key")
+        val testId = UUID.randomUUID().toString()
+        val newPluginState = PluginState(id = testId, publicKey = "plugin-public-key")
         var receivedState: PluginState? = null
 
         withTimeout(10000) {
@@ -137,6 +140,7 @@ class ConfigSyncResourceIT {
                 val event = sseEvents.first()
                 if (event.contains("publicKey")) {
                     receivedState = PluginState(
+                        id = testId,
                         publicKey = "plugin-public-key"
                     )
                 }
@@ -165,7 +169,8 @@ class ConfigSyncResourceIT {
 
     @Test
     fun testAppConfigUpdateEndpoint() {
-        val newAppState = AppState(9090, "another-test-key")
+        val testId = UUID.randomUUID().toString()
+        val newAppState = AppState(id = testId, port = 9090, publicKey = "another-test-key")
 
         // Send an update
         given()
@@ -182,6 +187,7 @@ class ConfigSyncResourceIT {
             val queueName = companionAppKeyPrefix + testUserId
             val storedState = appConfigQueue.lindex(queueName, 0).awaitSuspending()
             assert(storedState != null) { "No app state was stored in Redis" }
+            assert(storedState?.id == newAppState.id) { "Stored id doesn't match" }
             assert(storedState?.port == newAppState.port) { "Stored port doesn't match" }
             assert(storedState?.publicKey == newAppState.publicKey) { "Stored publicKey doesn't match" }
         }
@@ -189,7 +195,8 @@ class ConfigSyncResourceIT {
 
     @Test
     fun testPluginConfigUpdateEndpoint() {
-        val newPluginState = PluginState("another-plugin-key")
+        val testId = UUID.randomUUID().toString()
+        val newPluginState = PluginState(id = testId, publicKey = "another-plugin-key")
 
         // Send an update
         given()
@@ -206,6 +213,7 @@ class ConfigSyncResourceIT {
             val queueName = pluginKeyPrefix + testUserId
             val storedState = pluginConfigQueue.lindex(queueName, 0).awaitSuspending()
             assert(storedState != null) { "No plugin state was stored in Redis" }
+            assert(storedState?.id == newPluginState.id) { "Stored id doesn't match" }
             assert(storedState?.publicKey == newPluginState.publicKey) { "Stored publicKey doesn't match" }
         }
     }
@@ -221,7 +229,7 @@ class ConfigSyncResourceIT {
 
         given()
             .contentType(ContentType.JSON)
-            .body(AppState(8080, "test-key"))
+            .body(AppState(id = UUID.randomUUID().toString(), port = 8080, publicKey = "test-key"))
             .`when`()
             .post("/sync/app/update")
             .then()
@@ -235,7 +243,7 @@ class ConfigSyncResourceIT {
 
         given()
             .contentType(ContentType.JSON)
-            .body(PluginState("test-key"))
+            .body(PluginState(id = UUID.randomUUID().toString(), publicKey = "test-key"))
             .`when`()
             .post("/sync/plugin-config/update")
             .then()
