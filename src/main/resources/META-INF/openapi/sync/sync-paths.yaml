@@ -1,0 +1,155 @@
+/sync/app/update:
+  post:
+    summary: Update app configuration
+    description: Updates the app configuration for the authenticated user
+    tags:
+      - Configuration Sync
+    requestBody:
+      content:
+        application/json:
+          schema:
+            $ref: "./sync-schemas.yaml#/AppState"
+          examples:
+            set_port:
+              $ref: "./sync-examples.yaml#/AppState/set_port"
+            clear_port:
+              $ref: "./sync-examples.yaml#/AppState/clear_port"
+            empty_config:
+              $ref: "./sync-examples.yaml#/AppState/empty_config"
+      required: true
+    responses:
+      "200":
+        description: App configuration updated successfully
+        content:
+          application/json:
+            examples:
+              update_success:
+                $ref: "./sync-examples.yaml#/UpdateResponses/update_success"
+      "400":
+        description: Bad Request
+        content:
+          application/json:
+            examples:
+              invalid_config:
+                $ref: "./sync-examples.yaml#/ErrorResponses/invalid_config"
+      "401":
+        description: Unauthorized - invalid or missing authentication
+        content:
+          application/json:
+            examples:
+              unauthorized:
+                $ref: "./sync-examples.yaml#/ErrorResponses/unauthorized"
+      "500":
+        description: Internal server error - failed to update configuration
+        content:
+          application/json:
+            examples:
+              update_error:
+                $ref: "./sync-examples.yaml#/ErrorResponses/update_error"
+    security:
+      - JWT: []
+
+/sync/app/updates:
+  get:
+    summary: Listen to app configuration updates
+    description: Server-Sent Events stream for real-time app configuration updates
+    tags:
+      - Configuration Sync
+    responses:
+      "200":
+        description: SSE stream of app configuration updates
+        content:
+          text/event-stream:
+            schema:
+              $ref: "./sync-schemas.yaml#/AppState"
+            examples:
+              port_update_event:
+                $ref: "./sync-examples.yaml#/SSEEvents/port_update_event"
+              config_clear_event:
+                $ref: "./sync-examples.yaml#/SSEEvents/config_clear_event"
+      "401":
+        description: Unauthorized - invalid or missing authentication
+        content:
+          application/json:
+            examples:
+              unauthorized:
+                $ref: "./sync-examples.yaml#/ErrorResponses/unauthorized"
+    security:
+      - JWT: []
+
+/sync/key/generate:
+  post:
+    summary: Generate encryption key
+    description: Generates a new AES-256 encryption key for the authenticated user
+    tags:
+      - Configuration Sync
+    responses:
+      "200":
+        description: Encryption key generated successfully
+        content:
+          application/json:
+            schema:
+              $ref: "./sync-schemas.yaml#/GenerateKeyResponse"
+            examples:
+              new_key:
+                $ref: "./sync-examples.yaml#/GenerateKeyResponse/new_key"
+              regenerated_key:
+                $ref: "./sync-examples.yaml#/GenerateKeyResponse/regenerated_key"
+      "401":
+        description: Unauthorized - invalid or missing authentication
+        content:
+          application/json:
+            examples:
+              unauthorized:
+                $ref: "./sync-examples.yaml#/ErrorResponses/unauthorized"
+      "404":
+        description: User not found
+        content:
+          application/json:
+            examples:
+              user_not_found:
+                $ref: "./sync-examples.yaml#/ErrorResponses/user_not_found"
+      "500":
+        description: Internal server error - failed to generate key
+        content:
+          application/json:
+            examples:
+              key_generation_error:
+                $ref: "./sync-examples.yaml#/ErrorResponses/key_generation_error"
+    security:
+      - JWT: []
+
+/sync/key/get:
+  get:
+    summary: Get encryption key
+    description: Retrieves the existing encryption key for the authenticated user
+    tags:
+      - Configuration Sync
+    responses:
+      "200":
+        description: Encryption key retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: "./sync-schemas.yaml#/GetKeyResponse"
+            examples:
+              existing_key:
+                $ref: "./sync-examples.yaml#/GetKeyResponse/existing_key"
+              no_key:
+                $ref: "./sync-examples.yaml#/GetKeyResponse/no_key"
+      "401":
+        description: Unauthorized - invalid or missing authentication
+        content:
+          application/json:
+            examples:
+              unauthorized:
+                $ref: "./sync-examples.yaml#/ErrorResponses/unauthorized"
+      "500":
+        description: Internal server error - failed to retrieve key
+        content:
+          application/json:
+            examples:
+              key_retrieval_error:
+                $ref: "./sync-examples.yaml#/ErrorResponses/key_retrieval_error"
+    security:
+      - JWT: []

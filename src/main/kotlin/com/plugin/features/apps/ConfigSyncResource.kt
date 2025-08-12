@@ -6,6 +6,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.Consumes
 import jakarta.ws.rs.GET
+import jakarta.ws.rs.NotFoundException
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.Path
 import jakarta.ws.rs.Produces
@@ -15,8 +16,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import org.eclipse.microprofile.jwt.JsonWebToken
 
-data class AppState(val id: String, val port: Int?, val publicKey: String?)
-data class PluginState(val id: String, val publicKey: String)
+data class AppState(val port: Int?)
+data class GenerateKeyResponse(val key: String)
+data class GetKeyResponse(val key: String?)
 
 @Path("/sync")
 @Produces(MediaType.APPLICATION_JSON)
@@ -30,7 +32,7 @@ class ConfigSyncResource @Inject constructor(
     @Path("/app/updates")
     @GET
     @Produces(MediaType.SERVER_SENT_EVENTS)
-    suspend fun getAppConfig(): Flow<AppState> {
+    open suspend fun listenToAppConfigUpdates(): Flow<AppState> {
         val userId = jsonWebToken.subject
         return flow {
             while(true) {
@@ -42,7 +44,7 @@ class ConfigSyncResource @Inject constructor(
 
     @Path("/app/update")
     @POST
-    suspend fun updateAppConfig(newConfig: AppState) : Response {
+    open suspend fun updateAppConfig(newConfig: AppState) : Response {
         val userId = jsonWebToken.subject
         return try {
             configSyncService.updateAppConfig(userId, newConfig)
@@ -53,29 +55,35 @@ class ConfigSyncResource @Inject constructor(
         }
     }
 
-    @Path("/plugin-config/updates")
-    @GET
-    @Produces(MediaType.SERVER_SENT_EVENTS)
-    suspend fun getPluginState() : Flow<PluginState>{
+    @Path("/key/generate")
+    @POST
+    @Consumes(MediaType.WILDCARD)
+    open suspend fun generateKey(): Response {
         val userId = jsonWebToken.subject
-        return flow {
-            while(true) {
-                val pluginState = configSyncService.listenToPluginConfigUpdate(userId)
-                emit(pluginState)
+        return try {
+            val key = configSyncService.createEncryptionKey(userId)
+            Response.ok(GenerateKeyResponse(key)).build()
+        } catch (t: Throwable) {
+            if (t is NotFoundException) {
+                Response.status(Response.Status.NOT_FOUND).entity("User not found").build()
+            } else {
+                Log.error("Error generating encryption key", t)
+                Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Internal server error").build()
             }
         }
     }
 
-    @Path("/plugin-config/update")
-    @POST
-    suspend fun updatePluginConfig(newConfig: PluginState): Response {
+    @Path("/key/get")
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    open suspend fun getKey(): Response {
         val userId = jsonWebToken.subject
         return try {
-            configSyncService.updatePluginConfig(userId, newConfig)
-            Response.ok().build()
-        } catch (e: Exception) {
-            Log.error("Failed to update plugin config", e)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            val key = configSyncService.getEncryptionKey(userId)
+            Response.ok(GetKeyResponse(key)).build()
+        } catch (t: Throwable) {
+            Log.error("error getting encryption key", t)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Internal server error").build()
         }
     }
 }

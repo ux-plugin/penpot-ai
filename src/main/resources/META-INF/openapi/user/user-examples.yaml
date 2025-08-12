@@ -1,0 +1,121 @@
+GetUserResponse:
+  regular_user:
+    summary: Regular user profile
+    description: Example profile for a regular user
+    value:
+      id: "user_123456789"
+      name: "John Doe"
+      username: "johndoe"
+      allowSavingCompletions: true
+  
+  admin_user:
+    summary: Admin user profile
+    description: Example profile for an admin user
+    value:
+      id: "admin_987654321"
+      name: "Admin User"
+      username: "admin"
+      allowSavingCompletions: true
+  
+  user_with_completions_disabled:
+    summary: User with completions disabled
+    description: Example profile for user who disabled saving completions
+    value:
+      id: "user_555666777"
+      name: "Privacy User"
+      username: "privacyuser"
+      allowSavingCompletions: false
+
+UpdateUserRequest:
+  full_update:
+    summary: Full profile update
+    description: Example request updating all user fields
+    value:
+      name: "John Updated Doe"
+      username: "johnupdated"
+      allowSavingCompletions: false
+  
+  partial_update_name:
+    summary: Update name only
+    description: Example request updating only the display name
+    value:
+      name: "Jane Updated Smith"
+  
+  partial_update_username:
+    summary: Update username only
+    description: Example request updating only the username
+    value:
+      username: "newusername"
+  
+  toggle_completions:
+    summary: Toggle completions setting
+    description: Example request toggling the completions saving preference
+    value:
+      allowSavingCompletions: false
+
+UpdateResponses:
+  update_success:
+    summary: Successful profile update
+    description: Response when user profile is updated successfully
+    value:
+      message: "User profile updated successfully"
+      success: true
+      timestamp: "2024-08-06T16:01:00Z"
+
+DeleteResponses:
+  delete_success:
+    summary: Successful profile deletion
+    description: Response when user profile is deleted successfully
+    value:
+      message: "User profile and all associated data deleted successfully"
+      success: true
+      timestamp: "2024-08-06T16:01:00Z"
+
+ErrorResponses:
+  unauthorized:
+    summary: Unauthorized error
+    description: User not authenticated
+    value:
+      error: "unauthorized"
+      message: "Authentication required. Please provide a valid JWT token"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  forbidden:
+    summary: Forbidden error
+    description: User trying to access/modify another user's profile
+    value:
+      error: "forbidden"
+      message: "You can only access and modify your own profile"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  user_not_found:
+    summary: User not found error
+    description: Requested user doesn't exist
+    value:
+      error: "user_not_found"
+      message: "The requested user was not found"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  invalid_request:
+    summary: Invalid request error
+    description: Request contains invalid data
+    value:
+      error: "invalid_request"
+      message: "The request contains invalid or malformed data"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  username_taken:
+    summary: Username already taken error
+    description: Requested username is already in use
+    value:
+      error: "username_taken"
+      message: "The requested username is already taken. Please choose a different one"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  delete_error:
+    summary: User deletion error
+    description: Error occurred while deleting user
+    value:
+      error: "delete_failed"
+      message: "Failed to delete user profile. Please try again later"
+      timestamp: "2024-08-06T16:01:00Z"

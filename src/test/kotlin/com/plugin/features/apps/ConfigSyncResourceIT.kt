@@ -1,5 +1,6 @@
 package com.plugin.features.apps
 
+import com.plugin.shared.PostgresTestResourceManager
 import com.plugin.shared.RedisTestResourceManager
 import io.quarkus.redis.datasource.ReactiveRedisDataSource
 import io.quarkus.redis.datasource.list.ReactiveListCommands
@@ -12,49 +13,37 @@ import io.restassured.http.ContentType
 import io.smallrye.jwt.build.Jwt
 import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.inject.Inject
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.take
-import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import org.eclipse.microprofile.config.inject.ConfigProperty
-import org.hamcrest.CoreMatchers.equalTo
+import org.hibernate.reactive.mutiny.Mutiny
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 class ConfigSyncTestProfile : QuarkusTestProfile {
     override fun getConfigOverrides(): Map<String, String> = mapOf(
-        "apps.companion-app-key-prefix" to "test-app-",
-        "apps.plugin-key-prefix" to "test-plugin-"
+        "apps.companion-app-key-prefix" to "test-app-"
     )
 }
 
 @QuarkusTest
 @TestProfile(ConfigSyncTestProfile::class)
 @QuarkusTestResource(RedisTestResourceManager::class, parallel = true)
+@QuarkusTestResource(PostgresTestResourceManager::class, parallel = true)
 class ConfigSyncResourceIT {
 
     @Inject
     lateinit var redis: ReactiveRedisDataSource
 
+    @Inject
+    lateinit var sessionFactory: Mutiny.SessionFactory
+
     @ConfigProperty(name = "apps.companion-app-key-prefix")
     lateinit var companionAppKeyPrefix: String
 
-    @ConfigProperty(name = "apps.plugin-key-prefix")
-    lateinit var pluginKeyPrefix: String
-
-    private val appConfigQueue: ReactiveListCommands<String, AppState> by lazy {
+    private val appConfigUpdatesQueue: ReactiveListCommands<String, AppState> by lazy {
         redis.list(AppState::class.java)
-    }
-
-    private val pluginConfigQueue: ReactiveListCommands<String, PluginState> by lazy {
-        redis.list(PluginState::class.java)
     }
 
     private val testUserId = "test-user-${UUID.randomUUID()}"
@@ -69,108 +58,34 @@ class ConfigSyncResourceIT {
 
     @BeforeEach
     fun setup() {
-        // Initialize Redis lists for the test user
+        // Clear any existing data for the test user
         val appQueueKey = companionAppKeyPrefix + testUserId
-        val pluginQueueKey = pluginKeyPrefix + testUserId
-
+        
         runBlocking {
             // Clear any existing data
             redis.key().del(appQueueKey).awaitSuspending()
-            redis.key().del(pluginQueueKey).awaitSuspending()
-
-            // Initialize with empty values
-            appConfigQueue.rpush(appQueueKey, AppState(id = UUID.randomUUID().toString(), port = null, publicKey = null)).awaitSuspending()
-            pluginConfigQueue.rpush(pluginQueueKey, PluginState(id = UUID.randomUUID().toString(), publicKey = "")).awaitSuspending()
-        }
-    }
-
-    @Test
-    fun testAppConfigUpdateAndSSE() = runBlocking {
-        val testId = UUID.randomUUID().toString()
-        val newAppState = AppState(id = testId, port = 8080, publicKey = "test-public-key")
-        
-        // First, make sure there's an initial value in the Redis list
-        val appQueueKey = companionAppKeyPrefix + testUserId
-        appConfigQueue.rpush(appQueueKey, newAppState).awaitSuspending()
-        
-        // Now test the update endpoint
-        given()
-            .header("Authorization", "Bearer $testJwt")
-            .contentType(ContentType.JSON)
-            .body(newAppState)
-            .`when`()
-            .post("/sync/app/update")
-            .then()
-            .statusCode(200)
-            
-        // Verify the update was stored in Redis
-        val storedState = appConfigQueue.lindex(appQueueKey, 0).awaitSuspending()
-        assert(storedState != null) { "No app state was stored in Redis" }
-        assert(storedState?.id == newAppState.id) { "Stored id doesn't match" }
-        assert(storedState?.port == newAppState.port) { "Stored port doesn't match" }
-        assert(storedState?.publicKey == newAppState.publicKey) { "Stored publicKey doesn't match" }
-    }
-
-    @Test
-    fun testPluginConfigUpdateAndSSE() = runBlocking {
-        val testId = UUID.randomUUID().toString()
-        val newPluginState = PluginState(id = testId, publicKey = "plugin-public-key")
-        var receivedState: PluginState? = null
-
-        withTimeout(10000) {
-            launch(Dispatchers.IO) {
-                // Start listening to SSE endpoint
-                val response = given()
-                    .header("Authorization", "Bearer $testJwt")
-                    .`when`()
-                    .get("/sync/plugin-config/updates")
-                    .then()
-                    .statusCode(200)
-                    .extract()
-                    .response()
-
-                // Process the SSE response
-                val sseEvents = response.body.asInputStream().bufferedReader().lineSequence()
-                    .filter { it.startsWith("data:") }
-                    .map { it.substring(5).trim() }
-                    .take(1)
-                    .toList()
-
-                // Parse the first event
-                val event = sseEvents.first()
-                if (event.contains("publicKey")) {
-                    receivedState = PluginState(
-                        id = testId,
-                        publicKey = "plugin-public-key"
-                    )
-                }
-            }
-
-            // Give the SSE connection time to establish
-            delay(1000)
-
-            // Send an update
-            launch(Dispatchers.IO) {
-                given()
-                    .header("Authorization", "Bearer $testJwt")
-                    .contentType(ContentType.JSON)
-                    .body(newPluginState)
-                    .`when`()
-                    .post("/sync/plugin-config/update")
-                    .then()
-                    .statusCode(200)
-            }
         }
 
-        // Verify the update was received
-        assert(receivedState != null) { "No plugin state update was received via SSE" }
-        assert(receivedState?.publicKey == newPluginState.publicKey) { "Received publicKey doesn't match" }
+        sessionFactory.withTransaction { session, _ ->
+            val sql = """
+                DO $$
+                BEGIN
+                   IF EXISTS (SELECT FROM information_schema.tables
+                              WHERE table_schema = 'public'
+                              AND table_name = 'users') THEN
+                      EXECUTE 'TRUNCATE TABLE Users RESTART IDENTITY CASCADE';
+                   END IF;
+                END $$;
+            """.trimIndent()
+            session.createNativeQuery<Void>(sql).executeUpdate()
+        }.await().indefinitely()
+        
+
     }
 
     @Test
     fun testAppConfigUpdateEndpoint() {
-        val testId = UUID.randomUUID().toString()
-        val newAppState = AppState(id = testId, port = 9090, publicKey = "another-test-key")
+        val newAppState = AppState(port = 8080)
 
         // Send an update
         given()
@@ -185,36 +100,66 @@ class ConfigSyncResourceIT {
         // Verify the update was stored in Redis
         runBlocking {
             val queueName = companionAppKeyPrefix + testUserId
-            val storedState = appConfigQueue.lindex(queueName, 0).awaitSuspending()
+            val storedState = appConfigUpdatesQueue.lindex(queueName, 0).awaitSuspending()
             assert(storedState != null) { "No app state was stored in Redis" }
-            assert(storedState?.id == newAppState.id) { "Stored id doesn't match" }
             assert(storedState?.port == newAppState.port) { "Stored port doesn't match" }
-            assert(storedState?.publicKey == newAppState.publicKey) { "Stored publicKey doesn't match" }
         }
     }
 
     @Test
-    fun testPluginConfigUpdateEndpoint() {
-        val testId = UUID.randomUUID().toString()
-        val newPluginState = PluginState(id = testId, publicKey = "another-plugin-key")
+    fun testAppConfigUpdateWithNullPort() {
+        val newAppState = AppState(port = null)
 
         // Send an update
         given()
             .header("Authorization", "Bearer $testJwt")
             .contentType(ContentType.JSON)
-            .body(newPluginState)
+            .body(newAppState)
             .`when`()
-            .post("/sync/plugin-config/update")
+            .post("/sync/app/update")
             .then()
             .statusCode(200)
 
         // Verify the update was stored in Redis
         runBlocking {
-            val queueName = pluginKeyPrefix + testUserId
-            val storedState = pluginConfigQueue.lindex(queueName, 0).awaitSuspending()
-            assert(storedState != null) { "No plugin state was stored in Redis" }
-            assert(storedState?.id == newPluginState.id) { "Stored id doesn't match" }
-            assert(storedState?.publicKey == newPluginState.publicKey) { "Stored publicKey doesn't match" }
+            val queueName = companionAppKeyPrefix + testUserId
+            val storedState = appConfigUpdatesQueue.lindex(queueName, 0).awaitSuspending()
+            assert(storedState != null) { "No app state was stored in Redis" }
+            assert(storedState?.port == null) { "Stored port should be null" }
+        }
+    }
+
+    @Test
+    fun testAppConfigUpdateOverwritesExisting() {
+        val initialAppState = AppState(port = 3000)
+        val updatedAppState = AppState(port = 9090)
+
+        runBlocking {
+            val queueName = companionAppKeyPrefix + testUserId
+            // First, create an initial entry
+            appConfigUpdatesQueue.lpush(queueName, initialAppState).awaitSuspending()
+        }
+
+        // Send an update
+        given()
+            .header("Authorization", "Bearer $testJwt")
+            .contentType(ContentType.JSON)
+            .body(updatedAppState)
+            .`when`()
+            .post("/sync/app/update")
+            .then()
+            .statusCode(200)
+
+        // Verify the update overwrote the existing value
+        runBlocking {
+            val queueName = companionAppKeyPrefix + testUserId
+            val storedState = appConfigUpdatesQueue.lindex(queueName, 0).awaitSuspending()
+            assert(storedState != null) { "No app state was stored in Redis" }
+            assert(storedState?.port == updatedAppState.port) { "Stored port should be updated value" }
+            
+            // Verify there's only one item in the list
+            val listLength = appConfigUpdatesQueue.llen(queueName).awaitSuspending()
+            assert(listLength == 1L) { "List should contain only one item after update" }
         }
     }
 
@@ -229,7 +174,7 @@ class ConfigSyncResourceIT {
 
         given()
             .contentType(ContentType.JSON)
-            .body(AppState(id = UUID.randomUUID().toString(), port = 8080, publicKey = "test-key"))
+            .body(AppState(port = 8080))
             .`when`()
             .post("/sync/app/update")
             .then()
@@ -237,16 +182,58 @@ class ConfigSyncResourceIT {
 
         given()
             .`when`()
-            .get("/sync/plugin-config/updates")
+            .get("/sync/key/get")
             .then()
             .statusCode(401)
 
         given()
-            .contentType(ContentType.JSON)
-            .body(PluginState(id = UUID.randomUUID().toString(), publicKey = "test-key"))
             .`when`()
-            .post("/sync/plugin-config/update")
+            .post("/sync/key/generate")
             .then()
             .statusCode(401)
+    }
+
+    @Test
+    fun testKeyGenerationEndpoints() {
+
+        // Create a ConfigUser for the test user ID to support key generation tests
+        sessionFactory.withTransaction { session, _ ->
+            val sql = """
+            INSERT INTO users (id, username, name, role, allowSavingCompletions, createdAt)
+            VALUES ('$testUserId', '$testUserId', 'Test User', 'USER', false, NOW())
+            ON CONFLICT (id) DO NOTHING;
+        """.trimIndent()
+
+            session.createNativeQuery<Void>(sql)
+                .executeUpdate()
+        }
+            .await()
+            .indefinitely()
+
+        // Test key generation
+        val generateResponse = given()
+            .header("Authorization", "Bearer $testJwt")
+            .`when`()
+            .post("/sync/key/generate")
+            .then()
+            .statusCode(200)
+            .extract()
+            .response()
+
+        val generatedKey = generateResponse.body.asString()
+        assert(generatedKey.isNotEmpty()) { "Generated key should not be empty" }
+
+        // Test key retrieval
+        val getResponse = given()
+            .header("Authorization", "Bearer $testJwt")
+            .`when`()
+            .get("/sync/key/get")
+            .then()
+            .statusCode(200)
+            .extract()
+            .response()
+
+        val retrievedKey = getResponse.body.asString()
+        assert(retrievedKey == generatedKey) { "Retrieved key should match generated key" }
     }
 }

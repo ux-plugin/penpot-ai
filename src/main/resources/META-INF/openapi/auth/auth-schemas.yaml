@@ -1,0 +1,62 @@
+OAuthInitResponse:
+  type: object
+  description: Response containing OAuth initialization data
+  required:
+    - readTokenJwt
+    - loginUrl
+  properties:
+    readTokenJwt:
+      type: string
+      description: JWT token for reading authentication status
+      example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    loginUrl:
+      type: string
+      description: URL to redirect user for OAuth authentication
+      example: "https://www.figma.com/oauth?client_id=abc123&redirect_uri=http://localhost:8080/auth/figma/callback&scope=file_read&state=xyz789&response_type=code"
+  examples:
+    - readTokenJwt: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+      loginUrl: "https://www.figma.com/oauth?client_id=abc123&redirect_uri=http://localhost:8080/auth/figma/callback&scope=file_read&state=xyz789&response_type=code"
+    - readTokenJwt: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwiaWF0IjoxNzIzMDQ0MDYwfQ.example_token_hash"
+      loginUrl: "https://github.com/login/oauth/authorize?client_id=def456&redirect_uri=http://localhost:8080/auth/github/callback&scope=user:email&state=abc123&response_type=code"
+
+AccessTokenResponse:
+  type: object
+  description: Response containing access token for external service
+  required:
+    - accessToken
+  properties:
+    accessToken:
+      type: string
+      description: Access token for external service API
+      example: "figd_U2FsdGVkX1-example-token-hash"
+  examples:
+    - accessToken: "figd_U2FsdGVkX1-figma-access-token-example"
+    - accessToken: "ghp_github-personal-access-token-example"
+
+RefreshTokenResponse:
+  type: object
+  description: Response containing new access token after refresh
+  required:
+    - accessToken
+  properties:
+    accessToken:
+      type: string
+      description: New JWT access token
+      example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwiaWF0IjoxNzIzMDQ0MDYwLCJleHAiOjE3MjMwNDc2NjB9.new_token_hash"
+  examples:
+    - accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwiaWF0IjoxNzIzMDQ0MDYwLCJleHAiOjE3MjMwNDc2NjB9.refreshed_token_hash"
+    - accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbjQ1NiIsImlhdCI6MTcyMzA0NDA2MCwiZXhwIjoxNzIzMDQ3NjYwfQ.admin_refreshed_token"
+
+GetJwtResponse:
+  type: object
+  description: Response containing JWT token for development purposes
+  required:
+    - accessToken
+  properties:
+    accessToken:
+      type: string
+      description: JWT access token for API authentication
+      example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXZfdXNlciIsImlhdCI6MTcyMzA0NDA2MCwiZXhwIjoxNzIzMDQ3NjYwfQ.dev_token_hash"
+  examples:
+    - accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXZfdXNlcl8xMjMiLCJpYXQiOjE3MjMwNDQwNjAsImV4cCI6MTcyMzA0NzY2MH0.dev_user_token"
+    - accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0X2FkbWluIiwiaWF0IjoxNzIzMDQ0MDYwLCJleHAiOjE3MjMwNDc2NjB9.test_admin_token"
