@@ -2,7 +2,6 @@ package com.plugin.features.user
 
 import io.quarkus.logging.Log
 import io.quarkus.security.Authenticated
-import io.quarkus.security.identity.SecurityIdentity
 import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject

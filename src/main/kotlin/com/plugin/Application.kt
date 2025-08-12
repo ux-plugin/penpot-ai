@@ -6,6 +6,9 @@ import org.eclipse.microprofile.openapi.annotations.OpenAPIDefinition
 import org.eclipse.microprofile.openapi.annotations.info.Contact
 import org.eclipse.microprofile.openapi.annotations.info.Info
 import org.eclipse.microprofile.openapi.annotations.info.License
+import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme
+import org.eclipse.microprofile.openapi.annotations.security.SecuritySchemes
+import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType
 
 /**
  * Main application class for Quarkus.
@@ -27,6 +30,13 @@ import org.eclipse.microprofile.openapi.annotations.info.License
         )
     )
 )
+@SecuritySchemes(
+    SecurityScheme(
+        securitySchemeName = "JWT",
+        type = SecuritySchemeType.HTTP,
+        scheme = "bearer",
+        bearerFormat = "JWT",
+        description = "JWT authentication with bearer token"
+    )
+)
 class FigmaPluginApplication : Application()
-
-

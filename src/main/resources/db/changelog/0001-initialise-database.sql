@@ -33,6 +33,7 @@ $$
             role                   user_roles NOT NULL,
             createdAt              TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
             allowSavingCompletions BOOLEAN    NOT NULL DEFAULT FALSE,
+            encryptionKey          VARCHAR,
             refreshToken           VARCHAR,
             refreshTokenExpiresAt  TIMESTAMP
         );

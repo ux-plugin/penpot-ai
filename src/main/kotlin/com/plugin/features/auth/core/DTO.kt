@@ -34,7 +34,7 @@ data class OAuthInitResponse(
 /**
  * Read token response
  */
-data class ReadTokenResponse(
+data class AccessTokenResponse(
     val accessToken: String
 )
 

@@ -98,7 +98,7 @@ class AuthServiceGitHubFlowIT {
                     .extract()
                     .response()
 
-                val accessToken = response.jsonPath().getString("accessToken")
+                val accessToken = accessTokenResp.jsonPath().getString("accessToken")
                 val claims = jwtParser.parse(accessToken)
                 userId = claims.getClaim(Claims.sub.name)
 

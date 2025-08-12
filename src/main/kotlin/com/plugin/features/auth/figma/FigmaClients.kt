@@ -10,7 +10,6 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient
  */
 @RegisterRestClient(configKey = "figma-api")
 @Produces(MediaType.APPLICATION_JSON)
-@Consumes(MediaType.APPLICATION_JSON)
 interface FigmaRestClient {
 
     @POST
@@ -32,6 +31,7 @@ interface FigmaRestClient {
 
     @GET
     @Path("/v1/me")
+    @Consumes(MediaType.APPLICATION_JSON)
     fun getMe(@HeaderParam("Authorization") authorization: String): Uni<FigmaUser>
 }
 

@@ -22,9 +22,12 @@ quarkus:
     always-include: true
     validator-url: none
   smallrye-openapi:
+    enable: true
     info-title: Figma Plugin API
     info-version: 0.0.1
     info-description: API for Figma Plugin
+    path: /openapi
+    store-schema-directory: META-INF/openapi
 
   # Database configuration
   datasource:
@@ -125,4 +128,3 @@ auth:
 
 apps:
   companion-app-key-prefix: "companion-app:"
-  plugin-key-prefix: "plugin:"

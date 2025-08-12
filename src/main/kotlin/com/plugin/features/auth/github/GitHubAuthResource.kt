@@ -1,9 +1,9 @@
 package com.plugin.features.auth.github
 
-import com.plugin.features.auth.core.ReadTokenResponse
+import com.plugin.features.auth.core.AccessTokenResponse
 import io.quarkus.logging.Log
 import io.quarkus.security.Authenticated
-import io.quarkus.security.identity.SecurityIdentity
+import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
@@ -16,6 +16,7 @@ import org.eclipse.microprofile.jwt.JsonWebToken
 @Path("/auth/github")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@ApplicationScoped
 class GitHubAuthResource @Inject constructor(
     private val githubAuthService: GitHubAuthService,
     private val jsonWebToken: JsonWebToken
@@ -35,7 +36,10 @@ class GitHubAuthResource @Inject constructor(
 
     @GET
     @Path("/callback")
-    suspend fun callback(@QueryParam("code") code: String, @QueryParam("state") state: String): Response {
+    suspend fun callback(
+        @QueryParam("code") code: String, 
+        @QueryParam("state") state: String
+    ): Response {
         return try {
             githubAuthService.authenticateUser(state, code)
             Response.ok().build()
@@ -55,7 +59,7 @@ class GitHubAuthResource @Inject constructor(
             Log.error("Produced access token is null")
             Response.status(Response.Status.REQUEST_TIMEOUT).build()
         } else {
-            Response.ok(ReadTokenResponse(token.value)).build()
+            Response.ok(AccessTokenResponse(token.value)).build()
         }
     }
 }

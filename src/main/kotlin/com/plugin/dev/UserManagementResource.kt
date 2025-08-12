@@ -13,7 +13,10 @@ import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.persistence.Entity
+import jakarta.persistence.EnumType
+import jakarta.persistence.Enumerated
 import jakarta.persistence.Id
+import jakarta.persistence.Table
 import jakarta.ws.rs.Consumes
 import jakarta.ws.rs.GET
 import jakarta.ws.rs.POST
@@ -37,6 +40,8 @@ data class AddUserResponse(val accessToken: String)
 data class GetJwtResponse(val accessToken: String)
 
 @Entity
+@Table(name = "Users")
+@IfBuildProfile("dev")
 class DevUserEntity: PanacheEntityBase {
     @Id
     lateinit var id: String
@@ -44,10 +49,12 @@ class DevUserEntity: PanacheEntityBase {
     lateinit var name: String
     lateinit var refreshToken: String
     lateinit var refreshTokenExpiresAt: Instant
+    @Enumerated(EnumType.STRING)
     lateinit var role: UserRole
-    companion object : PanacheCompanion<com.plugin.features.user.UserEntity> {}
+    companion object : PanacheCompanion<DevUserEntity> {}
 }
 
+@IfBuildProfile("dev")
 @ApplicationScoped
 class UserManagementRepository : PanacheRepository<DevUserEntity>{
     @WithSession
@@ -99,7 +106,9 @@ class AuthResource @Inject constructor(
 
     @GET
     @Path("/jwt")
-    suspend fun getJWT(@QueryParam("userId") userId: String): GetJwtResponse {
+    suspend fun getJWT(
+        @QueryParam("userId") userId: String
+    ): GetJwtResponse {
         val token = userManagementRepository.getJWT(userId)
         return GetJwtResponse(token)
     }
