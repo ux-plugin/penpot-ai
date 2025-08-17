@@ -6,7 +6,7 @@ AddUserRequest:
     - username
     - name
     - role
-    - refreshToken
+    - refreshAccessToken
     - refreshTokenExpiresAt
   properties:
     id:

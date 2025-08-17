@@ -19,8 +19,17 @@ data class RefreshTokenInfo(
     val expiresAt: Instant
 )
 
-data class RefreshTokenResponse(
+data class RefreshAccessTokenResponse(
     val accessToken: String
+)
+
+data class FigmaPluginGetRefreshTokenResponse(
+    val refreshToken: String,
+)
+
+data class FigmaPluginRefreshAccessTokenRequest(
+    val refreshToken: String,
+    val userId: String,
 )
 
 /**

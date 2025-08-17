@@ -87,9 +87,6 @@ dependencies {
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlinVersion")
     testImplementation("io.quarkus:quarkus-test-security-jwt")
 
-    // Pact for consumer-driven contract testing
-    testImplementation("au.com.dius.pact.consumer:junit5:4.6.2")
-
     // Testcontainers for integration testing
     testImplementation("org.testcontainers:testcontainers:1.19.0")
     testImplementation("org.testcontainers:junit-jupiter:1.19.0")
@@ -103,7 +100,6 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
-    systemProperty("pact_do_not_track", "true")
 }
 
 kotlin {

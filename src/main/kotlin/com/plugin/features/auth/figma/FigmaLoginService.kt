@@ -145,13 +145,15 @@ class FigmaAuthService @Inject constructor(
             )
                 .awaitSuspending()
 
-            // Store the access token in Redis
+            // Store the figma rest client access token in Redis
             val accessTokenKey = restClientAccessTokenKeyPrefix + user.id
             redisRepository.setValueWithExpiration(
                 accessTokenKey,
                 figmaOAuthTokenResponse.accessToken,
                 figmaOAuthTokenResponse.expiresIn.toInt()
             )
+
+
             val appTokens =
                 authRepository.createTokensForUser(user.id, username = user.username, role = user.role).awaitSuspending()
 

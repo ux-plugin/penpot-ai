@@ -78,7 +78,7 @@ ErrorResponses:
     description: Request is missing required fields
     value:
       error: "missing_required_fields"
-      message: "Required fields are missing: id, username, name, role, refreshToken, refreshTokenExpiresAt"
+      message: "Required fields are missing: id, username, name, role, refreshAccessToken, refreshTokenExpiresAt"
       timestamp: "2024-08-06T16:01:00Z"
   
   user_exists:

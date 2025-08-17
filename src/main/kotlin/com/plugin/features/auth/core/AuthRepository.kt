@@ -65,29 +65,19 @@ class AuthRepository(
      * Creates an access token for a user
      */
     private fun createAccessToken(id: String, username: String, role: UserRole): Uni<String> {
-        val accessTokenKey = accessTokenPrefix + username
+        val now = Instant.now()
+        val exp = now.plusSeconds(accessTokenExpirationSeconds)
 
-        // Attempt to get an existing token first
-        return redis.get(accessTokenKey).flatMap { existingToken ->
-            if (existingToken != null) {
-                // Token already exists and is valid
-                Uni.createFrom().item(existingToken)
-            } else {
-                // No token found, create a new one
-                val now = Instant.now()
-                val exp = now.plusSeconds(accessTokenExpirationSeconds)
-                val token = Jwt.issuer("ux-plugin")
-                    .subject(id)
-                    .upn(username)
-                    .claim("role", role)
-                    .issuedAt(now.epochSecond)
-                    .expiresAt(exp.epochSecond)
-                    .sign()
+        return Uni.createFrom().item(
+            Jwt.claims().issuer("ux-plugin")
+                .subject(id)
+                .upn(username)
+                .claim("role", role)
+                .issuedAt(now.epochSecond)
+                .expiresAt(exp.epochSecond)
+                .sign()
+        )
 
-                redis.setex(accessTokenKey, accessTokenExpirationSeconds, token)
-                    .replaceWith(token)
-            }
-        }
     }
 
     @WithSession
@@ -145,15 +135,6 @@ class AuthRepository(
                         AuthUserEntity.persist(newUser).map { newUser }
                     }
                 }
-        }
-    }
-
-    @WithSession
-    fun getUser(id: String): Uni<AuthUserEntity> {
-        return withTransaction {
-            AuthUserEntity.find("id", id).firstResult()
-                .onItem().ifNull().failWith(NotFoundException("User not found with ID: $id"))
-                .onItem().transform { it }
         }
     }
 

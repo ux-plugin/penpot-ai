@@ -27,7 +27,7 @@ quarkus:
     info-version: 0.0.1
     info-description: API for Figma Plugin
     path: /openapi
-    store-schema-directory: META-INF/openapi
+    additional-docs-directory: src/main/resources/META-INF/openapi
 
   # Database configuration
   datasource:

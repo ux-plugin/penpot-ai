@@ -23,7 +23,7 @@ class AuthResource @Inject constructor(
      */
     @POST
     @Path("/access-token/refresh")
-    suspend fun refreshToken(
+    suspend fun refreshAccessToken(
         @CookieParam("refresh_token") refreshTokenCookie: Cookie?,
         @QueryParam("userId") userId: String,
     ): Response {
@@ -39,7 +39,7 @@ class AuthResource @Inject constructor(
         return try {
             val accessToken = authService.refreshToken(refreshTokenRequest)
             Response.ok()
-                .entity(RefreshTokenResponse(accessToken))
+                .entity(RefreshAccessTokenResponse(accessToken))
                 .build()
         } catch (e: Exception) {
             when (e) {
@@ -63,7 +63,7 @@ class AuthResource @Inject constructor(
     @GET
     @Path("/refresh-token")
     @Authenticated
-    open suspend fun refreshToken(): Response {
+    open suspend fun getRefreshToken(): Response {
         val userId: String = jsonWebToken.subject
         return try {
             val refreshToken = authService.getRefreshToken(userId)
@@ -89,5 +89,57 @@ class AuthResource @Inject constructor(
             }
         }
 
+    }
+
+    @GET
+    @Path("/plugin-ui/refresh-token")
+    @Authenticated
+    open suspend fun getFigmaPluginRefreshToken(): Response {
+        val userId: String = jsonWebToken.subject
+        return try {
+            val refreshToken = authService.getRefreshToken(userId)
+
+            Response.ok(FigmaPluginGetRefreshTokenResponse(refreshToken))
+                .build()
+        } catch (e: Exception) {
+            when (e) {
+                is NotFoundException, is SecurityException -> Response.status(Response.Status.UNAUTHORIZED).build()
+                else -> {
+                    Log.error("Failed to get refresh token", e)
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+                }
+            }
+        }
+    }
+
+    @POST
+    @Path("/plugin-ui/access-token/refresh")
+    suspend fun figmaPluginRefreshAccessToken(
+        request: FigmaPluginRefreshAccessTokenRequest
+    ): Response {
+        val refreshTokenRequest = RefreshTokenRequest(request.refreshToken, request.userId)
+
+        return try {
+            val accessToken = authService.refreshToken(refreshTokenRequest)
+            Response.ok()
+                .entity(RefreshAccessTokenResponse(accessToken))
+                .build()
+        } catch (e: Exception) {
+            when (e) {
+                is SecurityException -> {
+                    Log.debug(e)
+                    Response.status(Response.Status.UNAUTHORIZED)
+                        .entity(AuthErrorResponse())
+                        .build()
+                }
+
+                else -> {
+                    Log.error("Token refresh error", e)
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(AuthErrorResponse())
+                        .build()
+                }
+            }
+        }
     }
 }

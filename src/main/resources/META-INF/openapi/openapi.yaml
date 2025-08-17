@@ -103,51 +103,35 @@ components:
     AddUserResponse:
       $ref: './dev/dev-schemas.yaml#/AddUserResponse'
 
-tags:
-  - name: Component Resource
-    description: Component completion management endpoints
-  - name: Configuration Sync
-    description: Real-time configuration synchronization endpoints
-  - name: Figma Authentication
-    description: Figma OAuth authentication endpoints
-  - name: GitHub Authentication
-    description: GitHub OAuth authentication endpoints
-  - name: User Management
-    description: User profile and configuration management endpoints
-  - name: User Management (Dev)
-    description: Development-only endpoints for user management and JWT generation
-  - name: Auth Resource
-    description: Authentication and token management endpoints
-
 paths:
   # Completions paths
   /completions:
-    $ref: './completions/completions-paths.yaml#/~1completions'
+    $ref: './completions/completions-paths.yaml#/paths/~1completions'
   /completions/create:
-    $ref: './completions/completions-paths.yaml#/~1completions~1create'
+    $ref: './completions/completions-paths.yaml#/paths/~1completions~1create'
   /completions/{completionId}:
-    $ref: './completions/completions-paths.yaml#/~1completions~1{completionId}'
+    $ref: './completions/completions-paths.yaml#/paths/~1completions~1{completionId}'
   
   # User paths
   /user/{userId}:
-    $ref: './user/user-paths.yaml#/~1user~1{userId}'
+    $ref: './user/user-paths.yaml#/paths/~1user~1{userId}'
   /user/{userId}/update:
-    $ref: './user/user-paths.yaml#/~1user~1{userId}~1update'
+    $ref: './user/user-paths.yaml#/paths/~1user~1{userId}~1update'
   /user/{userId}/delete:
-    $ref: './user/user-paths.yaml#/~1user~1{userId}~1delete'
+    $ref: './user/user-paths.yaml#/paths/~1user~1{userId}~1delete'
   
   # Sync paths
   /sync/app/update:
-    $ref: './sync/sync-paths.yaml#/~1sync~1app~1update'
+    $ref: './sync/sync-paths.yaml#/paths/~1sync~1app~1update'
   /sync/app/updates:
-    $ref: './sync/sync-paths.yaml#/~1sync~1app~1updates'
+    $ref: './sync/sync-paths.yaml#/paths/~1sync~1app~1updates'
   /sync/key/generate:
-    $ref: './sync/sync-paths.yaml#/~1sync~1key~1generate'
+    $ref: './sync/sync-paths.yaml#/paths/~1sync~1key~1generate'
   /sync/key/get:
-    $ref: './sync/sync-paths.yaml#/~1sync~1key~1get'
+    $ref: './sync/sync-paths.yaml#/paths/~1sync~1key~1get'
   
   # Dev paths
   /dev/user/add:
-    $ref: './dev/dev-paths.yaml#/~1dev~1user~1add'
+    $ref: './dev/dev-paths.yaml#/paths/~1dev~1user~1add'
   /dev/user/jwt:
-    $ref: './dev/dev-paths.yaml#/~1dev~1user~1jwt'
+    $ref: './dev/dev-paths.yaml#/paths/~1dev~1user~1jwt'

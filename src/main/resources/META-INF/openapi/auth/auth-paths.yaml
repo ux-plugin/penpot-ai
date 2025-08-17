@@ -10,6 +10,13 @@ info:
   title: Authentication API
   version: 0.0.1
 
+tags:
+  - name: Figma Authentication
+    description: Figma OAuth authentication endpoints
+  - name: GitHub Authentication
+    description: GitHub OAuth authentication endpoints
+  - name: Auth Resource
+    description: Authentication and token management endpoints
 
 paths:
   /auth/access-token/refresh:
