@@ -19,9 +19,9 @@ class AuthUserEntity : PanacheEntityBase {
     @GeneratedValue(strategy = GenerationType.UUID)
     lateinit var id: String
 
-    @Column(nullable = false, unique = true)
+    @Column(nullable = true, unique = true)
     @Username
-    lateinit var username: String
+    var username: String? = null
 
     @Column(nullable = false)
     @Enumerated(EnumType.STRING)

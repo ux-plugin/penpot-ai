@@ -47,8 +47,8 @@ class AuthRepository(
     /**
      * Creates both access and refresh tokens for a user
      */
-    override fun createTokensForUser(id: String, username: String, role: UserRole): Uni<LoginCredentials> {
-        return createAccessToken(id, username, role)
+    override fun createTokensForUser(id: String, role: UserRole): Uni<LoginCredentials> {
+        return createAccessToken(id, role)
             .flatMap { accessToken ->
                 createRefreshToken(id)
                     .map { refreshTokenInfo ->
@@ -64,14 +64,13 @@ class AuthRepository(
     /**
      * Creates an access token for a user
      */
-    private fun createAccessToken(id: String, username: String, role: UserRole): Uni<String> {
+    private fun createAccessToken(id: String, role: UserRole): Uni<String> {
         val now = Instant.now()
         val exp = now.plusSeconds(accessTokenExpirationSeconds)
 
         return Uni.createFrom().item(
             Jwt.claims().issuer("ux-plugin")
                 .subject(id)
-                .upn(username)
                 .claim("role", role)
                 .issuedAt(now.epochSecond)
                 .expiresAt(exp.epochSecond)
@@ -103,15 +102,19 @@ class AuthRepository(
 
     @WithSession
     override fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
-        return AuthUserEntity.find("id = ?1 and refreshToken = ?2", refreshTokenRequest.userId,refreshTokenRequest.refreshToken).firstResult()
+        return AuthUserEntity.find(
+            "id = ?1 and refreshToken = ?2",
+            refreshTokenRequest.userId,
+            refreshTokenRequest.refreshToken
+        ).firstResult()
             .onItem().transformToUni { entity ->
                 if (entity == null || entity.refreshTokenExpiresAt.isAfter(Instant.now())) {
                     Log.error("User not found with ID: ${refreshTokenRequest.userId}")
-                    Uni.createFrom().failure(SecurityException("Invalid or expired refresh token for user with ID: ${refreshTokenRequest.userId}"))
+                    Uni.createFrom()
+                        .failure(SecurityException("Invalid or expired refresh token for user with ID: ${refreshTokenRequest.userId}"))
                 } else {
                     createAccessToken(
                         id = entity.id,
-                        username = entity.username,
                         role = entity.role
                     )
                 }
@@ -119,27 +122,18 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun getOrAddUser(username: String): Uni<AuthUserEntity> {
+    override fun addUser(): Uni<AuthUserEntity> {
         return withTransaction {
-            AuthUserEntity.find("username", username).firstResult()
-                .onItem().transformToUni { existingUser ->
-                    if (existingUser != null) {
-                        // User already exists, return the user ID
-                        Uni.createFrom().item(existingUser)
-                    } else {
-                        // Create a new user
-                        val newUser = AuthUserEntity().apply {
-                            this.username = username
-                            this.role = UserRole.USER // Default role
-                        }
-                        AuthUserEntity.persist(newUser).map { newUser }
-                    }
-                }
+            val newUser = AuthUserEntity().apply {
+                this.role = UserRole.USER // Default role
+            }
+            AuthUserEntity.persist(newUser).map { newUser }
+
         }
     }
 
     @WithSession
-    override fun getSocialLogin(providerUserId: String, provider: SocialProvider): Uni<SocialLoginEntity?>  {
+    override fun getSocialLogin(providerUserId: String, provider: SocialProvider): Uni<SocialLoginEntity?> {
         return withTransaction {
             SocialLoginEntity.find("providerUserId = ?1 and provider = ?2", providerUserId, provider).firstResult()
                 .onItem().transform { it }
@@ -177,9 +171,16 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun insertSocialLogin(provider: SocialProvider, providerUserId: String, refreshToken: String, refreshTokenExpiresAt: Instant, userId: String): Uni<SocialLoginEntity> {
+    override fun insertSocialLogin(
+        provider: SocialProvider,
+        providerUserId: String,
+        refreshToken: String,
+        refreshTokenExpiresAt: Instant,
+        userId: String
+    ): Uni<SocialLoginEntity> {
         return withTransaction {
-            AuthUserEntity.find("id", userId).firstResult().onItem().ifNull().failWith(NotFoundException("User $userId not found"))
+            AuthUserEntity.find("id", userId).firstResult().onItem().ifNull()
+                .failWith(NotFoundException("User $userId not found"))
                 .flatMap { user ->
                     val socialLoginEntity = SocialLoginEntity().apply {
                         this.userId = userId
@@ -194,13 +195,19 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun upsertSocialLogin(provider: SocialProvider, providerUserId: String, refreshToken: String, refreshTokenExpiresAt: Instant, userId: String): Uni<Unit> {
+    override fun upsertSocialLogin(
+        provider: SocialProvider,
+        providerUserId: String,
+        refreshToken: String,
+        refreshTokenExpiresAt: Instant,
+        userId: String
+    ): Uni<Unit> {
         return withTransaction {
-            getSocialLogin(providerUserId,provider).flatMap { socialLoginEntity ->
+            getSocialLogin(providerUserId, provider).flatMap { socialLoginEntity ->
                 if (socialLoginEntity == null) {
-                    insertSocialLogin(provider,providerUserId,refreshToken,refreshTokenExpiresAt,userId)
+                    insertSocialLogin(provider, providerUserId, refreshToken, refreshTokenExpiresAt, userId)
                 } else {
-                    updateSocialLogin(provider,providerUserId,refreshToken,refreshTokenExpiresAt)
+                    updateSocialLogin(provider, providerUserId, refreshToken, refreshTokenExpiresAt)
                 }
             }
         }.replaceWith(Unit)
@@ -208,52 +215,85 @@ class AuthRepository(
 
     @WithSession
     override fun associateUserWithSocialProvider(
-        username: String,
         provider: SocialProvider,
         providerUserId: String,
         refreshToken: String,
-        refreshTokenExpiresAt: Instant
+        refreshTokenExpiresAt: Instant,
+        userId: String?
     ): Uni<AuthUserEntity> {
         return withTransaction {
-            // First get or add the user
-            AuthUserEntity.find("username", username).firstResult()
-                .flatMap { existingUser ->
-                    val userUni = if (existingUser != null) {
-                        // User already exists, return the user
-                        Uni.createFrom().item(existingUser)
-                    } else {
-                        // Create a new user
-                        val newUser = AuthUserEntity().apply {
-                            this.username = username
-                            this.role = UserRole.USER // Default role
-                        }
-                        AuthUserEntity.persist(newUser).map { newUser }
-                    }
+            getSocialLogin(providerUserId, provider)
+                .flatMap { socialLoginEntity ->
+                    if (socialLoginEntity != null) {
+                        // Case 1: Social login exists. Return the associated user and update the refresh token.
+                        Log.debug("Social login found for provider: $provider, providerUserId: $providerUserId. Updating refresh token and expiresAt.")
+                        updateSocialLogin(
+                            provider = provider,
+                            providerUserId = providerUserId,
+                            refreshToken = refreshToken,
+                            refreshTokenExpiresAt = refreshTokenExpiresAt
+                        )
+                            .flatMap {
+                                // After updating, retrieve and return the user associated with this social login
+                                AuthUserEntity.find("id", socialLoginEntity.userId)
+                                    .firstResult()
+                                    .onItem().transformToUni { user ->
 
-                    // Once we have the user, handle the social login
-                    userUni.flatMap { user ->
-                        SocialLoginEntity.find("providerUserId = ?1 and provider = ?2", providerUserId, provider)
-                            .firstResult()
-                            .flatMap { socialLoginEntity ->
-                                if (socialLoginEntity == null) {
-                                    // Create new social login
-                                    val socialLogin = SocialLoginEntity().apply {
-                                        this.userId = user.id
-                                        this.provider = provider
-                                        this.providerUserId = providerUserId
-                                        this.refreshToken = refreshToken
-                                        this.refreshTokenExpiresAt = refreshTokenExpiresAt
+                                        if (user == null) {
+                                            Uni.createFrom()
+                                                .failure { NotFoundException("Associated user not found for social login with ID: ${socialLoginEntity.id}") }
+                                        } else {
+                                            Uni.createFrom().item(user)
+                                        }
                                     }
-                                    SocialLoginEntity.persist(socialLogin).map { user }
-                                } else {
-                                    // Update existing social login
-                                    socialLoginEntity.refreshToken = refreshToken
-                                    socialLoginEntity.refreshTokenExpiresAt = refreshTokenExpiresAt
-                                    SocialLoginEntity.persist(socialLoginEntity).map { user }
-                                }
+
                             }
+                    } else {
+                        // Case 2: Social login does not exist.
+                        if (userId != null) {
+                            // Case 2a: An existing userId is provided. Associate the new social login with this user.
+                            Log.debug("Social login not found, but userId is provided ($userId). Associating with this existing user.")
+                            AuthUserEntity.find("id", userId)
+                                .firstResult()
+                                .flatMap { user ->
+
+                                    if (user == null) {
+                                        Uni.createFrom().failure { NotFoundException("User $userId not found") }
+                                    } else {
+                                        insertSocialLogin(
+                                            provider = provider,
+                                            providerUserId = providerUserId,
+                                            refreshToken = refreshToken,
+                                            refreshTokenExpiresAt = refreshTokenExpiresAt,
+                                            userId = user.id
+                                        )
+                                            .map { user }
+                                    }
+
+                                }
+                        } else {
+                            // Case 2b: No userId is provided. Create a new user and associate the social login with it.
+                            Log.debug("Social login not found and no userId provided. Creating a new user and associating it.")
+                            // Generate a unique username for the new AuthUserEntity.
+                            // This ensures that the @Username field is populated and unique.
+                            val newUsername =
+                                "social_${provider.name.lowercase()}_${UUID.randomUUID().toString().substring(0, 8)}"
+
+                            addUser() // This function will create a new user with the generated unique username
+                                .flatMap { newUser ->
+                                    insertSocialLogin(
+                                        provider = provider,
+                                        providerUserId = providerUserId,
+                                        refreshToken = refreshToken,
+                                        refreshTokenExpiresAt = refreshTokenExpiresAt,
+                                        userId = newUser.id
+                                    )
+                                        .map { newUser } // Return the newly created user
+                                }
+                        }
                     }
                 }
         }
     }
+
 }

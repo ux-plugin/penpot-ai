@@ -58,15 +58,15 @@ class FigmaAuthService @Inject constructor(
      */
     suspend fun login(): OAuthInitResponse {
         val readToken = redisRepository.generateUniqueKey(
-            readTokenPrefix, 
-            randomKeyGenerationMaxRetries, 
-            "", 
+            readTokenPrefix,
+            randomKeyGenerationMaxRetries,
+            "",
             2 * loginTimeout.toInt()
         )
         val writeToken = redisRepository.generateUniqueKey(
-            writeTokenPrefix, 
-            randomKeyGenerationMaxRetries, 
-            readToken, 
+            writeTokenPrefix,
+            randomKeyGenerationMaxRetries,
+            readToken,
             2 * loginTimeout.toInt()
         )
 
@@ -126,18 +126,17 @@ class FigmaAuthService @Inject constructor(
         // Get the read token from Redis using the write token
         val redisKey = writeTokenPrefix + state
         val readToken = redisRepository.getValue(redisKey) ?: throw NotFoundException("Invalid state")
-
-        val figmaOAuthTokenResponse = exchangeCodeForToken(code)
-        val userInfo = figmaRestClient.getMe("Bearer ${figmaOAuthTokenResponse.accessToken}")
-            .awaitSuspending()
-
-
-
-        val refreshTokenExpiresAt = figmaOAuthTokenResponse.expiresIn.let { Instant.now().plusSeconds(it) }
-
         try {
+
+            val figmaOAuthTokenResponse = exchangeCodeForToken(code)
+            val userInfo = figmaRestClient.getMe("Bearer ${figmaOAuthTokenResponse.accessToken}")
+                .awaitSuspending()
+
+
+            val refreshTokenExpiresAt = figmaOAuthTokenResponse.expiresIn.let { Instant.now().plusSeconds(it) }
+
+
             val user = authRepository.associateUserWithSocialProvider(
-                userInfo.email,
                 SocialProvider.FIGMA,
                 userInfo.id,
                 figmaOAuthTokenResponse.refreshToken,
@@ -155,7 +154,7 @@ class FigmaAuthService @Inject constructor(
 
 
             val appTokens =
-                authRepository.createTokensForUser(user.id, username = user.username, role = user.role).awaitSuspending()
+                authRepository.createTokensForUser(user.id, role = user.role).awaitSuspending()
 
             val queueName = restClientAccessTokenKeyPrefix + readToken
             redisRepository.pushAccessToken(queueName, appTokens.accessToken)

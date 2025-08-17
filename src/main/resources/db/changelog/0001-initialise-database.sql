@@ -28,7 +28,7 @@ $$
         CREATE TABLE Users
         (
             id                     VARCHAR PRIMARY KEY,
-            username               VARCHAR    NOT NULL UNIQUE,
+            username               VARCHAR    UNIQUE,
             name                   VARCHAR    NOT NULL DEFAULT random_name(),
             role                   user_roles NOT NULL,
             createdAt              TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,

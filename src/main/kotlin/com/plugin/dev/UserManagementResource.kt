@@ -45,7 +45,7 @@ data class GetJwtResponse(val accessToken: String)
 class DevUserEntity: PanacheEntityBase {
     @Id
     lateinit var id: String
-    lateinit var username: String
+    var username: String? = null
     lateinit var name: String
     lateinit var refreshToken: String
     lateinit var refreshTokenExpiresAt: Instant

@@ -130,7 +130,6 @@ class GitHubAuthService @Inject constructor(
         // GitHub doesn't provide a refresh token, so we store the access token as the refresh token
         try {
             val user = authRepository.associateUserWithSocialProvider(
-                userInfo.email?: "",
                 SocialProvider.GITHUB,
                 userInfo.id.toString(),
                 githubOAuthTokenResponse.refreshToken,
@@ -146,7 +145,7 @@ class GitHubAuthService @Inject constructor(
             )
 
             val appTokens =
-                authRepository.createTokensForUser(user.id, username = user.username, role = user.role).awaitSuspending()
+                authRepository.createTokensForUser(user.id, role = user.role).awaitSuspending()
 
             val queueName = restClientAccessTokenKeyPrefix + readToken
             redisRepository.pushAccessToken(queueName, appTokens.accessToken)
