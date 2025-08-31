@@ -1,12 +1,12 @@
 package com.plugin.features.user
 
+import com.plugin.features.auth.core.SocialLoginEntity
 import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
 import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
 import io.smallrye.mutiny.Uni
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.ws.rs.NotFoundException
-import org.eclipse.microprofile.config.inject.ConfigProperty
 
 /**
  * Repository implementation for user configurations using Panache
@@ -58,5 +58,12 @@ class UserRepository() : PanacheRepository<UserEntity>, IUserRepository {
     override fun deleteUser(userId: String): Uni<Unit> {
         return delete("id", userId)
             .map { it }.replaceWith(Unit)
+    }
+
+    @WithSession
+    override fun getSocialLogins(userId: String): Uni<GetSocialLoginsResponse> {
+        return SocialLoginEntity.find("userId", userId)
+            .project(SocialLogin::class.java)
+            .list()
     }
 }

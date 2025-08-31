@@ -37,6 +37,10 @@ class UserService @Inject constructor(
     override suspend fun deleteUser(userId: String) {
         userRepository.deleteUser(userId).awaitSuspending()
     }
+
+    override suspend fun getSocialProfiles(userId: String): GetSocialLoginsResponse {
+        return userRepository.getSocialLogins(userId).awaitSuspending()
+    }
 }
 
 @Path("/user")
@@ -49,13 +53,10 @@ class UserResource @Inject constructor(
 ) {
 
     @GET
-    @Path("/{userId}")
-    suspend fun getUser(
-        @PathParam("userId") userId: String
-    ): Response {
-        if (jsonWebToken.subject != userId) {
-            return Response.status(Response.Status.FORBIDDEN).build()
-        }
+    @Path("/info")
+    suspend fun getUser(): Response {
+        val userId = jsonWebToken.subject
+
         return try {
             val user = userService.getUser(userId)
             Response.ok(user).build()
@@ -68,14 +69,12 @@ class UserResource @Inject constructor(
      * Update user configuration
      */
     @POST
-    @Path("/{userId}/update")
+    @Path("/update")
     suspend fun updateUser(
-        @PathParam("userId") userId: String,
         userUpdate: UpdateUserRequest
     ): Response {
-        if (jsonWebToken.subject != userId) {
-            return Response.status(Response.Status.FORBIDDEN).build()
-        }
+        val userId = jsonWebToken.subject
+
         return try {
             userService.updateUser(userId, userUpdate)
             Response.ok().build()
@@ -85,13 +84,11 @@ class UserResource @Inject constructor(
     }
 
     @DELETE
-    @Path("/{userId}/delete")
+    @Path("/delete")
     suspend fun deleteUser(
-        @PathParam("userId") userId: String,
     ): Response {
-        if (jsonWebToken.subject != userId) {
-            return Response.status(Response.Status.FORBIDDEN).build()
-        }
+        val userId = jsonWebToken.subject
+
         return try {
             userService.deleteUser(userId)
             Response.ok().build()
@@ -104,4 +101,20 @@ class UserResource @Inject constructor(
             Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
         }
     }
+
+    @GET
+    @Path("/socials")
+    suspend fun getSocialUser(): Response {
+        val userId = jsonWebToken.subject
+
+        return try {
+            val profiles = userService.getSocialProfiles(userId)
+            Response.ok(profiles).build()
+        } catch (e: Exception) {
+            Log.error("Failed to get social profiles", e)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+        }
+    }
+
+
 }

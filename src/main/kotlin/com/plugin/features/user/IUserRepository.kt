@@ -28,4 +28,5 @@ interface IUserRepository {
 
     fun deleteUser(userId: String): Uni<Unit>
 
+    fun getSocialLogins(userId: String): Uni<GetSocialLoginsResponse>
 }

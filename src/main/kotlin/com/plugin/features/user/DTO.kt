@@ -3,7 +3,7 @@ package com.plugin.features.user
 data class GetUserResponse(
     val id: String,
     val name: String,
-    val username: String,
+    val username: String?,
     val allowSavingCompletions: Boolean
 )
 
@@ -12,3 +12,11 @@ data class UpdateUserRequest(
     val username: String?,
     val allowSavingCompletions: Boolean?
 )
+
+data class SocialLogin(
+    val provider: String,
+    val id: String,
+    val providerUserId: String,
+)
+
+typealias GetSocialLoginsResponse = List<SocialLogin>

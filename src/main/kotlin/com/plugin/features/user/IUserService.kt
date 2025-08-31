@@ -18,4 +18,6 @@ interface IUserService {
     suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest)
 
     suspend fun deleteUser(userId: String)
+
+    suspend fun getSocialProfiles(userId: String): GetSocialLoginsResponse
 }
