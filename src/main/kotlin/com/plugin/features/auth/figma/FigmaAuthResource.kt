@@ -1,6 +1,9 @@
 package com.plugin.features.auth.figma
 
 import com.plugin.features.auth.core.AccessTokenResponse
+import com.plugin.features.auth.core.AccountAlreadyLinkedException
+import com.plugin.features.auth.core.ConnectSocialProviderResponse
+import com.plugin.features.auth.core.ConnectSocialProviderResult
 import io.quarkus.logging.Log
 import io.quarkus.security.Authenticated
 import jakarta.enterprise.context.ApplicationScoped
@@ -60,6 +63,57 @@ class FigmaAuthResource @Inject constructor(
             Response.status(Response.Status.REQUEST_TIMEOUT).build()
         } else {
             Response.ok(AccessTokenResponse(token.value)).build()
+        }
+    }
+
+    @GET
+    @Path("/connect/init")
+    @Authenticated
+    open suspend fun connectInit(): Response {
+        val userId = jsonWebToken.subject
+        return try {
+            val connectResponse = figmaAuthService.connectInitiate(userId)
+            Response.ok(connectResponse).build()
+        } catch (e: Exception) {
+            Log.error("Failed to authenticate", e)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Failed to authenticate").build()
+        }
+    }
+
+    @GET
+    @Path("/connect/callback")
+    open suspend fun connectCallback(
+        @QueryParam("code") code: String,
+        @QueryParam("state") state: String
+    ): Response {
+        return try {
+            figmaAuthService.connectSocialProfile(code = code, state = state)
+            Response.ok().build()
+        } catch (e: Exception) {
+            when (e) {
+                is AccountAlreadyLinkedException -> Response.status(Response.Status.CONFLICT).entity("Account already linked.").build()
+                else -> {
+                    Log.error("Failed to link social login", e)
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Failed to link account").build()
+                }
+            }
+        }
+    }
+
+    @GET
+    @Path("/connect/result")
+    @Authenticated
+    open suspend fun connectResult(): Response {
+        val userId = jsonWebToken.subject
+        try {
+            val result = figmaAuthService.getConnectResult(userId)
+            if (result == null || result.value != ConnectSocialProviderResult.SUCCESS.value) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            }
+            return Response.ok(ConnectSocialProviderResponse(result = ConnectSocialProviderResult.SUCCESS.value)).build()
+        } catch (e: Exception) {
+            Log.error("Failed to get connect result", e)
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
         }
     }
 }

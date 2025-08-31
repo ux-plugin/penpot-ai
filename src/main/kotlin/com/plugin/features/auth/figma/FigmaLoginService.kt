@@ -1,5 +1,8 @@
 package com.plugin.features.auth.figma
 
+import com.plugin.features.auth.core.AccountAlreadyLinkedException
+import com.plugin.features.auth.core.ConnectInitResponse
+import com.plugin.features.auth.core.ConnectSocialProviderResult
 import com.plugin.features.auth.core.IAuthRepository
 import com.plugin.features.auth.core.IRedisRepository
 import com.plugin.features.auth.core.OAuthInitResponse
@@ -31,8 +34,17 @@ class FigmaAuthService @Inject constructor(
     @ConfigProperty(name = "auth.figma.client-secret")
     private var clientSecret: String,
 
-    @ConfigProperty(name = "auth.figma.redirect-uri")
-    private var redirectUri: String,
+    @ConfigProperty(name = "auth.figma.login-redirect-uri")
+    private var loginRedirectUri: String,
+
+    @ConfigProperty(name = "auth.figma.connect-redirect-uri")
+    private var connectRedirectUri: String,
+
+    @ConfigProperty(name = "auth.figma.connect.redis-key-prefix", defaultValue = "figma-connect:")
+    private var resultKeyPrefix: String,
+
+    @ConfigProperty(name = "auth.figma.user-id.result-key-prefix", defaultValue = "figma-user-id:")
+    private var userIdPrefix: String,
 
     @ConfigProperty(name = "auth.figma.login.random-key.max-retries")
     private var randomKeyGenerationMaxRetries: Int,
@@ -77,17 +89,22 @@ class FigmaAuthService @Inject constructor(
             .expiresAt(tokenExpiration)
             .sign()
 
-        val redirectUri: String = generateLoginUrl(
+        val redirectUri: String = generateOAuthUrl(
             writeToken,
-            scopes = listOf(FigmaAccessScope.CURRENT_USER_READ, FigmaAccessScope.FILE_CONTENT_READ)
+            scopes = listOf(FigmaAccessScope.CURRENT_USER_READ, FigmaAccessScope.FILE_CONTENT_READ),
+            redirectUri = loginRedirectUri
         )
         return OAuthInitResponse(readTokenJwt, redirectUri)
     }
 
     /**
-     * Generates a login URL for the user to authenticate with Figma.
+     * Generates a Figma OAuth URL for authentication.
+     * @param state The state parameter for OAuth flow
+     * @param scopes The list of scopes to request
+     * @param redirectUri The URI to redirect to after authentication
+     * @return The complete OAuth URL
      */
-    fun generateLoginUrl(state: String, scopes: List<FigmaAccessScope>): String {
+    fun generateOAuthUrl(state: String, scopes: List<FigmaAccessScope>, redirectUri: String): String {
         val authUrl = "https://www.figma.com/oauth" +
                 "?client_id=${URLEncoder.encode(clientId, "UTF-8")}" +
                 "&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}" +
@@ -98,10 +115,14 @@ class FigmaAuthService @Inject constructor(
     }
 
     /**
-     * Exchanges the authorization code for a Figma access token.
-     * @param code The auth code received from Figma during the OAuth redirect.
+     * Generates a connect URL for the user to authenticate with Figma.
+     * @deprecated Use generateOAuthUrl(state, scopes, connectRedirectUri) instead
      */
-    suspend fun exchangeCodeForToken(code: String): FigmaOAuthTokenResponse {
+    @Deprecated("Use generateOAuthUrl instead", ReplaceWith("generateOAuthUrl(state, scopes, connectRedirectUri)"))
+    fun generateConnectUrl(state: String, scopes: List<FigmaAccessScope>): String = 
+        generateOAuthUrl(state, scopes, connectRedirectUri)
+
+    suspend fun exchangeCodeForToken(code: String, redirectUri: String): FigmaOAuthTokenResponse {
         val credentials = "$clientId:$clientSecret"
         val encodedCredentials = Base64.getEncoder().encodeToString(credentials.toByteArray())
         val authHeader = "Basic $encodedCredentials"
@@ -128,7 +149,7 @@ class FigmaAuthService @Inject constructor(
         val readToken = redisRepository.getValue(redisKey) ?: throw NotFoundException("Invalid state")
         try {
 
-            val figmaOAuthTokenResponse = exchangeCodeForToken(code)
+            val figmaOAuthTokenResponse = exchangeCodeForToken(code, redirectUri = loginRedirectUri)
             val userInfo = figmaRestClient.getMe("Bearer ${figmaOAuthTokenResponse.accessToken}")
                 .awaitSuspending()
 
@@ -166,6 +187,66 @@ class FigmaAuthService @Inject constructor(
 
     suspend fun readAccessToken(readToken: String): KeyValue<String, String>? {
         val queueName = restClientAccessTokenKeyPrefix + readToken
+        return redisRepository.readAccessToken(readToken = queueName, timeout = Duration.ofSeconds(loginTimeout))
+    }
+
+    suspend fun connectInitiate(userId: String): ConnectInitResponse {
+        val readToken = redisRepository.generateUniqueKey(
+            readTokenPrefix,
+            randomKeyGenerationMaxRetries,
+            "",
+            2 * loginTimeout.toInt()
+        )
+        val writeToken = redisRepository.generateUniqueKey(
+            writeTokenPrefix,
+            randomKeyGenerationMaxRetries,
+            readToken,
+            2 * loginTimeout.toInt()
+        )
+        redisRepository.setValueWithExpiration(userIdPrefix + writeToken, userId, 2 * loginTimeout.toInt())
+
+        val redirectUri: String = generateOAuthUrl(
+            writeToken,
+            scopes = listOf(FigmaAccessScope.CURRENT_USER_READ, FigmaAccessScope.FILE_CONTENT_READ),
+            redirectUri = connectRedirectUri
+        )
+
+        return ConnectInitResponse(readToken, redirectUri)
+    }
+
+    suspend fun connectSocialProfile(code: String, state: String) {
+        val userId = redisRepository.getValue(userIdPrefix + state) ?: throw NotFoundException("Invalid state")
+        try {
+            val figmaOAuthTokenResponse = exchangeCodeForToken(code = code, redirectUri = connectRedirectUri)
+            val userInfo = figmaRestClient.getMe("Bearer ${figmaOAuthTokenResponse.accessToken}").awaitSuspending()
+            val refreshTokenExpiresAt = Instant.now().plusSeconds(figmaOAuthTokenResponse.expiresIn)
+
+            val socialProfile = authRepository.getSocialLogin(userInfo.id, SocialProvider.FIGMA).awaitSuspending()
+            if (socialProfile != null && socialProfile.providerUserId != userInfo.id) {
+                throw AccountAlreadyLinkedException("Account already linked.")
+            }
+            if (socialProfile == null) {
+                authRepository.insertSocialLogin(
+                    provider = SocialProvider.FIGMA,
+                    userId = userId,
+                    providerUserId = userInfo.id,
+                    refreshToken = figmaOAuthTokenResponse.refreshToken,
+                    refreshTokenExpiresAt = refreshTokenExpiresAt
+                ).awaitSuspending()
+            }
+
+            val queueName = resultKeyPrefix + userId
+            redisRepository.pushAccessToken(queueName, ConnectSocialProviderResult.SUCCESS.value)
+        } catch (e: Exception) {
+            Log.error("Failed to upsert social login", e)
+            val queueName = resultKeyPrefix + userId
+            redisRepository.pushAccessToken(queueName, ConnectSocialProviderResult.FAILURE.value)
+            throw e
+        }
+    }
+
+    suspend fun getConnectResult(userId: String): KeyValue<String, String>? {
+        val queueName = resultKeyPrefix + userId
         return redisRepository.readAccessToken(readToken = queueName, timeout = Duration.ofSeconds(loginTimeout))
     }
 }

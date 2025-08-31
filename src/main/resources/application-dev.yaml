@@ -40,7 +40,7 @@ auth:
     login:
       random-key:
         max-retries: 5
-      timeout-sec: 6000
+      timeout-sec: 10
     rest-client:
       access-token:
         redis-key-prefix: "figma-client:"
