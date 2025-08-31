@@ -10,15 +10,12 @@ import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import org.eclipse.microprofile.jwt.JsonWebToken
 
-/**
- * Service for managing user configurations
- */
+/** Service for managing user configurations */
 @ApplicationScoped
-class UserService @Inject constructor(
-    private val userRepository: IUserRepository
-) : IUserService {
+class UserService @Inject constructor(private val userRepository: IUserRepository) : IUserService {
     /**
      * Get user by ID
+     *
      * @param userId The ID of the user
      * @return The user configuration
      */
@@ -28,6 +25,7 @@ class UserService @Inject constructor(
 
     /**
      * Create or update user configuration
+     *
      * @param userId The user configuration to create or update
      */
     override suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
@@ -47,10 +45,7 @@ class UserService @Inject constructor(
 @Produces(MediaType.APPLICATION_JSON)
 @ApplicationScoped
 @Authenticated
-class UserResource @Inject constructor(
-    private val userService: IUserService,
-    private val jsonWebToken: JsonWebToken
-) {
+class UserResource @Inject constructor(private val userService: IUserService, private val jsonWebToken: JsonWebToken) {
 
     @GET
     @Path("/info")
@@ -65,14 +60,10 @@ class UserResource @Inject constructor(
         }
     }
 
-    /**
-     * Update user configuration
-     */
+    /** Update user configuration */
     @POST
     @Path("/update")
-    suspend fun updateUser(
-        userUpdate: UpdateUserRequest
-    ): Response {
+    suspend fun updateUser(userUpdate: UpdateUserRequest): Response {
         val userId = jsonWebToken.subject
 
         return try {
@@ -85,8 +76,7 @@ class UserResource @Inject constructor(
 
     @DELETE
     @Path("/delete")
-    suspend fun deleteUser(
-    ): Response {
+    suspend fun deleteUser(): Response {
         val userId = jsonWebToken.subject
 
         return try {
@@ -115,6 +105,4 @@ class UserResource @Inject constructor(
             Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
         }
     }
-
-
 }

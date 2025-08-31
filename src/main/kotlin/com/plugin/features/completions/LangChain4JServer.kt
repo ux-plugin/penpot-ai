@@ -16,24 +16,20 @@ annotation class LangChain4JServer
 @LangChain4JServer
 @ApplicationScoped
 class LangChain4JService(
-    private val objectMapper: ObjectMapper  // Inject the configured ObjectMapper
+    private val objectMapper: ObjectMapper // Inject the configured ObjectMapper
 ) : IAiServerService {
 
-    @ConfigProperty(name = "openai.api.key")
-    private lateinit var apiKey: String
+    @ConfigProperty(name = "openai.api.key") private lateinit var apiKey: String
 
-    @ConfigProperty(name = "openai.api.base-url")
-    private lateinit var baseUrl: String
+    @ConfigProperty(name = "openai.api.base-url") private lateinit var baseUrl: String
 
     override suspend fun createCompletion(prompt: String): FrameNode {
         val model: OpenAiChatModel =
             OpenAiChatModel.builder().baseUrl(baseUrl).apiKey(apiKey).modelName("gpt-4o-mini").build()
         val userMessage = UserMessage(prompt)
         val messages = listOf(userMessage)
-        val chatRequest: ChatRequest = ChatRequest.builder()
-            .messages(messages)
-            .responseFormat(frameNodeJsonSchema)
-            .build()
+        val chatRequest: ChatRequest =
+            ChatRequest.builder().messages(messages).responseFormat(frameNodeJsonSchema).build()
 
         val response = model.chat(chatRequest).aiMessage().text()
         println(response)

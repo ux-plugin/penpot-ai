@@ -1,0 +1,11 @@
+# ..pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: spotless
+        name: Spotless
+        entry: ./gradlew :spotlessApply
+        language: system
+        pass_filenames: false
+        stages: [ pre-commit ]
+

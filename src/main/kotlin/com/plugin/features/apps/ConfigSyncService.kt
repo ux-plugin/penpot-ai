@@ -11,19 +11,20 @@ import io.vertx.mutiny.redis.client.Response
 import io.vertx.redis.client.impl.types.ErrorType
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
-import org.eclipse.microprofile.config.inject.ConfigProperty
 import java.util.*
 import javax.crypto.KeyGenerator
+import org.eclipse.microprofile.config.inject.ConfigProperty
 
 @ApplicationScoped
-class ConfigSyncService @Inject constructor(
+class ConfigSyncService
+@Inject
+constructor(
     val redis: ReactiveRedisDataSource,
     val objectMapper: ObjectMapper,
     val configSyncRepository: ConfigSyncRepository,
 ) {
 
-    @ConfigProperty(name = "apps.companion-app-key-prefix")
-    lateinit var companionAppKeyPrefix: String
+    @ConfigProperty(name = "apps.companion-app-key-prefix") lateinit var companionAppKeyPrefix: String
 
     val appConfigQueue: ReactiveListCommands<String, AppState> = redis.list(AppState::class.java)
 
@@ -50,25 +51,23 @@ class ConfigSyncService @Inject constructor(
     }
 
     suspend fun createEncryptionKey(userId: String): String {
-    val keyGenerator = KeyGenerator.getInstance("AES")
-    keyGenerator.init(256)
-    val secretKey = keyGenerator.generateKey()
-    
-    val encryptionKey = Base64.getEncoder().encodeToString(secretKey.encoded)
-    
-    return configSyncRepository.saveEncryptionKey(userId, encryptionKey).awaitSuspending()
+        val keyGenerator = KeyGenerator.getInstance("AES")
+        keyGenerator.init(256)
+        val secretKey = keyGenerator.generateKey()
+
+        val encryptionKey = Base64.getEncoder().encodeToString(secretKey.encoded)
+
+        return configSyncRepository.saveEncryptionKey(userId, encryptionKey).awaitSuspending()
     }
 
     suspend fun waitGetListElement(queueName: String): Response {
-        val request = Request.cmd(Command.BLPOP)
-            .arg(queueName)
-            .arg(0)
+        val request = Request.cmd(Command.BLPOP).arg(queueName).arg(0)
         val response: Response = redis.redis.send(request).awaitSuspending()
         if (response.delegate != null) {
             val value = response.get(1)
             return value
         } else {
-            throw IllegalStateException("Failed to get list element")
+            error("Failed to get list element")
         }
     }
 }

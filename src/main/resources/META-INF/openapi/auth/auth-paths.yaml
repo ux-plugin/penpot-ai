@@ -87,7 +87,7 @@ paths:
                 server_error:
                   $ref: "./auth-examples.yaml#/ErrorResponses/server_error"
       security:
-        - JWT: []
+        - JWT: [ ]
       tags:
         - Auth Resource
 
@@ -185,7 +185,7 @@ paths:
                 token_timeout:
                   $ref: "./auth-examples.yaml#/ErrorResponses/token_timeout"
       security:
-        - JWT: []
+        - JWT: [ ]
 
   /auth/github/login:
     get:
@@ -281,4 +281,4 @@ paths:
                 token_timeout:
                   $ref: "./auth-examples.yaml#/ErrorResponses/token_timeout"
       security:
-        - JWT: []
+        - JWT: [ ]

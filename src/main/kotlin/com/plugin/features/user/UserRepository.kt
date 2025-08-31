@@ -8,13 +8,12 @@ import io.smallrye.mutiny.Uni
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.ws.rs.NotFoundException
 
-/**
- * Repository implementation for user configurations using Panache
- */
+/** Repository implementation for user configurations using Panache */
 @ApplicationScoped
 class UserRepository() : PanacheRepository<UserEntity>, IUserRepository {
     /**
      * Get user configuration by user ID
+     *
      * @param userId The ID of the user
      * @return The user configuration
      * @throws NotFoundException if the user configuration is not found
@@ -24,12 +23,15 @@ class UserRepository() : PanacheRepository<UserEntity>, IUserRepository {
         return UserEntity.find("id", userId)
             .project(GetUserResponse::class.java)
             .firstResult()
-            .onItem().ifNull().failWith(NotFoundException("User $userId not found"))
+            .onItem()
+            .ifNull()
+            .failWith(NotFoundException("User $userId not found"))
             .map { it }
     }
 
     /**
      * Update user configuration
+     *
      * @param userId The id of the user
      * @param userUpdate The user configuration to update
      * @return The updated user configuration
@@ -40,7 +42,9 @@ class UserRepository() : PanacheRepository<UserEntity>, IUserRepository {
         return withTransaction {
             find("id", userId)
                 .firstResult()
-                .onItem().ifNull().failWith(NotFoundException("User $userId not found"))
+                .onItem()
+                .ifNull()
+                .failWith(NotFoundException("User $userId not found"))
                 .chain { existingUser ->
                     val newUserEntity = existingUser as UserEntity
 
@@ -50,20 +54,18 @@ class UserRepository() : PanacheRepository<UserEntity>, IUserRepository {
 
                     persistAndFlush(newUserEntity)
                 }
-                .map { it }.replaceWith(Unit)
+                .map { it }
+                .replaceWith(Unit)
         }
     }
 
     @WithSession
     override fun deleteUser(userId: String): Uni<Unit> {
-        return delete("id", userId)
-            .map { it }.replaceWith(Unit)
+        return delete("id", userId).map { it }.replaceWith(Unit)
     }
 
     @WithSession
     override fun getSocialLogins(userId: String): Uni<GetSocialLoginsResponse> {
-        return SocialLoginEntity.find("userId", userId)
-            .project(SocialLogin::class.java)
-            .list()
+        return SocialLoginEntity.find("userId", userId).project(SocialLogin::class.java).list()
     }
 }

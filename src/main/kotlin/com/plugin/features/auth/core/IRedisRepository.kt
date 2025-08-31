@@ -3,12 +3,11 @@ package com.plugin.features.auth.core
 import io.quarkus.redis.datasource.list.KeyValue
 import java.time.Duration
 
-/**
- * Interface for Redis operations used in authentication flows
- */
+/** Interface for Redis operations used in authentication flows */
 interface IRedisRepository {
     /**
      * Sets a key-value pair in Redis if the key does not exist, with an expiration time
+     *
      * @param key The key to set
      * @param value The value to set
      * @param expiresIn The expiration time in seconds
@@ -18,23 +17,31 @@ interface IRedisRepository {
 
     /**
      * Generates a unique key with a prefix, ensuring it doesn't exist in Redis
+     *
      * @param prefix The prefix for the key
      * @param maxRetries Maximum number of retries to generate a unique key
      * @param valueOfKey The value to set for the key
      * @param expiresIn The expiration time in seconds
      * @return The generated unique key
      */
-    suspend fun generateUniqueKey(prefix: String, maxRetries: Int, valueOfKey: String, expiresIn: Int = 5): String
+    suspend fun generateUniqueKey(
+        prefix: String,
+        maxRetries: Int,
+        valueOfKey: String,
+        expiresIn: Int = 5,
+    ): String
 
     /**
      * Gets a value from Redis by key
+     *
      * @param key The key to get
      * @return The value associated with the key, or null if the key doesn't exist
      */
     suspend fun getValue(key: String): String?
-    
+
     /**
      * Sets a value in Redis with an expiration time
+     *
      * @param key The key to set
      * @param value The value to set
      * @param expiresIn The expiration time in seconds
@@ -43,6 +50,7 @@ interface IRedisRepository {
 
     /**
      * Reads an access token from a Redis list with blocking operation
+     *
      * @param readToken The token used to identify the list
      * @param timeout The timeout for the blocking operation
      * @return The key-value pair containing the access token, or null if timeout
@@ -51,6 +59,7 @@ interface IRedisRepository {
 
     /**
      * Pushes an access token to a Redis list
+     *
      * @param queueName The name of the list
      * @param accessToken The access token to push
      * @return The length of the list after the push operation

@@ -13,16 +13,16 @@ import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import org.eclipse.microprofile.jwt.JsonWebToken
 
-/**
- * REST resource for handling Figma OAuth authentication.
- */
+/** REST resource for handling Figma OAuth authentication. */
 @Path("/auth/figma")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @ApplicationScoped
-class FigmaAuthResource @Inject constructor(
+class FigmaAuthResource
+@Inject
+constructor(
     private val figmaAuthService: FigmaAuthService,
-    private val jsonWebToken: JsonWebToken
+    private val jsonWebToken: JsonWebToken,
 ) {
 
     @GET
@@ -40,8 +40,8 @@ class FigmaAuthResource @Inject constructor(
     @GET
     @Path("/callback")
     suspend fun callback(
-        @QueryParam("code") code: String, 
-        @QueryParam("state") state: String
+        @QueryParam("code") code: String,
+        @QueryParam("state") state: String,
     ): Response {
         return try {
             figmaAuthService.authenticateUser(state, code)
@@ -84,14 +84,15 @@ class FigmaAuthResource @Inject constructor(
     @Path("/connect/callback")
     open suspend fun connectCallback(
         @QueryParam("code") code: String,
-        @QueryParam("state") state: String
+        @QueryParam("state") state: String,
     ): Response {
         return try {
             figmaAuthService.connectSocialProfile(code = code, state = state)
             Response.ok().build()
         } catch (e: Exception) {
             when (e) {
-                is AccountAlreadyLinkedException -> Response.status(Response.Status.CONFLICT).entity("Account already linked.").build()
+                is AccountAlreadyLinkedException ->
+                    Response.status(Response.Status.CONFLICT).entity("Account already linked.").build()
                 else -> {
                     Log.error("Failed to link social login", e)
                     Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Failed to link account").build()
@@ -110,7 +111,8 @@ class FigmaAuthResource @Inject constructor(
             if (result == null || result.value != ConnectSocialProviderResult.SUCCESS.value) {
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
             }
-            return Response.ok(ConnectSocialProviderResponse(result = ConnectSocialProviderResult.SUCCESS.value)).build()
+            return Response.ok(ConnectSocialProviderResponse(result = ConnectSocialProviderResult.SUCCESS.value))
+                .build()
         } catch (e: Exception) {
             Log.error("Failed to get connect result", e)
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()

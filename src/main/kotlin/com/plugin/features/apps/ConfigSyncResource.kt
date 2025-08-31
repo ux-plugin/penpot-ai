@@ -12,7 +12,9 @@ import kotlinx.coroutines.flow.flow
 import org.eclipse.microprofile.jwt.JsonWebToken
 
 data class AppState(val port: Int?)
+
 data class GenerateKeyResponse(val key: String)
+
 data class GetKeyResponse(val key: String?)
 
 @Path("/sync")
@@ -20,9 +22,11 @@ data class GetKeyResponse(val key: String?)
 @Consumes(MediaType.APPLICATION_JSON)
 @ApplicationScoped
 @Authenticated
-class ConfigSyncResource @Inject constructor(
+class ConfigSyncResource
+@Inject
+constructor(
     private val configSyncService: ConfigSyncService,
-    private val jsonWebToken: JsonWebToken
+    private val jsonWebToken: JsonWebToken,
 ) {
     @Path("/app/updates")
     @GET
@@ -30,7 +34,7 @@ class ConfigSyncResource @Inject constructor(
     open suspend fun listenToAppConfigUpdates(): Flow<AppState> {
         val userId = jsonWebToken.subject
         return flow {
-            while(true) {
+            while (true) {
                 val newConfig = configSyncService.listenToAppConfigUpdate(userId)
                 emit(newConfig)
             }
@@ -39,7 +43,7 @@ class ConfigSyncResource @Inject constructor(
 
     @Path("/app/update")
     @POST
-    open suspend fun updateAppConfig(newConfig: AppState) : Response {
+    open suspend fun updateAppConfig(newConfig: AppState): Response {
         val userId = jsonWebToken.subject
         return try {
             configSyncService.updateAppConfig(userId, newConfig)

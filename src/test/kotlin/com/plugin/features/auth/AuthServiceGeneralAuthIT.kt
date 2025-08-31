@@ -10,31 +10,33 @@ import org.hibernate.reactive.mutiny.Mutiny
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
-/**
- * Integration tests for general (non-Figma) authentication endpoints.
- */
+/** Integration tests for general (non-Figma) authentication endpoints. */
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResourceManager::class, parallel = true)
 @QuarkusTestResource(RedisTestResourceManager::class, parallel = true)
 class AuthServiceGeneralAuthIT {
-    @Inject
-    lateinit var sessionFactory: Mutiny.SessionFactory
+    @Inject lateinit var sessionFactory: Mutiny.SessionFactory
 
     @BeforeEach
     fun cleanDatabase() {
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
-                DO $$
-                BEGIN
-                   IF EXISTS (SELECT FROM information_schema.tables
-                              WHERE table_schema = 'public'
-                              AND table_name = 'users') THEN
-                      EXECUTE 'TRUNCATE TABLE Users RESTART IDENTITY CASCADE';
-                   END IF;
-                END $$;
-            """.trimIndent()
-            session.createNativeQuery<Void>(sql).executeUpdate()
-        }.await().indefinitely()
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
+                        DO $$
+                        BEGIN
+                           IF EXISTS (SELECT FROM information_schema.tables
+                                      WHERE table_schema = 'public'
+                                      AND table_name = 'users') THEN
+                              EXECUTE 'TRUNCATE TABLE Users RESTART IDENTITY CASCADE';
+                           END IF;
+                        END $$;
+                    """
+                        .trimIndent()
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
+            .await()
+            .indefinitely()
     }
 
     @Test
@@ -54,29 +56,26 @@ class AuthServiceGeneralAuthIT {
     fun testRefreshTokenWithMissingToken() {
         val userId = createTestUser("Test User", "testuser")
 
-        given()
-            .queryParam("userId", userId)
-            .`when`()
-            .post("/auth/access-token/refresh")
-            .then()
-            .statusCode(401)
+        given().queryParam("userId", userId).`when`().post("/auth/access-token/refresh").then().statusCode(401)
     }
 
-    /**
-     * Helper method to create a test user directly in the database using SQL.
-     */
+    /** Helper method to create a test user directly in the database using SQL. */
     private fun createTestUser(name: String, username: String): String {
         val userId = java.util.UUID.randomUUID().toString()
-        val result = sessionFactory.withTransaction { session, _ ->
-            val sql = """
+        val result =
+            sessionFactory
+                .withTransaction { session, _ ->
+                    val sql =
+                        """
                 INSERT INTO Users (id, username, name, role, createdAt)
                 VALUES ('$userId', '$username', '$name', 'USER', CURRENT_TIMESTAMP)
-            """.trimIndent()
+            """
+                            .trimIndent()
 
-            session.createNativeQuery<Void>(sql)
-                .executeUpdate()
-                .replaceWith(userId)
-        }.await().indefinitely()
+                    session.createNativeQuery<Void>(sql).executeUpdate().replaceWith(userId)
+                }
+                .await()
+                .indefinitely()
 
         return result
     }

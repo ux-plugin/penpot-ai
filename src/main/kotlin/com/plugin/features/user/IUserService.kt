@@ -1,11 +1,10 @@
 package com.plugin.features.user
 
-/**
- * Interface for the user service (business logic)
- */
+/** Interface for the user service (business logic) */
 interface IUserService {
     /**
      * Get user configuration by user ID
+     *
      * @param userId The ID of the user
      * @return The user configuration
      */
@@ -13,6 +12,7 @@ interface IUserService {
 
     /**
      * Create or update user configuration
+     *
      * @param userId The user configuration to create or update
      */
     suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest)

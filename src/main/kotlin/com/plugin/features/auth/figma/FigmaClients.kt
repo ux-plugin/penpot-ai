@@ -5,9 +5,7 @@ import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient
 
-/**
- * REST client for Figma API
- */
+/** REST client for Figma API */
 @RegisterRestClient(configKey = "figma-api")
 @Produces(MediaType.APPLICATION_JSON)
 interface FigmaRestClient {
@@ -17,7 +15,7 @@ interface FigmaRestClient {
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     fun exchangeToken(
         @HeaderParam("Authorization") authorization: String,
-        formData: String // Send the form data string
+        formData: String, // Send the form data string
     ): Uni<FigmaOAuthTokenResponse>
 
     @POST
@@ -26,7 +24,7 @@ interface FigmaRestClient {
     fun refreshToken(
         @HeaderParam("Authorization") authorization: String,
         @FormParam("refresh_token") refreshToken: String,
-        @FormParam("grant_type") grantType: String
+        @FormParam("grant_type") grantType: String,
     ): Uni<FigmaRefreshTokenResponse>
 
     @GET
@@ -35,9 +33,7 @@ interface FigmaRestClient {
     fun getMe(@HeaderParam("Authorization") authorization: String): Uni<FigmaUser>
 }
 
-/**
- * Figma access scopes
- */
+/** Figma access scopes */
 enum class FigmaAccessScope(val value: String) {
     CURRENT_USER_READ("current_user:read"),
     FILE_COMMENTS_READ("file_comments:read"),
@@ -57,5 +53,5 @@ enum class FigmaAccessScope(val value: String) {
     PROJECTS_READ("projects:read"),
     TEAM_LIBRARY_CONTENT_READ("team_library_content:read"),
     WEBHOOKS_READ("webhooks:read"),
-    WEBHOOKS_WRITE("webhooks:write")
+    WEBHOOKS_WRITE("webhooks:write"),
 }

@@ -4,19 +4,15 @@ data class GetUserResponse(
     val id: String,
     val name: String,
     val username: String?,
-    val allowSavingCompletions: Boolean
+    val allowSavingCompletions: Boolean,
 )
 
 data class UpdateUserRequest(
     val name: String?,
     val username: String?,
-    val allowSavingCompletions: Boolean?
+    val allowSavingCompletions: Boolean?,
 )
 
-data class SocialLogin(
-    val provider: String,
-    val id: String,
-    val providerUserId: String,
-)
+data class SocialLogin(val provider: String, val id: String, val providerUserId: String)
 
 typealias GetSocialLoginsResponse = List<SocialLogin>

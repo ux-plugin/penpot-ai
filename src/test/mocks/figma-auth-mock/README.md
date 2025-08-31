@@ -12,6 +12,7 @@ The server mocks the following endpoints:
 ## Authentication
 
 The server validates Basic Authentication for the token exchange endpoint. The format should be:
+
 ```
 Authorization: Basic <BASE64_ENCODED_CLIENT_ID_AND_SECRET>
 ```
@@ -21,6 +22,7 @@ Where `<BASE64_ENCODED_CLIENT_ID_AND_SECRET>` is the Base64 encoding of `client_
 ## Scope Validation
 
 The server validates that the requested scope is one of the following valid Figma API scopes:
+
 - current_user:read
 - file_comments:read
 - file_comments:write

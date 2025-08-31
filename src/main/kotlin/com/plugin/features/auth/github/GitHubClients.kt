@@ -5,14 +5,12 @@ import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient
 
-/**
- * REST client for GitHub OAuth authentication
- */
+/** REST client for GitHub OAuth authentication */
 @RegisterRestClient(configKey = "github-auth")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 interface GitHubAuthClient {
-    
+
     @POST
     @Path("/login/oauth/access_token")
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
@@ -34,21 +32,15 @@ interface GitHubAuthClient {
     ): Response
 }
 
-/**
- * REST client for GitHub API
- */
+/** REST client for GitHub API */
 @RegisterRestClient(configKey = "github-api")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 interface GithubApiRestClient {
-    @GET
-    @Path("/user")
-    suspend fun getUser(@HeaderParam("Authorization") authorization: String): GitHubUser
+    @GET @Path("/user") suspend fun getUser(@HeaderParam("Authorization") authorization: String): GitHubUser
 }
 
-/**
- * GitHub access scopes
- */
+/** GitHub access scopes */
 enum class GitHubAccessScope(val value: String) {
     REPO("repo"),
     REPO_STATUS("repo:status"),
@@ -83,5 +75,5 @@ enum class GitHubAccessScope(val value: String) {
     READ_GPG_KEY("read:gpg_key"),
     CODESPACE("codespace"),
     WORKFLOW("workflow"),
-    READ_AUDIT_LOG("read:audit_log")
+    READ_AUDIT_LOG("read:audit_log"),
 }

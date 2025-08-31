@@ -4,15 +4,12 @@ import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 
-/**
- * Service for authentication
- */
+/** Service for authentication */
 @ApplicationScoped
-class AuthService @Inject constructor(
-    private val authRepository: IAuthRepository
-) : IAuthService {
+class AuthService @Inject constructor(private val authRepository: IAuthRepository) : IAuthService {
     /**
      * Refresh an access token using a refresh token
+     *
      * @param refreshTokenRequest The request containing the refresh token
      * @return A new access token
      */

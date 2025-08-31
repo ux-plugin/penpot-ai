@@ -14,7 +14,7 @@ AppState:
   empty_config:
     summary: Empty configuration
     description: Example request with empty configuration
-    value: {}
+    value: { }
 
 GenerateKeyResponse:
   new_key:

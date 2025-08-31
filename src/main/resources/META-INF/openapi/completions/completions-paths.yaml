@@ -64,7 +64,7 @@ paths:
                 server_error:
                   $ref: "./completions-examples.yaml#/ErrorResponses/server_error"
       security:
-        - JWT: []
+        - JWT: [ ]
 
   /completions/create:
     post:
@@ -126,7 +126,7 @@ paths:
                 ai_service_error:
                   $ref: "./completions-examples.yaml#/ErrorResponses/ai_service_error"
       security:
-        - JWT: []
+        - JWT: [ ]
 
   /completions/{completionId}:
     get:
@@ -190,4 +190,4 @@ paths:
                 server_error:
                   $ref: "./completions-examples.yaml#/ErrorResponses/server_error"
       security:
-        - JWT: []
+        - JWT: [ ]

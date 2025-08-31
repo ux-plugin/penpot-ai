@@ -8,7 +8,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.ws.rs.NotFoundException
 
 @ApplicationScoped
-class ConfigSyncRepository: PanacheRepository<ConfigUser> {
+class ConfigSyncRepository : PanacheRepository<ConfigUser> {
     @WithSession
     fun getEncryptionKey(userId: String): Uni<String?> {
         return find("id", userId).firstResult().map { it?.encryptionKey }

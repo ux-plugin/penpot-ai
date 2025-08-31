@@ -1,5 +1,5 @@
-from typing import Optional, List
 from pydantic import BaseModel, validator
+from typing import Optional, List
 
 # Valid Figma API scopes
 VALID_SCOPES = [
@@ -25,6 +25,7 @@ VALID_SCOPES = [
     "webhooks:write"
 ]
 
+
 class TokenExchangeRequest(BaseModel):
     code: str
     redirect_uri: str
@@ -42,9 +43,11 @@ class TokenExchangeRequest(BaseModel):
                 raise ValueError(f"Invalid scope: {scope}. Must be one of {VALID_SCOPES}")
         return v
 
+
 class TokenRefreshRequest(BaseModel):
     refresh_token: str
     grant_type: str = "refresh_token"
+
 
 # These models represent the response structures
 class FigmaOAuthTokenResponse(BaseModel):
@@ -55,10 +58,12 @@ class FigmaOAuthTokenResponse(BaseModel):
     expires_in: int = 3600
     refresh_token: str = "mock-refresh-token"
 
+
 class FigmaRefreshTokenResponse(BaseModel):
     access_token: str = "mock-refreshed-access-token"
     token_type: str = "bearer"
     expires_in: int = 3600
+
 
 class FigmaUser(BaseModel):
     id: str = "mock-user-id"

@@ -4,9 +4,7 @@ import io.quarkus.test.common.QuarkusTestResourceLifecycleManager
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.utility.DockerImageName
 
-/**
- * Quarkus test resource that starts a Docker container for the mock GitHub API server.
- */
+/** Quarkus test resource that starts a Docker container for the mock GitHub API server. */
 class MockGitHubAuthInfra : QuarkusTestResourceLifecycleManager {
     private lateinit var githubMockContainer: GenericContainer<*>
 
@@ -17,15 +15,14 @@ class MockGitHubAuthInfra : QuarkusTestResourceLifecycleManager {
         val clientSecret = "github-client-secret"
 
         githubMockContainer =
-            GenericContainer(githubImage).withExposedPorts(port)
+            GenericContainer(githubImage)
+                .withExposedPorts(port)
                 .withEnv("GITHUB_MOCK_PORT", port.toString())
                 .withEnv("GITHUB_CLIENT_ID", clientId)
                 .withEnv("GITHUB_CLIENT_SECRET", clientSecret)
 
         githubMockContainer.start()
-        githubMockContainer.followOutput { output ->
-            println(output.utf8String.trim())
-        }
+        githubMockContainer.followOutput { output -> println(output.utf8String.trim()) }
 
         val mappedPort = githubMockContainer.getMappedPort(port)
         val host = githubMockContainer.host
@@ -35,7 +32,7 @@ class MockGitHubAuthInfra : QuarkusTestResourceLifecycleManager {
             "quarkus.rest-client.github-api.url" to "http://$host:$mappedPort",
             "quarkus.rest-client.github-auth.url" to "http://$host:$mappedPort",
             "auth.github.client-id" to clientId,
-            "auth.github.client-secret" to clientSecret
+            "auth.github.client-secret" to clientSecret,
         )
     }
 

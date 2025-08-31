@@ -8,9 +8,13 @@ import java.time.Instant
 interface IAuthRepository {
     // Existing methods (may vary in your implementation)
     fun getRefreshToken(userId: String): Uni<String>
+
     fun createTokensForUser(id: String, role: UserRole): Uni<LoginCredentials>
+
     fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): Uni<String>
+
     fun addUser(): Uni<AuthUserEntity>
+
     fun getSocialLogin(providerUserId: String, provider: SocialProvider): Uni<SocialLoginEntity?>
 
     // Add these two methods from the implementation
@@ -18,7 +22,7 @@ interface IAuthRepository {
         provider: SocialProvider,
         providerUserId: String,
         refreshToken: String?,
-        refreshTokenExpiresAt: Instant?
+        refreshTokenExpiresAt: Instant?,
     ): Uni<Unit>
 
     fun insertSocialLogin(
@@ -26,7 +30,7 @@ interface IAuthRepository {
         providerUserId: String,
         refreshToken: String,
         refreshTokenExpiresAt: Instant,
-        userId: String
+        userId: String,
     ): Uni<SocialLoginEntity>
 
     fun upsertSocialLogin(
@@ -34,7 +38,7 @@ interface IAuthRepository {
         providerUserId: String,
         refreshToken: String,
         refreshTokenExpiresAt: Instant,
-        userId: String
+        userId: String,
     ): Uni<Unit>
 
     /**
@@ -52,7 +56,6 @@ interface IAuthRepository {
         providerUserId: String,
         refreshToken: String,
         refreshTokenExpiresAt: Instant,
-        userId: String? = null
+        userId: String? = null,
     ): Uni<AuthUserEntity>
-
 }

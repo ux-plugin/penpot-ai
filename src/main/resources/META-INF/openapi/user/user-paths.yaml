@@ -65,7 +65,7 @@ paths:
                 user_not_found:
                   $ref: "./user-examples.yaml#/ErrorResponses/user_not_found"
       security:
-        - JWT: []
+        - JWT: [ ]
 
   /user/{userId}/update:
     post:
@@ -135,7 +135,7 @@ paths:
                 user_not_found:
                   $ref: "./user-examples.yaml#/ErrorResponses/user_not_found"
       security:
-        - JWT: []
+        - JWT: [ ]
 
   /user/{userId}/delete:
     delete:
@@ -188,4 +188,4 @@ paths:
                 delete_error:
                   $ref: "./user-examples.yaml#/ErrorResponses/delete_error"
       security:
-        - JWT: []
+        - JWT: [ ]

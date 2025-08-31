@@ -9,13 +9,9 @@ import jakarta.persistence.*
 @Table(name = "Users")
 class ConfigUser : PanacheEntityBase {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
-    lateinit var id: String
+    @Id @GeneratedValue(strategy = GenerationType.UUID) lateinit var id: String
 
-    @Column(nullable = true)
-    @Password
-    lateinit var encryptionKey: String
+    @Column(nullable = true) @Password lateinit var encryptionKey: String
 
     companion object : PanacheCompanion<ConfigUser>
 }

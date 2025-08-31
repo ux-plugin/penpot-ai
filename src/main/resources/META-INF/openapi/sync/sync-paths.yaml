@@ -64,7 +64,7 @@ paths:
                 update_error:
                   $ref: "./sync-examples.yaml#/ErrorResponses/update_error"
       security:
-        - JWT: []
+        - JWT: [ ]
 
   /sync/app/updates:
     get:
@@ -92,7 +92,7 @@ paths:
                 unauthorized:
                   $ref: "./sync-examples.yaml#/ErrorResponses/unauthorized"
       security:
-        - JWT: []
+        - JWT: [ ]
 
   /sync/key/generate:
     post:
@@ -134,7 +134,7 @@ paths:
                 key_generation_error:
                   $ref: "./sync-examples.yaml#/ErrorResponses/key_generation_error"
       security:
-        - JWT: []
+        - JWT: [ ]
 
   /sync/key/get:
     get:
@@ -169,4 +169,4 @@ paths:
                 key_retrieval_error:
                   $ref: "./sync-examples.yaml#/ErrorResponses/key_retrieval_error"
       security:
-        - JWT: []
+        - JWT: [ ]

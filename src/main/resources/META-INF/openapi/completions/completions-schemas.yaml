@@ -79,7 +79,7 @@ FrameNode:
       items:
         type: string
       description: Child node IDs
-      example: ["child_001", "child_002"]
+      example: [ "child_001", "child_002" ]
     parent:
       type: string
       nullable: true

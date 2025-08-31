@@ -1,6 +1,5 @@
 package com.plugin.features.completions
 
-import com.plugin.features.user.UserRole
 import com.plugin.shared.PostgresTestResourceManager
 import com.plugin.shared.RedisTestResourceManager
 import io.quarkus.test.common.QuarkusTestResource
@@ -10,31 +9,28 @@ import io.quarkus.test.security.jwt.Claim
 import io.quarkus.test.security.jwt.JwtSecurity
 import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
-import io.smallrye.jwt.build.Jwt
 import jakarta.inject.Inject
+import java.util.*
 import org.hamcrest.CoreMatchers.equalTo
 import org.hamcrest.CoreMatchers.notNullValue
 import org.hibernate.reactive.mutiny.Mutiny
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import java.util.*
 
-
-/**
- * Integration test for the Component service using Quarkus testing framework
- */
+/** Integration test for the Component service using Quarkus testing framework */
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResourceManager::class)
 @QuarkusTestResource(RedisTestResourceManager::class)
 @QuarkusTestResource(MockOpenAiInfra::class)
 class ComponentServiceIT {
-    @Inject
-    lateinit var sessionFactory: Mutiny.SessionFactory
+    @Inject lateinit var sessionFactory: Mutiny.SessionFactory
 
     @BeforeEach
     fun cleanDatabase() {
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
         DO $$ 
         BEGIN 
            -- Check and truncate 'ComponentCompletions'
@@ -51,38 +47,39 @@ class ComponentServiceIT {
               EXECUTE 'TRUNCATE TABLE users RESTART IDENTITY CASCADE';
            END IF;
         END $$;
-    """.trimIndent()
+    """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql)
-                .executeUpdate()
-        }
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
             .await()
             .indefinitely()
 
         // Create a test user
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
-            INSERT INTO users (id, name, username, role, allowSavingCompletions, createdAt)
-            VALUES ('test-user-id', 'Test User', 'testuser', 'USER', true, NOW())
-            ON CONFLICT (id) DO NOTHING;
-        """.trimIndent()
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
+                        INSERT INTO users (id, name, username, role, allowSavingCompletions, createdAt)
+                        VALUES ('test-user-id', 'Test User', 'testuser', 'USER', true, NOW())
+                        ON CONFLICT (id) DO NOTHING;
+                    """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql)
-                .executeUpdate()
-        }
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
             .await()
             .indefinitely()
     }
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "test-user-id")]
-    )
+    @JwtSecurity(claims = [Claim(key = "sub", value = "test-user-id")])
     fun testCreateCompletion() {
         val createRequest = PromptRequest(prompt = "Test prompt")
 
-        given().contentType(ContentType.JSON)
+        given()
+            .contentType(ContentType.JSON)
             .body(createRequest)
             .`when`()
             .post("/completions/create")
@@ -90,7 +87,8 @@ class ComponentServiceIT {
             .statusCode(200)
             .body("id", equalTo("mock-frame-id"))
 
-        given().contentType(ContentType.JSON)
+        given()
+            .contentType(ContentType.JSON)
             .`when`()
             .get("/completions")
             .then()
@@ -101,9 +99,7 @@ class ComponentServiceIT {
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "test-user-id")]
-    )
+    @JwtSecurity(claims = [Claim(key = "sub", value = "test-user-id")])
     fun testGetCompletion() {
         // Define variables for test data
         val completionId = UUID.randomUUID().toString()
@@ -113,19 +109,23 @@ class ComponentServiceIT {
         val aiCompletionId = "test-frame-id"
 
         // Insert the completion directly into the database
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
         INSERT INTO ComponentCompletions (id, userId, prompt, aiCompletion, createdAt)
         VALUES ('$completionId', '$userId', '$prompt', '$aiCompletionJson', NOW())
-        """.trimIndent()
+        """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql).executeUpdate()
-        }
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
             .await()
             .indefinitely()
 
         // Test retrieving the completion by ID
-        given().`when`()
+        given()
+            .`when`()
             .get("/completions/$completionId")
             .then()
             .statusCode(200)
@@ -137,9 +137,7 @@ class ComponentServiceIT {
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "test-user-id")]
-    )
+    @JwtSecurity(claims = [Claim(key = "sub", value = "test-user-id")])
     fun testGetAllCompletions() {
         // Extract hardcoded strings into variables
         val userId = "test-user-id"
@@ -155,23 +153,27 @@ class ComponentServiceIT {
         val completionId2 = UUID.randomUUID().toString()
         val completionId3 = UUID.randomUUID().toString()
 
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
         INSERT INTO ComponentCompletions (id, userId, prompt, aiCompletion, createdAt)
         VALUES 
             ('$completionId1', '$userId', '$prompt1', '$frame1Json', NOW()),
             ('$completionId2', '$userId', '$prompt2', '$frame2Json', NOW()),
             ('$completionId3', '$userId', '$prompt3', '$frame3Json', NOW())
-        """.trimIndent()
+        """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql).executeUpdate()
-        }
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
             .await()
             .indefinitely()
 
         // Test getting all completions
         val response =
-            given().`when`()
+            given()
+                .`when`()
                 .get("/completions/")
                 .then()
                 .statusCode(200)
@@ -186,12 +188,11 @@ class ComponentServiceIT {
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "test-user-id")]
-    )
+    @JwtSecurity(claims = [Claim(key = "sub", value = "test-user-id")])
     fun testGetNonExistentCompletion() {
         // Test getting a non-existent completion
-        given().`when`()
+        given()
+            .`when`()
             .get("/completions/non-existent-id")
             .then()
             .statusCode(404)
@@ -200,28 +201,29 @@ class ComponentServiceIT {
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "no-save-user-id")]
-    )
+    @JwtSecurity(claims = [Claim(key = "sub", value = "no-save-user-id")])
     fun testCreateCompletionWithoutSavingPermission() {
         // Create a user that doesn't allow saving completions
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
-            INSERT INTO users (id, name, username, role, allowSavingCompletions, createdAt)
-            VALUES ('no-save-user-id', 'No Save User', 'nosaveuser', 'USER', false, NOW())
-            ON CONFLICT (id) DO NOTHING;
-        """.trimIndent()
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
+                        INSERT INTO users (id, name, username, role, allowSavingCompletions, createdAt)
+                        VALUES ('no-save-user-id', 'No Save User', 'nosaveuser', 'USER', false, NOW())
+                        ON CONFLICT (id) DO NOTHING;
+                    """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql)
-                .executeUpdate()
-        }
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
             .await()
             .indefinitely()
 
         // Call the create completion endpoint
         val createRequest = PromptRequest(prompt = "Test prompt without saving")
 
-        given().contentType(ContentType.JSON)
+        given()
+            .contentType(ContentType.JSON)
             .body(createRequest)
             .`when`()
             .post("/completions/create")
@@ -230,13 +232,15 @@ class ComponentServiceIT {
             .body("id", equalTo("mock-frame-id"))
 
         // Verify that nothing was saved in the database
-        sessionFactory.withTransaction { session, _ ->
-            session.createNativeQuery<Long>(
-                "SELECT COUNT(*) FROM ComponentCompletions WHERE userId = 'no-save-user-id'",
-                Long::class.java
-            )
-                .singleResult
-        }
+        sessionFactory
+            .withTransaction { session, _ ->
+                session
+                    .createNativeQuery<Long>(
+                        "SELECT COUNT(*) FROM ComponentCompletions WHERE userId = 'no-save-user-id'",
+                        Long::class.java,
+                    )
+                    .singleResult
+            }
             .await()
             .indefinitely()
             .let { count ->
@@ -246,9 +250,7 @@ class ComponentServiceIT {
 
     @Test
     @TestSecurity(user = "test-user-id", roles = ["USER"])
-    @JwtSecurity(
-        claims = [Claim(key = "sub", value = "no-save-user-id")]
-    )
+    @JwtSecurity(claims = [Claim(key = "sub", value = "no-save-user-id")])
     fun testUnauthorizedAccessToCompletion() {
         // Create a completion for another user
         val otherUserId = "other-user-id"
@@ -257,28 +259,33 @@ class ComponentServiceIT {
         val aiCompletionJson = """{"id":"other-frame-id","name":"Other Frame","width":200,"height":200}"""
 
         // Create the other user
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
             INSERT INTO users (id, name, username, role, allowSavingCompletions, createdAt)
             VALUES ('$otherUserId', 'Other User', 'otheruser', 'USER', true, NOW())
             ON CONFLICT (id) DO NOTHING;
-        """.trimIndent()
+        """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql)
-                .executeUpdate()
-        }
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
             .await()
             .indefinitely()
 
         // Insert a completion for the other user
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
             INSERT INTO ComponentCompletions (id, userId, prompt, aiCompletion, createdAt)
             VALUES ('$completionId', '$otherUserId', '$prompt', '$aiCompletionJson', NOW())
-        """.trimIndent()
+        """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql).executeUpdate()
-        }
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
             .await()
             .indefinitely()
 
@@ -294,7 +301,8 @@ class ComponentServiceIT {
     @Test
     fun testUnauthenticatedAccess() {
         // Test POST /completions/create without authentication
-        given().contentType(ContentType.JSON)
+        given()
+            .contentType(ContentType.JSON)
             .body(PromptRequest(prompt = "Test prompt"))
             .`when`()
             .post("/completions/create")
@@ -302,16 +310,10 @@ class ComponentServiceIT {
             .statusCode(401)
 
         // Test GET /completions without authentication
-        given().`when`()
-            .get("/completions")
-            .then()
-            .statusCode(401)
+        given().`when`().get("/completions").then().statusCode(401)
 
         // Test GET /completions/{id} without authentication
-        given().`when`()
-            .get("/completions/some-id")
-            .then()
-            .statusCode(401)
+        given().`when`().get("/completions/some-id").then().statusCode(401)
     }
 
     @Test
@@ -322,7 +324,8 @@ class ComponentServiceIT {
         val createRequest = PromptRequest(prompt = "500")
 
         // Send the request and verify that a 500 error is returned
-        given().contentType(ContentType.JSON)
+        given()
+            .contentType(ContentType.JSON)
             .body(createRequest)
             .`when`()
             .post("/completions/create")
@@ -331,7 +334,8 @@ class ComponentServiceIT {
 
         val createRequest2 = PromptRequest(prompt = "429")
 
-        given().contentType(ContentType.JSON)
+        given()
+            .contentType(ContentType.JSON)
             .body(createRequest2)
             .`when`()
             .post("/completions/create")

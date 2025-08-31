@@ -50,7 +50,7 @@ FrameNode:
       height: 400
       x: 0
       y: 0
-      children: ["image_001", "title_001", "description_001", "price_001"]
+      children: [ "image_001", "title_001", "description_001", "price_001" ]
       fills:
         - visible: true
           opacity: 1.0
@@ -103,7 +103,7 @@ ComponentCompletionResponse:
         height: 400
         x: 0
         y: 0
-        children: ["image_001", "title_001", "description_001", "price_001"]
+        children: [ "image_001", "title_001", "description_001", "price_001" ]
         fills:
           - visible: true
             opacity: 1.0
@@ -142,7 +142,7 @@ CompletionsList:
   empty_completions:
     summary: Empty completions list
     description: Example empty completions list for new user
-    value: []
+    value: [ ]
 
 ErrorResponses:
   bad_request:

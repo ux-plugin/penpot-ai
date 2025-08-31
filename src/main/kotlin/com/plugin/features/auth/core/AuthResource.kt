@@ -14,13 +14,8 @@ import org.eclipse.microprofile.jwt.JsonWebToken
 @Path("/auth")
 @Produces(MediaType.APPLICATION_JSON)
 @ApplicationScoped
-class AuthResource @Inject constructor(
-    private val authService: IAuthService,
-    private val jsonWebToken: JsonWebToken
-) {
-    /**
-     * Refresh an access token
-     */
+class AuthResource @Inject constructor(private val authService: IAuthService, private val jsonWebToken: JsonWebToken) {
+    /** Refresh an access token */
     @POST
     @Path("/access-token/refresh")
     suspend fun refreshAccessToken(
@@ -38,23 +33,16 @@ class AuthResource @Inject constructor(
 
         return try {
             val accessToken = authService.refreshToken(refreshTokenRequest)
-            Response.ok()
-                .entity(RefreshAccessTokenResponse(accessToken))
-                .build()
+            Response.ok().entity(RefreshAccessTokenResponse(accessToken)).build()
         } catch (e: Exception) {
             when (e) {
                 is SecurityException -> {
                     Log.debug(e)
-                    Response.status(Response.Status.UNAUTHORIZED)
-                        .entity(AuthErrorResponse())
-                        .build()
+                    Response.status(Response.Status.UNAUTHORIZED).entity(AuthErrorResponse()).build()
                 }
-
                 else -> {
                     Log.error("Token refresh error", e)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                        .entity(AuthErrorResponse())
-                        .build()
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity(AuthErrorResponse()).build()
                 }
             }
         }
@@ -68,27 +56,26 @@ class AuthResource @Inject constructor(
         return try {
             val refreshToken = authService.getRefreshToken(userId)
 
-            val refreshTokenCookie = NewCookie.Builder("refresh_token")
-                .value(refreshToken)
-                .path("/")
-                .maxAge(30 * 24 * 60 * 60) // 30 days in seconds
-                .httpOnly(true)
-                .secure(true) // Requires HTTPS
-                .build()
+            val refreshTokenCookie =
+                NewCookie.Builder("refresh_token")
+                    .value(refreshToken)
+                    .path("/")
+                    .maxAge(30 * 24 * 60 * 60) // 30 days in seconds
+                    .httpOnly(true)
+                    .secure(true) // Requires HTTPS
+                    .build()
 
-            Response.ok()
-                .cookie(refreshTokenCookie)
-                .build()
+            Response.ok().cookie(refreshTokenCookie).build()
         } catch (e: Exception) {
             when (e) {
-                is NotFoundException, is SecurityException -> Response.status(Response.Status.UNAUTHORIZED).build()
+                is NotFoundException,
+                is SecurityException -> Response.status(Response.Status.UNAUTHORIZED).build()
                 else -> {
                     Log.error("Failed to get refresh token", e)
                     Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
                 }
             }
         }
-
     }
 
     @GET
@@ -99,11 +86,11 @@ class AuthResource @Inject constructor(
         return try {
             val refreshToken = authService.getRefreshToken(userId)
 
-            Response.ok(FigmaPluginGetRefreshTokenResponse(refreshToken))
-                .build()
+            Response.ok(FigmaPluginGetRefreshTokenResponse(refreshToken)).build()
         } catch (e: Exception) {
             when (e) {
-                is NotFoundException, is SecurityException -> Response.status(Response.Status.UNAUTHORIZED).build()
+                is NotFoundException,
+                is SecurityException -> Response.status(Response.Status.UNAUTHORIZED).build()
                 else -> {
                     Log.error("Failed to get refresh token", e)
                     Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
@@ -114,30 +101,21 @@ class AuthResource @Inject constructor(
 
     @POST
     @Path("/plugin-ui/access-token/refresh")
-    suspend fun figmaPluginRefreshAccessToken(
-        request: FigmaPluginRefreshAccessTokenRequest
-    ): Response {
+    suspend fun figmaPluginRefreshAccessToken(request: FigmaPluginRefreshAccessTokenRequest): Response {
         val refreshTokenRequest = RefreshTokenRequest(request.refreshToken, request.userId)
 
         return try {
             val accessToken = authService.refreshToken(refreshTokenRequest)
-            Response.ok()
-                .entity(RefreshAccessTokenResponse(accessToken))
-                .build()
+            Response.ok().entity(RefreshAccessTokenResponse(accessToken)).build()
         } catch (e: Exception) {
             when (e) {
                 is SecurityException -> {
                     Log.debug(e)
-                    Response.status(Response.Status.UNAUTHORIZED)
-                        .entity(AuthErrorResponse())
-                        .build()
+                    Response.status(Response.Status.UNAUTHORIZED).entity(AuthErrorResponse()).build()
                 }
-
                 else -> {
                     Log.error("Token refresh error", e)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                        .entity(AuthErrorResponse())
-                        .build()
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity(AuthErrorResponse()).build()
                 }
             }
         }

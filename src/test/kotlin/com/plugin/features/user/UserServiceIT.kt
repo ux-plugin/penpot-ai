@@ -11,23 +11,24 @@ import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
 import io.smallrye.jwt.build.Jwt
 import jakarta.inject.Inject
+import java.util.*
 import org.hamcrest.CoreMatchers.equalTo
 import org.hibernate.reactive.mutiny.Mutiny
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import java.util.UUID
 
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResourceManager::class)
 @QuarkusTestResource(RedisTestResourceManager::class)
 class UserServiceIT {
-    @Inject
-    lateinit var sessionFactory: Mutiny.SessionFactory
+    @Inject lateinit var sessionFactory: Mutiny.SessionFactory
 
     @BeforeEach
     fun cleanDatabase() {
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
             DO $$ 
             BEGIN 
                IF EXISTS (SELECT FROM information_schema.tables 
@@ -36,11 +37,13 @@ class UserServiceIT {
                   EXECUTE 'TRUNCATE TABLE Users RESTART IDENTITY CASCADE';
                END IF;
             END $$;
-        """.trimIndent()
+        """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql)
-                .executeUpdate()
-        }.await().indefinitely()
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
+            .await()
+            .indefinitely()
     }
 
     @Test
@@ -49,11 +52,7 @@ class UserServiceIT {
         val userId = createTestUser("Test User", "testuser")
 
         // Test without authentication
-        given()
-            .`when`()
-            .get("/user/$userId")
-            .then()
-            .statusCode(401) // Unauthorized because no JWT token
+        given().`when`().get("/user/$userId").then().statusCode(401) // Unauthorized because no JWT token
     }
 
     @Test
@@ -62,19 +61,18 @@ class UserServiceIT {
         // We'll use the same username as the JWT subject
         val userId = createTestUser("Test User", "test-user-id")
 
-        val token = Jwt.claims()
-            .issuer("ux-plugin")
-            .claim("sub", userId)
-            .claim("role", UserRole.USER)
-            .expiresAt(System.currentTimeMillis() + 600000)
-            .sign()
+        val token =
+            Jwt.claims()
+                .issuer("ux-plugin")
+                .claim("sub", userId)
+                .claim("role", UserRole.USER)
+                .expiresAt(System.currentTimeMillis() + 600000)
+                .sign()
 
         given()
             .`when`()
             .header("Authorization", "Bearer $token")
-            .get(
-                "/user/$userId"
-            )
+            .get("/user/$userId")
             .then()
             .statusCode(200)
             .body("name", equalTo("Test User"))
@@ -83,21 +81,13 @@ class UserServiceIT {
 
     @Test
     @TestSecurity(user = "testuser", roles = [])
-    @JwtSecurity(
-        claims = [
-            Claim(key = "sub", value = "wrong-user-id")
-        ]
-    )
+    @JwtSecurity(claims = [Claim(key = "sub", value = "wrong-user-id")])
     fun testGetUserForbidden() {
         // First create a user
         val userId = createTestUser("Test User", "testuser")
 
         // Test unauthorized access with wrong user ID in JWT
-        given()
-            .`when`()
-            .get("/user/$userId")
-            .then()
-            .statusCode(403)
+        given().`when`().get("/user/$userId").then().statusCode(403)
     }
 
     @Test
@@ -105,11 +95,12 @@ class UserServiceIT {
         // First create a user
         val userId = createTestUser("Test User", "testuser")
 
-        val updateRequest = UpdateUserRequest(
-            name = "Updated Name",
-            username = null,
-            allowSavingCompletions = false
-        )
+        val updateRequest =
+            UpdateUserRequest(
+                name = "Updated Name",
+                username = null,
+                allowSavingCompletions = false,
+            )
 
         // Test without authentication
         given()
@@ -126,18 +117,15 @@ class UserServiceIT {
         // Create a user with a specific username for testing
         val userId = createTestUser("Test User", "test-user-id")
 
-        val token = Jwt.claims()
-            .issuer("ux-plugin")
-            .claim("sub", userId)
-            .claim("role", UserRole.USER)
-            .expiresAt(System.currentTimeMillis() + 600000)
-            .sign()
+        val token =
+            Jwt.claims()
+                .issuer("ux-plugin")
+                .claim("sub", userId)
+                .claim("role", UserRole.USER)
+                .expiresAt(System.currentTimeMillis() + 600000)
+                .sign()
 
-        val updateRequest = UpdateUserRequest(
-            name = "Updated Name",
-            username = null,
-            allowSavingCompletions = true
-        )
+        val updateRequest = UpdateUserRequest(name = "Updated Name", username = null, allowSavingCompletions = true)
 
         // Test successful update with correct user ID
         given()
@@ -164,20 +152,17 @@ class UserServiceIT {
 
     @Test
     @TestSecurity(user = "testuser", roles = [])
-    @JwtSecurity(
-        claims = [
-            Claim(key = "sub", value = "wrong-user-id")
-        ]
-    )
+    @JwtSecurity(claims = [Claim(key = "sub", value = "wrong-user-id")])
     fun testUpdateUserForbidden() {
         // First, create a user
         val userId = createTestUser("Test User", "testuser")
 
-        val updateRequest = UpdateUserRequest(
-            name = "Updated Name",
-            username = null,
-            allowSavingCompletions = false
-        )
+        val updateRequest =
+            UpdateUserRequest(
+                name = "Updated Name",
+                username = null,
+                allowSavingCompletions = false,
+            )
 
         // Test unauthorized update with wrong user ID in JWT
         given()
@@ -190,30 +175,23 @@ class UserServiceIT {
     }
 
     @Test
-    fun testUserDelete(){
+    fun testUserDelete() {
         val userId = createTestUser("Test User", "testuser")
 
-        val token = Jwt.claims()
+        val token =
+            Jwt.claims()
                 .issuer("ux-plugin")
                 .claim("sub", userId)
                 .claim("role", UserRole.USER)
                 .expiresAt(System.currentTimeMillis() + 600000)
                 .sign()
 
-        given()
-            .header("Authorization", "Bearer $token")
-            .`when`()
-            .delete("/user/$userId/delete")
-            .then()
-            .statusCode(200)
+        given().header("Authorization", "Bearer $token").`when`().delete("/user/$userId/delete").then().statusCode(200)
 
-        sessionFactory.withTransaction { session, _ ->
-            session.createNativeQuery(
-                "SELECT COUNT(*) FROM Users",
-                Long::class.java
-            )
-                .singleResult
-        }
+        sessionFactory
+            .withTransaction { session, _ ->
+                session.createNativeQuery("SELECT COUNT(*) FROM Users", Long::class.java).singleResult
+            }
             .await()
             .indefinitely()
             .let { count ->
@@ -224,12 +202,13 @@ class UserServiceIT {
     @Test
     fun testUserDeleteForbidden() {
         val userId = createTestUser("Test User", "testuser")
-        val token = Jwt.claims()
-            .issuer("ux-plugin")
-            .claim("sub", "different-user-id")
-            .claim("role", UserRole.USER)
-            .expiresAt(System.currentTimeMillis() + 600000)
-            .sign()
+        val token =
+            Jwt.claims()
+                .issuer("ux-plugin")
+                .claim("sub", "different-user-id")
+                .claim("role", UserRole.USER)
+                .expiresAt(System.currentTimeMillis() + 600000)
+                .sign()
         given()
             .header("Authorization", "Bearer $token")
             .`when`()
@@ -238,34 +217,36 @@ class UserServiceIT {
             .statusCode(403)
     }
 
-    /**
-     * Helper method to create a test user directly in the database
-     */
+    /** Helper method to create a test user directly in the database */
     private fun createTestUser(name: String, username: String, id: String? = null): String {
 
-        return sessionFactory.withTransaction { session, _ ->
-            // Define and execute the insertion query with RETURNING id to fetch the generated ID
-            val sql = """
-            INSERT INTO Users (id, username, name, role, createdAt, allowSavingCompletions)
-            VALUES (
-                :id, -- Generates a UUID for the `id` column
-                :username,         -- Replace with the provided username
-                :name,             -- Replace with the provided name
-                'USER',            -- Default role ('admin', 'user', 'guest')
-                CURRENT_TIMESTAMP, -- Use the current timestamp for `createdAt`
-                TRUE               -- Whether the user is allowed to save completions
-            )
-            RETURNING id;         -- Return the generated ID
-        """.trimIndent()
+        return sessionFactory
+            .withTransaction { session, _ ->
+                // Define and execute the insertion query with RETURNING id to fetch the generated
+                // ID
+                val sql =
+                    """
+                        INSERT INTO Users (id, username, name, role, createdAt, allowSavingCompletions)
+                        VALUES (
+                            :id, -- Generates a UUID for the `id` column
+                            :username,         -- Replace with the provided username
+                            :name,             -- Replace with the provided name
+                            'USER',            -- Default role ('admin', 'user', 'guest')
+                            CURRENT_TIMESTAMP, -- Use the current timestamp for `createdAt`
+                            TRUE               -- Whether the user is allowed to save completions
+                        )
+                        RETURNING id;         -- Return the generated ID
+                    """
+                        .trimIndent()
 
-            session.createNativeQuery<String>(sql)
-                .setParameter("id", id ?: UUID.randomUUID().toString())
-                .setParameter("username", username)
-                .setParameter("name", name)
-                .singleResult // Fetch the resulting ID
-        }.await().indefinitely()
-
-
+                session
+                    .createNativeQuery<String>(sql)
+                    .setParameter("id", id ?: UUID.randomUUID().toString())
+                    .setParameter("username", username)
+                    .setParameter("name", name)
+                    .singleResult // Fetch the resulting ID
+            }
+            .await()
+            .indefinitely()
     }
-
 }

@@ -3,55 +3,78 @@ package com.plugin.features.completions
 import com.fasterxml.jackson.annotation.*
 import java.time.Instant
 
-/**
- * Database model for Component Completion
- */
+/** Database model for Component Completion */
 data class ComponentCompletion(
     var userId: String,
     var id: String,
     var prompt: String,
     var aiCompletion: String,
-    var createdAt: Instant
+    var createdAt: Instant,
 )
 
 enum class BlendMode(@JsonValue val value: String) {
-    NORMAL("NORMAL"), MULTIPLY("MULTIPLY"), SCREEN("SCREEN"), OVERLAY("OVERLAY"), DARKEN("DARKEN"), LIGHTEN("LIGHTEN"),
-    COLOR_DODGE("COLOR_DODGE"), COLOR_BURN("COLOR_BURN"), HARD_LIGHT("HARD_LIGHT"), SOFT_LIGHT("SOFT_LIGHT"),
-    DIFFERENCE("DIFFERENCE"), EXCLUSION("EXCLUSION"), HUE("HUE"), SATURATION("SATURATION"), COLOR("COLOR"),
-    LUMINOSITY("LUMINOSITY")
+    NORMAL("NORMAL"),
+    MULTIPLY("MULTIPLY"),
+    SCREEN("SCREEN"),
+    OVERLAY("OVERLAY"),
+    DARKEN("DARKEN"),
+    LIGHTEN("LIGHTEN"),
+    COLOR_DODGE("COLOR_DODGE"),
+    COLOR_BURN("COLOR_BURN"),
+    HARD_LIGHT("HARD_LIGHT"),
+    SOFT_LIGHT("SOFT_LIGHT"),
+    DIFFERENCE("DIFFERENCE"),
+    EXCLUSION("EXCLUSION"),
+    HUE("HUE"),
+    SATURATION("SATURATION"),
+    COLOR("COLOR"),
+    LUMINOSITY("LUMINOSITY"),
 }
 
 enum class ScaleMode(@JsonValue val value: String) {
-    FILL("FILL"), FIT("FIT"), CROP("CROP"), TILE("TILE")
+    FILL("FILL"),
+    FIT("FIT"),
+    CROP("CROP"),
+    TILE("TILE"),
 }
 
 enum class StrokeJoin(@JsonValue val value: String) {
-    MITER("MITER"), BEVEL("BEVEL"), ROUND("ROUND")
+    MITER("MITER"),
+    BEVEL("BEVEL"),
+    ROUND("ROUND"),
 }
 
 enum class WindingRule(@JsonValue val value: String) {
-    EVENODD("EVENODD"), NONZERO("NONZERO"), NONE("NONE")
+    EVENODD("EVENODD"),
+    NONZERO("NONZERO"),
+    NONE("NONE"),
 }
 
 enum class StrokeCap(@JsonValue val value: String) {
-    NONE("NONE"), ROUND("ROUND"), SQUARE("SQUARE"), ARROW_LINES("ARROW_LINES"), ARROW_EQUILATERAL("ARROW_EQUILATERAL")
+    NONE("NONE"),
+    ROUND("ROUND"),
+    SQUARE("SQUARE"),
+    ARROW_LINES("ARROW_LINES"),
+    ARROW_EQUILATERAL("ARROW_EQUILATERAL"),
 }
 
 enum class MaskType(@JsonValue val value: String) {
-    ALPHA("ALPHA"), VECTOR("VECTOR"), LUMINANCE("LUMINANCE")
+    ALPHA("ALPHA"),
+    VECTOR("VECTOR"),
+    LUMINANCE("LUMINANCE"),
 }
 
 enum class ConstraintType(@JsonValue val value: String) {
-    MIN("MIN"), CENTER("CENTER"), MAX("MAX"), STRETCH("STRETCH"), SCALE("SCALE")
+    MIN("MIN"),
+    CENTER("CENTER"),
+    MAX("MAX"),
+    STRETCH("STRETCH"),
+    SCALE("SCALE"),
 }
 
-data class RGBA(
-    val r: Float, val g: Float, val b: Float, val a: Float
-)
+data class RGBA(val r: Float, val g: Float, val b: Float, val a: Float)
 
-data class RGB(
-    val r: Float, val g: Float, val b: Float
-)
+data class RGB(val r: Float, val g: Float, val b: Float)
 
 typealias Transform = List<List<Float>>
 
@@ -63,12 +86,10 @@ data class ImageFilters(
     val temperature: Float? = null,
     val tint: Float? = null,
     val highlights: Float? = null,
-    val shadows: Float? = null
+    val shadows: Float? = null,
 )
 
-data class ColorStop(
-    val position: Float, val color: RGBA
-)
+data class ColorStop(val position: Float, val color: RGBA)
 
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "ty")
 @JsonSubTypes(
@@ -78,7 +99,7 @@ data class ColorStop(
     JsonSubTypes.Type(value = GradientPaintAngular::class, name = "GRADIENT_ANGULAR"),
     JsonSubTypes.Type(value = GradientPaintDiamond::class, name = "GRADIENT_DIAMOND"),
     JsonSubTypes.Type(value = ImagePaint::class, name = "IMAGE"),
-    JsonSubTypes.Type(value = VideoPaint::class, name = "VIDEO")
+    JsonSubTypes.Type(value = VideoPaint::class, name = "VIDEO"),
 )
 @JsonInclude(JsonInclude.Include.NON_DEFAULT)
 abstract class PaintProps {
@@ -98,7 +119,7 @@ data class VideoPaint(
     val filters: ImageFilters? = null,
     override val blendMode: BlendMode? = null,
     override val visible: Boolean? = null,
-    override val opacity: Float? = null
+    override val opacity: Float? = null,
 ) : PaintProps()
 
 @JsonTypeName("GRADIENT_LINEAR")
@@ -108,7 +129,7 @@ data class GradientPaintLinear(
     val gradientStops: List<ColorStop>,
     override val blendMode: BlendMode? = null,
     override val visible: Boolean? = null,
-    override val opacity: Float? = null
+    override val opacity: Float? = null,
 ) : PaintProps()
 
 @JsonTypeName("GRADIENT_RADIAL")
@@ -118,7 +139,7 @@ data class GradientPaintRadial(
     val gradientStops: List<ColorStop>,
     override val blendMode: BlendMode? = null,
     override val visible: Boolean? = null,
-    override val opacity: Float? = null
+    override val opacity: Float? = null,
 ) : PaintProps()
 
 @JsonTypeName("GRADIENT_ANGULAR")
@@ -128,7 +149,7 @@ data class GradientPaintAngular(
     val gradientStops: List<ColorStop>,
     override val blendMode: BlendMode? = null,
     override val visible: Boolean? = null,
-    override val opacity: Float? = null
+    override val opacity: Float? = null,
 ) : PaintProps()
 
 @JsonTypeName("GRADIENT_DIAMOND")
@@ -138,7 +159,7 @@ data class GradientPaintDiamond(
     val gradientStops: List<ColorStop>,
     override val blendMode: BlendMode? = null,
     override val visible: Boolean? = null,
-    override val opacity: Float? = null
+    override val opacity: Float? = null,
 ) : PaintProps()
 
 @JsonTypeName("IMAGE")
@@ -152,7 +173,7 @@ data class ImagePaint(
     val rotation: Int? = null,
     override val blendMode: BlendMode? = null,
     override val visible: Boolean? = null,
-    override val opacity: Float? = null
+    override val opacity: Float? = null,
 ) : PaintProps()
 
 @JsonTypeName("SOLID")
@@ -161,39 +182,44 @@ data class SolidPaint(
     val color: RGB,
     override val blendMode: BlendMode? = null,
     override val visible: Boolean? = null,
-    override val opacity: Float? = null
+    override val opacity: Float? = null,
 ) : PaintProps()
 
-data class Constraints(
-    val horizontal: ConstraintType, val vertical: ConstraintType
-)
+data class Constraints(val horizontal: ConstraintType, val vertical: ConstraintType)
 
 enum class StrokeAlign(@JsonValue val value: String) {
-    CENTER("CENTER"), INSIDE("INSIDE"), OUTSIDE("OUTSIDE")
+    CENTER("CENTER"),
+    INSIDE("INSIDE"),
+    OUTSIDE("OUTSIDE"),
 }
 
 enum class LayoutAlign(@JsonValue val value: String) {
-    MIN("MIN"), CENTER("CENTER"), MAX("MAX"), STRETCH("STRETCH"), INHERIT("INHERIT")
+    MIN("MIN"),
+    CENTER("CENTER"),
+    MAX("MAX"),
+    STRETCH("STRETCH"),
+    INHERIT("INHERIT"),
 }
 
 enum class LayoutPositioning(@JsonValue val value: String) {
-    AUTO("AUTO"), ABSOLUTE("ABSOLUTE")
+    AUTO("AUTO"),
+    ABSOLUTE("ABSOLUTE"),
 }
 
 enum class LayoutSizing(@JsonValue val value: String) {
-    FIXED("FIXED"), HUG("HUG"), FILL("FILL")
+    FIXED("FIXED"),
+    HUG("HUG"),
+    FILL("FILL"),
 }
 
-data class Vector(
-    val x: Int, val y: Int
-)
+data class Vector(val x: Int, val y: Int)
 
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "ty")
 @JsonSubTypes(
     JsonSubTypes.Type(value = DropShadowEffect::class, name = "DROP_SHADOW"),
     JsonSubTypes.Type(value = InnerShadowEffect::class, name = "INNER_SHADOW"),
     JsonSubTypes.Type(value = BackgroundBlurEffect::class, name = "BACKGROUND_BLUR"),
-    JsonSubTypes.Type(value = LayerBlurEffect::class, name = "LAYER_BLUR")
+    JsonSubTypes.Type(value = LayerBlurEffect::class, name = "LAYER_BLUR"),
 )
 abstract class Effect {
     abstract val visible: Boolean
@@ -208,7 +234,7 @@ data class DropShadowEffect(
     val spread: Int? = null,
     override val visible: Boolean,
     val blendMode: BlendMode,
-    val showShadowBehindNode: Boolean? = null
+    val showShadowBehindNode: Boolean? = null,
 ) : Effect()
 
 @JsonTypeName("INNER_SHADOW")
@@ -219,32 +245,28 @@ data class InnerShadowEffect(
     val radius: Int,
     val spread: Int? = null,
     override val visible: Boolean,
-    val blendMode: BlendMode
+    val blendMode: BlendMode,
 ) : Effect()
 
 @JsonTypeName("BACKGROUND_BLUR")
-data class BackgroundBlurEffect(
-    val radius: Int, override val visible: Boolean
-) : Effect()
+data class BackgroundBlurEffect(val radius: Int, override val visible: Boolean) : Effect()
 
-@JsonTypeName("LAYER_BLUR")
-data class LayerBlurEffect(
-    val radius: Int, override val visible: Boolean
-) : Effect()
+@JsonTypeName("LAYER_BLUR") data class LayerBlurEffect(val radius: Int, override val visible: Boolean) : Effect()
 
-data class VectorPath(
-    val windingRule: WindingRule, val data: String
-)
+data class VectorPath(val windingRule: WindingRule, val data: String)
 
 data class StrokeWeight(
     val strokeTopWeight: Float,
     val strokeBottomWeight: Float,
     val strokeLeftWeight: Float,
-    val strokeRightWeight: Float
+    val strokeRightWeight: Float,
 )
 
 data class CornerRadius(
-    val topLeftRadius: Int, val topRightRadius: Int, val bottomLeftRadius: Int, val bottomRightRadius: Int
+    val topLeftRadius: Int,
+    val topRightRadius: Int,
+    val bottomLeftRadius: Int,
+    val bottomRightRadius: Int,
 )
 
 @JsonInclude(JsonInclude.Include.NON_DEFAULT, content = JsonInclude.Include.NON_EMPTY)
@@ -289,6 +311,5 @@ data class FrameNode(
     val rotation: Int? = null,
     val layoutSizingHorizontal: LayoutSizing? = null,
     val layoutSizingVertical: LayoutSizing? = null,
-    val constraints: Constraints? = null
+    val constraints: Constraints? = null,
 )
-

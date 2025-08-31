@@ -13,18 +13,16 @@ import io.restassured.http.ContentType
 import io.smallrye.jwt.build.Jwt
 import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.inject.Inject
+import java.util.*
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.hibernate.reactive.mutiny.Mutiny
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import java.util.UUID
-import java.util.concurrent.TimeUnit
 
 class ConfigSyncTestProfile : QuarkusTestProfile {
-    override fun getConfigOverrides(): Map<String, String> = mapOf(
-        "apps.companion-app-key-prefix" to "test-app-"
-    )
+    override fun getConfigOverrides(): Map<String, String> = mapOf("apps.companion-app-key-prefix" to "test-app-")
 }
 
 @QuarkusTest
@@ -33,14 +31,11 @@ class ConfigSyncTestProfile : QuarkusTestProfile {
 @QuarkusTestResource(PostgresTestResourceManager::class, parallel = true)
 class ConfigSyncResourceIT {
 
-    @Inject
-    lateinit var redis: ReactiveRedisDataSource
+    @Inject lateinit var redis: ReactiveRedisDataSource
 
-    @Inject
-    lateinit var sessionFactory: Mutiny.SessionFactory
+    @Inject lateinit var sessionFactory: Mutiny.SessionFactory
 
-    @ConfigProperty(name = "apps.companion-app-key-prefix")
-    lateinit var companionAppKeyPrefix: String
+    @ConfigProperty(name = "apps.companion-app-key-prefix") lateinit var companionAppKeyPrefix: String
 
     private val appConfigUpdatesQueue: ReactiveListCommands<String, AppState> by lazy {
         redis.list(AppState::class.java)
@@ -60,27 +55,30 @@ class ConfigSyncResourceIT {
     fun setup() {
         // Clear any existing data for the test user
         val appQueueKey = companionAppKeyPrefix + testUserId
-        
+
         runBlocking {
             // Clear any existing data
             redis.key().del(appQueueKey).awaitSuspending()
         }
 
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
-                DO $$
-                BEGIN
-                   IF EXISTS (SELECT FROM information_schema.tables
-                              WHERE table_schema = 'public'
-                              AND table_name = 'users') THEN
-                      EXECUTE 'TRUNCATE TABLE Users RESTART IDENTITY CASCADE';
-                   END IF;
-                END $$;
-            """.trimIndent()
-            session.createNativeQuery<Void>(sql).executeUpdate()
-        }.await().indefinitely()
-        
-
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
+                        DO $$
+                        BEGIN
+                           IF EXISTS (SELECT FROM information_schema.tables
+                                      WHERE table_schema = 'public'
+                                      AND table_name = 'users') THEN
+                              EXECUTE 'TRUNCATE TABLE Users RESTART IDENTITY CASCADE';
+                           END IF;
+                        END $$;
+                    """
+                        .trimIndent()
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
+            .await()
+            .indefinitely()
     }
 
     @Test
@@ -156,7 +154,7 @@ class ConfigSyncResourceIT {
             val storedState = appConfigUpdatesQueue.lindex(queueName, 0).awaitSuspending()
             assert(storedState != null) { "No app state was stored in Redis" }
             assert(storedState?.port == updatedAppState.port) { "Stored port should be updated value" }
-            
+
             // Verify there's only one item in the list
             val listLength = appConfigUpdatesQueue.llen(queueName).awaitSuspending()
             assert(listLength == 1L) { "List should contain only one item after update" }
@@ -166,11 +164,7 @@ class ConfigSyncResourceIT {
     @Test
     fun testUnauthorizedAccess() {
         // Try to access without authentication
-        given()
-            .`when`()
-            .get("/sync/app/updates")
-            .then()
-            .statusCode(401)
+        given().`when`().get("/sync/app/updates").then().statusCode(401)
 
         given()
             .contentType(ContentType.JSON)
@@ -180,58 +174,54 @@ class ConfigSyncResourceIT {
             .then()
             .statusCode(401)
 
-        given()
-            .`when`()
-            .get("/sync/key/get")
-            .then()
-            .statusCode(401)
+        given().`when`().get("/sync/key/get").then().statusCode(401)
 
-        given()
-            .`when`()
-            .post("/sync/key/generate")
-            .then()
-            .statusCode(401)
+        given().`when`().post("/sync/key/generate").then().statusCode(401)
     }
 
     @Test
     fun testKeyGenerationEndpoints() {
 
         // Create a ConfigUser for the test user ID to support key generation tests
-        sessionFactory.withTransaction { session, _ ->
-            val sql = """
+        sessionFactory
+            .withTransaction { session, _ ->
+                val sql =
+                    """
             INSERT INTO users (id, username, name, role, allowSavingCompletions, createdAt)
             VALUES ('$testUserId', '$testUserId', 'Test User', 'USER', false, NOW())
             ON CONFLICT (id) DO NOTHING;
-        """.trimIndent()
+        """
+                        .trimIndent()
 
-            session.createNativeQuery<Void>(sql)
-                .executeUpdate()
-        }
+                session.createNativeQuery<Void>(sql).executeUpdate()
+            }
             .await()
             .indefinitely()
 
         // Test key generation
-        val generateResponse = given()
-            .header("Authorization", "Bearer $testJwt")
-            .`when`()
-            .post("/sync/key/generate")
-            .then()
-            .statusCode(200)
-            .extract()
-            .response()
+        val generateResponse =
+            given()
+                .header("Authorization", "Bearer $testJwt")
+                .`when`()
+                .post("/sync/key/generate")
+                .then()
+                .statusCode(200)
+                .extract()
+                .response()
 
         val generatedKey = generateResponse.body.asString()
         assert(generatedKey.isNotEmpty()) { "Generated key should not be empty" }
 
         // Test key retrieval
-        val getResponse = given()
-            .header("Authorization", "Bearer $testJwt")
-            .`when`()
-            .get("/sync/key/get")
-            .then()
-            .statusCode(200)
-            .extract()
-            .response()
+        val getResponse =
+            given()
+                .header("Authorization", "Bearer $testJwt")
+                .`when`()
+                .get("/sync/key/get")
+                .then()
+                .statusCode(200)
+                .extract()
+                .response()
 
         val retrievedKey = getResponse.body.asString()
         assert(retrievedKey == generatedKey) { "Retrieved key should match generated key" }
