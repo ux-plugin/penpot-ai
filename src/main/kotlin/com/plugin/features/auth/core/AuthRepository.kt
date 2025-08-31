@@ -6,7 +6,6 @@ import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
 import io.quarkus.logging.Log
 import io.quarkus.redis.datasource.ReactiveRedisDataSource
-import io.quarkus.redis.datasource.value.ReactiveValueCommands
 import io.smallrye.jwt.build.Jwt
 import io.smallrye.mutiny.Uni
 import jakarta.enterprise.context.ApplicationScoped
@@ -23,11 +22,6 @@ class AuthRepository(
     @ConfigProperty(name = "auth.refresh-token-ttl-s")
     private val refreshTokenExpirationSeconds: Long,
 ) : PanacheRepository<AuthUserEntity>, IAuthRepository {
-
-    private val redis: ReactiveValueCommands<String, String> =
-        reactiveRedisDataSource.value(String::class.java)
-    private val accessTokenPrefix = "access_token:"
-
 
     @WithSession
     override fun getRefreshToken(userId: String): Uni<String> {
@@ -274,12 +268,8 @@ class AuthRepository(
                         } else {
                             // Case 2b: No userId is provided. Create a new user and associate the social login with it.
                             Log.debug("Social login not found and no userId provided. Creating a new user and associating it.")
-                            // Generate a unique username for the new AuthUserEntity.
-                            // This ensures that the @Username field is populated and unique.
-                            val newUsername =
-                                "social_${provider.name.lowercase()}_${UUID.randomUUID().toString().substring(0, 8)}"
 
-                            addUser() // This function will create a new user with the generated unique username
+                            addUser()
                                 .flatMap { newUser ->
                                     insertSocialLogin(
                                         provider = provider,
@@ -288,7 +278,7 @@ class AuthRepository(
                                         refreshTokenExpiresAt = refreshTokenExpiresAt,
                                         userId = newUser.id
                                     )
-                                        .map { newUser } // Return the newly created user
+                                        .map { newUser }
                                 }
                         }
                     }

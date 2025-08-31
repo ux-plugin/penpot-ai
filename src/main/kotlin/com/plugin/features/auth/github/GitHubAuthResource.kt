@@ -2,7 +2,6 @@ package com.plugin.features.auth.github
 
 import com.plugin.features.auth.core.AccessTokenResponse
 import com.plugin.features.auth.core.AccountAlreadyLinkedException
-import com.plugin.features.auth.core.ConnectResultRequest
 import com.plugin.features.auth.core.ConnectSocialProviderResponse
 import com.plugin.features.auth.core.ConnectSocialProviderResult
 import io.quarkus.logging.Log

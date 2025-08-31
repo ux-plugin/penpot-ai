@@ -1,11 +1,11 @@
 package com.plugin.features.apps
 
-import jakarta.enterprise.context.ApplicationScoped
-import jakarta.ws.rs.NotFoundException
 import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
 import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
 import io.smallrye.mutiny.Uni
+import jakarta.enterprise.context.ApplicationScoped
+import jakarta.ws.rs.NotFoundException
 
 @ApplicationScoped
 class ConfigSyncRepository: PanacheRepository<ConfigUser> {

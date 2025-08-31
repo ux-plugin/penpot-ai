@@ -1,6 +1,5 @@
 package com.plugin.features.auth.core
 
-import io.quarkus.logging.Log
 import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject

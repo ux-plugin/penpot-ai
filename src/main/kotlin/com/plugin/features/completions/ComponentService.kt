@@ -1,10 +1,8 @@
 package com.plugin.features.completions
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.logging.Log
 import io.quarkus.security.Authenticated
-import io.smallrye.mutiny.Uni
 import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
