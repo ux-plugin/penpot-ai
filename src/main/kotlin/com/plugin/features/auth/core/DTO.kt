@@ -40,6 +40,19 @@ data class OAuthInitResponse(
     val loginUrl: String,
 )
 
+data class ConnectInitResponse(
+    val readToken: String,
+    val loginUrl: String,
+)
+
+data class ConnectResultRequest(
+    val readToken: String,
+)
+
+data class ConnectSocialProviderResponse(
+    val result: String,
+)
+
 /**
  * Read token response
  */

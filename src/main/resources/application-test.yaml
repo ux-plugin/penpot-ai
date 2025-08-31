@@ -38,7 +38,8 @@ auth:
     client-id: client id
     client-secret: client secret
     auth-url: https://www.figma.com/oauth
-    redirect-uri: http://localhost:8080/auth/figma/callback
+    login-redirect-uri: http://localhost:8080/auth/figma/callback
+    connect-redirect-uri: http://localhost:8080/auth/figma/connect/callback
     login:
       random-key:
         max-retries: 5
@@ -54,7 +55,8 @@ auth:
     client-id: github-client-id
     client-secret: github-client-secret
     auth-url: https://github.com/login/oauth/authorize
-    redirect-uri: http://localhost:8080/auth/github/callback
+    login-redirect-uri: http://localhost:8080/auth/github/callback
+    connect-redirect-uri: http://localhost:8080/auth/github/connect/callback
     login:
       random-key:
         max-retries: 5

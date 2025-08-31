@@ -10,3 +10,8 @@ data class LoginCredentials(
     val refreshToken: String,
     val refreshTokenExpiresAt: Instant
 )
+
+enum class ConnectSocialProviderResult(val value: String) {
+    SUCCESS("200"),
+    FAILURE("500")
+}
