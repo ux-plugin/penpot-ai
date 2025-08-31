@@ -184,6 +184,7 @@ class AuthRepository(
         refreshToken: String,
         refreshTokenExpiresAt: Instant,
         userId: String,
+        main: Boolean,
     ): Uni<SocialLoginEntity> {
         return withTransaction {
             AuthUserEntity.find("id", userId)
@@ -199,6 +200,7 @@ class AuthRepository(
                             this.providerUserId = providerUserId
                             this.refreshToken = refreshToken
                             this.refreshTokenExpiresAt = refreshTokenExpiresAt
+                            this.main = main
                         }
                     SocialLoginEntity.persist(socialLoginEntity).map { socialLoginEntity }
                 }
@@ -312,6 +314,7 @@ class AuthRepository(
                                     refreshToken = refreshToken,
                                     refreshTokenExpiresAt = refreshTokenExpiresAt,
                                     userId = newUser.id,
+                                    main = true,
                                 )
                                 .map { newUser }
                         }

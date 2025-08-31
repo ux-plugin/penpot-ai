@@ -31,6 +31,7 @@ interface IAuthRepository {
         refreshToken: String,
         refreshTokenExpiresAt: Instant,
         userId: String,
+        main: Boolean = false,
     ): Uni<SocialLoginEntity>
 
     fun upsertSocialLogin(

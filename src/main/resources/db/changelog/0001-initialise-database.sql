@@ -95,6 +95,7 @@ CREATE TABLE SocialLogins
     provider              social_providers NOT NULL,
     refreshToken          VARCHAR,
     refreshTokenExpiresAt TIMESTAMP        Not NULL,
+    main                  BOOLEAN          NOT NULL DEFAULT FALSE,
     CONSTRAINT fk_social_user FOREIGN KEY (userId) REFERENCES Users (id)
 );
 EXCEPTION

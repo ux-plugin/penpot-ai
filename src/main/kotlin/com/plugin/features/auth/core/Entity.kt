@@ -39,6 +39,8 @@ class SocialLoginEntity : PanacheEntityBase {
 
     @Column(nullable = false) @Password lateinit var refreshToken: String
 
+    @Column(nullable = false) var main: Boolean = false
+
     @Column(nullable = false) lateinit var refreshTokenExpiresAt: Instant
 
     companion object : PanacheCompanion<SocialLoginEntity>
