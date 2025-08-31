@@ -196,7 +196,6 @@ class GitHubAuthService @Inject constructor(
     }
 
     suspend fun connectSocialProfile(code: String, state: String) {
-        // Get the read token from Redis using the writing token
         val userId = redisRepository.getValue(userIdPrefix + state) ?: throw NotFoundException("Invalid state")
 
         try {
