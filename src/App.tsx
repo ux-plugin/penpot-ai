@@ -1,20 +1,41 @@
-import { createSignal } from 'solid-js'
-import { Button } from './components/ui/button'
+import { Routes, Route, Navigate, Outlet } from "react-router-dom";
+import Login from "./views/Login";
+import Home from "./views/Home";
+import { useAuthenticationStore } from "@/stores/useAuthenticationStore.ts";
+import Settings from "@/views/Settings.tsx";
+
+const AuthenticatedRoutes = () => {
+  const { isAuthenticated } = useAuthenticationStore();
+
+  return isAuthenticated ? <Outlet /> : <Navigate to="/login" replace />;
+};
+
+const NonAuthenticatedRoutes = () => {
+  const { isAuthenticated } = useAuthenticationStore();
+
+  return !isAuthenticated ? <Outlet /> : <Navigate to="/home" replace />;
+};
+
 
 function App() {
-  const [count, setCount] = createSignal(0)
-  function handleClick() {
-    parent.postMessage({ pluginMessage: { type: 'create-rectangles', count: count() } }, '*')
-  }
+  const { isAuthenticated } = useAuthenticationStore();
 
   return (
-    <div class='flex flex-col w-full h-full bg-slate-300 justify-center items-center'>
-      <h2>Rectangle Creator</h2>
-      <p>Count: <input id="count" value={count()} onChange={(event) => setCount(+event.target.value)} /></p>
-      <Button id="create" onClick={handleClick}>Create</Button>
-      <Button id="cancel" onClick={() => alert("canceled operation")}>Cancel</Button>
-    </div>
-  )
+    <Routes>
+      <Route element={<NonAuthenticatedRoutes />}>
+        <Route path="/login" element={<Login />} />
+      </Route>
+      <Route element={<AuthenticatedRoutes />}>
+        <Route path="/home" element={<Home />} />
+        <Route path="/settings" element={<Settings />}/>
+      </Route>
+      <Route
+        path="*"
+        element={isAuthenticated ? <Navigate to="/home" replace /> : <Navigate to="/login" replace />}
+      />
+
+    </Routes>
+  );
 }
 
-export default App
+export default App;
