@@ -14,3 +14,7 @@ export function showErrorToast(err: unknown, fallbackMessage?: string) {
   toast.error(message || fallbackMessage || 'An unexpected error occurred.');
 }
 
+export function showSuccessToast(message: string) {
+  toast.success(message);
+}
+

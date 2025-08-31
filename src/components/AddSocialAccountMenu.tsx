@@ -6,6 +6,7 @@ import { GitHubIcon } from '@/assets/GithubIcon';
 import { useGitHubConnect } from "@/api/auth/connectGithub.ts"; // Import your custom GitHubIcon
 import { useFigmaConnect } from "@/api/auth/connectFigma.ts"; // Import useFigmaConnect
 import { Loader2 } from "lucide-react"; // Import Loader2
+import { showErrorToast, showSuccessToast } from '@/utils/showErrorToast';
 
 /**
  * A component that provides a button to add social accounts via a dropdown menu.
@@ -16,28 +17,22 @@ export function AddSocialAccountMenu() {
   const { isFetching: isFigmaPending, refetch: figmaConnectRefetch } = useFigmaConnect();
 
   const handleFigmaConnect = async () => {
-    try {
-      const result = await figmaConnectRefetch()
-      if (result) {
-        console.log('Figma connected successfully');
-      } else {
-        console.log('Figma connection failed');
-      }
-    } finally {
+    const {error} = await figmaConnectRefetch()
+    if (error) {
+      showErrorToast('Figma connection failed');
+      return
     }
+    showSuccessToast('Figma account connected successfully');
+    
   };
 
   const handleGitHubConnect = async () => {
-    try {
-      const result = await githubConnectRefetch()
-      if (result) {
-        console.log('GitHub connected successfully');
-      } else {
-        console.log('GitHub connection failed');
-      }
-    } finally {
-      // No need to reset the local loading state, as isPending from hook will handle it
+    const { error } = await githubConnectRefetch();
+    if (error) {
+      showErrorToast("GitHub connection failed");
+      return;
     }
+    showSuccessToast("GitHub account connected successfully");
   };
 
   // Combine the pending states from the hooks

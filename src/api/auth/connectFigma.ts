@@ -1,8 +1,8 @@
 import { useQuery, UseQueryResult } from "@tanstack/react-query";
-import { apiFetch } from "@/api/auth/api-fetcher"; // Import apiFetch
+import { apiFetch } from "@/api/auth/api-fetcher";
 
 interface ConnectResponse {
-  readTokenJwt: string;
+  readToken: string;
   loginUrl: string;
 }
 
@@ -11,29 +11,30 @@ interface ConnectResultResponse {
 }
 
 /**
- * Fetches the Figma login info.
+ * Initiates the Figma connect flow and waits for the result.
  */
 export async function figmaConnect(signal?: AbortSignal): Promise<boolean> {
-
   const initLoginResponse = await apiFetch<ConnectResponse>(
     "/auth/figma/connect/init",
     {
       method: "GET",
-      headers: { Accept: "application/json"},
+      headers: { Accept: "application/json" },
       signal,
     },
     true
   );
 
+  // Open Figma OAuth/login flow in a new tab
   window.open(initLoginResponse.loginUrl, "_blank");
 
+  // Wait for backend to confirm the connect result using the temporary read token
   await apiFetch<ConnectResultResponse>(
     "/auth/figma/connect/result",
     {
       method: "GET",
       headers: {
         Accept: "application/json",
-        Authorization: `Bearer ${initLoginResponse.readTokenJwt}`,
+        Authorization: `Bearer ${initLoginResponse.readToken}`,
       },
       signal,
     },
@@ -44,14 +45,15 @@ export async function figmaConnect(signal?: AbortSignal): Promise<boolean> {
 }
 
 /**
- * React Query hook to retrieve the Figma login info.
- * By default the query is disabled (manual trigger). Pass { enabled: true } to fetch automatically.
+ * React Query hook to trigger Figma connect.
+ * Query is disabled by default so it can be triggered manually.
  */
 export function useFigmaConnect(opts?: { enabled?: boolean }): UseQueryResult<boolean, Error> {
   return useQuery({
-    queryKey: ["figma-login", import.meta.env.VITE_BACKEND_URL],
+    queryKey: ["figma-connect", import.meta.env.VITE_BACKEND_URL],
     queryFn: ({ signal }) => figmaConnect(signal),
     staleTime: 5 * 60 * 1000,
     enabled: opts?.enabled ?? false,
+    retry: false,
   });
 }
