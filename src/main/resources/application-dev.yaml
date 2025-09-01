@@ -1,4 +1,7 @@
 quarkus:
+  live-reload:
+    instrumentation: true
+
   liquibase:
     migrate-at-start: true
     clean-at-start: true

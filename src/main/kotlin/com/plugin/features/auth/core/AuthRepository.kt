@@ -9,6 +9,7 @@ import io.quarkus.redis.datasource.ReactiveRedisDataSource
 import io.smallrye.jwt.build.Jwt
 import io.smallrye.mutiny.Uni
 import jakarta.enterprise.context.ApplicationScoped
+import jakarta.ws.rs.NotAllowedException
 import jakarta.ws.rs.NotFoundException
 import java.time.Instant
 import java.util.*
@@ -19,10 +20,10 @@ class AuthRepository(
     reactiveRedisDataSource: ReactiveRedisDataSource,
     @ConfigProperty(name = "auth.access-token-ttl-s") private val accessTokenExpirationSeconds: Long,
     @ConfigProperty(name = "auth.refresh-token-ttl-s") private val refreshTokenExpirationSeconds: Long,
-) : PanacheRepository<AuthUserEntity>, IAuthRepository {
+) : PanacheRepository<AuthUserEntity> {
 
     @WithSession
-    override fun getRefreshToken(userId: String): Uni<String> {
+    fun getRefreshToken(userId: String): Uni<String> {
         return AuthUserEntity.find("id", userId).firstResult().onItem().transformToUni { entity ->
             if (entity == null) {
                 Log.error("User not found with ID: $userId")
@@ -36,7 +37,7 @@ class AuthRepository(
     }
 
     /** Creates both access and refresh tokens for a user */
-    override fun createTokensForUser(id: String, role: UserRole): Uni<LoginCredentials> {
+    fun createTokensForUser(id: String, role: UserRole): Uni<LoginCredentials> {
         return createAccessToken(id, role).flatMap { accessToken ->
             createRefreshToken(id).map { refreshTokenInfo ->
                 LoginCredentials(
@@ -91,7 +92,7 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
+    fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): Uni<String> {
         return AuthUserEntity.find(
                 "id = ?1 and refreshToken = ?2",
                 refreshTokenRequest.userId,
@@ -115,7 +116,7 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun addUser(): Uni<AuthUserEntity> {
+    fun addUser(): Uni<AuthUserEntity> {
         return withTransaction {
             val newUser =
                 AuthUserEntity().apply {
@@ -126,7 +127,7 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun getSocialLogin(
+    fun getSocialLogin(
         providerUserId: String,
         provider: SocialProvider,
     ): Uni<SocialLoginEntity?> {
@@ -143,7 +144,7 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun updateSocialLogin(
+    fun updateSocialLogin(
         provider: SocialProvider,
         providerUserId: String,
         refreshToken: String?,
@@ -178,13 +179,13 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun insertSocialLogin(
+    fun insertSocialLogin(
         provider: SocialProvider,
         providerUserId: String,
         refreshToken: String,
         refreshTokenExpiresAt: Instant,
         userId: String,
-        main: Boolean,
+        main: Boolean = false,
     ): Uni<SocialLoginEntity> {
         return withTransaction {
             AuthUserEntity.find("id", userId)
@@ -208,7 +209,7 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun upsertSocialLogin(
+    fun upsertSocialLogin(
         provider: SocialProvider,
         providerUserId: String,
         refreshToken: String,
@@ -239,12 +240,31 @@ class AuthRepository(
     }
 
     @WithSession
-    override fun associateUserWithSocialProvider(
+    fun deleteSocialLogin(userId: String, socialLoginId: String): Uni<Unit> {
+        return withTransaction {
+            SocialLoginEntity.find("userId = ?1 and id = ?2", userId, socialLoginId)
+                .firstResult()
+                .onItem()
+                .transformToUni { entity ->
+                    if (entity == null) {
+                        Uni.createFrom().failure(NotFoundException("Social login not found for user: $userId"))
+                    } else if (entity.main) {
+                        Uni.createFrom().failure(NotAllowedException("Cannot delete main social login"))
+                    } else {
+                        SocialLoginEntity.deleteById(socialLoginId)
+                    }
+                }
+                .replaceWith(Unit)
+        }
+    }
+
+    @WithSession
+    fun associateUserWithSocialProvider(
         provider: SocialProvider,
         providerUserId: String,
         refreshToken: String,
         refreshTokenExpiresAt: Instant,
-        userId: String?,
+        userId: String? = null,
     ): Uni<AuthUserEntity> {
         return withTransaction {
             getSocialLogin(providerUserId, provider).flatMap { socialLoginEntity ->

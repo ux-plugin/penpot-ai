@@ -14,7 +14,7 @@ import org.eclipse.microprofile.jwt.JsonWebToken
 @Path("/auth")
 @Produces(MediaType.APPLICATION_JSON)
 @ApplicationScoped
-class AuthResource @Inject constructor(private val authService: IAuthService, private val jsonWebToken: JsonWebToken) {
+class AuthResource @Inject constructor(private val authService: AuthService, private val jsonWebToken: JsonWebToken) {
     /** Refresh an access token */
     @POST
     @Path("/access-token/refresh")
@@ -116,6 +116,37 @@ class AuthResource @Inject constructor(private val authService: IAuthService, pr
                 else -> {
                     Log.error("Token refresh error", e)
                     Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity(AuthErrorResponse()).build()
+                }
+            }
+        }
+    }
+
+    @DELETE
+    @Path("/socials/{id}/delete")
+    @Authenticated
+    suspend fun deleteSocialLogin(@QueryParam("id") id: String): Response {
+        val userId: String = jsonWebToken.subject
+        return try {
+            authService.deleteSocialLogin(userId, id)
+            Response.ok().build()
+        } catch (e: Exception) {
+            when (e) {
+                is NotAllowedException -> {
+                    Log.debug(e)
+                    Response.status(Response.Status.FORBIDDEN)
+                        .entity(AuthErrorResponse("Operation not allowed"))
+                        .build()
+                }
+                is NotFoundException -> {
+                    Response.status(Response.Status.NOT_FOUND)
+                        .entity(AuthErrorResponse("Could not find socialLogin"))
+                        .build()
+                }
+                else -> {
+                    Log.error("Failed to delete social login", e)
+                    Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(AuthErrorResponse("Could not delete socialLogin"))
+                        .build()
                 }
             }
         }

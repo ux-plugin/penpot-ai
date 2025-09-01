@@ -33,8 +33,8 @@ constructor(
     @ConfigProperty(name = "auth.github.read-token.redis-key-prefix") private var readTokenPrefix: String,
     @ConfigProperty(name = "auth.github.user-id.redis-key-prefix") private var userIdPrefix: String,
     @ConfigProperty(name = "auth.github.write-token.redis-key-prefix") private var writeTokenPrefix: String,
-    private var authRepository: IAuthRepository,
-    private var redisRepository: IRedisRepository,
+    private var authRepository: AuthRepository,
+    private var redisRepository: RedisRepository,
 ) {
 
     /** Initializes the OAuth process by generating a unique token. */
