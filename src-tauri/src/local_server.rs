@@ -1,10 +1,18 @@
-use std::convert::Infallible;
 use crate::audio::{AudioCommand, AudioManager};
-use axum::{debug_handler, extract::State, http::StatusCode, response::{
-    sse::{Event, Sse},
-    IntoResponse,
-}, routing::get, Router};
+use axum::{
+    debug_handler,
+    extract::State,
+    http::StatusCode,
+    response::{
+        sse::{Event, Sse},
+        IntoResponse,
+    },
+    routing::get,
+    Router,
+};
+use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
+use std::convert::Infallible;
 use std::net::ToSocketAddrs;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -12,8 +20,6 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
-use base64::{Engine as _, engine::{general_purpose}};
-
 
 // Server state that will be shared across handlers
 #[derive(Clone)]
@@ -136,10 +142,13 @@ async fn start_recording(
     let (audio_tx, audio_rx) = mpsc::channel::<Bytes>(10);
 
     // First get the sender outside of the await
-    let audio_command_tx = state.audio_command_tx.lock().unwrap()
+    let audio_command_tx = state
+        .audio_command_tx
+        .lock()
+        .unwrap()
         .as_ref()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
-        .clone();  // Clone the sender
+        .clone(); // Clone the sender
 
     // Now use it after the guard is dropped
     if let Err(_) = audio_command_tx.send(AudioCommand::Start(audio_tx)).await {
@@ -171,7 +180,7 @@ async fn stop_recording(State(state): State<ServerState>) -> impl IntoResponse {
         }
         None => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to stop recording"
+            "Failed to stop recording",
         ),
     }
 }

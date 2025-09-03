@@ -1,7 +1,9 @@
-mod local_server;
 mod audio;
+mod local_server;
 
+use keyring::Entry;
 use local_server::LocalServer;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
@@ -11,15 +13,68 @@ use tokio::runtime::Runtime;
 // Server state that will be managed by Tauri
 struct ServerState(Mutex<Option<LocalServer>>, Mutex<Option<Runtime>>);
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str)  {
-    println!("Hello, {}! You've been greeted from Rust!", name);
+// Authentication credentials structure
+#[derive(Serialize, Deserialize, Clone)]
+struct AuthCredentials {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    aes_gcm: Option<String>,
+    refresh_token_expires_at: Option<String>,
+    user_id: Option<String>,
 }
+
+// Keyring commands for secure credential storage
+#[tauri::command]
+async fn get_credentials() -> Result<AuthCredentials, String> {
+    let entry = Entry::new("figma_plugin_companion_app", "auth_credentials")
+        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+
+    match entry.get_password() {
+        Ok(password) => serde_json::from_str::<AuthCredentials>(&password)
+            .map_err(|e| format!("Failed to deserialize credentials: {}", e)),
+        Err(keyring::Error::NoEntry) => {
+            // Return empty credentials if no entry exists
+            Ok(AuthCredentials {
+                access_token: None,
+                refresh_token: None,
+                aes_gcm: None,
+                refresh_token_expires_at: None,
+                user_id: None,
+            })
+        }
+        Err(e) => Err(format!("Failed to get credentials from keyring: {}", e)),
+    }
+}
+
+#[tauri::command]
+async fn set_credentials(credentials: AuthCredentials) -> Result<(), String> {
+    let entry = Entry::new("figma_plugin_companion_app", "auth_credentials")
+        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+
+    let credentials_json = serde_json::to_string(&credentials)
+        .map_err(|e| format!("Failed to serialize credentials: {}", e))?;
+
+    entry
+        .set_password(&credentials_json)
+        .map_err(|e| format!("Failed to set credentials in keyring: {}", e))
+}
+
+#[tauri::command]
+async fn delete_credentials() -> Result<(), String> {
+    let entry = Entry::new("figma_plugin_companion_app", "auth_credentials")
+        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+
+    entry
+        .delete_credential()
+        .map_err(|e| format!("Failed to delete credentials from keyring: {}", e))
+}
+
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
@@ -55,7 +110,7 @@ pub fn run() {
             let quit = MenuItemBuilder::new("Quit").id("quit").build(app).unwrap();
             let hide = MenuItemBuilder::new("Hide").id("hide").build(app).unwrap();
             let show = MenuItemBuilder::new("Show").id("show").build(app).unwrap();
-            // we could opt handle an error case better than calling unwrap
+
             let menu = MenuBuilder::new(app)
                 .items(&[&quit, &hide, &show])
                 .build()
@@ -68,7 +123,8 @@ pub fn run() {
                     "quit" => {
                         // Shutdown the server before exiting
                         let server_state = app.state::<ServerState>();
-                        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+                        let rt =
+                            tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
                         // Take the server from the state and shut it down
                         if let Some(mut server) = server_state.0.lock().unwrap().take() {
@@ -79,7 +135,7 @@ pub fn run() {
                         }
 
                         app.exit(0)
-                    },
+                    }
                     "hide" => {
                         dbg!("menu item hide clicked");
                         let window = app.get_webview_window("main").unwrap();
@@ -124,7 +180,11 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            get_credentials,
+            set_credentials,
+            delete_credentials
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
