@@ -11,12 +11,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import org.eclipse.microprofile.jwt.JsonWebToken
 
-data class AppState(val port: Int?)
-
-data class GenerateKeyResponse(val key: String)
-
-data class GetKeyResponse(val key: String?)
-
 @Path("/sync")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -61,7 +55,7 @@ constructor(
         val userId = jsonWebToken.subject
         return try {
             val key = configSyncService.createEncryptionKey(userId)
-            Response.ok(GenerateKeyResponse(key)).build()
+            Response.ok(key).build()
         } catch (t: Throwable) {
             if (t is NotFoundException) {
                 Response.status(Response.Status.NOT_FOUND).entity("User not found").build()
@@ -79,7 +73,7 @@ constructor(
         val userId = jsonWebToken.subject
         return try {
             val key = configSyncService.getEncryptionKey(userId)
-            Response.ok(GetKeyResponse(key)).build()
+            Response.ok(key).build()
         } catch (t: Throwable) {
             Log.error("error getting encryption key", t)
             Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Internal server error").build()

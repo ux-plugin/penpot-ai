@@ -9,6 +9,7 @@ import jakarta.ws.rs.core.Cookie
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.NewCookie
 import jakarta.ws.rs.core.Response
+import java.util.Date
 import org.eclipse.microprofile.jwt.JsonWebToken
 
 @Path("/auth")
@@ -58,9 +59,9 @@ class AuthResource @Inject constructor(private val authService: AuthService, pri
 
             val refreshTokenCookie =
                 NewCookie.Builder("refresh_token")
-                    .value(refreshToken)
+                    .value(refreshToken.refreshToken)
                     .path("/")
-                    .maxAge(30 * 24 * 60 * 60) // 30 days in seconds
+                    .expiry(Date.from(refreshToken.refreshTokenExpiresAt))
                     .httpOnly(true)
                     .secure(true) // Requires HTTPS
                     .build()
@@ -86,7 +87,7 @@ class AuthResource @Inject constructor(private val authService: AuthService, pri
         return try {
             val refreshToken = authService.getRefreshToken(userId)
 
-            Response.ok(FigmaPluginGetRefreshTokenResponse(refreshToken)).build()
+            Response.ok(refreshToken).build()
         } catch (e: Exception) {
             when (e) {
                 is NotFoundException,

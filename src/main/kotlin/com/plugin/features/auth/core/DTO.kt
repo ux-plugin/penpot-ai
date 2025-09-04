@@ -11,7 +11,7 @@ data class RefreshTokenInfo(val refreshToken: String, val expiresAt: Instant)
 
 data class RefreshAccessTokenResponse(val accessToken: String)
 
-data class FigmaPluginGetRefreshTokenResponse(val refreshToken: String)
+data class FigmaPluginGetRefreshTokenResponse(val refreshToken: String, val refreshTokenExpiresAt: Instant)
 
 data class FigmaPluginRefreshAccessTokenRequest(val refreshToken: String, val userId: String)
 

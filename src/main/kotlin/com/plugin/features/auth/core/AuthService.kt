@@ -17,7 +17,7 @@ class AuthService @Inject constructor(private val authRepository: AuthRepository
         return authRepository.refreshAccessToken(refreshTokenRequest).awaitSuspending()
     }
 
-    suspend fun getRefreshToken(userId: String): String {
+    suspend fun getRefreshToken(userId: String): FigmaPluginGetRefreshTokenResponse {
         return authRepository.getRefreshToken(userId).awaitSuspending()
     }
 

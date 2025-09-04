@@ -46,11 +46,11 @@ constructor(
         }
     }
 
-    suspend fun getEncryptionKey(userId: String): String? {
+    suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? {
         return configSyncRepository.getEncryptionKey(userId).awaitSuspending()
     }
 
-    suspend fun createEncryptionKey(userId: String): String {
+    suspend fun createEncryptionKey(userId: String): EncryptionKeyResponse {
         val keyGenerator = KeyGenerator.getInstance("AES")
         keyGenerator.init(256)
         val secretKey = keyGenerator.generateKey()

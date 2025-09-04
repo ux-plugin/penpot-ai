@@ -38,6 +38,7 @@ CREATE TABLE Users
     createdAt              TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     allowSavingCompletions BOOLEAN    NOT NULL DEFAULT FALSE,
     encryptionKey          VARCHAR,
+    encryptionKeyExpiresAt TIMESTAMP,
     refreshToken           VARCHAR,
     refreshTokenExpiresAt  TIMESTAMP
 );

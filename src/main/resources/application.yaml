@@ -138,3 +138,4 @@ auth:
 
 apps:
   companion-app-key-prefix: "companion-app:"
+  encryption-key-ttl-s: 3600

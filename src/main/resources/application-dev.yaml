@@ -70,3 +70,6 @@ auth:
       redis-key-prefix: "github-read-token:"
     write-token:
       redis-key-prefix: "github-write-token:"
+
+apps:
+  encryption-key-ttl-s: 3600

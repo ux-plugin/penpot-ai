@@ -5,7 +5,6 @@ import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
 import io.quarkus.hibernate.reactive.panache.common.WithSession
 import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
 import io.quarkus.logging.Log
-import io.quarkus.redis.datasource.ReactiveRedisDataSource
 import io.smallrye.jwt.build.Jwt
 import io.smallrye.mutiny.Uni
 import jakarta.enterprise.context.ApplicationScoped
@@ -17,19 +16,19 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 
 @ApplicationScoped
 class AuthRepository(
-    reactiveRedisDataSource: ReactiveRedisDataSource,
     @ConfigProperty(name = "auth.access-token-ttl-s") private val accessTokenExpirationSeconds: Long,
     @ConfigProperty(name = "auth.refresh-token-ttl-s") private val refreshTokenExpirationSeconds: Long,
 ) : PanacheRepository<AuthUserEntity> {
 
     @WithSession
-    fun getRefreshToken(userId: String): Uni<String> {
+    fun getRefreshToken(userId: String): Uni<FigmaPluginGetRefreshTokenResponse> {
         return AuthUserEntity.find("id", userId).firstResult().onItem().transformToUni { entity ->
             if (entity == null) {
                 Log.error("User not found with ID: $userId")
                 Uni.createFrom().failure(NotFoundException("User not found with ID: $userId"))
             } else if (entity.refreshToken.isNotEmpty() && entity.refreshTokenExpiresAt.isAfter(Instant.now())) {
-                Uni.createFrom().item(entity.refreshToken)
+                Uni.createFrom()
+                    .item(FigmaPluginGetRefreshTokenResponse(entity.refreshToken, entity.refreshTokenExpiresAt))
             } else {
                 Uni.createFrom().failure(SecurityException("Invalid or expired refresh token"))
             }
