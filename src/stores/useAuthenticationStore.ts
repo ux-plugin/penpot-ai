@@ -100,23 +100,43 @@ export const useAuthenticationStore = create<AuthState>()((set, get) => ({
   loadFromStorage: async () => {
     try {
       set({ isLoading: true });
-      const credentials = await invoke<AuthCredentials>('get_credentials');
-
-      if (credentials) {
-        const refreshTokenExpiresAt = credentials.refresh_token_expires_at || null;
-        const isAuthenticated = refreshTokenExpiresAt ? new Date(refreshTokenExpiresAt).getTime() > Date.now() : false;
-
+      
+      // First check authentication status from backend
+      const isAuthenticated = await invoke<boolean>('is_authenticated');
+      
+      if (isAuthenticated) {
+        // Only fetch credentials if authenticated
+        try {
+          const credentials = await invoke<AuthCredentials>('get_credentials');
+          
+          set({
+            accessToken: credentials.access_token || null,
+            refreshToken: credentials.refresh_token || null,
+            refreshTokenExpiresAt: credentials.refresh_token_expires_at || null,
+            aesGcm: credentials.aes_gcm || null,
+            userId: credentials.user_id || null,
+            isAuthenticated: true,
+          });
+        } catch (error) {
+          // If getting credentials fails, user is not authenticated
+          console.error('Error fetching credentials:', error);
+          set({ isAuthenticated: false });
+        }
+      } else {
+        // Not authenticated, clear local state
         set({
-          accessToken: credentials.access_token || null,
-          refreshToken: credentials.refresh_token || null,
-          refreshTokenExpiresAt,
-          aesGcm: credentials.aes_gcm || null,
-          userId: credentials.user_id || null,
-          isAuthenticated,
+          accessToken: null,
+          refreshToken: null,
+          refreshTokenExpiresAt: null,
+          aesGcm: null,
+          userId: null,
+          isAuthenticated: false,
         });
       }
     } catch (error) {
-      console.error('Error loading authentication state from keyring:', error);
+      console.error('Error checking authentication status:', error);
+      // On error, assume not authenticated
+      set({ isAuthenticated: false });
     } finally {
       set({ isLoading: false });
     }
