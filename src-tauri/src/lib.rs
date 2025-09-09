@@ -1,67 +1,57 @@
 mod audio;
+pub mod auth;
+mod backend_client;
 mod commands;
+mod config;
+mod dependencies;
 mod local_server;
 mod menu;
+pub mod window_utils;
 
-use commands::{delete_credentials, get_credentials, set_credentials};
-use local_server::LocalServer;
+use crate::commands::{logout, stop_server};
+use crate::dependencies::AppDependencies;
+use commands::{delete_credentials, get_credentials, set_credentials, start_server};
 use menu::setup_menu_and_tray;
-use std::sync::Mutex;
 use tauri::{Manager, WindowEvent};
-use tokio::runtime::Runtime;
-
-// Server state that Tauri will manage
-struct ServerState(Mutex<Option<LocalServer>>, Mutex<Option<Runtime>>);
-
-
-
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    dotenv::dotenv().ok();
+
+    let deps = AppDependencies::new().expect("Failed to initialize dependencies");
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .manage(ServerState(Mutex::new(None), Mutex::new(None)))
+        .manage(deps)
         .setup(|app| {
-            // Start the local server
-            let server_state = app.state::<ServerState>();
-            let rt = Runtime::new().expect("Failed to create Tokio runtime");
-            let mut server = LocalServer::new();
-
-            // Create and start the server
-            rt.block_on(async {
-                let port = server.start().await.expect("Failed to start local server");
-                println!("Local server started on port {}", port);
-
-                *server_state.0.lock().unwrap() = Some(server);
-            });
-
-            *server_state.1.lock().unwrap() = Some(rt);
-            // Setup window
-            let window = app.get_window("main").unwrap();
-
-            // Handle window close events
-            window.clone().on_window_event(move |event| match event {
-                WindowEvent::CloseRequested { api, .. } => {
-                    window.hide().unwrap();
-                    window.set_skip_taskbar(true).unwrap();
-                    api.prevent_close();
-                }
-                _ => {}
-            });
-
-            // Setup menu and tray using the menu module
-            setup_menu_and_tray(&app.handle())?;
-
+            setup_window_behavior(app)?;
+            setup_menu_and_tray(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_credentials,
             set_credentials,
-            delete_credentials
+            delete_credentials,
+            logout,
+            start_server,
+            stop_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn setup_window_behavior(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let window = app.get_window("main").unwrap();
+    window.clone().on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            window.hide().unwrap();
+            window.set_skip_taskbar(true).unwrap();
+            api.prevent_close();
+        }
+    });
+    Ok(())
 }

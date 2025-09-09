@@ -1,12 +1,8 @@
-use crate::local_server::LocalServer;
-use std::sync::Mutex;
+use crate::commands::logout;
+use crate::dependencies::AppDependencies;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::runtime::Runtime;
-
-// Server state type alias for clarity
-type ServerState = (Mutex<Option<LocalServer>>, Mutex<Option<Runtime>>);
 
 pub fn setup_menu_and_tray(app: &AppHandle) -> tauri::Result<()> {
     let quit = MenuItemBuilder::new("Quit").id("quit").build(app)?;
@@ -20,18 +16,23 @@ pub fn setup_menu_and_tray(app: &AppHandle) -> tauri::Result<()> {
     let _ = TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "quit" => {
-                handle_quit_menu(app);
-            }
-            "logout" => {
-                handle_logout_menu(app);
-            }
-            "show" => {
-                handle_show_menu(app);
-            }
-            _ => {}
-        })
+        .on_menu_event(
+            |app, event: tauri::menu::MenuEvent| match event.id().as_ref() {
+                "quit" => {
+                    handle_quit_menu(app);
+                }
+                "logout" => {
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        handle_logout_menu(&app_clone).await;
+                    });
+                }
+                "show" => {
+                    handle_show_menu(app);
+                }
+                _ => {}
+            },
+        )
         .on_tray_icon_event(|tray_icon, event| match event {
             TrayIconEvent::DoubleClick {
                 id: _,
@@ -49,34 +50,42 @@ pub fn setup_menu_and_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 fn handle_quit_menu(app: &AppHandle) {
-    // Shutdown the server before exiting
-    let server_state = app.state::<ServerState>();
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-
-    // Take the server from the state and shut it down
-    if let Some(mut server) = server_state.0.lock().unwrap().take() {
-        rt.block_on(async {
-            server.shutdown().await;
-        });
-        println!("Local server shut down");
-    }
-
-    app.exit(0)
+    let app_clone = app.clone();
+    
+    tauri::async_runtime::spawn(async move {
+        // Get dependencies from the app state
+        let deps = app_clone.state::<AppDependencies>();
+        
+        // Use the stop method from dependencies
+        if let Err(e) = deps.local_server().stop().await {
+            eprintln!("Failed to stop server during quit: {}", e);
+        }
+        
+        app_clone.exit(0);
+    });
 }
 
-fn handle_logout_menu(app: &AppHandle) {
+async fn handle_logout_menu(app: &AppHandle) {
     println!("=== LOGOUT MENU CLICKED ===");
     dbg!("menu item logout clicked");
     
+    // Get dependencies from the app state
+    let deps = app.state::<AppDependencies>();
+    
+    match logout(app.clone(), deps).await {
+        Ok(_) => println!("✅ Logout completed successfully"),
+        Err(e) => println!("❌ Logout failed: {}", e),
+    }
+
     // Check if the main window exists, create if it doesn't
     let main_window = app.get_webview_window("main");
-    
+
     match main_window {
         Some(window) => {
             // Window exists, show it and emit logout event
             let _ = window.show();
             let _ = window.set_focus();
-            match app.emit("logout", ()) {
+            match app.emit("reload", ()) {
                 Ok(_) => println!("✅ Logout event emitted successfully to existing window"),
                 Err(e) => println!("❌ Failed to emit logout event: {}", e),
             }
@@ -84,23 +93,20 @@ fn handle_logout_menu(app: &AppHandle) {
         None => {
             // No window exists, create one first
             println!("No main window found, creating new window");
-            match tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("/".into())
-            )
-            .inner_size(300.0, 400.0)
-            .title("Figma Plugin Companion")
-            .resizable(true)
-            .build() {
+            match tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
+                .inner_size(300.0, 400.0)
+                .title("Figma Plugin Companion")
+                .resizable(true)
+                .build()
+            {
                 Ok(window) => {
                     let _ = window.show();
                     let _ = window.set_focus();
-                    
-                    // Emit logout event to the new window
-                    match app.emit("logout", ()) {
-                        Ok(_) => println!("✅ Logout event emitted successfully to new window"),
-                        Err(e) => println!("❌ Failed to emit logout event: {}", e),
+
+                    // Emit reload event to the new window (not logout)
+                    match app.emit("reload", ()) {
+                        Ok(_) => println!("✅ Reload event emitted successfully to new window"),
+                        Err(e) => println!("❌ Failed to emit reload event: {}", e),
                     }
                 }
                 Err(e) => {
@@ -109,15 +115,15 @@ fn handle_logout_menu(app: &AppHandle) {
             }
         }
     }
-    
+
     println!("=== LOGOUT HANDLING COMPLETED ===");
 }
 
 fn handle_show_menu(app: &AppHandle) {
     println!("=== SHOW MENU CLICKED ===");
-    
+
     let main_window = app.get_webview_window("main");
-    
+
     match main_window {
         Some(window) => {
             // Window exists, just show it and focus
@@ -128,15 +134,12 @@ fn handle_show_menu(app: &AppHandle) {
         None => {
             // No window exists, create one
             println!("No main window found, creating new window");
-            match tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("/".into())
-            )
-            .inner_size(300.0, 400.0)
-            .title("Figma Plugin Companion")
-            .resizable(true)
-            .build() {
+            match tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
+                .inner_size(300.0, 400.0)
+                .title("Figma Plugin Companion")
+                .resizable(true)
+                .build()
+            {
                 Ok(window) => {
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -148,11 +151,14 @@ fn handle_show_menu(app: &AppHandle) {
             }
         }
     }
-    
+
     println!("=== SHOW HANDLING COMPLETED ===");
 }
 
-fn handle_tray_double_click(tray_icon: &tauri::tray::TrayIcon, position: tauri::PhysicalPosition<f64>) {
+fn handle_tray_double_click(
+    tray_icon: &tauri::tray::TrayIcon,
+    position: tauri::PhysicalPosition<f64>,
+) {
     dbg!("system tray received a left click");
 
     let window = tray_icon.app_handle().get_webview_window("main").unwrap();

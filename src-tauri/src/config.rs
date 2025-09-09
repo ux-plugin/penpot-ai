@@ -1,0 +1,73 @@
+use serde::{Deserialize, Serialize};
+use std::env;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub backend_base_url: String,
+    pub keyring_service: String,
+    pub keyring_username: String,
+    pub server_port_range: (u16, u16),
+    pub app_name: String,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            backend_base_url: "http://localhost:8080".to_string(),
+            keyring_service: "figma_plugin_companion_app".to_string(),
+            keyring_username: "auth_credentials".to_string(),
+            server_port_range: (3000, 4000),
+            app_name: "figma_plugin_companion_app".to_string(),
+        }
+    }
+}
+
+impl AppConfig {
+    pub fn load() -> Result<Self, String> {
+        let mut config = Self::default();
+        
+        // Load from environment variables
+        if let Ok(url) = env::var("VITE_BACKEND_URL") {
+            config.backend_base_url = url;
+        }
+        
+        if let Ok(app_name) = env::var("APP_NAME") {
+            config.app_name = app_name;
+        }
+        
+        if let Ok(keyring_service) = env::var("KEYRING_SERVICE") {
+            config.keyring_service = keyring_service;
+        }
+        
+        if let Ok(keyring_username) = env::var("KEYRING_USERNAME") {
+            config.keyring_username = keyring_username;
+        }
+        
+        // Try to load from a config file if it exists
+        if let Ok(config_str) = std::fs::read_to_string("config.json") {
+            match serde_json::from_str::<AppConfig>(&config_str) {
+                Ok(file_config) => {
+                    // Merge file config with environment variables (env vars take precedence)
+                    if env::var("BACKEND_URL").is_err() {
+                        config.backend_base_url = file_config.backend_base_url;
+                    }
+                    if env::var("APP_NAME").is_err() {
+                        config.app_name = file_config.app_name;
+                    }
+                    if env::var("KEYRING_SERVICE").is_err() {
+                        config.keyring_service = file_config.keyring_service;
+                    }
+                    if env::var("KEYRING_USERNAME").is_err() {
+                        config.keyring_username = file_config.keyring_username;
+                    }
+                    config.server_port_range = file_config.server_port_range;
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to parse config.json: {}. Using defaults.", e);
+                }
+            }
+        }
+        
+        Ok(config)
+    }
+}

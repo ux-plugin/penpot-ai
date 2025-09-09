@@ -1,58 +1,9 @@
-use keyring::Entry;
-use serde::{Deserialize, Serialize};
+pub mod auth_commands;
+pub mod server_commands;
 
-// Authentication credentials structure
-#[derive(Serialize, Deserialize, Clone)]
-pub struct AuthCredentials {
-    pub access_token: Option<String>,
-    pub refresh_token: Option<String>,
-    pub aes_gcm: Option<String>,
-    pub refresh_token_expires_at: Option<String>,
-    pub user_id: Option<String>,
-}
+pub(crate) use crate::auth::{AuthCredentials, AuthState};
 
-// Keyring commands for secure credential storage
-#[tauri::command]
-pub async fn get_credentials() -> Result<AuthCredentials, String> {
-    let entry = Entry::new("figma_plugin_companion_app", "auth_credentials")
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-
-    match entry.get_password() {
-        Ok(password) => serde_json::from_str::<AuthCredentials>(&password)
-            .map_err(|e| format!("Failed to deserialize credentials: {}", e)),
-        Err(keyring::Error::NoEntry) => {
-            // Return empty credentials if no entry exists
-            Ok(AuthCredentials {
-                access_token: None,
-                refresh_token: None,
-                aes_gcm: None,
-                refresh_token_expires_at: None,
-                user_id: None,
-            })
-        }
-        Err(e) => Err(format!("Failed to get credentials from keyring: {}", e)),
-    }
-}
-
-#[tauri::command]
-pub async fn set_credentials(credentials: AuthCredentials) -> Result<(), String> {
-    let entry = Entry::new("figma_plugin_companion_app", "auth_credentials")
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-
-    let credentials_json = serde_json::to_string(&credentials)
-        .map_err(|e| format!("Failed to serialize credentials: {}", e))?;
-
-    entry
-        .set_password(&credentials_json)
-        .map_err(|e| format!("Failed to set credentials in keyring: {}", e))
-}
-
-#[tauri::command]
-pub async fn delete_credentials() -> Result<(), String> {
-    let entry = Entry::new("figma_plugin_companion_app", "auth_credentials")
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-
-    entry
-        .delete_credential()
-        .map_err(|e| format!("Failed to delete credentials from keyring: {}", e))
-}
+// Re-export commands for easy access
+pub use auth_commands::{delete_credentials, get_credentials, logout, set_credentials};
+pub use server_commands::{start_server, stop_server};
+pub use crate::window_utils::show_or_create_main_window;

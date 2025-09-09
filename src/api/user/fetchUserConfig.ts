@@ -12,7 +12,6 @@ export interface UserConfig {
  * Fetches the current user's configuration.
  */
 export async function fetchUserConfig(signal?: AbortSignal): Promise<UserConfig> {
-  // apiFetch automatically includes the Authorization header if an accessToken is present
   return apiFetch<UserConfig>("/user/info", { method: "GET", signal });
 }
 
@@ -23,7 +22,8 @@ export function useUserConfigQuery(opts?: { enabled?: boolean }): UseQueryResult
   return useQuery({
     queryKey: ["user-config"],
     queryFn: ({ signal }) => fetchUserConfig(signal),
-    enabled: opts?.enabled ?? false, // Only fetch if authenticated and explicitly enabled or not disabled
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    enabled: opts?.enabled ?? false,
+    staleTime: 5 * 60 * 1000,
+    retry: 0,
   });
 }
