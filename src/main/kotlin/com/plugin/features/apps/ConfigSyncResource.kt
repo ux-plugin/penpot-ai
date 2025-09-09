@@ -66,7 +66,7 @@ constructor(
         }
     }
 
-    @Path("/key/get")
+    @Path("/key")
     @GET
     @Consumes(MediaType.WILDCARD)
     open suspend fun getKey(): Response {
