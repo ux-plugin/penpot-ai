@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+// Authentication error messages
+pub mod auth_errors {
+    pub const NOT_AUTHENTICATED: &str = "Unauthorized: User is not authenticated";
+    pub const NOT_CURRENTLY_AUTHENTICATED: &str = "Unauthorized: User is not currently authenticated";
+}
+
 // Authentication credentials structure
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AuthCredentials {
@@ -105,6 +111,43 @@ impl AuthState {
         println!("Write lock released, starting keyring delete...");
 
         Ok(())
+    }
+
+    // Check if a user is authenticated by validating refresh token expiration
+    pub async fn is_authenticated(&self) -> Result<bool, String> {
+        let credentials = self.credentials.read().await;
+        
+        // Check if refresh_token_expires_at exists and hasn't expired
+        match &credentials.refresh_token_expires_at {
+            Some(expires_at_str) => {
+                // Parse the expiration time string
+                match expires_at_str.parse::<i64>() {
+                    Ok(expires_at_timestamp) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|e| format!("Failed to get current time: {}", e))?
+                            .as_secs() as i64;
+                        
+                        // Token is valid if it hasn't expired
+                        Ok(expires_at_timestamp > now)
+                    }
+                    Err(_) => {
+                        // Try parsing as an ISO format if timestamp parsing fails
+                        match chrono::DateTime::parse_from_rfc3339(expires_at_str) {
+                            Ok(expires_at) => {
+                                let now = chrono::Utc::now();
+                                Ok(expires_at > now)
+                            }
+                            Err(_) => {
+                                // If both parsing methods fail, consider unauthenticated
+                                Ok(false)
+                            }
+                        }
+                    }
+                }
+            }
+            None => Ok(false), // No expiration time means not authenticated
+        }
     }
 }
 

@@ -10,7 +10,7 @@ pub mod window_utils;
 
 use crate::commands::{logout, stop_server};
 use crate::dependencies::AppDependencies;
-use commands::{delete_credentials, get_credentials, set_credentials, start_server};
+use commands::{delete_credentials, get_credentials, is_authenticated, set_credentials, start_server};
 use menu::setup_menu_and_tray;
 use tauri::{Manager, WindowEvent};
 
@@ -33,6 +33,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            is_authenticated,
             get_credentials,
             set_credentials,
             delete_credentials,
