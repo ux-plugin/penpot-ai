@@ -113,7 +113,7 @@ impl AuthState {
         Ok(())
     }
 
-    // Check if user is authenticated by validating refresh token expiration
+    // Check if a user is authenticated by validating refresh token expiration
     pub async fn is_authenticated(&self) -> Result<bool, String> {
         let credentials = self.credentials.read().await;
         
@@ -132,7 +132,7 @@ impl AuthState {
                         Ok(expires_at_timestamp > now)
                     }
                     Err(_) => {
-                        // Try parsing as ISO format if timestamp parsing fails
+                        // Try parsing as an ISO format if timestamp parsing fails
                         match chrono::DateTime::parse_from_rfc3339(expires_at_str) {
                             Ok(expires_at) => {
                                 let now = chrono::Utc::now();
