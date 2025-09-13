@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 use crate::auth::AuthState;
 use crate::backend_client::BackendClient;
-use crate::local_server::LocalServer;
+use crate::local_server::{LocalServer, encryption::EncryptionState};
 use crate::config::AppConfig;
 
 #[derive(Clone)]
@@ -45,7 +45,8 @@ impl AppDependencies {
     // Lazy getter for LocalServer
     pub fn local_server(&self) -> Arc<LocalServer> {
         self.local_server.get_or_init(|| {
-            Arc::new(LocalServer::new(self.backend_client()))
+            let encryption_state = EncryptionState::new();
+            Arc::new(LocalServer::new(self.backend_client(), encryption_state))
         }).clone()
     }
 }

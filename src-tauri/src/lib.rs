@@ -1,4 +1,3 @@
-mod audio;
 pub mod auth;
 mod backend_client;
 mod commands;

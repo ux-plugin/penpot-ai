@@ -1,33 +1,14 @@
-use crate::audio::{AudioCommand, AudioManager};
 use crate::backend_client::BackendClient;
-use axum::{
-    debug_handler,
-    extract::State,
-    http::StatusCode,
-    response::{
-        sse::{Event, Sse},
-        IntoResponse,
-    },
-    routing::get,
-    Router,
-};
-use base64::{engine::general_purpose, Engine as _};
-use bytes::Bytes;
-use std::convert::Infallible;
+use crate::local_server::audio::{AudioCommand, AudioManager};
+use crate::local_server::encryption::EncryptionState;
+use crate::local_server::handlers::{handshake, start_recording, stop_recording};
+use crate::local_server::state::StateForLocalServerHandler;
+use axum::{routing::post, Router};
 use std::net::ToSocketAddrs;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::{Stream, StreamExt};
-
-// Server state that will be shared across handlers
-#[derive(Clone)]
-pub struct StateForLocalServerHandler {
-    audio_command_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>>,
-    backend_client: Arc<BackendClient>,
-}
 
 // Internal mutable state for the LocalServer
 struct ServerState {
@@ -41,14 +22,15 @@ struct ServerState {
 pub struct LocalServer {
     // Protected mutable state
     state: AsyncMutex<ServerState>,
-    
+
     // Immutable dependencies (injected via constructor)
     backend_client: Arc<BackendClient>,
+    encryption_state: EncryptionState,
 }
 
 impl LocalServer {
     // Constructor with dependency injection
-    pub fn new(backend_client: Arc<BackendClient>) -> Self {
+    pub fn new(backend_client: Arc<BackendClient>, encryption_state: EncryptionState) -> Self {
         Self {
             state: AsyncMutex::new(ServerState {
                 port: None, // None = not started, Some(port) = running
@@ -56,6 +38,7 @@ impl LocalServer {
                 server_handle: None,
             }),
             backend_client,
+            encryption_state,
         }
     }
 
@@ -74,7 +57,7 @@ impl LocalServer {
     // This is the main method to start the server
     pub async fn get_or_start(&self) -> Result<u16, String> {
         let mut state = self.state.lock().await;
-        
+
         // If already running, return existing port
         if let Some(port) = state.port {
             return Ok(port);
@@ -101,7 +84,7 @@ impl LocalServer {
     // Stop the server if it's running
     pub async fn stop(&self) -> Result<(), String> {
         let mut state = self.state.lock().await;
-        
+
         if state.port.is_none() {
             println!("⚠️  Warning: Server is not running");
             return Ok(());
@@ -135,16 +118,17 @@ impl LocalServer {
             });
         });
 
-        // Create a simple router with a health check endpoint
-        let server_state = StateForLocalServerHandler {
-            audio_command_tx: Arc::new(Mutex::new(Some(audio_command_tx))),
-            backend_client: self.backend_client.clone(),
-        };
+        // Create server state with injected dependencies
+        let server_state = StateForLocalServerHandler::new(
+            audio_command_tx,
+            self.backend_client.clone(),
+            self.encryption_state.clone(),
+        );
 
         let app = Router::new()
-            .route("/init", get(handshake))
-            .route("/start-recording", get(start_recording))
-            .route("/stop-recording", get(stop_recording))
+            .route("/init", post(handshake))
+            .route("/start-recording", post(start_recording))
+            .route("/stop-recording", post(stop_recording))
             .with_state(server_state);
 
         // Bind to localhost with port 0 (any available port)
@@ -203,63 +187,5 @@ impl LocalServer {
                 println!("Server shutdown completed");
             }
         }
-    }
-}
-
-async fn handshake(
-    State(state): State<StateForLocalServerHandler>,
-) -> impl IntoResponse {
-    let backend_client = &state.backend_client;
-    // TODO: Implement handshake logic
-    "OK"
-}
-
-#[debug_handler]
-async fn start_recording(
-    State(state): State<StateForLocalServerHandler>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
-    let (audio_tx, audio_rx) = mpsc::channel::<Bytes>(10);
-
-    // First, get the sender outside to await
-    let audio_command_tx = state
-        .audio_command_tx
-        .lock()
-        .unwrap()
-        .as_ref()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
-        .clone(); // Clone the sender
-
-    // Now use it after the guard is dropped
-    if (audio_command_tx.send(AudioCommand::Start(audio_tx)).await).is_err() {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    let stream = ReceiverStream::new(audio_rx).map(|bytes| {
-        let base64_data = general_purpose::STANDARD.encode(bytes);
-        let event = Event::default().data(base64_data);
-        Ok(event)
-    });
-
-    Ok(Sse::new(stream))
-}
-
-#[debug_handler]
-async fn stop_recording(State(state): State<StateForLocalServerHandler>) -> impl IntoResponse {
-    // Clone the sender outside the mutex lock
-    let audio_command_tx = {
-        let guard = state.audio_command_tx.lock().unwrap();
-        guard.as_ref().map(|tx| tx.clone())
-    };
-
-    // Now use the cloned sender
-    match audio_command_tx {
-        Some(tx) => {
-            let _ = tx.send(AudioCommand::Stop).await;
-            (StatusCode::OK, "Recording stopped")
-        }
-        None => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to stop recording",
-        ),
     }
 }
