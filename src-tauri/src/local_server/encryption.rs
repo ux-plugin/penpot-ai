@@ -28,7 +28,7 @@ pub struct EncryptionData {
     pub key: Option<String>,
     pub expires_at: Option<String>,
     pub nonce_counter: u64,
-    pub last_persisted_nonce: u64, // Track what was last saved to avoid frequent keyring updates
+    pub last_persisted_nonce: u64, // Always kept in sync with nonce_counter
 }
 
 // Encryption state to store the validated key
@@ -104,11 +104,8 @@ impl EncryptionState {
     pub fn increment_nonce(&self) -> u64 {
         let new_nonce = self.nonce_counter.fetch_add(1, Ordering::SeqCst);
 
-        // Batch persist nonce every 10 increments to reduce keyring I/O
-        let last_persisted = self.last_persisted_nonce.load(Ordering::SeqCst);
-        if new_nonce > 0 && (new_nonce - last_persisted) >= 10 {
-            self.persist_nonce_to_keyring();
-        }
+        // Always persist nonce to keyring (no batching optimization)
+        self.persist_nonce_to_keyring();
 
         new_nonce
     }
