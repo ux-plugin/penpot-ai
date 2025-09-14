@@ -13,7 +13,6 @@ use axum::{
 };
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -32,24 +31,13 @@ pub async fn handshake(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    // Check if key is expired
-    if let Ok(expiry) = key_response.expires_at.parse::<DateTime<Utc>>() {
-        if expiry <= Utc::now() {
-            println!("Encryption key from backend is expired");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    } else {
-        println!("Failed to parse key expiration date");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
     // Try to decrypt with the key from backend
     match decrypt_message(&key_response.key, &request.nonce, &request.encrypted_data) {
         Ok(_) => {
             // Successfully decrypted - store the validated key
             {
                 let mut enc_state = state.encryption_state.write().await;
-                enc_state.set_key(key_response.key.clone(), key_response.expires_at.clone());
+                enc_state.set_key(key_response.key.clone());
                 enc_state.set_nonce(0); // Initialize nonce counter
             }
 
