@@ -23,64 +23,92 @@ pub async fn handshake(
     State(state): State<StateForLocalServerHandler>,
     Json(request): Json<InitRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // Fetch encryption key from backend
-    let key_response = state.backend_client.get_key().await
+    // First check if we have a valid encryption key in memory/keyring
+    let (encryption_key, expires_at) = {
+        let enc_state = state.encryption_state.read().await;
+        if enc_state.is_valid() {
+            // We have a valid key, try to use it first
+            if let Some(key) = enc_state.get_key() {
+                (key.clone(), enc_state.get_expires_at().cloned())
+            } else {
+                // Key is None but state claims it's valid - this shouldn't happen
+                ("".to_string(), None)
+            }
+        } else {
+            // No valid key, need to fetch from backend
+            ("".to_string(), None)
+        }
+    };
+
+    // If we don't have a valid key or decryption fails, fetch from backend
+    let (final_key, final_expires_at) = if encryption_key.is_empty() ||
+        decrypt_message(&encryption_key, &request.nonce, &request.encrypted_data).is_err() {
+
+        println!("No valid cached key or decryption failed, fetching from backend...");
+
+        // Fetch encryption key from backend
+        let key_response = state.backend_client.get_key().await
+            .map_err(|e| {
+                println!("Failed to get encryption key: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        // Check if key is expired
+        if let Ok(expiry) = key_response.expires_at.parse::<DateTime<Utc>>() {
+            if expiry <= Utc::now() {
+                println!("Encryption key from backend is expired");
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        } else {
+            println!("Failed to parse key expiration date");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        // Try to decrypt with the new key
+        match decrypt_message(&key_response.key, &request.nonce, &request.encrypted_data) {
+            Ok(_) => {
+                // Successfully decrypted - store the validated key
+                {
+                    let mut enc_state = state.encryption_state.write().await;
+                    enc_state.set_key(key_response.key.clone(), key_response.expires_at.clone());
+                    enc_state.set_nonce(0); // Initialize nonce counter
+                }
+                (key_response.key, key_response.expires_at)
+            }
+            Err(e) => {
+                println!("Failed to decrypt init message with backend key: {}", e);
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+    } else {
+        // Use cached key successfully
+        println!("Using cached encryption key");
+        (encryption_key, expires_at.unwrap_or_default())
+    };
+
+    // Prepare response
+    let response_data = b"ACK";
+    let next_nonce = 1u64; // Next expected nonce
+
+    // Encrypt response
+    let (encrypted_response, nonce_str) = encrypt_message(&final_key, next_nonce, response_data)
         .map_err(|e| {
-            println!("Failed to get encryption key: {}", e);
+            println!("Failed to encrypt response: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    // Check if key is expired
-    if let Ok(expiry) = key_response.expires_at.parse::<DateTime<Utc>>() {
-        if expiry <= Utc::now() {
-            println!("Encryption key is expired");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    } else {
-        println!("Failed to parse key expiration date");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    // Update nonce counter
+    {
+        let enc_state = state.encryption_state.read().await;
+        enc_state.increment_nonce(); // Set to 1 for next request
     }
 
-    // Try to decrypt the incoming message
-    match decrypt_message(&key_response.key, &request.nonce, &request.encrypted_data) {
-        Ok(_decrypted_data) => {
-            // Successfully decrypted - key is valid
-            // Store the validated key in the encryption state
-            {
-                let mut enc_state = state.encryption_state.write().await;
-                enc_state.set_key(key_response.key.clone(), key_response.expires_at);
-                enc_state.set_nonce(0); // Initialize nonce counter
-            }
+    let response = InitResponse {
+        encrypted_data: encrypted_response,
+        nonce: nonce_str,
+    };
 
-            // Prepare response
-            let response_data = b"ACK";
-            let next_nonce = 1u64; // Next expected nonce
-
-            // Encrypt response
-            let (encrypted_response, nonce_str) = encrypt_message(&key_response.key, next_nonce, response_data)
-                .map_err(|e| {
-                    println!("Failed to encrypt response: {}", e);
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-
-            // Update nonce counter
-            {
-                let enc_state = state.encryption_state.read().await;
-                enc_state.increment_nonce(); // Set to 1 for next request
-            }
-
-            let response = InitResponse {
-                encrypted_data: encrypted_response,
-                nonce: nonce_str,
-            };
-
-            Ok(Json(response))
-        }
-        Err(e) => {
-            println!("Failed to decrypt init message: {}", e);
-            Err(StatusCode::FORBIDDEN)
-        }
-    }
+    Ok(Json(response))
 }
 
 #[debug_handler]

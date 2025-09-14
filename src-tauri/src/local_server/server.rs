@@ -90,6 +90,11 @@ impl LocalServer {
             return Ok(());
         }
 
+        // Persist final encryption state before shutdown
+        if let Err(e) = self.encryption_state.persist_final_state().await {
+            eprintln!("Warning: Failed to persist final encryption state: {}", e);
+        }
+
         self._shutdown(&mut state).await;
         state.port = None;
         println!("Local server stopped successfully");
