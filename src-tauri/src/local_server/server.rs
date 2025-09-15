@@ -1,4 +1,5 @@
 use crate::backend_client::BackendClient;
+use crate::config::AppConfig;
 use crate::local_server::audio::{AudioCommand, AudioManager};
 use crate::local_server::encryption::EncryptionState;
 use crate::local_server::handlers::{handshake, start_recording, stop_recording};
@@ -26,11 +27,12 @@ pub struct LocalServer {
     // Immutable dependencies (injected via constructor)
     backend_client: Arc<BackendClient>,
     encryption_state: EncryptionState,
+    config: Arc<AppConfig>,
 }
 
 impl LocalServer {
     // Constructor with dependency injection
-    pub fn new(backend_client: Arc<BackendClient>, encryption_state: EncryptionState) -> Self {
+    pub fn new(backend_client: Arc<BackendClient>, encryption_state: EncryptionState, config: Arc<AppConfig>) -> Self {
         Self {
             state: AsyncMutex::new(ServerState {
                 port: None, // None = not started, Some(port) = running
@@ -39,6 +41,7 @@ impl LocalServer {
             }),
             backend_client,
             encryption_state,
+            config,
         }
     }
 
@@ -123,6 +126,7 @@ impl LocalServer {
             audio_command_tx,
             self.backend_client.clone(),
             self.encryption_state.clone(),
+            self.config.clone(),
         );
 
         let app = Router::new()

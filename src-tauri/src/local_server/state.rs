@@ -1,4 +1,5 @@
 use crate::backend_client::BackendClient;
+use crate::config::AppConfig;
 use crate::local_server::audio::AudioCommand;
 use crate::local_server::encryption::EncryptionState;
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,7 @@ pub struct StateForLocalServerHandler {
     pub audio_command_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>>,
     pub backend_client: Arc<BackendClient>,
     pub encryption_state: Arc<RwLock<EncryptionState>>,
+    pub config: Arc<AppConfig>,
 }
 
 impl StateForLocalServerHandler {
@@ -17,11 +19,13 @@ impl StateForLocalServerHandler {
         audio_command_tx: mpsc::Sender<AudioCommand>,
         backend_client: Arc<BackendClient>,
         encryption_state: EncryptionState,
+        config: Arc<AppConfig>,
     ) -> Self {
         Self {
             audio_command_tx: Arc::new(Mutex::new(Some(audio_command_tx))),
             backend_client,
             encryption_state: Arc::new(RwLock::new(encryption_state)),
+            config,
         }
     }
 }

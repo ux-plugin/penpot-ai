@@ -45,6 +45,13 @@ pub struct InitResponse {
     pub nonce: String,
 }
 
+// Request structure for handlers that need nonce validation
+#[derive(Serialize, Deserialize)]
+pub struct NonceRequest {
+    pub encrypted_data: String,
+    pub nonce: String,
+}
+
 // Persistent encryption data structure for keyring storage
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct EncryptionData {
@@ -110,11 +117,15 @@ impl EncryptionState {
                 nonce_counter: current_nonce,
             };
 
-            if let Err(e) = save_encryption_data_to_keyring_blocking(&encryption_data) {
-                eprintln!("Warning: Failed to persist nonce to keyring: {}", e);
-            } else {
-                println!("Nonce counter persisted to keyring ({})", current_nonce);
-            }
+            // Spawn the blocking operation on a separate thread pool
+            let encryption_data_clone = encryption_data.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = save_encryption_data_to_keyring_blocking(&encryption_data_clone) {
+                    eprintln!("Warning: Failed to persist nonce to keyring: {}", e);
+                } else {
+                    println!("Nonce counter persisted to keyring ({})", encryption_data_clone.nonce_counter);
+                }
+            });
         }
     }
 
@@ -126,22 +137,59 @@ impl EncryptionState {
         self.nonce_counter.store(nonce, Ordering::SeqCst);
     }
 
+    // Validate nonce for handler requests (must be current_nonce + 1)
+    pub fn validate_and_increment_nonce(&self, received_nonce_base64: &str) -> Result<(), String> {
+        // Decode the received nonce
+        let received_nonce_bytes = general_purpose::STANDARD.decode(received_nonce_base64)
+            .map_err(|e| format!("Failed to decode received nonce: {}", e))?;
+        
+        if received_nonce_bytes.len() != 12 {
+            return Err("Invalid nonce length".to_string());
+        }
+
+        // Extract the nonce counter from bytes (last 8 bytes as big-endian u64)
+        let mut nonce_counter_bytes = [0u8; 8];
+        nonce_counter_bytes.copy_from_slice(&received_nonce_bytes[4..12]);
+        let received_nonce = u64::from_be_bytes(nonce_counter_bytes);
+
+        // Get current nonce counter
+        let current_nonce = self.nonce_counter.load(Ordering::SeqCst);
+        let expected_nonce = current_nonce + 1;
+
+        // Validate that received nonce is current_nonce + 1
+        if received_nonce != expected_nonce {
+            return Err(format!(
+                "Invalid nonce: expected {}, received {}",
+                expected_nonce, received_nonce
+            ));
+        }
+
+        // Increment nonce counter (this also persists to keyring)
+        self.increment_nonce();
+        
+        println!("Nonce validation successful: {}", received_nonce);
+        Ok(())
+    }
+
     pub fn set_key(&mut self, key: String) {
         self.key = Some(key.clone());
 
-        // Persist to keyring - ignore errors to avoid breaking functionality
+        // Persist to keyring using spawn_blocking - ignore errors to avoid breaking functionality
         let current_nonce = self.nonce_counter.load(Ordering::SeqCst);
         let encryption_data = EncryptionData {
             key: Some(key),
             nonce_counter: current_nonce,
         };
 
-        if let Err(e) = save_encryption_data_to_keyring_blocking(&encryption_data) {
-            eprintln!("Warning: Failed to save encryption data to keyring: {}", e);
-            eprintln!("Application will continue to function but encryption key won't be persisted");
-        } else {
-            println!("Encryption key successfully persisted to keyring");
-        }
+        // Use spawn_blocking for keyring operations
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = save_encryption_data_to_keyring_blocking(&encryption_data) {
+                eprintln!("Warning: Failed to save encryption data to keyring: {}", e);
+                eprintln!("Application will continue to function but encryption key won't be persisted");
+            } else {
+                println!("Encryption key successfully persisted to keyring");
+            }
+        });
     }
 
     pub fn get_key(&self) -> Option<&String> {
@@ -156,8 +204,22 @@ impl EncryptionState {
         self.key = None;
         self.nonce_counter.store(0, Ordering::SeqCst);
 
-        // Delete from keyring
-        delete_encryption_data_from_keyring_blocking()?;
+        // Attempt to delete from keyring, but don't fail if keychain access is denied
+        match delete_encryption_data_from_keyring().await {
+            Ok(()) => {
+                println!("Encryption data successfully removed from keyring");
+            }
+            Err(EncryptionError::KeyringOperation(ref msg)) if msg.contains("Keychain access restricted") => {
+                // Keychain access denied - log warning but continue
+                eprintln!("Warning: Could not remove encryption data from keyring due to access restrictions");
+                eprintln!("In-memory encryption state has been cleared successfully");
+            }
+            Err(e) => {
+                // Other keyring errors - log warning but continue
+                eprintln!("Warning: Failed to remove encryption data from keyring: {}", e);
+                eprintln!("In-memory encryption state has been cleared successfully");
+            }
+        }
 
         println!("Encryption state cleared successfully");
         Ok(())
@@ -209,6 +271,36 @@ pub fn encrypt_message(key_base64: &str, nonce: u64, plaintext: &[u8]) -> Result
     ))
 }
 
+// Async wrapper functions for keyring operations - following the pattern from auth.rs
+async fn delete_encryption_data_from_keyring() -> Result<(), EncryptionError> {
+    println!("Starting async keyring delete operation...");
+    println!("Spawning blocking task for keyring delete...");
+    
+    let result = tokio::task::spawn_blocking(|| {
+        delete_encryption_data_from_keyring_blocking()
+    })
+    .await
+    .map_err(|e| EncryptionError::KeyringOperation(format!("Failed to spawn blocking task: {}", e)))?;
+    
+    println!("Blocking task completed for keyring delete");
+    result
+}
+
+async fn save_encryption_data_to_keyring(encryption_data: &EncryptionData) -> Result<(), EncryptionError> {
+    println!("Starting async keyring save operation...");
+    let data = encryption_data.clone();
+    println!("Spawning blocking task for keyring save...");
+    
+    let result = tokio::task::spawn_blocking(move || {
+        save_encryption_data_to_keyring_blocking(&data)
+    })
+    .await
+    .map_err(|e| EncryptionError::KeyringOperation(format!("Failed to spawn blocking task: {}", e)))?;
+    
+    println!("Blocking task completed for keyring save");
+    result
+}
+
 // Helper functions for keyring operations - following the pattern from auth.rs
 fn load_encryption_data_from_keyring_blocking() -> Result<EncryptionData, EncryptionError> {
     let entry = Entry::new("figma_plugin_companion_app", "encryption_state")
@@ -234,12 +326,22 @@ fn save_encryption_data_to_keyring_blocking(encryption_data: &EncryptionData) ->
         .map_err(|e| EncryptionError::Serialization(e.to_string()))?;
 
     println!("Setting password in keyring for encryption data...");
-    entry
-        .set_password(&encryption_json)
-        .map_err(|e| EncryptionError::KeyringOperation(e.to_string()))?;
-
-    println!("Encryption data saved to keyring successfully (blocking)");
-    Ok(())
+    match entry.set_password(&encryption_json) {
+        Ok(()) => {
+            println!("Encryption data saved to keyring successfully (blocking)");
+            Ok(())
+        }
+        Err(keyring::Error::PlatformFailure(platform_error)) => {
+            // Handle macOS keychain access denied (-25300) and other platform errors gracefully
+            eprintln!("Warning: Keychain access denied or restricted ({})", platform_error);
+            eprintln!("This may happen if you denied keychain access or have restricted permissions.");
+            eprintln!("The application will continue to function but encryption keys won't be persisted.");
+            Err(EncryptionError::KeyringOperation(format!("Keychain access restricted: {}", platform_error)))
+        }
+        Err(e) => {
+            Err(EncryptionError::KeyringOperation(e.to_string()))
+        }
+    }
 }
 
 fn delete_encryption_data_from_keyring_blocking() -> Result<(), EncryptionError> {
@@ -248,10 +350,25 @@ fn delete_encryption_data_from_keyring_blocking() -> Result<(), EncryptionError>
         .map_err(|e| EncryptionError::KeyringEntry(e.to_string()))?;
 
     println!("Deleting encryption data from keyring...");
-    entry
-        .delete_credential()
-        .map_err(|e| EncryptionError::KeyringOperation(e.to_string()))?;
-
-    println!("Encryption data deleted from keyring successfully (blocking)");
-    Ok(())
+    match entry.delete_credential() {
+        Ok(()) => {
+            println!("Encryption data deleted from keyring successfully (blocking)");
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            // Not an error - entry doesn't exist, which is fine for delete operations
+            println!("No encryption data found in keyring to delete (already clean)");
+            Ok(())
+        }
+        Err(keyring::Error::PlatformFailure(platform_error)) => {
+            // Handle macOS keychain access denied (-25300) and other platform errors gracefully
+            eprintln!("Warning: Keychain access denied or restricted during delete ({})", platform_error);
+            eprintln!("This may happen if you denied keychain access or have restricted permissions.");
+            eprintln!("The application will continue to function normally.");
+            Err(EncryptionError::KeyringOperation(format!("Keychain access restricted during delete: {}", platform_error)))
+        }
+        Err(e) => {
+            Err(EncryptionError::KeyringOperation(e.to_string()))
+        }
+    }
 }

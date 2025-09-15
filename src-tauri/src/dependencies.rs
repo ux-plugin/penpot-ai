@@ -24,6 +24,10 @@ impl AppDependencies {
             local_server: Arc::new(OnceLock::new()),
         })
     }
+
+    pub fn config(&self) -> Arc<AppConfig> {
+        self.config.clone()
+    }
     
     // Lazy getter for AuthState
     pub fn auth_state(&self) -> Arc<AuthState> {
@@ -46,7 +50,7 @@ impl AppDependencies {
     pub fn local_server(&self) -> Arc<LocalServer> {
         self.local_server.get_or_init(|| {
             let encryption_state = EncryptionState::new();
-            Arc::new(LocalServer::new(self.backend_client(), encryption_state))
+            Arc::new(LocalServer::new(self.backend_client(), encryption_state, self.config()))
         }).clone()
     }
 }

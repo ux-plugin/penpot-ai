@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub keyring_username: String,
     pub server_port_range: (u16, u16),
     pub app_name: String,
+    pub expected_command_string: String,
+    pub acknowledgment_string: String,
 }
 
 impl Default for AppConfig {
@@ -18,6 +20,8 @@ impl Default for AppConfig {
             keyring_username: "auth_credentials".to_string(),
             server_port_range: (3000, 4000),
             app_name: "figma_plugin_companion_app".to_string(),
+            expected_command_string: "CMD".to_string(),
+            acknowledgment_string: "ACK".to_string(),
         }
     }
 }
@@ -43,6 +47,14 @@ impl AppConfig {
             config.keyring_username = keyring_username;
         }
         
+        if let Ok(expected_command) = env::var("EXPECTED_COMMAND_STRING") {
+            config.expected_command_string = expected_command;
+        }
+        
+        if let Ok(ack_string) = env::var("ACKNOWLEDGMENT_STRING") {
+            config.acknowledgment_string = ack_string;
+        }
+        
         // Try to load from a config file if it exists
         if let Ok(config_str) = std::fs::read_to_string("config.json") {
             match serde_json::from_str::<AppConfig>(&config_str) {
@@ -59,6 +71,12 @@ impl AppConfig {
                     }
                     if env::var("KEYRING_USERNAME").is_err() {
                         config.keyring_username = file_config.keyring_username;
+                    }
+                    if env::var("EXPECTED_COMMAND_STRING").is_err() {
+                        config.expected_command_string = file_config.expected_command_string;
+                    }
+                    if env::var("ACKNOWLEDGMENT_STRING").is_err() {
+                        config.acknowledgment_string = file_config.acknowledgment_string;
                     }
                     config.server_port_range = file_config.server_port_range;
                 }
