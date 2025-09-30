@@ -1,5 +1,5 @@
 import { useMutation, UseMutationResult, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "@/api/auth/api-fetcher";
+import { apiJsonFetch } from "@/api/api-fetcher.ts";
 
 export interface UpdateUserRequest {
   name?: string;
@@ -14,8 +14,8 @@ export async function updateUserConfig(
   updateData: UpdateUserRequest,
   signal?: AbortSignal
 ): Promise<void> {
-  // apiFetch automatically includes the Authorization header if an accessToken is present
-  await apiFetch<void>("/user/update", {
+  // apiJsonFetch automatically includes the Authorization header if an accessToken is present
+  await apiJsonFetch<void>("/user/update", {
     method: "POST",
     signal,
     body: JSON.stringify(updateData)

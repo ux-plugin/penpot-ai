@@ -1,6 +1,5 @@
 import { create } from 'zustand';
-import { createStorageManager } from './ClientStorageManager';
-import { JsonValue } from "@/types.ts";
+import { uiStoreMessaging } from '@/messaging/UIMessageDispatcher';
 
 // Define the store state interface
 interface AuthState {
@@ -28,25 +27,15 @@ interface AuthState {
   loadFromStorage: () => Promise<void>;
   saveToStorage: () => Promise<void>;
   clearStorage: () => Promise<void>;
+  
+  // Messaging integration
+  set_state: (payload: any) => void;
+  set_update: (payload: any) => Promise<void>;
+  get_update: () => Promise<any>;
 }
-
-// Define the persistable state that is JSON compatible
-interface PersistableAuthState {
-  userId: string | null;
-  accessToken: string | null;
-  refreshToken: string | null;
-  isAuthenticated: boolean;
-  authProvider: 'FIGMA' | 'GITHUB' | null; // Changed to allow null
-  [key: string]: JsonValue;
-}
-
-// Storage key for persisting the store
-const STORAGE_KEY = 'auth-store';
-
-const clientStorageManager = createStorageManager<PersistableAuthState>();
 
 // Create the zustand store
-export const useAuthenticationStore = create<AuthState>((set, get) => ({
+export const useAuthenticationStore = create<AuthState>((set) => ({
   // Initial state
   userId: null,
   accessToken: null,
@@ -58,7 +47,6 @@ export const useAuthenticationStore = create<AuthState>((set, get) => ({
   // Authentication actions
   setUserId: (userId) => {
     set({ userId });
-    get().saveToStorage();
   },
 
   setAccessToken: (token) => {
@@ -66,12 +54,10 @@ export const useAuthenticationStore = create<AuthState>((set, get) => ({
     if (token) {
       set({ isAuthenticated: true });
     }
-    get().saveToStorage();
   },
 
   setRefreshToken: (token) => {
     set({ refreshToken: token });
-    get().saveToStorage();
   },
 
   setAuthenticated: (isAuthenticated) => {
@@ -80,12 +66,10 @@ export const useAuthenticationStore = create<AuthState>((set, get) => ({
     if (!isAuthenticated) {
       set({ accessToken: null, refreshToken: null, userId: null });
     }
-    get().saveToStorage();
   },
 
   setAuthProvider: (provider) => {
     set({ authProvider: provider });
-    get().saveToStorage();
   },
 
   // Logout action
@@ -97,22 +81,21 @@ export const useAuthenticationStore = create<AuthState>((set, get) => ({
       isAuthenticated: false,
       authProvider: null // Clear authProvider on logout
     });
-    get().saveToStorage();
   },
 
-  // Persistence actions
+  // Persistence actions using StoreMessaging
   loadFromStorage: async () => {
     try {
       set({ isLoading: true });
-      const stored = await clientStorageManager.getItem(STORAGE_KEY);
+      const result = await uiStoreMessaging.updateState('authentication', { action: 'load' });
       
-      if (stored) {
+      if (result.action === 'load' && result.success && result.state) {
         set({
-          userId: stored.userId || null,
-          accessToken: stored.accessToken || null,
-          refreshToken: stored.refreshToken || null,
-          isAuthenticated: stored.isAuthenticated || false,
-          authProvider: stored.authProvider || null, // Load authProvider from storage, default to null
+          userId: result.state.userId || null,
+          accessToken: result.state.accessToken || null,
+          refreshToken: result.state.refreshToken || null,
+          isAuthenticated: result.state.isAuthenticated || false,
+          authProvider: result.state.authProvider || null,
         });
       }
     } catch (error) {
@@ -124,16 +107,7 @@ export const useAuthenticationStore = create<AuthState>((set, get) => ({
 
   saveToStorage: async () => {
     try {
-      const state = get();
-      const stateToSave: PersistableAuthState = {
-        userId: state.userId,
-        accessToken: state.accessToken,
-        refreshToken: state.refreshToken,
-        isAuthenticated: state.isAuthenticated,
-        authProvider: state.authProvider, // Save authProvider to storage
-      };
-
-      await clientStorageManager.setItem(STORAGE_KEY, stateToSave);
+      await uiStoreMessaging.updateState('authentication', { action: 'save' });
     } catch (error) {
       console.error('Error saving authentication state to storage:', error);
     }
@@ -141,16 +115,62 @@ export const useAuthenticationStore = create<AuthState>((set, get) => ({
 
   clearStorage: async () => {
     try {
-      await clientStorageManager.removeItem(STORAGE_KEY);
+      await uiStoreMessaging.updateState('authentication', { action: 'clear' });
       set({
         userId: null,
         accessToken: null,
         refreshToken: null,
         isAuthenticated: false,
-        authProvider: null, // Reset authProvider to null on clear
+        authProvider: null,
       });
     } catch (error) {
       console.error('Error clearing authentication storage:', error);
+    }
+  },
+
+  // Messaging integration
+  set_state: async (payload: any) => {
+    // Update local state with payload
+    set(payload);
+    
+    try {
+      // Trigger update to code.ts and wait for confirmation
+      const result = await uiStoreMessaging.updateState('authentication', payload);
+      console.log('State synchronized with code.ts:', result);
+    } catch (error) {
+      console.error('Failed to sync state with code.ts:', error);
+      // Optionally revert local state or show error to user
+    }
+  },
+
+  // Set state locally and send update message to code.ts
+  set_update: async (payload: any) => {
+    console.log('[UI AUTH STORE] Received set_update request:', payload);
+    
+    // Update local state with payload
+    set(payload);
+    console.log('[UI AUTH STORE] Local state updated');
+
+    try {
+      // Send state update message to code.ts
+      const result = await uiStoreMessaging.updateState('authentication', payload);
+      console.log('[UI AUTH STORE] State synchronized with code.ts:', result);
+    } catch (error) {
+      console.error('[UI AUTH STORE] Failed to sync state with code.ts:', error);
+      // Optionally revert local state change if code.ts sync fails
+    }
+  },
+
+  // Get current state from code.ts
+  get_update: async () => {
+    try {
+      // Request current state from code.ts
+      const result = await uiStoreMessaging.getState('authentication');
+      console.log('Retrieved state from code.ts:', result);
+      return result.state;
+    } catch (error) {
+      console.error('Failed to get state from code.ts:', error);
+      throw error;
     }
   },
 }));

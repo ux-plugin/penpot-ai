@@ -12,7 +12,7 @@ export const wrapInProviders = ({ children }: WrapInProvidersProps) => {
   return (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter basename={import.meta.env.VITE_FRONTEND_BASE_PATH}>
-          {children}
+        {children}
       </MemoryRouter>
       <Toaster position="bottom-right" richColors />
     </QueryClientProvider>

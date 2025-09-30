@@ -1,9 +1,8 @@
 /**
- * ClientStorageManager - Handles storage for both Figma plugin and browser environments
+ * ClientStorageManager - Handles storage for browser environments only
  * Inspired by: https://story.vjy.me/how-i-simplified-my-figma-plugin-with-zustand-42
  */
-import { JsonValue, MessageType, StorageGetRequest, StorageGetResponse, StorageRemoveRequest, StorageRemoveResponse, StorageSaveRequest, StorageSaveResponse } from "@/types.ts";
-import { messageDispatcher } from "@/utils/FigmaUiPluginMessaging.ts";
+import { JsonValue } from "@/types/types.ts";
 
 export interface StorageManager<ObjectType extends JsonValue> {
   getItem(key: string): Promise<ObjectType | null>;
@@ -11,38 +10,6 @@ export interface StorageManager<ObjectType extends JsonValue> {
   removeItem(key: string): Promise<void>;
 }
 
-class FigmaStorageManager<ObjectType extends JsonValue> implements StorageManager<ObjectType> {
-  async getItem(key: string): Promise<ObjectType|null> {
-    const request: Omit<StorageGetRequest, 'id'>= {key: key, type: MessageType.storageGet}
-    return messageDispatcher.sendMessage<StorageGetResponse<ObjectType>>(request).then(response => {
-      if (!response.error) {
-        return response.result;
-      } else {
-        throw new Error(response.error);
-      }
-    });
-  }
-
-  async setItem(key: string, value: ObjectType): Promise<void> {
-    const request: Omit<StorageSaveRequest, 'id'> = {key: key, type: MessageType.storageSave, value: value}
-    messageDispatcher.sendMessage<StorageSaveResponse>(request).then(response => {
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      return;
-    })
-  }
-
-  async removeItem(key: string): Promise<void> {
-    const request: Omit<StorageRemoveRequest, 'id'> = {key: key, type: MessageType.storageRemove}
-    messageDispatcher.sendMessage<StorageRemoveResponse>(request).then(response => {
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      return;
-    })
-  }
-}
 
 class BrowserStorageManager<ObjectType extends JsonValue> implements StorageManager<ObjectType> {
   async getItem(key: string): Promise<ObjectType|null> {
@@ -77,11 +44,6 @@ class BrowserStorageManager<ObjectType extends JsonValue> implements StorageMana
 
 // Update the function signature to enforce JSON serializable constraints
 export function createStorageManager<ObjectType extends JsonValue>(): StorageManager<ObjectType> {
-  // Check if we're in a Figma plugin environment
-  if (typeof figma !== 'undefined' && figma.currentPage) {
-    return new FigmaStorageManager<ObjectType>();
-  } else {
-    // Assume browser environment if not in Figma
-    return new BrowserStorageManager<ObjectType>();
-  }
+  // Always return browser storage manager (no more Figma storage support)
+  return new BrowserStorageManager<ObjectType>();
 }

@@ -1,5 +1,3 @@
-// JSON serializable type definitions
-
 export type JsonValue =
   | string
   | number
@@ -28,7 +26,6 @@ export interface BaseResponse {
   error?: string;
 }
 
-
 export interface CompletionRequest extends BaseRequest {
   type: MessageType.complete;
   object: Partial<FrameNode> & {parent: string, fillStyleId: string};
@@ -38,7 +35,6 @@ export interface CompletionResponse extends BaseResponse {
   type: MessageType.complete;
   result: boolean;
 }
-
 
 export interface StorageSaveRequest extends BaseRequest {
   type: MessageType.storageSave;
@@ -61,8 +57,7 @@ export interface StorageRemoveResponse extends BaseResponse {
   result: boolean;
 }
 
-// Storage Get Message Types
-
+// Storage Gets Message Types
 export interface StorageGetRequest extends BaseRequest {
   type: MessageType.storageGet;
   key: string;
@@ -82,6 +77,7 @@ export interface CloseResponse extends BaseResponse {
   type: MessageType.close;
   result: boolean;
 }
+
 
 export type Request =
   | CompletionRequest

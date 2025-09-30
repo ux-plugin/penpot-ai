@@ -4,11 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build && yarn build:main",
-    "build:main": "esbuild src/widget/code.ts --bundle --outfile=dist/code.js",
+    "dev": "vite --open dev.html",
+    "build": "tsc -b && vite build && npm run build:main",
+    "build:main": "esbuild src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap",
     "preview": "vite preview",
-    "build:watch": "watch 'yarn build' src"
+    "build:watch": "watch 'npm run build' src"
   },
   "dependencies": {
     "@hookform/resolvers": "^4.1.3",

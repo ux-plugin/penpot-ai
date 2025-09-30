@@ -1,5 +1,5 @@
 import { useQuery, UseQueryResult } from "@tanstack/react-query";
-import { apiFetch } from "@/api/auth/api-fetcher";
+import { apiJsonFetch } from "@/api/api-fetcher.ts";
 
 export interface UserConfig {
   id: string;
@@ -12,8 +12,8 @@ export interface UserConfig {
  * Fetches the current user's configuration.
  */
 export async function fetchUserConfig(signal?: AbortSignal): Promise<UserConfig> {
-  // apiFetch automatically includes the Authorization header if an accessToken is present
-  return apiFetch<UserConfig>("/user/info", { method: "GET", signal });
+  // apiJsonFetch automatically includes the Authorization header if an accessToken is present
+  return apiJsonFetch<UserConfig>("/user/info", { method: "GET", signal });
 }
 
 /**

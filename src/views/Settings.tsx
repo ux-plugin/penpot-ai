@@ -7,12 +7,13 @@ import { useUserSettingsStore } from '@/stores/useUserSettingsStore.ts';
 import SocialLoginItem from '@/components/SocialLoginItem';
 import { AddSocialAccountMenu } from '@/components/AddSocialAccountMenu.tsx';
 import ProfileSection from '@/components/ProfileSection'; // Import the new component
+import { StatusDetailed } from '@/components/StatusDetailed';
 
 function Settings() {
   const navigate = useNavigate();
   const { keyboardShortcut, socialLogins, deleteSocialLogin } = useUserSettingsStore();
   const { setAuthenticated, setRefreshToken, setAccessToken, setAuthProvider } = useAuthenticationStore();
-  // TODO: Fetch user configuration from the server, figure out if we want to make this a provider or not.
+
   const handleLogout = () => {
     setAuthenticated(false);
     setRefreshToken('');
@@ -56,6 +57,13 @@ function Settings() {
               ))
             )}
           </div>
+        </div>
+
+        {/* Connection status Section */}
+        <div className="bg-gray-50 p-4 rounded-lg shadow-sm">
+          <h2 className="text-md font-semibold">Connection status</h2>
+          <p className="text-sm text-gray-500 mb-4">Manage connections to the server and companion app</p>
+          <StatusDetailed />
         </div>
 
         {/* Keyboard Shortcut Section */}

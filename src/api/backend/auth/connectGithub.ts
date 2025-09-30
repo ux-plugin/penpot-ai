@@ -1,5 +1,5 @@
 import { useQuery, UseQueryResult } from "@tanstack/react-query";
-import { apiFetch } from "@/api/auth/api-fetcher"; // Import apiFetch
+import { apiJsonFetch } from "@/api/api-fetcher.ts"; // Import apiJsonFetch
 
 interface ConnectResponse {
   readToken: string;
@@ -15,7 +15,7 @@ interface ConnectResultResponse {
  */
 export async function githubConnect(signal?: AbortSignal): Promise<boolean> {
 
-  const initLoginResponse = await apiFetch<ConnectResponse>(
+  const initLoginResponse = await apiJsonFetch<ConnectResponse>(
     "/auth/github/connect/init",
     {
       method: "GET",
@@ -27,7 +27,7 @@ export async function githubConnect(signal?: AbortSignal): Promise<boolean> {
 
   window.open(initLoginResponse.loginUrl, "_blank");
 
-  await apiFetch<ConnectResultResponse>(
+  await apiJsonFetch<ConnectResultResponse>(
     "/auth/github/connect/result",
     {
       method: "GET",

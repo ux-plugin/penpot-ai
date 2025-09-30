@@ -1,5 +1,5 @@
-import { useAuthenticationStore } from "@/stores/useAuthenticationStore";
-import { resolveBackendUrl } from "./utils";
+import { useAuthenticationStore } from "@/stores/useAuthenticationStore.ts";
+import { resolveBackendUrl } from "@/api/backend/auth/utils.ts";
 
 let isRefreshing = false;
 let failedQueue: { resolve: (value?: any) => void; reject: (reason?: any) => void; }[] = [];
@@ -15,18 +15,18 @@ const processQueue = (error: Error | null = null) => {
   failedQueue = [];
 };
 
-export async function apiFetch<T>(
+export async function apiFetch(
   endpoint: string,
   options?: RequestInit,
   includeAuth: boolean = true
-): Promise<T> {
+): Promise<Response> {
   const authStore = useAuthenticationStore.getState();
   const baseUrl = resolveBackendUrl();
   const url = `${baseUrl}${endpoint}`;
 
   let headers: HeadersInit = {
-    ...options?.headers,
     "Content-Type": "application/json",
+    ...options?.headers
   };
 
   if (includeAuth && authStore.accessToken) {
@@ -41,11 +41,11 @@ export async function apiFetch<T>(
 
     if (response.status === 401) {
       if (isRefreshing) {
-        return new Promise<T>((resolve, reject) => {
+        return new Promise<Response>((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         }).then(() => {
           // Retry the original request with the new token
-          return apiFetch<T>(endpoint, options, includeAuth);
+          return apiFetch(endpoint, options, includeAuth);
         });
       }
 
@@ -100,9 +100,18 @@ export async function apiFetch<T>(
       throw new Error(errorData.message || "API request failed");
     }
 
-    return response.json() as Promise<T>;
+    return response;
   } catch (error) {
     console.error("API fetch error:", error);
     throw error;
   }
+}
+
+export async function apiJsonFetch<T>(
+  endpoint: string,
+  options?: RequestInit,
+  includeAuth: boolean = true
+): Promise<T> {
+  const response = await apiFetch(endpoint, options, includeAuth);
+  return response.json() as Promise<T>;
 }

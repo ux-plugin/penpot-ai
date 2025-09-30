@@ -3,8 +3,8 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { Plus } from 'lucide-react';
 import { FigmaIcon } from '@/assets/FigmaIcon'; // Import your custom FigmaIcon
 import { GitHubIcon } from '@/assets/GithubIcon';
-import { useGitHubConnect } from "@/api/auth/connectGithub.ts"; // Import your custom GitHubIcon
-import { useFigmaConnect } from "@/api/auth/connectFigma.ts"; // Import useFigmaConnect
+import { useGitHubConnect } from "@/api/backend/auth/connectGithub.ts"; // Import your custom GitHubIcon
+import { useFigmaConnect } from "@/api/backend/auth/connectFigma.ts"; // Import useFigmaConnect
 import { Loader2 } from "lucide-react"; // Import Loader2
 import { showErrorToast, showSuccessToast } from '@/utils/showErrorToast';
 

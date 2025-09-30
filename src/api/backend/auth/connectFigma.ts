@@ -1,5 +1,5 @@
 import { useQuery, UseQueryResult } from "@tanstack/react-query";
-import { apiFetch } from "@/api/auth/api-fetcher";
+import { apiJsonFetch } from "@/api/api-fetcher.ts";
 
 interface ConnectResponse {
   readToken: string;
@@ -14,7 +14,7 @@ interface ConnectResultResponse {
  * Initiates the Figma connect flow and waits for the result.
  */
 export async function figmaConnect(signal?: AbortSignal): Promise<boolean> {
-  const initLoginResponse = await apiFetch<ConnectResponse>(
+  const initLoginResponse = await apiJsonFetch<ConnectResponse>(
     "/auth/figma/connect/init",
     {
       method: "GET",
@@ -28,7 +28,7 @@ export async function figmaConnect(signal?: AbortSignal): Promise<boolean> {
   window.open(initLoginResponse.loginUrl, "_blank");
 
   // Wait for backend to confirm the connect result using the temporary read token
-  await apiFetch<ConnectResultResponse>(
+  await apiJsonFetch<ConnectResultResponse>(
     "/auth/figma/connect/result",
     {
       method: "GET",

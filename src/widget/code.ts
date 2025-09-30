@@ -1,37 +1,43 @@
-// This plugin will open a window to prompt the user to enter a number, and
-// it will then create that many rectangles on the screen.
-// This file holds the main code for plugins. Code in this file has access to
-// the *figma document* via the figma global object.
-// You can access browser APIs in the <script> tag inside "ui.html" which has a
-// full browser environment (See https://www.figma.com/plugin-docs/how-plugins-run).
+// Import platform abstraction for cross-environment compatibility
+// Use direct path since worker bypasses Vite aliases
+import { platform } from "@/platform";
+import {
+  CompleteRequest,
+  MessageCategory,
+  OperationMessageType,
+} from "@/types/messageTypes";
 
-import { getAllFrameProperties } from "@/lib/extractFrameProperties";
-import { CompletionRequest, MessageType, Request } from "@/types.ts";
-import { storageService } from "@/widget/handleStorage.ts";
+// Wrap in async IIFE to handle top-level await in esbuild IIFE format
+(async () => {
+  const commands = await platform.getInstance();
+
+  commands.ui.showUI(__html__, {
+    height: 500,
+    width: 500,
+  });
+
+  const { codeMessageDispatcher, setupCodeMessageListener } = await import("@/messaging/CodeMessageDispatcher");
+
+  // Initialize the message listener to receive messages from the UI
+  setupCodeMessageListener();
 
 
-// This shows the HTML page in "ui.html".
-figma.showUI(__html__, {
-  height: 500,
-  width: 500,
-});
-
-async function handleCompletion({object}: CompletionRequest) {
+  async function handleCompletion({payload: object}: CompleteRequest): Promise<void> {
   let asyncFunctions: Promise<void>[] = [];
   if (!object.id) {
     console.error("Problem happened during completion");
     return;
   }
 
-  let currentFrameNode: FrameNode = await figma.getNodeByIdAsync(object.id) as FrameNode;
+  let currentFrameNode: FrameNode = await commands.getNodeByIdAsync(object.id) as FrameNode;
 
   if (!currentFrameNode) {
-    currentFrameNode = figma.createFrame();
+    currentFrameNode = commands.createFrame();
   }
 
   const appendFillStyle = async () => {
     if (object.fillStyleId) {
-      const fillStyle = await figma.getStyleByIdAsync(object.fillStyleId);
+      const fillStyle = await commands.getStyleByIdAsync(object.fillStyleId);
       if (fillStyle) {
         asyncFunctions.push(currentFrameNode.setFillStyleIdAsync(object.fillStyleId));
       }
@@ -41,7 +47,7 @@ async function handleCompletion({object}: CompletionRequest) {
 
   const appendStrokeStyle = async () => {
     if (object.strokeStyleId) {
-      const strokeStyle = await figma.getStyleByIdAsync(object.strokeStyleId);
+      const strokeStyle = await commands.getStyleByIdAsync(object.strokeStyleId);
       if (strokeStyle) {
         asyncFunctions.push(currentFrameNode.setStrokeStyleIdAsync(strokeStyle.id));
       }
@@ -51,7 +57,7 @@ async function handleCompletion({object}: CompletionRequest) {
 
   const appendEffectStyle = async () => {
     if (object.effectStyleId) {
-      const effectStyle = await figma.getStyleByIdAsync(object.effectStyleId);
+      const effectStyle = await commands.getStyleByIdAsync(object.effectStyleId);
       if (effectStyle) {
         asyncFunctions.push(currentFrameNode.setEffectStyleIdAsync(effectStyle.id));
       }
@@ -61,7 +67,7 @@ async function handleCompletion({object}: CompletionRequest) {
 
   const appendToParent = async () => {
     if (object.parent) {
-      const parentNode = await figma.getNodeByIdAsync(object.parent) as FrameNode;
+      const parentNode = await commands.getNodeByIdAsync(object.parent) as FrameNode;
       if (parentNode) {
         parentNode.appendChild(currentFrameNode);
       }
@@ -107,39 +113,10 @@ async function handleCompletion({object}: CompletionRequest) {
   await Promise.all(asyncFunctions);
 }
 
-// posted message.
-figma.ui.onmessage = async(msg: Request) => {
-  switch (msg.type) {
-    case MessageType.complete:
-      await handleCompletion(msg);
-      break;
-
-    case MessageType.storageSave:
-      await storageService.handleStorageSave(msg);
-      break;
-    case MessageType.storageRemove:
-      await storageService.handleStorageRemove(msg);
-      break;
-    case MessageType.storageGet:
-      await storageService.handleStorageGet(msg);
-      break;
-
-    case MessageType.close:
-      figma.closePlugin();
-      break;
-  }
-
-};
-
-figma.on("selectionchange", () => {
-  const selectedFrame = figma.currentPage.selection[0];
-  if (selectedFrame.type === "FRAME") {
-    const frameWithChildren = getAllFrameProperties(selectedFrame);
-
-    // If you need to send the data somewhere (like to the UI)
-    figma.ui.postMessage({
-      type: "node-selected",
-      data: frameWithChildren,
-    });
-  }
-});
+  // Register the completion handler with the new messaging system
+  codeMessageDispatcher.registerHandler(
+    MessageCategory.OPERATION,
+    OperationMessageType.COMPLETE,
+    handleCompletion
+  );
+})();
