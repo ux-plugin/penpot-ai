@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --open dev.html",
     "build": "tsc -b && vite build && npm run build:main",
-    "build:main": "esbuild src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap",
+    "build:main": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap",
     "preview": "vite preview",
     "build:watch": "watch 'npm run build' src"
   },

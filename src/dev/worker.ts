@@ -54,19 +54,19 @@ function sendStorageRequest(operation: string, key?: string, value?: any): Promi
 }
 
 (globalThis as any).localStorage = {
-  getItem(key: string): string | null {
+  getItem(_key: string): string | null {
     // Synchronous API but internally async - use cached value or return null
     // This is a compromise since localStorage API is sync but we need async bridge
     console.warn('[WORKER] localStorage.getItem called synchronously, this may not work correctly. Use async storage methods instead.');
     return null;
   },
-  setItem(key: string, value: string): void {
-    sendStorageRequest('setItem', key, value).catch(err =>
+  setItem(_key: string, _value: string): void {
+    sendStorageRequest('setItem', _key, _value).catch(err =>
       console.error('[WORKER] localStorage.setItem failed:', err)
     );
   },
-  removeItem(key: string): void {
-    sendStorageRequest('removeItem', key).catch(err =>
+  removeItem(_key: string): void {
+    sendStorageRequest('removeItem', _key).catch(err =>
       console.error('[WORKER] localStorage.removeItem failed:', err)
     );
   },
@@ -79,7 +79,7 @@ function sendStorageRequest(operation: string, key?: string, value?: any): Promi
     console.warn('[WORKER] localStorage.length called synchronously, this may not work correctly.');
     return 0;
   },
-  key(index: number): string | null {
+  key(_index: number): string | null {
     console.warn('[WORKER] localStorage.key called synchronously, this may not work correctly.');
     return null;
   }
@@ -102,8 +102,8 @@ function sendStorageRequest(operation: string, key?: string, value?: any): Promi
   async length(): Promise<number> {
     return await sendStorageRequest('length');
   },
-  async key(index: number): Promise<string | null> {
-    return await sendStorageRequest('key', undefined, index);
+  async key(_index: number): Promise<string | null> {
+    return await sendStorageRequest('key', undefined, _index);
   }
 };
 

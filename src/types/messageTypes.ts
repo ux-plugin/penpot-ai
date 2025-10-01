@@ -441,6 +441,7 @@ export interface TypedError<T = any> extends Error {
 
 export class MessageValidationError extends Error implements TypedError {
   code = 'MESSAGE_VALIDATION_ERROR';
+  timestamp: number;
   
   constructor(message: string, public context?: any) {
     super(message);
@@ -451,6 +452,7 @@ export class MessageValidationError extends Error implements TypedError {
 
 export class HandlerNotFoundError extends Error implements TypedError {
   code = 'HANDLER_NOT_FOUND_ERROR';
+  timestamp: number;
   
   constructor(category: MessageCategory, type: string, public context?: any) {
     super(`No handler found for ${category}:${type}`);

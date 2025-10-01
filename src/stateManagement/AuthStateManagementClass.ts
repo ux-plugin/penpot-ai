@@ -10,13 +10,12 @@ const STORAGE_KEY = 'auth-store';
 
 export class AuthStateManagementClass {
   private data: PersistableAuthState;
-  private loadedFromStorage: boolean;
   private commands: IDesignPlatform;
 
   constructor(commands: IDesignPlatform) {
     this.commands = commands;
     
-    // Initialize with default state matching UI store
+    // Initialize with the default state matching UI store
     this.data = {
       userId: null,
       accessToken: null,
@@ -24,10 +23,9 @@ export class AuthStateManagementClass {
       refreshTokenExpiresAt: null,
       authProvider: null
     };
-    this.loadedFromStorage = false;
+    
     this.loadFromStorage().then(state => {
       this.data = state || this.data;
-      this.loadedFromStorage = true;
       console.log('[AUTH STATE] Loaded state from storage:', this.data);
     })
     
@@ -63,13 +61,7 @@ export class AuthStateManagementClass {
    * Get current state - required for StoreMessaging integration
    * This method is called when the UI requests current state
    */
-  getState = async (): Promise<PersistableAuthState> => {
-    if (!this.loadedFromStorage) {
-      return this.loadFromStorage().then(state => {
-        this.loadedFromStorage = true;
-        return state
-      });
-    }
+  getState = (): PersistableAuthState => {
     console.log('[AUTH STATE] State requested, returning:', this.data);
     return { ...this.data };
   };
