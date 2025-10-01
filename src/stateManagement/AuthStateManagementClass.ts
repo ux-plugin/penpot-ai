@@ -2,109 +2,98 @@
 // Mirrors the UI store structure but adapted for the worker environment
 
 import { codeStoreMessaging } from '@/messaging/CodeMessageDispatcher';
-
-interface AuthStateData {
-  userId: string | null;
-  accessToken: string | null;
-  refreshToken: string | null;
-  isAuthenticated: boolean;
-  authProvider: 'FIGMA' | 'GITHUB' | null;
-  isLoading: boolean;
-}
-
-interface PersistableAuthState {
-  userId: string | null;
-  accessToken: string | null;
-  refreshToken: string | null;
-  isAuthenticated: boolean;
-  authProvider: 'FIGMA' | 'GITHUB' | null;
-}
+import { IDesignPlatform } from '@/platform/IDesignPlatform';
+import { PersistableAuthState } from '@/types/authTypes';
 
 // Storage key for persisting the store
 const STORAGE_KEY = 'auth-store';
 
 export class AuthStateManagementClass {
-  private state: AuthStateData;
+  private data: PersistableAuthState;
+  private loadedFromStorage: boolean;
+  private commands: IDesignPlatform;
 
-  constructor() {
+  constructor(commands: IDesignPlatform) {
+    this.commands = commands;
+    
     // Initialize with default state matching UI store
-    this.state = {
+    this.data = {
       userId: null,
       accessToken: null,
       refreshToken: null,
-      isAuthenticated: false,
-      authProvider: null,
-      isLoading: false
+      refreshTokenExpiresAt: null,
+      authProvider: null
     };
+    this.loadedFromStorage = false;
+    this.loadFromStorage().then(state => {
+      this.data = state || this.data;
+      this.loadedFromStorage = true;
+      console.log('[AUTH STATE] Loaded state from storage:', this.data);
+    })
     
     console.log('[AUTH STATE] Authentication state management initialized');
   }
 
   /**
-   * Set and update the UI store
+   * Set the state and save it to local storage with enhanced type safety
    */
-  set_state = async (payload: any): Promise<any> => {
+  setState = async (payload: Partial<PersistableAuthState>): Promise<void> => {
     console.log('[AUTH STATE] Received state update:', payload);
     
-    // Handle special storage operation commands
-    if (payload && typeof payload === 'object' && payload.action) {
-      switch (payload.action) {
-        case 'save':
-          await this.saveToStorage();
-          return { action: 'save', success: true };
-        case 'load':
-          const loadedState = await this.loadFromStorage();
-          return { action: 'load', success: true, state: loadedState };
-        case 'clear':
-          await this.clearStorage();
-          return { action: 'clear', success: true };
-        default:
-          console.warn('[AUTH STATE] Unknown storage action:', payload.action);
-          return { action: payload.action, success: false, error: 'Unknown action' };
-      }
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Invalid payload: must be a valid state object');
     }
     
-    // Regular state update
-    if (payload && typeof payload === 'object') {
-      this.state = { ...this.state, ...payload };
-      console.log('[AUTH STATE] State updated:', this.state);
-      
-      // Auto-save after state updates (except for loading operations)
-      if (!payload.skipAutoSave) {
-        await this.saveToStorage();
-      }
+    // Validate payload properties
+    const validKeys = ['userId', 'accessToken', 'refreshToken', 'refreshTokenExpiresAt', 'authProvider'];
+    const invalidKeys = Object.keys(payload).filter(key => !validKeys.includes(key));
+    if (invalidKeys.length > 0) {
+      console.warn('[AUTH STATE] Invalid keys in payload:', invalidKeys);
     }
 
-    return { success: true, state: this.state };
+    // Regular state update
+    this.data = { ...this.data, ...payload };
+    console.log('[AUTH STATE] State updated:', this.data);
+
+    return this.saveToStorage();
+
   };
 
   /**
    * Get current state - required for StoreMessaging integration
    * This method is called when the UI requests current state
    */
-  get_state = (): AuthStateData => {
-    console.log('[AUTH STATE] State requested, returning:', this.state);
-    return { ...this.state };
+  getState = async (): Promise<PersistableAuthState> => {
+    if (!this.loadedFromStorage) {
+      return this.loadFromStorage().then(state => {
+        this.loadedFromStorage = true;
+        return state
+      });
+    }
+    console.log('[AUTH STATE] State requested, returning:', this.data);
+    return { ...this.data };
   };
 
   /**
    * Set state and update the UI
    * This method updates the local state and sends a message to the UI to synchronize
    */
-  set_update = async (payload: Partial<AuthStateData>): Promise<void> => {
-    console.log('[AUTH STATE] Received set_update request:', payload);
-    
+  setUpdate = async (payload: Partial<PersistableAuthState>): Promise<void> => {
+    console.log('[AUTH STATE] Received setUpdate request:', payload);
+
     // Update local state
-    this.state = { ...this.state, ...payload };
-    console.log('[AUTH STATE] Local state updated:', this.state);
+    this.data = { ...this.data, ...payload };
+    console.log('[AUTH STATE] Local state updated:', this.data);
 
     try {
       // Send state update message to UI
       const result = await codeStoreMessaging.updateState('authentication', payload);
       console.log('[AUTH STATE] State synchronized with UI:', result);
+
+      return this.saveToStorage();
     } catch (error) {
       console.error('[AUTH STATE] Failed to sync state with UI:', error);
-      // Optionally revert local state change if UI sync fails
+
     }
   };
 
@@ -114,13 +103,13 @@ export class AuthStateManagementClass {
   saveToStorage = async (): Promise<void> => {
     try {
       const stateToSave: PersistableAuthState = {
-        userId: this.state.userId,
-        accessToken: this.state.accessToken,
-        refreshToken: this.state.refreshToken,
-        isAuthenticated: this.state.isAuthenticated,
-        authProvider: this.state.authProvider,
+        userId: this.data.userId,
+        accessToken: this.data.accessToken,
+        refreshToken: this.data.refreshToken,
+        refreshTokenExpiresAt: this.data.refreshTokenExpiresAt,
+        authProvider: this.data.authProvider,
       };
-      await figma.clientStorage.setAsync(STORAGE_KEY, stateToSave);
+      await this.commands.storage.setAsync(STORAGE_KEY, stateToSave);
       console.log('[AUTH STATE] State saved to storage:', stateToSave);
     } catch (error) {
       console.error('[AUTH STATE] Error saving to storage:', error);
@@ -131,28 +120,33 @@ export class AuthStateManagementClass {
   /**
    * Load state from storage
    */
-  loadFromStorage = async (): Promise<AuthStateData | null> => {
+  loadFromStorage = async (): Promise<PersistableAuthState> => {
     try {
-      const stored = await figma.clientStorage.getAsync(STORAGE_KEY) as PersistableAuthState | undefined;
+      const stored = await this.commands.storage.getAsync(STORAGE_KEY) as PersistableAuthState | undefined;
       
       if (stored) {
-        const loadedState: AuthStateData = {
+        const loadedState: PersistableAuthState = {
           userId: stored.userId || null,
           accessToken: stored.accessToken || null,
           refreshToken: stored.refreshToken || null,
-          isAuthenticated: stored.isAuthenticated || false,
+          refreshTokenExpiresAt: stored.refreshTokenExpiresAt || null,
           authProvider: stored.authProvider || null,
-          isLoading: false, // Always reset loading state
         };
         
         // Update local state
-        this.state = { ...this.state, ...loadedState };
+        this.data = { ...this.data, ...loadedState };
         console.log('[AUTH STATE] State loaded from storage:', loadedState);
         return loadedState;
       }
       
       console.log('[AUTH STATE] No stored state found');
-      return null;
+      return {
+        userId: null,
+        accessToken: null,
+        refreshToken: null,
+        refreshTokenExpiresAt: null,
+        authProvider: null
+      };
     } catch (error) {
       console.error('[AUTH STATE] Error loading from storage:', error);
       throw error;
@@ -164,16 +158,15 @@ export class AuthStateManagementClass {
    */
   clearStorage = async (): Promise<void> => {
     try {
-      await figma.clientStorage.deleteAsync(STORAGE_KEY);
+      await this.commands.storage.deleteAsync(STORAGE_KEY);
       
       // Reset state to defaults
-      this.state = {
+      this.data = {
         userId: null,
         accessToken: null,
         refreshToken: null,
-        isAuthenticated: false,
+        refreshTokenExpiresAt: null,
         authProvider: null,
-        isLoading: false,
       };
       
       console.log('[AUTH STATE] Storage cleared and state reset');

@@ -1,13 +1,21 @@
-import { Request, Response, Message, MessageCategory, isRequest, isResponse } from "@/types/messageTypes";
+import { 
+  Request, 
+  Response, 
+  Message, 
+  MessageCategory, 
+  isRequest, 
+  isResponse,
+  HandlerNotFoundError,
+} from "@/types/messageTypes";
 
-export type RequestHandler<TReq extends Request = Request> =
-  (request: TReq) => Promise<any> | any;
+export type RequestHandler<TReq extends Request = Request, TRes = any> =
+  (request: TReq) => Promise<TRes> | TRes;
 
 type ResolveFunction<T = any> = (value: T) => void;
 type RejectFunction = (reason: any) => void;
 
 export interface RequestHandlerRegistry {
-  [key: string]: RequestHandler;
+  [key: string]: RequestHandler<any, any>;
 }
 
 export class UniversalMessageDispatcher {
@@ -44,18 +52,21 @@ export class UniversalMessageDispatcher {
   }
 
   /**
-   * Register a handler for specific request types
+   * Register a handler for specific request types with enhanced type safety
    */
-  public registerHandler<TReq extends Request>(
+  public registerHandler<
+    TReq extends Request = Request,
+    TRes = any
+  >(
     category: MessageCategory,
     type: string,
-    handler: RequestHandler<TReq>
+    handler: RequestHandler<TReq, TRes>
   ): void {
     const key = `${category}:${type}`;
     if (this.handlers[key]) {
       console.warn(`Handler for ${key} already exists. Replacing existing handler.`);
     }
-    this.handlers[key] = handler as RequestHandler;
+    this.handlers[key] = handler as RequestHandler<any, any>;
   }
 
   /**
@@ -118,8 +129,9 @@ export class UniversalMessageDispatcher {
     const handler = this.handlers[key];
 
     if (!handler) {
-      console.warn(`No handler registered for ${key}`);
-      this.sendResponse(request, null, `No handler found for request type: ${key}`);
+      const error = new HandlerNotFoundError(request.category, request.type, { requestId: request.id });
+      console.warn(error.message);
+      this.sendResponse(request, null, error.message);
       return;
     }
 

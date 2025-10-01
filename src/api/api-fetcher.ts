@@ -75,7 +75,7 @@ export async function apiFetch(
 
         const data = await refreshResponse.json();
         authStore.setAccessToken(data.accessToken);
-        authStore.setRefreshToken(data.refreshToken);
+        authStore.setRefreshToken(data.refreshToken, null);
 
         isRefreshing = false;
         processQueue(null);

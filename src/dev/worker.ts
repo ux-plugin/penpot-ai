@@ -25,10 +25,106 @@ if (globalThis.WebSocket) {
 // Set up the __html__ global that code.ts expects
 (globalThis as any).__html__ = '<div>Plugin UI HTML content</div>';
 
+// Add localStorage polyfill for worker environment
+// Bridge to host's real localStorage to persist across refresh
+let nextRequestId = 0;
+const pendingStorageRequests = new Map<number, { resolve: (value: any) => void, reject: (error: any) => void }>();
+
+function sendStorageRequest(operation: string, key?: string, value?: any): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const id = nextRequestId++;
+    pendingStorageRequests.set(id, { resolve, reject });
+
+    postMessage({
+      type: 'localStorage-bridge',
+      operation,
+      key,
+      value,
+      id
+    });
+
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      if (pendingStorageRequests.has(id)) {
+        pendingStorageRequests.delete(id);
+        reject(new Error(`localStorage ${operation} timeout`));
+      }
+    }, 5000);
+  });
+}
+
+(globalThis as any).localStorage = {
+  getItem(key: string): string | null {
+    // Synchronous API but internally async - use cached value or return null
+    // This is a compromise since localStorage API is sync but we need async bridge
+    console.warn('[WORKER] localStorage.getItem called synchronously, this may not work correctly. Use async storage methods instead.');
+    return null;
+  },
+  setItem(key: string, value: string): void {
+    sendStorageRequest('setItem', key, value).catch(err =>
+      console.error('[WORKER] localStorage.setItem failed:', err)
+    );
+  },
+  removeItem(key: string): void {
+    sendStorageRequest('removeItem', key).catch(err =>
+      console.error('[WORKER] localStorage.removeItem failed:', err)
+    );
+  },
+  clear(): void {
+    sendStorageRequest('clear').catch(err =>
+      console.error('[WORKER] localStorage.clear failed:', err)
+    );
+  },
+  get length(): number {
+    console.warn('[WORKER] localStorage.length called synchronously, this may not work correctly.');
+    return 0;
+  },
+  key(index: number): string | null {
+    console.warn('[WORKER] localStorage.key called synchronously, this may not work correctly.');
+    return null;
+  }
+};
+
+// Export async versions for proper usage
+(globalThis as any).localStorageAsync = {
+  async getItem(key: string): Promise<string | null> {
+    return await sendStorageRequest('getItem', key);
+  },
+  async setItem(key: string, value: string): Promise<void> {
+    await sendStorageRequest('setItem', key, value);
+  },
+  async removeItem(key: string): Promise<void> {
+    await sendStorageRequest('removeItem', key);
+  },
+  async clear(): Promise<void> {
+    await sendStorageRequest('clear');
+  },
+  async length(): Promise<number> {
+    return await sendStorageRequest('length');
+  },
+  async key(index: number): Promise<string | null> {
+    return await sendStorageRequest('key', undefined, index);
+  }
+};
+
 // Handle messages from the host
 addEventListener('message', (event) => {
   const data = event.data;
-  
+
+  // Handle localStorage bridge responses
+  if (data.type === 'localStorage-bridge-response') {
+    const pending = pendingStorageRequests.get(data.id);
+    if (pending) {
+      pendingStorageRequests.delete(data.id);
+      if (data.error) {
+        pending.reject(new Error(data.error));
+      } else {
+        pending.resolve(data.result);
+      }
+    }
+    return;
+  }
+
   if (data.type === 'from-ui' && data.pluginMessage) {
     // Forward message from UI to code.ts via figma.ui.onmessage
     const figmaUi = (globalThis as any).figma.ui;

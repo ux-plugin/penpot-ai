@@ -138,4 +138,56 @@ export class DevImplementation implements IDesignPlatform {
       type: 'PAINT'
     };
   };
+
+  storage = {
+    setAsync: async (key: string, value: any) => {
+      console.log('[DEV] Storage setAsync:', key, value);
+      try {
+        // Check if we're in a worker with the async bridge
+        const storage = (globalThis as any).localStorageAsync || localStorage;
+        if (storage.setItem.constructor.name === 'AsyncFunction' || (globalThis as any).localStorageAsync) {
+          await storage.setItem(key, JSON.stringify(value));
+        } else {
+          storage.setItem(key, JSON.stringify(value));
+        }
+      } catch (error) {
+        console.error('[DEV] localStorage setItem failed:', error);
+        throw error;
+      }
+    },
+    getAsync: async (key: string) => {
+      console.log('[DEV] Storage getAsync:', key);
+      try {
+        // Check if we're in a worker with the async bridge
+        const storage = (globalThis as any).localStorageAsync || localStorage;
+        let item: string | null;
+        if (storage.getItem.constructor.name === 'AsyncFunction' || (globalThis as any).localStorageAsync) {
+          item = await storage.getItem(key);
+        } else {
+          item = storage.getItem(key);
+        }
+        const value = item ? JSON.parse(item) : undefined;
+        console.log('[DEV] Storage retrieved:', value);
+        return value;
+      } catch (error) {
+        console.error('[DEV] localStorage getItem failed:', error);
+        return undefined;
+      }
+    },
+    deleteAsync: async (key: string) => {
+      console.log('[DEV] Storage deleteAsync:', key);
+      try {
+        // Check if we're in a worker with the async bridge
+        const storage = (globalThis as any).localStorageAsync || localStorage;
+        if (storage.removeItem.constructor.name === 'AsyncFunction' || (globalThis as any).localStorageAsync) {
+          await storage.removeItem(key);
+        } else {
+          storage.removeItem(key);
+        }
+      } catch (error) {
+        console.error('[DEV] localStorage removeItem failed:', error);
+        throw error;
+      }
+    }
+  };
 }

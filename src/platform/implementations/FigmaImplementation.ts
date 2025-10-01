@@ -42,6 +42,18 @@ export class FigmaImplementation implements IDesignPlatform {
     return await figma.getStyleByIdAsync(id);
   };
 
+  storage = {
+    setAsync: async (key: string, value: any) => {
+      return await figma.clientStorage.setAsync(key, value);
+    },
+    getAsync: async (key: string) => {
+      return await figma.clientStorage.getAsync(key);
+    },
+    deleteAsync: async (key: string) => {
+      return await figma.clientStorage.deleteAsync(key);
+    }
+  };
+
   constructor() {
     // Bridge figma.ui.onmessage to our interface
     Object.defineProperty(this.ui, 'onmessage', {

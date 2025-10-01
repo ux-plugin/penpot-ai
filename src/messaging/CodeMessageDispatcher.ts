@@ -3,24 +3,29 @@ import { StoreMessaging } from './StoreMessaging';
 import { 
   MessageCategory, 
   OperationMessageType, 
-  StoreMessageType, 
   SystemMessageType,
   DrawRectangleRequest,
+  DrawRectangleResponse,
   ChangeColorRequest,
+  ChangeColorResponse,
   CreateFrameRequest,
-  StoreStateUpdateRequest,
+  CreateFrameResponse,
   ErrorRequest,
+  ErrorResponse,
   WorkerTestRequest,
-  Message 
+  WorkerTestResponse,
+  Message,
+  ExtractResultType
 } from '@/types/messageTypes';
 import { platform } from '@/platform';
+import { IDesignPlatform } from '@/platform/IDesignPlatform';
 import { AuthStateManagementClass } from '@/stateManagement/AuthStateManagementClass';
 
 // Initialize everything inside an async IIFE to handle top-level await
 let codeMessageDispatcher: UniversalMessageDispatcher;
 let codeStoreMessaging: StoreMessaging;
 let authStateManager: AuthStateManagementClass;
-let commands: any;
+let commands: IDesignPlatform;
 let setupCodeMessageListener: () => void;
 
 // Initialize async resources
@@ -38,7 +43,7 @@ let setupCodeMessageListener: () => void;
   codeStoreMessaging = new StoreMessaging(codeMessageDispatcher);
 
   // Create and register authentication state management
-  authStateManager = new AuthStateManagementClass();
+  authStateManager = new AuthStateManagementClass(commands);
   codeStoreMessaging.registerStore('authentication', authStateManager);
 
   // Setup message listener (this will replace the existing onmessage handler in code.ts)
@@ -48,123 +53,123 @@ let setupCodeMessageListener: () => void;
     };
   };
 
-  // Register operation handlers
-  codeMessageDispatcher.registerHandler(
-  MessageCategory.OPERATION,
-  OperationMessageType.DRAW_RECTANGLE,
-  async (request: DrawRectangleRequest) => {
-    const { x, y, width, height, color } = request.payload;
-    const rect = commands.createRectangle();
-    rect.x = x;
-    rect.y = y;
-    rect.resize(width, height);
-    if (color) {
-      rect.fills = [{ type: 'SOLID', color }];
-    }
-    console.log('Rectangle created:', rect.id);
-    
-    // Return structured response
-    return {
-      nodeId: rect.id,
-      created: true,
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height
-    };
-  }
-);
-
-codeMessageDispatcher.registerHandler(
-  MessageCategory.OPERATION,
-  OperationMessageType.CHANGE_COLOR,
-  async (request: ChangeColorRequest) => {
-    const { nodeId, color } = request.payload;
-    const node = await commands.getNodeByIdAsync(nodeId);
-    if (node && 'fills' in node) {
-      node.fills = [{ type: 'SOLID', color }];
-      console.log('Color changed for node:', nodeId);
+  // Register operation handlers with enhanced type safety
+  codeMessageDispatcher.registerHandler<
+    DrawRectangleRequest, 
+    ExtractResultType<DrawRectangleResponse>
+  >(
+    MessageCategory.OPERATION,
+    OperationMessageType.DRAW_RECTANGLE,
+    async (request: DrawRectangleRequest): Promise<ExtractResultType<DrawRectangleResponse>> => {
+      const { x, y, width, height, color } = request.payload;
+      const rect = commands.createRectangle();
+      rect.x = x;
+      rect.y = y;
+      rect.resize(width, height);
+      if (color) {
+        rect.fills = [{ type: 'SOLID', color }];
+      }
+      console.log('Rectangle created:', rect.id);
       
-      // Return structured response
+      // Return structured response with exact type
       return {
-        nodeId,
-        colorChanged: true,
-        color
+        nodeId: rect.id,
+        created: true,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
       };
-    } else {
-      throw new Error(`Node ${nodeId} not found or doesn't support fills`);
     }
-  }
-);
+  );
 
-codeMessageDispatcher.registerHandler(
-  MessageCategory.OPERATION,
-  OperationMessageType.CREATE_FRAME,
-  async (request: CreateFrameRequest) => {
-    const frame = commands.createFrame();
-    const { x, y, width, height, name } = request.payload;
-    
-    if (x !== undefined) frame.x = x || 0;
-    if (y !== undefined) frame.y = y || 0;
-    if (width !== undefined && height !== undefined) {
-      frame.resize(width || 100, height || 100);
+codeMessageDispatcher.registerHandler<
+    ChangeColorRequest,
+    ExtractResultType<ChangeColorResponse>
+  >(
+    MessageCategory.OPERATION,
+    OperationMessageType.CHANGE_COLOR,
+    async (request: ChangeColorRequest): Promise<ExtractResultType<ChangeColorResponse>> => {
+      const { nodeId, color } = request.payload;
+      const node = await commands.getNodeByIdAsync(nodeId);
+      if (node && 'fills' in node) {
+        node.fills = [{ type: 'SOLID', color }];
+        console.log('Color changed for node:', nodeId);
+        
+        // Return structured response with exact type
+        return {
+          nodeId,
+          colorChanged: true,
+          color
+        };
+      } else {
+        throw new Error(`Node ${nodeId} not found or doesn't support fills`);
+      }
     }
-    if (name) frame.name = name;
-    
-    console.log('Frame created:', frame.id);
-    
-    // Return structured response
-    return {
-      frameId: frame.id,
-      created: true,
-      x: frame.x,
-      y: frame.y,
-      width: frame.width,
-      height: frame.height,
-      name: frame.name
-    };
-  }
-);
+  );
 
-// Register store handlers
-codeMessageDispatcher.registerHandler(
-  MessageCategory.STORE,
-  StoreMessageType.STATE_UPDATE,
-  async (request: StoreStateUpdateRequest) => {
-    console.log(`Store ${request.storeId} updated:`, request.payload);
-    
-    // Return structured response
-    return {
-      storeId: request.storeId,
-      updated: true,
-      payload: request.payload
-    };
-  }
-);
+codeMessageDispatcher.registerHandler<
+    CreateFrameRequest,
+    ExtractResultType<CreateFrameResponse>
+  >(
+    MessageCategory.OPERATION,
+    OperationMessageType.CREATE_FRAME,
+    async (request: CreateFrameRequest): Promise<ExtractResultType<CreateFrameResponse>> => {
+      const frame = commands.createFrame();
+      const { x, y, width, height, name } = request.payload;
+      
+      if (x !== undefined) frame.x = x || 0;
+      if (y !== undefined) frame.y = y || 0;
+      if (width !== undefined && height !== undefined) {
+        frame.resize(width || 100, height || 100);
+      }
+      if (name) frame.name = name;
+      
+      console.log('Frame created:', frame.id);
+      
+      // Return structured response with exact type
+      return {
+        frameId: frame.id,
+        created: true,
+        x: frame.x,
+        y: frame.y,
+        width: frame.width,
+        height: frame.height,
+        name: frame.name
+      };
+    }
+  );
 
-// Register system handlers
-codeMessageDispatcher.registerHandler(
-  MessageCategory.SYSTEM,
-  SystemMessageType.ERROR,
-  async (request: ErrorRequest) => {
-    console.error('System error in code.ts:', request.payload.message, request.payload.details);
-    
-    // Return structured response
-    return {
-      logged: true,
-      handled: true
-    };
-  }
-);
 
-  codeMessageDispatcher.registerHandler(
+// Register system handlers with enhanced type safety
+codeMessageDispatcher.registerHandler<
+    ErrorRequest,
+    ExtractResultType<ErrorResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.ERROR,
+    async (request: ErrorRequest): Promise<ExtractResultType<ErrorResponse>> => {
+      console.error('System error in code.ts:', request.payload.message, request.payload.details);
+      
+      // Return structured response with exact type
+      return {
+        logged: true,
+        handled: true
+      };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    WorkerTestRequest,
+    ExtractResultType<WorkerTestResponse>
+  >(
     MessageCategory.SYSTEM,
     SystemMessageType.WORKER_TEST,
-    async (request: WorkerTestRequest) => {
+    async (request: WorkerTestRequest): Promise<ExtractResultType<WorkerTestResponse>> => {
       console.log('[CODE] Worker test message received:', request.payload.message);
       console.log('[CODE] Full request payload:', request.payload);
       
-      // Return structured response
+      // Return structured response with exact type
       return {
         received: true,
         echoed: `Code received: "${request.payload.message}"`,

@@ -5,8 +5,12 @@ import {
   OperationMessageType, 
   SystemMessageType, 
   DrawRectangleRequest,
+  DrawRectangleResponse,
   ErrorRequest,
-  WorkerTestRequest
+  ErrorResponse,
+  WorkerTestRequest,
+  WorkerTestResponse,
+  ExtractResultType
 } from '@/types/messageTypes';
 // Create UI message dispatcher
 export const uiMessageDispatcher = new UniversalMessageDispatcher(
@@ -17,12 +21,6 @@ export const uiMessageDispatcher = new UniversalMessageDispatcher(
 // Create store messaging
 export const uiStoreMessaging = new StoreMessaging(uiMessageDispatcher);
 
-// Function to initialize store registrations (called after stores are ready)
-export const initializeStoreRegistrations = () => {
-  // This will be called from the store modules after they're initialized
-  // to avoid circular dependency issues
-};
-
 // Setup message listener
 window.onmessage = (event: MessageEvent) => {
   const message = event.data.pluginMessage;
@@ -31,13 +29,16 @@ window.onmessage = (event: MessageEvent) => {
   }
 };
 
-// Register operation handlers
-uiMessageDispatcher.registerHandler(
+// Register operation handlers with enhanced type safety
+uiMessageDispatcher.registerHandler<
+  DrawRectangleRequest,
+  ExtractResultType<DrawRectangleResponse>
+>(
   MessageCategory.OPERATION,
   OperationMessageType.DRAW_RECTANGLE,
-  async (request: DrawRectangleRequest) => {
+  async (request: DrawRectangleRequest): Promise<ExtractResultType<DrawRectangleResponse>> => {
     console.log('Drawing rectangle request received:', request.payload);
-    // Return a response result
+    // Return a response result with exact type
     return {
       nodeId: 'ui-mock-node-id',
       created: true,
@@ -49,13 +50,16 @@ uiMessageDispatcher.registerHandler(
   }
 );
 
-// Register system handlers
-uiMessageDispatcher.registerHandler(
+// Register system handlers with enhanced type safety
+uiMessageDispatcher.registerHandler<
+  ErrorRequest,
+  ExtractResultType<ErrorResponse>
+>(
   MessageCategory.SYSTEM,
   SystemMessageType.ERROR,
-  async (request: ErrorRequest) => {
+  async (request: ErrorRequest): Promise<ExtractResultType<ErrorResponse>> => {
     console.error('System error:', request.payload.message, request.payload.details);
-    // Return a response result
+    // Return a response result with exact type
     return {
       logged: true,
       handled: true
@@ -63,13 +67,16 @@ uiMessageDispatcher.registerHandler(
   }
 );
 
-uiMessageDispatcher.registerHandler(
+uiMessageDispatcher.registerHandler<
+  WorkerTestRequest,
+  ExtractResultType<WorkerTestResponse>
+>(
   MessageCategory.SYSTEM,
   SystemMessageType.WORKER_TEST,
-  async (request: WorkerTestRequest) => {
+  async (request: WorkerTestRequest): Promise<ExtractResultType<WorkerTestResponse>> => {
     console.log('[UI] Worker test message received:', request.payload.message);
     console.log('[UI] Full request payload:', request.payload);
-    // Return a response result
+    // Return a response result with exact type
     return {
       received: true,
       echoed: `UI received: "${request.payload.message}"`,

@@ -42,7 +42,7 @@ function Login() {
       }
 
       setAccessToken(result.data.accessToken);
-      setRefreshToken(result.data.refreshToken);
+      setRefreshToken(result.data.refreshToken, null);
       setAuthenticated(true); // Set authenticated immediately
       setAuthProvider("FIGMA");
 
@@ -67,7 +67,7 @@ function Login() {
       }
 
       setAccessToken(result.data.accessToken);
-      setRefreshToken(result.data.refreshToken);
+      setRefreshToken(result.data.refreshToken, null);
       setAuthenticated(true); // Set authenticated immediately
       setAuthProvider("GITHUB");
 

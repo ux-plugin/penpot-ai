@@ -65,7 +65,6 @@ export interface StoreStateUpdateResponse extends MessageResponse {
   result: {
     storeId: string;
     updated: boolean;
-    payload: any;
   };
 }
 
@@ -342,6 +341,124 @@ export type Response =
 // Union of all message types
 export type Message = Request | Response;
 
+// =================
+// TYPE UTILITIES
+// =================
+
+// Request-to-Response type mapping utility
+export type RequestToResponseMap = {
+  [StoreMessageType.STATE_UPDATE]: {
+    request: StoreStateUpdateRequest;
+    response: StoreStateUpdateResponse;
+  };
+  [StoreMessageType.GET_STATE]: {
+    request: StoreGetStateRequest;
+    response: StoreGetStateResponse;
+  };
+  [OperationMessageType.DRAW_RECTANGLE]: {
+    request: DrawRectangleRequest;
+    response: DrawRectangleResponse;
+  };
+  [OperationMessageType.CHANGE_COLOR]: {
+    request: ChangeColorRequest;
+    response: ChangeColorResponse;
+  };
+  [OperationMessageType.CREATE_FRAME]: {
+    request: CreateFrameRequest;
+    response: CreateFrameResponse;
+  };
+  [OperationMessageType.COMPLETE]: {
+    request: CompleteRequest;
+    response: CompleteResponse;
+  };
+  [OperationMessageType.RESIZE_ELEMENT]: {
+    request: ResizeElementRequest;
+    response: ResizeElementResponse;
+  };
+  [SystemMessageType.ERROR]: {
+    request: ErrorRequest;
+    response: ErrorResponse;
+  };
+  [SystemMessageType.WARNING]: {
+    request: WarningRequest;
+    response: WarningResponse;
+  };
+  [SystemMessageType.INFO]: {
+    request: InfoRequest;
+    response: InfoResponse;
+  };
+  [SystemMessageType.PLUGIN_READY]: {
+    request: PluginReadyRequest;
+    response: PluginReadyResponse;
+  };
+  [SystemMessageType.WORKER_TEST]: {
+    request: WorkerTestRequest;
+    response: WorkerTestResponse;
+  };
+};
+
+// Utility type to extract request type from message type
+export type ExtractRequestType<T extends keyof RequestToResponseMap> = 
+  RequestToResponseMap[T]['request'];
+
+// Utility type to extract response type from message type
+export type ExtractResponseType<T extends keyof RequestToResponseMap> = 
+  RequestToResponseMap[T]['response'];
+
+// Utility type to extract result type from response
+export type ExtractResultType<T extends Response> = 
+  T extends { result: infer R } ? R : never;
+
+// Enhanced type-safe message creator utilities
+export type MessageRequestCreator<T extends keyof RequestToResponseMap> = 
+  Omit<ExtractRequestType<T>, 'id' | 'timestamp' | 'source'>;
+
+export type MessageResponseResult<T extends keyof RequestToResponseMap> = 
+  ExtractResultType<ExtractResponseType<T>>;
+
+// Conditional type for strict payload validation
+export type ValidatedPayload<T extends Request> = 
+  T extends { payload: infer P } ? P : never;
+
+// Type guard factory for specific message types
+export function createMessageTypeGuard<T extends keyof RequestToResponseMap>(
+  category: MessageCategory,
+  type: T
+) {
+  return (message: Message): message is ExtractRequestType<T> => {
+    return isRequest(message) && 
+           message.category === category && 
+           message.type === type;
+  };
+}
+
+// Enhanced error types for better error handling
+export interface TypedError<T = any> extends Error {
+  code?: string;
+  context?: T;
+  timestamp?: number;
+}
+
+export class MessageValidationError extends Error implements TypedError {
+  code = 'MESSAGE_VALIDATION_ERROR';
+  
+  constructor(message: string, public context?: any) {
+    super(message);
+    this.name = 'MessageValidationError';
+    this.timestamp = Date.now();
+  }
+}
+
+export class HandlerNotFoundError extends Error implements TypedError {
+  code = 'HANDLER_NOT_FOUND_ERROR';
+  
+  constructor(category: MessageCategory, type: string, public context?: any) {
+    super(`No handler found for ${category}:${type}`);
+    this.name = 'HandlerNotFoundError';
+    this.timestamp = Date.now();
+  }
+}
+
 // Type guards for request/response identification
 export function isRequest(message: Message): message is Request {
   return !('success' in message);
@@ -349,4 +466,19 @@ export function isRequest(message: Message): message is Request {
 
 export function isResponse(message: Message): message is Response {
   return 'success' in message;
+}
+
+// Enhanced type guards with specific type checking
+export function isStoreMessage(message: Message): message is StoreStateUpdateRequest | StoreGetStateRequest {
+  return message.category === MessageCategory.STORE;
+}
+
+export function isOperationMessage(message: Message): message is 
+  DrawRectangleRequest | ChangeColorRequest | CreateFrameRequest | CompleteRequest | ResizeElementRequest {
+  return message.category === MessageCategory.OPERATION;
+}
+
+export function isSystemMessage(message: Message): message is 
+  ErrorRequest | WarningRequest | InfoRequest | PluginReadyRequest | WorkerTestRequest {
+  return message.category === MessageCategory.SYSTEM;
 }

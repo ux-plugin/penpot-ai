@@ -16,8 +16,8 @@ function Settings() {
 
   const handleLogout = () => {
     setAuthenticated(false);
-    setRefreshToken('');
-    setAccessToken('');
+    setRefreshToken(null, null);
+    setAccessToken(null);
     setAuthProvider(null);
     navigate('/login');
   };

@@ -64,7 +64,7 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
   setCompanionConnected: (connected) => {
     set({ 
       isCompanionConnected: connected,
-      isCompanionConnecting: false,
+       isCompanionConnecting: false,
       companionError: connected ? null : get().companionError,
     });
   },

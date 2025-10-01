@@ -12,11 +12,13 @@ interface GetAccessTokenResponse {
 
 interface GetRefreshTokenResponse {
   refreshToken: string;
+  refreshTokenExpiresAt: number;
 }
 
 export interface FigmaLoginAuthData {
   accessToken: string;
   refreshToken: string;
+  refreshTokenExpiresAt: number;
 }
 
 /**
@@ -65,9 +67,9 @@ export async function getFigmaLogin(signal?: AbortSignal): Promise<FigmaLoginAut
     signal,
   })
 
-  const { refreshToken }: GetRefreshTokenResponse = await getRefreshTokenResponse.json();
+  const { refreshToken, refreshTokenExpiresAt }: GetRefreshTokenResponse = await getRefreshTokenResponse.json();
 
-  return {accessToken: accessToken, refreshToken: refreshToken};
+  return {accessToken: accessToken, refreshToken: refreshToken, refreshTokenExpiresAt: refreshTokenExpiresAt};
 }
 
 /**

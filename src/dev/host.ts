@@ -87,8 +87,60 @@ function wireCommunications(iframe: HTMLIFrameElement, worker: Worker) {
 
   // Forward messages from worker to iframe
   worker.addEventListener('message', (event: MessageEvent) => {
+    const data = event.data;
+
+    // Handle localStorage bridge messages from worker
+    if (data.type === 'localStorage-bridge') {
+      handleLocalStorageBridge(worker, data);
+      return;
+    }
+
     // console.log('Forwarding worker → iframe:', event.data);
     iframe.contentWindow?.postMessage(event.data, '*');
+  });
+}
+
+function handleLocalStorageBridge(worker: Worker, message: any) {
+  const { operation, key, value, id } = message;
+  let result: any = null;
+  let error: string | null = null;
+
+  try {
+    switch (operation) {
+      case 'getItem':
+        result = localStorage.getItem(key);
+        break;
+      case 'setItem':
+        localStorage.setItem(key, value);
+        result = true;
+        break;
+      case 'removeItem':
+        localStorage.removeItem(key);
+        result = true;
+        break;
+      case 'clear':
+        localStorage.clear();
+        result = true;
+        break;
+      case 'length':
+        result = localStorage.length;
+        break;
+      case 'key':
+        result = localStorage.key(value); // value contains the index
+        break;
+      default:
+        error = `Unknown operation: ${operation}`;
+    }
+  } catch (e) {
+    error = (e as Error).message;
+  }
+
+  // Send response back to worker
+  worker.postMessage({
+    type: 'localStorage-bridge-response',
+    id,
+    result,
+    error
   });
 }
 

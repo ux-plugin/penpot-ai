@@ -1,16 +1,54 @@
-import { UniversalMessageDispatcher } from './MessageDispatcher';
+import { UniversalMessageDispatcher } from "./MessageDispatcher";
 import {
+  ExtractResultType,
   MessageCategory,
+  MessageValidationError,
+  StoreGetStateRequest,
   StoreMessageType,
   StoreStateUpdateRequest,
-  StoreGetStateRequest,
-  StoreStateUpdateResponse,
-  StoreGetStateResponse,
+  StoreStateUpdateResponse
 } from "@/types/messageTypes";
+
+// Enhanced store interface with generic state type (camelCase only)
+export interface StoreWithState<TState = any> {
+  setState?: (data: Partial<TState>) => void | Promise<void>;
+  getState?: () => TState;
+}
+
+// Store operation result types
+export interface StoreUpdateResult {
+  storeId: string;
+  updated: boolean;
+  timestamp: number;
+}
+
+export interface StoreStateResult<TState = any> {
+  storeId: string;
+  state: TState;
+  timestamp: number;
+}
+
+// Enhanced error types for store operations
+export class StoreNotFoundError extends Error {
+  constructor(storeId: string) {
+    super(`Store '${storeId}' not found`);
+    this.name = 'StoreNotFoundError';
+  }
+}
+
+export class StoreMethodNotFoundError extends Error {
+  constructor(storeId: string, method: string) {
+    super(`Store '${storeId}' doesn't have '${method}' method`);
+    this.name = 'StoreMethodNotFoundError';
+  }
+}
+
+// Utility type for store registration
+export type RegisterableStore<TState = any> = StoreWithState<TState> & Record<string, any>;
 
 export class StoreMessaging {
   private dispatcher: UniversalMessageDispatcher;
-  private stores: Map<string, any> = new Map();
+  private stores: Map<string, RegisterableStore<any>> = new Map();
 
   constructor(dispatcher: UniversalMessageDispatcher) {
     this.dispatcher = dispatcher;
@@ -18,38 +56,110 @@ export class StoreMessaging {
   }
 
   /**
-   * Register a store with the set_state and get_state functions
+   * Register a store with enhanced type safety and validation
    */
-  public registerStore<T>(storeId: string, store: T & { 
-    set_state?: (data: any) => void;
-    get_state?: () => any;
-  }): void {
+  public registerStore<TState = any>(
+    storeId: string, 
+    store: RegisterableStore<TState>
+  ): void {
+    if (!storeId) {
+      throw new MessageValidationError('Store ID must be a non-empty string', { storeId });
+    }
+
+    if (!store || typeof store !== 'object') {
+      throw new MessageValidationError('Store must be a valid object', { storeId, store });
+    }
+
+    // Validate that store has at least one of the required methods
+    if (!store.setState && !store.getState) {
+      throw new MessageValidationError(
+        'Store must implement at least one of: setState, getState', 
+        { storeId, availableMethods: Object.keys(store).filter(key => typeof store[key] === 'function') }
+      );
+    }
+
+    // Warn if overwriting existing store
+    if (this.stores.has(storeId)) {
+      console.warn(`[StoreMessaging] Overwriting existing store: ${storeId}`);
+    }
+
     this.stores.set(storeId, store);
+    console.log(`[StoreMessaging] Store registered: ${storeId}`);
   }
 
   /**
-   * Update state and wait for confirmation
+   * Update state and wait for confirmation with enhanced type safety
    */
-  public async updateState(storeId: string, payload: any): Promise<any> {
-    return this.dispatcher.sendRequest<Omit<StoreStateUpdateRequest, "id"| "timestamp"| "source">, StoreStateUpdateResponse>({
+  public async updateState<TPayload = any>(
+    storeId: string, 
+    payload: TPayload
+  ): Promise<ExtractResultType<StoreStateUpdateResponse> & StoreUpdateResult> {
+    if (!storeId) {
+      throw new MessageValidationError("Store ID must be a non-empty string", {
+        storeId,
+      });
+    }
+
+    return await this.dispatcher.sendRequest<
+      Omit<StoreStateUpdateRequest, "id" | "timestamp" | "source">,
+      ExtractResultType<StoreStateUpdateResponse> & StoreUpdateResult
+    >({
       category: MessageCategory.STORE,
       type: StoreMessageType.STATE_UPDATE,
       storeId,
-      payload
+      payload,
     });
   }
 
-
   /**
-   * Get current state from remote store
+   * Get current state from remote store with enhanced type safety
    */
-  public async getState(storeId: string): Promise<any> {
-    return this.dispatcher.sendRequest<Omit<StoreGetStateRequest, "id"| "timestamp"| "source">, StoreGetStateResponse>({
+  public async getState<TState = any>(
+    storeId: string
+  ): Promise<StoreStateResult<TState>> {
+    if (!storeId) {
+      throw new MessageValidationError("Store ID must be a non-empty string", {
+        storeId,
+      });
+    }
+
+    return await this.dispatcher.sendRequest<
+      Omit<StoreGetStateRequest, "id" | "timestamp" | "source">,
+      StoreStateResult<TState>
+    >({
       category: MessageCategory.STORE,
       type: StoreMessageType.GET_STATE,
       storeId,
-      payload: {}
+      payload: {},
     });
+  }
+
+  /**
+   * Validate if a store exists
+   */
+  public validateStoreExists(storeId: string): boolean {
+    return this.stores.has(storeId);
+  }
+
+  /**
+   * Get all registered store IDs
+   */
+  public getRegisteredStores(): string[] {
+    return Array.from(this.stores.keys());
+  }
+
+  /**
+   * Clear all registered stores
+   */
+  public clearAllStores(): void {
+    this.stores.clear();
+  }
+
+  /**
+   * Get store count
+   */
+  public getStoreCount(): number {
+    return this.stores.size;
   }
 
   private setupHandlers(): void {
@@ -59,47 +169,76 @@ export class StoreMessaging {
       this.handleStateUpdate.bind(this)
     );
 
-    this.dispatcher.registerHandler(
+    this.dispatcher.registerHandler<StoreGetStateRequest>(
       MessageCategory.STORE,
       StoreMessageType.GET_STATE,
       this.handleGetState.bind(this)
     );
   }
 
-  private async handleStateUpdate(request: StoreStateUpdateRequest): Promise<any> {
+  private async handleStateUpdate(request: StoreStateUpdateRequest): Promise<StoreUpdateResult> {
     const store = this.stores.get(request.storeId);
-    if (store && store.set_state) {
-      store.set_state(request.payload);
-      return {
+
+    if (!store) {
+      throw new StoreNotFoundError(request.storeId);
+    }
+
+    const stateUpdateMethod = store.setState;
+
+    if (!stateUpdateMethod || typeof stateUpdateMethod !== 'function') {
+      throw new StoreMethodNotFoundError(request.storeId, 'setState');
+    }
+
+    try {
+      // Ensure we fully await the promise and return only serializable data
+      await stateUpdateMethod(request.payload);
+
+      // Return a plain object that can be safely cloned
+      const result: StoreUpdateResult = {
         storeId: request.storeId,
         updated: true,
-        payload: request.payload
+        timestamp: Date.now()
       };
-    } else {
-      throw new Error(`Store ${request.storeId} not found or doesn't have set_state method`);
+
+      return result;
+    } catch (error) {
+      throw new Error(`Failed to update state for store '${request.storeId}': ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
-
-
-  private async handleGetState(request: StoreGetStateRequest): Promise<any> {
+  private async handleGetState<TState = any>(request: StoreGetStateRequest): Promise<StoreStateResult<TState>> {
     const store = this.stores.get(request.storeId);
     
     if (!store) {
-      throw new Error(`Store ${request.storeId} not found`);
+      throw new StoreNotFoundError(request.storeId);
     }
 
-    let currentState;
-    if (store.get_state && typeof store.get_state === 'function') {
-      currentState = store.get_state();
-    } else if (store.getState && typeof store.getState === 'function') {
-      currentState = store.getState();
-    } else {
-      currentState = { ...store };
-    }
+    let currentState: TState;
 
-    return {
-      storeId: request.storeId,
-      state: currentState
-    };
+    try {
+      // Only support camelCase naming convention
+      const getStateMethod = store.getState;
+
+      if (getStateMethod && typeof getStateMethod === 'function') {
+        currentState = await getStateMethod();
+      } else {
+        // Fallback: return a copy of the store object (excluding methods)
+        const storeClone = { ...store };
+        // Remove function properties to get only data
+        Object.keys(storeClone).forEach(key => {
+          if (typeof storeClone[key] === 'function') {
+            delete storeClone[key];
+          }
+        });
+        currentState = storeClone as TState;
+      }
+
+      return {
+        storeId: request.storeId,
+        state: currentState,
+        timestamp: Date.now()
+      };
+    } catch (error) {
+      throw new Error(`Failed to get state for store '${request.storeId}': ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 }

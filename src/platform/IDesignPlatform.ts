@@ -23,6 +23,13 @@ export interface IDesignPlatform {
   
   // Styles
   getStyleByIdAsync: (id: string) => Promise<any>;
+  
+  // Storage
+  storage: {
+    setAsync: (key: string, value: any) => Promise<void>;
+    getAsync: (key: string) => Promise<any>;
+    deleteAsync: (key: string) => Promise<void>;
+  };
 }
 
 // Environment detection
