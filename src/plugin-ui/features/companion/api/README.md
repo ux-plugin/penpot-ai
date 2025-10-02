@@ -1,393 +1,248 @@
-# Companion App Communication System
+# Companion App Connection Architecture
 
-This directory contains the new React Query-based companion app communication system with symmetric encryption, nonce-based replay protection, and clean dependency injection.
+## Overview
 
-## Architecture Overview
+The companion app connection system has been refactored to use a **ConnectionManager** pattern that centralizes all connection logic and provides intelligent error handling with automatic reconnection on port updates.
 
-### 🏗️ Core Components
+## Architecture
 
+### ConnectionManager (Central Orchestrator)
+
+The `ConnectionManager` class is the **single entry point** for all companion app connectivity operations. It manages the connection lifecycle through a state machine and coordinates between multiple components.
+
+**Connection State Machine:**
 ```
-src/api/companionApp/
-├── companionAppClient.ts    # Pure client class (no store dependencies)
-├── companionAppHooks.ts     # React Query hooks with store integration
-├── encryption.ts           # Updated symmetric encryption utilities
-├── handshake.ts            # Handshake logic with new message format
-├── examples.ts             # Usage examples and migration guide
-└── README.md              # This documentation
+disconnected → key_ready → connected
+     ↑            ↑            ↓
+     └────────────┴────────────┘
 ```
 
-### 🔐 Message Format
+**Key Features:**
+- Centralized connection state management
+- Automatic key generation on port updates (companion restart)
+- Intelligent error classification (404, network, timeout, etc.)
+- No automatic retries on 404/network errors (waits for user action or port update)
+- Wraps all API calls with connection validation and error handling
 
-All messages between the UI and companion app use this structure:
+### Component Responsibilities
+
+#### ConnectionManager
+- **Role:** Central orchestrator and single public API
+- **Responsibilities:**
+  - Manages connection lifecycle and state transitions
+  - Coordinates encryption key generation and handshake
+  - Handles port updates with automatic reconnection
+  - Provides intelligent error handling
+  - Wraps API calls with connection validation
+
+#### CompanionAppClient
+- **Role:** HTTP operations implementation
+- **Responsibilities:**
+  - Low-level HTTP requests with encryption
+  - Handshake protocol implementation
+  - Streaming support
+  - **Should only be called by ConnectionManager**
+
+#### React Hooks
+- **Role:** React adapter layer
+- **Responsibilities:**
+  - Bridge between React components and ConnectionManager
+  - Provide React-friendly state management
+  - Handle React-specific concerns (loading states, cache invalidation)
+
+## Usage
+
+### Connecting to Companion App
 
 ```typescript
-{
-  encrypted_data: string,  // Encrypted JSON: { data: string, timestamp: number }
-  nonce: string           // Plain text nonce for replay protection
+import { connectionManager } from '@companion/api';
+
+// Connect (generates key if needed + performs handshake)
+await connectionManager.connect();
+
+// Disconnect
+connectionManager.disconnect();
+
+// Check connection status
+const isConnected = connectionManager.isConnected();
+```
+
+### Using React Hooks
+
+```typescript
+import { useCompanionConnection, useCompanionStatus } from '@companion/api';
+
+function MyComponent() {
+  const { connect, disconnect, isConnected, error } = useCompanionConnection();
+  const status = useCompanionStatus();
+  
+  return (
+    <button onClick={connect} disabled={!status.canConnect}>
+      Connect
+    </button>
+  );
 }
 ```
 
-### 🔄 Data Flow
-
-1. **Hook Level**: Stores integration (Zustand) + React Query
-2. **Client Level**: Pure communication logic with dependency injection
-3. **Encryption Level**: Symmetric encryption with timestamp validation
-4. **Transport Level**: HTTP with nonce-based replay protection
-
-## Key Features
-
-### ✨ New Capabilities
-
-- **React Query Integration**: Automatic caching, retries, and state management
-- **Streaming Support**: Real-time data streams with chunk validation
-- **Symmetric Encryption**: Improved security with timestamp validation
-- **Nonce-Based Replay Protection**: Automatic nonce management with cleanup
-- **Dependency Injection**: Clean, testable architecture
-- **Connection State Management**: Automatic connection monitoring
-- **TypeScript Support**: Full type safety throughout
-
-### 🛡️ Security Features
-
-- **Message Encryption**: All data encrypted with symmetric key
-- **Timestamp Validation**: Messages rejected if too old (30s window)
-- **Nonce Replay Protection**: Each nonce used only once within time window
-- **Automatic Cleanup**: Expired nonces cleaned up every 5 seconds
-- **Key Rotation**: Automatic encryption key refresh when expired
-
-## Usage Guide
-
-### 🚀 Quick Start
+### Making API Calls
 
 ```typescript
-import { 
-  useCompanionQuery, 
-  useCompanionMutation, 
-  useCompanionStream 
-} from '@/api/companionApp/companionAppHooks';
+import { useCompanionQuery } from '@companion/api';
 
-// Simple query
-const { data, isLoading, error } = useCompanionQuery({
-  endpoint: '/status'
-});
-
-// Mutation with callbacks
-const mutation = useCompanionMutation({
-  endpoint: '/command',
-  onSuccess: (data) => console.log('Success:', data),
-  onError: (error) => console.error('Error:', error)
-});
-
-// Streaming data
-const stream = useCompanionStream('/audio-stream', {
-  onChunk: (chunk) => console.log('Chunk:', chunk),
-  onComplete: (allChunks) => console.log('Stream complete')
-});
+function MyComponent() {
+  // Query is automatically wrapped with connection validation
+  const { data, error } = useCompanionQuery({
+    endpoint: '/api/data',
+    enabled: true
+  });
+  
+  return <div>{data}</div>;
+}
 ```
 
-### 📋 Available Hooks
+## Connection Lifecycle Events
 
-#### `useCompanionQuery<T>(options)`
-For GET-like operations with caching.
-
-```typescript
-const { data, isLoading, error, refetch } = useCompanionQuery<StatusResponse>({
-  endpoint: '/status',
-  requestOptions?: RequestInit,
-  // Standard React Query options
-  refetchInterval: 30000,
-  staleTime: 60000,
-  enabled: true
-});
+### User Initiates Connection
+```
+User clicks "Connect"
+  → connectionManager.connect()
+  → Ensure valid key (generate if needed)
+  → State: key_ready
+  → Perform handshake
+  → State: connected
 ```
 
-#### `useCompanionMutation<TData, TVariables>(options)`
-For POST/PUT operations with optimistic updates.
-
-```typescript
-const mutation = useCompanionMutation<ResponseType, RequestType>({
-  endpoint: '/command',
-  onSuccess: (data, variables) => { /* handle success */ },
-  onError: (error, variables) => { /* handle error */ },
-  onSettled: (data, error, variables) => { /* cleanup */ }
-});
-
-mutation.mutate(requestData);
+### Port Update (Companion Restart)
+```
+Port update received
+  → connectionManager.onPortUpdate(newPort)
+  → State: disconnected
+  → Generate NEW encryption key (security)
+  → State: key_ready
+  → Perform handshake automatically
+  → State: connected (or disconnected if 404)
 ```
 
-#### `useCompanionStream(endpoint, options)`
-For real-time streaming data.
-
-```typescript
-const {
-  startStream,
-  stopStream,
-  resetStream,
-  isStreaming,
-  chunks,
-  error,
-  isReady
-} = useCompanionStream('/stream-endpoint', {
-  onChunk: (chunk) => { /* process chunk */ },
-  onComplete: (allChunks) => { /* handle completion */ },
-  onError: (error) => { /* handle error */ },
-  autoStart: true // Start automatically when ready
-});
+### API Call Error
+```
+API call fails
+  → connectionManager.apiCall() detects error
+  → Classify error type (404, network, timeout, etc.)
+  → If 404 or network: State: disconnected, no auto-retry
+  → User must manually reconnect or wait for port update
 ```
 
-#### `useCompanionConnection()`
-For handshake and connection management.
+## Security Features
+
+### Key Rotation on Companion Restart
+When a port update is detected (indicating companion app restart), the system:
+1. Resets connection state
+2. **Generates a new encryption key** (ensures session isolation)
+3. Attempts handshake with the new key
+
+This provides:
+- Session isolation between companion restarts
+- Natural key rotation
+- Prevention of replay attacks across sessions
+
+### Connection Validation
+Every API call is validated to ensure:
+- Valid encryption key exists and hasn't expired
+- Successful handshake has been performed
+- Companion app port is available
+
+## Error Handling
+
+The system classifies errors into types for intelligent handling:
+
+- **404 Error:** Companion app doesn't exist, mark as disconnected, wait for user/port update
+- **Network Error:** Connection failed, mark as disconnected, wait for user/port update  
+- **Timeout Error:** Request timed out, mark as disconnected
+- **Handshake Error:** Handshake failed, mark as disconnected
+- **Other Error:** Propagate error but may maintain connection state
+
+## API Reference
+
+### ConnectionManager Methods
 
 ```typescript
-const {
-  performHandshake,
-  isConnected,
-  isConnecting,
-  error,
-  isReady
-} = useCompanionConnection();
+// Connection operations
+connect(): Promise<void>
+disconnect(): void
+isConnected(): boolean
+getState(): ConnectionState
+canConnect(): boolean
+
+// Event handlers
+onPortUpdate(newPort: number): Promise<void>
+onKeyGenerated(): void
+
+// API call wrappers
+apiCall<T>(fn: () => Promise<T>): Promise<T>
+streamCall<T>(fn: () => Promise<T>): Promise<T>
+
+// Status information
+getConnectionInfo(): ConnectionInfo
 ```
 
-#### `useCompanionStatus()`
-For monitoring connection status.
+### React Hooks
 
 ```typescript
-const {
-  hasEncryptionKey,
-  hasPort,
-  isConnected,
-  isReady,
-  error,
-  keyExpiresAt
-} = useCompanionStatus();
+// Connection management
+useCompanionConnection()
+  → { connect, disconnect, isConnected, isConnecting, error, connectionState, canConnect }
+
+// Status monitoring
+useCompanionStatus()
+  → { state, isConnected, hasKey, hasPort, canConnect, port, keyExpiresAt, isConnecting, error }
+
+// Data fetching
+useCompanionQuery<TData>(options)
+useCompanionMutation<TData, TVariables>(options)
+useCompanionStream(endpoint, options)
+```
+
+## Files Structure
+
+```
+companion/api/
+  ├── ConnectionManager.ts       (Central orchestrator)
+  ├── companionAppClient.ts      (HTTP operations)
+  ├── companionAppHooks.ts       (React hooks)
+  ├── handshake.ts               (Handshake protocol)
+  ├── encryption.ts              (Encryption utilities)
+  ├── index.ts                   (Public exports)
+  └── README.md                  (This file)
+
+companion/stores/
+  └── useCompanionStore.ts       (Connection state store)
+
+user/stores/
+  └── usePortUpdatesStore.ts     (Port monitoring with ConnectionManager integration)
 ```
 
 ## Migration Guide
 
-### 📦 From Old System
-
-**OLD (companion-app-fetch.ts):**
+### Old Code
 ```typescript
-// Manual state management
-const [data, setData] = useState(null);
-const [loading, setLoading] = useState(true);
-
-useEffect(() => {
-  companionAppFetch('/status')
-    .then(response => response.json())
-    .then(setData)
-    .catch(console.error)
-    .finally(() => setLoading(false));
-}, []);
+// ❌ Old way - direct client access
+const { performHandshake } = useCompanionConnection();
+await performHandshake();
 ```
 
-**NEW (React Query hooks):**
+### New Code
 ```typescript
-// Automatic state management
-const { data, isLoading, error } = useCompanionQuery({
-  endpoint: '/status'
-});
+// ✅ New way - through ConnectionManager
+const { connect } = useCompanionConnection();
+await connect();
 ```
 
-### 🔄 Migration Steps
+## Benefits
 
-1. **Replace fetch calls** with appropriate hooks
-2. **Remove manual state management** (loading, error states)
-3. **Update component logic** to use hook return values
-4. **Add connection status checks** where needed
-5. **Test thoroughly** with the new system
-
-### 📝 Migration Checklist
-
-- [ ] Identify all `companionAppFetch` calls
-- [ ] Choose appropriate hook for each use case
-- [ ] Update component state management
-- [ ] Add proper error handling
-- [ ] Test connection scenarios
-- [ ] Verify streaming functionality
-- [ ] Update TypeScript types
-
-## Advanced Usage
-
-### 🎛️ Custom Hooks
-
-Create domain-specific hooks for common operations:
-
-```typescript
-export function useDeviceStatus() {
-  return useCompanionQuery<DeviceStatus>({
-    endpoint: '/device/status',
-    refetchInterval: 5000, // Update every 5 seconds
-    staleTime: 3000,
-  });
-}
-
-export function useExecuteCommand() {
-  return useCompanionMutation<CommandResult, Command>({
-    endpoint: '/execute',
-    onSuccess: () => {
-      // Invalidate related queries
-      queryClient.invalidateQueries(['companion', '/device/status']);
-    }
-  });
-}
-```
-
-### 🌊 Streaming Best Practices
-
-```typescript
-const audioStream = useCompanionStream('/audio-recording', {
-  onChunk: useCallback((chunk) => {
-    // Process audio chunk efficiently
-    audioProcessor.processChunk(chunk.data);
-  }, [audioProcessor]),
-  
-  onError: useCallback((error) => {
-    // Handle stream errors gracefully
-    toast.error(`Stream error: ${error.message}`);
-  }, []),
-  
-  onComplete: useCallback((allChunks) => {
-    // Handle completion
-    const audioData = combineChunks(allChunks);
-    saveRecording(audioData);
-  }, [])
-});
-```
-
-### 🔗 Query Key Management
-
-Use consistent query keys for proper caching:
-
-```typescript
-import { companionQueryKeys } from './companionAppHooks';
-
-// Manual invalidation
-queryClient.invalidateQueries({
-  queryKey: companionQueryKeys.endpoint('/status')
-});
-
-// Prefetch data
-queryClient.prefetchQuery({
-  queryKey: companionQueryKeys.endpoint('/config'),
-  queryFn: () => companionQuery('/config')
-});
-```
-
-## Troubleshooting
-
-### 🔍 Common Issues
-
-#### Connection Not Ready
-```typescript
-const status = useCompanionStatus();
-
-if (!status.isReady) {
-  return <div>
-    <p>Connection Status:</p>
-    <ul>
-      <li>Encryption Key: {status.hasEncryptionKey ? '✓' : '✗'}</li>
-      <li>Port: {status.hasPort ? '✓' : '✗'}</li>
-      <li>Connected: {status.isConnected ? '✓' : '✗'}</li>
-    </ul>
-  </div>;
-}
-```
-
-#### Query Not Executing
-- Check if `enabled` option is set correctly
-- Verify connection state with `useCompanionStatus()`
-- Ensure encryption key and port are available
-
-#### Stream Not Starting
-- Verify `isReady` state before calling `startStream()`
-- Check for error messages in `stream.error`
-- Ensure endpoint supports streaming
-
-#### Nonce Replay Errors
-- This should be handled automatically
-- If persistent, check system clock synchronization
-- Verify nonce store is working correctly
-
-### 🐛 Debugging
-
-Enable detailed logging by adding to your component:
-
-```typescript
-useEffect(() => {
-  console.log('Companion Status:', useCompanionStatus());
-}, []);
-```
-
-Monitor React Query dev tools for cache and network state.
-
-## Security Considerations
-
-### 🔒 Best Practices
-
-1. **Key Management**: Encryption keys are managed by the store system
-2. **Nonce Validation**: Automatic replay protection with time windows
-3. **Timestamp Checks**: Messages rejected if outside acceptable time range
-4. **Error Handling**: Sensitive information not exposed in error messages
-5. **Connection State**: Always verify connection before sensitive operations
-
-### ⚠️ Security Notes
-
-- The current encryption uses base64 placeholder - implement proper AES-GCM encryption
-- Nonce cleanup happens automatically but can be manually triggered
-- Key rotation is handled by the backend key refresh system
-- All communication is over localhost only
-
-## Performance Optimization
-
-### ⚡ Tips
-
-1. **Query Keys**: Use consistent keys for proper caching
-2. **Stale Time**: Set appropriate `staleTime` for data freshness
-3. **Refetch Intervals**: Use sparingly to avoid unnecessary requests
-4. **Stream Processing**: Process chunks efficiently to avoid backpressure
-5. **Error Boundaries**: Implement proper error boundaries for graceful degradation
-
-### 📊 Monitoring
-
-Monitor the following metrics:
-- Query cache hit rate
-- Network request frequency
-- Stream chunk processing time
-- Connection state changes
-- Error rates by endpoint
-
----
-
-## API Reference
-
-### Types
-
-```typescript
-interface CompanionClientDependencies {
-  encryptionKey: string;
-  nonce: string;
-  currentPort: number;
-  nonceValidator: (nonce: string) => boolean;
-  onConnectionStateChange?: (connected: boolean) => void;
-  onError?: (error: Error) => void;
-}
-
-interface StreamChunk {
-  data: any;
-  timestamp: number;
-}
-```
-
-### Constants
-
-```typescript
-// Encryption
-const MAX_MESSAGE_AGE_MS = 30000;  // 30 seconds
-const TIMESTAMP_TOLERANCE_MS = 5000;  // 5 seconds
-
-// Client
-const DEFAULT_TIMEOUT = 10000;  // 10 seconds
-const MAX_RETRIES = 3;
-```
-
-For more examples, see `examples.ts` in this directory.
+1. **Single Source of Truth:** All connection logic in one place
+2. **Automatic Key Management:** Keys generated on demand and rotated on restart
+3. **Intelligent Error Handling:** Distinguishes between error types
+4. **Smart Reconnection:** Auto-reconnect on port update, but no infinite retries
+5. **Type-Safe:** Strong typing throughout the system
+6. **Testable:** Easy to mock ConnectionManager for testing
+7. **Clean Separation:** Each component has single responsibility

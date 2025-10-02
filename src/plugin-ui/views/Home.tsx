@@ -16,7 +16,7 @@ function Home() {
   const { keyboardShortcut, setUserConfig } = useUserSettingsStore();
   const { setUserId } = useAuthenticationStore();
   const navigate = useNavigate();
-  const {performHandshake} = useCompanionConnection();
+  const { connect } = useCompanionConnection();
   const { currentPort } = usePortUpdatesStore();
 
   const { data: userConfig } = useUserConfigQuery({ enabled: true });
@@ -30,19 +30,19 @@ function Home() {
   }, [userConfig, setUserConfig, setUserId]);
 
   useEffect(() => {
-    performHandshake().then(response => {
-      console.log("response: ", response);
-    }).catch(error => {
-      console.error('Handshake failed:', error);
+    connect().then(() => {
+      console.log("Connected to companion app");
+    }).catch((error) => {
+      console.error('Connection failed:', error);
     });
   }, []);
 
   useEffect(() => {
     if (userConfig) {
-      performHandshake().then(response => {
-        console.log("response: ", response);
-      }).catch(error => {
-        console.error('Handshake failed:', error);
+      connect().then(() => {
+        console.log("Reconnected to companion app");
+      }).catch((error) => {
+        console.error('Reconnection failed:', error);
       });
     }
   }, [currentPort]);

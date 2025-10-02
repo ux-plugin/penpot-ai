@@ -1,5 +1,4 @@
 import React from 'react';
-import { useCompanionStore } from '@companion/stores/useCompanionStore';
 import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore';
 import { useCompanionStatus, useCompanionConnection } from '../api/companionAppHooks.ts';
 import { Badge } from '@ui/badge';
@@ -21,7 +20,6 @@ export const CompanionAppStatus: React.FC<CompanionAppStatusProps> = ({
   
   // Get port info from port updates store
   const { currentPort } = usePortUpdatesStore();
-  const { setCompanionConnected } = useCompanionStore();
 
   const getWifiState = () => {
     if (companionStatus.isConnecting) return 'connecting';
@@ -62,14 +60,14 @@ export const CompanionAppStatus: React.FC<CompanionAppStatusProps> = ({
 
   const handleConnect = async () => {
     try {
-      await companionConnection.performHandshake();
+      await companionConnection.connect();
     } catch (error) {
       console.error('Failed to connect to companion app:', error);
     }
   };
 
   const handleDisconnect = () => {
-    setCompanionConnected(false);
+    companionConnection.disconnect();
   };
 
   if (variant === 'icon') {
@@ -127,7 +125,7 @@ export const CompanionAppStatus: React.FC<CompanionAppStatusProps> = ({
             size="sm"
             variant="default"
             onClick={handleConnect}
-            disabled={companionStatus.isConnecting || !companionStatus.hasEncryptionKey || !companionStatus.hasPort}
+            disabled={companionStatus.isConnecting || !companionStatus.hasKey || !companionStatus.hasPort}
           >
             {companionStatus.isConnecting ? 'Connecting...' : 'Connect'}
           </Button>

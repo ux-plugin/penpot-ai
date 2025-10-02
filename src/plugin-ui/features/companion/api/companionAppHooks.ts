@@ -1,14 +1,12 @@
 /**
  * React Query hooks for companion app communication
- * Simplified with constructor-level dependency injection in client
+ * Updated to use ConnectionManager as the central orchestrator
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { companionAppClient, StreamChunk } from './companionAppClient.ts';
+import { connectionManager, companionAppClient, StreamChunk } from './index.ts';
 import { useCompanionStore } from '@companion/stores/useCompanionStore.ts';
-import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore.ts';
-import { encryptionKeyManager } from '@user/api/EncryptionKeyManager.ts';
 
 // Query key factory for consistent caching
 export const companionQueryKeys = {
@@ -38,16 +36,9 @@ export interface UseCompanionStreamOptions {
   autoStart?: boolean;
 }
 
-// Helper function to check if connection prerequisites are met
-const isConnectionReady = (
-  companionState: ReturnType<typeof useCompanionStore.getState>,
-  portState: ReturnType<typeof usePortUpdatesStore.getState>
-): boolean => {
-  return !!(
-    encryptionKeyManager.isKeyValid() &&
-    portState.currentPort &&
-    companionState.isCompanionConnected
-  );
+// Helper function to check if connected via ConnectionManager
+const isConnectionReady = (): boolean => {
+  return connectionManager.isConnected();
 };
 
 // Helper function for retry logic
@@ -73,19 +64,19 @@ const shouldRetry = (failureCount: number, error: unknown): boolean => {
 
 /**
  * React Query hook for companion app queries
- * Simplified - client handles all dependency management internally
+ * Uses ConnectionManager for connection validation and error handling
  */
 export function useCompanionQuery<TData = any>(options: UseCompanionQueryOptions) {
-  const companionState = useCompanionStore();
-  const portState = usePortUpdatesStore();
-
   return useQuery({
     queryKey: companionQueryKeys.endpointWithOptions(options.endpoint, options.requestOptions),
     queryFn: async (): Promise<TData> => {
-      const response = await companionAppClient.fetch(options.endpoint, options.requestOptions);
-      return response.json() as TData;
+      // Wrap API call through ConnectionManager for error handling
+      return connectionManager.apiCall(async () => {
+        const response = await companionAppClient.fetch(options.endpoint, options.requestOptions);
+        return response.json() as TData;
+      });
     },
-    enabled: isConnectionReady(companionState, portState) && (options.enabled !== false),
+    enabled: isConnectionReady() && (options.enabled !== false),
     retry: shouldRetry,
     staleTime: 30000, // Consider data fresh for 30 seconds
     gcTime: 5 * 60 * 1000, // Keep in cache for 5 minutes
@@ -95,7 +86,7 @@ export function useCompanionQuery<TData = any>(options: UseCompanionQueryOptions
 
 /**
  * React Query hook for companion app mutations
- * Simplified - client handles all dependency management internally
+ * Uses ConnectionManager for connection validation and error handling
  */
 export function useCompanionMutation<TData = any, TVariables = any>(
   options: UseCompanionMutationOptions<TData, TVariables>
@@ -104,13 +95,16 @@ export function useCompanionMutation<TData = any, TVariables = any>(
 
   return useMutation({
     mutationFn: async (variables: TVariables): Promise<TData> => {
-      const requestOptions: RequestInit = {
-        method: 'POST',
-        body: typeof variables === 'string' ? variables : JSON.stringify(variables),
-      };
+      // Wrap API call through ConnectionManager for error handling
+      return connectionManager.apiCall(async () => {
+        const requestOptions: RequestInit = {
+          method: 'POST',
+          body: typeof variables === 'string' ? variables : JSON.stringify(variables),
+        };
 
-      const response = await companionAppClient.fetch(options.endpoint, requestOptions);
-      return response.json() as TData;
+        const response = await companionAppClient.fetch(options.endpoint, requestOptions);
+        return response.json() as TData;
+      });
     },
     onSuccess: (data, variables) => {
       // Invalidate related queries
@@ -127,12 +121,9 @@ export function useCompanionMutation<TData = any, TVariables = any>(
 
 /**
  * Hook for companion app streaming requests
- * Simplified - client handles all dependency management internally
+ * Uses ConnectionManager for connection validation and error handling
  */
 export function useCompanionStream(endpoint: string, options: UseCompanionStreamOptions = {}) {
-  const companionState = useCompanionStore();
-  const portState = usePortUpdatesStore();
-
   const [isStreaming, setIsStreaming] = useState(false);
   const [chunks, setChunks] = useState<StreamChunk[]>([]);
   const [error, setError] = useState<Error | null>(null);
@@ -143,8 +134,8 @@ export function useCompanionStream(endpoint: string, options: UseCompanionStream
   optionsRef.current = options;
 
   const startStream = useCallback(async (streamOptions?: RequestInit) => {
-    if (!isConnectionReady(companionState, portState)) {
-      const error = new Error('Companion app not connected or missing encryption key');
+    if (!isConnectionReady()) {
+      const error = new Error('Not connected to companion app');
       setError(error);
       optionsRef.current.onError?.(error);
       return;
@@ -158,24 +149,27 @@ export function useCompanionStream(endpoint: string, options: UseCompanionStream
     optionsRef.current.onStart?.();
 
     try {
-      const stream = await companionAppClient.fetchStream(endpoint, streamOptions);
-      const reader = stream.getReader();
+      // Wrap stream call through ConnectionManager for error handling
+      await connectionManager.streamCall(async () => {
+        const stream = await companionAppClient.fetchStream(endpoint, streamOptions);
+        const reader = stream.getReader();
 
-      while (true) {
-        const { done, value } = await reader.read();
+        while (true) {
+          const { done, value } = await reader.read();
 
-        if (done) {
-          optionsRef.current.onComplete?.(chunksRef.current);
-          break;
+          if (done) {
+            optionsRef.current.onComplete?.(chunksRef.current);
+            break;
+          }
+
+          // Update state and refs
+          chunksRef.current.push(value);
+          setChunks([...chunksRef.current]);
+
+          // Call chunk callback
+          optionsRef.current.onChunk?.(value);
         }
-
-        // Update state and refs
-        chunksRef.current.push(value);
-        setChunks([...chunksRef.current]);
-
-        // Call chunk callback
-        optionsRef.current.onChunk?.(value);
-      }
+      });
     } catch (streamError) {
       const error = streamError instanceof Error ? streamError : new Error('Stream failed');
       setError(error);
@@ -183,7 +177,7 @@ export function useCompanionStream(endpoint: string, options: UseCompanionStream
     } finally {
       setIsStreaming(false);
     }
-  }, [endpoint, companionState, portState]);
+  }, [endpoint]);
 
   const stopStream = useCallback(() => {
     // Note: In a real implementation, you'd want to store the reader
@@ -199,10 +193,10 @@ export function useCompanionStream(endpoint: string, options: UseCompanionStream
 
   // Auto-start if enabled
   useEffect(() => {
-    if (options.autoStart && isConnectionReady(companionState, portState)) {
+    if (options.autoStart && isConnectionReady()) {
       startStream();
     }
-  }, [options.autoStart, startStream, companionState.isCompanionConnected, portState.currentPort]);
+  }, [options.autoStart, startStream]);
 
   return {
     startStream,
@@ -211,58 +205,44 @@ export function useCompanionStream(endpoint: string, options: UseCompanionStream
     isStreaming,
     chunks,
     error,
-    isReady: isConnectionReady(companionState, portState),
+    isReady: isConnectionReady(),
   };
 }
 
 /**
- * Hook to ensure companion app connection with handshake
- * Simplified - client handles all dependency management internally
+ * Hook for managing companion app connection
+ * Uses ConnectionManager as the single entry point
  */
 export function useCompanionConnection() {
   const companionState = useCompanionStore();
-  const portState = usePortUpdatesStore();
 
-  const performHandshake = useCallback(async () => {
-    if (!encryptionKeyManager.isKeyValid() || !portState.currentPort) {
-      throw new Error('Missing encryption key or port for handshake');
-    }
+  const connect = useCallback(async () => {
+    await connectionManager.connect();
+  }, []);
 
-    companionState.setCompanionConnecting(true);
-    companionState.setCompanionError(null);
-
-    try {
-      await companionAppClient.performHandshake();
-      companionState.setHandshakeDone(true);
-    } catch (error) {
-      companionState.setCompanionError(error instanceof Error ? error.message : 'Handshake failed');
-      throw error;
-    } finally {
-      companionState.setCompanionConnecting(false);
-    }
-  }, [companionState, portState]);
+  const disconnect = useCallback(() => {
+    connectionManager.disconnect();
+  }, []);
 
   return {
-    performHandshake,
+    connect,
+    disconnect,
     isConnected: companionState.isCompanionConnected,
     isConnecting: companionState.isCompanionConnecting,
     error: companionState.companionError,
-    isReady: isConnectionReady(companionState, portState),
+    connectionState: companionState.connectionState,
+    canConnect: connectionManager.canConnect(),
   };
 }
 
 // Convenience hook for common status checks
 export function useCompanionStatus() {
   const companionState = useCompanionStore();
-  const portState = usePortUpdatesStore();
+  const connectionInfo = connectionManager.getConnectionInfo();
 
   return {
-    hasEncryptionKey: encryptionKeyManager.isKeyValid(),
-    hasPort: !!portState.currentPort,
-    isConnected: companionState.isCompanionConnected,
+    ...connectionInfo,
     isConnecting: companionState.isCompanionConnecting,
     error: companionState.companionError,
-    isReady: isConnectionReady(companionState, portState),
-    keyExpiresAt: encryptionKeyManager.getExpiresAt(),
   };
 }

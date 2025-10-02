@@ -1,8 +1,12 @@
 import { create } from "zustand";
 
+// Import connection state type
+type ConnectionState = 'disconnected' | 'key_ready' | 'connected';
+
 interface CompanionState {
   // Connection management
   handshakeDone: boolean;
+  connectionState: ConnectionState;
   
   // Connection states - Companion App
   isCompanionConnected: boolean;
@@ -11,6 +15,7 @@ interface CompanionState {
 
   // Actions - CompanionApp communication management
   setHandshakeDone: (done: boolean) => void;
+  setConnectionState: (state: ConnectionState) => void;
 
   // Actions - Connection management
   setCompanionConnected: (connected: boolean) => void;
@@ -22,6 +27,7 @@ interface CompanionState {
 export const useCompanionStore = create<CompanionState>((set, get) => ({
   // Initial state - Connection management
   handshakeDone: false,
+  connectionState: 'disconnected',
   
   // Initial state - Companion Connection
   isCompanionConnected: false,
@@ -31,6 +37,11 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
   // Handshake management
   setHandshakeDone: (done: boolean) => {
     set({ handshakeDone: done });
+  },
+
+  // Connection state management
+  setConnectionState: (state: ConnectionState) => {
+    set({ connectionState: state });
   },
 
   // Companion Connection management

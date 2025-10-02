@@ -49,20 +49,6 @@ export class CompanionAppClient {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  /**
-   * Check if connection prerequisites are met
-   * Throws error if prerequisites are not satisfied
-   */
-  private checkConnectionReady(): void {
-    if (!this.deps.keyManager.isKeyValid()) {
-      throw new Error('No valid encryption key available');
-    }
-    
-    const port = this.deps.portUpdatesStore.getState().currentPort;
-    if (!port) {
-      throw new Error('No companion app port configured');
-    }
-  }
 
   /**
    * Validate a received nonce
@@ -79,13 +65,19 @@ export class CompanionAppClient {
   /**
    * Performs handshake with companion app using the new handshake implementation
    * No parameters needed - pulls fresh values from injected dependencies
+   * NOTE: This should only be called by ConnectionManager
    */
   async performHandshake(): Promise<void> {
-    this.checkConnectionReady();
+    const encryptionKey = this.deps.keyManager.getKey();
+    if (!encryptionKey) {
+      throw new Error('No valid encryption key available');
+    }
     
-    const encryptionKey = this.deps.keyManager.getKey()!;
+    const port = this.deps.portUpdatesStore.getState().currentPort;
+    if (!port) {
+      throw new Error('No companion app port configured');
+    }
     const nonce = this.deps.nonceManager.generateNonce();
-    const port = this.deps.portUpdatesStore.getState().currentPort!;
 
     try {
       await performHandshakeWithDependencies(
@@ -109,14 +101,19 @@ export class CompanionAppClient {
   /**
    * Makes a regular HTTP request to the companion app
    * No parameters needed - pulls fresh values from injected dependencies
+   * NOTE: Should be called through ConnectionManager.apiCall() for proper error handling
    */
   async fetch(endpoint: string, options?: RequestInit): Promise<Response> {
-    this.checkConnectionReady();
+    const encryptionKey = this.deps.keyManager.getKey();
+    if (!encryptionKey) {
+      throw new Error('No valid encryption key available');
+    }
     
-    const encryptionKey = this.deps.keyManager.getKey()!;
+    const port = this.deps.portUpdatesStore.getState().currentPort;
+    if (!port) {
+      throw new Error('No companion app port configured');
+    }
     const nonce = this.deps.nonceManager.generateNonce();
-    const port = this.deps.portUpdatesStore.getState().currentPort!;
-
     const url = `http://localhost:${port}${endpoint}`;
     
     try {
@@ -178,11 +175,17 @@ export class CompanionAppClient {
    * Makes a streaming request to the companion app
    * Returns a ReadableStream that yields validated chunks
    * No parameters needed - pulls fresh values from injected dependencies
+   * NOTE: Should be called through ConnectionManager.streamCall() for proper error handling
    */
   async fetchStream(endpoint: string, options?: RequestInit): Promise<ReadableStream<StreamChunk>> {
-    this.checkConnectionReady();
+    const encryptionKey = this.deps.keyManager.getKey();
+    if (!encryptionKey) {
+      throw new Error('No valid encryption key available');
+    }
     
-    const encryptionKey = this.deps.keyManager.getKey()!;
+    // Use non-null assertion since we've already checked
+    const validKey = encryptionKey as string;
+    
     const response = await this.fetch(endpoint, options);
     
     if (!response.body) {
@@ -216,7 +219,7 @@ export class CompanionAppClient {
                 // Validate the chunk message
                 const validatedChunk = await decryptIfValid(
                   chunkMessage,
-                  encryptionKey,
+                  validKey,
                   validateNonce
                 );
 

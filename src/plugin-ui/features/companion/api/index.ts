@@ -1,57 +1,43 @@
 /**
- * Companion App Communication System
- * 
- * This is the main entry point for the new React Query-based companion app
- * communication system with symmetric encryption and nonce-based replay protection.
- * 
- * @example
- * ```typescript
- * import { useCompanionQuery, useCompanionMutation, useCompanionStream } from '@companion/api/companionApp';
- * 
- * // Simple query
- * const { data, isLoading } = useCompanionQuery({ endpoint: '/status' });
- * 
- * // Mutation
- * const mutation = useCompanionMutation({ endpoint: '/command' });
- * 
- * // Streaming
- * const stream = useCompanionStream('/audio', { onChunk: handleChunk });
- * ```
+ * Companion API exports
+ * Provides singleton instances and main exports for companion app connectivity
  */
 
-// Main hooks - most commonly used exports
+import { ConnectionManager } from './ConnectionManager.ts';
+import { companionAppClient } from './companionAppClient.ts';
+import { encryptionKeyManager } from '@user/api/EncryptionKeyManager.ts';
+import { nonceManager } from '@shared/api/NonceManager.ts';
+import { useCompanionStore } from '@companion/stores/useCompanionStore.ts';
+import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore.ts';
+
+// Export types
+export type { ConnectionState, ConnectionError, ConnectionErrorType } from './ConnectionManager.ts';
+export type { StreamChunk } from './companionAppClient.ts';
+
+// Create and export singleton ConnectionManager instance
+export const connectionManager = new ConnectionManager({
+  client: companionAppClient,
+  keyManager: encryptionKeyManager,
+  nonceManager,
+  companionStore: useCompanionStore,
+  portUpdatesStore: usePortUpdatesStore
+});
+
+// Export other modules
+export { companionAppClient } from './companionAppClient.ts';
+export { ConnectionManager } from './ConnectionManager.ts';
+
+// Export hooks
 export {
+  useCompanionConnection,
+  useCompanionStatus,
   useCompanionQuery,
   useCompanionMutation,
   useCompanionStream,
-  useCompanionConnection,
-  useCompanionStatus,
   companionQueryKeys
 } from './companionAppHooks.ts';
 
-// Client class - for advanced usage
-export {
-  companionAppClient,
-  CompanionAppClient,
-  type CompanionClientDependencies,
-  type StreamChunk
-} from './companionAppClient.ts';
-
-// Encryption utilities - for custom implementations
-export {
-  encryptMessage,
-  decryptMessage,
-  validateTimestamp,
-  createCompanionMessage,
-  decryptIfValid
-} from './encryption.ts';
-
-// Handshake functions - for custom connection management
-export {
-  performHandshakeWithDependencies
-} from './handshake.ts';
-
-// Hook options types - for TypeScript users
+// Export hook types
 export type {
   UseCompanionQueryOptions,
   UseCompanionMutationOptions,
