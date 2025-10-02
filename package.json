@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --open dev.html",
     "build": "tsc -b && vite build && npm run build:main",
-    "build:main": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap",
+    "build:main": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap --minify --tree-shaking=true",
     "preview": "vite preview",
     "build:watch": "watch 'npm run build' src"
   },
@@ -43,15 +43,17 @@
     "@typescript-eslint/parser": "^8.4.0",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.20",
+    "babel-plugin-transform-react-remove-prop-types": "^0.4.24",
     "eslint": "^9.10.0",
     "postcss": "^8.4.45",
     "prettier": "^3.3.3",
     "prettier-plugin-tailwindcss": "^0.6.6",
     "shadcn": "^2.10.0",
     "tailwindcss": "^4.0.17",
+    "terser": "^5.44.0",
     "typescript": "^5.5.3",
     "vite": "6.3.4",
-    "vite-plugin-singlefile": "^2.0.2",
+    "vite-plugin-singlefile": "^2.3.0",
     "watch": "^1.0.2"
   }
 }

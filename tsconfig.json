@@ -13,13 +13,47 @@
       "./node_modules/@figma"
     ],
     "types": [
-      "plugin-typings/index.d.ts",
+      "plugin-typings/index.d.ts"
     ],
     "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
+      // Root alias
+      "@/*": ["./src/*"],
+
+      // Widget environment
+      "@widget/*": ["./src/widget/*"],
+      "@widget/stores": ["./src/widget/stores"],
+      "@widget/messaging": ["./src/widget/messaging"],
+      "@widget/utils": ["./src/widget/utils"],
+      "@widget/types": ["./src/widget/types"],
+
+      // Plugin UI app layer
+      "@app/*": ["./src/plugin-ui/app/*"],
+      "@app/providers": ["./src/plugin-ui/app/providers"],
+
+      // Feature aliases
+      "@auth/*": ["./src/plugin-ui/features/auth/*"],
+      "@user/*": ["./src/plugin-ui/features/user/*"],
+      "@companion/*": ["./src/plugin-ui/features/companion/*"],
+      "@status/*": ["./src/plugin-ui/features/status/*"],
+
+      // Shared UI code
+      "@shared/*": ["./src/plugin-ui/shared/*"],
+      "@ui/*": ["./src/plugin-ui/shared/components/ui/*"],
+      "@components/*": ["./src/plugin-ui/shared/components/*"],
+      "@stores/*": ["./src/plugin-ui/shared/stores/*"],
+      "@api/*": ["./src/plugin-ui/shared/api/*"],
+      "@utils/*": ["./src/plugin-ui/shared/utils/*"],
+
+      // Cross-environment shared code
+      "@shared-core/*": ["./src/shared/*"],
+      "@shared-types/*": ["./src/shared/types/*"],
+      "@shared-constants/*": ["./src/shared/constants/*"],
+
+      // Plugin UI messaging and views
+      "@messaging/*": ["./src/plugin-ui/messaging/*"],
+      "@views/*": ["./src/plugin-ui/views/*"],
+      "@assets/*": ["./src/plugin-ui/assets/*"]
     },
     "skipLibCheck": true,
     "moduleResolution": "bundler",

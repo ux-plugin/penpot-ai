@@ -1,11 +1,11 @@
 // Import platform abstraction for cross-environment compatibility
 // Use direct path since worker bypasses Vite aliases
-import { platform } from "@/platform";
+import { platform } from "@widget/platform";
 import {
   CompleteRequest,
   MessageCategory,
   OperationMessageType,
-} from "@/types/messageTypes";
+} from "@shared-core/types/messageTypes";
 
 // Wrap in async IIFE to handle top-level await in esbuild IIFE format
 (async () => {
@@ -16,7 +16,7 @@ import {
     width: 500,
   });
 
-  const { codeMessageDispatcher, setupCodeMessageListener } = await import("@/messaging/CodeMessageDispatcher");
+  const { codeMessageDispatcher, setupCodeMessageListener } = await import("@widget/messaging/CodeMessageDispatcher");
 
   // Initialize the message listener to receive messages from the UI
   setupCodeMessageListener();
