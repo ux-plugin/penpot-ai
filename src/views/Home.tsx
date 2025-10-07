@@ -2,10 +2,11 @@ import {useUserConfigQuery} from "@/api/user/fetchUserConfig.ts";
 import {useEffect, useState} from "react";
 import {useAuthenticationStore} from "@/stores/useAuthenticationStore.ts";
 import {Button} from "@/components/ui/button";
-import {AlertCircle, CheckCircle, RotateCcw, LogOut} from "lucide-react";
+import {AlertCircle, CheckCircle, LogOut, Play, Square} from "lucide-react";
 import {invoke} from "@tauri-apps/api/core";
+import {serverStatusListener, ServerStatusPayload} from "@/events/serverStatusListener";
 
-type ServerStatus = 'starting' | 'success' | 'error' | 'stopping';
+type ServerStatus = 'starting' | 'success' | 'error' | 'stopped' | 'stopping';
 
 export function Home() {
     const { data, isFetching, isError } = useUserConfigQuery({
@@ -16,33 +17,79 @@ export function Home() {
     const [error, setError] = useState<string | null>(null)
     const [isActionLoading, setIsActionLoading] = useState(false)
 
+    // Listen for server status changes from backend
+    useEffect(() => {
+        let unlisten: (() => void) | undefined;
+
+        const setupListener = async () => {
+            unlisten = await serverStatusListener((payload: ServerStatusPayload) => {
+                setServerStatus(payload.status);
+                setError(payload.error || null);
+            });
+        };
+
+        setupListener();
+
+        return () => {
+            if (unlisten) {
+                unlisten();
+            }
+        };
+    }, []);
+
     useEffect(() => {
         if (data) {
             setUserId(data.id)
-            startServer()
+            // Only start server if we're not in an error state
+            if (!isError) {
+                startServer()
+            }
         }
-    }, [data])
+    }, [data, isError])
 
     useEffect(() => {
-        if(isError){
-            invoke('logout').catch(console.error)
+        if (isError) {
+            const handleLogoutAndRedirect = async () => {
+                try {
+                    await invoke('logout')
+                } catch (error) {
+                    console.error('Logout failed:', error)
+                }
+            }
+            handleLogoutAndRedirect()
         }
     }, [isError])
 
     const startServer = async () => {
         try {
-            setServerStatus('starting')
             setError(null)
             await invoke('start_server')
-            setServerStatus('success')
+            // Status will be updated via event listener
         } catch (err) {
             console.error('Failed to start server:', err)
-            setServerStatus('error')
-            setError(err instanceof Error ? err.message : 'Failed to start application. Please try again.')
+            // Error status will be emitted by backend and received via event listener
+            // But we also set it here as a fallback
+            if (!error) {
+                setError(err instanceof Error ? err.message : 'Failed to start application. Please try again.')
+            }
         }
     }
 
-    const handleReload = async () => {
+    const stopServer = async () => {
+        setIsActionLoading(true)
+        try {
+            setError(null)
+            await invoke('stop_server')
+            // Status will be updated via event listener
+        } catch (err) {
+            console.error('Failed to stop server:', err)
+            setError(err instanceof Error ? err.message : 'Failed to stop companion')
+        } finally {
+            setIsActionLoading(false)
+        }
+    }
+
+    const handleStartServer = async () => {
         setIsActionLoading(true)
         try {
             await startServer()
@@ -69,8 +116,8 @@ export function Home() {
         return (
             <div className="flex items-center justify-center min-h-screen">
                 <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mx-auto mb-4"></div>
-                    <p className="text-lg text-gray-600">Loading user configuration...</p>
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto mb-3"></div>
+                    <p className="text-sm text-gray-600">Loading...</p>
                 </div>
             </div>
         )
@@ -78,100 +125,134 @@ export function Home() {
 
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-50">
-            <div className="max-w-md w-full mx-4">
-                <div className="bg-white rounded-lg shadow-lg p-8 text-center">
-                    {/* Status Icon and Message */}
-                    {serverStatus === 'starting' && (
-                        <div className="mb-6">
-                            <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                            <h2 className="text-xl font-semibold text-gray-800 mb-2">Starting Application</h2>
-                            <p className="text-gray-600">Please wait while we initialize...</p>
-                        </div>
-                    )}
+            <div className="max-w-sm w-full mx-4">
+                <div className="bg-white rounded-lg shadow-md p-6">
+                    {/* Status Badge */}
+                    <div className="flex items-center justify-center mb-6">
+                        {serverStatus === 'starting' && (
+                            <div className="flex items-center gap-2">
+                                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                                <span className="text-sm font-medium text-gray-700">Starting...</span>
+                            </div>
+                        )}
+                        {serverStatus === 'success' && (
+                            <div className="flex items-center gap-2">
+                                <CheckCircle className="h-5 w-5 text-green-600" />
+                                <span className="text-sm font-medium text-gray-700">Companion Active</span>
+                            </div>
+                        )}
+                        {serverStatus === 'stopped' && (
+                            <div className="flex items-center gap-2">
+                                <Square className="h-5 w-5 text-red-600 fill-red-600" />
+                                <span className="text-sm font-medium text-gray-700">Companion Stopped</span>
+                            </div>
+                        )}
+                        {serverStatus === 'error' && (
+                            <div className="flex items-center gap-2">
+                                <AlertCircle className="h-5 w-5 text-red-600" />
+                                <span className="text-sm font-medium text-gray-700">Error</span>
+                            </div>
+                        )}
+                        {serverStatus === 'stopping' && (
+                            <div className="flex items-center gap-2">
+                                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-red-600"></div>
+                                <span className="text-sm font-medium text-gray-700">Stopping...</span>
+                            </div>
+                        )}
+                    </div>
 
-                    {serverStatus === 'success' && (
-                        <div className="mb-6">
-                            <CheckCircle className="h-16 w-16 text-green-600 mx-auto mb-4" />
-                            <h2 className="text-xl font-semibold text-gray-800 mb-2">Ready to Use</h2>
-                            <p className="text-gray-600">Application is ready. You can close this window or logout when finished.</p>
-                        </div>
-                    )}
+                    {/* Informational Message */}
+                    <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
+                        {serverStatus === 'starting' && (
+                            <p className="text-sm text-blue-800">
+                                Starting companion... This may take a few moments. The companion enables communication between your design tool and the plugin.
+                            </p>
+                        )}
+                        {serverStatus === 'success' && (
+                            <p className="text-sm text-green-800">
+                                Companion is active! You can now close this window and return to <strong>Figma</strong> or <strong>Penpot</strong> to use the plugin.
+                            </p>
+                        )}
+                        {serverStatus === 'error' && (
+                            <p className="text-sm text-red-800">
+                                Companion failed to start. Please try restarting the companion using the button below, or logout and login again to reset your session.
+                            </p>
+                        )}
+                        {serverStatus === 'stopped' && (
+                            <p className="text-sm text-gray-800">
+                                Companion is stopped. Click 'Start Companion' below to enable plugin functionality.
+                            </p>
+                        )}
+                        {serverStatus === 'stopping' && (
+                            <p className="text-sm text-gray-800">
+                                Stopping companion...
+                            </p>
+                        )}
+                    </div>
 
-                    {serverStatus === 'error' && (
-                        <div className="mb-6">
-                            <AlertCircle className="h-16 w-16 text-red-600 mx-auto mb-4" />
-                            <h2 className="text-xl font-semibold text-gray-800 mb-2">Startup Failed</h2>
-                            <p className="text-gray-600 mb-4">The application failed to start properly. Please try reloading.</p>
-                            {error && (
-                                <div className="bg-red-50 border border-red-200 rounded-md p-3 text-left">
-                                    <p className="text-sm text-red-800 font-medium">Error Details:</p>
-                                    <p className="text-sm text-red-700 mt-1">{error}</p>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                    {serverStatus === 'stopping' && (
-                        <div className="mb-6">
-                            <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-red-600 mx-auto mb-4"></div>
-                            <h2 className="text-xl font-semibold text-gray-800 mb-2">Shutting Down</h2>
-                            <p className="text-gray-600">Closing application...</p>
+                    {/* Error Message */}
+                    {error && (
+                        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
+                            <p className="text-xs text-red-800">{error}</p>
                         </div>
                     )}
 
                     {/* Action Buttons */}
-                    <div className="space-y-3">
-                        {serverStatus === 'error' && (
+                    <div className="space-y-2">
+                        {/* Start Server Button */}
+                        {(serverStatus === 'stopped' || serverStatus === 'error') && (
                             <Button
-                                onClick={handleReload}
+                                onClick={handleStartServer}
                                 disabled={isActionLoading}
-                                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md transition-colors"
+                                className="w-full"
                             >
                                 {isActionLoading ? (
                                     <>
                                         <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                                        Reloading...
+                                        Starting...
                                     </>
                                 ) : (
                                     <>
-                                        <RotateCcw className="h-4 w-4 mr-2" />
-                                        Reload App
+                                        <Play className="h-4 w-4 mr-2" />
+                                        Start Companion
                                     </>
                                 )}
                             </Button>
                         )}
 
+                        {/* Stop Server Button */}
                         {serverStatus === 'success' && (
                             <Button
-                                onClick={handleLogout}
+                                onClick={stopServer}
                                 disabled={isActionLoading}
                                 variant="destructive"
-                                className="w-full font-medium py-2 px-4 rounded-md transition-colors"
+                                className="w-full"
                             >
                                 {isActionLoading ? (
                                     <>
                                         <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                                        Logging out...
+                                        Stopping...
                                     </>
                                 ) : (
                                     <>
-                                        <LogOut className="h-4 w-4 mr-2" />
-                                        Logout
+                                        <Square className="h-4 w-4 mr-2" />
+                                        Stop Companion
                                     </>
                                 )}
                             </Button>
                         )}
-                    </div>
 
-                    {/* Additional Info */}
-                    {serverStatus === 'success' && (
-                        <div className="mt-6 pt-4 border-t border-gray-200">
-                            <p className="text-sm text-gray-500">
-                                The application is now running in the background. 
-                                This window can be safely closed.
-                            </p>
-                        </div>
-                    )}
+                        {/* Logout Button */}
+                        <Button
+                            onClick={handleLogout}
+                            disabled={isActionLoading}
+                            variant="ghost"
+                            className="w-full"
+                        >
+                            <LogOut className="h-4 w-4 mr-2" />
+                            Logout
+                        </Button>
+                    </div>
                 </div>
             </div>
         </div>

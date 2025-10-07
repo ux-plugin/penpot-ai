@@ -1303,6 +1303,7 @@ dependencies = [
  "tauri-plugin-store",
  "tokio",
  "tokio-stream",
+ "tower-http",
 ]
 
 [[package]]

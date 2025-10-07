@@ -40,18 +40,16 @@ pub async fn logout(
 ) -> Result<(), String> {
     println!("Logging out...");
     
-    // Check if user is currently authenticated before allowing logout
-    let is_auth = deps.auth_state().is_authenticated().await?;
-    if !is_auth {
-        return Err(auth_errors::NOT_CURRENTLY_AUTHENTICATED.to_string());
-    }
+    // Allow logout regardless of authentication state to handle edge cases
+    // like invalid/expired credentials or backend database resets
     
+    // Clear credentials (this will succeed even if already empty)
     deps.auth_state().clear().await?;
 
     // Ensure the main window is visible after logout
     show_or_create_main_window(app.clone()).await?;
 
-    // Shutdown the server
+    // Shutdown the server (this will handle already-stopped servers gracefully)
     deps.local_server().stop().await?;
 
     Ok(())

@@ -1,4 +1,5 @@
 use std::sync::{Arc, OnceLock};
+use tokio::sync::RwLock;
 use crate::auth::AuthState;
 use crate::backend_client::BackendClient;
 use crate::local_server::{LocalServer, encryption::EncryptionState};
@@ -10,6 +11,7 @@ pub struct AppDependencies {
     auth_state: Arc<OnceLock<Arc<AuthState>>>,
     backend_client: Arc<OnceLock<Arc<BackendClient>>>,
     local_server: Arc<OnceLock<Arc<LocalServer>>>,
+    encryption_state: Arc<OnceLock<Arc<RwLock<EncryptionState>>>>,
 }
 
 impl AppDependencies {
@@ -22,6 +24,7 @@ impl AppDependencies {
             auth_state: Arc::new(OnceLock::new()),
             backend_client: Arc::new(OnceLock::new()),
             local_server: Arc::new(OnceLock::new()),
+            encryption_state: Arc::new(OnceLock::new()),
         })
     }
 
@@ -46,11 +49,17 @@ impl AppDependencies {
         }).clone()
     }
     
+    // Lazy getter for EncryptionState singleton
+    pub fn encryption_state(&self) -> Arc<RwLock<EncryptionState>> {
+        self.encryption_state.get_or_init(|| {
+            EncryptionState::get_or_init(self.config())
+        }).clone()
+    }
+
     // Lazy getter for LocalServer
     pub fn local_server(&self) -> Arc<LocalServer> {
         self.local_server.get_or_init(|| {
-            let encryption_state = EncryptionState::new();
-            Arc::new(LocalServer::new(self.backend_client(), encryption_state, self.config()))
+            Arc::new(LocalServer::new(self.backend_client(), self.encryption_state(), self.config()))
         }).clone()
     }
 }

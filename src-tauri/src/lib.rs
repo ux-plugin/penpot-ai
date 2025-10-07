@@ -25,10 +25,18 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .manage(deps)
-        .setup(|app| {
+        .manage(deps.clone())
+        .setup(move |app| {
             setup_window_behavior(app)?;
             setup_menu_and_tray(app.handle())?;
+            
+            // Initialize the app handle in LocalServer for event emission
+            let app_handle = app.handle().clone();
+            let deps_clone = deps.clone();
+            tauri::async_runtime::spawn(async move {
+                deps_clone.local_server().set_app_handle(app_handle).await;
+            });
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

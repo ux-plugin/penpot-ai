@@ -143,7 +143,7 @@ impl BackendClient {
     async fn get_encryption_key(
         &self,
     ) -> Result<EncryptionKeyResponse, String> {
-        let url = format!("{}/sync/key", self.base_url);
+        let url = format!("{}/user/key", self.base_url);
 
         self.make_authenticated_request(|access_token| {
             let url = url.clone();
@@ -180,7 +180,7 @@ impl BackendClient {
         &self,
         port: Option<u16>,
     ) -> Result<(), String> {
-        let url = format!("{}/sync/app/update", self.base_url);
+        let url = format!("{}/user/port", self.base_url);
         let app_state = AppState { port };
         self.make_authenticated_request(|access_token| {
             let url = url.clone();

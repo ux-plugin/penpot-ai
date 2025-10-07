@@ -18,13 +18,13 @@ impl StateForLocalServerHandler {
     pub fn new(
         audio_command_tx: mpsc::Sender<AudioCommand>,
         backend_client: Arc<BackendClient>,
-        encryption_state: EncryptionState,
+        encryption_state: Arc<RwLock<EncryptionState>>,
         config: Arc<AppConfig>,
     ) -> Self {
         Self {
             audio_command_tx: Arc::new(Mutex::new(Some(audio_command_tx))),
             backend_client,
-            encryption_state: Arc::new(RwLock::new(encryption_state)),
+            encryption_state,
             config,
         }
     }

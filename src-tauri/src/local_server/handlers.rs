@@ -1,5 +1,8 @@
 use crate::local_server::audio::AudioCommand;
-use crate::local_server::encryption::{decrypt_message, encrypt_message, InitRequest, InitResponse, NonceRequest};
+use crate::local_server::encryption::{
+    encrypt_message_with_timestamp, create_message_format, 
+    parse_message_format, decrypt_and_parse_payload, InitResponse
+};
 use crate::local_server::state::StateForLocalServerHandler;
 use axum::{
     debug_handler,
@@ -13,129 +16,140 @@ use axum::{
 };
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
+use serde::Deserialize;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 
+// Request structure for JSON-wrapped encrypted data
+#[derive(Deserialize)]
+pub struct EncryptedRequest {
+    pub encrypted_data: String,
+}
+
 pub async fn handshake(
     State(state): State<StateForLocalServerHandler>,
-    Json(request): Json<InitRequest>,
+    Json(request): Json<EncryptedRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     println!("Always fetching fresh encryption key from backend...");
 
-    // Always fetch encryption key from backend
+    // Always fetch an encryption key from the backend
     let key_response = state.backend_client.get_key().await
         .map_err(|e| {
             println!("Failed to get encryption key: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    // Try to decrypt with the key from backend
-    match decrypt_message(&key_response.key, &request.nonce, &request.encrypted_data) {
-        Ok(decrypted_data) => {
-            // Validate that decrypted content matches expected command string
-            let decrypted_str = String::from_utf8(decrypted_data)
-                .map_err(|e| {
-                    println!("Failed to convert decrypted data to string: {}", e);
-                    StatusCode::BAD_REQUEST
-                })?;
-            
-            if decrypted_str != state.config.expected_command_string {
-                println!("Invalid decrypted content: expected '{}', got '{}'", state.config.expected_command_string, decrypted_str);
-                return Err(StatusCode::FORBIDDEN);
-            }
-            // Successfully decrypted - store the validated key
-            {
-                let mut enc_state = state.encryption_state.write().await;
-                enc_state.set_key(key_response.key.clone());
-                enc_state.set_nonce(0); // Initialize nonce counter
-            }
+    // Parse message format: base64<nonce(12)|encrypted_payload>
+    let (nonce, encrypted_payload) = parse_message_format(request.encrypted_data.as_bytes())
+        .map_err(|e| {
+            println!("Failed to parse message format: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
 
-            // Prepare response
-            let response_data = state.config.acknowledgment_string.as_bytes();
-            let next_nonce = 1u64; // Next expected nonce
+    // Decrypt and parse payload to get {message, timestamp}
+    let payload = decrypt_and_parse_payload(&key_response.key, &nonce, &encrypted_payload)
+        .map_err(|e| {
+            println!("Failed to decrypt and parse payload: {}", e);
+            StatusCode::FORBIDDEN
+        })?;
 
-            // Encrypt response
-            let (encrypted_response, nonce_str) = encrypt_message(&key_response.key, next_nonce, response_data)
-                .map_err(|e| {
-                    println!("Failed to encrypt response: {}", e);
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-
-            // Update nonce counter
-            {
-                let enc_state = state.encryption_state.read().await;
-                enc_state.increment_nonce(); // Set to 1 for next request
-            }
-
-            let response = InitResponse {
-                encrypted_data: encrypted_response,
-                nonce: nonce_str,
-            };
-
-            Ok(Json(response))
-        }
-        Err(e) => {
-            println!("Failed to decrypt init message with backend key: {}", e);
-            Err(StatusCode::FORBIDDEN)
-        }
+    // Validate message content
+    if payload.data != state.config.expected_command_string {
+        println!("Invalid command: expected '{}', got '{}'", state.config.expected_command_string, payload.data);
+        return Err(StatusCode::FORBIDDEN);
     }
+
+    // Successfully decrypted - store the validated key
+    {
+        let mut enc_state = state.encryption_state.write().await;
+        enc_state.set_key(key_response.key.clone());
+    }
+
+    // Generate unique nonce for response
+    let enc_state = state.encryption_state.read().await;
+    let response_nonce = enc_state.generate_unique_nonce();
+    
+    // Encrypt response with timestamp
+    let encrypted_response = encrypt_message_with_timestamp(
+        &key_response.key, 
+        &response_nonce, 
+        &state.config.acknowledgment_string
+    ).map_err(|e| {
+        println!("Failed to encrypt response: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Create response in new format: base64<nonce|encrypted_payload>
+    let response_message = create_message_format(&response_nonce, &encrypted_response)
+        .map_err(|e| {
+            println!("Failed to create response message format: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let response = InitResponse {
+        encrypted_data: response_message,
+    };
+
+    println!("Handshake successful, key stored and response generated");
+    Ok(Json(response))
 }
 
 #[debug_handler]
 pub async fn start_recording(
     State(state): State<StateForLocalServerHandler>,
-    Json(request): Json<NonceRequest>,
+    Json(request): Json<EncryptedRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
-    // Check if client is authenticated and validate nonce
-    {
-        let enc_state = state.encryption_state.read().await;
-        if !enc_state.is_valid() {
-            println!("Unauthorized: No valid encryption key");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-        
-        // Decrypt and validate content matches expected command string
-        let key = enc_state.get_key().ok_or(StatusCode::UNAUTHORIZED)?;
-        match decrypt_message(key, &request.nonce, &request.encrypted_data) {
-            Ok(decrypted_data) => {
-                let decrypted_str = String::from_utf8(decrypted_data)
-                    .map_err(|e| {
-                        println!("Failed to convert decrypted data to string: {}", e);
-                        StatusCode::BAD_REQUEST
-                    })?;
-                
-                if decrypted_str != state.config.expected_command_string {
-                    println!("Invalid decrypted content: expected '{}', got '{}'", state.config.expected_command_string, decrypted_str);
-                    return Err(StatusCode::FORBIDDEN);
-                }
-            }
-            Err(e) => {
-                println!("Failed to decrypt message: {}", e);
-                return Err(StatusCode::FORBIDDEN);
-            }
-        }
-        
-        // Validate nonce (must be current_nonce + 1)
-        if let Err(e) = enc_state.validate_and_increment_nonce(&request.nonce) {
-            println!("Nonce validation failed: {}", e);
-            return Err(StatusCode::FORBIDDEN);
-        }
+    // Check if client is authenticated
+    let enc_state = state.encryption_state.read().await;
+    if !enc_state.is_valid() {
+        println!("Unauthorized: No valid encryption key");
+        return Err(StatusCode::UNAUTHORIZED);
     }
+    
+    let key = enc_state.get_key().ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Parse message format: base64<nonce(12)|encrypted_payload>
+    let (nonce, encrypted_payload) = parse_message_format(request.encrypted_data.as_bytes())
+        .map_err(|e| {
+            println!("Failed to parse message format: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    // Decrypt and parse payload to get {message, timestamp}
+    let payload = decrypt_and_parse_payload(key, &nonce, &encrypted_payload)
+        .map_err(|e| {
+            println!("Failed to decrypt and parse payload: {}", e);
+            StatusCode::FORBIDDEN
+        })?;
+
+    // Validate message content
+    if payload.data != state.config.expected_command_string {
+        println!("Invalid command: expected '{}', got '{}'", state.config.expected_command_string, payload.data);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Validate nonce and timestamp
+    if let Err(e) = enc_state.validate_nonce_and_timestamp(&nonce, &payload) {
+        println!("Nonce/timestamp validation failed: {}", e);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    drop(enc_state); // Release the lock
 
     let (audio_tx, audio_rx) = mpsc::channel::<Bytes>(10);
 
-    // First, get the sender outside to await
+    // Get the audio command sender
     let audio_command_tx = state
         .audio_command_tx
         .lock()
         .unwrap()
         .as_ref()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
-        .clone(); // Clone the sender
+        .clone();
 
-    // Now use it after the guard is dropped
+    // Send start recording command
     if audio_command_tx.send(AudioCommand::Start(audio_tx)).await.is_err() {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -146,54 +160,55 @@ pub async fn start_recording(
         Ok(event)
     });
 
+    println!("Start recording validation successful");
     Ok(Sse::new(stream))
 }
 
 #[debug_handler]
 pub async fn stop_recording(
     State(state): State<StateForLocalServerHandler>,
-    Json(request): Json<NonceRequest>,
+    Json(request): Json<EncryptedRequest>,
 ) -> impl IntoResponse {
-    // Check if client is authenticated and validate nonce
-    {
-        let enc_state = state.encryption_state.read().await;
-        if !enc_state.is_valid() {
-            println!("Unauthorized: No valid encryption key");
-            return (StatusCode::UNAUTHORIZED, "Unauthorized");
-        }
-        
-        // Decrypt and validate content matches expected command string
-        let key = match enc_state.get_key() {
-            Some(k) => k,
-            None => return (StatusCode::UNAUTHORIZED, "No encryption key"),
-        };
-        match decrypt_message(key, &request.nonce, &request.encrypted_data) {
-            Ok(decrypted_data) => {
-                let decrypted_str = match String::from_utf8(decrypted_data) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        println!("Failed to convert decrypted data to string: {}", e);
-                        return (StatusCode::BAD_REQUEST, "Invalid encrypted data");
-                    }
-                };
-                
-                if decrypted_str != state.config.expected_command_string {
-                    println!("Invalid decrypted content: expected '{}', got '{}'", state.config.expected_command_string, decrypted_str);
-                    return (StatusCode::FORBIDDEN, "Invalid command");
-                }
-            }
-            Err(e) => {
-                println!("Failed to decrypt message: {}", e);
-                return (StatusCode::FORBIDDEN, "Decryption failed");
-            }
-        }
-        
-        // Validate nonce (must be current_nonce + 1)
-        if let Err(e) = enc_state.validate_and_increment_nonce(&request.nonce) {
-            println!("Nonce validation failed: {}", e);
-            return (StatusCode::FORBIDDEN, "Invalid nonce");
-        }
+    // Check if client is authenticated
+    let enc_state = state.encryption_state.read().await;
+    if !enc_state.is_valid() {
+        println!("Unauthorized: No valid encryption key");
+        return (StatusCode::UNAUTHORIZED, "Unauthorized");
     }
+    
+    let key = enc_state.get_key().unwrap();
+
+    // Parse message format: base64<nonce(12)|encrypted_payload>
+    let (nonce, encrypted_payload) = match parse_message_format(request.encrypted_data.as_bytes()) {
+        Ok(result) => result,
+        Err(e) => {
+            println!("Failed to parse message format: {}", e);
+            return (StatusCode::BAD_REQUEST, "Invalid message format");
+        }
+    };
+
+    // Decrypt and parse payload to get {message, timestamp}
+    let payload = match decrypt_and_parse_payload(key, &nonce, &encrypted_payload) {
+        Ok(payload) => payload,
+        Err(e) => {
+            println!("Failed to decrypt and parse payload: {}", e);
+            return (StatusCode::FORBIDDEN, "Decryption failed");
+        }
+    };
+
+    // Validate message content
+    if payload.data != state.config.expected_command_string {
+        println!("Invalid command: expected '{}', got '{}'", state.config.expected_command_string, payload.data);
+        return (StatusCode::FORBIDDEN, "Invalid command");
+    }
+
+    // Validate nonce and timestamp
+    if let Err(e) = enc_state.validate_nonce_and_timestamp(&nonce, &payload) {
+        println!("Nonce/timestamp validation failed: {}", e);
+        return (StatusCode::FORBIDDEN, "Invalid nonce");
+    }
+
+    drop(enc_state); // Release the lock
 
     // Clone the sender outside the mutex lock
     let audio_command_tx = {
@@ -205,6 +220,7 @@ pub async fn stop_recording(
     match audio_command_tx {
         Some(tx) => {
             let _ = tx.send(AudioCommand::Stop).await;
+            println!("Stop recording validation successful");
             (StatusCode::OK, "Recording stopped")
         }
         None => (
@@ -212,4 +228,72 @@ pub async fn stop_recording(
             "Failed to stop recording",
         ),
     }
+}
+
+#[debug_handler]
+pub async fn health_check(
+    State(state): State<StateForLocalServerHandler>,
+    Json(request): Json<EncryptedRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    // Check if client is authenticated
+    let enc_state = state.encryption_state.read().await;
+    if !enc_state.is_valid() {
+        println!("Unauthorized: No valid encryption key");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    
+    let key = enc_state.get_key().ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Parse message format: base64<nonce(12)|encrypted_payload>
+    let (nonce, encrypted_payload) = parse_message_format(request.encrypted_data.as_bytes())
+        .map_err(|e| {
+            println!("Failed to parse message format: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    // Decrypt and parse payload to get {message, timestamp}
+    let payload = decrypt_and_parse_payload(key, &nonce, &encrypted_payload)
+        .map_err(|e| {
+            println!("Failed to decrypt and parse payload: {}", e);
+            StatusCode::FORBIDDEN
+        })?;
+
+    // Validate message content
+    if payload.data != state.config.expected_command_string {
+        println!("Invalid command: expected '{}', got '{}'", state.config.expected_command_string, payload.data);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Validate nonce and timestamp
+    if let Err(e) = enc_state.validate_nonce_and_timestamp(&nonce, &payload) {
+        println!("Nonce/timestamp validation failed: {}", e);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Generate unique nonce for response
+    let response_nonce = enc_state.generate_unique_nonce();
+    
+    // Encrypt response with timestamp
+    let encrypted_response = encrypt_message_with_timestamp(
+        key, 
+        &response_nonce, 
+        &state.config.acknowledgment_string
+    ).map_err(|e| {
+        println!("Failed to encrypt health check response: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Create response in new format: base64<nonce|encrypted_payload>
+    let response_message = create_message_format(&response_nonce, &encrypted_response)
+        .map_err(|e| {
+            println!("Failed to create response message format: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let response = InitResponse {
+        encrypted_data: response_message,
+    };
+
+    println!("Health check validation successful");
+    Ok(Json(response))
 }

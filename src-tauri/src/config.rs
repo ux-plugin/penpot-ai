@@ -10,6 +10,7 @@ pub struct AppConfig {
     pub app_name: String,
     pub expected_command_string: String,
     pub acknowledgment_string: String,
+    pub nonce_timestamp_window_ms: u64,
 }
 
 impl Default for AppConfig {
@@ -22,6 +23,7 @@ impl Default for AppConfig {
             app_name: "figma_plugin_companion_app".to_string(),
             expected_command_string: "CMD".to_string(),
             acknowledgment_string: "ACK".to_string(),
+            nonce_timestamp_window_ms: 300000, // 5 minutes default (in milliseconds)
         }
     }
 }
@@ -55,6 +57,12 @@ impl AppConfig {
             config.acknowledgment_string = ack_string;
         }
         
+        if let Ok(window_str) = env::var("NONCE_TIMESTAMP_WINDOW_MS") {
+            if let Ok(window) = window_str.parse::<u64>() {
+                config.nonce_timestamp_window_ms = window;
+            }
+        }
+        
         // Try to load from a config file if it exists
         if let Ok(config_str) = std::fs::read_to_string("config.json") {
             match serde_json::from_str::<AppConfig>(&config_str) {
@@ -77,6 +85,9 @@ impl AppConfig {
                     }
                     if env::var("ACKNOWLEDGMENT_STRING").is_err() {
                         config.acknowledgment_string = file_config.acknowledgment_string;
+                    }
+                    if env::var("NONCE_TIMESTAMP_WINDOW_MS").is_err() {
+                        config.nonce_timestamp_window_ms = file_config.nonce_timestamp_window_ms;
                     }
                     config.server_port_range = file_config.server_port_range;
                 }

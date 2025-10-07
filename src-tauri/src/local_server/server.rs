@@ -5,11 +5,14 @@ use crate::local_server::encryption::EncryptionState;
 use crate::local_server::handlers::{handshake, start_recording, stop_recording};
 use crate::local_server::state::StateForLocalServerHandler;
 use axum::{routing::post, Router};
+use serde::Serialize;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::thread;
+use tauri::{AppHandle, Emitter};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex, RwLock};
+use tower_http::cors::{Any, CorsLayer};
 
 // Internal mutable state for the LocalServer
 struct ServerState {
@@ -19,6 +22,22 @@ struct ServerState {
     server_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum ServerStatus {
+    Starting,
+    Success,
+    Error,
+    Stopped,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ServerStatusPayload {
+    pub status: ServerStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 // Combined LocalServer structure with integrated state management and dependency injection
 pub struct LocalServer {
     // Protected mutable state
@@ -26,13 +45,14 @@ pub struct LocalServer {
 
     // Immutable dependencies (injected via constructor)
     backend_client: Arc<BackendClient>,
-    encryption_state: EncryptionState,
+    encryption_state: Arc<RwLock<EncryptionState>>,
     config: Arc<AppConfig>,
+    app_handle: Arc<AsyncMutex<Option<AppHandle>>>,
 }
 
 impl LocalServer {
     // Constructor with dependency injection
-    pub fn new(backend_client: Arc<BackendClient>, encryption_state: EncryptionState, config: Arc<AppConfig>) -> Self {
+    pub fn new(backend_client: Arc<BackendClient>, encryption_state: Arc<RwLock<EncryptionState>>, config: Arc<AppConfig>) -> Self {
         Self {
             state: AsyncMutex::new(ServerState {
                 port: None, // None = not started, Some(port) = running
@@ -42,6 +62,24 @@ impl LocalServer {
             backend_client,
             encryption_state,
             config,
+            app_handle: Arc::new(AsyncMutex::new(None)),
+        }
+    }
+
+    // Set the app handle for emitting events
+    pub async fn set_app_handle(&self, handle: AppHandle) {
+        let mut app_handle = self.app_handle.lock().await;
+        *app_handle = Some(handle);
+    }
+
+    // Emit server status event
+    async fn emit_status(&self, status: ServerStatus, error: Option<String>) {
+        let app_handle = self.app_handle.lock().await;
+        if let Some(handle) = app_handle.as_ref() {
+            let payload = ServerStatusPayload { status, error };
+            if let Err(e) = handle.emit("server-status-changed", payload) {
+                eprintln!("Failed to emit server status event: {}", e);
+            }
         }
     }
 
@@ -66,19 +104,33 @@ impl LocalServer {
             return Ok(port);
         }
 
+        // Emit starting status
+        self.emit_status(ServerStatus::Starting, None).await;
+
         // Start the server
-        let port = self._start(&mut state).await?;
+        let port = match self._start(&mut state).await {
+            Ok(port) => port,
+            Err(e) => {
+                // Emit error status
+                self.emit_status(ServerStatus::Error, Some(e.clone())).await;
+                return Err(e);
+            }
+        };
 
         // Update backend client with port - if this fails, clean up the server
         match self.backend_client.update_port(Some(port)).await {
             Ok(_) => {
                 state.port = Some(port);
                 println!("Local server initialized on port {}", port);
+                // Emit success status
+                self.emit_status(ServerStatus::Success, None).await;
                 Ok(port)
             }
             Err(e) => {
                 // Clean up the started server
                 self._shutdown(&mut state).await;
+                // Emit error status
+                self.emit_status(ServerStatus::Error, Some(e.clone())).await;
                 Err(e)
             }
         }
@@ -95,6 +147,8 @@ impl LocalServer {
 
         self._shutdown(&mut state).await;
         state.port = None;
+        // Emit stopped status
+        self.emit_status(ServerStatus::Stopped, None).await;
         println!("Local server stopped successfully");
         Ok(())
     }
@@ -121,7 +175,8 @@ impl LocalServer {
             });
         });
 
-        // Create server state with injected dependencies
+        // Create a server state with injected dependencies
+        // (encryption_state is already Arc<RwLock<>>)
         let server_state = StateForLocalServerHandler::new(
             audio_command_tx,
             self.backend_client.clone(),
@@ -129,10 +184,17 @@ impl LocalServer {
             self.config.clone(),
         );
 
+        // Configure CORS to allow cross-origin requests from Figma plugin
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([axum::http::Method::POST, axum::http::Method::OPTIONS])
+            .allow_headers([axum::http::header::CONTENT_TYPE]);
+
         let app = Router::new()
             .route("/init", post(handshake))
             .route("/start-recording", post(start_recording))
             .route("/stop-recording", post(stop_recording))
+            .layer(cors)
             .with_state(server_state);
 
         // Bind to localhost with port 0 (any available port)

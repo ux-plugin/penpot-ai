@@ -5,8 +5,14 @@ use aes_gcm::{
 use base64::{engine::general_purpose, Engine as _};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock as AsyncRwLock;
+use crate::config::AppConfig;
+
+// Global singleton for encryption state (using async RwLock for handler compatibility)
+static ENCRYPTION_STATE: OnceLock<Arc<AsyncRwLock<EncryptionState>>> = OnceLock::new();
 
 // Error types for encryption operations
 #[derive(Debug)]
@@ -42,7 +48,6 @@ pub struct InitRequest {
 #[derive(Serialize, Deserialize)]
 pub struct InitResponse {
     pub encrypted_data: String,
-    pub nonce: String,
 }
 
 // Request structure for handlers that need nonce validation
@@ -52,23 +57,41 @@ pub struct NonceRequest {
     pub nonce: String,
 }
 
+// Message payload structure for encrypted communication
+#[derive(Serialize, Deserialize)]
+pub struct MessagePayload {
+    pub data: String,
+    pub timestamp_ms: u64, // Unix timestamp in milliseconds
+}
+
 // Persistent encryption data structure for keyring storage
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct EncryptionData {
     pub key: Option<String>,
-    pub nonce_counter: u64,
 }
 
-// Encryption state to store the validated key
-#[derive(Clone, Default)]
+// Encryption state with nonce tracking maps
+#[derive(Clone)]
 pub struct EncryptionState {
     key: Option<String>,
-    nonce_counter: Arc<AtomicU64>,
+    received_nonces: Arc<RwLock<HashMap<[u8; 12], Instant>>>,
+    sent_nonces: Arc<RwLock<HashMap<[u8; 12], Instant>>>,
+    last_cleanup: Arc<RwLock<Instant>>,
+    config: Arc<AppConfig>,
 }
 
 impl EncryptionState {
-    pub fn new() -> Self {
-        // Try to load from the keyring, fallback to default if not available
+    /// Get or initialize the global singleton encryption state
+    pub fn get_or_init(config: Arc<AppConfig>) -> Arc<AsyncRwLock<EncryptionState>> {
+        ENCRYPTION_STATE.get_or_init(|| {
+            println!("Initializing encryption state singleton...");
+            Arc::new(AsyncRwLock::new(Self::new(config)))
+        }).clone()
+    }
+
+    /// Internal constructor for creating a new encryption state
+    fn new(config: Arc<AppConfig>) -> Self {
+        // Load only the key from keyring (no nonce data)
         let encryption_data = match load_encryption_data_from_keyring_blocking() {
             Ok(data) => data,
             Err(EncryptionError::NoEntry) => {
@@ -82,12 +105,14 @@ impl EncryptionState {
             }
         };
 
-        // Use loaded data directly since we no longer validate expiration
         println!("Loaded encryption data from keyring");
 
         Self {
             key: encryption_data.key,
-            nonce_counter: Arc::new(AtomicU64::new(encryption_data.nonce_counter)),
+            received_nonces: Arc::new(RwLock::new(HashMap::new())),
+            sent_nonces: Arc::new(RwLock::new(HashMap::new())),
+            last_cleanup: Arc::new(RwLock::new(Instant::now())),
+            config,
         }
     }
 
@@ -95,93 +120,109 @@ impl EncryptionState {
         self.key.is_some()
     }
 
-    pub fn increment_nonce(&self) -> u64 {
-        let new_nonce = self.nonce_counter.fetch_add(1, Ordering::SeqCst);
-
-        // Always persist nonce to keyring after incrementing
-        self.persist_nonce_to_keyring();
-
-        new_nonce
-    }
-
-
-    // Helper method to persist nonce to keyring with the current state
-    fn persist_nonce_to_keyring(&self) {
-        let key = self.key.clone();
-        let current_nonce = self.nonce_counter.load(Ordering::SeqCst);
-
-        // Only persist if we have a key
-        if let Some(key) = key {
-            let encryption_data = EncryptionData {
-                key: Some(key),
-                nonce_counter: current_nonce,
-            };
-
-            // Spawn the blocking operation on a separate thread pool
-            let encryption_data_clone = encryption_data.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = save_encryption_data_to_keyring_blocking(&encryption_data_clone) {
-                    eprintln!("Warning: Failed to persist nonce to keyring: {}", e);
-                } else {
-                    println!("Nonce counter persisted to keyring ({})", encryption_data_clone.nonce_counter);
-                }
-            });
-        }
-    }
-
-    pub fn get_current_nonce(&self) -> u64 {
-        self.nonce_counter.load(Ordering::SeqCst)
-    }
-
-    pub fn set_nonce(&self, nonce: u64) {
-        self.nonce_counter.store(nonce, Ordering::SeqCst);
-    }
-
-    // Validate nonce for handler requests (must be current_nonce + 1)
-    pub fn validate_and_increment_nonce(&self, received_nonce_base64: &str) -> Result<(), String> {
-        // Decode the received nonce
-        let received_nonce_bytes = general_purpose::STANDARD.decode(received_nonce_base64)
-            .map_err(|e| format!("Failed to decode received nonce: {}", e))?;
+    // Generate a cryptographically secure unique nonce
+    pub fn generate_unique_nonce(&self) -> [u8; 12] {
+        use rand::RngCore;
+        let mut rng = rand::thread_rng();
         
-        if received_nonce_bytes.len() != 12 {
-            return Err("Invalid nonce length".to_string());
-        }
-
-        // Extract the nonce counter from bytes (last 8 bytes as big-endian u64)
-        let mut nonce_counter_bytes = [0u8; 8];
-        nonce_counter_bytes.copy_from_slice(&received_nonce_bytes[4..12]);
-        let received_nonce = u64::from_be_bytes(nonce_counter_bytes);
-
-        // Get current nonce counter
-        let current_nonce = self.nonce_counter.load(Ordering::SeqCst);
-        let expected_nonce = current_nonce + 1;
-
-        // Validate that received nonce is current_nonce + 1
-        if received_nonce != expected_nonce {
-            return Err(format!(
-                "Invalid nonce: expected {}, received {}",
-                expected_nonce, received_nonce
-            ));
-        }
-
-        // Increment nonce counter (this also persists to keyring)
-        self.increment_nonce();
+        loop {
+            let mut nonce = [0u8; 12];
+            rng.fill_bytes(&mut nonce);
         
-        println!("Nonce validation successful: {}", received_nonce);
+            // Acquire write lock once and check + insert atomically
+            let mut sent = self.sent_nonces.write().unwrap();
+            if !sent.contains_key(&nonce) {
+                sent.insert(nonce, Instant::now());
+                drop(sent);
+            
+                // Trigger cleanup if needed
+                self.cleanup_if_needed();
+                
+                return nonce;
+            }
+            // If collision, release lock and try again
+        }
+    }
+
+    // Validate nonce and timestamp for incoming messages
+    pub fn validate_nonce_and_timestamp(&self, nonce: &[u8; 12], payload: &MessagePayload) -> Result<(), String> {
+        // 1. Validate timestamp within configured window
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let time_diff_ms = (now_ms as i64 - payload.timestamp_ms as i64).abs() as u64;
+        
+        if time_diff_ms > self.config.nonce_timestamp_window_ms {
+            return Err(format!("Message timestamp outside acceptable window: {} ms", time_diff_ms));
+        }
+        
+        // 2. Check for nonce replay
+        {
+            let received = self.received_nonces.read().unwrap();
+            if received.contains_key(nonce) {
+                return Err("Nonce replay detected".to_string());
+            }
+        }
+        
+        // 3. Add nonce to tracking
+        {
+            let mut received = self.received_nonces.write().unwrap();
+            received.insert(*nonce, Instant::now());
+        }
+        
+        // 4. Trigger cleanup if needed
+        self.cleanup_if_needed();
+        
         Ok(())
+    }
+
+    // Check if cleanup is needed and perform it
+    fn cleanup_if_needed(&self) {
+        let should_cleanup = {
+            let last_cleanup = self.last_cleanup.read().unwrap();
+            let window_duration_ms = Duration::from_millis(self.config.nonce_timestamp_window_ms);
+            last_cleanup.elapsed() >= window_duration_ms
+        };
+        
+        if should_cleanup {
+            self.cleanup_old_nonces();
+        }
+    }
+
+    // Clean up expired nonces from memory
+    fn cleanup_old_nonces(&self) {
+        let window_duration_ms = Duration::from_millis(self.config.nonce_timestamp_window_ms);
+        let cutoff = Instant::now() - window_duration_ms;
+        
+        // Clean received nonces
+        {
+            let mut received = self.received_nonces.write().unwrap();
+            let before_count = received.len();
+            received.retain(|_, instant| *instant > cutoff);
+            if before_count > received.len() {
+                println!("Cleaned {} expired received nonces", before_count - received.len());
+            }
+        }
+        
+        // Clean sent nonces
+        {
+            let mut sent = self.sent_nonces.write().unwrap();
+            let before_count = sent.len();
+            sent.retain(|_, instant| *instant > cutoff);
+            if before_count > sent.len() {
+                println!("Cleaned {} expired sent nonces", before_count - sent.len());
+            }
+        }
+        
+        *self.last_cleanup.write().unwrap() = Instant::now();
     }
 
     pub fn set_key(&mut self, key: String) {
         self.key = Some(key.clone());
 
-        // Persist to keyring using spawn_blocking - ignore errors to avoid breaking functionality
-        let current_nonce = self.nonce_counter.load(Ordering::SeqCst);
+        // Persist only the key to keyring using spawn_blocking
         let encryption_data = EncryptionData {
             key: Some(key),
-            nonce_counter: current_nonce,
         };
 
-        // Use spawn_blocking for keyring operations
         tokio::task::spawn_blocking(move || {
             if let Err(e) = save_encryption_data_to_keyring_blocking(&encryption_data) {
                 eprintln!("Warning: Failed to save encryption data to keyring: {}", e);
@@ -202,7 +243,8 @@ impl EncryptionState {
 
         // Clear in-memory state first
         self.key = None;
-        self.nonce_counter.store(0, Ordering::SeqCst);
+        self.received_nonces.write().unwrap().clear();
+        self.sent_nonces.write().unwrap().clear();
 
         // Attempt to delete from keyring, but don't fail if keychain access is denied
         match delete_encryption_data_from_keyring().await {
@@ -227,49 +269,87 @@ impl EncryptionState {
 }
 
 // Helper functions for AES-GCM encryption/decryption
-pub fn decrypt_message(key_base64: &str, nonce_base64: &str, ciphertext_base64: &str) -> Result<Vec<u8>, String> {
-    // Decode base64 inputs
+
+// Encryption function with timestamp in payload
+pub fn encrypt_message_with_timestamp(key_base64: &str, nonce: &[u8; 12], message: &str) -> Result<String, String> {
+    let payload = MessagePayload {
+        data: message.to_string(),
+        timestamp_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+    };
+    
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|e| format!("Failed to serialize payload: {}", e))?;
+    
+    // AES-GCM encryption
     let key_bytes = general_purpose::STANDARD.decode(key_base64)
         .map_err(|e| format!("Failed to decode key: {}", e))?;
-    let nonce_bytes = general_purpose::STANDARD.decode(nonce_base64)
-        .map_err(|e| format!("Failed to decode nonce: {}", e))?;
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let nonce_obj = Nonce::from_slice(nonce);
+    
+    let ciphertext = cipher.encrypt(nonce_obj, payload_json.as_bytes())
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+    
+    Ok(general_purpose::STANDARD.encode(&ciphertext))
+}
+
+// Decrypt and parse message payload
+pub fn decrypt_and_parse_payload(key_base64: &str, nonce: &[u8; 12], ciphertext_base64: &str) -> Result<MessagePayload, String> {
+    // Decode key and ciphertext
+    let key_bytes = general_purpose::STANDARD.decode(key_base64)
+        .map_err(|e| format!("Failed to decode key: {}", e))?;
     let ciphertext = general_purpose::STANDARD.decode(ciphertext_base64)
         .map_err(|e| format!("Failed to decode ciphertext: {}", e))?;
 
     // Create cipher
     let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
     let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce_obj = Nonce::from_slice(nonce);
 
     // Decrypt
-    cipher.decrypt(nonce, ciphertext.as_ref())
-        .map_err(|e| format!("Decryption failed: {}", e))
+    let plaintext = cipher.decrypt(nonce_obj, ciphertext.as_ref())
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+    
+    // Parse JSON payload
+    let payload_json = String::from_utf8(plaintext)
+        .map_err(|e| format!("Failed to convert decrypted data to string: {}", e))?;
+    
+    serde_json::from_str::<MessagePayload>(&payload_json)
+        .map_err(|e| format!("Failed to parse message payload: {}", e))
 }
 
-pub fn encrypt_message(key_base64: &str, nonce: u64, plaintext: &[u8]) -> Result<(String, String), String> {
-    // Decode key
-    let key_bytes = general_purpose::STANDARD.decode(key_base64)
-        .map_err(|e| format!("Failed to decode key: {}", e))?;
-
-    // Create nonce from the counter
-    let mut nonce_bytes = vec![0u8; 12];
-    nonce_bytes[4..12].copy_from_slice(&nonce.to_be_bytes());
-
-    // Create cipher
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce_obj = Nonce::from_slice(&nonce_bytes);
-
-    // Encrypt
-    let ciphertext = cipher.encrypt(nonce_obj, plaintext)
-        .map_err(|e| format!("Encryption failed: {}", e))?;
-
-    // Return base64 encoded results
-    Ok((
-        general_purpose::STANDARD.encode(&ciphertext),
-        general_purpose::STANDARD.encode(&nonce_bytes),
-    ))
+// Parse message format: base64<nonce(12)|encrypted_payload>
+pub fn parse_message_format(body: &[u8]) -> Result<([u8; 12], String), String> {
+    // Decode base64 body
+    let decoded = general_purpose::STANDARD.decode(body)
+        .map_err(|e| format!("Failed to decode base64 message: {}", e))?;
+    
+    if decoded.len() < 12 {
+        return Err("Message too short: missing nonce".to_string());
+    }
+    
+    // Extract nonce (first 12 bytes)
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&decoded[0..12]);
+    
+    // Extract encrypted payload (remaining bytes)
+    let encrypted_payload = general_purpose::STANDARD.encode(&decoded[12..]);
+    
+    Ok((nonce, encrypted_payload))
 }
+
+// Create message format: base64<nonce(12)|encrypted_payload>
+pub fn create_message_format(nonce: &[u8; 12], encrypted_payload: &str) -> Result<String, String> {
+    let payload_bytes = general_purpose::STANDARD.decode(encrypted_payload)
+        .map_err(|e| format!("Failed to decode encrypted payload: {}", e))?;
+    
+    let mut message = Vec::with_capacity(12 + payload_bytes.len());
+    message.extend_from_slice(nonce);
+    message.extend_from_slice(&payload_bytes);
+    
+    Ok(general_purpose::STANDARD.encode(&message))
+}
+
 
 // Async wrapper functions for keyring operations - following the pattern from auth.rs
 async fn delete_encryption_data_from_keyring() -> Result<(), EncryptionError> {
