@@ -19,11 +19,17 @@ class UserEntity : PanacheEntityBase {
 
     @Column(nullable = false) lateinit var name: String
 
-    @Column(nullable = false) @Enumerated(EnumType.STRING) lateinit var role: UserRole
+    @Column(nullable = false, columnDefinition = "user_roles") @Enumerated(EnumType.STRING) lateinit var role: UserRole
 
     @Column(nullable = false) var allowSavingCompletions: Boolean = false
 
     @Column(nullable = false) var createdAt: Instant = Instant.now()
+
+    @Column(nullable = true) var encryptionKey: String? = null
+
+    @Column(nullable = true) var encryptionKeyExpiresAt: Instant? = null
+
+    @Column(nullable = true) var port: Int? = null
 
     companion object : PanacheCompanion<UserEntity> {}
 }
@@ -35,7 +41,9 @@ class SocialLogins : PanacheEntityBase {
     @Id lateinit var id: String
     @Column(nullable = false) lateinit var userId: String
     @Column(nullable = false, unique = true) lateinit var providerUserId: String
-    @Column(nullable = false) @Enumerated(EnumType.STRING) lateinit var provider: SocialProvider
+    @Column(nullable = false, columnDefinition = "social_providers")
+    @Enumerated(EnumType.STRING)
+    lateinit var provider: SocialProvider
 
     companion object : PanacheCompanion<SocialLogins> {}
 }
@@ -43,4 +51,5 @@ class SocialLogins : PanacheEntityBase {
 enum class UserRole {
     ADMIN,
     USER,
+    GUEST
 }

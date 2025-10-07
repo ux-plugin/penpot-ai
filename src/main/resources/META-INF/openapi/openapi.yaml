@@ -89,14 +89,6 @@ components:
     WindingRule:
       $ref: './completions/completions-schemas.yaml#/WindingRule'
     
-    # Sync schemas
-    AppState:
-      $ref: './sync/sync-schemas.yaml#/AppState'
-    GenerateKeyResponse:
-      $ref: './sync/sync-schemas.yaml#/GenerateKeyResponse'
-    GetKeyResponse:
-      $ref: './sync/sync-schemas.yaml#/GetKeyResponse'
-    
     # Dev schemas
     AddUserRequest:
       $ref: './dev/dev-schemas.yaml#/AddUserRequest'
@@ -119,16 +111,12 @@ paths:
     $ref: './user/user-paths.yaml#/paths/~1user~1{userId}~1update'
   /user/{userId}/delete:
     $ref: './user/user-paths.yaml#/paths/~1user~1{userId}~1delete'
-  
-  # Sync paths
-  /sync/app/update:
-    $ref: './sync/sync-paths.yaml#/paths/~1sync~1app~1update'
-  /sync/app/updates:
-    $ref: './sync/sync-paths.yaml#/paths/~1sync~1app~1updates'
-  /sync/key/generate:
-    $ref: './sync/sync-paths.yaml#/paths/~1sync~1key~1generate'
-  /sync/key/get:
-    $ref: './sync/sync-paths.yaml#/paths/~1sync~1key~1get'
+  /user/key:
+    $ref: './user/user-paths.yaml#/paths/~1user~1key'
+  /user/port:
+    $ref: './user/user-paths.yaml#/paths/~1user~1port'
+  /user/port/listen:
+    $ref: './user/user-paths.yaml#/paths/~1user~1port~1listen'
   
   # Dev paths
   /dev/user/add:

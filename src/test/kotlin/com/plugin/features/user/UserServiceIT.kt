@@ -11,6 +11,7 @@ import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
 import io.smallrye.jwt.build.Jwt
 import jakarta.inject.Inject
+import java.time.Instant
 import java.util.*
 import org.hamcrest.CoreMatchers.equalTo
 import org.hibernate.reactive.mutiny.Mutiny
@@ -66,7 +67,7 @@ class UserServiceIT {
                 .issuer("ux-plugin")
                 .claim("sub", userId)
                 .claim("role", UserRole.USER)
-                .expiresAt(System.currentTimeMillis() + 600000)
+                .expiresAt(Instant.now().plusSeconds(600).epochSecond)
                 .sign()
 
         given()
@@ -122,7 +123,7 @@ class UserServiceIT {
                 .issuer("ux-plugin")
                 .claim("sub", userId)
                 .claim("role", UserRole.USER)
-                .expiresAt(System.currentTimeMillis() + 600000)
+                .expiresAt(Instant.now().plusSeconds(600).epochSecond)
                 .sign()
 
         val updateRequest = UpdateUserRequest(name = "Updated Name", username = null, allowSavingCompletions = true)
@@ -183,7 +184,7 @@ class UserServiceIT {
                 .issuer("ux-plugin")
                 .claim("sub", userId)
                 .claim("role", UserRole.USER)
-                .expiresAt(System.currentTimeMillis() + 600000)
+                .expiresAt(Instant.now().plusSeconds(600).epochSecond)
                 .sign()
 
         given().header("Authorization", "Bearer $token").`when`().delete("/user/$userId/delete").then().statusCode(200)
@@ -207,7 +208,7 @@ class UserServiceIT {
                 .issuer("ux-plugin")
                 .claim("sub", "different-user-id")
                 .claim("role", UserRole.USER)
-                .expiresAt(System.currentTimeMillis() + 600000)
+                .expiresAt(Instant.now().plusSeconds(600).epochSecond)
                 .sign()
         given()
             .header("Authorization", "Bearer $token")

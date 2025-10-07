@@ -1,6 +1,9 @@
 package com.plugin.features.user
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import io.quarkus.logging.Log
+import io.quarkus.redis.datasource.ReactiveRedisDataSource
+import io.quarkus.redis.datasource.pubsub.ReactivePubSubCommands
 import io.quarkus.security.Authenticated
 import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
@@ -8,36 +11,64 @@ import jakarta.inject.Inject
 import jakarta.ws.rs.*
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
+import java.util.*
+import javax.crypto.KeyGenerator
+import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.jwt.JsonWebToken
 
 /** Service for managing user configurations */
 @ApplicationScoped
-class UserService @Inject constructor(private val userRepository: IUserRepository) : IUserService {
-    /**
-     * Get user by ID
-     *
-     * @param userId The ID of the user
-     * @return The user configuration
-     */
-    override suspend fun getUser(userId: String): GetUserResponse {
+class UserService
+@Inject
+constructor(
+    private val userRepository: UserRepository,
+    val redis: ReactiveRedisDataSource,
+) {
+
+    @ConfigProperty(name = "user.companion-app-key-prefix") lateinit var companionAppKeyPrefix: String
+
+    val portConfigPubSub: ReactivePubSubCommands<PortState> = redis.pubsub(PortState::class.java)
+
+    suspend fun getUser(userId: String): GetUserResponse {
         return userRepository.getUser(userId).awaitSuspending()
     }
 
-    /**
-     * Create or update user configuration
-     *
-     * @param userId The user configuration to create or update
-     */
-    override suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
+    suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
         userRepository.updateUser(userId, userUpdate).awaitSuspending()
     }
 
-    override suspend fun deleteUser(userId: String) {
+    suspend fun deleteUser(userId: String) {
         userRepository.deleteUser(userId).awaitSuspending()
     }
 
-    override suspend fun getSocialProfiles(userId: String): GetSocialLoginsResponse {
+    suspend fun getSocialProfiles(userId: String): GetSocialLoginsResponse {
         return userRepository.getSocialLogins(userId).awaitSuspending()
+    }
+
+    suspend fun getCurrentPort(userId: String): PortState? {
+        return userRepository.getPort(userId).awaitSuspending()
+    }
+
+    suspend fun updatePort(userId: String, portState: PortState) {
+        // First, persist to database
+        userRepository.savePort(userId, portState).awaitSuspending()
+
+        // Then broadcast to Redis using pub/sub
+        portConfigPubSub.publish(companionAppKeyPrefix + userId, portState).awaitSuspending()
+    }
+
+    suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? {
+        return userRepository.getEncryptionKey(userId).awaitSuspending()
+    }
+
+    suspend fun createEncryptionKey(userId: String): EncryptionKeyResponse {
+        val keyGenerator = KeyGenerator.getInstance("AES")
+        keyGenerator.init(256)
+        val secretKey = keyGenerator.generateKey()
+
+        val encryptionKey = Base64.getEncoder().encodeToString(secretKey.encoded)
+
+        return userRepository.saveEncryptionKey(userId, encryptionKey).awaitSuspending()
     }
 }
 
@@ -45,7 +76,13 @@ class UserService @Inject constructor(private val userRepository: IUserRepositor
 @Produces(MediaType.APPLICATION_JSON)
 @ApplicationScoped
 @Authenticated
-class UserResource @Inject constructor(private val userService: IUserService, private val jsonWebToken: JsonWebToken) {
+class UserResource
+@Inject
+constructor(
+    private val userService: UserService,
+    private val jsonWebToken: JsonWebToken,
+    val objectMapper: ObjectMapper
+) {
 
     @GET
     @Path("/info")
@@ -103,6 +140,80 @@ class UserResource @Inject constructor(private val userService: IUserService, pr
         } catch (e: Exception) {
             Log.error("Failed to get social profiles", e)
             Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+        }
+    }
+
+    @Path("/key")
+    @POST
+    @Consumes(MediaType.WILDCARD)
+    suspend fun generateKey(): Response {
+        val userId = jsonWebToken.subject
+        return try {
+            val key = userService.createEncryptionKey(userId)
+            Response.ok(key).build()
+        } catch (t: Throwable) {
+            if (t is NotFoundException) {
+                Response.status(Response.Status.NOT_FOUND).entity("User not found").build()
+            } else {
+                Log.error("Error generating encryption key", t)
+                Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Internal server error").build()
+            }
+        }
+    }
+
+    @Path("/key")
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    suspend fun getKey(): Response {
+        val userId = jsonWebToken.subject
+        return try {
+            val key = userService.getEncryptionKey(userId)
+            Response.ok(key).build()
+        } catch (t: Throwable) {
+            Log.error("Error getting encryption key", t)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Internal server error").build()
+        }
+    }
+
+    @Path("/port")
+    @POST
+    suspend fun updatePort(portState: PortState): Response {
+        val userId = jsonWebToken.subject
+        return try {
+            userService.updatePort(userId, portState)
+            Response.ok().build()
+        } catch (e: Exception) {
+            Log.error("Failed to update port", e)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+        }
+    }
+
+    @Path("/port/listen")
+    @GET
+    @Produces(MediaType.SERVER_SENT_EVENTS)
+    suspend fun listenToPortUpdates(): kotlinx.coroutines.flow.Flow<String> {
+        val userId = jsonWebToken.subject
+        return kotlinx.coroutines.flow.flow {
+            // Emit current port once
+            val currentPort = userService.getCurrentPort(userId)
+            currentPort?.let { emit(objectMapper.writeValueAsString(it)) }
+
+            // Create a single subscription for updates
+            val channel = kotlinx.coroutines.channels.Channel<PortState>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+            val subscriber =
+                userService.portConfigPubSub
+                    .subscribe(userService.companionAppKeyPrefix + userId) { portState -> channel.trySend(portState) }
+                    .awaitSuspending()
+
+            try {
+                // Emit all updates from the channel
+                for (update in channel) {
+                    emit(objectMapper.writeValueAsString(update))
+                }
+            } finally {
+                subscriber.unsubscribe().awaitSuspending()
+                channel.close()
+            }
         }
     }
 }

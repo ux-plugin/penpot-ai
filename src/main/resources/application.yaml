@@ -13,7 +13,7 @@ quarkus:
       enabled: true
       origins: "*"
       methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
-      headers: Authorization,Content-Type,Accept
+      headers: Authorization,Content-Type,Accept,Cache-Control
       exposed-headers: Content-Disposition
       access-control-max-age: 3600
 
@@ -22,12 +22,12 @@ quarkus:
     always-include: true
     validator-url: none
   smallrye-openapi:
-    enable: true
     info-title: Figma Plugin API
     info-version: 0.0.1
     info-description: API for Figma Plugin
     path: /openapi
     additional-docs-directory: src/main/resources/META-INF/openapi
+    enabled: true
 
   # Database configuration
   datasource:
@@ -35,25 +35,33 @@ quarkus:
     username: "${DB_USERNAME:postgres}"
     password: "${DB_PASSWORD:password}"
     reactive:
-      url: "postgresql://${DB_HOST:localhost}:${DB_PORT:5430}/${DB_NAME:figma_plugin}"
+      url: "postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}"
 
     # JDBC configuration for liquibase
     jdbc:
-      url: "jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5430}/${DB_NAME:figma_plugin}"
+      url: "jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}"
       driver: org.postgresql.Driver
 
   # Redis configuration
   redis:
     hosts: "${REDIS_HOST:redis://localhost:6379}"
-    timeout: 5000
+    timeout: 10000
+    # Connection pool configuration
+    max-pool-size: "${REDIS_MAX_POOL_SIZE:50}"
+    max-pool-waiting: "${REDIS_MAX_WAITING:100}"
+    pool-cleaner-interval: 30000
+    pool-recycle-timeout: 15000
+    connect-timeout: 5000
+    reconnect-attempts: 3
+    reconnect-interval: 1000
 
   # Hibernate ORM configuration
   hibernate-orm:
-    database:
-      generation: none
     log:
       sql: true
     physical-naming-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+    schema-management:
+      strategy: validate
 
   # Liquibase configuration
   liquibase:
@@ -72,7 +80,13 @@ quarkus:
   log:
     category:
       "org.jboss.resteasy.reactive.client":
-        level: "${LOG_LEVEL:DEBUG}"
+        level: "${LOG_LEVEL:INFO}"
+      "io.vertx.redis":
+        level: "${REDIS_LOG_LEVEL:WARN}"
+      "io.quarkus.redis":
+        level: "${REDIS_LOG_LEVEL:WARN}"
+      "com.plugin.features.auth.core.RedisRepository":
+        level: "${REDIS_LOG_LEVEL:INFO}"
 
 openai:
   api.key: "${OPENAI_API_KEY}"
@@ -104,7 +118,7 @@ auth:
       redis-key-prefix: "figma-connect:"
     login:
       random-key:
-        max-retries: 5
+        max-retries: 3
       timeout-sec: 60
     rest-client:
       access-token:
@@ -126,7 +140,7 @@ auth:
       redis-key-prefix: "github-user-id:"
     login:
       random-key:
-        max-retries: 5
+        max-retries: 3
       timeout-sec: 60
     rest-client:
       access-token:
@@ -136,6 +150,6 @@ auth:
     write-token:
       redis-key-prefix: "github-write-token:"
 
-apps:
+user:
   companion-app-key-prefix: "companion-app:"
   encryption-key-ttl-s: 3600

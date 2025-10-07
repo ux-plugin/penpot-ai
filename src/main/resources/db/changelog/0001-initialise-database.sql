@@ -40,7 +40,8 @@ CREATE TABLE Users
     encryptionKey          VARCHAR,
     encryptionKeyExpiresAt TIMESTAMP,
     refreshToken           VARCHAR,
-    refreshTokenExpiresAt  TIMESTAMP
+    refreshTokenExpiresAt  TIMESTAMP,
+    port                   INTEGER
 );
 Exception
         WHEN duplicate_object THEN

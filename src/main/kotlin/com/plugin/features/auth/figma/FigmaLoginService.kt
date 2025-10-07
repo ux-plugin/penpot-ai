@@ -46,18 +46,18 @@ constructor(
                 readTokenPrefix,
                 randomKeyGenerationMaxRetries,
                 "",
-                2 * loginTimeout.toInt(),
+                2 * loginTimeout,
             )
         val writeToken =
             redisRepository.generateUniqueKey(
                 writeTokenPrefix,
                 randomKeyGenerationMaxRetries,
                 readToken,
-                2 * loginTimeout.toInt(),
+                2 * loginTimeout,
             )
 
         val tokenExpiration = Instant.now().plusSeconds(loginTimeout)
-        val readTokenJwt = Jwt.issuer("ux-plugin").subject(readToken).expiresAt(tokenExpiration).sign()
+        val readTokenJwt = Jwt.issuer("ux-plugin").subject(readToken).expiresAt(tokenExpiration.epochSecond).sign()
 
         val redirectUri: String =
             generateOAuthUrl(
@@ -152,7 +152,7 @@ constructor(
             redisRepository.setValueWithExpiration(
                 accessTokenKey,
                 figmaOAuthTokenResponse.accessToken,
-                figmaOAuthTokenResponse.expiresIn.toInt(),
+                figmaOAuthTokenResponse.expiresIn,
             )
 
             val appTokens = authRepository.createTokensForUser(user.id, role = user.role).awaitSuspending()
@@ -179,19 +179,19 @@ constructor(
                 readTokenPrefix,
                 randomKeyGenerationMaxRetries,
                 "",
-                2 * loginTimeout.toInt(),
+                2 * loginTimeout,
             )
         val writeToken =
             redisRepository.generateUniqueKey(
                 writeTokenPrefix,
                 randomKeyGenerationMaxRetries,
                 readToken,
-                2 * loginTimeout.toInt(),
+                2 * loginTimeout,
             )
         redisRepository.setValueWithExpiration(
             userIdPrefix + writeToken,
             userId,
-            2 * loginTimeout.toInt(),
+            2 * loginTimeout,
         )
 
         val redirectUri: String =

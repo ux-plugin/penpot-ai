@@ -2,6 +2,19 @@ quarkus:
   live-reload:
     instrumentation: true
 
+  log:
+    category:
+      "org.jboss.resteasy.reactive.client":
+        level: "${LOG_LEVEL:DEBUG}"
+      "io.vertx.redis":
+        level: "${REDIS_LOG_LEVEL:DEBUG}"
+        "io.vertx.redis.client.impl":
+          level: "${REDIS_LOG_LEVEL:DEBUG}"
+      "io.quarkus.redis":
+        level: "${REDIS_LOG_LEVEL:DEBUG}"
+      "com.plugin.features.auth.core.RedisRepository":
+        level: "${REDIS_LOG_LEVEL:DEBUG}"
+
   liquibase:
     migrate-at-start: true
     clean-at-start: true
@@ -42,8 +55,8 @@ auth:
     connect-redirect-uri: http://localhost:8080/auth/figma/connect/callback
     login:
       random-key:
-        max-retries: 5
-      timeout-sec: 10
+        max-retries: 3
+      timeout-sec: 60
     rest-client:
       access-token:
         redis-key-prefix: "figma-client:"
@@ -61,7 +74,7 @@ auth:
     connect-redirect-uri: http://localhost:8080/auth/github/connect/callback
     login:
       random-key:
-        max-retries: 5
+        max-retries: 3
       timeout-sec: 60
     rest-client:
       access-token:
@@ -71,5 +84,5 @@ auth:
     write-token:
       redis-key-prefix: "github-write-token:"
 
-apps:
+user:
   encryption-key-ttl-s: 3600

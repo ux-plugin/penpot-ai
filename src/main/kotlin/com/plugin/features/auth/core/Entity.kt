@@ -17,7 +17,7 @@ class AuthUserEntity : PanacheEntityBase {
 
     @Column(nullable = true, unique = true) @Username var username: String? = null
 
-    @Column(nullable = false) @Enumerated(EnumType.STRING) lateinit var role: UserRole
+    @Column(nullable = false, columnDefinition = "user_roles") @Enumerated(EnumType.STRING) lateinit var role: UserRole
 
     @Column(nullable = true) @Password lateinit var refreshToken: String
 
@@ -35,7 +35,9 @@ class SocialLoginEntity : PanacheEntityBase {
 
     @Column(nullable = false, unique = true) lateinit var providerUserId: String
 
-    @Column(nullable = false) @Enumerated(EnumType.STRING) lateinit var provider: SocialProvider
+    @Column(nullable = false, columnDefinition = "social_providers")
+    @Enumerated(EnumType.STRING)
+    lateinit var provider: SocialProvider
 
     @Column(nullable = false) @Password lateinit var refreshToken: String
 

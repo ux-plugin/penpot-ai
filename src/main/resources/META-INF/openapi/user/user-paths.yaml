@@ -67,6 +67,104 @@ paths:
       security:
         - JWT: [ ]
 
+  /user/key:
+    post:
+      summary: Generate encryption key
+      description: Generates a new AES-256 encryption key for the authenticated user
+      tags:
+        - User Management
+      responses:
+        "200":
+          description: Encryption key generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    description: Base64-encoded AES-256 encryption key
+                  expiresAt:
+                    type: string
+                    format: date-time
+                    description: When the encryption key expires
+        "404":
+          description: User not found
+        "500":
+          description: Internal server error
+      security:
+        - JWT: [ ]
+    get:
+      summary: Get encryption key
+      description: Retrieves the current encryption key for the authenticated user
+      tags:
+        - User Management
+      responses:
+        "200":
+          description: Encryption key retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    description: Base64-encoded AES-256 encryption key
+                  expiresAt:
+                    type: string
+                    format: date-time
+                    description: When the encryption key expires
+        "500":
+          description: Internal server error
+      security:
+        - JWT: [ ]
+
+  /user/port:
+    post:
+      summary: Update port configuration
+      description: Updates the port configuration for the authenticated user and broadcasts to subscribers
+      tags:
+        - User Management
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                port:
+                  type: integer
+                  nullable: true
+                  description: Port number for companion app
+        required: true
+      responses:
+        "200":
+          description: Port configuration updated successfully
+        "500":
+          description: Internal server error
+      security:
+        - JWT: [ ]
+
+  /user/port/listen:
+    get:
+      summary: Listen to port updates
+      description: Server-Sent Events stream for real-time port configuration updates
+      tags:
+        - User Management
+      responses:
+        "200":
+          description: SSE stream of port updates
+          content:
+            text/event-stream:
+              schema:
+                type: object
+                properties:
+                  port:
+                    type: integer
+                    nullable: true
+                    description: Port number for companion app
+      security:
+        - JWT: [ ]
+
   /user/{userId}/update:
     post:
       summary: Update user profile

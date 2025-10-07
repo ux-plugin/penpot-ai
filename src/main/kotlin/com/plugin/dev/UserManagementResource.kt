@@ -67,7 +67,10 @@ class UserManagementRepository : PanacheRepository<DevUserEntity> {
     }
 
     fun getJWT(userId: String): String {
-        val token = Jwt.claims().subject(userId).issuer("ux-plugin").issuedAt(Instant.now()).sign()
+        val now = Instant.now()
+        val exp = now.plusSeconds(3600) // 1 hour expiration for dev tokens
+        val token =
+            Jwt.claims().subject(userId).issuer("ux-plugin").issuedAt(now.epochSecond).expiresAt(exp.epochSecond).sign()
         return token
     }
 }
