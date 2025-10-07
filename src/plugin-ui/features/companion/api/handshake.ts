@@ -18,10 +18,10 @@ interface HandshakeResponse {
  * Creates handshake request with new message format (encrypted_data + nonce)
  */
 const createHandshakeRequest = async (
-  encryptionKey: string,
-  nonce: string
+  base64EncryptionKey: string,
+  nonce: Uint8Array
 ): Promise<HandshakeRequest> => {
-  const encrypted_data = await createCompanionMessage(HANDSHAKE_COMMAND, encryptionKey, nonce);
+  const encrypted_data = await createCompanionMessage(HANDSHAKE_COMMAND, base64EncryptionKey, nonce);
   return {
     encrypted_data: encrypted_data
   };
@@ -56,10 +56,8 @@ const sendHandshakeRequest = async (
     
     const responseData = await response.json();
     
-    // Validate new message format
-    if (!responseData || 
-        typeof responseData.encrypted_data !== 'string' || 
-        typeof responseData.nonce !== 'string') {
+    // Validate new message format - only encrypted_data field expected
+    if (!responseData || typeof responseData.encrypted_data !== 'string') {
       throw new Error('Invalid response format from companion app');
     }
     
@@ -80,16 +78,16 @@ const sendHandshakeRequest = async (
  */
 const processHandshakeResponse = async (
   response: HandshakeResponse,
-  encryptionKey: string,
-  nonceValidator: (nonce: string) => boolean
+  base64EncryptionKey: string,
+  nonceValidator: (nonce: Uint8Array) => boolean
 ): Promise<void> => {
   try {
     // Validate the handshake response using new encryption utilities
-    const validated = await decryptIfValid(response.encrypted_data, encryptionKey, nonceValidator);
+    const validated = await decryptIfValid(response.encrypted_data, base64EncryptionKey, nonceValidator);
     
     console.log('Handshake response validated successfully');
     console.log('Response data:', validated.data);
-    console.log('Response timestamp:', new Date(validated.timestamp).toISOString());
+    console.log('Response timestamp:', new Date(validated.timestamp_ms).toISOString());
     
   } catch (error) {
     console.error('Handshake response validation failed:', error);
@@ -102,25 +100,25 @@ const processHandshakeResponse = async (
  * New handshake function that uses the updated message format
  * This is used internally by the CompanionAppClient
  */
-export const performHandshakeWithDependencies = async (
+export const executeHandshake = async (
   port: number,
-  encryptionKey: string,
-  nonce: string,
-  nonceValidator: (nonce: string) => boolean
+  base64EncryptionKey: string,
+  nonce: Uint8Array,
+  nonceValidator: (nonce: Uint8Array) => boolean
 ): Promise<void> => {
   console.log(`Starting handshake with companion app on port ${port} using symmetric encryption`);
   
   try {
     // Create the encrypted handshake request
-    const handshakeRequest = await createHandshakeRequest(encryptionKey, nonce);
-    console.log('Handshake request created with nonce:', nonce);
+    const handshakeRequest = await createHandshakeRequest(base64EncryptionKey, nonce);
+    console.log('Handshake request created with nonce');
     
     // Send the handshake request
     const handshakeResponse = await sendHandshakeRequest(port, handshakeRequest);
     console.log('Handshake request sent successfully');
     
     // Process and validate the response
-    await processHandshakeResponse(handshakeResponse, encryptionKey, nonceValidator);
+    await processHandshakeResponse(handshakeResponse, base64EncryptionKey, nonceValidator);
     console.log('Handshake completed successfully');
     
   } catch (error) {

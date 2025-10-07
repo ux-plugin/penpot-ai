@@ -5,7 +5,7 @@
  */
 
 import { createCompanionMessage, decryptIfValid } from './encryption.ts';
-import { performHandshakeWithDependencies } from './handshake.ts';
+import { executeHandshake } from './handshake.ts';
 import { EncryptionKeyManager, encryptionKeyManager } from '@user/api/EncryptionKeyManager.ts';
 import { NonceManager, nonceManager } from '@shared/api/NonceManager.ts';
 import { useCompanionStore } from '@companion/stores/useCompanionStore.ts';
@@ -22,7 +22,7 @@ export interface CompanionClientDependencies {
 // Response type for streaming
 export interface StreamChunk {
   data: any;
-  timestamp: number;
+  timestamp_ms: number;
 }
 
 // Configuration options
@@ -54,7 +54,7 @@ export class CompanionAppClient {
    * Validate a received nonce
    * Returns false if nonce has already been seen, true otherwise
    */
-  private validateNonce(nonce: string): boolean {
+  private validateNonce(nonce: Uint8Array): boolean {
     if (this.deps.nonceManager.hasNonce(nonce)) {
       return false;
     }
@@ -67,9 +67,9 @@ export class CompanionAppClient {
    * No parameters needed - pulls fresh values from injected dependencies
    * NOTE: This should only be called by ConnectionManager
    */
-  async performHandshake(): Promise<void> {
-    const encryptionKey = this.deps.keyManager.getKey();
-    if (!encryptionKey) {
+  async connect(): Promise<void> {
+    const base64EncryptionKey = this.deps.keyManager.getKey();
+    if (!base64EncryptionKey) {
       throw new Error('No valid encryption key available');
     }
     
@@ -80,11 +80,11 @@ export class CompanionAppClient {
     const nonce = this.deps.nonceManager.generateNonce();
 
     try {
-      await performHandshakeWithDependencies(
+      await executeHandshake(
         port,
-        encryptionKey,
+        base64EncryptionKey,
         nonce,
-        (receivedNonce: string) => this.validateNonce(receivedNonce)
+        (receivedNonce: Uint8Array) => this.validateNonce(receivedNonce)
       );
       
       console.log('Handshake completed successfully');
@@ -104,8 +104,8 @@ export class CompanionAppClient {
    * NOTE: Should be called through ConnectionManager.apiCall() for proper error handling
    */
   async fetch(endpoint: string, options?: RequestInit): Promise<Response> {
-    const encryptionKey = this.deps.keyManager.getKey();
-    if (!encryptionKey) {
+    const base64EncryptionKey = this.deps.keyManager.getKey();
+    if (!base64EncryptionKey) {
       throw new Error('No valid encryption key available');
     }
     
@@ -123,7 +123,7 @@ export class CompanionAppClient {
       if (options?.body && typeof options.body === 'string') {
         requestMessage = await createCompanionMessage(
           options.body,
-          encryptionKey,
+          base64EncryptionKey,
           nonce
         );
       }
@@ -178,13 +178,13 @@ export class CompanionAppClient {
    * NOTE: Should be called through ConnectionManager.streamCall() for proper error handling
    */
   async fetchStream(endpoint: string, options?: RequestInit): Promise<ReadableStream<StreamChunk>> {
-    const encryptionKey = this.deps.keyManager.getKey();
-    if (!encryptionKey) {
+    const base64EncryptionKey = this.deps.keyManager.getKey();
+    if (!base64EncryptionKey) {
       throw new Error('No valid encryption key available');
     }
     
     // Use non-null assertion since we've already checked
-    const validKey = encryptionKey as string;
+    const validKey = base64EncryptionKey as string;
     
     const response = await this.fetch(endpoint, options);
     
@@ -195,7 +195,7 @@ export class CompanionAppClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     // Bind validateNonce to preserve 'this' context
-    const validateNonce = (nonce: string) => this.validateNonce(nonce);
+    const validateNonce = (nonce: Uint8Array) => this.validateNonce(nonce);
     
     return new ReadableStream<StreamChunk>({
       start(controller) {
@@ -226,7 +226,7 @@ export class CompanionAppClient {
                 // Enqueue the validated chunk
                 controller.enqueue({
                   data: validatedChunk.data,
-                  timestamp: validatedChunk.timestamp
+                  timestamp_ms: validatedChunk.timestamp_ms
                 });
 
               } catch (chunkError) {

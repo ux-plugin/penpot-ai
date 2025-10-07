@@ -446,7 +446,7 @@ export class MessageValidationError extends Error implements TypedError {
   constructor(message: string, public context?: any) {
     super(message);
     this.name = 'MessageValidationError';
-    this.timestamp = Date.now();
+    this.timestamp = Math.floor(Date.now() / 1000);
   }
 }
 
@@ -457,7 +457,7 @@ export class HandlerNotFoundError extends Error implements TypedError {
   constructor(category: MessageCategory, type: string, public context?: any) {
     super(`No handler found for ${category}:${type}`);
     this.name = 'HandlerNotFoundError';
-    this.timestamp = Date.now();
+    this.timestamp = Math.floor(Date.now() / 1000);
   }
 }
 

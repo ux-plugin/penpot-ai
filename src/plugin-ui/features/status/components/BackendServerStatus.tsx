@@ -1,5 +1,4 @@
 import React from 'react';
-import { RefreshCw } from 'lucide-react';
 import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore';
 import { Button } from '@ui/button';
 import { Badge } from '@ui/badge';
@@ -50,8 +49,15 @@ export const BackendServerStatus: React.FC<BackendServerStatusProps> = ({
   const getStatusText = () => {
     if (isConnecting) return 'Connecting to backend server...';
     if (isConnected) return 'Backend server connected';
-    if (error) return `Server error: ${error}`;
     return 'Backend server disconnected';
+  };
+
+  const getErrorText = () => {
+    return error ? `Error: ${error}` : null;
+  };
+
+  const getErrorSuggestion = () => {
+    return (error && isConnected) ? 'Try disconnecting and reconnecting to resolve this issue' : null;
   };
 
   const getStatusVariant = () => {
@@ -76,10 +82,16 @@ export const BackendServerStatus: React.FC<BackendServerStatusProps> = ({
   };
 
   if (variant === 'icon') {
+    const errorText = getErrorText();
+    const errorSuggestion = getErrorSuggestion();
+    const tooltipText = [getStatusText(), errorText, errorSuggestion]
+      .filter(Boolean)
+      .join('\n');
+    
     return (
       <div 
         className={`flex items-center justify-center p-2 rounded-full hover:bg-gray-100 cursor-pointer transition-colors ${className}`}
-        title={getStatusText()}
+        title={tooltipText}
         onClick={isConnected? handleDisconnect : handleConnect}
       >
         {getStatusIcon()}
@@ -88,11 +100,18 @@ export const BackendServerStatus: React.FC<BackendServerStatusProps> = ({
   }
 
   if (variant === 'badge') {
+    const errorText = getErrorText();
+    const errorSuggestion = getErrorSuggestion();
+    const tooltipText = [getStatusText(), errorText, errorSuggestion]
+      .filter(Boolean)
+      .join('\n');
+    
     return (
       <Badge
         variant={getStatusVariant() as any}
         className={`cursor-pointer hover:opacity-80 transition-opacity ${className}`}
         onClick={isConnected? handleDisconnect : handleConnect}
+        title={tooltipText}
       >
         <div className="flex items-center space-x-1">
           {getStatusIcon()}
@@ -103,50 +122,49 @@ export const BackendServerStatus: React.FC<BackendServerStatusProps> = ({
   }
 
   // Full variant
+  const errorText = getErrorText();
+  const errorSuggestion = getErrorSuggestion();
+  
   return (
-    <div className={`flex items-center justify-between p-3 border rounded-lg ${className}`}>
-      <div className="flex items-center space-x-3">
-        {getStatusIcon()}
-        <div>
-          <p className="text-sm font-medium">Backend Server</p>
-          <p className="text-xs text-gray-500">{getStatusText()}</p>
+    <div className={`p-3 border rounded-lg ${className}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          {getStatusIcon()}
+          <div>
+            <p className="text-sm font-medium">Backend Server</p>
+            <p className="text-xs text-gray-500">{getStatusText()}</p>
+          </div>
+        </div>
+        
+        <div className="flex items-center space-x-2">
+          {isConnected ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleDisconnect}
+              disabled={isConnecting}
+            >
+              Disconnect
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="default"
+              onClick={handleConnect}
+              disabled={isConnecting}
+            >
+              {isConnecting ? 'Connecting...' : 'Connect'}
+            </Button>
+          )}
         </div>
       </div>
       
-      <div className="flex items-center space-x-2">
-        {error && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={handleConnect}
-            disabled={isConnecting}
-            className="text-xs"
-          >
-            <RefreshCw className="h-3 w-3 mr-1" />
-            Retry
-          </Button>
-        )}
-
-        {isConnected ? (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={handleDisconnect}
-            disabled={isConnecting}
-          >
-            Disconnect
-          </Button>
-        ) : (
-          <Button
-            size="sm"
-            variant="default"
-            onClick={handleConnect}
-            disabled={isConnecting}
-          >
-            {isConnecting ? 'Connecting...' : 'Connect'}
-          </Button>
-        )}
-      </div>
+      {errorText && (
+        <p className="text-xs text-red-600 mt-2">{errorText}</p>
+      )}
+      {errorSuggestion && (
+        <p className="text-xs text-amber-600 mt-1">{errorSuggestion}</p>
+      )}
     </div>
   );
 };

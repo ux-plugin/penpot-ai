@@ -69,7 +69,7 @@ export async function getFigmaLogin(signal?: AbortSignal): Promise<FigmaLoginAut
 
   const { refreshToken, refreshTokenExpiresAt }: GetRefreshTokenResponse = await getRefreshTokenResponse.json();
 
-  return {accessToken: accessToken, refreshToken: refreshToken, refreshTokenExpiresAt: refreshTokenExpiresAt};
+  return {accessToken: accessToken, refreshToken: refreshToken, refreshTokenExpiresAt: new Date(refreshTokenExpiresAt).getTime()};
 }
 
 /**

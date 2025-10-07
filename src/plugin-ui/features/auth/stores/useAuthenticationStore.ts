@@ -105,8 +105,7 @@ export const useAuthenticationStore = create<AuthState>((set, get) => ({
         accessToken: authState.accessToken || null,
         refreshToken: authState.refreshToken || null,
         refreshTokenExpiresAt: authState.refreshTokenExpiresAt || null,
-        isAuthenticated: !!(authState.accessToken && 
-          (!authState.refreshTokenExpiresAt || Date.now() < authState.refreshTokenExpiresAt)),
+        isAuthenticated: !!(authState.refreshTokenExpiresAt && Date.now() < authState.refreshTokenExpiresAt),
         authProvider: authState.authProvider || null,
       });
       

@@ -96,7 +96,7 @@ export class UniversalMessageDispatcher {
       const fullRequest: Request = {
         ...request,
         id,
-        timestamp: Date.now(),
+        timestamp: Math.floor(Date.now() / 1000),
         source: this.context
       } as Request;
 
@@ -173,7 +173,7 @@ export class UniversalMessageDispatcher {
       id: originalRequest.id,
       type: originalRequest.type,
       category: originalRequest.category,
-      timestamp: Date.now(),
+      timestamp: Math.floor(Date.now() / 1000),
       source: this.context,
       success: !error,
       result,

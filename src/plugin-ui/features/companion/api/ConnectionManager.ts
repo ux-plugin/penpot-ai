@@ -55,11 +55,11 @@ export class ConnectionManager {
   }
 
   /**
-   * Check if currently connected (key valid + handshake done)
+   * Check if currently connected (handshake done + port configured)
+   * Note: Does not check key validity - key renewal happens automatically before operations
    */
   isConnected(): boolean {
     return this.currentState === 'connected' &&
-           this.deps.keyManager.isKeyValid() &&
            !!this.deps.portUpdatesStore.getState().currentPort;
   }
 
@@ -159,7 +159,7 @@ export class ConnectionManager {
     console.log('Performing handshake with companion app...');
     
     try {
-      await this.deps.client.performHandshake();
+      await this.deps.client.connect();
       console.log('Handshake completed successfully');
     } catch (error) {
       console.error('Handshake failed:', error);
@@ -256,11 +256,27 @@ export class ConnectionManager {
 
   /**
    * Wrap API call with connection validation and error handling
+   * Automatically renews expired keys and reconnects before executing
    * Use this for regular fetch operations
    */
   async apiCall<T>(fn: () => Promise<T>): Promise<T> {
     if (!this.isConnected()) {
       throw new Error('Not connected to companion app');
+    }
+
+    // Check if key has expired and renew if needed
+    if (!this.deps.keyManager.isKeyValid()) {
+      console.log('Encryption key expired, generating new key and reconnecting...');
+      try {
+        await this.ensureKey();
+        await this.performHandshake();
+        this.setState('connected');
+        console.log('Key renewed and reconnected successfully');
+      } catch (error) {
+        const renewalError = error instanceof Error ? error : new Error('Key renewal failed');
+        console.error('Failed to renew key:', renewalError);
+        throw this.handleConnectionError(renewalError);
+      }
     }
 
     try {
@@ -275,11 +291,27 @@ export class ConnectionManager {
 
   /**
    * Wrap streaming call with connection validation and error handling
+   * Automatically renews expired keys and reconnects before executing
    * Use this for streaming operations
    */
   async streamCall<T>(fn: () => Promise<T>): Promise<T> {
     if (!this.isConnected()) {
       throw new Error('Not connected to companion app');
+    }
+
+    // Check if key has expired and renew if needed
+    if (!this.deps.keyManager.isKeyValid()) {
+      console.log('Encryption key expired, generating new key and reconnecting...');
+      try {
+        await this.ensureKey();
+        await this.performHandshake();
+        this.setState('connected');
+        console.log('Key renewed and reconnected successfully');
+      } catch (error) {
+        const renewalError = error instanceof Error ? error : new Error('Key renewal failed');
+        console.error('Failed to renew key:', renewalError);
+        throw this.handleConnectionError(renewalError);
+      }
     }
 
     try {

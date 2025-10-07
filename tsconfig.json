@@ -17,6 +17,9 @@
     ],
     "baseUrl": ".",
     "paths": {
+      // External library mappings
+      "@noble/ciphers/*": ["./node_modules/@noble/ciphers/*"],
+      
       // Root alias
       "@/*": ["./src/*"],
 

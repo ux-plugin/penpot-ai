@@ -41,7 +41,6 @@ export function createPortUpdatesConnection(
     onError: (streamError: Error) => {
       console.error('Port updates streaming connection error:', streamError);
       onError?.(streamError.message);
-      onConnectionStatusChange?.(false);
     },
     onClose: () => {
       console.log('Port updates streaming connection closed');

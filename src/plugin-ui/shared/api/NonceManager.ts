@@ -4,8 +4,8 @@
  * Similar to EncryptionKeyManager pattern
  */
 
-// Nonce expiration time in milliseconds (10 seconds)
-const NONCE_EXPIRY_MS = 10 * 1000;
+// Nonce expiration time in seconds
+const NONCE_EXPIRY_S = 10;
 const MAX_NONCE_SIZE = 50;
 
 /**
@@ -13,33 +13,38 @@ const MAX_NONCE_SIZE = 50;
  * Replaces the Zustand useNonceStore with a pure TypeScript implementation
  */
 export class NonceManager {
-  // Nonce storage - nonce string -> expiration timestamp
+  // Nonce storage - nonce string (base64) -> expiration timestamp
+  // We use string as key since Map can't use Uint8Array directly
   private nonces: Map<string, number> = new Map();
 
   /**
-   * Generate a new nonce using 12 bytes
+   * Convert Uint8Array to base64 string for use as Map key
    */
-  private _generateNonce(): string {
-    const nonceBuffer = new Uint8Array(12);
-    crypto.getRandomValues(nonceBuffer);
-
-    return Array.from(nonceBuffer, (byte) =>
-      byte.toString(16).padStart(2, "0")
-    ).join("");
+  private nonceToKey(nonce: Uint8Array): string {
+    return btoa(String.fromCharCode(...nonce));
   }
 
   /**
-   * Gets current timestamp in milliseconds
+   * Generate a new nonce using 12 bytes as Uint8Array
+   */
+  private _generateNonce(): Uint8Array {
+    const nonceBuffer = new Uint8Array(12);
+    crypto.getRandomValues(nonceBuffer);
+    return nonceBuffer;
+  }
+
+  /**
+   * Gets current timestamp in seconds
    */
   private getCurrentTimestamp(): number {
-    return Date.now();
+    return Math.floor(Date.now() / 1000);
   }
 
   /**
    * Calculates expiration timestamp for a nonce
    */
   private getExpirationTimestamp(): number {
-    return this.getCurrentTimestamp() + NONCE_EXPIRY_MS;
+    return this.getCurrentTimestamp() + NONCE_EXPIRY_S;
   }
 
   /**
@@ -61,22 +66,24 @@ export class NonceManager {
   /**
    * Add nonce to tracking with expiration time
    */
-  addNonce(nonce: string): void {
+  addNonce(nonce: Uint8Array): void {
     // Cleanup if we've exceeded max size
     if (this.nonces.size > MAX_NONCE_SIZE) {
       this.cleanupNonces();
     }
 
+    const nonceKey = this.nonceToKey(nonce);
     const expirationTime = this.getExpirationTimestamp();
-    this.nonces.set(nonce, expirationTime);
+    this.nonces.set(nonceKey, expirationTime);
   }
 
   /**
    * Check if a nonce exists and is still valid
    * Returns false if nonce doesn't exist or has expired
    */
-  hasNonce(nonce: string): boolean {
-    const expirationTime = this.nonces.get(nonce);
+  hasNonce(nonce: Uint8Array): boolean {
+    const nonceKey = this.nonceToKey(nonce);
+    const expirationTime = this.nonces.get(nonceKey);
     
     if (!expirationTime) {
       return false;
@@ -85,7 +92,7 @@ export class NonceManager {
     // Check if nonce has expired
     if (this.getCurrentTimestamp() > expirationTime) {
       // Remove expired nonce immediately
-      this.nonces.delete(nonce);
+      this.nonces.delete(nonceKey);
       return false;
     }
     
@@ -96,11 +103,14 @@ export class NonceManager {
    * Generate a new unique nonce that doesn't exist in the store
    * Automatically adds it to tracking
    */
-  generateNonce(): string {
-    let nonce: string;
+  generateNonce(): Uint8Array {
+    let nonce: Uint8Array;
+    let nonceKey: string;
+    
     do {
       nonce = this._generateNonce();
-    } while (this.nonces.has(nonce));
+      nonceKey = this.nonceToKey(nonce);
+    } while (this.nonces.has(nonceKey));
     
     // Add the new nonce to tracking
     this.addNonce(nonce);

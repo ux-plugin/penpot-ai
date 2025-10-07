@@ -197,7 +197,7 @@ export class StoreMessaging {
       const result: StoreUpdateResult = {
         storeId: request.storeId,
         updated: true,
-        timestamp: Date.now()
+        timestamp: Math.floor(Date.now() / 1000)
       };
 
       return result;
@@ -235,7 +235,7 @@ export class StoreMessaging {
       return {
         storeId: request.storeId,
         state: currentState,
-        timestamp: Date.now()
+        timestamp: Math.floor(Date.now() / 1000)
       };
     } catch (error) {
       throw new Error(`Failed to get state for store '${request.storeId}': ${error instanceof Error ? error.message : 'Unknown error'}`);

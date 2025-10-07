@@ -125,7 +125,7 @@ export const CompanionAppStatus: React.FC<CompanionAppStatusProps> = ({
             size="sm"
             variant="default"
             onClick={handleConnect}
-            disabled={companionStatus.isConnecting || !companionStatus.hasKey || !companionStatus.hasPort}
+            disabled={companionStatus.isConnecting || !companionStatus.hasPort}
           >
             {companionStatus.isConnecting ? 'Connecting...' : 'Connect'}
           </Button>

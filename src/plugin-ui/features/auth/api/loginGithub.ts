@@ -12,11 +12,13 @@ interface GetAccessTokenResponse {
 
 interface GetRefreshTokenResponse {
   refreshToken: string;
+  refreshTokenExpiresAt: number;
 }
 
 export interface GithubLoginAuthData {
   accessToken: string;
   refreshToken: string;
+  refreshTokenExpiresAt: number;
 }
 
 /**
@@ -70,9 +72,9 @@ export async function getGithubLogin(signal?: AbortSignal): Promise<GithubLoginA
     throw new Error(`GitHub refresh token request failed: ${getRefreshTokenResponse.status} ${text}`);
   }
 
-  const { refreshToken }: GetRefreshTokenResponse = await getRefreshTokenResponse.json();
+  const { refreshToken, refreshTokenExpiresAt }: GetRefreshTokenResponse = await getRefreshTokenResponse.json();
 
-  return { accessToken: accessToken, refreshToken: refreshToken };
+  return { accessToken: accessToken, refreshToken: refreshToken, refreshTokenExpiresAt: new Date(refreshTokenExpiresAt).getTime() };
 }
 
 /**

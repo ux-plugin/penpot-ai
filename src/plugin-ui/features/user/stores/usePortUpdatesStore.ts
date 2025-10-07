@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { createPortUpdatesConnection, PortUpdatesData } from '../api/portUpdates.ts';
-import { connectionManager } from '@companion/api/index.ts';
 
 interface PortUpdatesStore {
   connection: PortUpdatesData | null;
@@ -37,14 +36,6 @@ export const usePortUpdatesStore = create<PortUpdatesStore>((set, get) => ({
         (port) => {
           console.log('Port update received in store:', port);
           set({ currentPort: port });
-          
-          // Trigger ConnectionManager to handle port update
-          if (port) {
-            console.log('Triggering ConnectionManager.onPortUpdate...');
-            connectionManager.onPortUpdate(port).catch((error) => {
-              console.error('Failed to reconnect after port update:', error);
-            });
-          }
         },
         // onConnectionStatusChange callback
         (connected) => {
@@ -59,10 +50,7 @@ export const usePortUpdatesStore = create<PortUpdatesStore>((set, get) => ({
         (errorMessage) => {
           console.error('Port updates connection error:', errorMessage);
           set({ 
-            error: errorMessage, 
-            isConnecting: false,
-            isConnected: false,
-            connection: null
+            error: errorMessage
           });
         }
       );

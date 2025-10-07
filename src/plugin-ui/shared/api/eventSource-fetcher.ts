@@ -87,30 +87,30 @@ class StreamingConnectionImpl implements StreamingConnection {
 
             // Process complete lines
             const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // Keep incomplete line in buffer
+            buffer = lines.pop() || ''; // Keep incomplete line in the buffer
 
             let eventData = '';
             
             for (const line of lines) {
               if (line.trim() === '') {
-                // Empty line indicates end of event, process accumulated data
+                // Empty line indicates the end of event, process accumulated data
                 if (eventData) {
                   this.processEventData(eventData, onMessage, onError);
                   eventData = '';
                 }
-              } else if (line.startsWith('data: ')) {
+              } else if (line.startsWith('data:')) {
                 // Accumulate data lines
-                const data = line.slice(6);
+                const data = line.slice(5);
                 eventData += (eventData ? '\n' : '') + data;
-              } else if (line.startsWith('event: ')) {
+              } else if (line.startsWith('event:')) {
                 // Handle event type if needed
                 const eventType = line.slice(7);
                 console.log('Event type:', eventType);
-              } else if (line.startsWith('id: ')) {
+              } else if (line.startsWith('id:')) {
                 // Handle event ID if needed
                 const eventId = line.slice(4);
                 console.log('Event ID:', eventId);
-              } else if (line.startsWith('retry: ')) {
+              } else if (line.startsWith('retry:')) {
                 // Handle retry interval if needed
                 const retryMs = parseInt(line.slice(7), 10);
                 console.log('Server suggested retry interval:', retryMs);
