@@ -290,11 +290,25 @@ Existing clients will continue to work without modifications. New clients should
 To test the WebSocket implementation:
 
 1. Start the companion app
-2. Connect to WebSocket endpoint
-3. Send encrypted init command
-4. Verify encrypted response
-5. Test health check, recording, and error scenarios
-6. Verify connection state monitoring
+2. Open `docs/websocket-test-client.html` in a web browser
+3. Enter the port number (displayed when the companion app starts)
+4. Enter your encryption key (base64 encoded)
+5. Click "Connect to /ws" to establish connection
+6. Send encrypted init command
+7. Verify encrypted response
+8. Test health check, recording, and error scenarios
+9. Verify connection state monitoring
+
+### Using the Test Client
+
+The included HTML test client (`docs/websocket-test-client.html`) provides a simple UI to:
+- Connect to both `/ws` and `/ws/recording` endpoints
+- Send encrypted commands with proper nonce and timestamp
+- View real-time logs of all WebSocket activity
+- Test audio recording with chunk counting
+- Visualize connection state changes
+
+Simply open the HTML file in any modern web browser (Chrome, Firefox, Safari, Edge) to start testing.
 
 ## Troubleshooting
 
