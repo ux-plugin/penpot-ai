@@ -158,10 +158,13 @@ impl LocalServer {
         // Create a channel for audio commands
         let (audio_command_tx, audio_command_rx) = mpsc::channel::<AudioCommand>(10);
 
+        // Clone config for the audio manager thread
+        let audio_sample_rate = self.config.audio_sample_rate;
+        
         // Start the audio manager in a separate thread
         thread::spawn(move || {
-            // Create a new audio manager
-            let mut audio_manager = AudioManager::new(audio_command_rx);
+            // Create a new audio manager with configured sample rate
+            let mut audio_manager = AudioManager::new(audio_command_rx, audio_sample_rate);
 
             // Create a tokio runtime for the audio manager
             let rt = tokio::runtime::Builder::new_current_thread()

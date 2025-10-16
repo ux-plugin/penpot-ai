@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub expected_command_string: String,
     pub acknowledgment_string: String,
     pub nonce_timestamp_window_ms: u64,
+    pub audio_sample_rate: u32,
 }
 
 impl Default for AppConfig {
@@ -24,6 +25,7 @@ impl Default for AppConfig {
             expected_command_string: "CMD".to_string(),
             acknowledgment_string: "ACK".to_string(),
             nonce_timestamp_window_ms: 300000, // 5 minutes default (in milliseconds)
+            audio_sample_rate: 16000, // 16kHz default
         }
     }
 }
@@ -63,6 +65,12 @@ impl AppConfig {
             }
         }
         
+        if let Ok(sample_rate_str) = env::var("AUDIO_SAMPLE_RATE") {
+            if let Ok(sample_rate) = sample_rate_str.parse::<u32>() {
+                config.audio_sample_rate = sample_rate;
+            }
+        }
+        
         // Try to load from a config file if it exists
         if let Ok(config_str) = std::fs::read_to_string("config.json") {
             match serde_json::from_str::<AppConfig>(&config_str) {
@@ -88,6 +96,9 @@ impl AppConfig {
                     }
                     if env::var("NONCE_TIMESTAMP_WINDOW_MS").is_err() {
                         config.nonce_timestamp_window_ms = file_config.nonce_timestamp_window_ms;
+                    }
+                    if env::var("AUDIO_SAMPLE_RATE").is_err() {
+                        config.audio_sample_rate = file_config.audio_sample_rate;
                     }
                     config.server_port_range = file_config.server_port_range;
                 }

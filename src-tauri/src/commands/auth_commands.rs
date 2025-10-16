@@ -40,9 +40,6 @@ pub async fn logout(
 ) -> Result<(), String> {
     println!("Logging out...");
     
-    // Allow logout regardless of authentication state to handle edge cases
-    // like invalid/expired credentials or backend database resets
-    
     // Clear credentials (this will succeed even if already empty)
     deps.auth_state().clear().await?;
 

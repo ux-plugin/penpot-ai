@@ -350,6 +350,37 @@ pub fn create_message_format(nonce: &[u8; 12], encrypted_payload: &str) -> Resul
     Ok(general_purpose::STANDARD.encode(&message))
 }
 
+// Encrypt audio chunk with timestamp in the format: base64<nonce|encrypted_payload>
+// where payload is {timestamp: timestamp_ms, data: audio_chunk_base64}
+pub fn encrypt_audio_chunk(key_base64: &str, nonce: &[u8; 12], audio_bytes: &[u8]) -> Result<String, String> {
+    // Base64-encode the audio bytes
+    let audio_base64 = general_purpose::STANDARD.encode(audio_bytes);
+    
+    // Create payload with timestamp and audio data
+    let payload = MessagePayload {
+        data: audio_base64,
+        timestamp_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+    };
+    
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|e| format!("Failed to serialize audio payload: {}", e))?;
+    
+    // AES-GCM encryption
+    let key_bytes = general_purpose::STANDARD.decode(key_base64)
+        .map_err(|e| format!("Failed to decode key: {}", e))?;
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let nonce_obj = Nonce::from_slice(nonce);
+    
+    let ciphertext = cipher.encrypt(nonce_obj, payload_json.as_bytes())
+        .map_err(|e| format!("Audio encryption failed: {}", e))?;
+    
+    let encrypted_payload = general_purpose::STANDARD.encode(&ciphertext);
+    
+    // Create message format: base64<nonce|encrypted_payload>
+    create_message_format(nonce, &encrypted_payload)
+}
+
 
 // Async wrapper functions for keyring operations - following the pattern from auth.rs
 async fn delete_encryption_data_from_keyring() -> Result<(), EncryptionError> {
