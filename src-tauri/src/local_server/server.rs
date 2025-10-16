@@ -4,7 +4,8 @@ use crate::local_server::audio::{AudioCommand, AudioManager};
 use crate::local_server::encryption::EncryptionState;
 use crate::local_server::handlers::{handshake, start_recording, stop_recording};
 use crate::local_server::state::StateForLocalServerHandler;
-use axum::{routing::post, Router};
+use crate::local_server::ws_handlers::{ws_handler, ws_recording_handler};
+use axum::{routing::{get, post}, Router};
 use serde::Serialize;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
@@ -190,13 +191,21 @@ impl LocalServer {
         // Configure CORS to allow cross-origin requests from Figma plugin
         let cors = CorsLayer::new()
             .allow_origin(Any)
-            .allow_methods([axum::http::Method::POST, axum::http::Method::OPTIONS])
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::OPTIONS,
+            ])
             .allow_headers([axum::http::header::CONTENT_TYPE]);
 
         let app = Router::new()
+            // HTTP endpoints (backward compatibility)
             .route("/init", post(handshake))
             .route("/start-recording", post(start_recording))
             .route("/stop-recording", post(stop_recording))
+            // WebSocket endpoints
+            .route("/ws", get(ws_handler))
+            .route("/ws/recording", get(ws_recording_handler))
             .layer(cors)
             .with_state(server_state);
 
