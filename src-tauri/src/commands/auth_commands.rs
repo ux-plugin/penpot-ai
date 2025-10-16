@@ -40,14 +40,24 @@ pub async fn logout(
 ) -> Result<(), String> {
     println!("Logging out...");
     
-    // Clear credentials (this will succeed even if already empty)
-    deps.auth_state().clear().await?;
+    // Clear credentials - log error but don't block logout if keyring fails
+    if let Err(e) = deps.auth_state().clear().await {
+        eprintln!("Warning: Failed to clear credentials from keyring: {}", e);
+        // Continue with logout anyway
+    }
 
-    // Ensure the main window is visible after logout
-    show_or_create_main_window(app.clone()).await?;
+    // Ensure the main window is visible after logout - log error but don't block
+    if let Err(e) = show_or_create_main_window(app.clone()).await {
+        eprintln!("Warning: Failed to show main window: {}", e);
+        // Continue with logout anyway
+    }
 
-    // Shutdown the server (this will handle already-stopped servers gracefully)
-    deps.local_server().stop().await?;
+    // Shutdown the server - log error but don't block logout
+    if let Err(e) = deps.local_server().stop().await {
+        eprintln!("Warning: Failed to stop server: {}", e);
+        // Continue with logout anyway
+    }
 
+    println!("Logout completed successfully");
     Ok(())
 }
