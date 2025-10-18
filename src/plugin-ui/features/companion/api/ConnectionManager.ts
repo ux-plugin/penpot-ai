@@ -15,8 +15,12 @@ import { NonceManager } from "@shared/api/NonceManager.ts";
 import { useCompanionStore } from "@companion/stores/useCompanionStore.ts";
 import { usePortUpdatesStore } from "@user/stores/usePortUpdatesStore.ts";
 
-// Connection state machine
-export type ConnectionState = 'disconnected' | 'key_ready' | 'connected';
+// Connection state machine as enum for type safety and performance
+export enum ConnectionState {
+  DISCONNECTED = 'DISCONNECTED',
+  KEY_READY = 'KEY_READY',
+  CONNECTED = 'CONNECTED'
+}
 
 // Error types for intelligent handling
 export type ConnectionErrorType = '404' | 'network' | 'timeout' | 'handshake' | 'other';
@@ -41,17 +45,16 @@ export interface ConnectionManagerDependencies {
  */
 export class ConnectionManager {
   private deps: ConnectionManagerDependencies;
-  private currentState: ConnectionState = 'disconnected';
 
   constructor(deps: ConnectionManagerDependencies) {
     this.deps = deps;
   }
 
   /**
-   * Get current connection state
+   * Get current connection state from store
    */
   getState(): ConnectionState {
-    return this.currentState;
+    return this.deps.companionStore.getState().connectionState;
   }
 
   /**
@@ -59,35 +62,35 @@ export class ConnectionManager {
    * Note: Does not check key validity - key renewal happens automatically before operations
    */
   isConnected(): boolean {
-    return this.currentState === 'connected' &&
+    const companionState = this.deps.companionStore.getState();
+    return companionState.connectionState === ConnectionState.CONNECTED &&
            !!this.deps.portUpdatesStore.getState().currentPort;
   }
 
   /**
-   * Update connection state and sync with store
+   * Update connection state in store
    */
   private setState(newState: ConnectionState, error?: ConnectionError): void {
-    this.currentState = newState;
     const companionStore = this.deps.companionStore.getState();
 
+    // Update connection state
+    companionStore.setConnectionState(newState);
+
+    // Handle side effects based on state
     switch (newState) {
-      case 'disconnected':
-        companionStore.setCompanionConnected(false);
-        companionStore.setHandshakeDone(false);
+      case ConnectionState.DISCONNECTED:
         if (error) {
           companionStore.setCompanionError(error.message);
         }
         break;
       
-      case 'key_ready':
+      case ConnectionState.KEY_READY:
         companionStore.setCompanionConnecting(true);
-        companionStore.setHandshakeDone(false);
         break;
       
-      case 'connected':
-        companionStore.setCompanionConnected(true);
-        companionStore.setHandshakeDone(true);
+      case ConnectionState.CONNECTED:
         companionStore.setCompanionError(null);
+        companionStore.setCompanionConnecting(false);
         break;
     }
   }
@@ -124,7 +127,7 @@ export class ConnectionManager {
     // For 404 and network errors, mark as disconnected and wait
     // (Don't retry automatically - companion app may not exist)
     if (errorType === '404' || errorType === 'network') {
-      this.setState('disconnected', connectionError);
+      this.setState(ConnectionState.DISCONNECTED, connectionError);
     }
 
     return connectionError;
@@ -144,6 +147,11 @@ export class ConnectionManager {
   /**
    * Perform handshake with companion app
    * This is the internal implementation - external code should call connect()
+   * 
+   * Implements automatic key refresh on 403:
+   * - If handshake fails with 403, fetches new key from backend
+   * - Retries handshake once with new key
+   * - If 403 again, throws the error
    */
   private async performHandshake(): Promise<void> {
     const port = this.deps.portUpdatesStore.getState().currentPort;
@@ -162,6 +170,36 @@ export class ConnectionManager {
       await this.deps.client.connect();
       console.log('Handshake completed successfully');
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Check if error is a 403 (Forbidden) - key mismatch
+      if (errorMessage.includes('403')) {
+        console.log('Received 403 during handshake, fetching new encryption key from backend...');
+        
+        try {
+          // Fetch the current key from backend
+          await this.deps.keyManager.fetchCurrentKey();
+          console.log('New encryption key fetched, retrying handshake...');
+          
+          // Retry handshake once with new key
+          await this.deps.client.connect();
+          console.log('Handshake completed successfully after key refresh');
+          return; // Success on retry
+        } catch (retryError) {
+          const retryErrorMessage = retryError instanceof Error ? retryError.message : String(retryError);
+          
+          // If we get 403 again, the issue is not key-related
+          if (retryErrorMessage.includes('403')) {
+            console.error('Received 403 again after key refresh, authentication issue persists');
+          } else {
+            console.error('Handshake failed on retry:', retryError);
+          }
+          
+          throw retryError; // Throw the retry error
+        }
+      }
+      
+      // For non-403 errors, throw immediately
       console.error('Handshake failed:', error);
       throw error;
     }
@@ -181,11 +219,11 @@ export class ConnectionManager {
     try {
       // Step 1: Ensure valid encryption key
       await this.ensureKey();
-      this.setState('key_ready');
+      this.setState(ConnectionState.KEY_READY);
 
       // Step 2: Perform handshake
       await this.performHandshake();
-      this.setState('connected');
+      this.setState(ConnectionState.CONNECTED);
 
       console.log('Connection established successfully');
     } catch (error) {
@@ -203,7 +241,7 @@ export class ConnectionManager {
    */
   disconnect(): void {
     console.log('Disconnecting from companion app...');
-    this.setState('disconnected');
+    this.setState(ConnectionState.DISCONNECTED);
     console.log('Disconnected successfully');
   }
 
@@ -221,11 +259,11 @@ export class ConnectionManager {
       // Generate fresh encryption key for new companion session
       console.log('Generating new encryption key for companion restart...');
       await this.deps.keyManager.generateKey();
-      this.setState('key_ready');
+      this.setState(ConnectionState.KEY_READY);
 
       // Attempt handshake with new key
       await this.performHandshake();
-      this.setState('connected');
+      this.setState(ConnectionState.CONNECTED);
       
       console.log('Reconnection successful after port update');
     } catch (error) {
@@ -249,8 +287,9 @@ export class ConnectionManager {
    */
   onKeyGenerated(): void {
     console.log('New encryption key generated, ready for handshake');
-    if (this.currentState === 'disconnected') {
-      this.setState('key_ready');
+    const currentState = this.getState();
+    if (currentState === ConnectionState.DISCONNECTED) {
+      this.setState(ConnectionState.KEY_READY);
     }
   }
 
@@ -270,7 +309,7 @@ export class ConnectionManager {
       try {
         await this.ensureKey();
         await this.performHandshake();
-        this.setState('connected');
+        this.setState(ConnectionState.CONNECTED);
         console.log('Key renewed and reconnected successfully');
       } catch (error) {
         const renewalError = error instanceof Error ? error : new Error('Key renewal failed');
@@ -305,7 +344,7 @@ export class ConnectionManager {
       try {
         await this.ensureKey();
         await this.performHandshake();
-        this.setState('connected');
+        this.setState(ConnectionState.CONNECTED);
         console.log('Key renewed and reconnected successfully');
       } catch (error) {
         const renewalError = error instanceof Error ? error : new Error('Key renewal failed');
@@ -345,7 +384,7 @@ export class ConnectionManager {
     keyExpiresAt: Date | null;
   } {
     return {
-      state: this.currentState,
+      state: this.getState(),
       isConnected: this.isConnected(),
       hasKey: this.deps.keyManager.isKeyValid(),
       hasPort: !!this.deps.portUpdatesStore.getState().currentPort,
@@ -353,5 +392,58 @@ export class ConnectionManager {
       port: this.deps.portUpdatesStore.getState().currentPort,
       keyExpiresAt: this.deps.keyManager.getExpiresAt()
     };
+  }
+
+  /**
+   * Start audio recording stream
+   * Returns an object with a close function
+   * Handles encrypted SSE stream with audio chunks
+   */
+  async startRecording(options: {
+    onAudioChunk: (base64Audio: string) => void;
+    onError: (error: Error) => void;
+  }): Promise<{ close: () => void }> {
+    return this.streamCall(async () => {
+      const port = this.deps.portUpdatesStore.getState().currentPort;
+      if (!port) {
+        throw new Error('No companion app port configured');
+      }
+
+      const base64EncryptionKey = this.deps.keyManager.getKey();
+      if (!base64EncryptionKey) {
+        throw new Error('No valid encryption key available');
+      }
+
+      // Import SSE connection utility
+      const { createCompanionSSEConnection } = await import('./companionSSE-fetcher.ts');
+      
+      // Create SSE connection with encryption
+      const connection = await createCompanionSSEConnection<string>('/start-recording', {
+        requestData: 'CMD',
+        encryptionKey: base64EncryptionKey,
+        port,
+        generateNonce: () => this.deps.nonceManager.generateNonce(),
+        validateNonce: (nonce: Uint8Array) => {
+          if (this.deps.nonceManager.hasNonce(nonce)) {
+            return false;
+          }
+          this.deps.nonceManager.addNonce(nonce);
+          return true;
+        },
+        onMessage: options.onAudioChunk,
+        onError: options.onError,
+        onOpen: () => {
+          console.log('Audio recording stream started');
+        },
+        onClose: () => {
+          console.log('Audio recording stream closed');
+        }
+      });
+
+      // Return close function
+      return {
+        close: () => connection.close()
+      };
+    });
   }
 }

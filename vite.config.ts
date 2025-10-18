@@ -23,9 +23,9 @@ export default defineConfig(({ command, mode }) => ({
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: true, // Remove console.logs
+        drop_console: false, // Keep console.logs
         drop_debugger: true, // Remove debugger statements
-        pure_funcs: ['console.log', 'console.info', 'console.debug'], // Remove specific console methods
+        pure_funcs: ['console.info', 'console.debug'], // Remove specific console methods (but keep console.log)
         passes: 2 // Run minification twice for better results
       },
       mangle: {
@@ -75,6 +75,7 @@ export default defineConfig(({ command, mode }) => ({
       "@auth": fileURLToPath(new URL("./src/plugin-ui/features/auth", import.meta.url)),
       "@user": fileURLToPath(new URL("./src/plugin-ui/features/user", import.meta.url)),
       "@companion": fileURLToPath(new URL("./src/plugin-ui/features/companion", import.meta.url)),
+      "@completions": fileURLToPath(new URL("./src/plugin-ui/features/completions", import.meta.url)),
       "@status": fileURLToPath(new URL("./src/plugin-ui/features/status", import.meta.url)),
 
       // Shared UI code

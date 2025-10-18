@@ -1,67 +1,37 @@
 import { create } from "zustand";
-
-// Import connection state type
-type ConnectionState = 'disconnected' | 'key_ready' | 'connected';
+import { ConnectionState } from "@companion/api/ConnectionManager.ts";
 
 interface CompanionState {
-  // Connection management
-  handshakeDone: boolean;
+  // Single source of truth for connection state
   connectionState: ConnectionState;
   
-  // Connection states - Companion App
-  isCompanionConnected: boolean;
+  // Additional state that cannot be derived from connectionState
   isCompanionConnecting: boolean;
   companionError: string | null;
 
-  // Actions - CompanionApp communication management
-  setHandshakeDone: (done: boolean) => void;
+  // Actions
   setConnectionState: (state: ConnectionState) => void;
-
-  // Actions - Connection management
-  setCompanionConnected: (connected: boolean) => void;
   setCompanionConnecting: (connecting: boolean) => void;
   setCompanionError: (error: string | null) => void;
 }
 
 
-export const useCompanionStore = create<CompanionState>((set, get) => ({
-  // Initial state - Connection management
-  handshakeDone: false,
-  connectionState: 'disconnected',
-  
-  // Initial state - Companion Connection
-  isCompanionConnected: false,
+export const useCompanionStore = create<CompanionState>((set) => ({
+  // Initial state
+  connectionState: ConnectionState.DISCONNECTED,
   isCompanionConnecting: false,
   companionError: null,
 
-  // Handshake management
-  setHandshakeDone: (done: boolean) => {
-    set({ handshakeDone: done });
-  },
-
-  // Connection state management
+  // Actions
   setConnectionState: (state: ConnectionState) => {
     set({ connectionState: state });
   },
 
-  // Companion Connection management
-  setCompanionConnected: (connected) => {
-    set({ 
-      isCompanionConnected: connected,
-       isCompanionConnecting: false,
-      companionError: connected ? null : get().companionError,
-    });
+  setCompanionConnecting: (connecting: boolean) => {
+    set({ isCompanionConnecting: connecting });
   },
 
-  setCompanionConnecting: (connecting) => {
-    set({ isCompanionConnecting: connecting, companionError: connecting ? null : get().companionError });
-  },
-
-  setCompanionError: (error) => {
-    set({ 
-      companionError: error, 
-      isCompanionConnecting: false, 
-      isCompanionConnected: false,
-    });
+  setCompanionError: (error: string | null) => {
+    set({ companionError: error });
   },
 }));

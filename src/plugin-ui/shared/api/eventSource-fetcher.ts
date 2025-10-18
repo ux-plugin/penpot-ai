@@ -1,4 +1,5 @@
 import { apiFetch } from "./api-fetcher.ts";
+import { parseSSEStream } from "./sse-parser.ts";
 
 export interface StreamingConnectionOptions<T> {
   onMessage?: (data: T) => void;
@@ -69,54 +70,22 @@ class StreamingConnectionImpl implements StreamingConnection {
         onOpen?.(this);
 
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
 
         try {
-          while (this.isActive) {
-            const { done, value } = await reader.read();
-
-            if (done) {
-              console.log('Stream ended');
-              break;
-            }
-
-            // Decode the chunk and add to buffer
-            const chunk = decoder.decode(value, { stream: true });
-            buffer += chunk;
-
-            // Process complete lines
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // Keep incomplete line in the buffer
-
-            let eventData = '';
-            
-            for (const line of lines) {
-              if (line.trim() === '') {
-                // Empty line indicates the end of event, process accumulated data
-                if (eventData) {
-                  this.processEventData(eventData, onMessage, onError);
-                  eventData = '';
-                }
-              } else if (line.startsWith('data:')) {
-                // Accumulate data lines
-                const data = line.slice(5);
-                eventData += (eventData ? '\n' : '') + data;
-              } else if (line.startsWith('event:')) {
-                // Handle event type if needed
-                const eventType = line.slice(7);
-                console.log('Event type:', eventType);
-              } else if (line.startsWith('id:')) {
-                // Handle event ID if needed
-                const eventId = line.slice(4);
-                console.log('Event ID:', eventId);
-              } else if (line.startsWith('retry:')) {
-                // Handle retry interval if needed
-                const retryMs = parseInt(line.slice(7), 10);
-                console.log('Server suggested retry interval:', retryMs);
-              }
-            }
-          }
+          await parseSSEStream(reader, {
+            onEvent: (event) => {
+              // Log event metadata if present
+              if (event.event) console.log('Event type:', event.event);
+              if (event.id) console.log('Event ID:', event.id);
+              if (event.retry) console.log('Server suggested retry interval:', event.retry);
+            },
+            onMessage: (parsed) => {
+              this.lastMessage = parsed;
+              onMessage?.(parsed);
+            },
+            onError,
+            shouldContinue: () => this.isActive
+          });
         } finally {
           reader.releaseLock();
         }
@@ -147,19 +116,6 @@ class StreamingConnectionImpl implements StreamingConnection {
     };
 
     await attemptConnection();
-  }
-
-  private processEventData(data: string, onMessage?: (data: any) => void, onError?: (error: Error) => void): void {
-    if (!data.trim()) return;
-
-    try {
-      const parsed = JSON.parse(data);
-      this.lastMessage = parsed;
-      onMessage?.(parsed);
-    } catch (parseError) {
-      console.error('Failed to parse SSE data:', parseError, 'Raw data:', data);
-      onError?.(new Error(`Failed to parse SSE message: ${parseError}`));
-    }
   }
 
   close(): void {

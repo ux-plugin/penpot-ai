@@ -7,6 +7,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { connectionManager, companionAppClient, StreamChunk } from './index.ts';
 import { useCompanionStore } from '@companion/stores/useCompanionStore.ts';
+import { ConnectionState } from './ConnectionManager.ts';
 
 // Query key factory for consistent caching
 export const companionQueryKeys = {
@@ -214,7 +215,9 @@ export function useCompanionStream(endpoint: string, options: UseCompanionStream
  * Uses ConnectionManager as the single entry point
  */
 export function useCompanionConnection() {
-  const companionState = useCompanionStore();
+  const connectionState = useCompanionStore((state) => state.connectionState);
+  const isCompanionConnecting = useCompanionStore((state) => state.isCompanionConnecting);
+  const companionError = useCompanionStore((state) => state.companionError);
 
   const connect = useCallback(async () => {
     await connectionManager.connect();
@@ -227,22 +230,114 @@ export function useCompanionConnection() {
   return {
     connect,
     disconnect,
-    isConnected: companionState.isCompanionConnected,
-    isConnecting: companionState.isCompanionConnecting,
-    error: companionState.companionError,
-    connectionState: companionState.connectionState,
+    isConnected: connectionState === ConnectionState.CONNECTED,
+    isConnecting: isCompanionConnecting,
+    error: companionError,
+    connectionState: connectionState,
     canConnect: connectionManager.canConnect(),
   };
 }
 
 // Convenience hook for common status checks
 export function useCompanionStatus() {
-  const companionState = useCompanionStore();
+  const isCompanionConnecting = useCompanionStore((state) => state.isCompanionConnecting);
+  const companionError = useCompanionStore((state) => state.companionError);
   const connectionInfo = connectionManager.getConnectionInfo();
 
   return {
     ...connectionInfo,
-    isConnecting: companionState.isCompanionConnecting,
-    error: companionState.companionError,
+    isConnecting: isCompanionConnecting,
+    error: companionError,
+  };
+}
+
+/**
+ * Hook for managing audio recording with the companion app
+ * Provides a clean interface for starting/stopping recording and handling audio chunks
+ */
+export function useAudioRecording(options: {
+  onAudioChunk: (base64Audio: string) => void;
+  onError?: (error: Error) => void;
+}) {
+  const [isRecording, setIsRecording] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const connectionRef = useRef<{ close: () => void } | null>(null);
+  
+  // Subscribe to connection state reactively from store
+  const connectionState = useCompanionStore((state) => state.connectionState);
+  const isCompanionConnected = connectionState === ConnectionState.CONNECTED;
+
+  const startRecording = useCallback(async () => {
+    if (isRecording) {
+      console.warn('Recording already in progress');
+      return;
+    }
+
+    if (!connectionManager.isConnected()) {
+      const error = new Error('Not connected to companion app');
+      setError(error);
+      options.onError?.(error);
+      return;
+    }
+
+    try {
+      setError(null);
+      console.log('🎤 Starting audio recording...');
+
+      const connection = await connectionManager.startRecording({
+        onAudioChunk: (base64Audio: string) => {
+          options.onAudioChunk(base64Audio);
+        },
+        onError: (err: Error) => {
+          console.error('❌ Recording error:', err);
+          setError(err);
+          setIsRecording(false);
+          connectionRef.current = null;
+          options.onError?.(err);
+        }
+      });
+
+      connectionRef.current = connection;
+      setIsRecording(true);
+      console.log('✅ Recording started successfully');
+
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Failed to start recording');
+      console.error('❌ Failed to start recording:', error);
+      setError(error);
+      setIsRecording(false);
+      options.onError?.(error);
+    }
+  }, [isRecording, options]);
+
+  const stopRecording = useCallback(() => {
+    if (!isRecording || !connectionRef.current) {
+      console.warn('No recording in progress');
+      return;
+    }
+
+    console.log('⏹️ Stopping recording...');
+    connectionRef.current.close();
+    connectionRef.current = null;
+    setIsRecording(false);
+    console.log('✅ Recording stopped');
+  }, [isRecording]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (connectionRef.current) {
+        console.log('🧹 Cleaning up recording connection on unmount');
+        connectionRef.current.close();
+      }
+    };
+  }, []);
+
+  return {
+    startRecording,
+    stopRecording,
+    isRecording,
+    error,
+    isReady: isCompanionConnected, // Now reactive!
   };
 }

@@ -10,6 +10,7 @@ import { EncryptionKeyManager, encryptionKeyManager } from '@user/api/Encryption
 import { NonceManager, nonceManager } from '@shared/api/NonceManager.ts';
 import { useCompanionStore } from '@companion/stores/useCompanionStore.ts';
 import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore.ts';
+import { ConnectionState } from './ConnectionManager.ts';
 
 // Dependency interface for the client - stores and managers
 export interface CompanionClientDependencies {
@@ -88,7 +89,7 @@ export class CompanionAppClient {
       );
       
       console.log('Handshake completed successfully');
-      this.deps.companionStore.getState().setCompanionConnected(true);
+      this.deps.companionStore.getState().setConnectionState(ConnectionState.CONNECTED);
       
     } catch (error) {
       console.error('Handshake failed:', error);

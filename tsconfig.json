@@ -38,6 +38,7 @@
       "@auth/*": ["./src/plugin-ui/features/auth/*"],
       "@user/*": ["./src/plugin-ui/features/user/*"],
       "@companion/*": ["./src/plugin-ui/features/companion/*"],
+      "@completions/*": ["./src/plugin-ui/features/completions/*"],
       "@status/*": ["./src/plugin-ui/features/status/*"],
 
       // Shared UI code

@@ -18,6 +18,30 @@ export class EncryptionKeyManager {
   private keyExpiresAt: Date | null = null;
 
   /**
+   * Fetches the current encryption key from the backend via GET /user/key
+   * Updates the local key if it differs from the backend
+   */
+  async fetchCurrentKey(): Promise<void> {
+    try {
+      const response = await apiFetch("/user/key", {
+        method: "GET",
+      });
+
+      const data: EncryptionKeyResponse = await response.json();
+
+      this.encryptionKey = data.key;
+      this.keyExpiresAt = new Date(data.expiresAt);
+
+      console.log("Encryption key fetched successfully, expires at:", this.keyExpiresAt);
+    } catch (error) {
+      console.error("Failed to fetch encryption key:", error);
+      throw new Error(
+        `Failed to fetch encryption key: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    }
+  }
+
+  /**
    * Generates a new encryption key by calling POST /user/key
    * Stores the key and expiration date in memory
    */
