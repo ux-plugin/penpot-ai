@@ -99,8 +99,6 @@ paths:
   # Completions paths
   /completions:
     $ref: './completions/completions-paths.yaml#/paths/~1completions'
-  /completions/create:
-    $ref: './completions/completions-paths.yaml#/paths/~1completions~1create'
   /completions/{completionId}:
     $ref: './completions/completions-paths.yaml#/paths/~1completions~1{completionId}'
   

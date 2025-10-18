@@ -13,7 +13,7 @@ quarkus:
       enabled: true
       origins: "*"
       methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
-      headers: Authorization,Content-Type,Accept,Cache-Control
+      headers: Authorization,Content-Type,Accept,Cache-Control,Upgrade,Connection,Sec-WebSocket-Key,Sec-WebSocket-Version,Sec-WebSocket-Protocol,Sec-WebSocket-Extensions
       exposed-headers: Content-Disposition
       access-control-max-age: 3600
 
@@ -101,6 +101,13 @@ smallrye:
     sign:
       key:
         location: classpath:META-INF/resources/privateKey-dev.pem
+
+websocket:
+  auth:
+    path: "/completions/create"
+    token-query-param: "token"
+    upgrade-header: "upgrade"
+    websocket-value: "websocket"
 
 auth:
   access-token-ttl-s: 900  # 15 minutes

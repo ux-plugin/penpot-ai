@@ -4,6 +4,8 @@ import java.time.Instant
 
 data class PromptRequest(val prompt: String)
 
+data class StreamingDataMessage(val timestamp: Long, val drawnPath: String, val audioChunk: String)
+
 data class ComponentCompletionResponse(
     var id: String,
     var prompt: String,

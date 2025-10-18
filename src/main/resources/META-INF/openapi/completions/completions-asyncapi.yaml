@@ -1,0 +1,234 @@
+asyncapi: 3.0.0
+info:
+  title: Component Completions WebSocket API
+  version: 0.0.1
+  description: |
+    WebSocket API for streaming component creation with real-time drawing and audio data.
+    
+    This API enables real-time streaming of user interactions (drawn paths and audio chunks) 
+    to generate AI-powered Figma components.
+    
+    ## Authentication
+    
+    This WebSocket endpoint requires JWT authentication via a custom `HttpAuthenticationMechanism`
+    that extracts the token from a query parameter. The JWT token must be provided as a query
+    parameter during the WebSocket connection upgrade request.
+    
+    **Authentication Method**:
+    - **Query Parameter**: `ws://localhost:8080/completions/create?token=YOUR_JWT_TOKEN`
+    
+    **Authentication Implementation**:
+    - Custom `QueryParamJwtAuthMechanism` with priority 1000 (runs before default JWT auth)
+    - Mechanism only handles WebSocket upgrade requests to `/completions/create`
+    - All other requests (REST endpoints) use standard Authorization header authentication
+    - JWT token is validated using Quarkus SmallRye JWT
+    
+    **Authentication Validation**:
+    - Token is extracted from the `token` query parameter
+    - JWT signature and claims are validated
+    - User ID is extracted from `JWT.subject`
+    - If token is missing, invalid, or subject is null/blank, connection is rejected
+    - Failed authentication results in connection closure with error code 1008 (VIOLATED_POLICY)
+    - Successful authentication creates a proper `SecurityIdentity` and stores user ID for session lifetime
+    
+    ## Connection Lifecycle
+    
+    1. **Connection Establishment** (`@OnOpen`):
+       - JWT token is validated
+       - User ID is extracted from token subject
+       - Audio buffer is initialized for the session
+       - User ID is mapped to session ID
+    
+    2. **Message Processing** (`@OnMessage`):
+       - Client sends JSON messages with timestamp, drawn path, and audio chunk
+       - Server decodes base64 audio data and accumulates in buffer
+       - Server responds with "OK" acknowledgment for each message
+    
+    3. **Connection Closure** (`@OnClose`):
+       - Accumulated audio is saved as WAV file (16kHz, mono, 16-bit PCM)
+       - File naming: `audio_{timestamp}_{sessionId}.wav`
+       - Session mappings and buffers are cleaned up
+    
+    4. **Error Handling** (`@OnError`):
+       - Logs error with session and user information
+       - Cleans up all session resources
+  contact:
+    name: Support
+    email: support@example.com
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  production:
+    host: localhost:8080
+    protocol: ws
+    description: Local development WebSocket server
+    tags:
+      - name: env:development
+        description: Development environment
+
+channels:
+  completionsCreate:
+    address: /completions/create
+    messages:
+      streamingInput:
+        $ref: '#/components/messages/StreamingInput'
+      acknowledgment:
+        $ref: '#/components/messages/Acknowledgment'
+    description: |
+      WebSocket channel for streaming component creation data.
+      
+      **Authentication Required**: This channel requires a valid JWT token with a non-empty subject.
+      
+      **Session Management**:
+      - Each WebSocket session is associated with an authenticated user ID
+      - Audio data is accumulated in a per-session buffer
+      - Session state is maintained until connection closure or error
+      
+      **Message Flow**:
+      - Client sends JSON messages with drawing and audio data
+      - Server processes and accumulates audio chunks
+      - Server sends "OK" acknowledgment for each successful message
+      - On disconnect, server saves complete audio as WAV file
+      
+      **Error Conditions**:
+      - Missing or invalid JWT: Connection closed with code 1008 (VIOLATED_POLICY)
+      - Message processing errors: "ERROR: {message}" response sent to client
+      - Connection errors: Automatic cleanup of session resources
+
+operations:
+  sendComponentData:
+    action: send
+    channel:
+      $ref: '#/channels/completionsCreate'
+    messages:
+      - $ref: '#/channels/completionsCreate/messages/streamingInput'
+    description: |
+      Send streaming component creation data to the server.
+      
+      Clients send JSON messages containing:
+      - timestamp: Current time in milliseconds
+      - drawnPath: SVG path data representing user's drawing
+      - audioChunk: Base64-encoded audio data from user's voice input
+
+  receiveAcknowledgment:
+    action: receive
+    channel:
+      $ref: '#/channels/completionsCreate'
+    messages:
+      - $ref: '#/channels/completionsCreate/messages/acknowledgment'
+    description: |
+      Receive acknowledgment messages from the server.
+      
+      The server responds with "OK" for each successfully processed message.
+
+components:
+  messages:
+    StreamingInput:
+      name: StreamingInput
+      title: Streaming Component Input
+      summary: Real-time drawing and audio data for component generation
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/StreamingInputPayload'
+      examples:
+        - name: buttonDrawing
+          summary: Drawing a button with voice description
+          payload:
+            timestamp: 1734041923456
+            drawnPath: "M 0 0 L 120 0 L 120 40 L 0 40 Z"
+            audioChunk: "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
+        - name: cardDrawing
+          summary: Drawing a card layout with voice input
+          payload:
+            timestamp: 1734041924789
+            drawnPath: "M 10 10 L 310 10 L 310 410 L 10 410 Z M 20 20 L 300 20 L 300 200 L 20 200 Z"
+            audioChunk: "UklGRjQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YRAAAAAAAAAAAAAAAAAAAAA="
+
+    Acknowledgment:
+      name: Acknowledgment
+      title: Server Acknowledgment
+      summary: Confirmation that message was received and processed
+      contentType: text/plain
+      payload:
+        type: string
+        const: "OK"
+        description: Simple acknowledgment message
+      examples:
+        - name: success
+          summary: Successful processing acknowledgment
+          payload: "OK"
+
+  schemas:
+    StreamingInputPayload:
+      type: object
+      description: Payload containing streaming drawing and audio data
+      required:
+        - timestamp
+        - drawnPath
+        - audioChunk
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds when the data was captured
+          minimum: 0
+          example: 1734041923456
+        drawnPath:
+          type: string
+          description: |
+            SVG path data representing the user's drawing.
+            
+            Uses standard SVG path syntax with commands like:
+            - M (moveto)
+            - L (lineto)
+            - Q (quadratic Bezier curve)
+            - C (cubic Bezier curve)
+            - Z (closepath)
+          example: "M 0 0 L 100 100 Z"
+          minLength: 1
+        audioChunk:
+          type: string
+          format: byte
+          description: |
+            Base64-encoded audio data chunk from the user's voice input.
+            
+            The audio format should be PCM WAV data encoded in base64.
+            Each chunk represents a small segment of continuous audio recording.
+          example: "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
+          minLength: 1
+      examples:
+        - timestamp: 1734041923456
+          drawnPath: "M 0 0 L 120 0 L 120 40 L 0 40 Z"
+          audioChunk: "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
+
+  securitySchemes:
+    jwtAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT authentication token required for WebSocket connection.
+        
+        **Token Requirements**:
+        - Must contain a non-null, non-blank `subject` claim (user ID)
+        - Token is validated using custom `QueryParamJwtAuthMechanism`
+        - Uses Quarkus SmallRye JWT for validation
+        - Standard JWT format with valid signature
+        
+        **How to Provide Token**:
+        - Must be provided as query parameter during WebSocket upgrade
+        - Format: `ws://localhost:8080/completions/create?token=YOUR_JWT_TOKEN`
+        - Parameter name: `token`
+        
+        **Validation Behavior**:
+        - Custom mechanism extracts token from query parameter
+        - JWT signature and expiration are validated
+        - On success: User ID extracted from `subject`, `SecurityIdentity` created, connection established
+        - On failure: Connection closed with WebSocket close code 1008 (VIOLATED_POLICY)
+        - On error: Connection closed with appropriate error code
+        
+        **Note**: REST endpoints (`/completions`, `/completions/{id}`) continue to use 
+        Authorization header authentication (`Authorization: Bearer TOKEN`). The query 
+        parameter authentication is specific to the WebSocket endpoint only.
