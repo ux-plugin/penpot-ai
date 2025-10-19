@@ -111,12 +111,16 @@ class ComponentStreamingWebSocket
 constructor(
     private val objectMapper: ObjectMapper,
     private val jsonWebToken: JsonWebToken,
+    private val commandDispatcher: CommandDispatcher,
 ) {
     // Store audio buffers per session
     private val audioBuffers = ConcurrentHashMap<String, ByteArrayOutputStream>()
 
     // Store user IDs per session for authenticated users
     private val sessionUserIds = ConcurrentHashMap<String, String>()
+
+    // Store JWT token expiration times per session
+    private val sessionTokenExpirations = ConcurrentHashMap<String, Long>()
 
     @OnOpen
     fun onOpen(session: Session) {
@@ -130,9 +134,19 @@ constructor(
                 return
             }
 
+            // Cache the token expiration time
+            val expirationTime = jsonWebToken.expirationTime
+            if (expirationTime <= 0) {
+                Log.warn("JWT token has no valid expiration time: $expirationTime")
+                session.close(CloseReason(CloseReason.CloseCodes.VIOLATED_POLICY, "Invalid token"))
+                return
+            }
+
             sessionUserIds[session.id] = userId
+            sessionTokenExpirations[session.id] = expirationTime
 
             Log.info("WebSocket connection opened: ${session.id} for user: $userId")
+            Log.debug("Token expiration time: $expirationTime (${java.time.Instant.ofEpochSecond(expirationTime)})")
             audioBuffers[session.id] = ByteArrayOutputStream()
         } catch (e: Exception) {
             Log.error("Error during WebSocket authentication", e)
@@ -143,26 +157,40 @@ constructor(
     @OnMessage
     fun onMessage(message: String, session: Session): String {
         return try {
-            val streamingData = objectMapper.readValue(message, StreamingDataMessage::class.java)
+            // Check if token has expired
+            val expirationTime = sessionTokenExpirations[session.id]
+            val currentTime = System.currentTimeMillis() / 1000 // Convert to seconds
 
-            // Log the received data
-            Log.info("Received streaming data:")
-            Log.info("  Timestamp: ${streamingData.timestamp}")
-            Log.info(
-                "  Drawn Path: ${streamingData.drawnPath.take(100)}${if (streamingData.drawnPath.length > 100) "..." else ""}"
-            )
+            if (expirationTime == null) {
+                Log.error("No expiration time found for session: ${session.id}")
+                session.close(CloseReason(CloseReason.CloseCodes.TRY_AGAIN_LATER, "Session not properly initialized"))
+                return "ERROR: Session not initialized"
+            }
 
-            // Decode and accumulate audio data
-            val audioBytes = Base64.getDecoder().decode(streamingData.audioChunk)
-            audioBuffers[session.id]?.write(audioBytes)
+            if (currentTime >= expirationTime) {
+                Log.warn("Token expired for session: ${session.id}")
+                // Use custom close code 4001 for token expiration
+                session.close(CloseReason(CloseReason.CloseCode { 4001 }, "Token expired"))
+                return "ERROR: Token expired"
+            }
 
-            Log.info(
-                "  Audio Chunk Size: ${audioBytes.size} bytes (decoded from ${streamingData.audioChunk.length} base64 chars)"
-            )
-            Log.info("  Total accumulated audio: ${audioBuffers[session.id]?.size() ?: 0} bytes")
+            val userId =
+                sessionUserIds[session.id]
+                    ?: run {
+                        Log.error("No user ID found for session: ${session.id}")
+                        session.close(CloseReason(CloseReason.CloseCodes.VIOLATED_POLICY, "Session not authenticated"))
+                        return "ERROR: Not authenticated"
+                    }
 
-            // Return acknowledgment
-            "OK"
+            // Parse the command
+            val command = objectMapper.readValue(message, WebSocketCommand::class.java)
+
+            Log.debug("Received command: ${command.event} for session: ${session.id}")
+
+            // Dispatch to appropriate handler
+            val response = kotlinx.coroutines.runBlocking { commandDispatcher.dispatch(command, session, userId) }
+
+            response
         } catch (e: Exception) {
             Log.error("Error processing message", e)
             "ERROR: ${e.message}"
@@ -196,8 +224,13 @@ constructor(
             } finally {
                 audioBuffers.remove(session.id)
                 sessionUserIds.remove(session.id)
+                sessionTokenExpirations.remove(session.id)
             }
-        } ?: sessionUserIds.remove(session.id)
+        }
+            ?: run {
+                sessionUserIds.remove(session.id)
+                sessionTokenExpirations.remove(session.id)
+            }
     }
 
     @OnError
@@ -207,6 +240,7 @@ constructor(
         // Clean up buffers on error
         audioBuffers.remove(session.id)
         sessionUserIds.remove(session.id)
+        sessionTokenExpirations.remove(session.id)
     }
 }
 
