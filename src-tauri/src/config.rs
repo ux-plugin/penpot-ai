@@ -24,7 +24,7 @@ impl Default for AppConfig {
             app_name: "figma_plugin_companion_app".to_string(),
             expected_command_string: "CMD".to_string(),
             acknowledgment_string: "ACK".to_string(),
-            nonce_timestamp_window_ms: 300000, // 5 minutes default (in milliseconds)
+            nonce_timestamp_window_ms: 300000, // 5-minute default (in milliseconds)
             audio_sample_rate: 16000, // 16kHz default
         }
     }

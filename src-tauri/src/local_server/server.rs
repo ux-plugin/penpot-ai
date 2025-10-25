@@ -2,9 +2,9 @@ use crate::backend_client::BackendClient;
 use crate::config::AppConfig;
 use crate::local_server::audio::{AudioCommand, AudioManager};
 use crate::local_server::encryption::EncryptionState;
-use crate::local_server::handlers::{handshake, start_recording, stop_recording};
 use crate::local_server::state::StateForLocalServerHandler;
-use axum::{routing::post, Router};
+use crate::local_server::ws_handlers::ws_handler;
+use axum::{routing::get, Router};
 use serde::Serialize;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
@@ -20,6 +20,7 @@ struct ServerState {
     port: Option<u16>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     server_handle: Option<tokio::task::JoinHandle<()>>,
+    handler_state: Option<StateForLocalServerHandler>,
 }
 
 #[derive(Serialize, Clone)]
@@ -58,6 +59,7 @@ impl LocalServer {
                 port: None, // None = not started, Some(port) = running
                 shutdown_tx: None,
                 server_handle: None,
+                handler_state: None,
             }),
             backend_client,
             encryption_state,
@@ -145,8 +147,15 @@ impl LocalServer {
             return Ok(());
         }
 
+        // Close all active WebSocket connections before shutting down the server
+        if let Some(handler_state) = &state.handler_state {
+            println!("Closing active WebSocket connections...");
+            handler_state.close_all_connections().await;
+        }
+
         self._shutdown(&mut state).await;
         state.port = None;
+        state.handler_state = None;
         // Emit stopped status
         self.emit_status(ServerStatus::Stopped, None).await;
         println!("Local server stopped successfully");
@@ -187,16 +196,22 @@ impl LocalServer {
             self.config.clone(),
         );
 
+        // Store the handler state for shutdown access
+        state.handler_state = Some(server_state.clone());
+
         // Configure CORS to allow cross-origin requests from Figma plugin
         let cors = CorsLayer::new()
             .allow_origin(Any)
-            .allow_methods([axum::http::Method::POST, axum::http::Method::OPTIONS])
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::OPTIONS,
+            ])
             .allow_headers([axum::http::header::CONTENT_TYPE]);
 
         let app = Router::new()
-            .route("/init", post(handshake))
-            .route("/start-recording", post(start_recording))
-            .route("/stop-recording", post(stop_recording))
+            // WebSocket endpoint
+            .route("/companion", get(ws_handler))
             .layer(cors)
             .with_state(server_state);
 

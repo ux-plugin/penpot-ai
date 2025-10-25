@@ -1,0 +1,414 @@
+asyncapi: 2.6.0
+info:
+  title: Figma Plugin Companion App WebSocket API
+  version: 1.0.0
+  description: |
+    WebSocket API for secure, real-time communication between Figma plugins and the Companion App.
+    
+    ## Security Features
+    
+    - **End-to-End Encryption**: All messages encrypted using AES-GCM with 256-bit keys
+    - **Nonce Protection**: Unique 12-byte nonce per message prevents replay attacks
+    - **Timestamp Validation**: Messages include timestamps validated within configurable window
+    - **Request/Response Correlation**: Unique IDs for tracking and debugging
+    - **Encrypted Error Codes**: Error codes encrypted within WebSocket frames
+    
+    ## Message Format
+    
+    All messages use the format: `base64<nonce(12 bytes)|encrypted_payload>`
+    
+    The encrypted payload contains:
+    ```json
+    {
+      "data": "<JSON string with actual message>",
+      "timestamp_ms": 1234567890123
+    }
+    ```
+    
+    ## Workflow
+    
+    1. Client obtains encryption key from backend
+    2. Client connects to WebSocket endpoint
+    3. Client sends encrypted `init` command with unique request ID
+    4. Server validates and responds with acknowledgment
+    5. Client can send commands with correlation IDs
+    6. Server responds with matching IDs for correlation
+    
+  contact:
+    name: UX Plugin Team
+    url: https://github.com/ux-plugin/figma_plugin_companion_app
+  license:
+    name: MIT
+
+servers:
+  production:
+    url: ws://localhost:{port}/companion
+    protocol: ws
+    description: Local WebSocket server on dynamically assigned port
+    variables:
+      port:
+        description: Dynamically assigned port number (displayed when app starts)
+        default: '0'
+    security:
+      - aesGcmEncryption: []
+
+defaultContentType: application/json
+
+channels:
+  /companion:
+    description: |
+      Main WebSocket channel for all commands and responses.
+      Supports bidirectional communication with encrypted messages.
+    
+    subscribe:
+      summary: Receive messages from server
+      description: |
+        Server sends responses and streaming data to clients.
+        All responses include the request ID for correlation.
+      operationId: receiveMessage
+      message:
+        oneOf:
+          - $ref: '#/components/messages/InitResponse'
+          - $ref: '#/components/messages/RecordingStartedResponse'
+          - $ref: '#/components/messages/RecordingStoppedResponse'
+          - $ref: '#/components/messages/HealthCheckResponse'
+          - $ref: '#/components/messages/AudioChunkResponse'
+          - $ref: '#/components/messages/ErrorResponse'
+    
+    publish:
+      summary: Send commands to server
+      description: |
+        Client sends encrypted commands with unique request IDs.
+        Each command must include a unique ID for correlation.
+      operationId: sendCommand
+      message:
+        oneOf:
+          - $ref: '#/components/messages/InitRequest'
+          - $ref: '#/components/messages/StartRecordingRequest'
+          - $ref: '#/components/messages/StopRecordingRequest'
+          - $ref: '#/components/messages/HealthCheckRequest'
+
+components:
+  messages:
+    # Request Messages
+    InitRequest:
+      name: InitRequest
+      title: Initialize Connection
+      summary: Initialize WebSocket connection and establish encryption
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedMessage'
+      examples:
+        - name: InitCommandExample
+          summary: Example init command
+          payload:
+            id: req-001
+            command: init
+      x-response: InitResponse
+    
+    StartRecordingRequest:
+      name: StartRecordingRequest
+      title: Start Audio Recording
+      summary: Start audio recording with real-time streaming
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedMessage'
+      examples:
+        - name: StartRecordingExample
+          summary: Example start-recording command
+          payload:
+            id: req-002
+            command: start-recording
+      x-response: RecordingStartedResponse
+    
+    StopRecordingRequest:
+      name: StopRecordingRequest
+      title: Stop Audio Recording
+      summary: Stop active audio recording
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedMessage'
+      examples:
+        - name: StopRecordingExample
+          summary: Example stop-recording command
+          payload:
+            id: req-003
+            command: stop-recording
+      x-response: RecordingStoppedResponse
+    
+    HealthCheckRequest:
+      name: HealthCheckRequest
+      title: Health Check
+      summary: Verify connection is alive and authenticated
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedMessage'
+      examples:
+        - name: HealthCheckExample
+          summary: Example health-check command
+          payload:
+            id: req-004
+            command: health-check
+      x-response: HealthCheckResponse
+    
+    # Response Messages
+    InitResponse:
+      name: InitResponse
+      title: Init Response
+      summary: Acknowledgment of successful initialization
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedResponse'
+      examples:
+        - name: InitResponseExample
+          summary: Example init response
+          payload:
+            id: req-001
+            type: init
+            data:
+              message: Connection initialized successfully
+    
+    RecordingStartedResponse:
+      name: RecordingStartedResponse
+      title: Recording Started Response
+      summary: Confirmation that recording has started
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedResponse'
+      examples:
+        - name: RecordingStartedExample
+          summary: Example recording-started response
+          payload:
+            id: req-002
+            type: recording-started
+    
+    RecordingStoppedResponse:
+      name: RecordingStoppedResponse
+      title: Recording Stopped Response
+      summary: Confirmation that recording has stopped
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedResponse'
+      examples:
+        - name: RecordingStoppedExample
+          summary: Example recording-stopped response
+          payload:
+            id: req-003
+            type: recording-stopped
+    
+    HealthCheckResponse:
+      name: HealthCheckResponse
+      title: Health Check Response
+      summary: Health check acknowledgment
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedResponse'
+      examples:
+        - name: HealthCheckResponseExample
+          summary: Example health-check response
+          payload:
+            id: req-004
+            type: health-check
+            data:
+              message: Server is healthy
+    
+    AudioChunkResponse:
+      name: AudioChunkResponse
+      title: Audio Chunk
+      summary: Streaming audio data chunk
+      description: |
+        Real-time audio data chunks streamed during recording.
+        Uses the request ID from the start-recording command.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedResponse'
+      examples:
+        - name: AudioChunkExample
+          summary: Example audio chunk
+          payload:
+            id: req-002
+            type: audio-chunk
+            data: UklGRiQAAABXQVZFZm10IBAAAAABAAEA...
+    
+    ErrorResponse:
+      name: ErrorResponse
+      title: Error Response
+      summary: Error response with code and message
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EncryptedResponse'
+      examples:
+        - name: ErrorResponseExample
+          summary: Example error response
+          payload:
+            id: req-005
+            type: error
+            data:
+              code: 403
+              message: Decryption failed
+
+  schemas:
+    EncryptedMessage:
+      type: object
+      description: |
+        Decrypted request payload structure.
+        
+        **Wire Format**: `base64<nonce(12)|encrypted_payload>`
+        
+        The encrypted payload contains this JSON structure along with a timestamp.
+      required:
+        - id
+        - command
+      properties:
+        id:
+          type: string
+          description: Unique request identifier for correlation (client-generated)
+          example: req-001
+        command:
+          type: string
+          enum:
+            - init
+            - start-recording
+            - stop-recording
+            - health-check
+          description: Command type to execute
+          example: init
+    
+    EncryptedResponse:
+      type: object
+      description: |
+        Decrypted response payload structure.
+        
+        **Wire Format**: `base64<nonce(12)|encrypted_payload>`
+        
+        The encrypted payload contains this JSON structure along with a timestamp.
+      required:
+        - id
+        - type
+      properties:
+        id:
+          type: string
+          description: Request ID from the original command (for correlation)
+          example: req-001
+        type:
+          type: string
+          enum:
+            - init
+            - recording-started
+            - recording-stopped
+            - health-check
+            - audio-chunk
+            - error
+          description: Response type
+          example: init
+        data:
+          oneOf:
+            - $ref: '#/components/schemas/AcknowledgmentData'
+            - $ref: '#/components/schemas/AudioChunkData'
+            - $ref: '#/components/schemas/ErrorData'
+            - type: 'null'
+          description: Optional response data (depends on response type)
+    
+    AcknowledgmentData:
+      type: object
+      description: Acknowledgment message data
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Acknowledgment message from server
+          example: Connection initialized successfully
+    
+    AudioChunkData:
+      type: string
+      description: Base64-encoded audio data chunk (PCM format)
+      example: UklGRiQAAABXQVZFZm10IBAAAAABAAEA...
+    
+    ErrorData:
+      type: object
+      description: Error details
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+          description: HTTP-style error code
+          enum: [400, 401, 403, 404, 409, 500]
+          example: 403
+        message:
+          type: string
+          description: Human-readable error message
+          example: Decryption failed
+
+  securitySchemes:
+    aesGcmEncryption:
+      type: userPassword
+      description: |
+        AES-GCM encryption with 256-bit key.
+        
+        ## Encryption Process
+        
+        1. **Obtain Key**: Client retrieves base64-encoded encryption key from backend API
+        2. **Generate Nonce**: Create unique 12-byte nonce for each message
+        3. **Create Payload**: Construct JSON payload with data and timestamp
+        4. **Encrypt**: Use AES-GCM to encrypt payload with key and nonce
+        5. **Format Message**: Concatenate nonce + encrypted payload, encode as base64
+        6. **Send**: Transmit base64 string via WebSocket
+        
+        ## Decryption Process
+        
+        1. **Receive**: Get base64-encoded message
+        2. **Decode**: Convert from base64 to bytes
+        3. **Extract**: Separate nonce (first 12 bytes) and encrypted payload (remaining)
+        4. **Decrypt**: Use AES-GCM with key, nonce to decrypt payload
+        5. **Parse**: Parse decrypted JSON to get data and timestamp
+        6. **Validate**: Check timestamp is within acceptable window
+        7. **Process**: Handle the message data
+        
+        ## Security Features
+        
+        - **Nonce Tracking**: Server tracks nonces to prevent replay attacks
+        - **Timestamp Validation**: Messages older than configured window are rejected
+        - **Unique Per Message**: Each message uses fresh nonce and timestamp
+        - **Symmetric Encryption**: Same key encrypts and decrypts
+        
+        ## Error Handling
+        
+        All errors (including authentication failures) are encrypted within WebSocket
+        messages, preventing information leakage to potential attackers.
+
+x-tags:
+  - name: Authentication
+    description: Connection initialization and security
+  - name: Recording
+    description: Audio recording commands and streaming
+  - name: Health
+    description: Connection health monitoring
+
+x-message-flows:
+  init-flow:
+    description: Initialize connection
+    steps:
+      - client: Send encrypted init request with ID
+      - server: Validate and store encryption key
+      - server: Send encrypted init response with same ID
+  
+  recording-flow:
+    description: Audio recording with streaming
+    steps:
+      - client: Send encrypted start-recording request with ID
+      - server: Start audio capture
+      - server: Send recording-started response
+      - server: Stream multiple audio-chunk messages (all with same ID)
+      - client: Send stop-recording request with new ID
+      - server: Stop audio capture
+      - server: Send recording-stopped response
+  
+  error-flow:
+    description: Error handling
+    steps:
+      - client: Send invalid/unauthorized request
+      - server: Send encrypted error response with code and message
+      - client: Parse error and handle appropriately
