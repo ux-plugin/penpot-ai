@@ -10,10 +10,24 @@
 
 import { resolveBackendUrl } from '@auth/api/utils';
 
-export interface AudioChunkMessage {
+/**
+ * Message format for completion_request command
+ * Matches backend AsyncAPI specification
+ */
+export interface CompletionRequestMessage {
+  event: 'completion_request';
+  fe_id: string;
+  drawn_path: string;
+  audio_chunk: string;
   timestamp: number;
-  drawnPath: string;
-  audioChunk: string;
+}
+
+/**
+ * Message format for completion_request_end command
+ */
+export interface CompletionRequestEndMessage {
+  event: 'completion_request_end';
+  fe_id: string;
 }
 
 export interface WebSocketCallbacks {
@@ -31,10 +45,27 @@ export class CompletionsWebSocketManager {
   private maxReconnectAttempts = 3;
   private reconnectDelay = 1000; // Start with 1 second
   private isManualClose = false;
+  private currentFeId: string | null = null;
 
   constructor(jwtToken: string, callbacks: WebSocketCallbacks = {}) {
     this.jwtToken = jwtToken;
     this.callbacks = callbacks;
+  }
+
+  /**
+   * Generate a unique frontend ID for correlating request/response messages
+   */
+  private generateFeId(): string {
+    return `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  /**
+   * Start a new recording session with a fresh fe_id
+   */
+  startSession(): string {
+    this.currentFeId = this.generateFeId();
+    console.log('🎬 Started new session with fe_id:', this.currentFeId);
+    return this.currentFeId;
   }
 
   /**
@@ -122,17 +153,58 @@ export class CompletionsWebSocketManager {
       return;
     }
 
-    const message: AudioChunkMessage = {
-      timestamp: Date.now(),
-      drawnPath: '', // No drawn path needed
-      audioChunk: base64Audio
+    if (!this.currentFeId) {
+      console.error('❌ No active session. Call startSession() first.');
+      return;
+    }
+
+    const message: CompletionRequestMessage = {
+      event: 'completion_request',
+      fe_id: this.currentFeId,
+      drawn_path: '', // Empty for now, can be populated later if drawing is added
+      audio_chunk: base64Audio,
+      timestamp: Date.now()
     };
 
     try {
       this.ws.send(JSON.stringify(message));
-      console.log('📤 Sent audio chunk:', { timestamp: message.timestamp, audioLength: base64Audio.length });
+      console.log('📤 Sent audio chunk:', { 
+        event: message.event,
+        fe_id: message.fe_id,
+        timestamp: message.timestamp, 
+        audioLength: base64Audio.length 
+      });
     } catch (error) {
       console.error('❌ Failed to send audio chunk:', error);
+      this.callbacks.onError?.(error as Event);
+    }
+  }
+
+  /**
+   * Send completion_request_end to signal end of recording
+   */
+  endSession(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('⚠️ WebSocket is not open, cannot send end message');
+      return;
+    }
+
+    if (!this.currentFeId) {
+      console.warn('⚠️ No active session to end');
+      return;
+    }
+
+    const message: CompletionRequestEndMessage = {
+      event: 'completion_request_end',
+      fe_id: this.currentFeId
+    };
+
+    try {
+      this.ws.send(JSON.stringify(message));
+      console.log('🏁 Sent completion_request_end:', { fe_id: message.fe_id });
+      this.currentFeId = null; // Clear the session
+    } catch (error) {
+      console.error('❌ Failed to send end message:', error);
       this.callbacks.onError?.(error as Event);
     }
   }
@@ -148,6 +220,11 @@ export class CompletionsWebSocketManager {
 
     console.log('🔌 Closing WebSocket connection...');
     this.isManualClose = true;
+    
+    // End session if one is active
+    if (this.currentFeId) {
+      this.endSession();
+    }
     
     // Close with normal closure code
     this.ws.close(1000, 'Normal closure');

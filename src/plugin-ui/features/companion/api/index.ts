@@ -4,42 +4,43 @@
  */
 
 import { ConnectionManager } from './ConnectionManager.ts';
-import { companionAppClient } from './companionAppClient.ts';
-import { encryptionKeyManager } from '@user/api/EncryptionKeyManager.ts';
-import { nonceManager } from '@shared/api/NonceManager.ts';
-import { useCompanionStore } from '@companion/stores/useCompanionStore.ts';
-import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore.ts';
+import { CompanionWebSocketClient } from './companionWebSocketClient.ts';
 
 // Export types
-export type { ConnectionState, ConnectionError, ConnectionErrorType } from './ConnectionManager.ts';
-export type { StreamChunk } from './companionAppClient.ts';
+export { WebSocketState } from './companionWebSocketClient.ts';
+export type { WebSocketCommand, WebSocketResponseType, DecryptedPayload } from './websocketMessageTypes.ts';
 
-// Create and export singleton ConnectionManager instance
-export const connectionManager = new ConnectionManager({
-  client: companionAppClient,
-  keyManager: encryptionKeyManager,
-  nonceManager,
-  companionStore: useCompanionStore,
-  portUpdatesStore: usePortUpdatesStore
+// Create singleton WebSocket client instance
+const wsClient = new CompanionWebSocketClient({
+  reconnectDelay: 1000,
+  maxReconnectDelay: 30000,
+  reconnectDecayFactor: 1.5,
+  maxReconnectAttempts: 10,
+  commandTimeout: 10000
 });
 
-// Export other modules
-export { companionAppClient } from './companionAppClient.ts';
-export { ConnectionManager } from './ConnectionManager.ts';
+// Create a singleton ConnectionManager instance (private to this module)
+/** @internal */
+export const connectionManager = new ConnectionManager(wsClient);
+
+/**
+ * Handle port update from companion app
+ * This is the public API for handling port changes
+ * ConnectionManager is kept private to this module
+ */
+export async function handlePortUpdate(newPort: number): Promise<void> {
+  try {
+    console.log(`Handling port update to ${newPort}...`);
+    await connectionManager.onPortUpdate(newPort);
+    console.log('Port update handled successfully');
+  } catch (error) {
+    console.error('Failed to handle port update:', error);
+    throw error;
+  }
+}
 
 // Export hooks
 export {
   useCompanionConnection,
-  useCompanionStatus,
-  useCompanionQuery,
-  useCompanionMutation,
-  useCompanionStream,
-  companionQueryKeys
-} from './companionAppHooks.ts';
-
-// Export hook types
-export type {
-  UseCompanionQueryOptions,
-  UseCompanionMutationOptions,
-  UseCompanionStreamOptions
+  useAudioRecording
 } from './companionAppHooks.ts';

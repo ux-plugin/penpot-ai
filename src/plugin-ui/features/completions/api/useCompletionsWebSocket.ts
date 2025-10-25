@@ -1,12 +1,19 @@
 /**
  * useCompletionsWebSocket - Unified hook for managing audio recording and WebSocket streaming
  * 
- * This hook synchronizes the lifecycle of:
+ * This hook manages:
+ * - Persistent WebSocket connection to backend completions endpoint
  * - Audio recording from companion app
- * - WebSocket connection to backend completions endpoint
+ * - Session-based request/response cycles using fe_id
  * 
- * When recording starts → WebSocket connects
- * When recording stops → WebSocket closes
+ * Connection Lifecycle:
+ * - WebSocket connects once when first needed and stays open
+ * - Each recording session gets a unique fe_id for correlation
+ * - WebSocket closes only on component unmount or error
+ * 
+ * Recording Flow:
+ * - Start recording → Creates new session with fe_id → Streams audio chunks
+ * - Stop recording → Sends completion_request_end → Ready for next session
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
@@ -58,7 +65,7 @@ export function useCompletionsWebSocket(
   // Refs to maintain references
   const wsManagerRef = useRef<CompletionsWebSocketManager | null>(null);
 
-  // Get JWT token from auth store
+  // Get JWT token from the auth store
   const accessToken = useAuthenticationStore((state) => state.accessToken);
 
   // Set up audio recording with WebSocket forwarding
@@ -87,33 +94,22 @@ export function useCompletionsWebSocket(
     },
     onError: (error: Error) => {
       console.error('❌ Audio recording error:', error);
-      // If recording fails, also close WebSocket
-      if (wsManagerRef.current) {
-        wsManagerRef.current.close();
-        wsManagerRef.current = null;
-        setIsWebSocketConnected(false);
-      }
     },
   });
 
   /**
-   * Start both audio recording and WebSocket connection
+   * Initialize WebSocket connection (called once when component mounts)
    */
-  const startRecordingAndStreaming = useCallback(async () => {
+  const initializeWebSocket = useCallback(async () => {
+    // Don't initialize if already connected or if missing prerequisites
+    if (wsManagerRef.current?.isConnected() || !accessToken) {
+      return;
+    }
+
     try {
-      // Validate prerequisites
-      if (!accessToken) {
-        throw new Error('Not authenticated. Please log in first.');
-      }
-
-      if (!isCompanionReady) {
-        throw new Error('Companion app not connected. Please connect first.');
-      }
-
-      console.log('🚀 Starting recording and WebSocket streaming...');
-
-      // Step 1: Create and connect WebSocket
+      console.log('🔌 Initializing WebSocket connection...');
       setWebSocketError(null);
+      
       const wsManager = new CompletionsWebSocketManager(accessToken, {
         onOpen: () => {
           console.log('✅ WebSocket opened');
@@ -127,6 +123,7 @@ export function useCompletionsWebSocket(
         onClose: () => {
           console.log('🔌 WebSocket closed');
           setIsWebSocketConnected(false);
+          wsManagerRef.current = null;
           onWebSocketClose?.();
         },
         onError: (event: Event) => {
@@ -139,8 +136,43 @@ export function useCompletionsWebSocket(
 
       await wsManager.connect();
       wsManagerRef.current = wsManager;
+      console.log('✅ WebSocket initialized successfully');
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error('Failed to initialize WebSocket');
+      console.error('❌ Failed to initialize WebSocket:', err);
+      setWebSocketError(err);
+      wsManagerRef.current = null;
+      throw err;
+    }
+  }, [accessToken, onWebSocketOpen, onWebSocketClose, onWebSocketError, onAcknowledgment]);
 
-      // Step 2: Start audio recording (will forward chunks to WebSocket)
+  /**
+   * Start recording and create a new session (reuses existing WebSocket)
+   */
+  const startRecordingAndStreaming = useCallback(async () => {
+    try {
+      // Validate prerequisites
+      if (!accessToken) {
+        throw new Error('Not authenticated. Please log in first.');
+      }
+
+      if (!isCompanionReady) {
+        throw new Error('Companion app not connected. Please connect first.');
+      }
+
+      console.log('🚀 Starting recording and streaming...');
+
+      // Ensure WebSocket is connected (will create if needed)
+      if (!wsManagerRef.current?.isConnected()) {
+        await initializeWebSocket();
+      }
+
+      // Start a new session (generates fe_id)
+      if (wsManagerRef.current) {
+        wsManagerRef.current.startSession();
+      }
+
+      // Start audio recording (will forward chunks to WebSocket)
       await startRecording();
 
       console.log('✅ Recording and streaming started successfully');
@@ -148,38 +180,27 @@ export function useCompletionsWebSocket(
       const err = error instanceof Error ? error : new Error('Failed to start recording and streaming');
       console.error('❌ Failed to start recording and streaming:', err);
       setWebSocketError(err);
-
-      // Clean up WebSocket if it was created
-      if (wsManagerRef.current) {
-        wsManagerRef.current.close();
-        wsManagerRef.current = null;
-        setIsWebSocketConnected(false);
-      }
-
       throw err;
     }
-  }, [accessToken, isCompanionReady, startRecording, onWebSocketOpen, onWebSocketClose, onWebSocketError, onAcknowledgment]);
+  }, [accessToken, isCompanionReady, startRecording, initializeWebSocket]);
 
   /**
-   * Stop both audio recording and WebSocket connection
+   * Stop recording and end the current session (keeps WebSocket open for next session)
    */
   const stopRecordingAndStreaming = useCallback(() => {
-    console.log('⏹️ Stopping recording and WebSocket streaming...');
+    console.log('⏹️ Stopping recording...');
 
-    // Step 1: Stop audio recording
+    // Stop audio recording first
     stopRecording();
 
-    // Step 2: Close WebSocket
+    // Send completion_request_end to signal end of this session
     if (wsManagerRef.current) {
-      wsManagerRef.current.close();
-      wsManagerRef.current = null;
-      setIsWebSocketConnected(false);
+      wsManagerRef.current.endSession();
     }
 
-    console.log('✅ Recording and streaming stopped');
+    console.log('✅ Recording stopped, WebSocket remains open for next session');
   }, [stopRecording]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (wsManagerRef.current) {

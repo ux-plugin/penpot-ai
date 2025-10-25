@@ -5,7 +5,7 @@ import Home from "@views/Home";
 import Settings from "@user/views/Settings";
 import { useAuthenticationStore } from "@auth/stores/useAuthenticationStore";
 import { usePortUpdatesStore } from "@user/stores/usePortUpdatesStore";
-import { connectionManager } from "@companion/api";
+import { handlePortUpdate } from "@companion/api";
 import { useCompletionsWebSocket } from "@completions/api";
 
 const NonAuthenticatedLayout = () => {
@@ -17,7 +17,6 @@ const AuthenticatedLayout = () => {
   const { isAuthenticated } = useAuthenticationStore();
   const { currentPort } = usePortUpdatesStore();
   const hasInitialized = useRef(false);
-  const prevPortRef = useRef<number | null>(null);
 
   // Initialize port listener when user authenticates
   useEffect(() => {
@@ -37,18 +36,16 @@ const AuthenticatedLayout = () => {
       const { disconnect } = usePortUpdatesStore.getState();
       disconnect();
       hasInitialized.current = false;
-      prevPortRef.current = null;
     }
   }, [isAuthenticated]);
 
   // Handle port changes (only when authenticated)
   useEffect(() => {
-    if (isAuthenticated && currentPort && currentPort !== prevPortRef.current) {
+    if (isAuthenticated && currentPort) {
       console.log(`Port changed to ${currentPort}, triggering reconnection...`);
-      connectionManager.onPortUpdate(currentPort).catch((error) => {
+      handlePortUpdate(currentPort).catch((error) => {
         console.error('Failed to reconnect after port update:', error);
       });
-      prevPortRef.current = currentPort;
     }
   }, [currentPort, isAuthenticated]);
 

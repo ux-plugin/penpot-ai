@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore';
-import { useCompanionStatus, useCompanionConnection } from '../api/companionAppHooks.ts';
+import { useCompanionConnection } from "@companion/api";
+import { useCompanionStore, selectIsCompanionConnecting, selectIsConnected } from '../stores/useCompanionStore.ts';
 import { Badge } from '@ui/badge';
 import { Button } from '@ui/button';
 import { LaptopWithWifiIcon } from '@assets/icons/LaptopWithWifiIcon';
@@ -14,23 +15,29 @@ export const CompanionAppStatus: React.FC<CompanionAppStatusProps> = ({
   variant = 'icon',
   className = ''
 }) => {
-  // Use custom hooks for better connection management
-  const companionStatus = useCompanionStatus();
-  const companionConnection = useCompanionConnection();
+  // Get state from store
+  const isConnecting = useCompanionStore(selectIsCompanionConnecting);
+  const isConnected = useCompanionStore(selectIsConnected);
+  
+  // Get connection actions
+  const { connect, disconnect } = useCompanionConnection();
+  
+  // Local error state
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   
   // Get port info from port updates store
   const { currentPort } = usePortUpdatesStore();
 
   const getWifiState = () => {
-    if (companionStatus.isConnecting) return 'connecting';
-    if (companionStatus.isConnected) return 'connected';
+    if (isConnecting) return 'connecting';
+    if (isConnected) return 'connected';
     return 'disconnected';
   };
 
   const getStatusColors = () => {
-    if (companionStatus.isConnecting) return { main: 'text-yellow-600', wifi: 'text-yellow-600' };
-    if (companionStatus.isConnected) return { main: 'text-green-600', wifi: 'text-green-600' };
-    if (companionStatus.error) return { main: 'text-red-600', wifi: 'text-red-600' };
+    if (isConnecting) return { main: 'text-yellow-600', wifi: 'text-yellow-600' };
+    if (isConnected) return { main: 'text-green-600', wifi: 'text-green-600' };
+    if (connectionError) return { main: 'text-red-600', wifi: 'text-red-600' };
     return { main: 'text-gray-500', wifi: 'text-gray-500' };
   };
 
@@ -46,28 +53,32 @@ export const CompanionAppStatus: React.FC<CompanionAppStatusProps> = ({
   };
 
   const getStatusText = () => {
-    if (companionStatus.isConnecting) return 'Handshake in progress...';
-    if (companionStatus.isConnected) return `Companion connected${currentPort ? ` (Port ${currentPort})` : ''}`;
-    if (companionStatus.error) return `Companion error: ${companionStatus.error}`;
+    if (isConnecting) return 'Handshake in progress...';
+    if (isConnected) return `Companion connected${currentPort ? ` (Port ${currentPort})` : ''}`;
+    if (connectionError) return `Companion error: ${connectionError}`;
     return 'Companion disconnected';
   };
 
   const getStatusVariant = () => {
-    if (companionStatus.isConnecting) return 'secondary';
-    if (companionStatus.isConnected) return 'default';
+    if (isConnecting) return 'secondary';
+    if (isConnected) return 'default';
     return 'outline';
   };
 
   const handleConnect = async () => {
     try {
-      await companionConnection.connect();
+      setConnectionError(null);
+      await connect();
     } catch (error) {
-      console.error('Failed to connect to companion app:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to connect to companion app';
+      console.error('Failed to connect to companion app:', errorMessage);
+      setConnectionError(errorMessage);
     }
   };
 
   const handleDisconnect = () => {
-    companionConnection.disconnect();
+    setConnectionError(null);
+    disconnect();
   };
 
   if (variant === 'icon') {
@@ -111,12 +122,12 @@ export const CompanionAppStatus: React.FC<CompanionAppStatusProps> = ({
           {currentPort ? `Port ${currentPort}` : 'No port configured'}
         </div>
         
-        {companionStatus.isConnected ? (
+        {isConnected ? (
           <Button
             size="sm"
             variant="outline"
             onClick={handleDisconnect}
-            disabled={companionStatus.isConnecting}
+            disabled={isConnecting}
           >
             Disconnect
           </Button>
@@ -125,9 +136,9 @@ export const CompanionAppStatus: React.FC<CompanionAppStatusProps> = ({
             size="sm"
             variant="default"
             onClick={handleConnect}
-            disabled={companionStatus.isConnecting || !companionStatus.hasPort}
+            disabled={isConnecting || !currentPort}
           >
-            {companionStatus.isConnecting ? 'Connecting...' : 'Connect'}
+            {isConnecting ? 'Connecting...' : 'Connect'}
           </Button>
         )}
       </div>

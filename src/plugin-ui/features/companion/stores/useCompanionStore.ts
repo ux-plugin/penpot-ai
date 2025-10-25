@@ -1,37 +1,46 @@
 import { create } from "zustand";
-import { ConnectionState } from "@companion/api/ConnectionManager.ts";
+import { WebSocketState } from "@companion/api/companionWebSocketClient.ts";
 
 interface CompanionState {
-  // Single source of truth for connection state
-  connectionState: ConnectionState;
+  // Single source of truth for WebSocket state
+  webSocketState: WebSocketState;
   
-  // Additional state that cannot be derived from connectionState
-  isCompanionConnecting: boolean;
-  companionError: string | null;
+  // Recording state
+  isRecording: boolean;
+  recordingError: string | null;
 
   // Actions
-  setConnectionState: (state: ConnectionState) => void;
-  setCompanionConnecting: (connecting: boolean) => void;
-  setCompanionError: (error: string | null) => void;
+  setWebSocketState: (state: WebSocketState) => void;
+  setIsRecording: (recording: boolean) => void;
+  setRecordingError: (error: string | null) => void;
 }
-
 
 export const useCompanionStore = create<CompanionState>((set) => ({
   // Initial state
-  connectionState: ConnectionState.DISCONNECTED,
-  isCompanionConnecting: false,
-  companionError: null,
+  webSocketState: WebSocketState.DISCONNECTED,
+  isRecording: false,
+  recordingError: null,
 
   // Actions
-  setConnectionState: (state: ConnectionState) => {
-    set({ connectionState: state });
+  setWebSocketState: (state: WebSocketState) => {
+    set({ webSocketState: state });
   },
 
-  setCompanionConnecting: (connecting: boolean) => {
-    set({ isCompanionConnecting: connecting });
+  setIsRecording: (recording: boolean) => {
+    set({ isRecording: recording });
   },
 
-  setCompanionError: (error: string | null) => {
-    set({ companionError: error });
+  setRecordingError: (error: string | null) => {
+    set({ recordingError: error });
   },
 }));
+
+// Computed selectors
+export const selectIsCompanionConnecting = (state: CompanionState): boolean => {
+  return state.webSocketState === WebSocketState.CONNECTING || 
+         state.webSocketState === WebSocketState.RECONNECTING;
+};
+
+export const selectIsConnected = (state: CompanionState): boolean => {
+  return state.webSocketState === WebSocketState.CONNECTED;
+};
