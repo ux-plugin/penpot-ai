@@ -13,6 +13,10 @@ import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
 import java.util.*
 import javax.crypto.KeyGenerator
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.Channel.Factory.UNLIMITED
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.jwt.JsonWebToken
 
@@ -93,7 +97,11 @@ constructor(
             val user = userService.getUser(userId)
             Response.ok(user).build()
         } catch (e: NotFoundException) {
+            Log.error("Error $userId not found. $e")
             Response.status(Response.Status.NOT_FOUND).build()
+        } catch (e: Exception) {
+            Log.error("Failed to get user info.", e)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
         }
     }
 
@@ -108,6 +116,9 @@ constructor(
             Response.ok().build()
         } catch (e: NotFoundException) {
             Response.status(Response.Status.NOT_FOUND).build()
+        } catch (e: Exception) {
+            Log.error("Failed to update user info.", e)
+            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
         }
     }
 
@@ -191,15 +202,15 @@ constructor(
     @Path("/port/listen")
     @GET
     @Produces(MediaType.SERVER_SENT_EVENTS)
-    suspend fun listenToPortUpdates(): kotlinx.coroutines.flow.Flow<String> {
+    suspend fun listenToPortUpdates(): Flow<String> {
         val userId = jsonWebToken.subject
-        return kotlinx.coroutines.flow.flow {
+        return flow {
             // Emit current port once
             val currentPort = userService.getCurrentPort(userId)
             currentPort?.let { emit(objectMapper.writeValueAsString(it)) }
 
             // Create a single subscription for updates
-            val channel = kotlinx.coroutines.channels.Channel<PortState>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+            val channel = Channel<PortState>(UNLIMITED)
             val subscriber =
                 userService.portConfigPubSub
                     .subscribe(userService.companionAppKeyPrefix + userId) { portState -> channel.trySend(portState) }
