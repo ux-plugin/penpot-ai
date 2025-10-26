@@ -202,6 +202,11 @@ constructor(
     @Path("/port/listen")
     @GET
     @Produces(MediaType.SERVER_SENT_EVENTS)
+    @Deprecated(
+        message = "Use WebSocket at /ws with message type 'user:subscribe_ports' instead",
+        replaceWith = ReplaceWith("WebSocket at /ws"),
+        level = DeprecationLevel.WARNING
+    )
     suspend fun listenToPortUpdates(): Flow<String> {
         val userId = jsonWebToken.subject
         return flow {
