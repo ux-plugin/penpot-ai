@@ -17,7 +17,7 @@ export function Home() {
     const [error, setError] = useState<string | null>(null)
     const [isActionLoading, setIsActionLoading] = useState(false)
 
-    // Listen for server status changes from backend
+    // Listen for server status changes from the backend
     useEffect(() => {
         let unlisten: (() => void) | undefined;
 

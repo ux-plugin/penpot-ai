@@ -119,7 +119,7 @@ impl LocalServer {
             }
         };
 
-        // Update backend client with port - if this fails, clean up the server
+        // Update backend client with port - if this fails, clean up the server.
         match self.backend_client.update_port(Some(port)).await {
             Ok(_) => {
                 state.port = Some(port);
@@ -172,7 +172,7 @@ impl LocalServer {
         
         // Start the audio manager in a separate thread
         thread::spawn(move || {
-            // Create a new audio manager with configured sample rate
+            // Create a new audio manager with a configured sample rate
             let mut audio_manager = AudioManager::new(audio_command_rx, audio_sample_rate);
 
             // Create a tokio runtime for the audio manager

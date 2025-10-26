@@ -65,8 +65,6 @@ impl AuthState {
             println!("Credentials saved to keyring successfully");
         } // Lock is released here
         
-        println!("Write lock released, starting keyring save...");
-
         Ok(())
     }
 
@@ -87,8 +85,6 @@ impl AuthState {
             save_credentials_to_keyring(&credentials.clone()).await?;
             println!("Updated credentials saved to keyring successfully");
         }; // Lock is released here
-
-        println!("Write lock released, starting keyring save...");
 
         Ok(())
     }
