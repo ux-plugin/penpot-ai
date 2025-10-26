@@ -40,8 +40,8 @@ constructor(
         context: RoutingContext,
         identityProviderManager: IdentityProviderManager
     ): Uni<SecurityIdentity> {
-        // Only handle WebSocket upgrade requests to the configured path
-        if (!isWebSocketRequest(context) || context.request().path() != config.path()) {
+        // Only handle WebSocket upgrade requests to the configured paths
+        if (!isWebSocketRequest(context) || !isWebSocketPath(context.request().path())) {
             // Not our concern - let default JWT mechanism handle it
             return Uni.createFrom().nullItem()
         }
@@ -101,5 +101,11 @@ constructor(
     /** Validates the JWT token and returns the principal */
     private fun validateJwt(token: String): JsonWebToken {
         return jwtParser.parse(token)
+    }
+    
+    /** Checks if the request path is a WebSocket endpoint that needs query param auth */
+    private fun isWebSocketPath(path: String): Boolean {
+        // Support both legacy and new WebSocket endpoints
+        return path == config.path() || path == "/ws"
     }
 }
