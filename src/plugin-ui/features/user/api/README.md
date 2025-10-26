@@ -2,6 +2,23 @@
 
 This directory contains API functions and utilities for user-related operations.
 
+## Port Updates
+
+The port updates feature provides real-time notifications when the companion app port changes via WebSocket. See [PORT_UPDATES.md](./PORT_UPDATES.md) for detailed documentation.
+
+**Quick Start:**
+```typescript
+import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore.ts';
+
+// In your component
+const { currentPort, isConnected, connect, disconnect } = usePortUpdatesStore();
+
+useEffect(() => {
+  connect();
+  return () => disconnect();
+}, []);
+```
+
 ## EncryptionKeyManager
 
 The `EncryptionKeyManager` class handles the generation and lifecycle management of encryption keys for backend-user communication.
