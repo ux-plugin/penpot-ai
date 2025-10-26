@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import { createPortUpdatesConnection, PortUpdatesData } from '../api/portUpdates.ts';
+import { createPortUpdatesConnection, PortUpdatesConnection } from '../api/portUpdatesWebSocket.ts';
 
 interface PortUpdatesStore {
-  connection: PortUpdatesData | null;
+  connection: PortUpdatesConnection | null;
   isConnecting: boolean;
   isConnected: boolean;
   error: string | null;
@@ -23,7 +23,7 @@ export const usePortUpdatesStore = create<PortUpdatesStore>((set, get) => ({
   connect: async () => {
     const { connection, isConnecting } = get();
     // Prevent multiple connections
-    if (connection?.connection || isConnecting) {
+    if (connection || isConnecting) {
       console.log('Port updates connection already exists or is connecting');
       return;
     }
@@ -58,11 +58,9 @@ export const usePortUpdatesStore = create<PortUpdatesStore>((set, get) => ({
       set({ 
         connection: newConnection, 
         isConnecting: false,
-        isConnected: newConnection.isConnected,
-        error: newConnection.error
+        isConnected: true,
+        error: null
       });
-
-      await newConnection.connection?.connect();
       
       console.log('Port updates connection established successfully');
     } catch (error) {
@@ -79,9 +77,9 @@ export const usePortUpdatesStore = create<PortUpdatesStore>((set, get) => ({
   
   disconnect: () => {
     const { connection } = get();
-    if (connection?.connection) {
+    if (connection) {
       console.log('Disconnecting port updates connection');
-      connection.connection.close();
+      connection.close();
     }
     set({ 
       connection: null, 
@@ -94,8 +92,8 @@ export const usePortUpdatesStore = create<PortUpdatesStore>((set, get) => ({
   
   reset: () => {
     const { connection } = get();
-    if (connection?.connection) {
-      connection.connection.close();
+    if (connection) {
+      connection.close();
     }
     set({ 
       connection: null, 
