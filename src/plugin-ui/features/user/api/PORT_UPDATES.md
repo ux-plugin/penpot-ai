@@ -120,10 +120,10 @@ function MyComponent() {
 ## Error Handling
 
 The WebSocket client implements automatic reconnection with exponential backoff:
-- Initial retry delay: 5 seconds
+- Initial retry delay: 1 second
 - Maximum retry delay: 30 seconds
 - Backoff factor: 1.5x
-- Maximum retry attempts: 5
+- Maximum retry attempts: 10
 
 ## Migration from SSE
 

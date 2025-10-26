@@ -33,10 +33,10 @@ export function createPortUpdatesConnection(
   let currentPort: number | null = null;
 
   const wsClient = new SharedWebSocketClient({
-    reconnectDelay: 5000,
+    reconnectDelay: 1000,
     maxReconnectDelay: 30000,
     reconnectDecayFactor: 1.5,
-    maxReconnectAttempts: 5,
+    maxReconnectAttempts: 10,
     onOpen: () => {
       console.log('Port updates WebSocket connection opened');
       onConnectionStatusChange?.(true);

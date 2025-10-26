@@ -5,8 +5,8 @@
  * Supports event subscription pattern for different message types
  */
 
-import { resolveBackendUrl } from '@auth/api/utils';
-import { useAuthenticationStore } from '@auth/stores/useAuthenticationStore';
+import { resolveBackendUrl } from '@auth/api/utils.ts';
+import { useAuthenticationStore } from '@auth/stores/useAuthenticationStore.ts';
 
 export type WebSocketEventType = 'user:port_update' | string;
 
