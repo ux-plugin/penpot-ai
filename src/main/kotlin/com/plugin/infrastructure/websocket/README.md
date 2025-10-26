@@ -65,13 +65,14 @@ The `QueryParamJwtAuthMechanism` extracts and validates the token. Both `/ws` an
 
 The completions namespace supports the following message types:
 
+- `completions:create` - Create a new completion (not yet implemented in facade)
 - `completions:refresh_token` - Refresh authentication token
 - `completions:request` - Send completion request
 - `completions:request_end` - End completion request
 - `completions:response` - Receive completion response
 - `completions:response_end` - End completion response
 
-These messages are converted to the legacy command format internally for backwards compatibility.
+These messages are converted to the legacy command format internally for backwards compatibility with existing handlers.
 
 ### User Namespace (`user:*`)
 
