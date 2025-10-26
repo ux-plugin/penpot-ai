@@ -3,7 +3,7 @@
  * Replaces SSE-based port updates with unified WebSocket infrastructure
  */
 
-import { SharedWebSocketClient } from '@shared/api/SharedWebSocketClient.ts';
+import { SharedWebSocketClient } from '@shared/api/SharedWebSocketClient';
 
 export interface AppState {
   port: number | null;

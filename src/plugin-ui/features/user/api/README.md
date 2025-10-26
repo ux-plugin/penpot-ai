@@ -8,7 +8,7 @@ The port updates feature provides real-time notifications when the companion app
 
 **Quick Start:**
 ```typescript
-import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore.ts';
+import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore';
 
 // In your component
 const { currentPort, isConnected, connect, disconnect } = usePortUpdatesStore();

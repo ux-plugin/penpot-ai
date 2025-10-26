@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { createPortUpdatesConnection, PortUpdatesConnection } from '../api/portUpdatesWebSocket.ts';
+import { createPortUpdatesConnection, PortUpdatesConnection } from '../api/portUpdatesWebSocket';
 
 interface PortUpdatesStore {
   connection: PortUpdatesConnection | null;

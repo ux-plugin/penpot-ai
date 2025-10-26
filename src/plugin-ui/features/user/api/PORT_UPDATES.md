@@ -55,7 +55,7 @@ Port-specific WebSocket connection wrapper.
 
 **Usage**:
 ```typescript
-import { createPortUpdatesConnection } from '@user/api/portUpdatesWebSocket.ts';
+import { createPortUpdatesConnection } from '@user/api/portUpdatesWebSocket';
 
 const connection = createPortUpdatesConnection(
   // onPortUpdate
@@ -89,7 +89,7 @@ Zustand store for managing port update state.
 
 **Usage**:
 ```typescript
-import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore.ts';
+import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore';
 
 function MyComponent() {
   const { currentPort, isConnected, error, connect, disconnect } = usePortUpdatesStore();
