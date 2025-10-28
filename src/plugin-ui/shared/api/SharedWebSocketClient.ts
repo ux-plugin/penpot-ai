@@ -3,12 +3,15 @@
  * 
  * Handles connection to /ws endpoint with JWT authentication
  * Supports event subscription pattern for different message types
+ * 
+ * This is implemented as a singleton to ensure only one WebSocket connection
+ * is maintained for all features (port updates, completions, etc.)
  */
 
 import { resolveBackendUrl } from '@auth/api/utils';
 import { useAuthenticationStore } from '@auth/stores/useAuthenticationStore';
 
-export type WebSocketEventType = 'user:port_update' | string;
+export type WebSocketEventType = 'user:port_update' | 'completion_response' | 'completion_acknowledgment' | string;
 
 export interface WebSocketMessage {
   event: WebSocketEventType;
@@ -20,12 +23,11 @@ export interface WebSocketClientOptions {
   maxReconnectDelay?: number;
   reconnectDecayFactor?: number;
   maxReconnectAttempts?: number;
-  onOpen?: () => void;
-  onClose?: () => void;
-  onError?: (error: Event) => void;
 }
 
 type MessageHandler = (data: any) => void;
+type ConnectionCallback = () => void;
+type ErrorCallback = (error: Event) => void;
 
 const DEFAULT_OPTIONS: WebSocketClientOptions = {
   reconnectDelay: 1000, // 1 second
@@ -41,10 +43,14 @@ export class SharedWebSocketClient {
   private ws: WebSocket | null = null;
   private options: WebSocketClientOptions;
   private messageHandlers: Map<WebSocketEventType, Set<MessageHandler>> = new Map();
+  private openCallbacks: Set<ConnectionCallback> = new Set();
+  private closeCallbacks: Set<ConnectionCallback> = new Set();
+  private errorCallbacks: Set<ErrorCallback> = new Set();
   private reconnectAttempts = 0;
   private reconnectTimeout: number | null = null;
   private shouldReconnect = false;
   private isManualClose = false;
+  private connectionPromise: Promise<void> | null = null;
 
   constructor(options: WebSocketClientOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -68,15 +74,59 @@ export class SharedWebSocketClient {
   }
 
   /**
+   * Register a callback for connection open events
+   */
+  onOpen(callback: ConnectionCallback): () => void {
+    this.openCallbacks.add(callback);
+    // Return unsubscribe function
+    return () => {
+      this.openCallbacks.delete(callback);
+    };
+  }
+
+  /**
+   * Register a callback for connection close events
+   */
+  onClose(callback: ConnectionCallback): () => void {
+    this.closeCallbacks.add(callback);
+    // Return unsubscribe function
+    return () => {
+      this.closeCallbacks.delete(callback);
+    };
+  }
+
+  /**
+   * Register a callback for connection error events
+   */
+  onError(callback: ErrorCallback): () => void {
+    this.errorCallbacks.add(callback);
+    // Return unsubscribe function
+    return () => {
+      this.errorCallbacks.delete(callback);
+    };
+  }
+
+  /**
    * Connect to the WebSocket endpoint with JWT authentication
    */
   async connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    // If already connected, return immediately
+    if (this.isConnected()) {
+      return Promise.resolve();
+    }
+
+    // If connection is in progress, return the existing promise
+    if (this.connectionPromise) {
+      return this.connectionPromise;
+    }
+
+    this.connectionPromise = new Promise((resolve, reject) => {
       try {
         const wsUrl = this.buildWebSocketUrl();
         const jwtToken = this.getJwtToken();
 
         if (!jwtToken) {
+          this.connectionPromise = null;
           reject(new Error('No JWT token available'));
           return;
         }
@@ -94,7 +144,17 @@ export class SharedWebSocketClient {
         this.ws.onopen = () => {
           console.log('✅ WebSocket connected successfully');
           this.reconnectAttempts = 0; // Reset reconnect attempts on successful connection
-          this.options.onOpen?.();
+          this.connectionPromise = null;
+          
+          // Notify all registered callbacks
+          this.openCallbacks.forEach(callback => {
+            try {
+              callback();
+            } catch (error) {
+              console.error('Error in onOpen callback:', error);
+            }
+          });
+          
           resolve();
         };
 
@@ -104,7 +164,16 @@ export class SharedWebSocketClient {
 
         this.ws.onclose = (event) => {
           console.log('🔌 WebSocket closed:', event.code, event.reason);
-          this.options.onClose?.();
+          this.connectionPromise = null;
+          
+          // Notify all registered callbacks
+          this.closeCallbacks.forEach(callback => {
+            try {
+              callback();
+            } catch (error) {
+              console.error('Error in onClose callback:', error);
+            }
+          });
 
           // Only attempt reconnect if not manually closed and haven't exceeded max attempts
           if (
@@ -118,14 +187,27 @@ export class SharedWebSocketClient {
 
         this.ws.onerror = (event) => {
           console.error('❌ WebSocket error:', event);
-          this.options.onError?.(event);
+          this.connectionPromise = null;
+          
+          // Notify all registered callbacks
+          this.errorCallbacks.forEach(callback => {
+            try {
+              callback(event);
+            } catch (error) {
+              console.error('Error in onError callback:', error);
+            }
+          });
+          
           reject(new Error('WebSocket connection failed'));
         };
       } catch (error) {
         console.error('❌ Failed to create WebSocket:', error);
+        this.connectionPromise = null;
         reject(error);
       }
     });
+
+    return this.connectionPromise;
   }
 
   /**
@@ -212,7 +294,13 @@ export class SharedWebSocketClient {
       console.log('📤 Sent message:', message);
     } catch (error) {
       console.error('❌ Failed to send message:', error);
-      this.options.onError?.(error as Event);
+      this.errorCallbacks.forEach(callback => {
+        try {
+          callback(error as Event);
+        } catch (cbError) {
+          console.error('Error in onError callback:', cbError);
+        }
+      });
     }
   }
 
@@ -237,6 +325,7 @@ export class SharedWebSocketClient {
     // Close with normal closure code
     this.ws.close(1000, 'Normal closure');
     this.ws = null;
+    this.connectionPromise = null;
   }
 
   /**
@@ -251,5 +340,29 @@ export class SharedWebSocketClient {
    */
   getReadyState(): number | null {
     return this.ws?.readyState ?? null;
+  }
+}
+
+// Singleton instance
+let sharedWebSocketInstance: SharedWebSocketClient | null = null;
+
+/**
+ * Get the shared WebSocket instance (singleton)
+ * Creates the instance if it doesn't exist
+ */
+export function getSharedWebSocket(): SharedWebSocketClient {
+  if (!sharedWebSocketInstance) {
+    sharedWebSocketInstance = new SharedWebSocketClient();
+  }
+  return sharedWebSocketInstance;
+}
+
+/**
+ * Reset the shared WebSocket instance (mainly for testing)
+ */
+export function resetSharedWebSocket(): void {
+  if (sharedWebSocketInstance) {
+    sharedWebSocketInstance.close();
+    sharedWebSocketInstance = null;
   }
 }

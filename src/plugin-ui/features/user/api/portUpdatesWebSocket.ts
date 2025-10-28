@@ -3,7 +3,7 @@
  * Replaces SSE-based port updates with unified WebSocket infrastructure
  */
 
-import { SharedWebSocketClient } from '@shared/api/SharedWebSocketClient';
+import { getSharedWebSocket } from '@shared/api/SharedWebSocketClient';
 
 export interface AppState {
   port: number | null;
@@ -15,15 +15,10 @@ export interface PortUpdatesConnection {
   isConnected(): boolean;
 }
 
-interface PortUpdatesOptions {
-  onPortUpdate?: (port: number | null) => void;
-  onConnectionStatusChange?: (connected: boolean) => void;
-  onError?: (error: string) => void;
-}
-
 /**
  * Creates a WebSocket connection for port updates.
  * Subscribes to user:port_update events from the backend.
+ * Uses the shared singleton WebSocket instance.
  */
 export function createPortUpdatesConnection(
   onPortUpdate?: (port: number | null) => void,
@@ -32,33 +27,33 @@ export function createPortUpdatesConnection(
 ): PortUpdatesConnection {
   let currentPort: number | null = null;
 
-  const wsClient = new SharedWebSocketClient({
-    reconnectDelay: 1000,
-    maxReconnectDelay: 30000,
-    reconnectDecayFactor: 1.5,
-    maxReconnectAttempts: 10,
-    onOpen: () => {
-      console.log('Port updates WebSocket connection opened');
-      onConnectionStatusChange?.(true);
+  // Get the shared WebSocket singleton
+  const wsClient = getSharedWebSocket();
 
-      // Subscribe to port updates after connection opens
-      wsClient.send({
-        event: 'user:subscribe_ports',
-      });
-      console.log('Subscribed to port updates');
-    },
-    onClose: () => {
-      console.log('Port updates WebSocket connection closed');
-      onConnectionStatusChange?.(false);
-    },
-    onError: (event) => {
-      console.error('Port updates WebSocket connection error:', event);
-      onError?.('WebSocket connection error');
-    },
+  // Register connection callbacks
+  const unsubscribeOpen = wsClient.onOpen(() => {
+    console.log('Port updates: WebSocket connection opened');
+    onConnectionStatusChange?.(true);
+
+    // Subscribe to port updates after connection opens
+    wsClient.send({
+      event: 'user:subscribe_ports',
+    });
+    console.log('Subscribed to port updates');
+  });
+
+  const unsubscribeClose = wsClient.onClose(() => {
+    console.log('Port updates: WebSocket connection closed');
+    onConnectionStatusChange?.(false);
+  });
+
+  const unsubscribeError = wsClient.onError((event) => {
+    console.error('Port updates: WebSocket connection error:', event);
+    onError?.('WebSocket connection error');
   });
 
   // Subscribe to port update events
-  const unsubscribe = wsClient.on('user:port_update', (data: AppState) => {
+  const unsubscribePortUpdate = wsClient.on('user:port_update', (data: AppState) => {
     if (data.port !== currentPort) {
       console.log('Port updated:', data.port);
       currentPort = data.port;
@@ -66,7 +61,7 @@ export function createPortUpdatesConnection(
     }
   });
 
-  // Connect to WebSocket
+  // Connect to WebSocket (will reuse existing connection if already connected)
   wsClient.connect().catch((error) => {
     console.error('Failed to connect to port updates WebSocket:', error);
     onError?.(error.message || 'Failed to connect to WebSocket');
@@ -74,9 +69,12 @@ export function createPortUpdatesConnection(
 
   return {
     close: () => {
-      console.log('Closing port updates WebSocket connection');
-      unsubscribe();
-      wsClient.close();
+      console.log('Unsubscribing from port updates');
+      // Unsubscribe from events but don't close the shared connection
+      unsubscribeOpen();
+      unsubscribeClose();
+      unsubscribeError();
+      unsubscribePortUpdate();
     },
     isConnected: () => wsClient.isConnected(),
   };
