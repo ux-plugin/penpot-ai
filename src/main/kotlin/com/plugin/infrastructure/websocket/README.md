@@ -24,7 +24,7 @@ The system provides a unified WebSocket endpoint at `/ws` that supports multiple
 3. **Message Protocol** - JSON-based protocol with namespaced types
    ```json
    {
-     "type": "completions:create" | "user:subscribe_ports" | "user:port_update",
+     "type": "completions:request" | "user:subscribe_ports" | "user:port_update",
      "payload": { /* feature-specific data */ },
      "requestId": "optional-correlation-id"
    }
@@ -44,7 +44,7 @@ SharedWebSocketHandler (authentication & routing)
 Message type routing by prefix
   ↓
 ├─→ CompletionsFacade (completions:*)
-│     └─→ CommandDispatcher → existing handlers
+│     └─→ Direct message handling
 └─→ UserFacade (user:*)
       └─→ Redis Pub/Sub → Port Updates
 ```
@@ -57,7 +57,7 @@ WebSocket connections are authenticated using JWT tokens passed as query paramet
 ws://localhost:8003/ws?token=<your-jwt-token>
 ```
 
-The `QueryParamJwtAuthMechanism` extracts and validates the token. Both `/ws` and the legacy `/completions/create` endpoints are supported.
+The `QueryParamJwtAuthMechanism` extracts and validates the token for the `/ws` endpoint.
 
 ## Message Types
 
@@ -65,14 +65,13 @@ The `QueryParamJwtAuthMechanism` extracts and validates the token. Both `/ws` an
 
 The completions namespace supports the following message types:
 
-- `completions:create` - Create a new completion (not yet implemented in facade)
 - `completions:refresh_token` - Refresh authentication token
 - `completions:request` - Send completion request
 - `completions:request_end` - End completion request
 - `completions:response` - Receive completion response
 - `completions:response_end` - End completion response
 
-These messages are converted to the legacy command format internally for backwards compatibility with existing handlers.
+All messages use the new message schema with type and payload.
 
 ### User Namespace (`user:*`)
 
@@ -145,7 +144,7 @@ Errors are returned in a standardized format:
 }
 ```
 
-## Migration from SSE
+## Migration from SSE (Port Updates Only)
 
 The SSE endpoint `/user/port/listen` is now **deprecated** but remains available for backwards compatibility.
 
@@ -174,6 +173,10 @@ ws.onmessage = (event) => {
   }
 };
 ```
+
+## WebSocket Endpoint
+
+All WebSocket functionality is now handled through the `/ws` endpoint. The legacy `/completions/create` endpoint has been removed.
 
 ## Adding New Features
 
@@ -206,18 +209,18 @@ class MyFeatureFacade : WebSocketFacade {
 
 ## Configuration
 
-The WebSocket endpoints are configured in `application.yaml`:
+The WebSocket endpoint is configured in `application.yaml`:
 
 ```yaml
 websocket:
   auth:
-    path: "/completions/create"  # Legacy endpoint (still supported)
+    path: "/completions/create"  # No longer used
     token-query-param: "token"
     upgrade-header: "upgrade"
     websocket-value: "websocket"
 ```
 
-The new `/ws` endpoint is automatically supported without additional configuration.
+The `/ws` endpoint uses query parameter authentication as configured above.
 
 ## Testing
 
@@ -232,9 +235,9 @@ Run tests:
 
 ## Benefits
 
-1. **Single connection per client** - More efficient than multiple SSE connections
-2. **Unified protocol** - Consistent message format across features
+1. **Single connection per client** - More efficient with unified WebSocket endpoint
+2. **Unified protocol** - Consistent message format across all features
 3. **Better scalability** - WebSocket is more efficient than SSE
-4. **Extensibility** - Easy to add new features via facades
+4. **No legacy code** - Clean implementation with new message schema
 5. **Type safety** - Namespaced message types prevent conflicts
-6. **Backwards compatibility** - Legacy endpoints remain functional during migration
+6. **Extensibility** - Easy to add new features via facades
