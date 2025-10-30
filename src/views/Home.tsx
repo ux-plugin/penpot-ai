@@ -1,4 +1,3 @@
-import {useUserConfigQuery} from "@/api/user/fetchUserConfig.ts";
 import {useEffect, useState} from "react";
 import {useAuthenticationStore} from "@/stores/useAuthenticationStore.ts";
 import {Button} from "@/components/ui/button";
@@ -6,16 +5,41 @@ import {AlertCircle, CheckCircle, LogOut, Play, Square} from "lucide-react";
 import {invoke} from "@tauri-apps/api/core";
 import {serverStatusListener, ServerStatusPayload} from "@/events/serverStatusListener";
 
+interface UserConfig {
+    id: string;
+    name?: string;
+    username?: string;
+    allow_saving_completions: boolean;
+}
+
 type ServerStatus = 'starting' | 'success' | 'error' | 'stopped' | 'stopping';
 
 export function Home() {
-    const { data, isFetching, isError } = useUserConfigQuery({
-        enabled: true,
-    })
     const { setUserId, loadFromStorage } = useAuthenticationStore()
     const [serverStatus, setServerStatus] = useState<ServerStatus>('starting')
     const [error, setError] = useState<string | null>(null)
     const [isActionLoading, setIsActionLoading] = useState(false)
+    const [isFetching, setIsFetching] = useState(true)
+    const [isError, setIsError] = useState(false)
+    const [data, setData] = useState<UserConfig | null>(null)
+
+    // Fetch user config on mount
+    useEffect(() => {
+        const fetchConfig = async () => {
+            try {
+                setIsFetching(true)
+                const config = await invoke<UserConfig>('fetch_user_config')
+                setData(config)
+                setIsError(false)
+            } catch (err) {
+                console.error('Error fetching user config:', err)
+                setIsError(true)
+            } finally {
+                setIsFetching(false)
+            }
+        }
+        fetchConfig()
+    }, [])
 
     // Listen for server status changes from the backend
     useEffect(() => {
