@@ -1,5 +1,5 @@
 import React from 'react';
-import { usePortUpdatesStore } from '@user/stores/usePortUpdatesStore';
+import { useWebSocketStore } from '@shared/stores/useWebSocketStore';
 import { Button } from '@ui/button';
 import { Badge } from '@ui/badge';
 import { ServerWithWifiIcon } from '@assets/icons/ServerWithWifiIcon';
@@ -13,13 +13,14 @@ export const BackendServerStatus: React.FC<BackendServerStatusProps> = ({
   variant = 'icon',
   className = ''
 }) => {
+  // Get connection state from WebSocket store
   const {
     isConnected,
     isConnecting,
     error,
     connect,
     disconnect
-  } = usePortUpdatesStore();
+  } = useWebSocketStore();
 
 
   const getWifiState = () => {

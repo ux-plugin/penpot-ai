@@ -1,36 +1,42 @@
 /**
  * Completions WebSocket adapter using the shared WebSocket infrastructure
  * 
- * Replaces CompletionsWebSocketManager to use the unified /ws endpoint
+ * Uses the unified /ws endpoint with AsyncAPI 3.0.0 message format
  */
 
 import { getSharedWebSocket } from '@shared/api/SharedWebSocketClient';
+import type {
+  CompletionsRequestPayload,
+  CompletionsRequestEndPayload,
+  CompletionsResponseMessage,
+  CompletionsResponseEndMessage,
+  AcknowledgmentMessage,
+  AuthRefreshTokenPayload,
+} from './messageTypes';
 
 /**
- * Message format for completion_request command
- * Matches backend AsyncAPI specification
+ * Callbacks for handling completions WebSocket events
  */
-export interface CompletionRequestMessage {
-  event: 'completion_request';
-  fe_id: string;
-  drawn_path: string;
-  audio_chunk: string;
-  timestamp: number;
-}
-
-/**
- * Message format for completion_request_end command
- */
-export interface CompletionRequestEndMessage {
-  event: 'completion_request_end';
-  fe_id: string;
-}
-
 export interface CompletionsWebSocketCallbacks {
+  // Connection events
   onOpen?: () => void;
-  onMessage?: (data: any) => void;
   onClose?: () => void;
-  onError?: (error: Event) => void;
+  onError?: (error: Error) => void;
+  onMessage?: (message: any) => void;
+  
+  // Action handlers (from completions:response)
+  onCreateNode?: (target: string, params: any) => void;
+  onSetProperty?: (target: string, params: any) => void;
+  onSetText?: (target: string, params: any) => void;
+  onSetStyle?: (target: string, params: any) => void;
+  onAddConstraint?: (target: string, params: any) => void;
+  
+  // Session events
+  onCompletionEnd?: (feId: string) => void;
+  onAcknowledgment?: (ack: AcknowledgmentMessage) => void;
+  
+  // Token management
+  onTokenRefreshed?: (expiresAt: number) => void;
 }
 
 /**
@@ -63,25 +69,117 @@ export class CompletionsWebSocketAdapter {
       this.callbacks.onClose?.();
     });
 
-    const unsubError = wsClient.onError((event) => {
-      console.error('❌ Completions: WebSocket error:', event);
-      this.callbacks.onError?.(event);
+    const unsubError = wsClient.onError((error) => {
+      console.error('❌ Completions: WebSocket error:', error);
+      this.callbacks.onError?.(error);
     });
 
-    // Subscribe to completion response messages
-    const unsubResponse = wsClient.on('completion_response', (data) => {
-      console.log('📨 Completions: Received response:', data);
-      this.callbacks.onMessage?.(JSON.stringify(data));
+    // Subscribe to completions:response messages (AI actions)
+    const unsubResponse = wsClient.on('completions:response', (message) => {
+      console.log('📨 Completions: Received response:', message);
+      this.handleCompletionResponse(message as CompletionsResponseMessage);
     });
 
-    // Subscribe to completion acknowledgment messages
-    const unsubAck = wsClient.on('completion_acknowledgment', (data) => {
-      console.log('📨 Completions: Received acknowledgment:', data);
-      this.callbacks.onMessage?.(JSON.stringify(data));
+    // Subscribe to completions:response_end messages
+    const unsubResponseEnd = wsClient.on('completions:response_end', (message) => {
+      console.log('🏁 Completions: Response stream ended:', message);
+      this.handleCompletionEnd(message as CompletionsResponseEndMessage);
+    });
+
+    // Subscribe to acknowledgment messages
+    const unsubAck = wsClient.on('ack', (message) => {
+      console.log('✅ Completions: Acknowledgment:', message);
+      this.handleAcknowledgment(message as AcknowledgmentMessage);
+    });
+
+    // Subscribe to auth:refresh_token acknowledgments
+    const unsubAuthRefresh = wsClient.on('auth:refresh_token', (message) => {
+      console.log('🔄 Completions: Token refresh response:', message);
+      this.handleAcknowledgment(message as AcknowledgmentMessage);
     });
 
     // Store unsubscribe functions
-    this.unsubscribeCallbacks = [unsubOpen, unsubClose, unsubError, unsubResponse, unsubAck];
+    this.unsubscribeCallbacks = [
+      unsubOpen,
+      unsubClose,
+      unsubError,
+      unsubResponse,
+      unsubResponseEnd,
+      unsubAck,
+      unsubAuthRefresh,
+    ];
+  }
+
+  /**
+   * Handle completions:response message (AI-generated actions)
+   */
+  private handleCompletionResponse(message: CompletionsResponseMessage): void {
+    const { action, target, params } = message.payload;
+    
+    try {
+      const parsedParams = JSON.parse(params);
+      
+      console.log(`🎬 Action: ${action} on target: ${target}`, parsedParams);
+      
+      // Call appropriate callback based on action type
+      switch (action) {
+        case 'create_node':
+          this.callbacks.onCreateNode?.(target, parsedParams);
+          break;
+        case 'set_property':
+          this.callbacks.onSetProperty?.(target, parsedParams);
+          break;
+        case 'set_text':
+          this.callbacks.onSetText?.(target, parsedParams);
+          break;
+        case 'set_style':
+          this.callbacks.onSetStyle?.(target, parsedParams);
+          break;
+        case 'add_constraint':
+          this.callbacks.onAddConstraint?.(target, parsedParams);
+          break;
+        default:
+          console.warn('⚠️ Unknown action type:', action);
+      }
+    } catch (error) {
+      console.error('❌ Failed to parse action params:', error);
+      this.callbacks.onError?.(new Error(`Failed to parse action params: ${error}`));
+    }
+  }
+
+  /**
+   * Handle completions:response_end message (end of stream)
+   */
+  private handleCompletionEnd(message: CompletionsResponseEndMessage): void {
+    const { fe_id } = message.payload;
+    console.log('🎉 All completions finished for session:', fe_id);
+    
+    this.callbacks.onCompletionEnd?.(fe_id);
+    
+    // Clear session if it matches current
+    if (this.currentFeId === fe_id) {
+      this.currentFeId = null;
+    }
+  }
+
+  /**
+   * Handle acknowledgment messages
+   */
+  private handleAcknowledgment(message: AcknowledgmentMessage): void {
+    const { status, fe_id, expires_at } = message.payload;
+    
+    if (status === 'error') {
+      console.error('❌ Server error in acknowledgment');
+      this.callbacks.onError?.(new Error('Server acknowledgment error'));
+    } else if (expires_at) {
+      console.log('🔄 Token refreshed, expires at:', new Date(expires_at * 1000));
+      this.callbacks.onTokenRefreshed?.(expires_at);
+    } else {
+      console.log('✅ Request acknowledged for fe_id:', fe_id);
+    }
+    
+    // Notify callback with full acknowledgment
+    this.callbacks.onAcknowledgment?.(message);
   }
 
   /**
@@ -110,8 +208,9 @@ export class CompletionsWebSocketAdapter {
 
   /**
    * Send an audio chunk to the WebSocket
+   * Uses AsyncAPI 3.0.0 format: { type: "completions:request", payload: {...} }
    */
-  sendAudioChunk(base64Audio: string): void {
+  sendAudioChunk(base64Audio: string, drawnPath: string = ''): void {
     const wsClient = getSharedWebSocket();
 
     if (!wsClient.isConnected()) {
@@ -124,25 +223,27 @@ export class CompletionsWebSocketAdapter {
       return;
     }
 
-    const message: CompletionRequestMessage = {
-      event: 'completion_request',
+    const payload: CompletionsRequestPayload = {
       fe_id: this.currentFeId,
-      drawn_path: '', // Empty for now, can be populated later if drawing is added
+      drawn_path: drawnPath,
       audio_chunk: base64Audio,
       timestamp: Date.now()
     };
 
-    wsClient.send(message);
+    wsClient.send('completions:request', payload);
+    
     console.log('📤 Sent audio chunk:', {
-      event: message.event,
-      fe_id: message.fe_id,
-      timestamp: message.timestamp,
-      audioLength: base64Audio.length
+      type: 'completions:request',
+      fe_id: payload.fe_id,
+      timestamp: payload.timestamp,
+      audioLength: base64Audio.length,
+      pathLength: drawnPath.length
     });
   }
 
   /**
-   * Send completion_request_end to signal end of recording
+   * Send completions:request_end to signal end of recording
+   * Uses AsyncAPI 3.0.0 format
    */
   endSession(): void {
     const wsClient = getSharedWebSocket();
@@ -157,14 +258,35 @@ export class CompletionsWebSocketAdapter {
       return;
     }
 
-    const message: CompletionRequestEndMessage = {
-      event: 'completion_request_end',
+    const payload: CompletionsRequestEndPayload = {
       fe_id: this.currentFeId
     };
 
-    wsClient.send(message);
-    console.log('🏁 Sent completion_request_end:', { fe_id: message.fe_id });
+    wsClient.send('completions:request_end', payload);
+    
+    console.log('🏁 Sent completions:request_end:', { fe_id: payload.fe_id });
     this.currentFeId = null; // Clear the session
+  }
+
+  /**
+   * Refresh JWT token without reconnecting
+   * Uses AsyncAPI 3.0.0 format
+   */
+  refreshToken(newAccessToken: string): void {
+    const wsClient = getSharedWebSocket();
+    
+    if (!wsClient.isConnected()) {
+      console.warn('⚠️ WebSocket not connected, cannot refresh token');
+      return;
+    }
+    
+    const payload: AuthRefreshTokenPayload = {
+      access_token: newAccessToken
+    };
+    
+    wsClient.send('auth:refresh_token', payload);
+    
+    console.log('🔄 Sent token refresh request');
   }
 
   /**
@@ -199,5 +321,12 @@ export class CompletionsWebSocketAdapter {
   getReadyState(): number | null {
     const wsClient = getSharedWebSocket();
     return wsClient.getReadyState();
+  }
+
+  /**
+   * Get current session fe_id (if any)
+   */
+  getCurrentFeId(): string | null {
+    return this.currentFeId;
   }
 }

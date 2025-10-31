@@ -1,22 +1,21 @@
 /**
  * SharedWebSocketClient - Unified WebSocket client for backend communication
- * 
+ *
  * Handles connection to /ws endpoint with JWT authentication
  * Supports event subscription pattern for different message types
- * 
+ *
  * This is implemented as a singleton to ensure only one WebSocket connection
  * is maintained for all features (port updates, completions, etc.)
+ *
+ * Message Format (AsyncAPI 3.0.0):
+ * All messages use { type, payload, requestId?, error? } structure
  */
 
 import { resolveBackendUrl } from '@auth/api/utils';
 import { useAuthenticationStore } from '@auth/stores/useAuthenticationStore';
+import type { WebSocketMessage, WebSocketMessageType } from '@completions/api/messageTypes';
 
-export type WebSocketEventType = 'user:port_update' | 'completion_response' | 'completion_acknowledgment' | string;
-
-export interface WebSocketMessage {
-  event: WebSocketEventType;
-  data?: any;
-}
+export type WebSocketEventType = WebSocketMessageType | string;
 
 export interface WebSocketClientOptions {
   reconnectDelay?: number;
@@ -27,7 +26,7 @@ export interface WebSocketClientOptions {
 
 type MessageHandler = (data: any) => void;
 type ConnectionCallback = () => void;
-type ErrorCallback = (error: Event) => void;
+type ErrorCallback = (error: Error) => void;
 
 const DEFAULT_OPTIONS: WebSocketClientOptions = {
   reconnectDelay: 1000, // 1 second
@@ -115,7 +114,7 @@ export class SharedWebSocketClient {
       return Promise.resolve();
     }
 
-    // If connection is in progress, return the existing promise
+    // If a connection is in progress, return the existing promise
     if (this.connectionPromise) {
       return this.connectionPromise;
     }
@@ -189,16 +188,19 @@ export class SharedWebSocketClient {
           console.error('❌ WebSocket error:', event);
           this.connectionPromise = null;
           
-          // Notify all registered callbacks
+          // Convert Event to Error for consistent error handling
+          const error = new Error('WebSocket connection failed');
+          
+          // Notify all registered callbacks with Error object
           this.errorCallbacks.forEach(callback => {
             try {
-              callback(event);
-            } catch (error) {
-              console.error('Error in onError callback:', error);
+              callback(error);
+            } catch (cbError) {
+              console.error('Error in onError callback:', cbError);
             }
           });
           
-          reject(new Error('WebSocket connection failed'));
+          reject(error);
         };
       } catch (error) {
         console.error('❌ Failed to create WebSocket:', error);
@@ -232,14 +234,16 @@ export class SharedWebSocketClient {
 
   /**
    * Handle incoming WebSocket message
+   * Messages follow AsyncAPI 3.0.0 format: { type, payload, requestId?, error? }
    */
   private handleMessage(data: string): void {
     try {
       const message: WebSocketMessage = JSON.parse(data);
       console.log('📨 Received message:', message);
 
-      if (message.event) {
-        this.routeMessage(message.event, message.data);
+      if (message.type) {
+        // Route by type, passing the entire message (includes payload, requestId, error)
+        this.routeMessage(message.type, message);
       }
     } catch (error) {
       console.error('❌ Failed to parse WebSocket message:', error);
@@ -248,14 +252,15 @@ export class SharedWebSocketClient {
 
   /**
    * Route message to registered handlers
+   * Handlers receive the complete message object
    */
-  private routeMessage(eventType: WebSocketEventType, data: any): void {
+  private routeMessage(eventType: WebSocketEventType, message: WebSocketMessage): void {
     const handlers = this.messageHandlers.get(eventType);
 
     if (handlers && handlers.size > 0) {
       handlers.forEach((handler) => {
         try {
-          handler(data);
+          handler(message);
         } catch (error) {
           console.error(`Error in message handler for event ${eventType}:`, error);
         }
@@ -265,6 +270,7 @@ export class SharedWebSocketClient {
 
   /**
    * Subscribe to messages of a specific event type
+   * Handlers receive the complete WebSocketMessage object
    * Returns unsubscribe function
    */
   on(eventType: WebSocketEventType, handler: MessageHandler): () => void {
@@ -282,21 +288,29 @@ export class SharedWebSocketClient {
 
   /**
    * Send a message to the WebSocket
+   * Creates AsyncAPI 3.0.0 compliant message: { type, payload, requestId? }
    */
-  send(message: WebSocketMessage): void {
+  send<T = any>(type: string, payload: T, requestId?: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn('⚠️ WebSocket is not open, cannot send message');
       return;
     }
+
+    const message: WebSocketMessage<T> = {
+      type,
+      payload,
+      ...(requestId && { requestId })
+    };
 
     try {
       this.ws.send(JSON.stringify(message));
       console.log('📤 Sent message:', message);
     } catch (error) {
       console.error('❌ Failed to send message:', error);
+      const err = error instanceof Error ? error : new Error('Failed to send WebSocket message');
       this.errorCallbacks.forEach(callback => {
         try {
-          callback(error as Event);
+          callback(err);
         } catch (cbError) {
           console.error('Error in onError callback:', cbError);
         }
@@ -355,14 +369,4 @@ export function getSharedWebSocket(): SharedWebSocketClient {
     sharedWebSocketInstance = new SharedWebSocketClient();
   }
   return sharedWebSocketInstance;
-}
-
-/**
- * Reset the shared WebSocket instance (mainly for testing)
- */
-export function resetSharedWebSocket(): void {
-  if (sharedWebSocketInstance) {
-    sharedWebSocketInstance.close();
-    sharedWebSocketInstance = null;
-  }
 }

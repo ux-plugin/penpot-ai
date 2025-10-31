@@ -5,6 +5,8 @@ import Home from "@views/Home";
 import Settings from "@user/views/Settings";
 import { useAuthenticationStore } from "@auth/stores/useAuthenticationStore";
 import { usePortUpdatesStore } from "@user/stores/usePortUpdatesStore";
+import { useWebSocketStore } from "@shared/stores/useWebSocketStore";
+import { initializePortSubscription, cleanupPortSubscription } from "@user/api/portSubscriptionManager";
 import { handlePortUpdate } from "@companion/api";
 import { useCompletionsWebSocket } from "@completions/api";
 
@@ -18,23 +20,35 @@ const AuthenticatedLayout = () => {
   const { currentPort } = usePortUpdatesStore();
   const hasInitialized = useRef(false);
 
-  // Initialize port listener when user authenticates
+  // Initialize WebSocket and port subscription when user authenticates
   useEffect(() => {
     if (isAuthenticated && !hasInitialized.current) {
       console.log("User authenticated - running initialization");
 
-      // Start port updates listener
-      console.log("Starting port updates listener...");
-      const { connect } = usePortUpdatesStore.getState();
-      connect();
+      // Initialize port subscription manager (auto-subscribes on connection)
+      console.log("Initializing port subscription manager...");
+      initializePortSubscription();
+      
+      // Connect to WebSocket
+      console.log("Starting WebSocket connection...");
+      const { connect } = useWebSocketStore.getState();
+      connect().catch((error) => {
+        console.error("Failed to connect to WebSocket:", error);
+      });
       
       hasInitialized.current = true;
     }
 
     if (!isAuthenticated && hasInitialized.current) {
       console.log("User logged out - cleaning up");
-      const { disconnect } = usePortUpdatesStore.getState();
+      
+      // Clean up port subscription
+      cleanupPortSubscription();
+      
+      // Disconnect WebSocket
+      const { disconnect } = useWebSocketStore.getState();
       disconnect();
+      
       hasInitialized.current = false;
     }
   }, [isAuthenticated]);

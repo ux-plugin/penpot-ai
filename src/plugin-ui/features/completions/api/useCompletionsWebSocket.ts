@@ -19,12 +19,11 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { CompletionsWebSocketAdapter } from './CompletionsWebSocketAdapter';
 import { useAudioRecording } from '@companion/api/companionAppHooks';
-import { useAuthenticationStore } from '@auth/stores/useAuthenticationStore';
 
 export interface UseCompletionsWebSocketOptions {
   onWebSocketOpen?: () => void;
   onWebSocketClose?: () => void;
-  onWebSocketError?: (error: Event) => void;
+  onWebSocketError?: (error: Error) => void;
   onAcknowledgment?: (message: string) => void;
 }
 
@@ -65,9 +64,6 @@ export function useCompletionsWebSocket(
   // Refs to maintain references
   const wsAdapterRef = useRef<CompletionsWebSocketAdapter | null>(null);
 
-  // Get JWT token from the auth store
-  const accessToken = useAuthenticationStore((state) => state.accessToken);
-
   // Set up audio recording with WebSocket forwarding
   const {
     startRecording,
@@ -101,8 +97,8 @@ export function useCompletionsWebSocket(
    * Initialize WebSocket connection (called once when component mounts)
    */
   const initializeWebSocket = useCallback(async () => {
-    // Don't initialize if already connected or if missing prerequisites
-    if (wsAdapterRef.current?.isConnected() || !accessToken) {
+    // Don't initialize if already connected
+    if (wsAdapterRef.current?.isConnected()) {
       return;
     }
 
@@ -125,11 +121,10 @@ export function useCompletionsWebSocket(
           setIsWebSocketConnected(false);
           onWebSocketClose?.();
         },
-        onError: (event: Event) => {
-          console.error('❌ WebSocket error:', event);
-          const error = new Error('WebSocket connection error');
+        onError: (error: Error) => {
+          console.error('❌ WebSocket error:', error);
           setWebSocketError(error);
-          onWebSocketError?.(event);
+          onWebSocketError?.(error);
         },
       });
 
@@ -143,7 +138,7 @@ export function useCompletionsWebSocket(
       wsAdapterRef.current = null;
       throw err;
     }
-  }, [accessToken, onWebSocketOpen, onWebSocketClose, onWebSocketError, onAcknowledgment]);
+  }, [onWebSocketOpen, onWebSocketClose, onWebSocketError, onAcknowledgment]);
 
   /**
    * Start recording and create a new session (reuses existing WebSocket)
@@ -151,10 +146,6 @@ export function useCompletionsWebSocket(
   const startRecordingAndStreaming = useCallback(async () => {
     try {
       // Validate prerequisites
-      if (!accessToken) {
-        throw new Error('Not authenticated. Please log in first.');
-      }
-
       if (!isCompanionReady) {
         throw new Error('Companion app not connected. Please connect first.');
       }
@@ -181,7 +172,7 @@ export function useCompletionsWebSocket(
       setWebSocketError(err);
       throw err;
     }
-  }, [accessToken, isCompanionReady, startRecording, initializeWebSocket]);
+  }, [isCompanionReady, startRecording, initializeWebSocket]);
 
   /**
    * Stop recording and end the current session (keeps WebSocket open for next session)
@@ -223,7 +214,7 @@ export function useCompletionsWebSocket(
     recordingError,
     webSocketError,
 
-    // Readiness check (companion connected + authenticated)
-    isReady: isCompanionReady && !!accessToken,
+    // Readiness check (companion connected)
+    isReady: isCompanionReady || isWebSocketConnected,
   };
 }
