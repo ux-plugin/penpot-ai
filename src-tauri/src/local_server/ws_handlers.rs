@@ -3,7 +3,7 @@ use crate::local_server::encryption::{
     create_message_format, decrypt_and_parse_payload, encrypt_message_with_timestamp,
     parse_message_format,
 };
-use crate::local_server::state::StateForLocalServerHandler;
+use crate::local_server::state::{ConnectionGuard, StateForLocalServerHandler};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -48,6 +48,7 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<StateForLocalServerHandler>,
 ) -> Response {
+    print!("New WebSocket connection established\n");
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -118,14 +119,13 @@ async fn send_error_response(
 
 /// Handle WebSocket connection - SINGLE RECEIVER POINT
 async fn handle_socket(socket: WebSocket, state: StateForLocalServerHandler) {
-    // Generate unique ID for this connection
-    let connection_id = Uuid::new_v4();
-    
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
+    print!("New WebSocket connection established\n");
     
-    // Register this connection
-    state.register_connection(connection_id, sender.clone());
+    // Create connection guard - automatically registers and will auto-deregister on drop
+    let _guard = ConnectionGuard::new(state.clone(), sender.clone());
+    let connection_id = _guard.id();
 
     // Process commands in a single loop
     while let Some(msg) = receiver.next().await {
@@ -156,7 +156,7 @@ async fn handle_socket(socket: WebSocket, state: StateForLocalServerHandler) {
                 }
             }
             Ok(Message::Close(_)) => {
-                println!("WebSocket connection closed by client");
+                println!("WebSocket connection closed by client ({})", connection_id);
                 break;
             }
             Ok(Message::Ping(data)) => {
@@ -176,10 +176,7 @@ async fn handle_socket(socket: WebSocket, state: StateForLocalServerHandler) {
         }
     }
 
-    println!("WebSocket connection closed");
-    
-    // Unregister this connection
-    state.unregister_connection(&connection_id);
+    println!("WebSocket connection closed for connection: {}", connection_id);
     
     // Cleanup: Stop any active stream on disconnect
     let stream = {
@@ -205,24 +202,22 @@ async fn handle_message(
         Ok(result) => result,
         Err(e) => {
             eprintln!("Message format parsing error - full trace: {}", e);
-            // Cannot send encrypted error without key - break connection
             return Err(true);
         }
     };
 
     // Get encryption key - try cached key first
-    let (mut key, used_cached_key) = {
+    let mut key = {
         let enc_state = state.encryption_state.read().await;
         if enc_state.is_valid() {
-            (enc_state.get_key().unwrap().to_string(), true)
+            enc_state.get_key().unwrap().to_string()
         } else {
             // Not authenticated - try to get key from backend
             drop(enc_state);
             match state.backend_client.get_key().await {
-                Ok(key_response) => (key_response.key, false),
+                Ok(key_response) => key_response.key,
                 Err(e) => {
                     eprintln!("Failed to get encryption key - full trace: {}", e);
-                    // Cannot send encrypted error without key - break connection
                     return Err(true);
                 }
             }
@@ -236,42 +231,36 @@ async fn handle_message(
             eprintln!("Decryption failed with initial key - full trace: {}", e);
             
             // If we used a cached key and decryption failed, try fetching a fresh key from backend
-            if used_cached_key {
-                eprintln!("Attempting to fetch fresh key from backend and retry decryption...");
-                
-                match state.backend_client.get_key().await {
-                    Ok(key_response) => {
-                        key = key_response.key;
-                        
-                        // Update the encryption state with the fresh key
-                        {
-                            let mut enc_state = state.encryption_state.write().await;
-                            enc_state.set_key(key.clone());
-                        }
-                        
-                        // Retry decryption with fresh key
-                        match decrypt_and_parse_payload(&key, &nonce, &encrypted_payload) {
-                            Ok(p) => {
-                                eprintln!("Decryption succeeded with fresh key from backend");
-                                p
-                            }
-                            Err(retry_err) => {
-                                eprintln!("Decryption failed even with fresh key - full trace: {}", retry_err);
-                                let _ = send_error_response(sender.clone(), state, &key, "unknown", 403, "Decryption failed".to_string()).await;
-                                return Err(false);
-                            }
-                        }
+            eprintln!("Attempting to fetch fresh key from backend and retry decryption...");
+
+            match state.backend_client.get_key().await {
+                Ok(key_response) => {
+                    key = key_response.key;
+
+                    // Update the encryption state with the fresh key
+                    {
+                        let mut enc_state = state.encryption_state.write().await;
+                        enc_state.set_key(key.clone());
                     }
-                    Err(backend_err) => {
-                        eprintln!("Failed to fetch fresh key from backend - full trace: {}", backend_err);
-                        let _ = send_error_response(sender.clone(), state, &key, "unknown", 403, "Decryption failed".to_string()).await;
-                        return Err(false);
+
+                    // Retry decryption with fresh key
+                    match decrypt_and_parse_payload(&key, &nonce, &encrypted_payload) {
+                        Ok(p) => {
+                            eprintln!("Decryption succeeded with fresh key from backend");
+                            p
+                        }
+                        Err(retry_err) => {
+                            eprintln!("Decryption failed even with fresh key - full trace: {}", retry_err);
+                            let _ = send_error_response(sender.clone(), state, &key, "unknown", 403, "Decryption failed".to_string()).await;
+                            return Err(false);
+                        }
                     }
                 }
-            } else {
-                // Already used backend key, no point in retrying
-                let _ = send_error_response(sender.clone(), state, &key, "unknown", 403, "Decryption failed".to_string()).await;
-                return Err(false);
+                Err(backend_err) => {
+                    eprintln!("Failed to fetch fresh key from backend - full trace: {}", backend_err);
+                    let _ = send_error_response(sender.clone(), state, &key, "unknown", 403, "Decryption failed".to_string()).await;
+                    return Err(false);
+                }
             }
         }
     };
