@@ -18,4 +18,16 @@ interface WebSocketAuthConfig {
 
     /** The expected value of the upgrade header for WebSocket connections */
     @NotBlank fun websocketValue(): String
+
+    /** Configuration for session properties */
+    fun session(): SessionConfig
+
+    /** Configuration for WebSocket session property keys */
+    interface SessionConfig {
+        /** The key used to store user ID in session.userProperties */
+        @NotBlank fun userIdKey(): String
+
+        /** The key used to store token expiration time in session.userProperties */
+        @NotBlank fun tokenExpirationKey(): String
+    }
 }

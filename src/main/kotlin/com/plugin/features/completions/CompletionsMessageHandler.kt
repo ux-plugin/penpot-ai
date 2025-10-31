@@ -1,43 +1,49 @@
-package com.plugin.infrastructure.websocket
+package com.plugin.features.completions
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.plugin.infrastructure.websocket.WebSocketMessage
+import com.plugin.infrastructure.websocket.WebSocketMessageHandler
+import com.plugin.infrastructure.websocket.WebSocketMessageType
+import com.plugin.infrastructure.websocket.WebSocketResponse
 import io.quarkus.logging.Log
+import io.quarkus.websockets.next.WebSocketConnection
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
-import jakarta.websocket.Session
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Facade for handling completions-related WebSocket messages
- * 
- * This facade handles completion requests using the new message schema.
+ * Handler for completions-related WebSocket messages
+ *
+ * This handler manages completion requests using the new message schema.
+ *
+ * Migrated to Quarkus WebSocket Next API with thread-safe audio buffer handling for parallel message processing.
  */
 @ApplicationScoped
-class CompletionsFacade
+class CompletionsMessageHandler
 @Inject
 constructor(
     private val objectMapper: ObjectMapper,
-) : WebSocketFacade {
-    
-    // Store audio buffers per session for recording
+) : WebSocketMessageHandler {
+
+    // Store audio buffers per connection for recording (thread-safe)
     private val audioBuffers = ConcurrentHashMap<String, ByteArrayOutputStream>()
-    
+
     override fun getMessageTypePrefix(): String = "completions:"
-    
+
     override suspend fun handleMessage(
         message: WebSocketMessage,
-        session: Session,
+        connection: WebSocketConnection,
         userId: String
     ): WebSocketResponse? {
         return try {
             when (message.type) {
-                WebSocketMessageType.COMPLETIONS_REFRESH_TOKEN -> handleRefreshToken(message, session, userId)
-                WebSocketMessageType.COMPLETIONS_REQUEST -> handleCompletionRequest(message, session, userId)
-                WebSocketMessageType.COMPLETIONS_REQUEST_END -> handleCompletionRequestEnd(message, session, userId)
-                WebSocketMessageType.COMPLETIONS_RESPONSE -> handleCompletionResponse(message, session, userId)
-                WebSocketMessageType.COMPLETIONS_RESPONSE_END -> handleCompletionResponseEnd(message, session, userId)
+                WebSocketMessageType.COMPLETIONS_REQUEST -> handleCompletionRequest(message, connection, userId)
+                WebSocketMessageType.COMPLETIONS_REQUEST_END -> handleCompletionRequestEnd(message, connection, userId)
+                WebSocketMessageType.COMPLETIONS_RESPONSE -> handleCompletionResponse(message, connection, userId)
+                WebSocketMessageType.COMPLETIONS_RESPONSE_END ->
+                    handleCompletionResponseEnd(message, connection, userId)
                 else -> {
                     Log.warn("Unknown completions message type: ${message.type}")
                     WebSocketResponse(
@@ -58,29 +64,23 @@ constructor(
             )
         }
     }
-    
-    private fun handleRefreshToken(message: WebSocketMessage, session: Session, userId: String): WebSocketResponse {
-        Log.debug("Handling refresh_token for user: $userId")
-        // TODO: Implement token refresh logic
-        return WebSocketResponse(
-            type = message.type,
-            payload = mapOf("status" to "ok", "message" to "Token refresh not yet implemented"),
-            requestId = message.requestId
-        )
-    }
-    
-    private fun handleCompletionRequest(message: WebSocketMessage, session: Session, userId: String): WebSocketResponse {
+
+    private fun handleCompletionRequest(
+        message: WebSocketMessage,
+        connection: WebSocketConnection,
+        userId: String
+    ): WebSocketResponse {
         val feId = message.payload["fe_id"] as? String
         val drawnPath = message.payload["drawn_path"] as? String
         val audioChunk = message.payload["audio_chunk"] as? String
         val timestamp = message.payload["timestamp"] as? Number
-        
+
         Log.info("Handling completion_request:")
         Log.info("  FE ID: $feId")
         Log.info("  Timestamp: $timestamp")
         Log.info("  Drawn Path: ${drawnPath?.take(100)}${if ((drawnPath?.length ?: 0) > 100) "..." else ""}")
         Log.info("  Audio Chunk Size: ${audioChunk?.length ?: 0} base64 chars")
-        
+
         // TODO: Process the completion request
         return WebSocketResponse(
             type = message.type,
@@ -88,11 +88,15 @@ constructor(
             requestId = message.requestId
         )
     }
-    
-    private fun handleCompletionRequestEnd(message: WebSocketMessage, session: Session, userId: String): WebSocketResponse {
+
+    private fun handleCompletionRequestEnd(
+        message: WebSocketMessage,
+        connection: WebSocketConnection,
+        userId: String
+    ): WebSocketResponse {
         val feId = message.payload["fe_id"] as? String
         Log.info("Handling completion_request_end for FE ID: $feId")
-        
+
         // TODO: Finalize completion request processing
         return WebSocketResponse(
             type = message.type,
@@ -100,19 +104,23 @@ constructor(
             requestId = message.requestId
         )
     }
-    
-    private fun handleCompletionResponse(message: WebSocketMessage, session: Session, userId: String): WebSocketResponse {
+
+    private fun handleCompletionResponse(
+        message: WebSocketMessage,
+        connection: WebSocketConnection,
+        userId: String
+    ): WebSocketResponse {
         val feId = message.payload["fe_id"] as? String
         val action = message.payload["action"] as? String
         val target = message.payload["target"] as? String
         val params = message.payload["params"] as? String
-        
+
         Log.info("Handling completion_response:")
         Log.info("  FE ID: $feId")
         Log.info("  Action: $action")
         Log.info("  Target: $target")
         Log.info("  Params: $params")
-        
+
         // TODO: Process the completion response
         return WebSocketResponse(
             type = message.type,
@@ -120,11 +128,15 @@ constructor(
             requestId = message.requestId
         )
     }
-    
-    private fun handleCompletionResponseEnd(message: WebSocketMessage, session: Session, userId: String): WebSocketResponse {
+
+    private fun handleCompletionResponseEnd(
+        message: WebSocketMessage,
+        connection: WebSocketConnection,
+        userId: String
+    ): WebSocketResponse {
         val feId = message.payload["fe_id"] as? String
         Log.info("Handling completion_response_end for FE ID: $feId")
-        
+
         // TODO: Finalize completion response processing
         return WebSocketResponse(
             type = message.type,
@@ -132,45 +144,47 @@ constructor(
             requestId = message.requestId
         )
     }
-    
-    override suspend fun onOpen(session: Session, userId: String) {
-        Log.debug("CompletionsFacade: Session opened for user $userId")
-        audioBuffers[session.id] = ByteArrayOutputStream()
+
+    override suspend fun onOpen(connection: WebSocketConnection, userId: String) {
+        Log.debug("CompletionsMessageHandler: Connection opened for user $userId")
+        audioBuffers[connection.id()] = ByteArrayOutputStream()
     }
-    
-    override suspend fun onClose(session: Session, userId: String) {
-        Log.debug("CompletionsFacade: Session closed for user $userId")
-        
+
+    override suspend fun onClose(connection: WebSocketConnection, userId: String) {
+        Log.debug("CompletionsMessageHandler: Connection closed for user $userId")
+
         // Save accumulated audio to WAV file
-        audioBuffers[session.id]?.let { buffer ->
+        audioBuffers[connection.id()]?.let { buffer ->
             try {
                 val timestamp = System.currentTimeMillis()
-                val sessionIdShort = session.id.take(8)
+                val connectionIdShort = connection.id().take(8)
                 val outputDir = File("audio-recordings")
-                val outputFile = File(outputDir, "audio_${timestamp}_${sessionIdShort}.wav")
-                
-                val audioData = buffer.toByteArray()
+                val outputFile = File(outputDir, "audio_${timestamp}_${connectionIdShort}.wav")
+
+                // Thread-safe read of audio data
+                val audioData = synchronized(buffer) { buffer.toByteArray() }
+
                 if (audioData.isNotEmpty()) {
                     WavFileWriter.writeWavFile(audioData, outputFile)
                     Log.info("Audio saved to: ${outputFile.absolutePath}")
                     Log.info("Audio file size: ${outputFile.length()} bytes")
                     Log.info("Duration: ~${audioData.size / (AudioConfig.SAMPLE_RATE * 2)} seconds")
                 } else {
-                    Log.warn("No audio data to save for session ${session.id}")
+                    Log.warn("No audio data to save for connection ${connection.id()}")
                 }
             } catch (e: Exception) {
                 Log.error("Failed to save audio file", e)
             }
         }
-        
+
         // Clean up audio buffers
-        audioBuffers.remove(session.id)
+        audioBuffers.remove(connection.id())
     }
-    
-    override suspend fun onError(session: Session, userId: String, error: Throwable) {
-        Log.error("CompletionsFacade: Error for user $userId", error)
+
+    override suspend fun onError(connection: WebSocketConnection, userId: String, error: Throwable) {
+        Log.error("CompletionsMessageHandler: Error for user $userId", error)
         // Clean up audio buffers
-        audioBuffers.remove(session.id)
+        audioBuffers.remove(connection.id())
     }
 }
 
