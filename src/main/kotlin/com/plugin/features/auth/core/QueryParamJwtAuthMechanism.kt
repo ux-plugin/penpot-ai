@@ -24,7 +24,7 @@ import org.eclipse.microprofile.jwt.JsonWebToken
  * allowing other requests to use the default Authorization header mechanism.
  *
  * This mechanism specifically handles the configured WebSocket endpoint, extracting the token from the configured query
- * parameter.
+ * parameter and storing the JWT in the security identity for access in WebSocket Next connections.
  */
 @Priority(1000) // Run before default JWT mechanism (priority 2000)
 @ApplicationScoped
@@ -40,8 +40,8 @@ constructor(
         context: RoutingContext,
         identityProviderManager: IdentityProviderManager
     ): Uni<SecurityIdentity> {
-        // Only handle WebSocket upgrade requests to the configured path
-        if (!isWebSocketRequest(context) || context.request().path() != config.path()) {
+        // Only handle WebSocket upgrade requests to /ws
+        if (!isWebSocketRequest(context) || context.request().path() != "/ws") {
             // Not our concern - let default JWT mechanism handle it
             return Uni.createFrom().nullItem()
         }
@@ -59,12 +59,13 @@ constructor(
             val jwtPrincipal = validateJwt(token)
             Log.info("Successfully validated JWT for user: ${jwtPrincipal.subject}")
 
-            // Build SecurityIdentity directly from the validated JWT
+            // Build SecurityIdentity with JWT stored in attributes for WebSocket Next access
             val identity =
                 QuarkusSecurityIdentity.builder()
                     .setPrincipal(jwtPrincipal)
                     .addCredential(TokenCredential(token, "bearer"))
                     .addRoles(jwtPrincipal.groups ?: emptySet())
+                    .addAttribute("jwt", jwtPrincipal) // Store JWT for WebSocket Next access
                     .build()
 
             Log.info("Successfully authenticated WebSocket connection for user: ${jwtPrincipal.subject}")

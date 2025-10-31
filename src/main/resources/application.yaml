@@ -17,6 +17,25 @@ quarkus:
       exposed-headers: Content-Disposition
       access-control-max-age: 3600
 
+  # WebSocket Next configuration
+  websockets-next:
+    server:
+      # Enable virtual threads for parallel message processing (Java 21+)
+      run-on-virtual-thread: true
+      
+      # Auto-ping to keep connections alive
+      auto-ping-interval: 30s
+      
+      # Close connection on unhandled failures
+      unhandled-failure-strategy: close
+      
+      # Connection limits
+      max-message-size: 1048576  # 1MB
+    
+    # Security integration
+    security:
+      auth-failure-close-reason: VIOLATED_POLICY
+
   # OpenAPI and Swagger UI
   swagger-ui:
     always-include: true
@@ -87,6 +106,8 @@ quarkus:
         level: "${REDIS_LOG_LEVEL:WARN}"
       "com.plugin.features.auth.core.RedisRepository":
         level: "${REDIS_LOG_LEVEL:INFO}"
+      "io.quarkus.websockets.next":
+        level: "${WEBSOCKET_LOG_LEVEL:INFO}"
 
 openai:
   api.key: "${OPENAI_API_KEY}"
@@ -108,6 +129,9 @@ websocket:
     token-query-param: "token"
     upgrade-header: "upgrade"
     websocket-value: "websocket"
+    session:
+      user-id-key: "ws.auth.userId"
+      token-expiration-key: "ws.auth.tokenExpiration"
 
 auth:
   access-token-ttl-s: 900  # 15 minutes
