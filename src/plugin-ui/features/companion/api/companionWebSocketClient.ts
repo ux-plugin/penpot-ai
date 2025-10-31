@@ -62,10 +62,7 @@ export class CompanionWebSocketClient {
   private nextRequestId: number = 1;
   
   // Reconnection state
-  private reconnectAttempts = 0;
   private reconnectTimeout: number | null = null;
-  private shouldReconnect = false;
-  private currentPort: number | null = null;
 
   constructor(config: WebSocketClientConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -106,7 +103,7 @@ export class CompanionWebSocketClient {
   }
 
   /**
-   * Connect to companion app WebSocket
+   * Connect to a companion app WebSocket
    * Automatically sends init command after connection
    */
   async connect(port: number): Promise<void> {
@@ -121,9 +118,6 @@ export class CompanionWebSocketClient {
 
       await encryptionKeyManager.ensureValidKey();
 
-      this.currentPort = port;
-      this.shouldReconnect = true;
-      
       const url = `ws://localhost:${port}/companion`;
       console.log(`Connecting to companion WebSocket: ${url}`);
       
@@ -162,7 +156,7 @@ export class CompanionWebSocketClient {
 
       this.ws!.onclose = (event) => {
         console.log(`WebSocket closed: code=${event.code}, reason=${event.reason}`);
-        this.handleDisconnect(event.code !== 1000); // 1000 = normal closure
+        this.handleDisconnect();
       };
 
       // Send init command and wait for response
@@ -171,7 +165,6 @@ export class CompanionWebSocketClient {
       console.log('Init command acknowledged');
       
       // Mark as fully connected after successful init
-      this.reconnectAttempts = 0;
       this.setState(WebSocketState.CONNECTED);
 
     } catch (error) {
@@ -192,8 +185,6 @@ export class CompanionWebSocketClient {
    * Close the WebSocket connection
    */
   close(): void {
-    this.shouldReconnect = false;
-    
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
@@ -286,7 +277,7 @@ export class CompanionWebSocketClient {
       await encryptionKeyManager.generateKey();
       console.log('New encryption key generated from backend');
       
-      // Step 2: Send init command with new key (encryption happens automatically)
+      // Step 2: Send init command with a new key (encryption happens automatically)
       await this.sendCommand('init');
       console.log('Init command sent with new key');
       
@@ -407,7 +398,7 @@ export class CompanionWebSocketClient {
   /**
    * Handle WebSocket disconnection
    */
-  private handleDisconnect(wasUnexpected: boolean): void {
+  private handleDisconnect(): void {
     this.ws = null;
     
     // Reject all pending requests
@@ -425,39 +416,5 @@ export class CompanionWebSocketClient {
     }
 
     this.setState(WebSocketState.DISCONNECTED);
-
-    if (this.shouldReconnect && wasUnexpected && this.currentPort !== null) {
-      this.scheduleReconnect();
-    }
-  }
-
-  /**
-   * Schedule reconnection attempt
-   */
-  private scheduleReconnect(): void {
-    if (this.reconnectAttempts >= this.config.maxReconnectAttempts!) {
-      console.error('Max reconnection attempts reached');
-      return;
-    }
-
-    // Calculate backoff delay
-    const delay = Math.min(
-      this.config.reconnectDelay! * Math.pow(this.config.reconnectDecayFactor!, this.reconnectAttempts),
-      this.config.maxReconnectDelay!
-    );
-
-    console.log(`Scheduling reconnect attempt ${this.reconnectAttempts + 1} in ${delay}ms`);
-    
-    this.reconnectTimeout = setTimeout(() => {
-      this.reconnectAttempts++;
-      this.setState(WebSocketState.RECONNECTING);
-      
-      if (this.currentPort !== null) {
-        this.connect(this.currentPort).catch(error => {
-          console.error('Reconnection failed:', error);
-          this.handleDisconnect(true);
-        });
-      }
-    }, delay);
   }
 }

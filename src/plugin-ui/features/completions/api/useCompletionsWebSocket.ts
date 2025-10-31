@@ -17,14 +17,13 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { CompletionsWebSocketManager } from './CompletionsWebSocketManager';
+import { CompletionsWebSocketAdapter } from './CompletionsWebSocketAdapter';
 import { useAudioRecording } from '@companion/api/companionAppHooks';
-import { useAuthenticationStore } from '@auth/stores/useAuthenticationStore';
 
 export interface UseCompletionsWebSocketOptions {
   onWebSocketOpen?: () => void;
   onWebSocketClose?: () => void;
-  onWebSocketError?: (error: Event) => void;
+  onWebSocketError?: (error: Error) => void;
   onAcknowledgment?: (message: string) => void;
 }
 
@@ -63,10 +62,7 @@ export function useCompletionsWebSocket(
   const [webSocketError, setWebSocketError] = useState<Error | null>(null);
 
   // Refs to maintain references
-  const wsManagerRef = useRef<CompletionsWebSocketManager | null>(null);
-
-  // Get JWT token from the auth store
-  const accessToken = useAuthenticationStore((state) => state.accessToken);
+  const wsAdapterRef = useRef<CompletionsWebSocketAdapter | null>(null);
 
   // Set up audio recording with WebSocket forwarding
   const {
@@ -78,18 +74,18 @@ export function useCompletionsWebSocket(
   } = useAudioRecording({
     onAudioChunk: (base64Audio: string) => {
       console.log('🎵 Audio chunk received in onAudioChunk callback, length:', base64Audio.length);
-      console.log('📡 WebSocket manager exists:', !!wsManagerRef.current);
-      console.log('📡 WebSocket connected:', wsManagerRef.current?.isConnected());
-      console.log('📡 WebSocket readyState:', wsManagerRef.current?.getReadyState());
+      console.log('📡 WebSocket adapter exists:', !!wsAdapterRef.current);
+      console.log('📡 WebSocket connected:', wsAdapterRef.current?.isConnected());
+      console.log('📡 WebSocket readyState:', wsAdapterRef.current?.getReadyState());
       
       // Forward audio chunk to WebSocket
-      if (wsManagerRef.current?.isConnected()) {
+      if (wsAdapterRef.current?.isConnected()) {
         console.log('✅ Forwarding audio chunk to WebSocket...');
-        wsManagerRef.current.sendAudioChunk(base64Audio);
+        wsAdapterRef.current.sendAudioChunk(base64Audio);
         console.log('✅ Audio chunk forwarded successfully');
       } else {
         console.warn('⚠️ WebSocket not connected, skipping audio chunk');
-        console.warn('⚠️ WebSocket state:', wsManagerRef.current?.getReadyState());
+        console.warn('⚠️ WebSocket state:', wsAdapterRef.current?.getReadyState());
       }
     },
     onError: (error: Error) => {
@@ -101,8 +97,8 @@ export function useCompletionsWebSocket(
    * Initialize WebSocket connection (called once when component mounts)
    */
   const initializeWebSocket = useCallback(async () => {
-    // Don't initialize if already connected or if missing prerequisites
-    if (wsManagerRef.current?.isConnected() || !accessToken) {
+    // Don't initialize if already connected
+    if (wsAdapterRef.current?.isConnected()) {
       return;
     }
 
@@ -110,7 +106,7 @@ export function useCompletionsWebSocket(
       console.log('🔌 Initializing WebSocket connection...');
       setWebSocketError(null);
       
-      const wsManager = new CompletionsWebSocketManager(accessToken, {
+      const wsAdapter = new CompletionsWebSocketAdapter({
         onOpen: () => {
           console.log('✅ WebSocket opened');
           setIsWebSocketConnected(true);
@@ -123,28 +119,26 @@ export function useCompletionsWebSocket(
         onClose: () => {
           console.log('🔌 WebSocket closed');
           setIsWebSocketConnected(false);
-          wsManagerRef.current = null;
           onWebSocketClose?.();
         },
-        onError: (event: Event) => {
-          console.error('❌ WebSocket error:', event);
-          const error = new Error('WebSocket connection error');
+        onError: (error: Error) => {
+          console.error('❌ WebSocket error:', error);
           setWebSocketError(error);
-          onWebSocketError?.(event);
+          onWebSocketError?.(error);
         },
       });
 
-      await wsManager.connect();
-      wsManagerRef.current = wsManager;
+      await wsAdapter.connect();
+      wsAdapterRef.current = wsAdapter;
       console.log('✅ WebSocket initialized successfully');
     } catch (error) {
       const err = error instanceof Error ? error : new Error('Failed to initialize WebSocket');
       console.error('❌ Failed to initialize WebSocket:', err);
       setWebSocketError(err);
-      wsManagerRef.current = null;
+      wsAdapterRef.current = null;
       throw err;
     }
-  }, [accessToken, onWebSocketOpen, onWebSocketClose, onWebSocketError, onAcknowledgment]);
+  }, [onWebSocketOpen, onWebSocketClose, onWebSocketError, onAcknowledgment]);
 
   /**
    * Start recording and create a new session (reuses existing WebSocket)
@@ -152,10 +146,6 @@ export function useCompletionsWebSocket(
   const startRecordingAndStreaming = useCallback(async () => {
     try {
       // Validate prerequisites
-      if (!accessToken) {
-        throw new Error('Not authenticated. Please log in first.');
-      }
-
       if (!isCompanionReady) {
         throw new Error('Companion app not connected. Please connect first.');
       }
@@ -163,13 +153,13 @@ export function useCompletionsWebSocket(
       console.log('🚀 Starting recording and streaming...');
 
       // Ensure WebSocket is connected (will create if needed)
-      if (!wsManagerRef.current?.isConnected()) {
+      if (!wsAdapterRef.current?.isConnected()) {
         await initializeWebSocket();
       }
 
       // Start a new session (generates fe_id)
-      if (wsManagerRef.current) {
-        wsManagerRef.current.startSession();
+      if (wsAdapterRef.current) {
+        wsAdapterRef.current.startSession();
       }
 
       // Start audio recording (will forward chunks to WebSocket)
@@ -182,7 +172,7 @@ export function useCompletionsWebSocket(
       setWebSocketError(err);
       throw err;
     }
-  }, [accessToken, isCompanionReady, startRecording, initializeWebSocket]);
+  }, [isCompanionReady, startRecording, initializeWebSocket]);
 
   /**
    * Stop recording and end the current session (keeps WebSocket open for next session)
@@ -194,8 +184,8 @@ export function useCompletionsWebSocket(
     stopRecording();
 
     // Send completion_request_end to signal end of this session
-    if (wsManagerRef.current) {
-      wsManagerRef.current.endSession();
+    if (wsAdapterRef.current) {
+      wsAdapterRef.current.endSession();
     }
 
     console.log('✅ Recording stopped, WebSocket remains open for next session');
@@ -203,10 +193,10 @@ export function useCompletionsWebSocket(
 
   useEffect(() => {
     return () => {
-      if (wsManagerRef.current) {
+      if (wsAdapterRef.current) {
         console.log('🧹 Cleaning up WebSocket on unmount');
-        wsManagerRef.current.close();
-        wsManagerRef.current = null;
+        wsAdapterRef.current.close();
+        wsAdapterRef.current = null;
       }
     };
   }, []);
@@ -224,7 +214,7 @@ export function useCompletionsWebSocket(
     recordingError,
     webSocketError,
 
-    // Readiness check (companion connected + authenticated)
-    isReady: isCompanionReady && !!accessToken,
+    // Readiness check (companion connected)
+    isReady: isCompanionReady || isWebSocketConnected,
   };
 }

@@ -30,15 +30,7 @@ function Home() {
   }, [userConfig, setUserConfig, setUserId]);
 
   useEffect(() => {
-    connect().then(() => {
-      console.log("Connected to companion app");
-    }).catch((error) => {
-      console.error('Connection failed:', error);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (userConfig) {
+    if (currentPort) {
       connect().then(() => {
         console.log("Reconnected to companion app");
       }).catch((error) => {

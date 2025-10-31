@@ -70,7 +70,9 @@ export class ConnectionManager {
   async onPortUpdate(newPort: number): Promise<void> {
     console.log(`Port updated to ${newPort}, initiating reconnection...`);
 
-    this.disconnect();
+    if (this.isConnected()) {
+      this.disconnect();
+    }
 
     try {
       await this.wsClient.connect(newPort);
