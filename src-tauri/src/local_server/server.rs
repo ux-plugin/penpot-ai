@@ -80,7 +80,7 @@ impl LocalServer {
         if let Some(handle) = app_handle.as_ref() {
             let payload = ServerStatusPayload { status, error };
             if let Err(e) = handle.emit("server-status-changed", payload) {
-                eprintln!("Failed to emit server status event: {}", e);
+                tracing::error!("Failed to emit server status event: {}", e);
             }
         }
     }
@@ -123,7 +123,7 @@ impl LocalServer {
         match self.backend_client.update_port(Some(port)).await {
             Ok(_) => {
                 state.port = Some(port);
-                println!("Local server initialized on port {}", port);
+                tracing::info!("Local server initialized on port {}", port);
                 // Emit success status
                 self.emit_status(ServerStatus::Success, None).await;
                 Ok(port)
@@ -143,13 +143,13 @@ impl LocalServer {
         let mut state = self.state.lock().await;
 
         if state.port.is_none() {
-            println!("⚠️  Warning: Server is not running");
+            tracing::warn!("Server is not running");
             return Ok(());
         }
 
         // Close all active WebSocket connections before shutting down the server
         if let Some(handler_state) = &state.handler_state {
-            println!("Closing active WebSocket connections...");
+            tracing::debug!("Closing active WebSocket connections");
             handler_state.close_all_connections().await;
         }
 
@@ -158,7 +158,7 @@ impl LocalServer {
         state.handler_state = None;
         // Emit stopped status
         self.emit_status(ServerStatus::Stopped, None).await;
-        println!("Local server stopped successfully");
+        tracing::info!("Local server stopped successfully");
         Ok(())
     }
 
@@ -238,18 +238,18 @@ impl LocalServer {
 
         // Spawn the server in a separate task and store the handle
         let server_handle = tokio::spawn(async move {
-            println!("Local server listening on {}", local_addr);
+            tracing::info!("Local server listening on {}", local_addr);
 
             // Start the server with a graceful shutdown
             match axum::serve(listener, app)
                 .with_graceful_shutdown(async {
                     rx.await.ok();
-                    println!("Local server shutting down");
+                    tracing::debug!("Local server shutting down");
                 })
                 .await
             {
-                Ok(_) => println!("Server terminated normally"),
-                Err(e) => eprintln!("Server failed to start: {}", e),
+                Ok(_) => tracing::info!("Server terminated normally"),
+                Err(e) => tracing::error!("Server failed to start: {}", e),
             }
         });
 
@@ -263,12 +263,12 @@ impl LocalServer {
     async fn _shutdown(&self, state: &mut ServerState) {
         if let Some(tx) = state.shutdown_tx.take() {
             let _ = tx.send(());
-            println!("Shutdown signal sent to local server");
+            tracing::debug!("Shutdown signal sent to local server");
 
             // Wait for the server task to complete
             if let Some(handle) = state.server_handle.take() {
                 let _ = handle.await;
-                println!("Server shutdown completed");
+                tracing::debug!("Server shutdown completed");
             }
         }
     }

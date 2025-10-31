@@ -58,7 +58,7 @@ fn handle_quit_menu(app: &AppHandle) {
         
         // Use the stop method from dependencies
         if let Err(e) = deps.local_server().stop().await {
-            eprintln!("Failed to stop server during quit: {}", e);
+            tracing::error!("Failed to stop server during quit: {}", e);
         }
         
         app_clone.exit(0);
@@ -66,15 +66,14 @@ fn handle_quit_menu(app: &AppHandle) {
 }
 
 async fn handle_logout_menu(app: &AppHandle) {
-    println!("=== LOGOUT MENU CLICKED ===");
-    dbg!("menu item logout clicked");
+    tracing::info!("Logout menu clicked");
     
     // Get dependencies from the app state
     let deps = app.state::<AppDependencies>();
     
     match logout(app.clone(), deps).await {
-        Ok(_) => println!("✅ Logout completed successfully"),
-        Err(e) => println!("❌ Logout failed: {}", e),
+        Ok(_) => tracing::info!("Logout completed successfully"),
+        Err(e) => tracing::error!("Logout failed: {}", e),
     }
 
     // Check if the main window exists, create if it doesn't
@@ -86,13 +85,13 @@ async fn handle_logout_menu(app: &AppHandle) {
             let _ = window.show();
             let _ = window.set_focus();
             match app.emit("reload", ()) {
-                Ok(_) => println!("✅ Logout event emitted successfully to existing window"),
-                Err(e) => println!("❌ Failed to emit logout event: {}", e),
+                Ok(_) => tracing::debug!("Logout event emitted successfully to existing window"),
+                Err(e) => tracing::error!("Failed to emit logout event: {}", e),
             }
         }
         None => {
             // No window exists, create one first
-            println!("No main window found, creating new window");
+            tracing::debug!("No main window found, creating new window");
             match tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
                 .inner_size(300.0, 400.0)
                 .title("Figma Plugin Companion")
@@ -105,22 +104,22 @@ async fn handle_logout_menu(app: &AppHandle) {
 
                     // Emit reload event to the new window (not logout)
                     match app.emit("reload", ()) {
-                        Ok(_) => println!("✅ Reload event emitted successfully to new window"),
-                        Err(e) => println!("❌ Failed to emit reload event: {}", e),
+                        Ok(_) => tracing::debug!("Reload event emitted successfully to new window"),
+                        Err(e) => tracing::error!("Failed to emit reload event: {}", e),
                     }
                 }
                 Err(e) => {
-                    println!("❌ Failed to create new window: {}", e);
+                    tracing::error!("Failed to create new window: {}", e);
                 }
             }
         }
     }
 
-    println!("=== LOGOUT HANDLING COMPLETED ===");
+    tracing::info!("Logout handling completed");
 }
 
 fn handle_show_menu(app: &AppHandle) {
-    println!("=== SHOW MENU CLICKED ===");
+    tracing::debug!("Show menu clicked");
 
     let main_window = app.get_webview_window("main");
 
@@ -129,11 +128,11 @@ fn handle_show_menu(app: &AppHandle) {
             // Window exists, just show it and focus
             let _ = window.show();
             let _ = window.set_focus();
-            println!("✅ Existing window shown and focused");
+            tracing::debug!("Existing window shown and focused");
         }
         None => {
             // No window exists, create one
-            println!("No main window found, creating new window");
+            tracing::debug!("No main window found, creating new window");
             match tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
                 .inner_size(300.0, 400.0)
                 .title("Figma Plugin Companion")
@@ -143,23 +142,23 @@ fn handle_show_menu(app: &AppHandle) {
                 Ok(window) => {
                     let _ = window.show();
                     let _ = window.set_focus();
-                    println!("✅ New window created and shown");
+                    tracing::debug!("New window created and shown");
                 }
                 Err(e) => {
-                    println!("❌ Failed to create new window: {}", e);
+                    tracing::error!("Failed to create new window: {}", e);
                 }
             }
         }
     }
 
-    println!("=== SHOW HANDLING COMPLETED ===");
+    tracing::debug!("Show handling completed");
 }
 
 fn handle_tray_double_click(
     tray_icon: &tauri::tray::TrayIcon,
     position: tauri::PhysicalPosition<f64>,
 ) {
-    dbg!("system tray received a left click");
+    tracing::debug!("System tray received a left click");
 
     let window = tray_icon.app_handle().get_webview_window("main").unwrap();
     let _ = window.show().unwrap();

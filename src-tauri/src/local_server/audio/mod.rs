@@ -49,7 +49,7 @@ impl AudioManager {
         while let Some(command) = self.command_rx.recv().await {
             match command {
                 AudioCommand::Start { audio_tx, response_tx } => {
-                    println!("Audio manager: Received start recording command");
+                    tracing::debug!("Audio manager: Received start recording command");
 
                     // Check if already recording - reject if so
                     if self.is_recording.compare_exchange(
@@ -58,7 +58,7 @@ impl AudioManager {
                         Ordering::SeqCst,
                         Ordering::SeqCst,
                     ).is_err() {
-                        println!("Audio manager: Recording already in progress - rejecting request");
+                        tracing::warn!("Audio manager: Recording already in progress - rejecting request");
                         let _ = response_tx.send(Err("Recording already in progress".to_string()));
                         continue;
                     }
@@ -80,11 +80,11 @@ impl AudioManager {
                         Ok(stream) => {
                             let mut stream_lock = self.active_stream.lock().unwrap();
                             *stream_lock = Some(stream);
-                            println!("Audio manager: Recording started successfully");
+                            tracing::info!("Audio manager: Recording started successfully");
                             let _ = response_tx.send(Ok(()));
                         }
                         Err(e) => {
-                            eprintln!("Audio manager: Failed to start recording: {}", e);
+                            tracing::error!("Audio manager: Failed to start recording: {}", e);
                             
                             // Send error to client
                             if let Some(tx) = &*self.active_sender.lock().unwrap() {
@@ -100,9 +100,9 @@ impl AudioManager {
                     }
                 }
                 AudioCommand::Stop => {
-                    println!("Audio manager: Stopping recording");
+                    tracing::debug!("Audio manager: Stopping recording");
                     self.cleanup_state();
-                    println!("Audio manager: Recording stopped and state cleaned up");
+                    tracing::debug!("Audio manager: Recording stopped and state cleaned up");
                 }
             }
         }
@@ -132,7 +132,7 @@ impl AudioManager {
             .default_input_device()
             .ok_or_else(|| "No input device available".to_string())?;
 
-        println!(
+        tracing::info!(
             "Using input device: {}",
             device.name().unwrap_or_else(|_| "Unknown".to_string())
         );
@@ -146,7 +146,7 @@ impl AudioManager {
         let channels = default_config.channels() as usize;
         let sample_format = default_config.sample_format();
 
-        println!(
+        tracing::debug!(
             "Device native sample rate: {}Hz, channels: {}, format: {:?}",
             device_sample_rate, channels, sample_format
         );
@@ -158,7 +158,7 @@ impl AudioManager {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        println!(
+        tracing::debug!(
             "Using device configuration: {}Hz (will resample to {}Hz)",
             device_sample_rate, self.target_sample_rate
         );
@@ -169,7 +169,7 @@ impl AudioManager {
         let is_recording_clone = Arc::clone(&is_recording_for_err);
         
         let err_fn = move |err: cpal::StreamError| {
-            eprintln!("Audio stream error occurred: {}", err);
+            tracing::error!("Audio stream error occurred: {}", err);
             
             // Send an error message to a client
             if let Some(tx) = &*active_sender_for_err.lock().unwrap() {
@@ -186,7 +186,7 @@ impl AudioManager {
         // Create resampler if sample rates differ
         let needs_resampling = device_sample_rate != self.target_sample_rate;
         let resampler = if needs_resampling {
-            println!("Creating resampler: {} -> {}", device_sample_rate, self.target_sample_rate);
+            tracing::debug!("Creating resampler: {} -> {}", device_sample_rate, self.target_sample_rate);
             
             // Create a high-quality resampler
             let params = SincInterpolationParameters {
@@ -209,12 +209,12 @@ impl AudioManager {
             ) {
                 Ok(r) => Some(Arc::new(Mutex::new(r))),
                 Err(e) => {
-                    eprintln!("Failed to create resampler: {}", e);
+                    tracing::error!("Failed to create resampler: {}", e);
                     return Err(format!("Failed to create resampler: {}", e));
                 }
             }
         } else {
-            println!("No resampling needed");
+            tracing::debug!("No resampling needed");
             None
         };
 
@@ -334,7 +334,7 @@ impl AudioManager {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Resampling error: {}", e);
+                                tracing::error!("Resampling error: {}", e);
                             }
                         }
                     }
@@ -446,7 +446,7 @@ impl AudioManager {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Resampling error: {}", e);
+                                tracing::error!("Resampling error: {}", e);
                             }
                         }
                     }

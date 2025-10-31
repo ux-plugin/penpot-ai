@@ -54,14 +54,14 @@ impl EncryptionState {
     /// Get or initialize the global singleton encryption state
     pub fn get_or_init(config: Arc<AppConfig>) -> Arc<AsyncRwLock<EncryptionState>> {
         ENCRYPTION_STATE.get_or_init(|| {
-            println!("Initializing encryption state singleton...");
+            tracing::debug!("Initializing encryption state singleton");
             Arc::new(AsyncRwLock::new(Self::new(config)))
         }).clone()
     }
 
     /// Internal constructor for creating a new encryption state
     fn new(config: Arc<AppConfig>) -> Self {
-        println!("Initializing encryption state with in-memory key storage only");
+        tracing::debug!("Initializing encryption state with in-memory key storage only");
 
         Self {
             key: Arc::new(RwLock::new(None)),
@@ -154,7 +154,7 @@ impl EncryptionState {
             let before_count = received.len();
             received.retain(|_, instant| *instant > cutoff);
             if before_count > received.len() {
-                println!("Cleaned {} expired received nonces", before_count - received.len());
+                tracing::trace!("Cleaned {} expired received nonces", before_count - received.len());
             }
         }
         
@@ -164,7 +164,7 @@ impl EncryptionState {
             let before_count = sent.len();
             sent.retain(|_, instant| *instant > cutoff);
             if before_count > sent.len() {
-                println!("Cleaned {} expired sent nonces", before_count - sent.len());
+                tracing::trace!("Cleaned {} expired sent nonces", before_count - sent.len());
             }
         }
         
@@ -173,7 +173,7 @@ impl EncryptionState {
 
     pub fn set_key(&mut self, key: String) {
         *self.key.write().unwrap() = Some(key);
-        println!("Encryption key set in memory (not persisted)");
+        tracing::trace!("Encryption key set in memory (not persisted)");
     }
 
     pub fn get_key(&self) -> Option<String> {
@@ -182,14 +182,14 @@ impl EncryptionState {
 
     // Clear encryption state from memory
     pub async fn clear(&mut self) {
-        println!("Clearing encryption state from memory...");
+        tracing::debug!("Clearing encryption state from memory");
 
         // Clear in-memory state
         *self.key.write().unwrap() = None;
         self.received_nonces.write().unwrap().clear();
         self.sent_nonces.write().unwrap().clear();
 
-        println!("Encryption state cleared successfully");
+        tracing::debug!("Encryption state cleared successfully");
     }
 }
 

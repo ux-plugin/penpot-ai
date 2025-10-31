@@ -64,7 +64,7 @@ impl AudioStream {
         // Wait for AudioManager confirmation
         match response_rx.await {
             Ok(Ok(())) => {
-                println!("AudioStream: Recording started successfully");
+                tracing::debug!("AudioStream: Recording started successfully");
             }
             Ok(Err(e)) => {
                 return Err(format!("AudioManager rejected start: {}", e));
@@ -113,30 +113,30 @@ impl AudioStream {
                                             Ok(message) => {
                                                 let mut sender_lock = sender_clone.lock().await;
                                                 if sender_lock.send(Message::Text(message.into())).await.is_err() {
-                                                    eprintln!("AudioStream: Failed to send audio chunk");
+                                                    tracing::error!("AudioStream: Failed to send audio chunk");
                                                     break;
                                                 }
                                             }
                                             Err(e) => {
-                                                eprintln!("AudioStream: Failed to create message format: {}", e);
+                                                tracing::error!("AudioStream: Failed to create message format: {}", e);
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("AudioStream: Failed to encrypt audio chunk: {}", e);
+                                        tracing::error!("AudioStream: Failed to encrypt audio chunk: {}", e);
                                     }
                                 }
                             }
                         }
                     }
                     AudioStreamMessage::Error(err) => {
-                        eprintln!("AudioStream: Audio error: {}", err);
+                        tracing::error!("AudioStream: Audio error: {}", err);
                         break;
                     }
                 }
             }
             
-            println!("AudioStream: Streaming task ended");
+            tracing::debug!("AudioStream: Streaming task ended");
         });
 
         Ok(stream)
@@ -146,7 +146,7 @@ impl AudioStream {
     /// SINGLE STOP POINT - ensures AudioCommand::Stop is sent exactly once
     pub async fn stop(&self, _sender: Arc<Mutex<SplitSink<WebSocket, Message>>>, _key: &str, _request_id: &str) {
         if !self.stop_flag.swap(true, Ordering::SeqCst) {
-            println!("AudioStream: Stopping recording");
+            tracing::debug!("AudioStream: Stopping recording");
             let _ = self.audio_manager_tx.send(AudioCommand::Stop).await;
             
             // Note: The actual recording-stopped response is sent by the caller (handle_stop_recording)
@@ -157,7 +157,7 @@ impl AudioStream {
     /// Stop the audio stream without sending a response (for cleanup on disconnect)
     pub async fn stop_silent(&self) {
         if !self.stop_flag.swap(true, Ordering::SeqCst) {
-            println!("AudioStream: Stopping recording (silent cleanup)");
+            tracing::debug!("AudioStream: Stopping recording (silent cleanup)");
             let _ = self.audio_manager_tx.send(AudioCommand::Stop).await;
         }
     }
@@ -167,7 +167,7 @@ impl Drop for AudioStream {
     fn drop(&mut self) {
         // Ensure a stop command is sent if not already stopped
         if !self.stop_flag.load(Ordering::SeqCst) {
-            println!("AudioStream: Drop detected - sending stop command");
+            tracing::debug!("AudioStream: Drop detected - sending stop command");
             let tx = self.audio_manager_tx.clone();
             tokio::spawn(async move {
                 let _ = tx.send(AudioCommand::Stop).await;
