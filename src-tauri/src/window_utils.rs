@@ -12,11 +12,11 @@ pub async fn show_or_create_main_window(app: AppHandle) -> Result<(), String> {
             window
                 .set_focus()
                 .map_err(|e| format!("Failed to focus window: {}", e))?;
-            println!("✅ Existing main window shown and focused");
+            tracing::debug!("Existing main window shown and focused");
         }
         None => {
             // No window exists, create one
-            println!("No main window found, creating new window");
+            tracing::debug!("No main window found, creating new window");
             let window =
                 tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::App("/".into()))
                     .inner_size(300.0, 400.0)
@@ -31,7 +31,7 @@ pub async fn show_or_create_main_window(app: AppHandle) -> Result<(), String> {
             window
                 .set_focus()
                 .map_err(|e| format!("Failed to focus new window: {}", e))?;
-            println!("✅ New main window created and shown");
+            tracing::debug!("New main window created and shown");
         }
     }
 

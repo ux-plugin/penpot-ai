@@ -48,7 +48,7 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<StateForLocalServerHandler>,
 ) -> Response {
-    print!("New WebSocket connection established\n");
+    tracing::debug!("New WebSocket connection established");
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -121,7 +121,7 @@ async fn send_error_response(
 async fn handle_socket(socket: WebSocket, state: StateForLocalServerHandler) {
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
-    print!("New WebSocket connection established\n");
+    tracing::debug!("New WebSocket connection established");
     
     // Create connection guard - automatically registers and will auto-deregister on drop
     let _guard = ConnectionGuard::new(state.clone(), sender.clone());
@@ -149,20 +149,20 @@ async fn handle_socket(socket: WebSocket, state: StateForLocalServerHandler) {
                         }
                     }
                     Err(err) => {
-                        eprintln!("Binary decode error - full trace: {}", err);
+                        tracing::error!("Binary decode error: {}", err);
                         // Can't send encrypted error without key in this context
                         break;
                     }
                 }
             }
             Ok(Message::Close(_)) => {
-                println!("WebSocket connection closed by client ({})", connection_id);
+                tracing::debug!("WebSocket connection closed by client ({})", connection_id);
                 break;
             }
             Ok(Message::Ping(data)) => {
                 let mut sender_lock = sender.lock().await;
                 if let Err(e) = sender_lock.send(Message::Pong(data)).await {
-                    eprintln!("Failed to send pong: {}", e);
+                    tracing::error!("Failed to send pong: {}", e);
                     break;
                 }
             }
@@ -170,13 +170,13 @@ async fn handle_socket(socket: WebSocket, state: StateForLocalServerHandler) {
                 // Ignore pong messages
             }
             Err(e) => {
-                eprintln!("WebSocket error: {}", e);
+                tracing::error!("WebSocket error: {}", e);
                 break;
             }
         }
     }
 
-    println!("WebSocket connection closed for connection: {}", connection_id);
+    tracing::debug!("WebSocket connection closed for connection: {}", connection_id);
     
     // Cleanup: Stop any active stream on disconnect
     let stream = {
@@ -187,7 +187,7 @@ async fn handle_socket(socket: WebSocket, state: StateForLocalServerHandler) {
     if let Some(stream) = stream {
         // Stop the stream silently (no response sent since connection is closing)
         stream.stop_silent().await;
-        println!("Stopped active stream due to connection close");
+        tracing::debug!("Stopped active stream due to connection close");
     }
 }
 
@@ -201,7 +201,7 @@ async fn handle_message(
     let (nonce, encrypted_payload) = match parse_message_format(message.as_bytes()) {
         Ok(result) => result,
         Err(e) => {
-            eprintln!("Message format parsing error - full trace: {}", e);
+            tracing::error!("Message format parsing error: {}", e);
             return Err(true);
         }
     };
@@ -217,7 +217,7 @@ async fn handle_message(
             match state.backend_client.get_key().await {
                 Ok(key_response) => key_response.key,
                 Err(e) => {
-                    eprintln!("Failed to get encryption key - full trace: {}", e);
+                    tracing::error!("Failed to get encryption key: {}", e);
                     return Err(true);
                 }
             }
@@ -228,10 +228,10 @@ async fn handle_message(
     let payload = match decrypt_and_parse_payload(&key, &nonce, &encrypted_payload) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Decryption failed with initial key - full trace: {}", e);
+            tracing::debug!("Decryption failed with initial key, attempting retry with fresh key: {}", e);
             
             // If we used a cached key and decryption failed, try fetching a fresh key from backend
-            eprintln!("Attempting to fetch fresh key from backend and retry decryption...");
+            tracing::debug!("Fetching fresh key from backend and retrying decryption");
 
             match state.backend_client.get_key().await {
                 Ok(key_response) => {
@@ -246,18 +246,18 @@ async fn handle_message(
                     // Retry decryption with fresh key
                     match decrypt_and_parse_payload(&key, &nonce, &encrypted_payload) {
                         Ok(p) => {
-                            eprintln!("Decryption succeeded with fresh key from backend");
+                            tracing::debug!("Decryption succeeded with fresh key from backend");
                             p
                         }
                         Err(retry_err) => {
-                            eprintln!("Decryption failed even with fresh key - full trace: {}", retry_err);
+                            tracing::error!("Decryption failed even with fresh key: {}", retry_err);
                             let _ = send_error_response(sender.clone(), state, &key, "unknown", 403, "Decryption failed".to_string()).await;
                             return Err(false);
                         }
                     }
                 }
                 Err(backend_err) => {
-                    eprintln!("Failed to fetch fresh key from backend - full trace: {}", backend_err);
+                    tracing::error!("Failed to fetch fresh key from backend: {}", backend_err);
                     let _ = send_error_response(sender.clone(), state, &key, "unknown", 403, "Decryption failed".to_string()).await;
                     return Err(false);
                 }
@@ -269,7 +269,7 @@ async fn handle_message(
     let request: WsRequest = match serde_json::from_str(&payload.data) {
         Ok(req) => req,
         Err(e) => {
-            eprintln!("Command parsing error - full trace: {}", e);
+            tracing::error!("Command parsing error: {}", e);
             // Use a default ID for error responses when parsing fails
             let _ = send_error_response(sender.clone(), state, &key, "unknown", 400, "Invalid command format".to_string()).await;
             return Ok(()); // Continue
@@ -282,7 +282,7 @@ async fn handle_message(
     let enc_state = state.encryption_state.read().await;
     if enc_state.is_valid() {
         if let Err(e) = enc_state.validate_nonce_and_timestamp(&nonce, &payload) {
-            eprintln!("Nonce/timestamp validation failed - full trace: {}", e);
+            tracing::debug!("Nonce/timestamp validation failed (may be due to replay or clock skew): {}", e);
             drop(enc_state);
             let _ = send_error_response(sender.clone(), state, &key, &request_id, 403, "Authentication validation failed".to_string()).await;
             return Err(false); // Break on validation failure
@@ -371,10 +371,10 @@ async fn handle_start_recording(
             // Send encrypted success response
             let _ = send_encrypted_response(sender, state, key, request_id, "recording-started", None).await;
             
-            println!("Started recording - stream stored globally");
+            tracing::info!("Started recording - stream stored globally");
         }
         Err(e) => {
-            eprintln!("Failed to start recording - full trace: {}", e);
+            tracing::error!("Failed to start recording: {}", e);
             let _ = send_error_response(sender.clone(), state, key, request_id, 500, "Failed to start recording".to_string()).await;
         }
     }
@@ -404,7 +404,7 @@ async fn handle_stop_recording(
             // Send encrypted success response
             let _ = send_encrypted_response(sender, state, key, request_id, "recording-stopped", None).await;
             
-            println!("Recording stopped via stop command");
+            tracing::info!("Recording stopped via stop command");
         }
         None => {
             let _ = send_error_response(sender.clone(), state, key, request_id, 404, "No active recording to stop".to_string()).await;

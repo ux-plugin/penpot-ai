@@ -12,10 +12,14 @@ use crate::dependencies::AppDependencies;
 use commands::{delete_credentials, get_credentials, is_authenticated, set_credentials, start_server};
 use menu::setup_menu_and_tray;
 use tauri::{Manager, WindowEvent};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     dotenv::dotenv().ok();
+
+    // Initialize tracing subscriber
+    initialize_tracing();
 
     let deps = AppDependencies::new().expect("Failed to initialize dependencies");
 
@@ -50,6 +54,22 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn initialize_tracing() {
+    // Get log level from environment variable, defaulting to "info"
+    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    
+    // Initialize tracing subscriber with environment filter
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level))
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+    
+    tracing::info!("Tracing initialized");
 }
 
 fn setup_window_behavior(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {

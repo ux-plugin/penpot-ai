@@ -103,7 +103,7 @@ impl AppConfig {
                     config.server_port_range = file_config.server_port_range;
                 }
                 Err(e) => {
-                    eprintln!("Warning: Failed to parse config.json: {}. Using defaults.", e);
+                    tracing::warn!("Failed to parse config.json: {}. Using defaults.", e);
                 }
             }
         }
