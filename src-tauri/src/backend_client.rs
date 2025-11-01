@@ -278,26 +278,39 @@ impl BackendClient {
 
     // Login with Figma - complete OAuth flow
     pub async fn login_with_figma(&self) -> Result<LoginAuthData, String> {
+        tracing::debug!("Starting Figma OAuth flow");
+        
         // Step 1: Initialize login
         let init_url = format!("{}/auth/figma/login", self.base_url);
+        tracing::trace!("Requesting Figma login init from: {}", init_url);
+        
         let init_response = self
             .client
             .get(&init_url)
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| format!("Failed to initialize Figma login: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to initialize Figma login: {}", e);
+                format!("Failed to initialize Figma login: {}", e)
+            })?;
 
         if !init_response.status().is_success() {
             let status = init_response.status();
             let text = init_response.text().await.unwrap_or_default();
+            tracing::error!("Figma login init failed with status {}: {}", status, text);
             return Err(format!("Figma login request failed: {} {}", status, text));
         }
 
         let login_init: LoginInitResponse = init_response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse login init response: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to parse Figma login init response: {}", e);
+                format!("Failed to parse login init response: {}", e)
+            })?;
+        
+        tracing::debug!("Figma login initialized, polling for access token");
 
         // Step 2: Get access token (polling)
         let access_token_url = format!("{}/auth/figma/access-token", self.base_url);
@@ -308,18 +321,27 @@ impl BackendClient {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| format!("Failed to get Figma access token: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to get Figma access token: {}", e);
+                format!("Failed to get Figma access token: {}", e)
+            })?;
 
         if !access_response.status().is_success() {
             let status = access_response.status();
             let text = access_response.text().await.unwrap_or_default();
+            tracing::error!("Figma access token request failed with status {}: {}", status, text);
             return Err(format!("Figma access token request failed: {} {}", status, text));
         }
 
         let access_token_resp: AccessTokenResponse = access_response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse access token response: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to parse Figma access token response: {}", e);
+                format!("Failed to parse access token response: {}", e)
+            })?;
+        
+        tracing::debug!("Figma access token obtained, fetching refresh token");
 
         // Step 3: Get refresh token
         let refresh_token_url = format!("{}/auth/plugin-ui/refresh-token", self.base_url);
@@ -330,19 +352,28 @@ impl BackendClient {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| format!("Failed to get refresh token: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to get refresh token: {}", e);
+                format!("Failed to get refresh token: {}", e)
+            })?;
 
         if !refresh_response.status().is_success() {
             let status = refresh_response.status();
             let text = refresh_response.text().await.unwrap_or_default();
+            tracing::error!("Refresh token request failed with status {}: {}", status, text);
             return Err(format!("Refresh token request failed: {} {}", status, text));
         }
 
         let refresh_token_resp: RefreshTokenResponse = refresh_response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse refresh token response: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to parse refresh token response: {}", e);
+                format!("Failed to parse refresh token response: {}", e)
+            })?;
 
+        tracing::info!("Figma OAuth flow completed successfully");
+        
         Ok(LoginAuthData {
             access_token: access_token_resp.access_token,
             refresh_token: refresh_token_resp.refresh_token,
@@ -352,26 +383,39 @@ impl BackendClient {
 
     // Login with GitHub - complete OAuth flow
     pub async fn login_with_github(&self) -> Result<LoginAuthData, String> {
+        tracing::debug!("Starting GitHub OAuth flow");
+        
         // Step 1: Initialize login
         let init_url = format!("{}/auth/github/login", self.base_url);
+        tracing::trace!("Requesting GitHub login init from: {}", init_url);
+        
         let init_response = self
             .client
             .get(&init_url)
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| format!("Failed to initialize GitHub login: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to initialize GitHub login: {}", e);
+                format!("Failed to initialize GitHub login: {}", e)
+            })?;
 
         if !init_response.status().is_success() {
             let status = init_response.status();
             let text = init_response.text().await.unwrap_or_default();
+            tracing::error!("GitHub login init failed with status {}: {}", status, text);
             return Err(format!("GitHub login request failed: {} {}", status, text));
         }
 
         let login_init: LoginInitResponse = init_response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse login init response: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to parse GitHub login init response: {}", e);
+                format!("Failed to parse login init response: {}", e)
+            })?;
+        
+        tracing::debug!("GitHub login initialized, polling for access token");
 
         // Step 2: Get access token (polling)
         let access_token_url = format!("{}/auth/github/access-token", self.base_url);
@@ -382,18 +426,27 @@ impl BackendClient {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| format!("Failed to get GitHub access token: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to get GitHub access token: {}", e);
+                format!("Failed to get GitHub access token: {}", e)
+            })?;
 
         if !access_response.status().is_success() {
             let status = access_response.status();
             let text = access_response.text().await.unwrap_or_default();
+            tracing::error!("GitHub access token request failed with status {}: {}", status, text);
             return Err(format!("GitHub access token request failed: {} {}", status, text));
         }
 
         let access_token_resp: AccessTokenResponse = access_response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse access token response: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to parse GitHub access token response: {}", e);
+                format!("Failed to parse access token response: {}", e)
+            })?;
+        
+        tracing::debug!("GitHub access token obtained, fetching refresh token");
 
         // Step 3: Get refresh token
         let refresh_token_url = format!("{}/auth/plugin-ui/refresh-token", self.base_url);
@@ -404,19 +457,28 @@ impl BackendClient {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| format!("Failed to get refresh token: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to get refresh token: {}", e);
+                format!("Failed to get refresh token: {}", e)
+            })?;
 
         if !refresh_response.status().is_success() {
             let status = refresh_response.status();
             let text = refresh_response.text().await.unwrap_or_default();
+            tracing::error!("Refresh token request failed with status {}: {}", status, text);
             return Err(format!("Refresh token request failed: {} {}", status, text));
         }
 
         let refresh_token_resp: RefreshTokenResponse = refresh_response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse refresh token response: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to parse refresh token response: {}", e);
+                format!("Failed to parse refresh token response: {}", e)
+            })?;
 
+        tracing::info!("GitHub OAuth flow completed successfully");
+        
         Ok(LoginAuthData {
             access_token: access_token_resp.access_token,
             refresh_token: refresh_token_resp.refresh_token,
@@ -431,6 +493,7 @@ impl BackendClient {
 
     // Fetch user configuration
     pub async fn fetch_user_config(&self) -> Result<UserConfig, String> {
+        tracing::debug!("Fetching user configuration from backend");
         let url = format!("{}/user/info", self.base_url);
 
         self.make_authenticated_request(|access_token| {
@@ -442,19 +505,28 @@ impl BackendClient {
                     .bearer_auth(&access_token)
                     .send()
                     .await
-                    .map_err(|e| format!("Failed to fetch user config: {}", e))?;
+                    .map_err(|e| {
+                        tracing::error!("Failed to fetch user config: {}", e);
+                        format!("Failed to fetch user config: {}", e)
+                    })?;
 
                 if response.status().is_success() {
                     let user_config: UserConfig = response
                         .json()
                         .await
-                        .map_err(|e| format!("Failed to parse user config response: {}", e))?;
+                        .map_err(|e| {
+                            tracing::error!("Failed to parse user config response: {}", e);
+                            format!("Failed to parse user config response: {}", e)
+                        })?;
+                    tracing::trace!("User config fetched successfully");
                     Ok(user_config)
                 } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    tracing::debug!("Received 401, will trigger token refresh");
                     Err("HTTP 401".to_string())
                 } else {
                     let status = response.status();
                     let text = response.text().await.unwrap_or_default();
+                    tracing::error!("Failed to fetch user config with status {}: {}", status, text);
                     Err(format!("Failed to fetch user config: {} {}", status, text))
                 }
             }
@@ -464,6 +536,7 @@ impl BackendClient {
 
     // Update user configuration
     pub async fn update_user_config(&self, update_data: UpdateUserRequest) -> Result<(), String> {
+        tracing::debug!("Updating user configuration");
         let url = format!("{}/user/update", self.base_url);
 
         self.make_authenticated_request(|access_token| {
@@ -477,15 +550,21 @@ impl BackendClient {
                     .json(&update_data)
                     .send()
                     .await
-                    .map_err(|e| format!("Failed to update user config: {}", e))?;
+                    .map_err(|e| {
+                        tracing::error!("Failed to update user config: {}", e);
+                        format!("Failed to update user config: {}", e)
+                    })?;
 
                 if response.status().is_success() {
+                    tracing::info!("User configuration updated successfully");
                     Ok(())
                 } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    tracing::debug!("Received 401, will trigger token refresh");
                     Err("HTTP 401".to_string())
                 } else {
                     let status = response.status();
                     let text = response.text().await.unwrap_or_default();
+                    tracing::error!("Failed to update user config with status {}: {}", status, text);
                     Err(format!("Failed to update user config: {} {}", status, text))
                 }
             }
