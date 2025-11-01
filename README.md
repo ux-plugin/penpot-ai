@@ -36,6 +36,24 @@ The backend manages:
 - **Audio Recording**: Real-time audio capture and streaming
 - **Authentication**: OAuth flows (Figma, GitHub) with credential management and OS keyring integration
 - **System Tray**: Background operation with tray menu
+- **Structured Logging**: Production-ready logging with the `tracing` crate
+
+## Logging
+
+The application uses structured logging via the `tracing` crate. You can control log verbosity using the `RUST_LOG` environment variable:
+
+```bash
+# Set log level to debug for development
+RUST_LOG=debug pnpm tauri dev
+
+# Set log level to info for production
+RUST_LOG=info pnpm tauri build
+
+# Set module-specific log levels
+RUST_LOG=figma_plugin_companion_app::auth=debug,info pnpm tauri dev
+```
+
+For detailed logging configuration and best practices, see [LOGGING.md](docs/LOGGING.md).
 
 ## WebSocket Support
 

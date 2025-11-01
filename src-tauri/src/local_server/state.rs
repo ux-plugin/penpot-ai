@@ -44,14 +44,17 @@ impl StateForLocalServerHandler {
     pub fn register_connection(&self, id: Uuid, sender: Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>>) {
         let mut connections = self.active_connections.lock().unwrap();
         connections.insert(id, sender);
-        println!("WebSocket connection registered: {}", id);
+        tracing::info!("WebSocket connection registered: {} (total active: {})", id, connections.len());
     }
 
     /// Unregister a WebSocket connection
     pub fn unregister_connection(&self, id: &Uuid) {
         let mut connections = self.active_connections.lock().unwrap();
-        connections.remove(id);
-        println!("WebSocket connection unregistered: {}", id);
+        if connections.remove(id).is_some() {
+            tracing::info!("WebSocket connection unregistered: {} (total active: {})", id, connections.len());
+        } else {
+            tracing::warn!("Attempted to unregister non-existent connection: {}", id);
+        }
     }
 
     /// Close all active WebSocket connections
@@ -62,15 +65,44 @@ impl StateForLocalServerHandler {
             connections
         };
 
-        println!("Closing {} active WebSocket connection(s)", connections.len());
+        tracing::info!("Closing {} active WebSocket connection(s)", connections.len());
 
         for (id, sender) in connections {
             let mut sender_lock = sender.lock().await;
             if let Err(e) = sender_lock.send(Message::Close(None)).await {
-                eprintln!("Failed to send close frame to connection {}: {}", id, e);
+                tracing::error!("Failed to send close frame to connection {}: {}", id, e);
             } else {
-                println!("Sent close frame to connection: {}", id);
+                tracing::debug!("Sent close frame to connection: {}", id);
             }
         }
+    }
+}
+
+/// RAII guard for WebSocket connections
+/// Automatically deregisters connection when dropped (guarantees cleanup)
+pub struct ConnectionGuard {
+    id: Uuid,
+    state: StateForLocalServerHandler,
+}
+
+impl ConnectionGuard {
+    /// Create a new connection guard and automatically register the connection
+    pub fn new(state: StateForLocalServerHandler, sender: WebSocketSender) -> Self {
+        let id = Uuid::new_v4();
+        state.register_connection(id, sender);
+        tracing::debug!("ConnectionGuard created for: {}", id);
+        Self { id, state }
+    }
+
+    /// Get the connection ID
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        tracing::debug!("ConnectionGuard dropping for: {} (auto-deregistering)", self.id);
+        self.state.unregister_connection(&self.id);
     }
 }

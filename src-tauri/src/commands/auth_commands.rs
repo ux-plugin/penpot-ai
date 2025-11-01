@@ -38,26 +38,29 @@ pub async fn logout(
     app: AppHandle,
     deps: tauri::State<'_, AppDependencies>
 ) -> Result<(), String> {
-    println!("Logging out...");
+    let span = tracing::info_span!("logout");
+    let _enter = span.enter();
+    
+    tracing::info!("Starting logout");
     
     // Clear credentials - log error but don't block logout if keyring fails
     if let Err(e) = deps.auth_state().clear().await {
-        eprintln!("Warning: Failed to clear credentials from keyring: {}", e);
+        tracing::warn!("Failed to clear credentials from keyring: {}", e);
         // Continue with logout anyway
     }
 
     // Ensure the main window is visible after logout - log error but don't block
     if let Err(e) = show_or_create_main_window(app.clone()).await {
-        eprintln!("Warning: Failed to show main window: {}", e);
+        tracing::warn!("Failed to show main window: {}", e);
         // Continue with logout anyway
     }
 
     // Shutdown the server - log error but don't block logout
     if let Err(e) = deps.local_server().stop().await {
-        eprintln!("Warning: Failed to stop server: {}", e);
+        tracing::warn!("Failed to stop server: {}", e);
         // Continue with logout anyway
     }
 
-    println!("Logout completed successfully");
+    tracing::info!("Logout completed successfully");
     Ok(())
 }
