@@ -103,8 +103,6 @@ impl AuthState {
             delete_credentials_from_keyring().await?;
             tracing::debug!("Credentials deleted from keyring successfully");
         } // Lock is released here
-        
-        tracing::trace!("Write lock released, keyring delete completed");
 
         Ok(())
     }

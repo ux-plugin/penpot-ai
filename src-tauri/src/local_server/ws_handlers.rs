@@ -228,10 +228,10 @@ async fn handle_message(
     let payload = match decrypt_and_parse_payload(&key, &nonce, &encrypted_payload) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!("Decryption failed with initial key: {}", e);
+            tracing::debug!("Decryption failed with initial key, attempting retry with fresh key: {}", e);
             
             // If we used a cached key and decryption failed, try fetching a fresh key from backend
-            tracing::debug!("Attempting to fetch fresh key from backend and retry decryption");
+            tracing::debug!("Fetching fresh key from backend and retrying decryption");
 
             match state.backend_client.get_key().await {
                 Ok(key_response) => {
@@ -282,7 +282,7 @@ async fn handle_message(
     let enc_state = state.encryption_state.read().await;
     if enc_state.is_valid() {
         if let Err(e) = enc_state.validate_nonce_and_timestamp(&nonce, &payload) {
-            tracing::warn!("Nonce/timestamp validation failed: {}", e);
+            tracing::debug!("Nonce/timestamp validation failed (may be due to replay or clock skew): {}", e);
             drop(enc_state);
             let _ = send_error_response(sender.clone(), state, &key, &request_id, 403, "Authentication validation failed".to_string()).await;
             return Err(false); // Break on validation failure
