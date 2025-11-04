@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 import { Store } from '@tauri-apps/plugin-store';
-import { UserConfig } from '@/api/user/fetchUserConfig'; // Import UserConfig type
+
+// UserConfig type matching the Rust backend structure
+interface UserConfig {
+  id: string;
+  name?: string;
+  username?: string;
+  allowSavingCompletions: boolean;
+}
 
 interface SocialLogin {
   provider: ("GITHUB" | "FIGMA");

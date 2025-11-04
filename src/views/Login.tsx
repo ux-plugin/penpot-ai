@@ -1,70 +1,72 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { FigmaIcon } from "@/assets/FigmaIcon.tsx";
 import { GitHubIcon } from "@/assets/GithubIcon.tsx";
-import { useGithubLoginQuery } from "@/api/auth/loginGithub.ts";
-import { useFigmaLoginQuery } from "@/api/auth/loginFigma.ts";
 import { Loader2 } from "lucide-react";
 import { useAuthenticationStore } from "@/stores/useAuthenticationStore";
 import { showErrorToast } from "@/utils/showErrorToast";
+import { invoke } from "@tauri-apps/api/core";
+
+interface LoginAuthData {
+    access_token: string;
+    refresh_token: string;
+    refresh_token_expires_at: string;
+}
 
 export const Login = () => {
     const { setAccessToken, setRefreshToken, setIsAuthenticated, setRefreshTokenExpiresAt } = useAuthenticationStore();
 
-    // Keep queries disabled so we trigger them manually with refetch()
-    const {
-        isFetching: githubIsPending,
-        refetch: refetchGithub,
-    } = useGithubLoginQuery({ enabled: false });
-
-    const {
-        isFetching: figmaIsPending,
-        refetch: refetchFigma,
-    } = useFigmaLoginQuery({ enabled: false });
+    const [figmaLoading, setFigmaLoading] = useState(false);
+    const [githubLoading, setGithubLoading] = useState(false);
 
     // Individual loading states for each provider
-    const isAnyLoading = githubIsPending || figmaIsPending;
+    const isAnyLoading = githubLoading || figmaLoading;
 
     const handleFigmaLogin = useCallback(async () => {
+        setFigmaLoading(true);
         try {
-            const result = await refetchFigma();
+            const result = await invoke<LoginAuthData>('login_with_figma');
 
-            if (!result.data?.accessToken || !result.data?.accessToken) {
+            if (!result.access_token || !result.refresh_token) {
                 showErrorToast("Malformed response from the server.");
                 return;
             }
 
-            setAccessToken(result.data.accessToken);
-            setRefreshToken(result.data.refreshToken);
+            setAccessToken(result.access_token);
+            setRefreshToken(result.refresh_token);
             setIsAuthenticated(true);
-            setRefreshTokenExpiresAt(result.data.refreshTokenExpiresAt);
+            setRefreshTokenExpiresAt(result.refresh_token_expires_at);
 
         } catch (err: unknown) {
             // Fallback for unexpected exceptions
             showErrorToast(err, "An unexpected error occurred.");
+        } finally {
+            setFigmaLoading(false);
         }
-    }, [refetchFigma, setAccessToken, setRefreshToken, setIsAuthenticated]);
+    }, [setAccessToken, setRefreshToken, setIsAuthenticated, setRefreshTokenExpiresAt]);
 
     const handleGitHubLogin = useCallback(async () => {
+        setGithubLoading(true);
         try {
-            const result = await refetchGithub();
+            const result = await invoke<LoginAuthData>('login_with_github');
 
-
-            if (!result.data?.accessToken || !result.data?.accessToken) {
+            if (!result.access_token || !result.refresh_token) {
                 showErrorToast("Malformed response from the server.");
                 return;
             }
 
-            setAccessToken(result.data.accessToken);
-            setRefreshToken(result.data.refreshToken);
-            setRefreshTokenExpiresAt(result.data.refreshTokenExpiresAt);
+            setAccessToken(result.access_token);
+            setRefreshToken(result.refresh_token);
+            setRefreshTokenExpiresAt(result.refresh_token_expires_at);
             setIsAuthenticated(true);
 
         } catch (err: unknown) {
             // Fallback for unexpected exceptions
             showErrorToast(err, "An unexpected error occurred.");
+        } finally {
+            setGithubLoading(false);
         }
-    }, [refetchGithub, setAccessToken, setRefreshToken, setIsAuthenticated, setRefreshTokenExpiresAt]);
+    }, [setAccessToken, setRefreshToken, setIsAuthenticated, setRefreshTokenExpiresAt]);
 
     return (
         <div className="flex min-h-screen flex-col items-center justify-center gap-4">
@@ -77,7 +79,7 @@ export const Login = () => {
                         className="w-full"
                         disabled={isAnyLoading}
                     >
-                        {figmaIsPending ? (
+                        {figmaLoading ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                 Please wait
@@ -97,7 +99,7 @@ export const Login = () => {
                         className="w-full"
                         disabled={isAnyLoading}
                     >
-                        {githubIsPending ? (
+                        {githubLoading ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                 Please wait

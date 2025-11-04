@@ -32,7 +32,8 @@
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.0.2",
     "tailwindcss": "^4.0.15",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss-animate": "^1.0.7",
+    "zustand": "^5.0.8"
   },
   "devDependencies": {
     "@mui/icons-material": "^5.15.14",

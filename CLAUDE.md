@@ -29,15 +29,15 @@ This is a **Tauri desktop application** that serves as a companion app for a Fig
 **Frontend (React/TypeScript)**
 - React Router for navigation with authentication-based route protection
 - Zustand stores for state management (authentication, user settings)
-- TanStack Query for server state management
 - Tailwind CSS with Radix UI components for styling
 - Path alias `@/*` maps to `./src/*`
+- **NO DIRECT API CALLS** - All API communication through Tauri commands
 
 **Backend (Rust/Tauri)**
 - **Dependency Injection System**: `AppDependencies` with lazy initialization using `Arc<OnceLock<T>>`
 - **Local HTTP Server**: Axum-based server with audio recording capabilities and SSE streaming
 - **Backend Client**: HTTP client for external API communication with authentication
-- **Authentication**: Credential management with OS keyring integration
+- **Authentication**: OAuth flows (Figma, GitHub) with credential management and OS keyring integration
 - **Audio Manager**: Real-time audio capture and streaming via CPAL
 - **System Tray**: Menu and tray functionality for background operation
 
@@ -45,10 +45,10 @@ This is a **Tauri desktop application** that serves as a companion app for a Fig
 
 - `dependencies.rs` - Centralized dependency injection container
 - `local_server.rs` - Local HTTP server (handshake, audio recording endpoints)
-- `backend_client.rs` - External API communication client
+- `backend_client.rs` - External API communication client with OAuth flows
 - `auth.rs` - Authentication state and credential management
 - `audio.rs` - Audio recording and streaming functionality
-- `commands/` - Tauri commands (auth_commands, server_commands)
+- `commands/` - Tauri commands (auth_commands, server_commands, api_commands)
 - `window_utils.rs` - Window management utilities
 - `config.rs` - Application configuration management
 
@@ -57,16 +57,41 @@ This is a **Tauri desktop application** that serves as a companion app for a Fig
 - `App.tsx` - Main router with ProtectedRoute/PublicRoute wrappers
 - `views/` - Main application views (Login, Home)
 - `stores/` - Zustand state stores
-- `providers/` - React context providers and query client setup
+- `providers/` - React context providers
 - `components/ui/` - Reusable UI components (Radix-based)
+
+### API Communication Pattern
+
+**ALL API calls to external services are handled by the Rust backend.** The frontend NEVER makes direct HTTP requests to external APIs.
+
+Frontend triggers backend operations via Tauri commands:
+```typescript
+// Login with Figma
+const result = await invoke<LoginAuthData>('login_with_figma');
+
+// Fetch user configuration
+const config = await invoke<UserConfig>('fetch_user_config');
+
+// Update user configuration
+await invoke('update_user_config', { updateData });
+```
+
+The backend handles:
+- Complete OAuth flows (initialize, poll, get tokens)
+- Token refresh on 401 errors
+- All HTTP communication with external APIs
+- Response parsing and error handling
 
 ### Authentication Flow
 
-1. Users authenticate through Login view
-2. Credentials stored in OS keyring via Rust backend
-3. Authentication state managed by Zustand store
-4. Routes protected based on authentication status
-5. Backend client automatically includes auth in API calls
+1. User clicks login button in Login view
+2. Frontend invokes `login_with_figma` or `login_with_github` Tauri command
+3. Backend initializes OAuth flow and opens browser
+4. Backend polls for access token
+5. Backend retrieves refresh token
+6. Backend returns LoginAuthData to frontend
+7. Frontend updates Zustand store and stores credentials via Tauri commands
+8. Credentials persisted in OS keyring by backend
 
 ### Local Server Architecture
 
@@ -87,9 +112,15 @@ All Rust functions exposed to frontend are in `commands/` modules and registered
 - **Backend**: Arc-wrapped shared state with tokio async mutexes
 - **Cross-language**: Tauri commands bridge React and Rust
 
+### API Communication
+- **ALL external API calls handled by Rust backend**
+- Frontend triggers operations via Tauri commands: `invoke('command_name', params)`
+- Backend handles OAuth flows, token refresh, HTTP requests
+- Frontend never makes direct fetch/HTTP calls to external services
+
 ### Error Handling
 - Rust functions return `Result<T, String>` for Tauri command compatibility
-- Frontend uses TanStack Query for async error states
+- Frontend catches errors from invoke() calls and displays to user
 
 ### Window Behavior
 App hides to system tray on close instead of exiting (see `setup_window_behavior` in lib.rs)
