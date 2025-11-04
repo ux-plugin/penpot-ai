@@ -10,65 +10,10 @@ pub async fn login_with_figma(
 ) -> Result<LoginAuthData, String> {
     tracing::info!("Starting Figma login flow");
     
-    let backend_client = deps.backend_client();
+    let result = deps.backend_client().login_with_figma(app).await?;
     
-    // Get login init response first to extract the login URL
-    let init_url = deps.config().backend_base_url.clone() + "/auth/figma/login";
-    tracing::debug!("Initializing Figma login with URL: {}", init_url);
-    
-    // Use reqwest directly for the initial call to get the login URL
-    let client = tauri_plugin_http::reqwest::Client::new();
-    let init_response = client
-        .get(&init_url)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to initialize Figma login: {}", e);
-            format!("Failed to initialize Figma login: {}", e)
-        })?;
-
-    if !init_response.status().is_success() {
-        let status = init_response.status();
-        let text = init_response.text().await.unwrap_or_default();
-        tracing::error!("Figma login request failed with status {}: {}", status, text);
-        return Err(format!("Figma login request failed: {} {}", status, text));
-    }
-
-    #[derive(serde::Deserialize)]
-    struct LoginInitResponse {
-        #[serde(rename = "loginUrl")]
-        login_url: String,
-    }
-
-    let login_init: LoginInitResponse = init_response
-        .json()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to parse login init response: {}", e);
-            format!("Failed to parse login init response: {}", e)
-        })?;
-
-    // Open the login URL in the default browser
-    tracing::debug!("Opening login URL in browser");
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_url(&login_init.login_url, None::<&str>)
-        .map_err(|e| {
-            tracing::error!("Failed to open login URL: {}", e);
-            format!("Failed to open login URL: {}", e)
-        })?;
-
-    // Continue with the login flow using backend_client
-    tracing::debug!("Continuing with backend login flow");
-    let result = backend_client.login_with_figma().await;
-    
-    match &result {
-        Ok(_) => tracing::info!("Figma login completed successfully"),
-        Err(e) => tracing::error!("Figma login failed: {}", e),
-    }
-    
-    result
+    tracing::info!("Figma login completed successfully");
+    Ok(result)
 }
 
 // Login with GitHub
@@ -79,65 +24,10 @@ pub async fn login_with_github(
 ) -> Result<LoginAuthData, String> {
     tracing::info!("Starting GitHub login flow");
     
-    let backend_client = deps.backend_client();
+    let result = deps.backend_client().login_with_github(app).await?;
     
-    // Get login init response first to extract the login URL
-    let init_url = deps.config().backend_base_url.clone() + "/auth/github/login";
-    tracing::debug!("Initializing GitHub login with URL: {}", init_url);
-    
-    // Use reqwest directly for the initial call to get the login URL
-    let client = tauri_plugin_http::reqwest::Client::new();
-    let init_response = client
-        .get(&init_url)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to initialize GitHub login: {}", e);
-            format!("Failed to initialize GitHub login: {}", e)
-        })?;
-
-    if !init_response.status().is_success() {
-        let status = init_response.status();
-        let text = init_response.text().await.unwrap_or_default();
-        tracing::error!("GitHub login request failed with status {}: {}", status, text);
-        return Err(format!("GitHub login request failed: {} {}", status, text));
-    }
-
-    #[derive(serde::Deserialize)]
-    struct LoginInitResponse {
-        #[serde(rename = "loginUrl")]
-        login_url: String,
-    }
-
-    let login_init: LoginInitResponse = init_response
-        .json()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to parse login init response: {}", e);
-            format!("Failed to parse login init response: {}", e)
-        })?;
-
-    // Open the login URL in the default browser
-    tracing::debug!("Opening login URL in browser");
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_url(&login_init.login_url, None::<&str>)
-        .map_err(|e| {
-            tracing::error!("Failed to open login URL: {}", e);
-            format!("Failed to open login URL: {}", e)
-        })?;
-
-    // Continue with the login flow using backend_client
-    tracing::debug!("Continuing with backend login flow");
-    let result = backend_client.login_with_github().await;
-    
-    match &result {
-        Ok(_) => tracing::info!("GitHub login completed successfully"),
-        Err(e) => tracing::error!("GitHub login failed: {}", e),
-    }
-    
-    result
+    tracing::info!("GitHub login completed successfully");
+    Ok(result)
 }
 
 // Fetch user configuration
