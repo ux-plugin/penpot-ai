@@ -20,8 +20,8 @@ class WebSocketConfiguration
 constructor(
     private val sharedHandler: SharedWebSocketRouter,
     private val authMessageHandler: AuthMessageHandler,
-    private val completionsFacade: CompletionsMessageHandler,
-    private val userFacade: UserMessageHandler,
+    private val completionsMessageHandler: CompletionsMessageHandler,
+    private val userMessageHandler: UserMessageHandler,
 ) {
 
     fun onStart(@Observes event: StartupEvent) {
@@ -29,8 +29,8 @@ constructor(
 
         // Register facades (auth first for proper message routing)
         sharedHandler.registerMessageHandler(authMessageHandler)
-        sharedHandler.registerMessageHandler(completionsFacade)
-        sharedHandler.registerMessageHandler(userFacade)
+        sharedHandler.registerMessageHandler(completionsMessageHandler)
+        sharedHandler.registerMessageHandler(userMessageHandler)
 
         Log.info("WebSocket infrastructure initialized successfully")
     }
