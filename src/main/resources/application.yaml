@@ -114,6 +114,19 @@ openai:
   project.id: "${OPENAI_PROJECT_ID}"
   org.id: "${OPENAI_ORG_ID}"
 
+# Fireworks AI configuration for audio transcription
+fireworks:
+  api:
+    key: "${FIREWORKS_API_KEY}"
+    base-url: "${FIREWORKS_API_BASE_URL:https://api.fireworks.ai}"
+  whisper:
+    model: "${FIREWORKS_WHISPER_MODEL:whisper-v3-large}"
+
+# Agent configuration
+agent:
+  model:
+    name: "${AGENT_MODEL_NAME:gpt-4o-mini}"
+
 
 smallrye:
   jwt:
