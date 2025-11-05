@@ -142,9 +142,10 @@ constructor(
             )
         }
 
-        // Save audio to file
+        // Save audio to file with sanitized filename
         val timestamp = System.currentTimeMillis()
-        val connectionIdShort = connection.id().take(8)
+        // Sanitize connection ID to prevent directory traversal
+        val connectionIdShort = connection.id().take(8).filter { it.isLetterOrDigit() || it == '-' }
         val outputDir = File("audio-recordings")
         val audioFile = File(outputDir, "audio_${timestamp}_${connectionIdShort}.wav")
 

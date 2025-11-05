@@ -91,10 +91,13 @@ class AudioTranscriptionService {
             builder.append("$language$lineBreak")
         }
 
+        // Detect content type from file extension
+        val contentType = detectContentType(audioFile)
+
         // Add file field header
         builder.append("--$boundary$lineBreak")
         builder.append("Content-Disposition: form-data; name=\"file\"; filename=\"${audioFile.name}\"$lineBreak")
-        builder.append("Content-Type: audio/wav$lineBreak$lineBreak")
+        builder.append("Content-Type: $contentType$lineBreak$lineBreak")
 
         val headerBytes = builder.toString().toByteArray(Charsets.UTF_8)
         val fileBytes = Files.readAllBytes(audioFile.toPath())
@@ -102,6 +105,19 @@ class AudioTranscriptionService {
 
         // Combine all parts
         return headerBytes + fileBytes + footerBytes
+    }
+
+    /** Detect content type from file extension */
+    private fun detectContentType(file: File): String {
+        return when (file.extension.lowercase()) {
+            "wav" -> "audio/wav"
+            "mp3" -> "audio/mpeg"
+            "m4a" -> "audio/mp4"
+            "flac" -> "audio/flac"
+            "ogg" -> "audio/ogg"
+            "webm" -> "audio/webm"
+            else -> "audio/wav" // Default to WAV
+        }
     }
 
     /** Parse the transcription response JSON to extract the text */
