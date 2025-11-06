@@ -1,6 +1,8 @@
 package com.plugin.features.completions
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.plugin.features.completions.koog.AgentPipelineInput
+import com.plugin.features.completions.koog.KoogAgentPipeline
 import com.plugin.infrastructure.websocket.WebSocketMessage
 import com.plugin.infrastructure.websocket.WebSocketMessageHandler
 import com.plugin.infrastructure.websocket.WebSocketMessageType
@@ -11,12 +13,18 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 
 /**
  * Handler for completions-related WebSocket messages
  *
- * This handler manages completion requests using the new message schema.
+ * This handler manages completion requests using the new message schema and integrates with Koog agent pipeline for
+ * audio transcription and LLM response generation.
  *
  * Migrated to Quarkus WebSocket Next API with thread-safe audio buffer handling for parallel message processing.
  */
@@ -25,10 +33,14 @@ class CompletionsMessageHandler
 @Inject
 constructor(
     private val objectMapper: ObjectMapper,
+    private val koogAgentPipeline: KoogAgentPipeline,
 ) : WebSocketMessageHandler {
 
     // Store audio buffers per connection for recording (thread-safe)
     private val audioBuffers = ConcurrentHashMap<String, ByteArrayOutputStream>()
+
+    // Store accumulated drawn paths per connection
+    private val drawnPaths = ConcurrentHashMap<String, StringBuilder>()
 
     override fun getMessageTypePrefix(): String = "completions:"
 
@@ -81,7 +93,24 @@ constructor(
         Log.info("  Drawn Path: ${drawnPath?.take(100)}${if ((drawnPath?.length ?: 0) > 100) "..." else ""}")
         Log.info("  Audio Chunk Size: ${audioChunk?.length ?: 0} base64 chars")
 
-        // TODO: Process the completion request
+        // Accumulate drawn path for context
+        if (!drawnPath.isNullOrBlank()) {
+            drawnPaths.getOrPut(connection.id()) { StringBuilder() }.append(drawnPath).append(" ")
+        }
+
+        // Accumulate audio chunk
+        if (!audioChunk.isNullOrBlank()) {
+            try {
+                val decodedAudio = Base64.getDecoder().decode(audioChunk)
+                audioBuffers[connection.id()]?.let { buffer ->
+                    synchronized(buffer) { buffer.write(decodedAudio) }
+                    Log.debug("Accumulated audio: ${buffer.size()} bytes")
+                }
+            } catch (e: Exception) {
+                Log.error("Failed to decode audio chunk", e)
+            }
+        }
+
         return WebSocketResponse(
             type = message.type,
             payload = mapOf("status" to "ok", "fe_id" to feId),
@@ -89,7 +118,7 @@ constructor(
         )
     }
 
-    private fun handleCompletionRequestEnd(
+    private suspend fun handleCompletionRequestEnd(
         message: WebSocketMessage,
         connection: WebSocketConnection,
         userId: String
@@ -97,7 +126,76 @@ constructor(
         val feId = message.payload["fe_id"] as? String
         Log.info("Handling completion_request_end for FE ID: $feId")
 
-        // TODO: Finalize completion request processing
+        // Process accumulated audio and generate response using Koog pipeline
+        val audioBuffer = audioBuffers[connection.id()]
+        val cursorContext = drawnPaths[connection.id()]?.toString()
+
+        if (audioBuffer != null && audioBuffer.size() > 0) {
+            try {
+                // Save audio to temporary file
+                val timestamp = System.currentTimeMillis()
+                val connectionIdShort = connection.id().take(8)
+                val audioFile = File("audio-recordings", "audio_${timestamp}_${connectionIdShort}.wav")
+                audioFile.parentFile?.mkdirs()
+
+                val audioData = synchronized(audioBuffer) { audioBuffer.toByteArray() }
+                WavFileWriter.writeWavFile(audioData, audioFile)
+                Log.info("Saved audio for processing: ${audioFile.absolutePath}")
+
+                // Create streaming channel for responses
+                val streamChannel = Channel<String>(Channel.UNLIMITED)
+
+                // Launch Koog pipeline in background and stream responses
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val pipelineInput = AgentPipelineInput(audioFile = audioFile, cursorContext = cursorContext)
+                        koogAgentPipeline.executePipeline(pipelineInput, streamChannel)
+                    } catch (e: Exception) {
+                        Log.error("Koog pipeline execution failed", e)
+                        streamChannel.close()
+                    }
+                }
+
+                // Stream responses back to client
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (chunk in streamChannel) {
+                        connection.sendText(
+                            objectMapper.writeValueAsString(
+                                WebSocketResponse(
+                                    type = WebSocketMessageType.COMPLETIONS_RESPONSE,
+                                    payload = mapOf("fe_id" to feId, "response_chunk" to chunk),
+                                    requestId = message.requestId
+                                )
+                            )
+                        )
+                    }
+                    // Send completion signal
+                    connection.sendText(
+                        objectMapper.writeValueAsString(
+                            WebSocketResponse(
+                                type = WebSocketMessageType.COMPLETIONS_RESPONSE_END,
+                                payload = mapOf("fe_id" to feId, "status" to "completed"),
+                                requestId = message.requestId
+                            )
+                        )
+                    )
+                }
+
+                // Clear buffers after processing starts
+                audioBuffers[connection.id()]?.reset()
+                drawnPaths[connection.id()]?.clear()
+            } catch (e: Exception) {
+                Log.error("Failed to process audio with Koog pipeline", e)
+                return WebSocketResponse(
+                    type = message.type,
+                    payload = mapOf("status" to "error", "fe_id" to feId, "error" to (e.message ?: "Unknown error")),
+                    requestId = message.requestId
+                )
+            }
+        } else {
+            Log.warn("No audio data received for processing")
+        }
+
         return WebSocketResponse(
             type = message.type,
             payload = mapOf("status" to "ok", "fe_id" to feId),
@@ -148,43 +246,22 @@ constructor(
     override suspend fun onOpen(connection: WebSocketConnection, userId: String) {
         Log.debug("CompletionsMessageHandler: Connection opened for user $userId")
         audioBuffers[connection.id()] = ByteArrayOutputStream()
+        drawnPaths[connection.id()] = StringBuilder()
     }
 
     override suspend fun onClose(connection: WebSocketConnection, userId: String) {
         Log.debug("CompletionsMessageHandler: Connection closed for user $userId")
 
-        // Save accumulated audio to WAV file
-        audioBuffers[connection.id()]?.let { buffer ->
-            try {
-                val timestamp = System.currentTimeMillis()
-                val connectionIdShort = connection.id().take(8)
-                val outputDir = File("audio-recordings")
-                val outputFile = File(outputDir, "audio_${timestamp}_${connectionIdShort}.wav")
-
-                // Thread-safe read of audio data
-                val audioData = synchronized(buffer) { buffer.toByteArray() }
-
-                if (audioData.isNotEmpty()) {
-                    WavFileWriter.writeWavFile(audioData, outputFile)
-                    Log.info("Audio saved to: ${outputFile.absolutePath}")
-                    Log.info("Audio file size: ${outputFile.length()} bytes")
-                    Log.info("Duration: ~${audioData.size / (AudioConfig.SAMPLE_RATE * 2)} seconds")
-                } else {
-                    Log.warn("No audio data to save for connection ${connection.id()}")
-                }
-            } catch (e: Exception) {
-                Log.error("Failed to save audio file", e)
-            }
-        }
-
-        // Clean up audio buffers
+        // Clean up buffers
         audioBuffers.remove(connection.id())
+        drawnPaths.remove(connection.id())
     }
 
     override suspend fun onError(connection: WebSocketConnection, userId: String, error: Throwable) {
         Log.error("CompletionsMessageHandler: Error for user $userId", error)
-        // Clean up audio buffers
+        // Clean up buffers
         audioBuffers.remove(connection.id())
+        drawnPaths.remove(connection.id())
     }
 }
 
