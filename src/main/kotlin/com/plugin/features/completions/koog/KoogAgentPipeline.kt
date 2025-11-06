@@ -40,9 +40,25 @@ class KoogAgentPipeline {
 
     @Inject @ConfigProperty(name = "koog.openai.api-key") lateinit var openaiApiKey: String
 
-    @Inject @ConfigProperty(name = "koog.llm.model", defaultValue = "gpt-4o-mini") lateinit var llmModel: String
+    @Inject @ConfigProperty(name = "koog.llm.model", defaultValue = "gpt-4o-mini") lateinit var llmModelName: String
 
     @Inject @ConfigProperty(name = "koog.llm.temperature", defaultValue = "0.7") lateinit var llmTemperature: String
+
+    /**
+     * Resolve the LLM model from configuration
+     *
+     * Maps the configured model name to the appropriate OpenAI model object. Currently supports GPT-4o and GPT-4o-mini.
+     */
+    private fun resolveLLMModel() =
+        when (llmModelName.lowercase()) {
+            "gpt-4o" -> OpenAIModels.Chat.GPT4o
+            "gpt-4o-mini",
+            "default" -> OpenAIModels.CostOptimized.GPT4oMini
+            else -> {
+                Log.warn("Unknown model '$llmModelName', defaulting to gpt-4o-mini")
+                OpenAIModels.CostOptimized.GPT4oMini
+            }
+        }
 
     /**
      * Execute the complete agent pipeline: transcription + LLM response
@@ -120,7 +136,7 @@ class KoogAgentPipeline {
             AIAgent(
                 promptExecutor = executor,
                 strategy = streamingStrategy,
-                llmModel = OpenAIModels.CostOptimized.GPT4oMini,
+                llmModel = resolveLLMModel(),
                 systemPrompt = buildSystemPrompt(),
                 temperature = llmTemperature.toDouble()
             ) {

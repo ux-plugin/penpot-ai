@@ -1,5 +1,6 @@
 package com.plugin.features.completions.koog
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import io.quarkus.logging.Log
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -14,6 +15,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
+/** Response structure from Fireworks AI transcription API */
+data class FireworksTranscriptionResponse(val text: String)
+
 /**
  * Service for transcribing audio files using Fireworks AI's Whisper v3 Large model
  *
@@ -24,6 +28,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 class FireworksTranscriptionService {
 
     @Inject @ConfigProperty(name = "koog.fireworks.api-key") lateinit var fireworksApiKey: String
+
+    @Inject lateinit var objectMapper: ObjectMapper
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build()
@@ -67,11 +73,10 @@ class FireworksTranscriptionService {
                 val responseBody =
                     response.body?.string() ?: throw RuntimeException("Empty response from Fireworks API")
 
-                // Parse the JSON response to extract the text field
-                // Expected format: {"text": "transcribed text here"}
-                val textMatch = Regex(""""text"\s*:\s*"([^"]*)"""").find(responseBody)
-                val transcribedText =
-                    textMatch?.groupValues?.get(1) ?: throw RuntimeException("Could not parse transcription response")
+                // Parse the JSON response using Jackson to properly handle escaped characters
+                val transcriptionResponse =
+                    objectMapper.readValue(responseBody, FireworksTranscriptionResponse::class.java)
+                val transcribedText = transcriptionResponse.text
 
                 Log.info("Successfully transcribed ${audioFile.name}: ${transcribedText.length} characters")
                 transcribedText
