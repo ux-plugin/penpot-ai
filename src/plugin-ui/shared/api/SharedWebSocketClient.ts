@@ -66,7 +66,7 @@ export class SharedWebSocketClient {
   }
 
   /**
-   * Get JWT token from auth store
+   * Get JWT token from the auth store
    */
   private getJwtToken(): string | null {
     return useAuthenticationStore.getState().accessToken;
@@ -350,7 +350,7 @@ export class SharedWebSocketClient {
   }
 
   /**
-   * Get current connection state
+   * Get the current connection state
    */
   getReadyState(): number | null {
     return this.ws?.readyState ?? null;
