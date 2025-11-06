@@ -15,7 +15,6 @@ object WebSocketMessageType {
     const val AUTH_REFRESH_TOKEN = "auth:refresh_token"
 
     // Completions namespace
-    const val COMPLETIONS_CREATE = "completions:create"
     const val COMPLETIONS_REQUEST = "completions:request"
     const val COMPLETIONS_REQUEST_END = "completions:request_end"
     const val COMPLETIONS_RESPONSE = "completions:response"
