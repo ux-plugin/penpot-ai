@@ -2,7 +2,9 @@
 
 ## Overview
 
-The WebSocket endpoint at `/completions/create` now supports receiving and recording audio data along with drawing paths. Audio chunks are accumulated during the WebSocket session and saved as a playable WAV file when the connection closes.
+The WebSocket endpoint at `/completions/create` now supports receiving and recording audio data along with drawing paths. Audio chunks are accumulated during the WebSocket session and processed through an AI agent pipeline powered by Koog.
+
+**New in this version**: Audio is now automatically transcribed using Fireworks AI's Whisper v3 Large model and processed by a Koog AI agent to generate intelligent responses. See [KOOG_PIPELINE.md](KOOG_PIPELINE.md) for details on the AI pipeline.
 
 ## Audio Format Specifications
 
@@ -34,12 +36,13 @@ The server:
 - Appends it to the session's audio buffer
 - Logs the chunk size and total accumulated size
 
-### 3. Saving Audio Files
-When the WebSocket connection closes:
-- All accumulated audio data is written to a WAV file
-- File location: `audio-recordings/audio_{timestamp}_{sessionId}.wav`
-- File naming example: `audio_1704067200000_abc12345.wav`
-- The WAV file includes proper headers for playback compatibility
+### 3. Processing Audio with AI Pipeline
+When `completion_request_end` message is sent:
+- All accumulated audio data is saved to a WAV file
+- The audio file is transcribed using Fireworks AI Whisper v3 Large
+- The transcribed text along with cursor context is processed by a Koog AI agent
+- AI-generated responses are streamed back through the WebSocket connection
+- See [KOOG_PIPELINE.md](KOOG_PIPELINE.md) for complete pipeline documentation
 
 ## Output Files
 
