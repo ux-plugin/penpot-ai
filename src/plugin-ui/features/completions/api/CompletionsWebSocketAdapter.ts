@@ -10,7 +10,6 @@ import type {
   CompletionsRequestEndPayload,
   CompletionsResponseMessage,
   CompletionsResponseEndMessage,
-  AcknowledgmentMessage,
   AuthRefreshTokenPayload,
 } from './messageTypes';
 
@@ -33,10 +32,10 @@ export interface CompletionsWebSocketCallbacks {
   
   // Session events
   onCompletionEnd?: (feId: string) => void;
-  onAcknowledgment?: (ack: AcknowledgmentMessage) => void;
+  onCompletionResponse?: (response: CompletionsResponseMessage) => void;
   
   // Token management
-  onTokenRefreshed?: (expiresAt: number) => void;
+  onTokenRefreshResponse?: () => void;
 }
 
 /**
@@ -86,16 +85,10 @@ export class CompletionsWebSocketAdapter {
       this.handleCompletionEnd(message as CompletionsResponseEndMessage);
     });
 
-    // Subscribe to acknowledgment messages
-    const unsubAck = wsClient.on('ack', (message) => {
-      console.log('✅ Completions: Acknowledgment:', message);
-      this.handleAcknowledgment(message as AcknowledgmentMessage);
-    });
-
-    // Subscribe to auth:refresh_token acknowledgments
-    const unsubAuthRefresh = wsClient.on('auth:refresh_token', (message) => {
-      console.log('🔄 Completions: Token refresh response:', message);
-      this.handleAcknowledgment(message as AcknowledgmentMessage);
+    // Subscribe to auth:refresh_token_response messages
+    const unsubAuthRefresh = wsClient.on('auth:refresh_token_response', (message) => {
+      console.log('🔄 Completions: Token refresh response received:', message);
+      this.callbacks.onTokenRefreshResponse?.();
     });
 
     // Store unsubscribe functions
@@ -105,7 +98,6 @@ export class CompletionsWebSocketAdapter {
       unsubError,
       unsubResponse,
       unsubResponseEnd,
-      unsubAck,
       unsubAuthRefresh,
     ];
   }
@@ -114,8 +106,22 @@ export class CompletionsWebSocketAdapter {
    * Handle completions:response message (AI-generated actions)
    */
   private handleCompletionResponse(message: CompletionsResponseMessage): void {
-    const { action, target, params } = message.payload;
-    
+    if (message.error) {
+      console.error('❌ Completions: Error in response:', message.error);
+      this.callbacks.onError?.(new Error('Completions response error'));
+      return;
+    }
+
+    // Notify about the response (this includes successful acknowledgments)
+    this.callbacks.onCompletionResponse?.(message);
+
+    const { action, target, params, reasoning } = message.payload;
+    console.log(`🧠 Reasoning: ${reasoning}`);
+
+    if (params === '') {
+      console.warn('⚠️ Completions: Empty params received');
+      return;
+    }
     try {
       const parsedParams = JSON.parse(params);
       
@@ -160,26 +166,6 @@ export class CompletionsWebSocketAdapter {
     if (this.currentFeId === fe_id) {
       this.currentFeId = null;
     }
-  }
-
-  /**
-   * Handle acknowledgment messages
-   */
-  private handleAcknowledgment(message: AcknowledgmentMessage): void {
-    const { status, fe_id, expires_at } = message.payload;
-    
-    if (status === 'error') {
-      console.error('❌ Server error in acknowledgment');
-      this.callbacks.onError?.(new Error('Server acknowledgment error'));
-    } else if (expires_at) {
-      console.log('🔄 Token refreshed, expires at:', new Date(expires_at * 1000));
-      this.callbacks.onTokenRefreshed?.(expires_at);
-    } else {
-      console.log('✅ Request acknowledged for fe_id:', fe_id);
-    }
-    
-    // Notify callback with full acknowledgment
-    this.callbacks.onAcknowledgment?.(message);
   }
 
   /**

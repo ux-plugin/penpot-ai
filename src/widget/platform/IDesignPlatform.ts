@@ -5,6 +5,7 @@ export interface IDesignPlatform {
     onmessage: ((message: any) => void | Promise<void>) | null;
     postMessage: (message: any) => void;
     showUI: (html: string, options?: { width?: number; height?: number }) => void;
+    resize: (width: number, height: number) => void;
   };
   
   // Plugin Lifecycle

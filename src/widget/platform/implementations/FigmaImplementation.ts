@@ -9,6 +9,10 @@ export class FigmaImplementation implements IDesignPlatform {
     },
     showUI: (html: string, options = {}) => {
       figma.showUI(html, Object.assign({ width: 500, height: 500 }, options));
+    },
+    resize: (width: number, height: number) => {
+      console.log('[FIGMA] Resizing UI to:', { width, height });
+      figma.ui.resize(width, height);
     }
   };
 

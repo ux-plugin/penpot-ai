@@ -23,7 +23,8 @@ export enum SystemMessageType {
   WARNING = 'warning',
   INFO = 'info',
   PLUGIN_READY = 'plugin_ready',
-  WORKER_TEST = 'worker_test'
+  WORKER_TEST = 'worker_test',
+  RESIZE = 'resize'
 }
 
 // Base message request interface
@@ -304,6 +305,26 @@ export interface WorkerTestResponse extends MessageResponse {
   };
 }
 
+// Resize Window Request/Response
+export interface ResizeRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.RESIZE;
+  payload: {
+    width: number;
+    height: number;
+  };
+}
+
+export interface ResizeResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.RESIZE;
+  result: {
+    resized: boolean;
+    width: number;
+    height: number;
+  };
+}
+
 // =================
 // UNION TYPES
 // =================
@@ -321,7 +342,8 @@ export type Request =
   | WarningRequest
   | InfoRequest
   | PluginReadyRequest
-  | WorkerTestRequest;
+  | WorkerTestRequest
+  | ResizeRequest;
 
 // All response types
 export type Response = 
@@ -336,7 +358,8 @@ export type Response =
   | WarningResponse
   | InfoResponse
   | PluginReadyResponse
-  | WorkerTestResponse;
+  | WorkerTestResponse
+  | ResizeResponse;
 
 // Union of all message types
 export type Message = Request | Response;
@@ -394,6 +417,10 @@ export type RequestToResponseMap = {
   [SystemMessageType.WORKER_TEST]: {
     request: WorkerTestRequest;
     response: WorkerTestResponse;
+  };
+  [SystemMessageType.RESIZE]: {
+    request: ResizeRequest;
+    response: ResizeResponse;
   };
 };
 

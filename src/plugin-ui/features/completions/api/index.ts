@@ -14,10 +14,12 @@ export type { UseCompletionsWebSocketOptions, UseCompletionsWebSocketReturn } fr
 // Export all AsyncAPI 3.0.0 message types
 export type {
   WebSocketMessage,
+  WebSocketError,
   WebSocketMessageType,
   // Auth messages
   AuthRefreshTokenPayload,
   AuthRefreshTokenMessage,
+  AuthRefreshTokenResponse,
   // Completions messages
   CompletionsRequestPayload,
   CompletionsRequestMessage,
@@ -30,10 +32,6 @@ export type {
   // User messages
   UserSubscribePortsMessage,
   UserUnsubscribePortsMessage,
-  // System messages
-  AcknowledgmentPayload,
-  AcknowledgmentMessage,
-  ErrorMessage,
   // Union types
   ClientMessage,
   ServerMessage,
