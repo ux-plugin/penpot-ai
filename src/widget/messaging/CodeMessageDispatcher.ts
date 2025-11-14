@@ -14,6 +14,8 @@ import {
   ErrorResponse,
   WorkerTestRequest,
   WorkerTestResponse,
+  ResizeRequest,
+  ResizeResponse,
   Message,
   ExtractResultType
 } from '@shared-core/types/messageTypes';
@@ -174,6 +176,28 @@ codeMessageDispatcher.registerHandler<
         received: true,
         echoed: `Code received: "${request.payload.message}"`,
         processedBy: 'code' as const
+      };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    ResizeRequest,
+    ExtractResultType<ResizeResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.RESIZE,
+    async (request: ResizeRequest): Promise<ExtractResultType<ResizeResponse>> => {
+      const { width, height } = request.payload;
+      console.log('[CODE] Resize request received:', { width, height });
+      
+      // Call the platform-specific resize method
+      commands.ui.resize(width, height);
+      
+      // Return structured response with exact type
+      return {
+        resized: true,
+        width,
+        height
       };
     }
   );

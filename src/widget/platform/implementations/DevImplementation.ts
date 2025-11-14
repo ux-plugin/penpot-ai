@@ -15,6 +15,17 @@ export class DevImplementation implements IDesignPlatform {
     },
     showUI: (_html: string, options = {}) => {
       console.log('[DEV] ShowUI called (no-op in dev):', { options });
+    },
+    resize: (width: number, height: number) => {
+      console.log('[DEV] Resize called:', { width, height });
+      // Post resize event to parent/host for dev environment
+      if (typeof self !== 'undefined' && 'postMessage' in self) {
+        self.postMessage({ 
+          type: 'resize',
+          width, 
+          height 
+        });
+      }
     }
   };
 

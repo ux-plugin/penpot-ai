@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@ui/button';
-import { Settings } from 'lucide-react';
+import { Settings, Minimize2, Maximize2, MessageSquare } from 'lucide-react';
 import { useUserSettingsStore } from '@user/stores/useUserSettingsStore.ts';
 import { useEffect } from "react";
 import { useAuthenticationStore } from "@auth/stores/useAuthenticationStore";
@@ -10,9 +10,11 @@ import { usePortUpdatesStore } from "@user/stores/usePortUpdatesStore.ts";
 import { ReactFlowCanvas } from '@/plugin-ui/features/reactflow/components/ReactFlowCanvas';
 import { StatusPanel } from '@status/components/StatusPanel';
 import { SettingsPanel } from '@user/components/SettingsPanel';
-import { HelpButton } from '@shared/components/HelpButton';
 import { useCompanionStore } from '@companion/stores/useCompanionStore';
 import { useWebSocketStore } from "@stores/useWebSocketStore.ts";
+import { ConversationPanel } from '@completions/components/ConversationHistory';
+import { uiMessageDispatcher } from '@messaging/UIMessageDispatcher';
+import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@shared-core/types/messageTypes';
 
 function Home() {
   const { setUserConfig } = useUserSettingsStore();
@@ -24,6 +26,7 @@ function Home() {
 
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [conversationPanelOpen, setConversationPanelOpen] = useState(false);
 
   const { data: userConfig } = useUserConfigQuery({ enabled: true });
 
@@ -69,6 +72,47 @@ function Home() {
     }
   }
 
+  const handleMinimizeWindow = async () => {
+    // Minimize to minimum possible size
+    try {
+      await uiMessageDispatcher.sendRequest<
+        Omit<ResizeRequest, 'id' | 'timestamp' | 'source'>,
+        ExtractResultType<ResizeResponse>
+      >({
+        category: MessageCategory.SYSTEM,
+        type: SystemMessageType.RESIZE,
+        payload: {
+          width: 24,
+          height: 24
+        }
+      });
+      console.log('Window minimized to 24x24');
+    } catch (error) {
+      console.error('Failed to minimize window:', error);
+    }
+  };
+
+  const handleMaximizeWindow = async () => {
+    // Maximize to fill available viewport space
+    // Figma will automatically constrain to viewport bounds
+    try {
+      await uiMessageDispatcher.sendRequest<
+        Omit<ResizeRequest, 'id' | 'timestamp' | 'source'>,
+        ExtractResultType<ResizeResponse>
+      >({
+        category: MessageCategory.SYSTEM,
+        type: SystemMessageType.RESIZE,
+        payload: {
+          width: 10000,
+          height: 10000
+        }
+      });
+      console.log('Window maximized to fill viewport');
+    } catch (error) {
+      console.error('Failed to maximize window:', error);
+    }
+  };
+
   return (
     <div className="relative w-full h-screen overflow-hidden bg-white">
       {/* ReactFlow Canvas - Full Screen */}
@@ -104,6 +148,28 @@ function Home() {
                 {getBackendStatusLabel()}
               </Button>
 
+              {/* Maximize Button */}
+              <Button
+                variant="outline"
+                size="icon"
+                className="bg-white hover:bg-gray-50 text-gray-900 border-gray-300 rounded-full shadow-sm"
+                onClick={handleMaximizeWindow}
+                title="Maximize Window"
+              >
+                <Maximize2 className="h-5 w-5" />
+              </Button>
+
+              {/* Minimize Button */}
+              <Button
+                variant="outline"
+                size="icon"
+                className="bg-white hover:bg-gray-50 text-gray-900 border-gray-300 rounded-full shadow-sm"
+                onClick={handleMinimizeWindow}
+                title="Minimize Window"
+              >
+                <Minimize2 className="h-5 w-5" />
+              </Button>
+
               {/* Settings Button */}
               <Button
                 variant="outline"
@@ -116,21 +182,35 @@ function Home() {
               </Button>
             </div>
           }
-          bottomRightContent={
-            <HelpButton onClick={() => console.log('Help clicked')} />
+          topLeftContent={
+            <div className="flex items-center gap-2">
+              {/* Conversation Button */}
+              <Button
+                variant="outline"
+                size="icon"
+                className="bg-white hover:bg-gray-50 text-gray-900 border-gray-300 rounded-full shadow-sm"
+                onClick={() => setConversationPanelOpen(!conversationPanelOpen)}
+                title="Conversations"
+              >
+                <MessageSquare className="h-5 w-5" />
+              </Button>
+            </div>
           }
         />
       </div>
-
-      {/* Panels */}
-      <StatusPanel 
-        isOpen={statusPanelOpen} 
-        onClose={() => setStatusPanelOpen(false)} 
+      <StatusPanel
+        isOpen={statusPanelOpen}
+        onClose={() => setStatusPanelOpen(false)}
       />
-      <SettingsPanel 
-        isOpen={settingsPanelOpen} 
-        onClose={() => setSettingsPanelOpen(false)} 
+      <SettingsPanel
+        isOpen={settingsPanelOpen}
+        onClose={() => setSettingsPanelOpen(false)}
       />
+      {conversationPanelOpen && (
+        <div className="absolute top-16 left-4 z-50">
+          <ConversationPanel onClose={() => setConversationPanelOpen(false)} />
+        </div>
+      )}
     </div>
   );
 }

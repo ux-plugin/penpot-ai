@@ -18,8 +18,10 @@ async function createPlatform(): Promise<IDesignPlatform> {
       const { FigmaImplementation } = await import('./implementations/FigmaImplementation');
       return new FigmaImplementation();
     }
-    case PlatformEnvironment.PENPOT:
-      throw new Error('Penpot implementation not yet available');
+    case PlatformEnvironment.PENPOT: {
+      const { PenpotImplementation } = await import('./implementations/PenpotImplementation');
+      return new PenpotImplementation();
+    }
     default:
       throw new Error(`Unsupported platform environment: ${environment}`);
   }

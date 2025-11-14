@@ -24,7 +24,7 @@ export interface UseCompletionsWebSocketOptions {
   onWebSocketOpen?: () => void;
   onWebSocketClose?: () => void;
   onWebSocketError?: (error: Error) => void;
-  onAcknowledgment?: (message: string) => void;
+  onCompletionResponse?: (response: any) => void;
 }
 
 export interface UseCompletionsWebSocketReturn {
@@ -54,7 +54,7 @@ export function useCompletionsWebSocket(
     onWebSocketOpen,
     onWebSocketClose,
     onWebSocketError,
-    onAcknowledgment,
+    onCompletionResponse,
   } = options;
 
   // State
@@ -112,9 +112,9 @@ export function useCompletionsWebSocket(
           setIsWebSocketConnected(true);
           onWebSocketOpen?.();
         },
-        onMessage: (data: string) => {
-          console.log('📨 Received acknowledgment:', data);
-          onAcknowledgment?.(data);
+        onCompletionResponse: (response) => {
+          console.log('📨 Received completion response:', response);
+          onCompletionResponse?.(response);
         },
         onClose: () => {
           console.log('🔌 WebSocket closed');
@@ -138,7 +138,7 @@ export function useCompletionsWebSocket(
       wsAdapterRef.current = null;
       throw err;
     }
-  }, [onWebSocketOpen, onWebSocketClose, onWebSocketError, onAcknowledgment]);
+  }, [onWebSocketOpen, onWebSocketClose, onWebSocketError, onCompletionResponse]);
 
   /**
    * Start recording and create a new session (reuses existing WebSocket)

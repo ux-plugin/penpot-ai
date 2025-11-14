@@ -10,15 +10,20 @@ import {
   BackgroundVariant,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { Scaling } from 'lucide-react';
 
 interface ReactFlowCanvasProps {
   topRightContent?: React.ReactNode;
   bottomRightContent?: React.ReactNode;
+  centerRightContent?: React.ReactNode;
+  topLeftContent?: React.ReactNode;
 }
 
 export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
   topRightContent,
   bottomRightContent,
+  centerRightContent,
+  topLeftContent,
 }) => {
   const [nodes, ,onNodesChange] = useNodesState([]);
   const [edges, ,onEdgesChange] = useEdgesState([]);
@@ -32,6 +37,7 @@ export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
         onEdgesChange={onEdgesChange}
         fitView
         className="bg-gray-50"
+        proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d1d5db" />
         <Controls
@@ -58,6 +64,23 @@ export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
             {bottomRightContent}
           </Panel>
         )}
+        {centerRightContent && (
+          <Panel position="center-right" className="mb-2">
+            {centerRightContent}
+          </Panel>
+        )}
+        {topLeftContent && (
+          <Panel position="top-left" className="mb-2 h-[70%] w-[30%]">
+            {topLeftContent}
+          </Panel>
+        )}
+        
+        {/* Resize Indicator */}
+        <Panel position="bottom-right" className="pointer-events-none">
+          <div className="flex items-center justify-center w-6 h-6 text-gray-400">
+            <Scaling className="h-4 w-4" />
+          </div>
+        </Panel>
       </ReactFlow>
     </div>
   );

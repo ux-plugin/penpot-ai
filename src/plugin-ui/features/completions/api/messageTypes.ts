@@ -17,7 +17,12 @@ export interface WebSocketMessage<T = any> {
   type: string;           // Namespaced type (e.g., "completions:request")
   payload: T;             // Message-specific payload
   requestId?: string;     // Optional correlation ID
-  error?: string;         // Error message (only for type: "error")
+  error?: WebSocketError;         // Error message (only for type: "error")
+}
+
+export interface WebSocketError {
+  code: number;
+  message: string;
 }
 
 // ============================================================================
@@ -34,6 +39,10 @@ export interface AuthRefreshTokenPayload {
 export type AuthRefreshTokenMessage = WebSocketMessage<AuthRefreshTokenPayload> & {
   type: 'auth:refresh_token';
 };
+
+export type AuthRefreshTokenResponse = WebSocketMessage<string> & {
+  type: 'auth:refresh_token_response';
+}
 
 // ============================================================================
 // COMPLETIONS MESSAGES
@@ -74,7 +83,8 @@ export interface CompletionsResponsePayload {
   fe_id: string;
   action: 'create_node' | 'set_property' | 'set_text' | 'set_style' | 'add_constraint';
   target: string;
-  params: string; // JSON-encoded action parameters
+  params: string;
+  reasoning: string;
 }
 
 export type CompletionsResponseMessage = WebSocketMessage<CompletionsResponsePayload> & {
@@ -115,32 +125,22 @@ export type UserUnsubscribePortsMessage = WebSocketMessage<Record<string, never>
   payload: {};
 };
 
-// ============================================================================
-// SYSTEM MESSAGES
-// ============================================================================
-
 /**
- * Acknowledgment (Server → Client)
- * Command acknowledgment with status
+ * User: Subscribe Ports Response (Server → Client)
+ * Confirmation of port subscription
  */
-export interface AcknowledgmentPayload {
-  status: 'ok' | 'error';
-  expires_at?: number;  // For auth:refresh_token acknowledgments (Unix seconds)
-  fe_id?: string;       // For completions acknowledgments
-}
-
-export type AcknowledgmentMessage = WebSocketMessage<AcknowledgmentPayload> & {
-  type: 'ack' | 'auth:refresh_token'; // Can echo original type or be generic 'ack'
+export type UserSubscribePortsResponseMessage = WebSocketMessage<Record<string, never>> & {
+  type: 'user:subscribe_ports_response';
+  payload: {};
 };
 
 /**
- * Error (Server → Client)
- * Error response from server
+ * User: Unsubscribe Ports Response (Server → Client)
+ * Confirmation of port unsubscription
  */
-export type ErrorMessage = WebSocketMessage<Record<string, never>> & {
-  type: 'error';
+export type UserUnsubscribePortsResponseMessage = WebSocketMessage<Record<string, never>> & {
+  type: 'user:unsubscribe_ports_response';
   payload: {};
-  error: string;
 };
 
 // ============================================================================
@@ -163,19 +163,21 @@ export type ClientMessage =
 export type ServerMessage =
   | CompletionsResponseMessage
   | CompletionsResponseEndMessage
-  | AcknowledgmentMessage
-  | ErrorMessage;
+  | AuthRefreshTokenResponse
+  | UserSubscribePortsResponseMessage
+  | UserUnsubscribePortsResponseMessage;
 
 /**
  * All valid WebSocket message type strings
  */
 export type WebSocketMessageType =
   | 'auth:refresh_token'
+  | 'auth:refresh_token_response'
   | 'completions:request'
   | 'completions:request_end'
   | 'completions:response'
   | 'completions:response_end'
   | 'user:subscribe_ports'
   | 'user:unsubscribe_ports'
-  | 'ack'
-  | 'error';
+  | 'user:subscribe_ports_response'
+  | 'user:unsubscribe_ports_response';

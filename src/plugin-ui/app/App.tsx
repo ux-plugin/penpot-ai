@@ -68,7 +68,7 @@ const AuthenticatedLayout = () => {
 
 function App() {
   const { isAuthenticated } = useAuthenticationStore();
-  const [acknowledgementsCount, setAcknowledgementsCount] = useState(0);
+  const [responsesCount, setResponsesCount] = useState(0);
 
   // Use completions WebSocket hook for audio streaming to backend
   const {
@@ -81,7 +81,7 @@ function App() {
   } = useCompletionsWebSocket({
     onWebSocketOpen: () => {
       console.log('✅ WebSocket connected to backend!');
-      setAcknowledgementsCount(0);
+      setResponsesCount(0);
     },
     
     onWebSocketClose: () => {
@@ -92,9 +92,12 @@ function App() {
       console.error('❌ WebSocket error:', event);
     },
     
-    onAcknowledgment: (message) => {
-      console.log('📨 Backend acknowledged chunk:', message);
-      setAcknowledgementsCount((prev) => prev + 1);
+    onCompletionResponse: (response) => {
+      console.log('📨 Backend completion response:', response);
+      // Count successful responses (those without errors)
+      if (!response.error) {
+        setResponsesCount((prev) => prev + 1);
+      }
     },
   });
 
@@ -125,7 +128,7 @@ function App() {
         if (isRecording) {
           console.log('⏹️ Stopping recording and WebSocket...');
           stopRecordingAndStreaming();
-          console.log(`✅ Stopped. Total chunks sent: ${acknowledgementsCount}`);
+          console.log(`✅ Stopped. Total responses received: ${responsesCount}`);
         } else {
           console.log('🎙️ Starting recording and WebSocket streaming...');
           try {
@@ -145,7 +148,7 @@ function App() {
       console.log('🧹 Keyboard listener cleaned up');
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isRecording, startRecordingAndStreaming, stopRecordingAndStreaming, acknowledgementsCount]);
+  }, [isRecording, startRecordingAndStreaming, stopRecordingAndStreaming, responsesCount]);
 
   return (
     <Routes>
