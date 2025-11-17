@@ -9,6 +9,8 @@ import { useWebSocketStore } from "@shared/stores/useWebSocketStore";
 import { initializePortSubscription, cleanupPortSubscription } from "@user/api/portSubscriptionManager";
 import { handlePortUpdate } from "@companion/api";
 import { useCompletionsWebSocket } from "@completions/api";
+import { WindowResizeHandle } from '@/plugin-ui/shared/components/WindowResizeHandle';
+import { ResizeIconBottomRight } from '@/plugin-ui/shared/components/ResizeIcons';
 
 const NonAuthenticatedLayout = () => {
   const { isAuthenticated } = useAuthenticationStore();
@@ -151,21 +153,28 @@ function App() {
   }, [isRecording, startRecordingAndStreaming, stopRecordingAndStreaming, responsesCount]);
 
   return (
-    <Routes>
-      <Route element={<NonAuthenticatedLayout />}>
-        <Route path="/login" element={<Login />} />
-      </Route>
+    <>
+      <Routes>
+        <Route element={<NonAuthenticatedLayout />}>
+          <Route path="/login" element={<Login />} />
+        </Route>
 
-      <Route element={<AuthenticatedLayout />}>
-        <Route path="/home" element={<Home />} />
-        <Route path="/settings" element={<Settings />} />
-      </Route>
+        <Route element={<AuthenticatedLayout />}>
+          <Route path="/home" element={<Home />} />
+          <Route path="/settings" element={<Settings />} />
+        </Route>
 
-      <Route
-        path="*"
-        element={isAuthenticated ? <Navigate to="/home" replace /> : <Navigate to="/login" replace />}
-      />
-    </Routes>
+        <Route
+          path="*"
+          element={isAuthenticated ? <Navigate to="/home" replace /> : <Navigate to="/login" replace />}
+        />
+      </Routes>
+      
+      {/* Resize handle available on all pages */}
+      <WindowResizeHandle>
+        <ResizeIconBottomRight />
+      </WindowResizeHandle>
+    </>
   );
 }
 

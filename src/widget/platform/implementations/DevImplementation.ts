@@ -26,6 +26,58 @@ export class DevImplementation implements IDesignPlatform {
           height 
         });
       }
+    },
+    reposition: (x: number, y: number) => {
+      console.log('[DEV] Reposition called:', { x, y });
+      // Post reposition event to parent/host for dev environment
+      if (typeof self !== 'undefined' && 'postMessage' in self) {
+        self.postMessage({ 
+          type: 'reposition',
+          x, 
+          y 
+        });
+      }
+    },
+    getPosition: async (): Promise<{ windowSpace: { x: number; y: number }; canvasSpace: { x: number; y: number } }> => {
+      console.log('[DEV] GetPosition called');
+      // Post get position request to parent/host for dev environment
+      if (typeof self !== 'undefined' && 'postMessage' in self) {
+        return new Promise<{ windowSpace: { x: number; y: number }; canvasSpace: { x: number; y: number } }>((resolve) => {
+          const requestId = `getPosition_${Date.now()}`;
+          
+          // Set up one-time listener for the response
+          const listener = (event: MessageEvent) => {
+            if (event.data.type === 'getPosition-response' && event.data.requestId === requestId) {
+              self.removeEventListener('message', listener);
+              resolve(event.data.position);
+            }
+          };
+          
+          self.addEventListener('message', listener);
+          
+          // Send the request
+          self.postMessage({ 
+            type: 'getPosition',
+            requestId
+          });
+          
+          // Timeout after 5 seconds
+          setTimeout(() => {
+            self.removeEventListener('message', listener);
+            console.warn('[DEV] GetPosition timeout, returning default position');
+            resolve({
+              windowSpace: { x: 0, y: 0 },
+              canvasSpace: { x: 0, y: 0 }
+            });
+          }, 5000);
+        });
+      }
+      
+      // Fallback if not in worker context
+      return {
+        windowSpace: { x: 0, y: 0 },
+        canvasSpace: { x: 0, y: 0 }
+      };
     }
   };
 

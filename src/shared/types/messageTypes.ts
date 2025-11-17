@@ -24,7 +24,8 @@ export enum SystemMessageType {
   INFO = 'info',
   PLUGIN_READY = 'plugin_ready',
   WORKER_TEST = 'worker_test',
-  RESIZE = 'resize'
+  RESIZE = 'resize',
+  GET_POSITION = 'get_position'
 }
 
 // Base message request interface
@@ -312,6 +313,8 @@ export interface ResizeRequest extends MessageRequest {
   payload: {
     width: number;
     height: number;
+    x?: number;
+    y?: number;
   };
 }
 
@@ -322,6 +325,24 @@ export interface ResizeResponse extends MessageResponse {
     resized: boolean;
     width: number;
     height: number;
+    x?: number;
+    y?: number;
+  };
+}
+
+// Get Position Request/Response
+export interface GetPositionRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.GET_POSITION;
+  payload: {};
+}
+
+export interface GetPositionResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.GET_POSITION;
+  result: {
+    windowSpace: { x: number; y: number };
+    canvasSpace: { x: number; y: number };
   };
 }
 
@@ -343,7 +364,8 @@ export type Request =
   | InfoRequest
   | PluginReadyRequest
   | WorkerTestRequest
-  | ResizeRequest;
+  | ResizeRequest
+  | GetPositionRequest;
 
 // All response types
 export type Response = 
@@ -359,7 +381,8 @@ export type Response =
   | InfoResponse
   | PluginReadyResponse
   | WorkerTestResponse
-  | ResizeResponse;
+  | ResizeResponse
+  | GetPositionResponse;
 
 // Union of all message types
 export type Message = Request | Response;
@@ -421,6 +444,10 @@ export type RequestToResponseMap = {
   [SystemMessageType.RESIZE]: {
     request: ResizeRequest;
     response: ResizeResponse;
+  };
+  [SystemMessageType.GET_POSITION]: {
+    request: GetPositionRequest;
+    response: GetPositionResponse;
   };
 };
 

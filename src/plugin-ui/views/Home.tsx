@@ -1,28 +1,30 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@ui/button';
-import { Settings, Minimize2, Maximize2, MessageSquare } from 'lucide-react';
+import {
+  Settings,
+  Minimize2,
+  Maximize2,
+  MessageSquare,
+} from "lucide-react";
 import { useUserSettingsStore } from '@user/stores/useUserSettingsStore.ts';
-import { useEffect } from "react";
 import { useAuthenticationStore } from "@auth/stores/useAuthenticationStore";
 import { useUserConfigQuery } from "@user/api/fetchUserConfig.ts";
-import { useCompanionConnection, WebSocketState } from "@companion/api";
+import { useCompanionConnection } from "@companion/api";
 import { usePortUpdatesStore } from "@user/stores/usePortUpdatesStore.ts";
 import { ReactFlowCanvas } from '@/plugin-ui/features/reactflow/components/ReactFlowCanvas';
 import { StatusPanel } from '@status/components/StatusPanel';
 import { SettingsPanel } from '@user/components/SettingsPanel';
-import { useCompanionStore } from '@companion/stores/useCompanionStore';
-import { useWebSocketStore } from "@stores/useWebSocketStore.ts";
-import { ConversationPanel } from '@completions/components/ConversationHistory';
+import { ConversationPanel } from '@completions/components/ConversationPanel';
 import { uiMessageDispatcher } from '@messaging/UIMessageDispatcher';
 import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@shared-core/types/messageTypes';
+import { BackendServerStatus } from '@status/components/BackendServerStatus';
+import { CompanionAppStatus } from '@companion/components/CompanionAppStatus';
 
 function Home() {
   const { setUserConfig } = useUserSettingsStore();
   const { setUserId } = useAuthenticationStore();
   const { connect } = useCompanionConnection();
   const { currentPort } = usePortUpdatesStore();
-  const { webSocketState } = useCompanionStore();
-  const { isConnected, isConnecting } = useWebSocketStore();
 
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
@@ -48,29 +50,6 @@ function Home() {
     }
   }, [currentPort]);
 
-  // Get status label based on connection state
-  const getCompanionStatusLabel = () => {
-    switch (webSocketState) {
-      case WebSocketState.CONNECTED:
-        return 'Companion App';
-      case WebSocketState.CONNECTING:
-        return 'Connecting...';
-      case WebSocketState.DISCONNECTED:
-        return 'Companion App';
-      default:
-        return 'Companion App';
-    }
-  };
-
-  const getBackendStatusLabel = () => {
-    if (isConnected) {
-      return 'Backend Server';
-    } else if (isConnecting) {
-      return 'Connecting...';
-    } else {
-      return 'Backend Server';
-    }
-  }
 
   const handleMinimizeWindow = async () => {
     // Minimize to minimum possible size
@@ -114,39 +93,21 @@ function Home() {
   };
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-white">
+    <div className="relative w-full h-screen bg-white overflow-hidden min-w-[650px] min-h-[400px]">
       {/* ReactFlow Canvas - Full Screen */}
       <div className="absolute inset-0">
-        <ReactFlowCanvas 
+        <ReactFlowCanvas
           topRightContent={
             <div className="flex items-center gap-2">
-              {/* Companion App Button */}
-              <Button
-                variant="outline"
-                className="bg-white hover:bg-gray-50 text-gray-900 border-gray-300 rounded-full px-4 py-2 font-medium shadow-sm"
-                onClick={() => setStatusPanelOpen(!statusPanelOpen)}
-              >
-                <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
-                  webSocketState === WebSocketState.CONNECTED ? 'bg-green-500' : 
-                  webSocketState === WebSocketState.CONNECTING ? 'bg-yellow-500' : 
-                  'bg-red-500'
-                }`} />
-                {getCompanionStatusLabel()}
-              </Button>
+              {/* Companion App Status */}
+              <div onClick={() => setStatusPanelOpen(!statusPanelOpen)}>
+                <CompanionAppStatus variant="icon" className="bg-white border border-gray-300 shadow-sm" />
+              </div>
 
-              {/* Backend Button */}
-              <Button
-                variant="outline"
-                className="bg-white hover:bg-gray-50 text-gray-900 border-gray-300 rounded-full px-4 py-2 font-medium shadow-sm"
-                onClick={() => setStatusPanelOpen(!statusPanelOpen)}
-              >
-                <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
-                  isConnected ? 'bg-green-500' : 
-                  isConnecting ? 'bg-yellow-500' : 
-                  'bg-red-500'
-                }`} />
-                {getBackendStatusLabel()}
-              </Button>
+              {/* Backend Server Status */}
+              <div onClick={() => setStatusPanelOpen(!statusPanelOpen)}>
+                <BackendServerStatus variant="icon" className="bg-white border border-gray-300 shadow-sm" />
+              </div>
 
               {/* Maximize Button */}
               <Button
@@ -206,11 +167,10 @@ function Home() {
         isOpen={settingsPanelOpen}
         onClose={() => setSettingsPanelOpen(false)}
       />
-      {conversationPanelOpen && (
-        <div className="absolute top-16 left-4 z-50">
-          <ConversationPanel onClose={() => setConversationPanelOpen(false)} />
-        </div>
-      )}
+      <ConversationPanel
+        isOpen={conversationPanelOpen}
+        onClose={() => setConversationPanelOpen(false)}
+      />
     </div>
   );
 }

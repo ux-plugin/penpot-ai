@@ -125,6 +125,14 @@ addEventListener('message', (event) => {
     return;
   }
 
+  // Handle getPosition responses from host
+  if (data.type === 'getPosition-response') {
+    // Forward the response back through the worker context
+    // This will be picked up by the DevImplementation.getPosition listener
+    postMessage(data);
+    return;
+  }
+
   if (data.type === 'from-ui' && data.pluginMessage) {
     // Forward message from UI to code.ts via figma.ui.onmessage
     const figmaUi = (globalThis as any).figma.ui;

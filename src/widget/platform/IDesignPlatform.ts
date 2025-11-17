@@ -6,6 +6,8 @@ export interface IDesignPlatform {
     postMessage: (message: any) => void;
     showUI: (html: string, options?: { width?: number; height?: number }) => void;
     resize: (width: number, height: number) => void;
+    reposition: (x: number, y: number) => void;
+    getPosition: () => Promise<{ windowSpace: { x: number; y: number }; canvasSpace: { x: number; y: number } }>;
   };
   
   // Plugin Lifecycle

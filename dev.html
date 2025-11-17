@@ -94,10 +94,9 @@
         display: flex;
         flex-direction: column;
         z-index: 1000;
-        resize: both;
-        overflow: hidden;
-        min-width: 300px;
-        min-height: 200px;
+        overflow: auto;
+        min-width: 70px;
+        min-height: 50px;
       }
       
       .browser-window.hidden {
@@ -153,7 +152,7 @@
         display: flex;
         flex-direction: column;
         padding: 12px;
-        overflow: hidden;
+        overflow: auto;
       }
       
       .browser-window .status {
@@ -388,6 +387,66 @@
       instructionText.style.color = '#999';
       instructionText.innerHTML = 'Plugin window: Drag by header • Close with ✕ • Show/Hide with Ctrl+P • Right-click for menu • Double-click anywhere to show if hidden';
       canvasPlaceholder.appendChild(instructionText);
+      
+      // Handle resize and reposition messages from the iframe
+      window.addEventListener('message', (event) => {
+        const iframe = document.getElementById('plugin-iframe');
+        
+        // Check if message came from our iframe
+        if (event.source !== iframe?.contentWindow) {
+          return;
+        }
+        
+        const message = event.data;
+        
+        // Check if this is a resize message
+        if (message.category === 'system' && message.type === 'resize' && message.payload) {
+          const { width, height, x, y } = message.payload;
+          
+          // Apply minimum size constraints
+          const minWidth = 70;
+          const minHeight = 50;
+          const constrainedWidth = Math.max(width, minWidth);
+          const constrainedHeight = Math.max(height, minHeight);
+          
+          // Update the plugin window dimensions
+          pluginWindow.style.width = constrainedWidth + 'px';
+          pluginWindow.style.height = constrainedHeight + 'px';
+          
+          // Handle repositioning if x and y are provided
+          if (x !== undefined && y !== undefined) {
+            // Keep window within viewport bounds
+            const maxX = window.innerWidth - constrainedWidth;
+            const maxY = window.innerHeight - constrainedHeight;
+            
+            const constrainedX = Math.max(0, Math.min(x, maxX));
+            const constrainedY = Math.max(0, Math.min(y, maxY));
+            
+            // Update position and override initial CSS positioning
+            pluginWindow.style.left = constrainedX + 'px';
+            pluginWindow.style.top = constrainedY + 'px';
+            pluginWindow.style.right = 'auto'; // Override the CSS right positioning
+          }
+          
+          // Send response back to iframe
+          const response = {
+            id: message.id,
+            category: 'system',
+            type: 'resize',
+            timestamp: Date.now(),
+            source: 'code',
+            success: true,
+            result: {
+              resized: true,
+              width: constrainedWidth,
+              height: constrainedHeight,
+              ...(x !== undefined && y !== undefined && { x, y })
+            }
+          };
+          
+          iframe.contentWindow?.postMessage(response, '*');
+        }
+      });
     </script>
     
     <script type="module" src="src/dev/host.ts"></script>

@@ -10,7 +10,6 @@ import {
   BackgroundVariant,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Scaling } from 'lucide-react';
 
 interface ReactFlowCanvasProps {
   topRightContent?: React.ReactNode;
@@ -74,13 +73,6 @@ export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
             {topLeftContent}
           </Panel>
         )}
-        
-        {/* Resize Indicator */}
-        <Panel position="bottom-right" className="pointer-events-none">
-          <div className="flex items-center justify-center w-6 h-6 text-gray-400">
-            <Scaling className="h-4 w-4" />
-          </div>
-        </Panel>
       </ReactFlow>
     </div>
   );

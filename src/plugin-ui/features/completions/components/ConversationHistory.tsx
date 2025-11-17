@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@ui/button';
 import { Input } from '@ui/input';
-import { X, Send, MessageSquare, History, ChevronLeft } from 'lucide-react';
+import { Send, MessageSquare, History, ChevronLeft } from 'lucide-react';
 
 interface Message {
   id: string;
@@ -17,11 +17,7 @@ interface Conversation {
   lastUpdated: number;
 }
 
-interface ConversationPanelProps {
-  onClose?: () => void;
-}
-
-export function ConversationPanel({ onClose }: ConversationPanelProps) {
+export function ConversationHistory() {
   const [showHistory, setShowHistory] = useState(false);
   const [currentMessage, setCurrentMessage] = useState('');
   const [currentConversationId, setCurrentConversationId] = useState('1');
@@ -139,54 +135,42 @@ export function ConversationPanel({ onClose }: ConversationPanelProps) {
     setShowHistory(false);
   };
 
-  // Full chat interface
+  // Content for the panel
   return (
-    <div className="w-96 h-full bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-gray-300">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-300 bg-gray-900">
+    <div className="flex flex-col h-full -m-4">
+      {/* Header Actions */}
+      <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gray-50">
         <div className="flex items-center gap-2">
           {showHistory && (
             <Button
               variant="ghost"
               size="icon"
               onClick={() => setShowHistory(false)}
-              className="text-white hover:bg-gray-800"
+              className="text-gray-700 hover:bg-gray-200"
             >
               <ChevronLeft className="h-5 w-5" />
             </Button>
           )}
-          <MessageSquare className="h-5 w-5 text-white" />
-          <h3 className="text-white font-semibold">
-            {showHistory ? 'Conversation History' : currentConversation?.title || 'Chat'}
-          </h3>
+          <h4 className="font-medium text-gray-900">
+            {showHistory ? 'History' : currentConversation?.title || 'Chat'}
+          </h4>
         </div>
-        <div className="flex items-center gap-2">
-          {!showHistory && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowHistory(true)}
-              className="text-white hover:bg-gray-800"
-              title="View History"
-            >
-              <History className="h-5 w-5" />
-            </Button>
-          )}
+        {!showHistory && (
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => onClose?.()}
-            className="text-white hover:bg-gray-800"
-            title="Close"
+            onClick={() => setShowHistory(true)}
+            className="text-gray-700 hover:bg-gray-200"
+            title="View History"
           >
-            <X className="h-5 w-5" />
+            <History className="h-5 w-5" />
           </Button>
-        </div>
+        )}
       </div>
 
       {/* Conversation History View */}
       {showHistory ? (
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-4 bg-white">
           <Button
             onClick={startNewConversation}
             className="w-full mb-4 bg-gray-900 hover:bg-gray-800 text-white"

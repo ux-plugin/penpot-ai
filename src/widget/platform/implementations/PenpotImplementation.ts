@@ -25,6 +25,25 @@ export class PenpotImplementation implements IDesignPlatform {
       if (typeof (globalThis as any).penpot !== 'undefined') {
         (globalThis as any).penpot.ui.resize(width, height);
       }
+    },
+    reposition: (x: number, y: number) => {
+      console.log('[PENPOT] Reposition called:', { x, y });
+      // Penpot's reposition API - assuming similar to Figma
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.ui.reposition) {
+        (globalThis as any).penpot.ui.reposition(x, y);
+      }
+    },
+    getPosition: async () => {
+      console.log('[PENPOT] GetPosition called');
+      // Penpot's getPosition API - assuming similar to Figma
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.ui.getPosition) {
+        return await (globalThis as any).penpot.ui.getPosition();
+      }
+      // Fallback to default position
+      return {
+        windowSpace: { x: 0, y: 0 },
+        canvasSpace: { x: 0, y: 0 }
+      };
     }
   };
 

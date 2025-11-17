@@ -16,6 +16,8 @@ import {
   WorkerTestResponse,
   ResizeRequest,
   ResizeResponse,
+  GetPositionRequest,
+  GetPositionResponse,
   Message,
   ExtractResultType
 } from '@shared-core/types/messageTypes';
@@ -187,18 +189,44 @@ codeMessageDispatcher.registerHandler<
     MessageCategory.SYSTEM,
     SystemMessageType.RESIZE,
     async (request: ResizeRequest): Promise<ExtractResultType<ResizeResponse>> => {
-      const { width, height } = request.payload;
-      console.log('[CODE] Resize request received:', { width, height });
+      const { width, height, x, y } = request.payload;
+      console.log('[CODE] Resize request received:', { width, height, x, y });
       
       // Call the platform-specific resize method
       commands.ui.resize(width, height);
+      
+      // If position is provided, reposition the window
+      if (x !== undefined && y !== undefined) {
+        commands.ui.reposition(x, y);
+      }
       
       // Return structured response with exact type
       return {
         resized: true,
         width,
-        height
+        height,
+        x,
+        y
       };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    GetPositionRequest,
+    ExtractResultType<GetPositionResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.GET_POSITION,
+    async (_: GetPositionRequest): Promise<ExtractResultType<GetPositionResponse>> => {
+      console.log('[CODE] GetPosition request received');
+      
+      // Call the platform-specific getPosition method
+      const position = await commands.ui.getPosition();
+      
+      console.log('[CODE] Position retrieved:', position);
+      
+      // Return structured response with exact type
+      return position;
     }
   );
 })();

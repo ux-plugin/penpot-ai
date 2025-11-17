@@ -95,6 +95,24 @@ function wireCommunications(iframe: HTMLIFrameElement, worker: Worker) {
       return;
     }
 
+    // Handle resize messages from worker (ui.resize calls from code.ts)
+    if (data.type === 'resize') {
+      handleResize(data);
+      return;
+    }
+
+    // Handle getPosition messages from worker
+    if (data.type === 'getPosition') {
+      handleGetPosition(worker, data);
+      return;
+    }
+
+    // Handle reposition messages from worker (ui.reposition calls from code.ts)
+    if (data.type === 'reposition') {
+      handleReposition(data);
+      return;
+    }
+
     // console.log('Forwarding worker → iframe:', event.data);
     iframe.contentWindow?.postMessage(event.data, '*');
   });
@@ -144,6 +162,105 @@ function handleLocalStorageBridge(worker: Worker, message: any) {
   });
 }
 
+function handleResize(message: any) {
+  const { width, height } = message;
+  
+  console.log('[HOST] Handling resize request:', { width, height });
+  
+  // Get the plugin window element
+  const pluginWindow = document.getElementById('plugin-window');
+  
+  if (!pluginWindow) {
+    console.error('[HOST] Plugin window not found');
+    return;
+  }
+  
+  // Apply minimum size constraints
+  const minWidth = 300;
+  const minHeight = 200;
+  const constrainedWidth = Math.max(width, minWidth);
+  const constrainedHeight = Math.max(height, minHeight);
+  
+  // Update the plugin window dimensions
+  pluginWindow.style.width = constrainedWidth + 'px';
+  pluginWindow.style.height = constrainedHeight + 'px';
+  
+  console.log('[HOST] Resized plugin window to:', { 
+    width: constrainedWidth, 
+    height: constrainedHeight 
+  });
+}
+
+function handleReposition(message: any) {
+  const { x, y } = message;
+  
+  console.log('[HOST] Handling reposition request:', { x, y });
+  
+  // Get the plugin window element
+  const pluginWindow = document.getElementById('plugin-window');
+  
+  if (!pluginWindow) {
+    console.error('[HOST] Plugin window not found');
+    return;
+  }
+  
+  // Keep window within viewport bounds
+  const maxX = window.innerWidth - pluginWindow.offsetWidth;
+  const maxY = window.innerHeight - pluginWindow.offsetHeight;
+  
+  const constrainedX = Math.max(0, Math.min(x, maxX));
+  const constrainedY = Math.max(0, Math.min(y, maxY));
+  
+  // Update position
+  pluginWindow.style.left = constrainedX + 'px';
+  pluginWindow.style.top = constrainedY + 'px';
+  pluginWindow.style.right = 'auto'; // Override the CSS right positioning
+  
+  console.log('[HOST] Repositioned plugin window to:', { 
+    x: constrainedX, 
+    y: constrainedY 
+  });
+}
+
+function handleGetPosition(worker: Worker, message: any) {
+  const { requestId } = message;
+  
+  console.log('[HOST] Handling getPosition request:', requestId);
+  
+  // Get the plugin window element
+  const pluginWindow = document.getElementById('plugin-window');
+  
+  if (!pluginWindow) {
+    console.error('[HOST] Plugin window not found');
+    worker.postMessage({
+      type: 'getPosition-response',
+      requestId,
+      position: {
+        windowSpace: { x: 0, y: 0 },
+        canvasSpace: { x: 0, y: 0 }
+      }
+    });
+    return;
+  }
+  
+  // Get the bounding rect to get accurate position
+  const rect = pluginWindow.getBoundingClientRect();
+  
+  const position = {
+    windowSpace: { x: rect.left, y: rect.top },
+    canvasSpace: { x: rect.left, y: rect.top } // Same as windowSpace in dev environment
+  };
+  
+  console.log('[HOST] Sending position:', position);
+  
+  // Send response back to worker
+  worker.postMessage({
+    type: 'getPosition-response',
+    requestId,
+    position
+  });
+}
+
 // Initialize everything when the DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[HOST] Initializing Figma plugin development environment');
@@ -161,4 +278,3 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
-
