@@ -1,64 +1,77 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@ui/button';
 import { Input } from '@ui/input';
-import { Send, MessageSquare, History, ChevronLeft } from 'lucide-react';
-
-interface Message {
-  id: string;
-  type: 'user' | 'ai';
-  content: string;
-  timestamp: number;
-}
-
-interface Conversation {
-  id: string;
-  title: string;
-  messages: Message[];
-  lastUpdated: number;
-}
+import { Send, MessageSquare, History, ChevronLeft, Mic, Play, Pause } from 'lucide-react';
+import { useConversationStore, type Message, type Conversation } from '../stores/useConversationStore';
+import { useCompletionsWebSocket } from '../api/useCompletionsWebSocket';
 
 export function ConversationHistory() {
   const [showHistory, setShowHistory] = useState(false);
   const [currentMessage, setCurrentMessage] = useState('');
-  const [currentConversationId, setCurrentConversationId] = useState('1');
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   
-  // Mock data - will be replaced with actual state management
-  const [conversations, setConversations] = useState<Conversation[]>([
-    {
-      id: '1',
-      title: 'New Conversation',
-      messages: [
-        {
-          id: 'm1',
-          type: 'user',
-          content: 'Hello! Can you help me create a button?',
-          timestamp: Date.now() - 60000,
-        },
-        {
-          id: 'm2',
+  // Use conversation store
+  const {
+    conversations,
+    currentConversationId,
+    addConversation,
+    setCurrentConversation,
+    addMessage,
+    updateMessage,
+    appendToMessage,
+    getCurrentConversation,
+  } = useConversationStore();
+  
+  // Initialize with a default conversation if none exists
+  useEffect(() => {
+    if (conversations.length === 0) {
+      const defaultConv: Conversation = {
+        id: 'conv_default',
+        title: 'New Conversation',
+        messages: [],
+        lastUpdated: Date.now(),
+      };
+      addConversation(defaultConv);
+    }
+  }, [conversations.length, addConversation]);
+  
+  const currentConversation = getCurrentConversation();
+  
+  // Set up WebSocket for streaming responses
+  const {
+    startRecordingAndStreaming,
+    stopRecordingAndStreaming,
+    isRecording,
+    isReady,
+  } = useCompletionsWebSocket({
+    onCompletionResponse: (response) => {
+      if (!currentConversationId) return;
+      
+      const { reasoning } = response.payload;
+      
+      // Find or create streaming AI message
+      const streamingMessage = currentConversation?.messages.find(
+        (m) => m.isStreaming && m.type === 'ai'
+      );
+      
+      if (streamingMessage) {
+        // Append to existing streaming message
+        appendToMessage(currentConversationId, streamingMessage.id, ' ' + reasoning);
+      } else {
+        // Create new streaming message
+        const newMessage: Message = {
+          id: `msg_${Date.now()}`,
           type: 'ai',
-          content: 'Of course! I can help you create a button. What style would you like?',
-          timestamp: Date.now() - 50000,
-        },
-      ],
-      lastUpdated: Date.now(),
+          content: reasoning,
+          timestamp: Date.now(),
+          isStreaming: true,
+        };
+        addMessage(currentConversationId, newMessage);
+      }
     },
-    {
-      id: '2',
-      title: 'UI Design Discussion',
-      messages: [
-        {
-          id: 'm3',
-          type: 'user',
-          content: 'What are best practices for spacing?',
-          timestamp: Date.now() - 120000,
-        },
-      ],
-      lastUpdated: Date.now() - 120000,
-    },
-  ]);
-
-  const currentConversation = conversations.find(c => c.id === currentConversationId);
+  });
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Scroll to bottom when messages change
@@ -69,46 +82,62 @@ export function ConversationHistory() {
   }, [currentConversation?.messages, showHistory]);
 
   const handleSendMessage = () => {
-    if (!currentMessage.trim()) return;
+    if (!currentMessage.trim() || !currentConversationId) return;
 
     const newMessage: Message = {
-      id: `m${Date.now()}`,
+      id: `msg_${Date.now()}`,
       type: 'user',
       content: currentMessage,
       timestamp: Date.now(),
     };
 
-    setConversations(prev => prev.map(conv => 
-      conv.id === currentConversationId 
-        ? { 
-            ...conv, 
-            messages: [...conv.messages, newMessage],
-            lastUpdated: Date.now(),
-          }
-        : conv
-    ));
-
+    addMessage(currentConversationId, newMessage);
     setCurrentMessage('');
-
-    // Simulate AI response
-    setTimeout(() => {
-      const aiMessage: Message = {
-        id: `m${Date.now()}`,
-        type: 'ai',
-        content: 'I understand. Let me help you with that.',
-        timestamp: Date.now(),
-      };
-
-      setConversations(prev => prev.map(conv => 
-        conv.id === currentConversationId 
-          ? { 
-              ...conv, 
-              messages: [...conv.messages, aiMessage],
-              lastUpdated: Date.now(),
-            }
-          : conv
-      ));
-    }, 1000);
+  };
+  
+  const handleStartRecording = async () => {
+    if (!currentConversationId) return;
+    
+    try {
+      await startRecordingAndStreaming();
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+    }
+  };
+  
+  const handleStopRecording = () => {
+    if (!currentConversationId) return;
+    
+    stopRecordingAndStreaming();
+    
+    // Mark the streaming message as complete
+    const streamingMessage = currentConversation?.messages.find(
+      (m) => m.isStreaming && m.type === 'ai'
+    );
+    
+    if (streamingMessage && currentConversationId) {
+      updateMessage(currentConversationId, streamingMessage.id, { isStreaming: false });
+    }
+  };
+  
+  const handlePlayAudio = (messageId: string, audioData: string) => {
+    if (playingAudioId === messageId) {
+      // Pause current audio
+      audioRef.current?.pause();
+      setPlayingAudioId(null);
+    } else {
+      // Play new audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      
+      // Convert base64 to audio blob and play
+      const audio = new Audio(`data:audio/webm;base64,${audioData}`);
+      audioRef.current = audio;
+      audio.onended = () => setPlayingAudioId(null);
+      audio.play().catch(console.error);
+      setPlayingAudioId(messageId);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -119,19 +148,18 @@ export function ConversationHistory() {
   };
 
   const selectConversation = (conversationId: string) => {
-    setCurrentConversationId(conversationId);
+    setCurrentConversation(conversationId);
     setShowHistory(false);
   };
 
   const startNewConversation = () => {
     const newConv: Conversation = {
-      id: `conv${Date.now()}`,
+      id: `conv_${Date.now()}`,
       title: 'New Conversation',
       messages: [],
       lastUpdated: Date.now(),
     };
-    setConversations(prev => [newConv, ...prev]);
-    setCurrentConversationId(newConv.id);
+    addConversation(newConv);
     setShowHistory(false);
   };
 
@@ -223,7 +251,27 @@ export function ConversationHistory() {
                         : 'bg-gray-100 text-gray-900'
                     }`}
                   >
-                    <p className="text-sm">{message.content}</p>
+                    {message.audioData && (
+                      <div className="mb-2 flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => handlePlayAudio(message.id, message.audioData!)}
+                        >
+                          {playingAudioId === message.id ? (
+                            <Pause className="h-4 w-4" />
+                          ) : (
+                            <Play className="h-4 w-4" />
+                          )}
+                        </Button>
+                        <span className="text-xs opacity-75">Audio message</span>
+                      </div>
+                    )}
+                    <p className="text-sm">
+                      {message.content}
+                      {message.isStreaming && <span className="animate-pulse ml-1">▋</span>}
+                    </p>
                     <p className={`text-xs mt-1 ${
                       message.type === 'user' ? 'text-gray-400' : 'text-gray-500'
                     }`}>
@@ -239,16 +287,26 @@ export function ConversationHistory() {
           {/* Input */}
           <div className="p-4 border-t border-gray-200 bg-gray-50">
             <div className="flex items-center gap-2">
+              <Button
+                onClick={isRecording ? handleStopRecording : handleStartRecording}
+                disabled={!isReady}
+                className={isRecording ? "bg-red-600 hover:bg-red-700" : "bg-gray-600 hover:bg-gray-700"}
+                size="icon"
+                title={isRecording ? "Stop Recording" : "Start Voice Recording"}
+              >
+                <Mic className="h-5 w-5" />
+              </Button>
               <Input
                 value={currentMessage}
                 onChange={(e) => setCurrentMessage(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder="Type your message..."
                 className="flex-1"
+                disabled={isRecording}
               />
               <Button
                 onClick={handleSendMessage}
-                disabled={!currentMessage.trim()}
+                disabled={!currentMessage.trim() || isRecording}
                 className="bg-blue-600 hover:bg-blue-700"
                 size="icon"
               >
