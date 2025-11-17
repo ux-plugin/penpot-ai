@@ -9,6 +9,7 @@ export function ConversationHistory() {
   const [showHistory, setShowHistory] = useState(false);
   const [currentMessage, setCurrentMessage] = useState('');
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const [recordedAudioChunks, setRecordedAudioChunks] = useState<string[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   
   // Use conversation store
@@ -45,6 +46,10 @@ export function ConversationHistory() {
     isRecording,
     isReady,
   } = useCompletionsWebSocket({
+    onAudioChunk: (base64Audio: string) => {
+      // Accumulate audio chunks during recording
+      setRecordedAudioChunks((prev) => [...prev, base64Audio]);
+    },
     onCompletionResponse: (response) => {
       if (!currentConversationId) return;
       
@@ -109,6 +114,24 @@ export function ConversationHistory() {
     if (!currentConversationId) return;
     
     stopRecordingAndStreaming();
+    
+    // Combine all audio chunks into a single base64 string
+    const combinedAudio = recordedAudioChunks.join('');
+    
+    // Create a user message with the recorded audio
+    if (combinedAudio) {
+      const audioMessage: Message = {
+        id: `msg_${Date.now()}`,
+        type: 'user',
+        content: 'Voice message',
+        timestamp: Date.now(),
+        audioData: combinedAudio,
+      };
+      addMessage(currentConversationId, audioMessage);
+    }
+    
+    // Clear recorded chunks
+    setRecordedAudioChunks([]);
     
     // Mark the streaming message as complete
     const streamingMessage = currentConversation?.messages.find(

@@ -25,6 +25,7 @@ export interface UseCompletionsWebSocketOptions {
   onWebSocketClose?: () => void;
   onWebSocketError?: (error: Error) => void;
   onCompletionResponse?: (response: any) => void;
+  onAudioChunk?: (base64Audio: string) => void; // Callback for captured audio chunks
 }
 
 export interface UseCompletionsWebSocketReturn {
@@ -55,6 +56,7 @@ export function useCompletionsWebSocket(
     onWebSocketClose,
     onWebSocketError,
     onCompletionResponse,
+    onAudioChunk,
   } = options;
 
   // State
@@ -77,6 +79,9 @@ export function useCompletionsWebSocket(
       console.log('📡 WebSocket adapter exists:', !!wsAdapterRef.current);
       console.log('📡 WebSocket connected:', wsAdapterRef.current?.isConnected());
       console.log('📡 WebSocket readyState:', wsAdapterRef.current?.getReadyState());
+      
+      // Forward to caller if callback provided
+      onAudioChunk?.(base64Audio);
       
       // Forward audio chunk to WebSocket
       if (wsAdapterRef.current?.isConnected()) {
