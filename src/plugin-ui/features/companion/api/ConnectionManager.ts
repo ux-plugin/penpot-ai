@@ -84,6 +84,86 @@ export class ConnectionManager {
   }
 
   /**
+   * Play audio through the companion app
+   * Subscribes to playback-related events
+   * 
+   * IMPORTANT: WebSocket remains open after playback stops.
+   */
+  async playAudio(options: {
+    audioData: string; // base64 audio data
+    onStarted?: () => void;
+    onStopped?: () => void;
+    onError?: (error: Error) => void;
+  }): Promise<{ stop: () => void }>
+  {
+    if (!this.isConnected()) {
+      throw new Error('Not connected to companion app');
+    }
+
+    console.log('🔊 Starting audio playback via companion app');
+    
+    // Track if cleanup has already been done
+    let isCleanedUp = false;
+    
+    const cleanup = () => {
+      if (isCleanedUp) {
+        console.log('⚠️ Playback cleanup already performed, skipping');
+        return;
+      }
+      isCleanedUp = true;
+      
+      console.log('🧹 Cleaning up playback subscriptions (WebSocket stays open)');
+      unsubscribeStarted();
+      unsubscribeStopped();
+      unsubscribeError();
+    };
+
+    // Subscribe to playback started
+    const unsubscribeStarted = this.wsClient.on('audio-playback-started', () => {
+      console.log('✅ Audio playback started');
+      options.onStarted?.();
+    });
+
+    // Subscribe to playback stopped
+    const unsubscribeStopped = this.wsClient.on('audio-playback-stopped', () => {
+      console.log('⏹️ Audio playback stopped by companion app');
+      options.onStopped?.();
+      cleanup();
+    });
+
+    // Subscribe to playback errors
+    const unsubscribeError = this.wsClient.on('audio-playback-error', (errorData: any) => {
+      console.error('🔴 Audio playback error:', errorData);
+      options.onError?.(new Error(errorData.message || 'Playback error'));
+      cleanup();
+    });
+
+    // Send play-audio command with audio data
+    try {
+      await this.wsClient.sendCommand('play-audio', { audio: options.audioData });
+      console.log('✅ Play audio command sent successfully');
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
+
+    // Return stop function
+    return {
+      stop: () => {
+        console.log('⏹️ Stopping audio playback...');
+        cleanup();
+        
+        // Send stop command to companion app
+        this.wsClient.sendCommand('stop-audio').catch(error => {
+          console.error('Error sending stop-audio command:', error);
+        });
+        
+        console.log('✅ Audio playback stopped - WebSocket remains open');
+      }
+    };
+  }
+
+  /**
    * Start audio recording via WebSocket
    * Returns an object with a close function
    * Subscribes to audio-chunk messages
@@ -94,7 +174,8 @@ export class ConnectionManager {
   async startRecording(options: {
     onAudioChunk: (base64Audio: string) => void;
     onError: (error: Error) => void;
-  }): Promise<{ close: () => void }> {
+  }): Promise<{ close: () => void }>
+  {
     if (!this.isConnected()) {
       throw new Error('Not connected to companion app');
     }

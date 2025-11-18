@@ -42,5 +42,6 @@ export async function handlePortUpdate(newPort: number): Promise<void> {
 // Export hooks
 export {
   useCompanionConnection,
-  useAudioRecording
+  useAudioRecording,
+  useAudioPlayback
 } from './companionAppHooks.ts';

@@ -3,14 +3,17 @@ import { Button } from '@ui/button';
 import { Input } from '@ui/input';
 import { Send, MessageSquare, History, ChevronLeft, Mic, Play, Pause } from 'lucide-react';
 import { useConversationStore, type Message, type Conversation } from '../stores/useConversationStore';
-import { useCompletionsWebSocket } from '../api/useCompletionsWebSocket';
+import { useCompletionsWebSocket } from "@completions/api";
+import { useAudioPlayback } from '@companion/api';
 
 export function ConversationHistory() {
   const [showHistory, setShowHistory] = useState(false);
   const [currentMessage, setCurrentMessage] = useState('');
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
-  const [recordedAudioChunks, setRecordedAudioChunks] = useState<string[]>([]);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [recordedAudioChunks, setRecordedAudioChunks] = useState<Uint8Array[]>([]);
+  
+  // Use audio playback hook for companion app
+  const { playAudio, stopAudio } = useAudioPlayback();
   
   // Use conversation store
   const {
@@ -47,24 +50,29 @@ export function ConversationHistory() {
     isReady,
   } = useCompletionsWebSocket({
     onAudioChunk: (base64Audio: string) => {
-      // Accumulate audio chunks during recording
-      setRecordedAudioChunks((prev) => [...prev, base64Audio]);
+      // Decode base64 immediately and store as binary
+      const binaryString = atob(base64Audio);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      setRecordedAudioChunks((prev) => [...prev, bytes]);
     },
     onCompletionResponse: (response) => {
       if (!currentConversationId) return;
       
       const { reasoning } = response.payload;
       
-      // Find or create streaming AI message
+      // Find or create a streaming AI message
       const streamingMessage = currentConversation?.messages.find(
         (m) => m.isStreaming && m.type === 'ai'
       );
       
       if (streamingMessage) {
-        // Append to existing streaming message
+        // Append to an existing streaming message
         appendToMessage(currentConversationId, streamingMessage.id, ' ' + reasoning);
       } else {
-        // Create new streaming message
+        // Create a new streaming message
         const newMessage: Message = {
           id: `msg_${Date.now()}`,
           type: 'ai',
@@ -79,7 +87,7 @@ export function ConversationHistory() {
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Scroll to bottom when messages change
+  // Scroll to the bottom when messages change
   useEffect(() => {
     if (!showHistory) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -115,8 +123,27 @@ export function ConversationHistory() {
     
     stopRecordingAndStreaming();
     
-    // Combine all audio chunks into a single base64 string
-    const combinedAudio = recordedAudioChunks.join('');
+    // Concatenate binary chunks and encode to base64
+    let combinedAudio = '';
+    if (recordedAudioChunks.length > 0) {
+      // Calculate total length
+      const totalLength = recordedAudioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      
+      // Concatenate all binary chunks
+      const combined = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of recordedAudioChunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
+      // Encode to base64
+      let binaryString = '';
+      for (let i = 0; i < combined.length; i++) {
+        binaryString += String.fromCharCode(combined[i]);
+      }
+      combinedAudio = btoa(binaryString);
+    }
     
     // Create a user message with the recorded audio
     if (combinedAudio) {
@@ -143,23 +170,27 @@ export function ConversationHistory() {
     }
   };
   
-  const handlePlayAudio = (messageId: string, audioData: string) => {
+  const handlePlayAudio = async (messageId: string, audioData: string) => {
     if (playingAudioId === messageId) {
-      // Pause current audio
-      audioRef.current?.pause();
+      // Stop current audio playback
+      stopAudio();
       setPlayingAudioId(null);
     } else {
-      // Play new audio
-      if (audioRef.current) {
-        audioRef.current.pause();
+      // Stop any currently playing audio first
+      if (playingAudioId) {
+        stopAudio();
       }
       
-      // Convert base64 to audio blob and play
-      const audio = new Audio(`data:audio/webm;base64,${audioData}`);
-      audioRef.current = audio;
-      audio.onended = () => setPlayingAudioId(null);
-      audio.play().catch(console.error);
-      setPlayingAudioId(messageId);
+      try {
+        // Play audio through companion app
+        setPlayingAudioId(messageId);
+        await playAudio(audioData);
+        // Audio stopped naturally or by user
+        setPlayingAudioId(null);
+      } catch (error) {
+        console.error('Failed to play audio:', error);
+        setPlayingAudioId(null);
+      }
     }
   };
 

@@ -210,7 +210,7 @@ export class CompanionWebSocketClient {
    * Send a command to the companion app and wait for response
    * Returns a promise that resolves with the response data
    */
-  async sendCommand(command: WebSocketCommand): Promise<any> {
+  async sendCommand(command: WebSocketCommand, data?: any): Promise<any> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket not connected');
     }
@@ -236,10 +236,11 @@ export class CompanionWebSocketClient {
         timeout
       });
 
-      // Create request payload
+      // Create request payload with optional data
       const requestPayload = JSON.stringify({
         id: requestId,
-        command: command
+        command: command,
+        ...(data && { data })
       });
 
       // Generate nonce and encrypt
@@ -249,7 +250,7 @@ export class CompanionWebSocketClient {
         .then(encryptedMessage => {
           // Send the encrypted message
           this.ws!.send(encryptedMessage);
-          console.log(`Sent command: ${command} (id: ${requestId})`);
+          console.log(`Sent command: ${command} (id: ${requestId})${data ? ' with data' : ''}`);
         })
         .catch(error => {
           clearTimeout(timeout);
