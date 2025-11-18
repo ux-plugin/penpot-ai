@@ -1,22 +1,25 @@
 package com.plugin.features.completions
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.plugin.infrastructure.websocket.WebSocketMessage
-import com.plugin.infrastructure.websocket.WebSocketMessageHandler
-import com.plugin.infrastructure.websocket.WebSocketMessageType
-import com.plugin.infrastructure.websocket.WebSocketResponse
+import com.plugin.features.completions.koog.AgentPipelineInput
+import com.plugin.features.completions.koog.KoogAgentPipeline
+import com.plugin.infrastructure.websocket.*
 import io.quarkus.logging.Log
 import io.quarkus.websockets.next.WebSocketConnection
+import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.reflect.KClass
 
 /**
  * Handler for completions-related WebSocket messages
  *
- * This handler manages completion requests using the new message schema.
+ * This handler manages completion requests using the new message schema and integrates with Koog agent pipeline for
+ * audio transcription and LLM response generation.
  *
  * Migrated to Quarkus WebSocket Next API with thread-safe audio buffer handling for parallel message processing.
  */
@@ -25,95 +28,166 @@ class CompletionsMessageHandler
 @Inject
 constructor(
     private val objectMapper: ObjectMapper,
+    private val koogAgentPipeline: KoogAgentPipeline,
 ) : WebSocketMessageHandler {
 
     // Store audio buffers per connection for recording (thread-safe)
     private val audioBuffers = ConcurrentHashMap<String, ByteArrayOutputStream>()
 
-    override fun getMessageTypePrefix(): String = "completions:"
+    // Store accumulated drawn paths per connection
+    private val drawnPaths = ConcurrentHashMap<String, StringBuilder>()
 
-    override suspend fun handleMessage(
-        message: WebSocketMessage,
-        connection: WebSocketConnection,
-        userId: String
-    ): WebSocketResponse? {
-        return try {
-            when (message.type) {
-                WebSocketMessageType.COMPLETIONS_REQUEST -> handleCompletionRequest(message, connection, userId)
-                WebSocketMessageType.COMPLETIONS_REQUEST_END -> handleCompletionRequestEnd(message, connection, userId)
-                WebSocketMessageType.COMPLETIONS_RESPONSE -> handleCompletionResponse(message, connection, userId)
-                WebSocketMessageType.COMPLETIONS_RESPONSE_END ->
-                    handleCompletionResponseEnd(message, connection, userId)
+    override fun getHandledMessageTypes(): List<KClass<out WebSocketMessage>> =
+        listOf(
+            CompletionRequest::class,
+            CompletionRequestEnd::class,
+            CompletionResponse::class,
+            CompletionResponseEnd::class
+        )
+
+    override suspend fun handleMessage(message: WebSocketMessage, connection: WebSocketConnection, userId: String) {
+        try {
+            when (message) {
+                is CompletionRequest -> handleCompletionRequest(message, connection, userId)
+                is CompletionRequestEnd -> handleCompletionRequestEnd(message, connection, userId)
+                is CompletionResponse -> handleCompletionResponse(message, connection, userId)
+                is CompletionResponseEnd -> handleCompletionResponseEnd(message, connection, userId)
                 else -> {
-                    Log.warn("Unknown completions message type: ${message.type}")
-                    WebSocketResponse(
-                        type = "error",
-                        payload = emptyMap(),
-                        requestId = message.requestId,
-                        error = "Unsupported message type: ${message.type}"
-                    )
+                    Log.warn("Unexpected message type in CompletionsMessageHandler: ${message::class.simpleName}")
+                    sendErrorResponse(connection, "Unsupported message type", message.requestId, 4003)
                 }
             }
         } catch (e: Exception) {
             Log.error("Error handling completions message", e)
-            WebSocketResponse(
-                type = "error",
-                payload = emptyMap(),
-                requestId = message.requestId,
-                error = e.message ?: "Unknown error"
-            )
+            sendErrorResponse(connection, e.message ?: "Unknown error", message.requestId, 5000)
         }
     }
 
-    private fun handleCompletionRequest(
-        message: WebSocketMessage,
+    private suspend fun handleCompletionRequest(
+        message: CompletionRequest,
         connection: WebSocketConnection,
         userId: String
-    ): WebSocketResponse {
-        val feId = message.payload["fe_id"] as? String
-        val drawnPath = message.payload["drawn_path"] as? String
-        val audioChunk = message.payload["audio_chunk"] as? String
-        val timestamp = message.payload["timestamp"] as? Number
+    ) {
+        val feId = message.payload.fe_id
+        val drawnPath = message.payload.drawn_path
+        val audioChunk = message.payload.audio_chunk
+        val timestamp = message.payload.timestamp
 
         Log.info("Handling completion_request:")
         Log.info("  FE ID: $feId")
         Log.info("  Timestamp: $timestamp")
-        Log.info("  Drawn Path: ${drawnPath?.take(100)}${if ((drawnPath?.length ?: 0) > 100) "..." else ""}")
-        Log.info("  Audio Chunk Size: ${audioChunk?.length ?: 0} base64 chars")
+        Log.info("  Drawn Path: ${drawnPath.take(100)}${if (drawnPath.length > 100) "..." else ""}")
+        Log.info("  Audio Chunk Size: ${audioChunk.length} base64 chars")
 
-        // TODO: Process the completion request
-        return WebSocketResponse(
-            type = message.type,
-            payload = mapOf("status" to "ok", "fe_id" to feId),
-            requestId = message.requestId
-        )
+        // Accumulate drawn path for context
+        if (drawnPath.isNotBlank()) {
+            drawnPaths.getOrPut(connection.id()) { StringBuilder() }.append(drawnPath).append(" ")
+        }
+
+        // Accumulate audio chunk
+        if (audioChunk.isNotBlank()) {
+            try {
+                val decodedAudio = Base64.getDecoder().decode(audioChunk)
+                audioBuffers[connection.id()]?.let { buffer ->
+                    synchronized(buffer) { buffer.write(decodedAudio) }
+                    Log.debug("Accumulated audio: ${buffer.size()} bytes")
+                }
+            } catch (e: Exception) {
+                Log.error("Failed to decode audio chunk", e)
+            }
+        }
+
+        // Send acknowledgment response
+        val response =
+            CompletionRequest(
+                payload =
+                    CompletionRequestPayload(fe_id = feId, drawn_path = "", audio_chunk = "", timestamp = timestamp),
+                requestId = message.requestId
+            )
+        connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
     }
 
-    private fun handleCompletionRequestEnd(
-        message: WebSocketMessage,
+    private suspend fun handleCompletionRequestEnd(
+        message: CompletionRequestEnd,
         connection: WebSocketConnection,
         userId: String
-    ): WebSocketResponse {
-        val feId = message.payload["fe_id"] as? String
+    ) {
+        val feId = message.payload.fe_id
         Log.info("Handling completion_request_end for FE ID: $feId")
 
-        // TODO: Finalize completion request processing
-        return WebSocketResponse(
-            type = message.type,
-            payload = mapOf("status" to "ok", "fe_id" to feId),
-            requestId = message.requestId
-        )
+        // Process accumulated audio and generate response using Koog pipeline
+        val audioBuffer = audioBuffers[connection.id()]
+        val cursorContext = drawnPaths[connection.id()]?.toString()
+
+        if (audioBuffer != null && audioBuffer.size() > 0) {
+            try {
+                // Save audio to temporary file
+                val timestamp = System.currentTimeMillis()
+                val connectionIdShort = connection.id().take(8)
+                val audioFile = File("audio-recordings", "audio_${timestamp}_${connectionIdShort}.wav")
+                audioFile.parentFile?.mkdirs()
+
+                val audioData = synchronized(audioBuffer) { audioBuffer.toByteArray() }
+                WavFileWriter.writeWavFile(audioData, audioFile)
+                Log.info("Saved audio for processing: ${audioFile.absolutePath}")
+
+                // Execute Koog pipeline with streaming callback
+                val pipelineInput = AgentPipelineInput(audioFile = audioFile, cursorContext = cursorContext)
+                koogAgentPipeline.executePipeline(pipelineInput) { chunk ->
+                    // Parse chunk as CompletionsResponsePayload (assuming chunk is JSON with
+                    // action, target, params, reasoning)
+                    // For now, send the chunk as-is in the reasoning field until proper parsing is
+                    // implemented
+                    val response =
+                        CompletionResponse(
+                            payload =
+                                CompletionResponsePayload(
+                                    fe_id = feId,
+                                    action = "create_node", // TODO: Parse from chunk
+                                    target = "", // TODO: Parse from chunk
+                                    params = "", // TODO: Parse from chunk
+                                    reasoning = chunk
+                                ),
+                            requestId = message.requestId
+                        )
+                    connection.sendText(objectMapper.writeValueAsString(response)).awaitSuspending()
+                }
+
+                // Send completion signal
+                val endResponse =
+                    CompletionResponseEnd(
+                        payload = CompletionResponseEndPayload(fe_id = feId),
+                        requestId = message.requestId
+                    )
+                connection.sendText(objectMapper.writeValueAsString(endResponse)).awaitSuspending()
+
+                // Clear buffers after processing completes
+                audioBuffers[connection.id()]?.reset()
+                drawnPaths[connection.id()]?.clear()
+            } catch (e: Exception) {
+                Log.error("Failed to process audio with Koog pipeline", e)
+                sendErrorResponse(connection, e.message ?: "Unknown error", message.requestId, 5000)
+                return
+            }
+        } else {
+            Log.warn("No audio data received for processing")
+        }
+
+        // Send acknowledgment response
+        val response =
+            CompletionRequestEnd(payload = CompletionRequestEndPayload(fe_id = feId), requestId = message.requestId)
+        connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
     }
 
-    private fun handleCompletionResponse(
-        message: WebSocketMessage,
+    private suspend fun handleCompletionResponse(
+        message: CompletionResponse,
         connection: WebSocketConnection,
         userId: String
-    ): WebSocketResponse {
-        val feId = message.payload["fe_id"] as? String
-        val action = message.payload["action"] as? String
-        val target = message.payload["target"] as? String
-        val params = message.payload["params"] as? String
+    ) {
+        val feId = message.payload.fe_id
+        val action = message.payload.action
+        val target = message.payload.target
+        val params = message.payload.params
 
         Log.info("Handling completion_response:")
         Log.info("  FE ID: $feId")
@@ -122,69 +196,73 @@ constructor(
         Log.info("  Params: $params")
 
         // TODO: Process the completion response
-        return WebSocketResponse(
-            type = message.type,
-            payload = mapOf("status" to "ok", "fe_id" to feId),
-            requestId = message.requestId
-        )
+        val response =
+            CompletionResponse(
+                payload =
+                    CompletionResponsePayload(
+                        fe_id = feId,
+                        action = action,
+                        target = target,
+                        params = params,
+                        reasoning = ""
+                    ),
+                requestId = message.requestId
+            )
+        connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
     }
 
-    private fun handleCompletionResponseEnd(
-        message: WebSocketMessage,
+    private suspend fun handleCompletionResponseEnd(
+        message: CompletionResponseEnd,
         connection: WebSocketConnection,
         userId: String
-    ): WebSocketResponse {
-        val feId = message.payload["fe_id"] as? String
+    ) {
+        val feId = message.payload.fe_id
         Log.info("Handling completion_response_end for FE ID: $feId")
 
         // TODO: Finalize completion response processing
-        return WebSocketResponse(
-            type = message.type,
-            payload = mapOf("status" to "ok", "fe_id" to feId),
-            requestId = message.requestId
-        )
+        val response =
+            CompletionResponseEnd(payload = CompletionResponseEndPayload(fe_id = feId), requestId = message.requestId)
+        connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
+    }
+
+    private suspend fun sendErrorResponse(
+        connection: WebSocketConnection,
+        message: String,
+        requestId: String?,
+        errorCode: Int
+    ) {
+        try {
+            val error =
+                CompletionRequest(
+                    payload = CompletionRequestPayload(fe_id = "", drawn_path = "", audio_chunk = "", timestamp = 0),
+                    requestId = requestId,
+                    error = WebSocketError(code = errorCode, message = message)
+                )
+            connection.sendTextAndAwait(objectMapper.writeValueAsString(error))
+        } catch (e: Exception) {
+            Log.error("Failed to send error response", e)
+        }
     }
 
     override suspend fun onOpen(connection: WebSocketConnection, userId: String) {
         Log.debug("CompletionsMessageHandler: Connection opened for user $userId")
         audioBuffers[connection.id()] = ByteArrayOutputStream()
+        drawnPaths[connection.id()] = StringBuilder()
     }
 
     override suspend fun onClose(connection: WebSocketConnection, userId: String) {
         Log.debug("CompletionsMessageHandler: Connection closed for user $userId")
 
-        // Save accumulated audio to WAV file
-        audioBuffers[connection.id()]?.let { buffer ->
-            try {
-                val timestamp = System.currentTimeMillis()
-                val connectionIdShort = connection.id().take(8)
-                val outputDir = File("audio-recordings")
-                val outputFile = File(outputDir, "audio_${timestamp}_${connectionIdShort}.wav")
-
-                // Thread-safe read of audio data
-                val audioData = synchronized(buffer) { buffer.toByteArray() }
-
-                if (audioData.isNotEmpty()) {
-                    WavFileWriter.writeWavFile(audioData, outputFile)
-                    Log.info("Audio saved to: ${outputFile.absolutePath}")
-                    Log.info("Audio file size: ${outputFile.length()} bytes")
-                    Log.info("Duration: ~${audioData.size / (AudioConfig.SAMPLE_RATE * 2)} seconds")
-                } else {
-                    Log.warn("No audio data to save for connection ${connection.id()}")
-                }
-            } catch (e: Exception) {
-                Log.error("Failed to save audio file", e)
-            }
-        }
-
-        // Clean up audio buffers
+        // Clean up buffers
         audioBuffers.remove(connection.id())
+        drawnPaths.remove(connection.id())
     }
 
     override suspend fun onError(connection: WebSocketConnection, userId: String, error: Throwable) {
         Log.error("CompletionsMessageHandler: Error for user $userId", error)
-        // Clean up audio buffers
+        // Clean up buffers
         audioBuffers.remove(connection.id())
+        drawnPaths.remove(connection.id())
     }
 }
 

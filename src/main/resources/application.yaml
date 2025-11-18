@@ -92,6 +92,10 @@ quarkus:
       url: "${AI_SERVER_URL:http://localhost:8002}"
     github-api:
       url: "https://github.com"
+    fireworks-api:
+      url: "https://audio-prod.api.fireworks.ai"
+      connect-timeout: 30000  # 30 seconds
+      read-timeout: 120000    # 120 seconds (for large audio files)
     logging:
       scope: request-response
 
@@ -113,6 +117,25 @@ openai:
   api.key: "${OPENAI_API_KEY}"
   project.id: "${OPENAI_PROJECT_ID}"
   org.id: "${OPENAI_ORG_ID}"
+
+# Koog AI Agent Framework Configuration
+koog:
+  # Fireworks AI API key for Whisper v3 Large transcription
+  fireworks:
+    api-key: "${FIREWORKS_API_KEY:}"
+  
+  # OpenAI API key for LLM responses
+  openai:
+    api-key: "${OPENAI_API_KEY}"
+  
+  # LLM model configuration
+  llm:
+    model: "${KOOG_LLM_MODEL:gpt-4o-mini}"
+    temperature: "${KOOG_LLM_TEMPERATURE:0.7}"
+  
+  # Agent configuration
+  agent:
+    max-iterations: "${KOOG_MAX_ITERATIONS:10}"
 
 
 smallrye:
