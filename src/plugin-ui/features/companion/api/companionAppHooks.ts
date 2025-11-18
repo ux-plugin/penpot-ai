@@ -123,3 +123,94 @@ export function useAudioRecording(options: {
     isReady: isCompanionConnected, // Now reactive!
   };
 }
+
+/**
+ * Hook for managing audio playback through the companion app
+ * Provides a clean interface for playing audio through the companion app instead of browser
+ */
+export function useAudioPlayback() {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const playbackRef = useRef<{ stop: () => void } | null>(null);
+  
+  // Subscribe to connection state reactively from store
+  const isCompanionConnected = useCompanionStore(selectIsConnected);
+
+  const playAudio = useCallback(async (audioData: string): Promise<void> => {
+    if (isPlaying) {
+      console.warn('Audio already playing, stopping current playback first');
+      playbackRef.current?.stop();
+    }
+
+    if (!connectionManager.isConnected()) {
+      const error = new Error('Not connected to companion app');
+      setError(error);
+      throw error;
+    }
+
+    // Return a promise that resolves only when playback completes or errors
+    return new Promise<void>(async (resolve, reject) => {
+      try {
+        setError(null);
+        console.log("🔊 Starting audio playback...");
+
+        playbackRef.current = await connectionManager.playAudio({
+          audioData,
+          onStarted: () => {
+            console.log("✅ Audio playback started");
+            setIsPlaying(true);
+          },
+          onStopped: () => {
+            console.log("⏹️ Audio playback stopped");
+            setIsPlaying(false);
+            playbackRef.current = null;
+            resolve(); // ✅ Resolve when playback finishes
+          },
+          onError: (err: Error) => {
+            console.error("❌ Playback error:", err);
+            setError(err);
+            setIsPlaying(false);
+            playbackRef.current = null;
+            reject(err); // ✅ Reject on error
+          },
+        });
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error('Failed to play audio');
+        console.error('❌ Failed to start audio playback:', error);
+        setError(error);
+        setIsPlaying(false);
+        reject(error);
+      }
+    });
+  }, [isPlaying]);
+
+  const stopAudio = useCallback(() => {
+    if (!isPlaying || !playbackRef.current) {
+      console.warn('No audio playing');
+      return;
+    }
+
+    console.log('⏹️ Stopping audio playback...');
+    playbackRef.current.stop();
+    setIsPlaying(false);
+    console.log('✅ Audio playback stopped');
+  }, [isPlaying]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (playbackRef.current) {
+        console.log('🧹 Cleaning up audio playback on unmount');
+        playbackRef.current.stop();
+      }
+    };
+  }, []);
+
+  return {
+    playAudio,
+    stopAudio,
+    isPlaying,
+    error,
+    isReady: isCompanionConnected,
+  };
+}

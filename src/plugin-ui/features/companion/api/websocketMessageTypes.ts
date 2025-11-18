@@ -10,6 +10,8 @@ export type WebSocketCommand =
   | 'init'
   | 'start-recording'
   | 'stop-recording'
+  | 'play-audio'
+  | 'stop-audio'
   | 'health-check';
 
 // Response types received from companion
@@ -19,12 +21,16 @@ export type WebSocketResponseType =
   | 'recording-started'
   | 'recording-stopped'
   | 'audio-chunk'
+  | 'audio-playback-started'
+  | 'audio-playback-stopped'
+  | 'audio-playback-error'
   | 'error';
 
 // Request structure (Client → Server)
 export interface WebSocketRequest {
   id: string;
   command: WebSocketCommand;
+  data?: any; // Optional data payload for commands
 }
 
 // Response structure (Server → Client)
@@ -88,4 +94,16 @@ export function isAudioChunkResponse(payload: DecryptedPayload): payload is WebS
 
 export function isErrorResponse(payload: DecryptedPayload): payload is WebSocketResponse & { data: ErrorResponseData } {
   return isWebSocketResponse(payload) && payload.type === 'error';
+}
+
+export function isAudioPlaybackStartedResponse(payload: DecryptedPayload): payload is WebSocketResponse & { data: null } {
+  return isWebSocketResponse(payload) && payload.type === 'audio-playback-started';
+}
+
+export function isAudioPlaybackStoppedResponse(payload: DecryptedPayload): payload is WebSocketResponse & { data: null } {
+  return isWebSocketResponse(payload) && payload.type === 'audio-playback-stopped';
+}
+
+export function isAudioPlaybackErrorResponse(payload: DecryptedPayload): payload is WebSocketResponse & { data: ErrorResponseData } {
+  return isWebSocketResponse(payload) && payload.type === 'audio-playback-error';
 }
