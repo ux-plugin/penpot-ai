@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod audio_playback;
 pub mod audio_stream;
 pub mod encryption;
 pub mod server;

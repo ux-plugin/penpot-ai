@@ -1,6 +1,7 @@
 use crate::backend_client::BackendClient;
 use crate::config::AppConfig;
 use crate::local_server::audio::{AudioCommand, AudioManager};
+use crate::local_server::audio_playback::{AudioPlaybackManager, PlaybackCommand};
 use crate::local_server::encryption::EncryptionState;
 use crate::local_server::state::StateForLocalServerHandler;
 use crate::local_server::ws_handlers::ws_handler;
@@ -164,7 +165,7 @@ impl LocalServer {
 
     // Start the server on localhost with any available port
     async fn _start(&self, state: &mut ServerState) -> Result<u16, String> {
-        // Create a channel for audio commands
+        // Create a channel for audio recording commands
         let (audio_command_tx, audio_command_rx) = mpsc::channel::<AudioCommand>(10);
 
         // Clone config for the audio manager thread
@@ -187,10 +188,31 @@ impl LocalServer {
             });
         });
 
+        // Create a channel for audio playback commands
+        let (playback_command_tx, playback_command_rx) = mpsc::channel::<PlaybackCommand>(10);
+        
+        // Start the playback manager in a separate thread
+        thread::spawn(move || {
+            // Create a new playback manager
+            let mut playback_manager = AudioPlaybackManager::new(playback_command_rx);
+
+            // Create a tokio runtime for the playback manager
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create Tokio runtime for playback manager");
+
+            // Run the playback manager
+            rt.block_on(async {
+                playback_manager.run().await;
+            });
+        });
+
         // Create a server state with injected dependencies
         // (encryption_state is already Arc<RwLock<>>)
         let server_state = StateForLocalServerHandler::new(
             audio_command_tx,
+            playback_command_tx,
             self.backend_client.clone(),
             self.encryption_state.clone(),
             self.config.clone(),

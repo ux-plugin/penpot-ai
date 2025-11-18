@@ -1,6 +1,7 @@
 use crate::backend_client::BackendClient;
 use crate::config::AppConfig;
 use crate::local_server::audio::AudioCommand;
+use crate::local_server::audio_playback::PlaybackCommand;
 use crate::local_server::audio_stream::AudioStream;
 use crate::local_server::encryption::EncryptionState;
 use axum::extract::ws::{Message, WebSocket};
@@ -16,6 +17,7 @@ type WebSocketSender = Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>>;
 #[derive(Clone)]
 pub struct StateForLocalServerHandler {
     pub audio_command_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>>,
+    pub playback_command_tx: Arc<Mutex<Option<mpsc::Sender<PlaybackCommand>>>>,
     pub backend_client: Arc<BackendClient>,
     pub encryption_state: Arc<RwLock<EncryptionState>>,
     pub config: Arc<AppConfig>,
@@ -26,12 +28,14 @@ pub struct StateForLocalServerHandler {
 impl StateForLocalServerHandler {
     pub fn new(
         audio_command_tx: mpsc::Sender<AudioCommand>,
+        playback_command_tx: mpsc::Sender<PlaybackCommand>,
         backend_client: Arc<BackendClient>,
         encryption_state: Arc<RwLock<EncryptionState>>,
         config: Arc<AppConfig>,
     ) -> Self {
         Self {
             audio_command_tx: Arc::new(Mutex::new(Some(audio_command_tx))),
+            playback_command_tx: Arc::new(Mutex::new(Some(playback_command_tx))),
             backend_client,
             encryption_state,
             config,

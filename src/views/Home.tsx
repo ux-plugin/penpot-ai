@@ -15,7 +15,7 @@ interface UserConfig {
 type ServerStatus = 'starting' | 'success' | 'error' | 'stopped' | 'stopping';
 
 export function Home() {
-    const { setUserId, loadFromStorage } = useAuthenticationStore()
+    const { setUserId, loadFromStorage, setIsAuthenticated } = useAuthenticationStore()
     const [serverStatus, setServerStatus] = useState<ServerStatus>('starting')
     const [error, setError] = useState<string | null>(null)
     const [isActionLoading, setIsActionLoading] = useState(false)
@@ -76,6 +76,7 @@ export function Home() {
             const handleLogoutAndRedirect = async () => {
                 try {
                     await invoke('logout')
+                    setIsAuthenticated(false)
                 } catch (error) {
                     console.error('Logout failed:', error)
                 }

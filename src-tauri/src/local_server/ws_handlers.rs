@@ -1,3 +1,4 @@
+use crate::local_server::audio_playback::{PlaybackCommand, PlaybackEvent};
 use crate::local_server::audio_stream::AudioStream;
 use crate::local_server::encryption::{
     create_message_format, decrypt_and_parse_payload, encrypt_message_with_timestamp,
@@ -22,6 +23,8 @@ use uuid::Uuid;
 struct WsRequest {
     id: String,
     command: WsCommandType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -30,7 +33,14 @@ enum WsCommandType {
     Init,
     StartRecording,
     StopRecording,
+    PlayAudio,
+    StopAudio,
     HealthCheck,
+}
+
+#[derive(Deserialize)]
+struct PlayAudioData {
+    audio: String, // base64-encoded PCM audio
 }
 
 // WebSocket response payload structure (to be encrypted)
@@ -295,6 +305,25 @@ async fn handle_message(
         WsCommandType::Init => handle_init(state, &key, &request_id, sender).await,
         WsCommandType::StartRecording => handle_start_recording(state, &key, &request_id, sender).await,
         WsCommandType::StopRecording => handle_stop_recording(state, &key, &request_id, sender).await,
+        WsCommandType::PlayAudio => {
+            // Parse the data field for play-audio command
+            let data = match request.data {
+                Some(data_value) => match serde_json::from_value::<PlayAudioData>(data_value) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        tracing::error!("Failed to parse play-audio data: {}", e);
+                        let _ = send_error_response(sender.clone(), state, &key, &request_id, 400, "Invalid play-audio data format".to_string()).await;
+                        return Ok(());
+                    }
+                },
+                None => {
+                    let _ = send_error_response(sender.clone(), state, &key, &request_id, 400, "Missing data field for play-audio command".to_string()).await;
+                    return Ok(());
+                }
+            };
+            handle_play_audio(state, &key, &request_id, sender, data).await
+        },
+        WsCommandType::StopAudio => handle_stop_audio(state, &key, &request_id, sender).await,
         WsCommandType::HealthCheck => handle_health_check(state, &key, &request_id, sender).await,
     }
 }
@@ -410,6 +439,148 @@ async fn handle_stop_recording(
             let _ = send_error_response(sender.clone(), state, key, request_id, 404, "No active recording to stop".to_string()).await;
         }
     }
+    
+    Ok(())
+}
+
+/// Handle play-audio command
+async fn handle_play_audio(
+    state: &StateForLocalServerHandler,
+    key: &str,
+    request_id: &str,
+    sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    data: PlayAudioData,
+) -> Result<(), bool> {
+    // Get playback command tx
+    let playback_command_tx = {
+        let guard = state.playback_command_tx.lock().unwrap();
+        guard.as_ref().map(|tx| tx.clone())
+    };
+    
+    let playback_command_tx = match playback_command_tx {
+        Some(tx) => tx,
+        None => {
+            let _ = send_error_response(sender.clone(), state, key, request_id, 500, "Audio playback system not available".to_string()).await;
+            return Ok(());
+        }
+    };
+
+    // Create channel for playback events
+    let (playback_event_tx, mut playback_event_rx) = tokio::sync::mpsc::channel::<PlaybackEvent>(10);
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+    // Send play command to playback manager
+    if let Err(e) = playback_command_tx.send(PlaybackCommand::Play {
+        audio_data: data.audio,
+        response_tx,
+        playback_ended_tx: playback_event_tx,
+    }).await {
+        tracing::error!("Failed to send play command: {}", e);
+        let _ = send_error_response(sender.clone(), state, key, request_id, 500, "Failed to send play command".to_string()).await;
+        return Ok(());
+    }
+
+    // Wait for playback manager confirmation
+    match response_rx.await {
+        Ok(Ok(())) => {
+            tracing::info!("Playback started successfully");
+            // Send playback-started response
+            let _ = send_encrypted_response(sender.clone(), state, key, request_id, "audio-playback-started", None).await;
+        }
+        Ok(Err(e)) => {
+            tracing::error!("Playback manager rejected play: {}", e);
+            let error_data = serde_json::json!({
+                "code": 500,
+                "message": e,
+            });
+            let _ = send_encrypted_response(sender.clone(), state, key, request_id, "audio-playback-error", Some(error_data)).await;
+            return Ok(());
+        }
+        Err(_) => {
+            tracing::error!("Playback manager did not respond");
+            let error_data = serde_json::json!({
+                "code": 500,
+                "message": "Playback manager did not respond",
+            });
+            let _ = send_encrypted_response(sender.clone(), state, key, request_id, "audio-playback-error", Some(error_data)).await;
+            return Ok(());
+        }
+    }
+
+    // Spawn task to listen for playback events (ended or error)
+    let sender_clone = sender.clone();
+    let state_clone = state.clone();
+    let key_clone = key.to_string();
+    let request_id_clone = request_id.to_string();
+
+    tokio::spawn(async move {
+        while let Some(event) = playback_event_rx.recv().await {
+            match event {
+                PlaybackEvent::PlaybackEnded => {
+                    tracing::debug!("Playback ended naturally");
+                    let _ = send_encrypted_response(
+                        sender_clone.clone(),
+                        &state_clone,
+                        &key_clone,
+                        &request_id_clone,
+                        "audio-playback-stopped",
+                        None,
+                    ).await;
+                }
+                PlaybackEvent::PlaybackError(err) => {
+                    tracing::error!("Playback error: {}", err);
+                    let error_data = serde_json::json!({
+                        "code": 500,
+                        "message": err,
+                    });
+                    let _ = send_encrypted_response(
+                        sender_clone.clone(),
+                        &state_clone,
+                        &key_clone,
+                        &request_id_clone,
+                        "audio-playback-error",
+                        Some(error_data),
+                    ).await;
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Handle stop-audio command
+async fn handle_stop_audio(
+    state: &StateForLocalServerHandler,
+    key: &str,
+    request_id: &str,
+    sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+) -> Result<(), bool> {
+    // Get playback command tx
+    let playback_command_tx = {
+        let guard = state.playback_command_tx.lock().unwrap();
+        guard.as_ref().map(|tx| tx.clone())
+    };
+    
+    let playback_command_tx = match playback_command_tx {
+        Some(tx) => tx,
+        None => {
+            let _ = send_error_response(sender.clone(), state, key, request_id, 500, "Audio playback system not available".to_string()).await;
+            return Ok(());
+        }
+    };
+
+    // Send stop command to playback manager
+    if let Err(e) = playback_command_tx.send(PlaybackCommand::Stop).await {
+        tracing::error!("Failed to send stop command: {}", e);
+        let _ = send_error_response(sender.clone(), state, key, request_id, 500, "Failed to send stop command".to_string()).await;
+        return Ok(());
+    }
+
+    // Send playback-stopped response
+    let _ = send_encrypted_response(sender, state, key, request_id, "audio-playback-stopped", None).await;
+    
+    tracing::info!("Playback stopped via stop command");
     
     Ok(())
 }
