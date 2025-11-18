@@ -5,8 +5,6 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.WebApplicationException
 import java.io.File
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.rest.client.inject.RestClient
 
@@ -29,31 +27,32 @@ class FireworksTranscriptionService {
      * @param audioFile The audio file to transcribe (WAV format)
      * @return The transcribed text
      */
-    suspend fun transcribeAudio(audioFile: File): String =
-        withContext(Dispatchers.IO) {
-            if (!audioFile.exists()) {
-                throw IllegalArgumentException("Audio file does not exist: ${audioFile.absolutePath}")
-            }
-
-            Log.info("Transcribing audio file: ${audioFile.name} (${audioFile.length()} bytes)")
-
-            try {
-                val request = TranscriptionRequest(file = audioFile, model = "whisper-v3-large")
-
-                val response =
-                    fireworksRestClient.transcribeAudio(authorization = "Bearer $fireworksApiKey", request = request)
-
-                val transcribedText = response.text
-                Log.info("Successfully transcribed ${audioFile.name}: ${transcribedText.length} characters")
-                transcribedText
-            } catch (e: WebApplicationException) {
-                val statusCode = e.response?.status ?: 0
-                val errorBody = e.response?.readEntity(String::class.java) ?: "No error body"
-                Log.error("Fireworks transcription failed: $statusCode - $errorBody")
-                throw RuntimeException("Transcription failed with status $statusCode: $errorBody", e)
-            } catch (e: Exception) {
-                Log.error("Fireworks transcription error: ${e.message}", e)
-                throw RuntimeException("Transcription failed: ${e.message}", e)
-            }
+    suspend fun transcribeAudio(audioFile: File): String {
+        if (!audioFile.exists()) {
+            throw IllegalArgumentException("Audio file does not exist: ${audioFile.absolutePath}")
         }
+
+        Log.info("Transcribing audio file: ${audioFile.name} (${audioFile.length()} bytes)")
+
+        try {
+            val response =
+                fireworksRestClient.transcribeAudio(
+                    authorization = "Bearer $fireworksApiKey",
+                    file = audioFile,
+                    model = "whisper-v3"
+                )
+
+            Log.info("Successfully transcribed ${audioFile.name}: ${response.text.length} characters")
+
+            return response.text
+        } catch (e: WebApplicationException) {
+            val statusCode = e.response?.status ?: 0
+            val errorBody = e.response?.readEntity(String::class.java) ?: "No error body"
+            Log.error("Fireworks transcription failed: $statusCode - $errorBody")
+            throw RuntimeException("Transcription failed with status $statusCode: $errorBody", e)
+        } catch (e: Exception) {
+            Log.error("Fireworks transcription error: ${e.message}", e)
+            throw RuntimeException("Transcription failed: ${e.message}", e)
+        }
+    }
 }

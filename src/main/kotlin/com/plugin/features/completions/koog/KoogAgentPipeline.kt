@@ -14,8 +14,15 @@ import io.quarkus.logging.Log
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.io.File
-import kotlinx.coroutines.channels.SendChannel
 import org.eclipse.microprofile.config.inject.ConfigProperty
+
+/**
+ * Callback interface for streaming response chunks This functional interface allows KoogAgentPipeline to stream
+ * responses directly without creating new coroutine scopes or channels
+ */
+fun interface StreamCallback {
+    suspend fun onChunk(chunk: String)
+}
 
 /**
  * Data class representing the input to the agent pipeline
@@ -64,9 +71,9 @@ class KoogAgentPipeline {
      * Execute the complete agent pipeline: transcription + LLM response
      *
      * @param input Pipeline input containing audio file and cursor context
-     * @param streamChannel Channel to stream response chunks to (for WebSocket streaming)
+     * @param onStreamChunk Callback to stream response chunks to (for WebSocket streaming)
      */
-    suspend fun executePipeline(input: AgentPipelineInput, streamChannel: SendChannel<String>? = null) {
+    suspend fun executePipeline(input: AgentPipelineInput, onStreamChunk: StreamCallback? = null) {
         Log.info("Starting Koog agent pipeline execution")
 
         try {
@@ -77,15 +84,13 @@ class KoogAgentPipeline {
 
             // Step 2: Generate response using Koog agent with LLM
             Log.info("Pipeline Step 2: Generating response with Koog agent")
-            generateAgentResponse(transcribedText, input.cursorContext, streamChannel)
+            generateAgentResponse(transcribedText, input.cursorContext, onStreamChunk)
 
             Log.info("Koog agent pipeline execution completed successfully")
         } catch (e: Exception) {
             Log.error("Pipeline execution failed", e)
-            streamChannel?.send("ERROR: ${e.message}")
+            onStreamChunk?.onChunk("ERROR: ${e.message}")
             throw e
-        } finally {
-            streamChannel?.close()
         }
     }
 
@@ -97,11 +102,11 @@ class KoogAgentPipeline {
     private suspend fun generateAgentResponse(
         transcribedText: String,
         cursorContext: String?,
-        streamChannel: SendChannel<String>?
+        onStreamChunk: StreamCallback?
     ) {
         val executor = simpleOpenAIExecutor(openaiApiKey)
 
-        // Create streaming strategy for response generation
+        // Create a streaming strategy for response generation
         val streamingStrategy =
             strategy("audio_response_streaming") {
                 val nodeStreaming by nodeLLMRequestStreamingAndSendResults()
@@ -143,8 +148,8 @@ class KoogAgentPipeline {
                 handleEvents {
                     onLLMStreamingFrameReceived { context ->
                         (context.streamFrame as? StreamFrame.Append)?.let { frame ->
-                            // Stream response chunks to WebSocket
-                            streamChannel?.send(frame.text)
+                            // Stream response chunks to WebSocket via callback
+                            onStreamChunk?.onChunk(frame.text)
                             Log.debug("Streaming frame: ${frame.text}")
                         }
                     }

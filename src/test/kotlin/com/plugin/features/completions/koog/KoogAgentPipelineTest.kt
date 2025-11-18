@@ -56,11 +56,16 @@ class KoogAgentPipelineTest {
         }
 
         val input = AgentPipelineInput(audioFile = audioFile, cursorContext = "User is drawing a rectangle")
+        val receivedChunks = mutableListOf<String>()
 
         try {
-            // This would stream responses - in a real test we'd capture them
-            koogAgentPipeline.executePipeline(input, null)
+            // Capture streaming responses using callback
+            koogAgentPipeline.executePipeline(input) { chunk ->
+                receivedChunks.add(chunk)
+                println("Received chunk: $chunk")
+            }
             println("Pipeline execution completed successfully")
+            println("Total chunks received: ${receivedChunks.size}")
         } catch (e: Exception) {
             fail<Unit>("Pipeline should not throw exception: ${e.message}")
         }

@@ -30,7 +30,7 @@ quarkus:
     github-auth:
       url: https://github.com
     fireworks-api:
-      url: "https://api.fireworks.ai"
+      url: "https://audio-prod.api.fireworks.ai"
       connect-timeout: 30000  # 30 seconds
       read-timeout: 120000    # 120 seconds (for large audio files)
 

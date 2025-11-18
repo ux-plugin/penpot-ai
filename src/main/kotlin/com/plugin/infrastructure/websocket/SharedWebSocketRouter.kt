@@ -15,16 +15,9 @@ import io.quarkus.websockets.next.WebSocketConnection
 import jakarta.inject.Inject
 import java.time.Instant.now
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.reflect.KClass
 import org.eclipse.microprofile.jwt.JsonWebToken
 
-/**
- * Shared WebSocket handler that routes messages to appropriate message handlers
- *
- * This handler manages WebSocket connections, authentication, and message routing. Messages are routed to registered
- * handlers based on their type prefix.
- *
- * Migrated to Quarkus WebSocket Next API for parallel message processing.
- */
 @WebSocket(path = "/ws")
 @Authenticated
 class SharedWebSocketRouter
@@ -34,18 +27,26 @@ constructor(
     private val authConfig: WebSocketAuthConfig,
     private val jsonWebToken: JsonWebToken,
 ) {
-    private val messageHandlers = ConcurrentHashMap<String, WebSocketMessageHandler>()
+    // Map message class to its handler
+    private val messageHandlers = ConcurrentHashMap<KClass<out WebSocketMessage>, WebSocketMessageHandler>()
 
-    /** Register a message handler to handle messages with a specific type prefix */
+    // Keep track of all registered handlers for lifecycle callbacks
+    private val allHandlers = ConcurrentHashMap.newKeySet<WebSocketMessageHandler>()
+
+    /** Register a message handler for the message types it handles */
     fun registerMessageHandler(messageHandler: WebSocketMessageHandler) {
-        messageHandlers[messageHandler.getMessageTypePrefix()] = messageHandler
-        Log.info("Registered WebSocket handler for prefix: ${messageHandler.getMessageTypePrefix()}")
+        allHandlers.add(messageHandler)
+        messageHandler.getHandledMessageTypes().forEach { messageType ->
+            messageHandlers[messageType] = messageHandler
+            Log.info(
+                "Registered handler ${messageHandler::class.simpleName} for message type: ${messageType.simpleName}"
+            )
+        }
     }
 
     @OnOpen
     suspend fun onOpen(connection: WebSocketConnection) {
         try {
-            // Extract user ID from the principal
             val userId = jsonWebToken.subject
             Log.debug("User ID from security identity: $userId")
 
@@ -55,7 +56,6 @@ constructor(
                 return
             }
 
-            // Get JWT token from identity attributes
             val expirationTime = jsonWebToken.expirationTime
 
             if (expirationTime <= now().epochSecond) {
@@ -64,7 +64,6 @@ constructor(
                 return
             }
 
-            // Store authentication data in connection userData
             val userIdKey = authConfig.session().userIdKey()
             val expirationKey = authConfig.session().tokenExpirationKey()
 
@@ -74,12 +73,11 @@ constructor(
             Log.info("WebSocket connection opened: ${connection.id()} for user: $userId")
             Log.debug("Token expiration time: $expirationTime (${java.time.Instant.ofEpochSecond(expirationTime)})")
 
-            // Notify all handlers about the connection
-            messageHandlers.values.forEach { handler ->
+            allHandlers.forEach { handler ->
                 try {
                     handler.onOpen(connection, userId)
                 } catch (e: Exception) {
-                    Log.error("Error in handler.onOpen for ${handler.getMessageTypePrefix()}", e)
+                    Log.error("Error in handler.onOpen for ${handler::class.simpleName}", e)
                 }
             }
         } catch (e: Exception) {
@@ -89,9 +87,8 @@ constructor(
     }
 
     @OnTextMessage(broadcast = false)
-    suspend fun onMessage(messageStr: String, connection: WebSocketConnection): String {
-        return try {
-            // Get session data from connection attributes
+    suspend fun onMessage(messageStr: String, connection: WebSocketConnection) {
+        try {
             val userIdKey = authConfig.session().userIdKey()
             val expirationKey = authConfig.session().tokenExpirationKey()
 
@@ -100,52 +97,53 @@ constructor(
 
             if (expirationTime == null) {
                 Log.error("No expiration time found for connection: ${connection.id()}")
+                sendErrorResponse(connection, "Connection not initialized")
                 connection.closeAndAwait(CloseReason(4001, "Connection not properly initialized"))
-                return createErrorResponse("Connection not initialized")
+                return
             }
 
             if (currentTime >= expirationTime) {
                 Log.warn("Token expired for connection: ${connection.id()}")
+                sendErrorResponse(connection, "Token expired")
                 connection.closeAndAwait(CloseReason(4001, "Token expired"))
-                return createErrorResponse("Token expired")
+                return
             }
 
             val userId =
                 connection.userData().get(TypedKey.forString(userIdKey))
                     ?: run {
                         Log.error("No user ID found for connection: ${connection.id()}")
+                        sendErrorResponse(connection, "Not authenticated")
                         connection.closeAndAwait(CloseReason(4001, "Connection not authenticated"))
-                        return createErrorResponse("Not authenticated")
+                        return
                     }
 
-            // Parse the message
+            // Parse the message - Jackson will automatically deserialize to the correct type
             val message =
                 try {
                     objectMapper.readValue(messageStr, WebSocketMessage::class.java)
                 } catch (e: Exception) {
                     Log.error("Failed to parse WebSocket message", e)
-                    return createErrorResponse("Invalid message format")
+                    sendErrorResponse(connection, "Invalid message format")
+                    return
                 }
 
-            Log.debug("Received message type: ${message.type} for connection: ${connection.id()}")
+            Log.debug("Received message type: ${message::class.simpleName} for connection: ${connection.id()}")
 
-            // Route to appropriate handler based on message type prefix
-            val prefix = message.type.substringBefore(':') + ":"
-            val messageHandler = messageHandlers[prefix]
+            // Look up handler by message class
+            val messageHandler = messageHandlers[message::class]
 
             if (messageHandler == null) {
-                Log.warn("No handler registered for message type: ${message.type}")
-                return createErrorResponse("Unknown message type: ${message.type}", message.requestId)
+                Log.warn("No handler registered for message type: ${message::class.simpleName}")
+                sendErrorResponse(connection, "Unknown message type: ${message::class.simpleName}", message.requestId)
+                return
             }
 
-            // Handle the message (this runs in parallel with other messages!)
-            val response = messageHandler.handleMessage(message, connection, userId)
-
-            // Return response if available, otherwise success acknowledgment
-            response?.let { objectMapper.writeValueAsString(it) } ?: createSuccessResponse(message.requestId)
+            // Handle the message
+            messageHandler.handleMessage(message, connection, userId)
         } catch (e: Exception) {
             Log.error("Error processing message", e)
-            createErrorResponse("Internal error: ${e.message}")
+            sendErrorResponse(connection, "Internal error: ${e.message}")
         }
     }
 
@@ -156,13 +154,12 @@ constructor(
 
         Log.info("WebSocket connection closed: ${connection.id()} for user: $userId")
 
-        // Notify all handlers about the closure
         if (userId != null) {
-            messageHandlers.values.forEach { messageHandler ->
+            allHandlers.forEach { messageHandler ->
                 try {
                     messageHandler.onClose(connection, userId)
                 } catch (e: Exception) {
-                    Log.error("Error in messageHandler.onClose for ${messageHandler.getMessageTypePrefix()}", e)
+                    Log.error("Error in messageHandler.onClose for ${messageHandler::class.simpleName}", e)
                 }
             }
         }
@@ -176,23 +173,34 @@ constructor(
         Log.error("WebSocket error on connection: ${connection.id()} for user: $userId", throwable)
 
         if (userId != null) {
-            messageHandlers.values.forEach { messageHandler ->
+            allHandlers.forEach { messageHandler ->
                 try {
                     messageHandler.onError(connection, userId, throwable)
                 } catch (e: Exception) {
-                    Log.error("Error in messageHandler.onError for ${messageHandler.getMessageTypePrefix()}", e)
+                    Log.error("Error in messageHandler.onError for ${messageHandler::class.simpleName}", e)
                 }
             }
         }
     }
 
-    private fun createErrorResponse(message: String, requestId: String? = null): String {
-        val error = WebSocketResponse(type = "error", payload = emptyMap(), requestId = requestId, error = message)
-        return objectMapper.writeValueAsString(error)
-    }
-
-    private fun createSuccessResponse(requestId: String? = null): String {
-        val response = WebSocketResponse(type = "ack", payload = mapOf("status" to "ok"), requestId = requestId)
-        return objectMapper.writeValueAsString(response)
+    private suspend fun sendErrorResponse(
+        connection: WebSocketConnection,
+        message: String,
+        requestId: String? = null,
+        errorCode: Int = 5000
+    ) {
+        try {
+            val errorJson =
+                objectMapper.writeValueAsString(
+                    mapOf(
+                        "type" to "error",
+                        "requestId" to requestId,
+                        "error" to mapOf("code" to errorCode, "message" to message)
+                    )
+                )
+            connection.sendTextAndAwait(errorJson)
+        } catch (e: Exception) {
+            Log.error("Failed to send error response", e)
+        }
     }
 }
