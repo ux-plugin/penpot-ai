@@ -50,8 +50,6 @@ constructor(
             when (message) {
                 is CompletionRequest -> handleCompletionRequest(message, connection, userId)
                 is CompletionRequestEnd -> handleCompletionRequestEnd(message, connection, userId)
-                is CompletionResponse -> handleCompletionResponse(message, connection, userId)
-                is CompletionResponseEnd -> handleCompletionResponseEnd(message, connection, userId)
                 else -> {
                     Log.warn("Unexpected message type in CompletionsMessageHandler: ${message::class.simpleName}")
                     sendErrorResponse(connection, "Unsupported message type", message.requestId, 4003)
@@ -134,20 +132,11 @@ constructor(
                 // Execute Koog pipeline with streaming callback
                 val pipelineInput = AgentPipelineInput(audioFile = audioFile, cursorContext = cursorContext)
                 koogAgentPipeline.executePipeline(pipelineInput) { chunk ->
-                    // Parse chunk as CompletionsResponsePayload (assuming chunk is JSON with
-                    // action, target, params, reasoning)
-                    // For now, send the chunk as-is in the reasoning field until proper parsing is
-                    // implemented
+                    // Stream the LLM response as text chunks
+                    // TODO: Parse structured actions if the chunk contains action commands
                     val response =
                         CompletionResponse(
-                            payload =
-                                CompletionResponsePayload(
-                                    fe_id = feId,
-                                    action = "create_node", // TODO: Parse from chunk
-                                    target = "", // TODO: Parse from chunk
-                                    params = "", // TODO: Parse from chunk
-                                    reasoning = chunk
-                                ),
+                            payload = CompletionResponsePayload(fe_id = feId, text = chunk),
                             requestId = message.requestId
                         )
                     connection.sendText(objectMapper.writeValueAsString(response)).awaitSuspending()
@@ -176,52 +165,6 @@ constructor(
         // Send acknowledgment response
         val response =
             CompletionRequestEnd(payload = CompletionRequestEndPayload(fe_id = feId), requestId = message.requestId)
-        connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
-    }
-
-    private suspend fun handleCompletionResponse(
-        message: CompletionResponse,
-        connection: WebSocketConnection,
-        userId: String
-    ) {
-        val feId = message.payload.fe_id
-        val action = message.payload.action
-        val target = message.payload.target
-        val params = message.payload.params
-
-        Log.info("Handling completion_response:")
-        Log.info("  FE ID: $feId")
-        Log.info("  Action: $action")
-        Log.info("  Target: $target")
-        Log.info("  Params: $params")
-
-        // TODO: Process the completion response
-        val response =
-            CompletionResponse(
-                payload =
-                    CompletionResponsePayload(
-                        fe_id = feId,
-                        action = action,
-                        target = target,
-                        params = params,
-                        reasoning = ""
-                    ),
-                requestId = message.requestId
-            )
-        connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
-    }
-
-    private suspend fun handleCompletionResponseEnd(
-        message: CompletionResponseEnd,
-        connection: WebSocketConnection,
-        userId: String
-    ) {
-        val feId = message.payload.fe_id
-        Log.info("Handling completion_response_end for FE ID: $feId")
-
-        // TODO: Finalize completion response processing
-        val response =
-            CompletionResponseEnd(payload = CompletionResponseEndPayload(fe_id = feId), requestId = message.requestId)
         connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
     }
 

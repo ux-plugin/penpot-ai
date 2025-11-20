@@ -58,7 +58,7 @@ class KoogAgentPipeline {
      */
     private fun resolveLLMModel() =
         when (llmModelName.lowercase()) {
-            "gpt-4o" -> OpenAIModels.Chat.GPT4o
+            "gpt-4o" -> OpenAIModels.Reasoning.O1
             "gpt-4o-mini",
             "default" -> OpenAIModels.CostOptimized.GPT4oMini
             else -> {
@@ -147,10 +147,26 @@ class KoogAgentPipeline {
             ) {
                 handleEvents {
                     onLLMStreamingFrameReceived { context ->
-                        (context.streamFrame as? StreamFrame.Append)?.let { frame ->
-                            // Stream response chunks to WebSocket via callback
-                            onStreamChunk?.onChunk(frame.text)
-                            Log.debug("Streaming frame: ${frame.text}")
+                        when (val frame = context.streamFrame) {
+                            is StreamFrame.Append -> {
+                                // Stream response chunks to WebSocket via callback
+                                onStreamChunk?.onChunk(frame.text)
+                                Log.debug("Streaming frame: ${frame.text}")
+                            }
+                            is StreamFrame.ToolCall -> {
+                                // Handle tool call frame
+                                Log.info(
+                                    "Tool call received - ID: ${frame.id}, Name: ${frame.name}, Content: ${frame.content}"
+                                )
+                                // Optional: Stream tool call info to client
+                                onStreamChunk?.onChunk("[Tool: ${frame.name}]")
+                            }
+                            is StreamFrame.End -> {
+                                // Handle end of stream
+                                Log.info("Stream ended - Reason: ${frame.finishReason}, MetaInfo: ${frame.metaInfo}")
+                                // Optional: Notify client of completion
+                                onStreamChunk?.onChunk("[DONE]")
+                            }
                         }
                     }
                     onLLMStreamingCompleted { Log.info("LLM streaming completed") }

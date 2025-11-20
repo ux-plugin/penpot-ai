@@ -106,13 +106,15 @@ data class CompletionRequestEnd(
     override val error: WebSocketError? = null
 ) : WebSocketMessage
 
+/** Completions: Action details */
+data class CompletionAction(val action: String, val target: String, val params: String)
+
 /** Completions: Response Payload */
 data class CompletionResponsePayload(
     val fe_id: String,
-    val action: String,
-    val target: String,
-    val params: String,
-    val reasoning: String
+    val action: CompletionAction? = null,
+    val reasoning: String? = null,
+    val text: String? = null
 )
 
 @JsonTypeName(WebSocketMessageType.COMPLETIONS_RESPONSE)
