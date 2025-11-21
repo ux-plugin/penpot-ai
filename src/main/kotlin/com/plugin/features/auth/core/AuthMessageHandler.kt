@@ -1,16 +1,14 @@
 package com.plugin.features.auth.core
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.plugin.infrastructure.websocket.WebSocketMessage
-import com.plugin.infrastructure.websocket.WebSocketMessageHandler
-import com.plugin.infrastructure.websocket.WebSocketMessageType
-import com.plugin.infrastructure.websocket.WebSocketResponse
+import com.plugin.infrastructure.websocket.*
 import io.quarkus.logging.Log
 import io.quarkus.websockets.next.UserData.TypedKey
 import io.quarkus.websockets.next.WebSocketConnection
 import io.smallrye.jwt.auth.principal.JWTParser
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import kotlin.reflect.KClass
 
 /**
  * Handler for authentication-related WebSocket messages
@@ -30,44 +28,32 @@ constructor(
     private val authConfig: WebSocketAuthConfig,
 ) : WebSocketMessageHandler {
 
-    override fun getMessageTypePrefix(): String = "auth:"
+    override fun getHandledMessageTypes(): List<KClass<out WebSocketMessage>> =
+        listOf(AuthRefreshTokenRequest::class, AuthRefreshTokenResponse::class)
 
-    override suspend fun handleMessage(
-        message: WebSocketMessage,
-        connection: WebSocketConnection,
-        userId: String
-    ): WebSocketResponse? {
-        return when (message.type) {
-            WebSocketMessageType.AUTH_REFRESH_TOKEN -> handleRefreshToken(message, connection, userId)
+    override suspend fun handleMessage(message: WebSocketMessage, connection: WebSocketConnection, userId: String) {
+        when (message) {
+            is AuthRefreshTokenRequest -> handleRefreshToken(message, connection, userId)
             else -> {
-                Log.warn("Unknown auth message type: ${message.type}")
-                WebSocketResponse(
-                    type = "error",
-                    payload = emptyMap(),
-                    requestId = message.requestId,
-                    error = "Unknown message type: ${message.type}"
-                )
+                Log.warn("Unexpected message type in AuthMessageHandler: ${message::class.simpleName}")
+                sendErrorResponse(connection, "Unsupported message type", message.requestId, 4003)
             }
         }
     }
 
     /** Handle token refresh request Validates the new access token and updates connection expiration */
     private suspend fun handleRefreshToken(
-        message: WebSocketMessage,
+        message: AuthRefreshTokenRequest,
         connection: WebSocketConnection,
         userId: String
-    ): WebSocketResponse {
-        return try {
-            val newAccessToken = message.payload["access_token"] as? String
+    ) {
+        try {
+            val newAccessToken = message.payload.access_token
 
-            if (newAccessToken.isNullOrBlank()) {
+            if (newAccessToken.isBlank()) {
                 Log.warn("Refresh token request missing access_token payload for user: $userId")
-                return WebSocketResponse(
-                    type = "error",
-                    payload = emptyMap(),
-                    requestId = message.requestId,
-                    error = "Missing access_token in payload"
-                )
+                sendErrorResponse(connection, "Missing access_token in payload", message.requestId, 4002)
+                return
             }
 
             // Parse and validate the new JWT token
@@ -76,35 +62,23 @@ constructor(
                     jwtParser.parse(newAccessToken)
                 } catch (e: Exception) {
                     Log.error("Failed to parse new access token", e)
-                    return WebSocketResponse(
-                        type = "error",
-                        payload = emptyMap(),
-                        requestId = message.requestId,
-                        error = "Invalid access token"
-                    )
+                    sendErrorResponse(connection, "Invalid access token", message.requestId, 4001)
+                    return
                 }
 
             // Verify the token is for the same user
             if (jwt.subject != userId) {
                 Log.warn("Token user mismatch: expected $userId, got ${jwt.subject}")
-                return WebSocketResponse(
-                    type = "error",
-                    payload = emptyMap(),
-                    requestId = message.requestId,
-                    error = "Token user mismatch"
-                )
+                sendErrorResponse(connection, "Token user mismatch", message.requestId, 4001)
+                return
             }
 
             // Extract expiration time from the new token
             val newExpiration = jwt.expirationTime
             if (newExpiration <= 0) {
                 Log.error("Invalid expiration time in new token: $newExpiration")
-                return WebSocketResponse(
-                    type = "error",
-                    payload = emptyMap(),
-                    requestId = message.requestId,
-                    error = "Invalid token expiration"
-                )
+                sendErrorResponse(connection, "Invalid token expiration", message.requestId, 4001)
+                return
             }
 
             // Update connection expiration in attributes
@@ -114,19 +88,35 @@ constructor(
             Log.info("Token refreshed for user: $userId, connection: ${connection.id()}")
             Log.debug("New expiration time: $newExpiration (${java.time.Instant.ofEpochSecond(newExpiration)})")
 
-            WebSocketResponse(
-                type = WebSocketMessageType.AUTH_REFRESH_TOKEN,
-                payload = mapOf("status" to "ok", "expires_at" to newExpiration),
-                requestId = message.requestId
-            )
+            // Send success response
+            val response =
+                AuthRefreshTokenResponse(
+                    payload = AuthRefreshTokenResponsePayload(status = "ok"),
+                    requestId = message.requestId
+                )
+            connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
         } catch (e: Exception) {
             Log.error("Error handling refresh token", e)
-            WebSocketResponse(
-                type = "error",
-                payload = emptyMap(),
-                requestId = message.requestId,
-                error = "Failed to refresh token: ${e.message}"
-            )
+            sendErrorResponse(connection, "Failed to refresh token: ${e.message}", message.requestId, 5000)
+        }
+    }
+
+    private suspend fun sendErrorResponse(
+        connection: WebSocketConnection,
+        message: String,
+        requestId: String?,
+        errorCode: Int
+    ) {
+        try {
+            val error =
+                AuthRefreshTokenResponse(
+                    payload = AuthRefreshTokenResponsePayload(status = "error"),
+                    requestId = requestId,
+                    error = WebSocketError(code = errorCode, message = message)
+                )
+            connection.sendTextAndAwait(objectMapper.writeValueAsString(error))
+        } catch (e: Exception) {
+            Log.error("Failed to send error response", e)
         }
     }
 }

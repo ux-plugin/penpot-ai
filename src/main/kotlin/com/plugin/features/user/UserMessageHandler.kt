@@ -1,16 +1,14 @@
 package com.plugin.features.user
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.plugin.infrastructure.websocket.WebSocketMessage
-import com.plugin.infrastructure.websocket.WebSocketMessageHandler
-import com.plugin.infrastructure.websocket.WebSocketMessageType
-import com.plugin.infrastructure.websocket.WebSocketResponse
+import com.plugin.infrastructure.websocket.*
 import io.quarkus.logging.Log
 import io.quarkus.websockets.next.WebSocketConnection
 import io.smallrye.mutiny.coroutines.awaitSuspending
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.reflect.KClass
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -37,42 +35,36 @@ constructor(
 
     data class PortSubscription(val channel: Channel<PortState>, val userId: String, var isActive: Boolean = true)
 
-    override fun getMessageTypePrefix(): String = "user:"
+    override fun getHandledMessageTypes(): List<KClass<out WebSocketMessage>> =
+        listOf(UserSubscribePortsRequest::class, UserUnsubscribePortsRequest::class)
 
-    override suspend fun handleMessage(
-        message: WebSocketMessage,
-        connection: WebSocketConnection,
-        userId: String
-    ): WebSocketResponse? {
-        return when (message.type) {
-            WebSocketMessageType.USER_SUBSCRIBE_PORTS -> handleSubscribePorts(message, connection, userId)
-            WebSocketMessageType.USER_UNSUBSCRIBE_PORTS -> handleUnsubscribePorts(message, connection, userId)
+    override suspend fun handleMessage(message: WebSocketMessage, connection: WebSocketConnection, userId: String) {
+        when (message) {
+            is UserSubscribePortsRequest -> handleSubscribePorts(message, connection, userId)
+            is UserUnsubscribePortsRequest -> handleUnsubscribePorts(message, connection, userId)
             else -> {
-                Log.warn("Unknown user message type: ${message.type}")
-                WebSocketResponse(
-                    type = "error",
-                    payload = emptyMap(),
-                    requestId = message.requestId,
-                    error = "Unknown message type: ${message.type}"
-                )
+                Log.warn("Unexpected message type in UserMessageHandler: ${message::class.simpleName}")
+                sendErrorResponse(connection, "Unsupported message type", message.requestId, 4003)
             }
         }
     }
 
     private suspend fun handleSubscribePorts(
-        message: WebSocketMessage,
+        message: UserSubscribePortsRequest,
         connection: WebSocketConnection,
         userId: String
-    ): WebSocketResponse {
-        return try {
+    ) {
+        try {
             // Check if already subscribed
             if (portSubscriptions.containsKey(connection.id())) {
                 Log.debug("Connection ${connection.id()} already subscribed to port updates")
-                return WebSocketResponse(
-                    type = WebSocketMessageType.USER_SUBSCRIBE_PORTS,
-                    payload = mapOf("status" to "already_subscribed"),
-                    requestId = message.requestId
-                )
+                val response =
+                    UserSubscribePortsResponse(
+                        payload = UserSubscribePortsResponsePayload(),
+                        requestId = message.requestId
+                    )
+                connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
+                return
             }
 
             // Get the current port state and send it immediately
@@ -118,54 +110,68 @@ constructor(
 
             Log.info("User $userId subscribed to port updates on connection ${connection.id()}")
 
-            WebSocketResponse(
-                type = WebSocketMessageType.USER_SUBSCRIBE_PORTS,
-                payload = mapOf("status" to "subscribed"),
-                requestId = message.requestId
-            )
+            val response =
+                UserSubscribePortsResponse(payload = UserSubscribePortsResponsePayload(), requestId = message.requestId)
+            connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
         } catch (e: Exception) {
             Log.error("Error subscribing to port updates", e)
-            WebSocketResponse(
-                type = "error",
-                payload = emptyMap(),
-                requestId = message.requestId,
-                error = e.message ?: "Failed to subscribe to port updates"
-            )
+            sendErrorResponse(connection, e.message ?: "Failed to subscribe to port updates", message.requestId, 5000)
         }
     }
 
     private suspend fun handleUnsubscribePorts(
-        message: WebSocketMessage,
+        message: UserUnsubscribePortsRequest,
         connection: WebSocketConnection,
         userId: String
-    ): WebSocketResponse {
-        return try {
+    ) {
+        try {
             val subscription = portSubscriptions.remove(connection.id())
             if (subscription != null) {
                 subscription.isActive = false
                 subscription.channel.close()
                 Log.info("User $userId unsubscribed from port updates on connection ${connection.id()}")
 
-                WebSocketResponse(
-                    type = WebSocketMessageType.USER_UNSUBSCRIBE_PORTS,
-                    payload = mapOf("status" to "unsubscribed"),
-                    requestId = message.requestId
-                )
+                val response =
+                    UserUnsubscribePortsResponse(
+                        payload = UserUnsubscribePortsResponsePayload(),
+                        requestId = message.requestId
+                    )
+                connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
             } else {
-                WebSocketResponse(
-                    type = WebSocketMessageType.USER_UNSUBSCRIBE_PORTS,
-                    payload = mapOf("status" to "not_subscribed"),
-                    requestId = message.requestId
-                )
+                val response =
+                    UserUnsubscribePortsResponse(
+                        payload = UserUnsubscribePortsResponsePayload(),
+                        requestId = message.requestId
+                    )
+                connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
             }
         } catch (e: Exception) {
             Log.error("Error unsubscribing from port updates", e)
-            WebSocketResponse(
-                type = "error",
-                payload = emptyMap(),
-                requestId = message.requestId,
-                error = e.message ?: "Failed to unsubscribe from port updates"
+            sendErrorResponse(
+                connection,
+                e.message ?: "Failed to unsubscribe from port updates",
+                message.requestId,
+                5000
             )
+        }
+    }
+
+    private suspend fun sendErrorResponse(
+        connection: WebSocketConnection,
+        message: String,
+        requestId: String?,
+        errorCode: Int
+    ) {
+        try {
+            val error =
+                UserSubscribePortsResponse(
+                    payload = UserSubscribePortsResponsePayload(status = "error"),
+                    requestId = requestId,
+                    error = WebSocketError(code = errorCode, message = message)
+                )
+            connection.sendTextAndAwait(objectMapper.writeValueAsString(error))
+        } catch (e: Exception) {
+            Log.error("Failed to send error response", e)
         }
     }
 
@@ -173,11 +179,7 @@ constructor(
         try {
             if (connection.isOpen) {
                 val response =
-                    WebSocketResponse(
-                        type = WebSocketMessageType.USER_PORT_UPDATE,
-                        payload = mapOf("port" to portState.port),
-                        requestId = requestId
-                    )
+                    UserPortUpdate(payload = UserPortUpdatePayload(port = portState.port), requestId = requestId)
                 // Use sendTextAndAwait for async sending
                 connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
             }
