@@ -3,7 +3,7 @@ package com.plugin.features.auth.core
 import org.springframework.stereotype.Service
 
 @Service
-class AuthServiceSpring(private val authRepository: AuthRepositorySpring) {
+class AuthService(private val authRepository: AuthRepository) {
     
     suspend fun refreshToken(refreshTokenRequest: RefreshTokenRequest): String {
         return authRepository.refreshAccessToken(refreshTokenRequest)

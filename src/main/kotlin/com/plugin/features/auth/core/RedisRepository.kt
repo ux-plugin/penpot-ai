@@ -8,7 +8,7 @@ import java.time.Duration
 import java.util.*
 
 @Repository
-class RedisRepositorySpring(
+class RedisRepository(
     private val reactiveRedisTemplate: ReactiveRedisTemplate<String, String>
 ) {
 

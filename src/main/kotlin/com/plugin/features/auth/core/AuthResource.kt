@@ -11,8 +11,8 @@ import java.time.Duration
 
 @RestController
 @RequestMapping("/auth")
-class AuthController(
-    private val authService: AuthServiceSpring
+class AuthResource(
+    private val authService: AuthService
 ) {
     
     @PostMapping("/access-token/refresh")

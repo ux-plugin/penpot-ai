@@ -11,7 +11,7 @@ import java.time.Instant
 import java.util.*
 
 @Repository
-class AuthRepositorySpring(
+class AuthRepository(
     private val authUserRepository: AuthUserR2dbcRepository,
     private val socialLoginRepository: SocialLoginR2dbcRepository,
     private val jwtService: JwtService,
