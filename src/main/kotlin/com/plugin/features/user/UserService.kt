@@ -14,9 +14,9 @@ import javax.crypto.KeyGenerator
 
 @Service
 class UserService(
-    private val userRepository: UserRepository,
-    private val reactiveRedisTemplate: ReactiveRedisTemplate<String, PortState>,
-    @Value("\${user.companion-app-key-prefix}") private val companionAppKeyPrefix: String
+    val userRepository: UserRepository,
+    val reactiveRedisTemplate: ReactiveRedisTemplate<String, PortState>,
+    @Value("\${user.companion-app-key-prefix}") val companionAppKeyPrefix: String
 ) {
 
     suspend fun getUser(userId: String): GetUserResponse {

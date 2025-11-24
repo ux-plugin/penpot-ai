@@ -98,6 +98,12 @@ dependencies {
     // AI dependencies
     implementation 'com.openai:openai-java:2.2.1'
 
+    // LangChain4j for AI pipeline
+    implementation platform('dev.langchain4j:langchain4j-bom:0.36.2')
+    implementation 'dev.langchain4j:langchain4j'
+    implementation 'dev.langchain4j:langchain4j-open-ai'
+    implementation 'dev.langchain4j:langchain4j-spring-boot-starter:0.36.2'
+
     // Koog AI agent framework
     implementation 'ai.koog:koog-agents:0.5.2'
 
