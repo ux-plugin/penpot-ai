@@ -41,8 +41,14 @@ class UserService(
 
     suspend fun updatePort(userId: String, portState: PortState) {
         userRepository.savePort(userId, portState)
-        // Publish to Redis
-        reactiveRedisTemplate.convertAndSend(companionAppKeyPrefix + userId, portState)
+        // Publish to Redis with proper error handling
+        try {
+            reactiveRedisTemplate.convertAndSend(companionAppKeyPrefix + userId, portState)
+                .subscribe()
+        } catch (e: Exception) {
+            // Log error but don't fail the operation
+            println("Failed to publish port state to Redis: ${e.message}")
+        }
     }
 
     suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? {

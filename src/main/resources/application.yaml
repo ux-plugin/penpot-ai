@@ -7,20 +7,7 @@ spring:
   webflux:
     base-path: /
 
-server:
-  port: ${API_PORT:8003}
-  address: ${API_HOST:0.0.0.0}
-
-# CORS configuration
-cors:
-  allowed-origins: "*"
-  allowed-methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
-  allowed-headers: Authorization,Content-Type,Accept,Cache-Control,Upgrade,Connection,Sec-WebSocket-Key,Sec-WebSocket-Version,Sec-WebSocket-Protocol,Sec-WebSocket-Extensions
-  exposed-headers: Content-Disposition
-  max-age: 3600
-
-# R2DBC Database configuration
-spring:
+  # R2DBC Database configuration
   r2dbc:
     url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
     username: ${DB_USERNAME:postgres}
@@ -54,6 +41,26 @@ spring:
       write-dates-as-timestamps: false
     default-property-inclusion: non_null
 
+  # Security configuration
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ux-plugin
+          jwk-set-uri: classpath:META-INF/resources/publicKey-dev.pem
+
+server:
+  port: ${API_PORT:8003}
+  address: ${API_HOST:0.0.0.0}
+
+# CORS configuration
+cors:
+  allowed-origins: "*"
+  allowed-methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
+  allowed-headers: Authorization,Content-Type,Accept,Cache-Control,Upgrade,Connection,Sec-WebSocket-Key,Sec-WebSocket-Version,Sec-WebSocket-Protocol,Sec-WebSocket-Extensions
+  exposed-headers: Content-Disposition
+  max-age: 3600
+
 # OpenAPI/Swagger configuration
 springdoc:
   api-docs:
@@ -66,15 +73,6 @@ springdoc:
     title: Figma Plugin API
     version: 0.0.1
     description: API for Figma Plugin
-
-# Security configuration
-spring:
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: ux-plugin
-          jwk-set-uri: classpath:META-INF/resources/publicKey-dev.pem
 
 # Logging configuration
 logging:
