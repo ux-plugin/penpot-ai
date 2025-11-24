@@ -1,42 +1,56 @@
 package com.plugin.features.completions
 
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.core.io.FileSystemResource
+import org.springframework.http.MediaType
+import org.springframework.http.client.MultipartBodyBuilder
 import org.springframework.stereotype.Service
+import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.awaitBody
 import java.io.File
-import java.util.Base64
+
+data class FireworksTranscriptionResponse(val text: String)
 
 @Service
 class FireworksTranscriptionService(
     private val webClientBuilder: WebClient.Builder,
-    @Value("\${fireworks.api-key}") private val apiKey: String
+    @Value("\${fireworks.api.key}") private val apiKey: String,
+    @Value("\${fireworks.api.base-url}") private val baseUrl: String,
+    @Value("\${fireworks.whisper.model}") private val whisperModel: String
 ) {
     
-    private val webClient = webClientBuilder.baseUrl("https://api.fireworks.ai").build()
+    private val webClient: WebClient by lazy {
+        webClientBuilder.baseUrl(baseUrl).build()
+    }
     
     suspend fun transcribe(audioFile: File): String {
+        if (!audioFile.exists()) {
+            throw IllegalArgumentException("Audio file does not exist: ${audioFile.absolutePath}")
+        }
+        
+        println("Transcribing audio file: ${audioFile.name} (${audioFile.length()} bytes)")
+        
         return try {
-            // Read audio file and encode as base64
-            val audioBytes = audioFile.readBytes()
-            val base64Audio = Base64.getEncoder().encodeToString(audioBytes)
-            
-            val request = mapOf(
-                "model" to "whisper-v3",
-                "audio" to base64Audio
-            )
+            val bodyBuilder = MultipartBodyBuilder()
+            bodyBuilder.part("file", FileSystemResource(audioFile))
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+            bodyBuilder.part("model", whisperModel)
             
             val response = webClient.post()
-                .uri("/inference/v1/audio/transcriptions")
+                .uri("/v1/audio/transcriptions")
                 .header("Authorization", "Bearer $apiKey")
-                .bodyValue(request)
+                .contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(BodyInserters.fromMultipartData(bodyBuilder.build()))
                 .retrieve()
-                .awaitBody<Map<String, Any>>()
+                .awaitBody<FireworksTranscriptionResponse>()
             
-            response["text"] as? String ?: ""
+            println("Successfully transcribed ${audioFile.name}: ${response.text.length} characters")
+            response.text
         } catch (e: Exception) {
-            println("Transcription failed: ${e.message}")
-            ""
+            println("Fireworks transcription error: ${e.message}")
+            e.printStackTrace()
+            throw RuntimeException("Transcription failed: ${e.message}", e)
         }
     }
 }

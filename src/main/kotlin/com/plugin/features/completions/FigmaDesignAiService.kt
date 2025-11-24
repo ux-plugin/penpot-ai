@@ -5,102 +5,95 @@ import com.plugin.infrastructure.websocket.CompletionResponse
 import com.plugin.infrastructure.websocket.CompletionResponseEnd
 import com.plugin.infrastructure.websocket.CompletionResponseEndPayload
 import com.plugin.infrastructure.websocket.CompletionResponsePayload
-import dev.langchain4j.model.chat.ChatLanguageModel
-import dev.langchain4j.model.openai.OpenAiChatModel
+import dev.langchain4j.service.SystemMessage
+import dev.langchain4j.service.UserMessage
+import dev.langchain4j.service.V
+import dev.langchain4j.service.spring.AiService
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.reactive.awaitFirst
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.socket.WebSocketSession
+import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import java.io.File
+
+/**
+ * High-level AI Service interface for generating Figma design components from voice commands
+ * 
+ * This uses LangChain4j Spring Boot integration with declarative AI service pattern.
+ * Streaming is enabled via Flux<String> return type.
+ */
+@AiService
+interface FigmaDesignAssistant {
+    @SystemMessage("You are a Figma design assistant. Help users create and modify designs based on voice commands. Provide concise, actionable responses to help the user accomplish their design goal. If they're asking to create something, suggest specific design actions. Keep your response brief and focused.")
+    @UserMessage("User's voice command: {{transcribedText}}")
+    fun generateDesignStreaming(@V("transcribedText") transcribedText: String): Flux<String>
+}
 
 @Service
 class FigmaDesignAiService(
     private val transcriptionService: FireworksTranscriptionService,
-    private val objectMapper: ObjectMapper,
-    @Value("\${openai.api-key}") private val openAiApiKey: String
+    private val figmaDesignAssistant: FigmaDesignAssistant,
+    private val objectMapper: ObjectMapper
 ) {
-    
-    private val chatModel: ChatLanguageModel by lazy {
-        OpenAiChatModel.builder()
-            .apiKey(openAiApiKey)
-            .modelName("gpt-4")
-            .temperature(0.7)
-            .build()
-    }
     
     suspend fun executePipeline(
         input: AgentPipelineInput,
         session: WebSocketSession,
         requestId: String?
     ) {
+        println("Starting AI pipeline execution for fe_id: ${input.feId}")
+        
         try {
-            // Step 1: Transcribe audio
-            println("Transcribing audio for FE ID: ${input.feId}")
-            val transcription = transcriptionService.transcribe(input.audioFile)
+            // Step 1: Transcribe audio using Fireworks AI
+            println("Pipeline Step 1: Transcribing audio with Fireworks AI")
+            val transcribedText = transcriptionService.transcribe(input.audioFile)
             
-            if (transcription.isBlank()) {
+            if (transcribedText.isBlank()) {
                 println("No transcription available")
-                sendCompletionResponse(
-                    session,
-                    input.feId,
-                    text = "Could not transcribe audio",
-                    requestId
-                )
+                sendCompletionResponse(session, input.feId, "Could not transcribe audio", requestId)
                 sendCompletionEnd(session, input.feId, requestId)
                 return
             }
             
-            println("Transcription: $transcription")
+            println("Transcription completed: ${transcribedText.take(100)}...")
             
-            // Step 2: Build context with cursor information
-            val contextPrompt = buildContextPrompt(transcription, input.cursorContext)
-            
-            // Step 3: Get design suggestion from LLM
-            println("Getting design suggestion from LLM")
-            val responseText = chatModel.generate(contextPrompt)
-            
-            // Step 4: Send response  
-            println("LLM Response: $responseText")
-            
-            sendCompletionResponse(
-                session,
-                input.feId,
-                text = responseText,
-                requestId
-            )
+            // Step 2: Generate streaming response using LangChain4j AI service
+            println("Pipeline Step 2: Generating streaming response with LangChain4j")
+            generateStreamingResponse(transcribedText, input.feId, session, requestId)
             
             // Send completion end signal
             sendCompletionEnd(session, input.feId, requestId)
             
+            println("AI pipeline execution completed successfully")
         } catch (e: Exception) {
-            println("Error in AI pipeline: ${e.message}")
+            println("Pipeline execution failed: ${e.message}")
             e.printStackTrace()
-            sendCompletionResponse(
-                session,
-                input.feId,
-                text = "Error processing request: ${e.message}",
-                requestId
-            )
+            sendCompletionResponse(session, input.feId, "ERROR: ${e.message}", requestId)
             sendCompletionEnd(session, input.feId, requestId)
         }
     }
     
-    private fun buildContextPrompt(transcription: String, cursorContext: String?): String {
-        return buildString {
-            appendLine("You are a Figma design assistant. Help users create and modify designs based on voice commands.")
-            appendLine()
-            appendLine("User's voice command: $transcription")
+    private suspend fun generateStreamingResponse(
+        transcribedText: String,
+        feId: String,
+        session: WebSocketSession,
+        requestId: String?
+    ) {
+        try {
+            // Use streaming version with Flux
+            figmaDesignAssistant.generateDesignStreaming(transcribedText)
+                .asFlow()
+                .collect { chunk ->
+                    println("Streaming content chunk: ${chunk.take(50)}...")
+                    sendCompletionResponse(session, feId, chunk, requestId)
+                }
             
-            if (!cursorContext.isNullOrBlank()) {
-                appendLine()
-                appendLine("Current cursor context: $cursorContext")
-            }
-            
-            appendLine()
-            appendLine("Provide a concise, actionable response to help the user accomplish their design goal.")
-            appendLine("If they're asking to create something, suggest specific design actions.")
-            appendLine("Keep your response brief and focused.")
+            println("LangChain4j streaming completed successfully")
+        } catch (e: Exception) {
+            println("LangChain4j execution failed: ${e.message}")
+            throw e
         }
     }
     
@@ -112,10 +105,7 @@ class FigmaDesignAiService(
     ) {
         try {
             val response = CompletionResponse(
-                payload = CompletionResponsePayload(
-                    fe_id = feId,
-                    text = text
-                ),
+                payload = CompletionResponsePayload(fe_id = feId, text = text),
                 requestId = requestId
             )
             val json = objectMapper.writeValueAsString(response)
