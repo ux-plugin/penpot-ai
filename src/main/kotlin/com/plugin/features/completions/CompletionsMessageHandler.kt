@@ -1,8 +1,9 @@
 package com.plugin.features.completions
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.plugin.features.completions.koog.AgentPipelineInput
 import com.plugin.features.completions.koog.KoogAgentPipeline
+import com.plugin.features.completions.pipeline.AgentPipelineInput
+import com.plugin.features.completions.pipeline.LangChain4jAgentPipeline
 import com.plugin.infrastructure.websocket.*
 import io.quarkus.logging.Log
 import io.quarkus.websockets.next.WebSocketConnection
@@ -29,6 +30,7 @@ class CompletionsMessageHandler
 constructor(
     private val objectMapper: ObjectMapper,
     private val koogAgentPipeline: KoogAgentPipeline,
+    private val langChain4jAgentPipeline: LangChain4jAgentPipeline,
 ) : WebSocketMessageHandler {
 
     // Store audio buffers per connection for recording (thread-safe)
@@ -102,7 +104,7 @@ constructor(
                     CompletionRequestPayload(fe_id = feId, drawn_path = "", audio_chunk = "", timestamp = timestamp),
                 requestId = message.requestId
             )
-        connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
+        connection.sendText(objectMapper.writeValueAsString(response)).awaitSuspending()
     }
 
     private suspend fun handleCompletionRequestEnd(
@@ -113,13 +115,13 @@ constructor(
         val feId = message.payload.fe_id
         Log.info("Handling completion_request_end for FE ID: $feId")
 
-        // Process accumulated audio and generate response using Koog pipeline
+        // Process accumulated audio and generated response using a Koog pipeline
         val audioBuffer = audioBuffers[connection.id()]
         val cursorContext = drawnPaths[connection.id()]?.toString()
 
         if (audioBuffer != null && audioBuffer.size() > 0) {
             try {
-                // Save audio to temporary file
+                // Save audio to a temporary file
                 val timestamp = System.currentTimeMillis()
                 val connectionIdShort = connection.id().take(8)
                 val audioFile = File("audio-recordings", "audio_${timestamp}_${connectionIdShort}.wav")
@@ -129,18 +131,11 @@ constructor(
                 WavFileWriter.writeWavFile(audioData, audioFile)
                 Log.info("Saved audio for processing: ${audioFile.absolutePath}")
 
-                // Execute Koog pipeline with streaming callback
-                val pipelineInput = AgentPipelineInput(audioFile = audioFile, cursorContext = cursorContext)
-                koogAgentPipeline.executePipeline(pipelineInput) { chunk ->
-                    // Stream the LLM response as text chunks
-                    // TODO: Parse structured actions if the chunk contains action commands
-                    val response =
-                        CompletionResponse(
-                            payload = CompletionResponsePayload(fe_id = feId, text = chunk),
-                            requestId = message.requestId
-                        )
-                    connection.sendText(objectMapper.writeValueAsString(response)).awaitSuspending()
-                }
+                langChain4jAgentPipeline.executePipeline(
+                    input = AgentPipelineInput(audioFile = audioFile, cursorContext = cursorContext, feId = feId),
+                    connection = connection,
+                    requestId = message.requestId
+                )
 
                 // Send completion signal
                 val endResponse =
@@ -165,7 +160,7 @@ constructor(
         // Send acknowledgment response
         val response =
             CompletionRequestEnd(payload = CompletionRequestEndPayload(fe_id = feId), requestId = message.requestId)
-        connection.sendTextAndAwait(objectMapper.writeValueAsString(response))
+        connection.sendText(objectMapper.writeValueAsString(response)).awaitSuspending()
     }
 
     private suspend fun sendErrorResponse(
@@ -181,7 +176,7 @@ constructor(
                     requestId = requestId,
                     error = WebSocketError(code = errorCode, message = message)
                 )
-            connection.sendTextAndAwait(objectMapper.writeValueAsString(error))
+            connection.sendText(objectMapper.writeValueAsString(error)).awaitSuspending()
         } catch (e: Exception) {
             Log.error("Failed to send error response", e)
         }

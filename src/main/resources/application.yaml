@@ -87,6 +87,16 @@ quarkus:
     migrate-at-start: true
     change-log: db/changelog/master.yaml
 
+  # langchain4j configuration
+  langchain4j:
+    openai:
+      figma-design-ai:
+        api-key: "${OPENAI_API_KEY}"
+        chat-model:
+          model-name: gpt-5
+          reasoning-effort: medium
+        timeout: 20000
+
   rest-client:
     ai-server:
       url: "${AI_SERVER_URL:http://localhost:8002}"
@@ -96,6 +106,8 @@ quarkus:
       url: "https://audio-prod.api.fireworks.ai"
       connect-timeout: 30000  # 30 seconds
       read-timeout: 120000    # 120 seconds (for large audio files)
+      headers:
+        Authorization: Bearer ${FIREWORKS_API_KEY}
     logging:
       scope: request-response
 
@@ -118,25 +130,30 @@ openai:
   project.id: "${OPENAI_PROJECT_ID}"
   org.id: "${OPENAI_ORG_ID}"
 
-# Koog AI Agent Framework Configuration
+# Fireworks AI configuration for audio transcription
+fireworks:
+  api:
+    key: "${FIREWORKS_API_KEY}"
+    base-url: "${FIREWORKS_API_BASE_URL:https://api.fireworks.ai}"
+  whisper:
+    model: "${FIREWORKS_WHISPER_MODEL:whisper-v3-large}"
+
+# Agent configuration
+agent:
+  model:
+    name: "${AGENT_MODEL_NAME:gpt-4o-mini}"
+
+# Koog AI agent framework configuration
 koog:
-  # Fireworks AI API key for Whisper v3 Large transcription
   fireworks:
-    api-key: "${FIREWORKS_API_KEY:}"
-  
-  # OpenAI API key for LLM responses
+    api-key: "${FIREWORKS_API_KEY}"
   openai:
     api-key: "${OPENAI_API_KEY}"
-  
-  # LLM model configuration
   llm:
     model: "${KOOG_LLM_MODEL:gpt-4o-mini}"
     temperature: "${KOOG_LLM_TEMPERATURE:0.7}"
-  
-  # Agent configuration
   agent:
     max-iterations: "${KOOG_MAX_ITERATIONS:10}"
-
 
 smallrye:
   jwt:

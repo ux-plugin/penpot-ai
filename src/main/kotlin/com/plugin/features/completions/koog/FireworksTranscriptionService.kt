@@ -5,7 +5,6 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import jakarta.ws.rs.WebApplicationException
 import java.io.File
-import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.rest.client.inject.RestClient
 
 /**
@@ -16,8 +15,6 @@ import org.eclipse.microprofile.rest.client.inject.RestClient
  */
 @ApplicationScoped
 class FireworksTranscriptionService {
-
-    @Inject @ConfigProperty(name = "koog.fireworks.api-key") lateinit var fireworksApiKey: String
 
     @Inject @RestClient lateinit var fireworksRestClient: FireworksRestClient
 
@@ -35,12 +32,7 @@ class FireworksTranscriptionService {
         Log.info("Transcribing audio file: ${audioFile.name} (${audioFile.length()} bytes)")
 
         try {
-            val response =
-                fireworksRestClient.transcribeAudio(
-                    authorization = "Bearer $fireworksApiKey",
-                    file = audioFile,
-                    model = "whisper-v3"
-                )
+            val response = fireworksRestClient.transcribeAudio(file = audioFile, model = "whisper-v3")
 
             Log.info("Successfully transcribed ${audioFile.name}: ${response.text.length} characters")
 

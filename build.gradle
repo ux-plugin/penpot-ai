@@ -82,9 +82,9 @@ dependencies {
 
     // AI dependencies
     implementation 'com.openai:openai-java:2.2.1'
-    implementation 'dev.langchain4j:langchain4j:1.1.0'
-    implementation 'dev.langchain4j:langchain4j-open-ai:1.1.0'
-    
+    implementation 'io.quarkiverse.langchain4j:quarkus-langchain4j-openai:1.4.2'
+
+
     // Koog AI agent framework
     implementation 'ai.koog:koog-agents:0.5.2'
     
