@@ -1,0 +1,203 @@
+# Spring Boot YAML configuration
+spring:
+  application:
+    name: figma-plugin-api
+  
+  # Server configuration
+  webflux:
+    base-path: /
+
+server:
+  port: ${API_PORT:8003}
+  address: ${API_HOST:0.0.0.0}
+
+# CORS configuration
+cors:
+  allowed-origins: "*"
+  allowed-methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
+  allowed-headers: Authorization,Content-Type,Accept,Cache-Control,Upgrade,Connection,Sec-WebSocket-Key,Sec-WebSocket-Version,Sec-WebSocket-Protocol,Sec-WebSocket-Extensions
+  exposed-headers: Content-Disposition
+  max-age: 3600
+
+# R2DBC Database configuration
+spring:
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:password}
+  
+  # Liquibase configuration (uses JDBC)
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/master.yaml
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
+    user: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:password}
+  
+  # Redis configuration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 10000ms
+      lettuce:
+        pool:
+          max-active: ${REDIS_MAX_POOL_SIZE:50}
+          max-idle: 10
+          min-idle: 5
+          max-wait: ${REDIS_MAX_WAITING:100}ms
+        shutdown-timeout: 5000ms
+
+  # Jackson configuration
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+
+# OpenAPI/Swagger configuration
+springdoc:
+  api-docs:
+    path: /openapi
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+  info:
+    title: Figma Plugin API
+    version: 0.0.1
+    description: API for Figma Plugin
+
+# Security configuration
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ux-plugin
+          jwk-set-uri: classpath:META-INF/resources/publicKey-dev.pem
+
+# Logging configuration
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    org.springframework.data.redis: ${REDIS_LOG_LEVEL:WARN}
+    io.lettuce: ${REDIS_LOG_LEVEL:WARN}
+    com.plugin.features.auth.core.RedisRepository: ${REDIS_LOG_LEVEL:INFO}
+    org.springframework.web.socket: ${WEBSOCKET_LOG_LEVEL:INFO}
+
+# OpenAI configuration
+openai:
+  api:
+    key: ${OPENAI_API_KEY}
+  project:
+    id: ${OPENAI_PROJECT_ID}
+  org:
+    id: ${OPENAI_ORG_ID}
+
+# Fireworks AI configuration for audio transcription
+fireworks:
+  api:
+    key: ${FIREWORKS_API_KEY}
+    base-url: ${FIREWORKS_API_BASE_URL:https://api.fireworks.ai}
+  whisper:
+    model: ${FIREWORKS_WHISPER_MODEL:whisper-v3-large}
+
+# Agent configuration
+agent:
+  model:
+    name: ${AGENT_MODEL_NAME:gpt-4o-mini}
+
+# Koog AI agent framework configuration
+koog:
+  fireworks:
+    api-key: ${FIREWORKS_API_KEY}
+  openai:
+    api-key: ${OPENAI_API_KEY}
+  llm:
+    model: ${KOOG_LLM_MODEL:gpt-4o-mini}
+    temperature: ${KOOG_LLM_TEMPERATURE:0.7}
+  agent:
+    max-iterations: ${KOOG_MAX_ITERATIONS:10}
+
+# JWT configuration
+jwt:
+  private-key-location: classpath:META-INF/resources/privateKey-dev.pem
+  public-key-location: classpath:META-INF/resources/publicKey-dev.pem
+  token:
+    lifespan: 600
+
+# WebSocket configuration
+websocket:
+  auth:
+    path: /completions/create
+    token-query-param: token
+    upgrade-header: upgrade
+    websocket-value: websocket
+    session:
+      user-id-key: ws.auth.userId
+      token-expiration-key: ws.auth.tokenExpiration
+
+# Auth configuration
+auth:
+  access-token-ttl-s: 900  # 15 minutes
+  refresh-token-ttl-s: 2592000  # 30 days
+  figma:
+    client-id: client id
+    client-secret: client secret
+    auth-url: https://www.figma.com/oauth
+    token-url: https://api.figma.com/v1/oauth/token
+    login-redirect-uri: http://localhost:8080/auth/figma/callback
+    connect-redirect-uri: http://localhost:8080/auth/figma/connect/callback
+    user-id:
+      result-key-prefix: figma-user-id:
+    connect:
+      redis-key-prefix: figma-connect:
+    login:
+      random-key:
+        max-retries: 3
+      timeout-sec: 60
+    rest-client:
+      access-token:
+        redis-key-prefix: figma-login:
+    read-token:
+      redis-key-prefix: figma-read-token:
+    write-token:
+      redis-key-prefix: figma-write-token:
+  github:
+    client-id: github-client-id
+    client-secret: github-client-secret
+    auth-url: https://github.com/login/oauth/authorize
+    token-url: https://github.com/login/oauth/access_token
+    login-redirect-uri: http://localhost:8080/auth/github/callback
+    connect-redirect-uri: http://localhost:8080/auth/github/connect/callback
+    connect:
+      result-key-prefix: github-connect:
+    user-id:
+      redis-key-prefix: github-user-id:
+    login:
+      random-key:
+        max-retries: 3
+      timeout-sec: 60
+    rest-client:
+      access-token:
+        redis-key-prefix: github-login:
+    read-token:
+      redis-key-prefix: github-read-token:
+    write-token:
+      redis-key-prefix: github-write-token:
+
+# User configuration
+user:
+  companion-app-key-prefix: companion-app:
+  encryption-key-ttl-s: 3600
+
+# REST Client configurations
+rest-client:
+  ai-server:
+    url: ${AI_SERVER_URL:http://localhost:8002}
+  github-api:
+    url: https://github.com
+  fireworks-api:
+    url: https://audio-prod.api.fireworks.ai
+    connect-timeout: 30000  # 30 seconds
+    read-timeout: 120000    # 120 seconds (for large audio files)
