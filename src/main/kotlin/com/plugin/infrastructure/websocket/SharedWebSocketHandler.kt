@@ -3,7 +3,6 @@ package com.plugin.infrastructure.websocket
 import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.reactive.awaitFirst
 import kotlinx.coroutines.reactor.mono
-import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder
 import org.springframework.stereotype.Component
 import org.springframework.web.reactive.socket.WebSocketHandler
 import org.springframework.web.reactive.socket.WebSocketMessage as SpringWebSocketMessage
@@ -16,7 +15,7 @@ import kotlin.reflect.KClass
 @Component
 class SharedWebSocketHandler(
     private val objectMapper: ObjectMapper,
-    private val jwtDecoder: ReactiveJwtDecoder,
+    private val authInterceptor: AuthHandshakeInterceptor,
 ) : WebSocketHandler {
 
     private val messageHandlers = ConcurrentHashMap<KClass<out WebSocketMessage>, WebSocketMessageHandler>()
@@ -32,43 +31,35 @@ class SharedWebSocketHandler(
     }
 
     override fun handle(session: WebSocketSession): Mono<Void> {
-        return mono {
-            try {
-                // Extract and validate JWT from query params
-                val token = session.handshakeInfo.uri.query?.split("&")
-                    ?.find { it.startsWith("token=") }
-                    ?.substringAfter("token=")
-
-                if (token.isNullOrBlank()) {
-                    session.close().awaitFirst()
-                    return@mono
+        // Authenticate first
+        return authInterceptor.authenticate(session)
+            .flatMap { authenticated ->
+                if (!authenticated) {
+                    println("WebSocket authentication failed for session: ${session.id}")
+                    return@flatMap session.close()
                 }
 
-                val jwt = try {
-                    jwtDecoder.decode(token).awaitFirst()
-                } catch (e: Exception) {
-                    session.close().awaitFirst()
-                    return@mono
+                val userId = authInterceptor.getUserId(session)
+                val expirationTime = authInterceptor.getExpiration(session)
+
+                if (userId == null || expirationTime == null) {
+                    println("Missing user ID or expiration time in session attributes")
+                    return@flatMap session.close()
                 }
 
-                val userId = jwt.subject
-                val expirationTime = jwt.expiresAt
-
-                if (userId.isNullOrBlank() || expirationTime == null || expirationTime.isBefore(Instant.now())) {
-                    session.close().awaitFirst()
-                    return@mono
-                }
-
+                println("WebSocket authenticated for user: $userId, session: ${session.id}")
                 sessionUserMap[session.id] = userId
 
                 // Notify handlers of connection open
-                allHandlers.forEach { handler ->
-                    try {
-                        handler.onOpen(session, userId)
-                    } catch (e: Exception) {
-                        println("Error in handler.onOpen: ${e.message}")
+                mono {
+                    allHandlers.forEach { handler ->
+                        try {
+                            handler.onOpen(session, userId)
+                        } catch (e: Exception) {
+                            println("Error in handler.onOpen: ${e.message}")
+                        }
                     }
-                }
+                }.subscribe()
 
                 // Handle incoming messages
                 session.receive()
@@ -90,12 +81,11 @@ class SharedWebSocketHandler(
                         }
                     }
                     .then()
-                    .awaitFirst()
-            } catch (e: Exception) {
-                println("WebSocket error: ${e.message}")
-                session.close().awaitFirst()
             }
-        }.then()
+            .onErrorResume { error ->
+                println("WebSocket error: ${error.message}")
+                session.close()
+            }
     }
 
     private suspend fun handleIncomingMessage(
