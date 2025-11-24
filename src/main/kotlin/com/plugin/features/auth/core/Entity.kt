@@ -1,52 +1,55 @@
 package com.plugin.features.auth.core
 
 import com.plugin.features.user.UserRole
-import io.quarkus.hibernate.reactive.panache.kotlin.PanacheCompanion
-import io.quarkus.hibernate.reactive.panache.kotlin.PanacheEntityBase
-import io.quarkus.security.jpa.Password
-import io.quarkus.security.jpa.Username
-import jakarta.persistence.*
+import org.springframework.data.annotation.Id
+import org.springframework.data.relational.core.mapping.Column
+import org.springframework.data.relational.core.mapping.Table
 import java.time.Instant
+import java.util.UUID
 
-/** Database entity for user credentials */
-@Entity
-@Table(name = "Users")
-class AuthUserEntity : PanacheEntityBase {
+@Table("users")
+data class AuthUserEntity(
+    @Id
+    @Column("id")
+    var id: String = UUID.randomUUID().toString(),
+    
+    @Column("username")
+    var username: String? = null,
+    
+    @Column("role")
+    var role: UserRole = UserRole.USER,
+    
+    @Column("refresh_token")
+    var refreshToken: String = "",
+    
+    @Column("refresh_token_expires_at")
+    var refreshTokenExpiresAt: Instant = Instant.now()
+)
 
-    @Id @GeneratedValue(strategy = GenerationType.UUID) lateinit var id: String
-
-    @Column(nullable = true, unique = true) @Username var username: String? = null
-
-    @Column(nullable = false, columnDefinition = "user_roles") @Enumerated(EnumType.STRING) lateinit var role: UserRole
-
-    @Column(nullable = true) @Password lateinit var refreshToken: String
-
-    @Column(nullable = true) lateinit var refreshTokenExpiresAt: Instant
-
-    companion object : PanacheCompanion<AuthUserEntity>
-}
-
-@Entity
-@Table(name = "SocialLogins")
-class SocialLoginEntity : PanacheEntityBase {
-    @Id @GeneratedValue(strategy = GenerationType.UUID) lateinit var id: String
-
-    @Column(nullable = false) lateinit var userId: String
-
-    @Column(nullable = false, unique = true) lateinit var providerUserId: String
-
-    @Column(nullable = false, columnDefinition = "social_providers")
-    @Enumerated(EnumType.STRING)
-    lateinit var provider: SocialProvider
-
-    @Column(nullable = false) @Password lateinit var refreshToken: String
-
-    @Column(nullable = false) var main: Boolean = false
-
-    @Column(nullable = false) lateinit var refreshTokenExpiresAt: Instant
-
-    companion object : PanacheCompanion<SocialLoginEntity>
-}
+@Table("social_logins")
+data class SocialLoginEntity(
+    @Id
+    @Column("id")
+    var id: String = UUID.randomUUID().toString(),
+    
+    @Column("user_id")
+    var userId: String = "",
+    
+    @Column("provider_user_id")
+    var providerUserId: String = "",
+    
+    @Column("provider")
+    var provider: SocialProvider = SocialProvider.GITHUB,
+    
+    @Column("refresh_token")
+    var refreshToken: String = "",
+    
+    @Column("main")
+    var main: Boolean = false,
+    
+    @Column("refresh_token_expires_at")
+    var refreshTokenExpiresAt: Instant = Instant.now()
+)
 
 enum class SocialProvider {
     GOOGLE,
