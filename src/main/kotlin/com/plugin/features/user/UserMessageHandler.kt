@@ -169,7 +169,7 @@ constructor(
                     requestId = requestId,
                     error = WebSocketError(code = errorCode, message = message)
                 )
-            connection.sendTextAndAwait(objectMapper.writeValueAsString(error))
+            connection.sendText<String>(objectMapper.writeValueAsString(error)).awaitSuspending()
         } catch (e: Exception) {
             Log.error("Failed to send error response", e)
         }

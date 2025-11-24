@@ -90,3 +90,15 @@ auth:
 
 user:
   encryption-key-ttl-s: 3600
+
+# Koog AI agent framework configuration (development overrides)
+koog:
+  fireworks:
+    api-key: "${FIREWORKS_API_KEY}"
+  openai:
+    api-key: "${OPENAI_API_KEY}"
+  llm:
+    model: "${KOOG_LLM_MODEL:gpt-4o-mini}"
+    temperature: "${KOOG_LLM_TEMPERATURE:0.7}"
+  agent:
+    max-iterations: "${KOOG_MAX_ITERATIONS:10}"
