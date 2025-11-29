@@ -1,98 +1,47 @@
 package com.plugin.dev
 
+import com.plugin.config.JwtService
+import com.plugin.features.user.UserEntity
+import com.plugin.features.user.UserRepository
 import com.plugin.features.user.UserRole
-import io.quarkus.arc.profile.IfBuildProfile
-import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
-import io.quarkus.hibernate.reactive.panache.common.WithSession
-import io.quarkus.hibernate.reactive.panache.kotlin.PanacheCompanion
-import io.quarkus.hibernate.reactive.panache.kotlin.PanacheEntityBase
-import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
-import io.smallrye.jwt.build.Jwt
-import io.smallrye.mutiny.Uni
-import io.smallrye.mutiny.coroutines.awaitSuspending
-import jakarta.enterprise.context.ApplicationScoped
-import jakarta.inject.Inject
-import jakarta.persistence.*
-import jakarta.ws.rs.*
-import jakarta.ws.rs.core.MediaType
 import java.time.Instant
+import org.springframework.context.annotation.Profile
+import org.springframework.http.MediaType
+import org.springframework.web.bind.annotation.*
 
-data class AddUserRequest(
-    val id: String,
-    val username: String,
-    val name: String,
-    val role: UserRole,
-    val refreshToken: String,
-    val refreshTokenExpiresAt: Instant,
-)
+data class AddUserRequest(val id: String, val username: String, val name: String, val role: UserRole)
 
 data class AddUserResponse(val accessToken: String)
 
 data class GetJwtResponse(val accessToken: String)
 
-@Entity
-@Table(name = "Users")
-@IfBuildProfile("dev")
-class DevUserEntity : PanacheEntityBase {
-    @Id lateinit var id: String
-    var username: String? = null
-    lateinit var name: String
-    lateinit var refreshToken: String
-    lateinit var refreshTokenExpiresAt: Instant
-    @Enumerated(EnumType.STRING) lateinit var role: UserRole
+@RestController
+@RequestMapping("/dev/user", produces = [MediaType.APPLICATION_JSON_VALUE])
+@Profile("dev")
+class UserManagementResource(private val userRepository: UserRepository, private val jwtService: JwtService) {
 
-    companion object : PanacheCompanion<DevUserEntity> {}
-}
+    @PostMapping("/add", consumes = [MediaType.APPLICATION_JSON_VALUE])
+    suspend fun addUser(@RequestBody request: AddUserRequest): AddUserResponse {
+        val newUser =
+            UserEntity(
+                id = request.id,
+                username = request.username,
+                name = request.name,
+                role = request.role,
+                createdAt = Instant.now()
+            )
+        // Upsert user using Exposed-based repository
+        userRepository.save(newUser)
 
-@IfBuildProfile("dev")
-@ApplicationScoped
-class UserManagementRepository : PanacheRepository<DevUserEntity> {
-    @WithSession
-    fun addUser(addUserRequest: AddUserRequest): Uni<AddUserResponse> {
-        return withTransaction {
-            val newUser =
-                DevUserEntity().apply {
-                    this.id = addUserRequest.id
-                    this.username = addUserRequest.username
-                    this.name = addUserRequest.name
-                    this.role = addUserRequest.role
-                    this.refreshToken = addUserRequest.refreshToken
-                    this.refreshTokenExpiresAt = addUserRequest.refreshTokenExpiresAt
-                }
-            persistAndFlush(newUser).map { _ ->
-                val token = getJWT(addUserRequest.id)
-                AddUserResponse(token)
-            }
-        }
+        val token = jwtService.createToken(subject = request.id, role = request.role.name, expirationSeconds = 3600)
+
+        return AddUserResponse(accessToken = token)
     }
 
-    fun getJWT(userId: String): String {
-        val now = Instant.now()
-        val exp = now.plusSeconds(3600) // 1 hour expiration for dev tokens
-        val token =
-            Jwt.claims().subject(userId).issuer("ux-plugin").issuedAt(now.epochSecond).expiresAt(exp.epochSecond).sign()
-        return token
-    }
-}
+    @GetMapping("/jwt")
+    suspend fun getJWT(@RequestParam userId: String): GetJwtResponse {
+        val token = jwtService.createToken(subject = userId, role = UserRole.USER.name, expirationSeconds = 3600)
 
-/** Resource for user registration & JWT issuance. */
-@Path("/dev/user")
-@Consumes(MediaType.APPLICATION_JSON)
-@Produces(MediaType.APPLICATION_JSON)
-@IfBuildProfile("dev")
-@ApplicationScoped
-class AuthResource @Inject constructor(private val userManagementRepository: UserManagementRepository) {
-
-    @POST
-    @Path("/add")
-    suspend fun addUser(request: AddUserRequest): AddUserResponse {
-        return userManagementRepository.addUser(request).awaitSuspending()
-    }
-
-    @GET
-    @Path("/jwt")
-    suspend fun getJWT(@QueryParam("userId") userId: String): GetJwtResponse {
-        val token = userManagementRepository.getJWT(userId)
-        return GetJwtResponse(token)
+        return GetJwtResponse(accessToken = token)
     }
 }

@@ -1,57 +1,83 @@
 package com.plugin.features.auth.figma
 
-import io.smallrye.mutiny.Uni
-import jakarta.ws.rs.*
-import jakarta.ws.rs.core.MediaType
-import org.eclipse.microprofile.rest.client.inject.RegisterRestClient
+import java.util.Base64
+import org.springframework.http.MediaType
+import org.springframework.stereotype.Component
+import org.springframework.util.LinkedMultiValueMap
+import org.springframework.web.reactive.function.BodyInserters
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
 
-/** REST client for Figma API */
-@RegisterRestClient(configKey = "figma-api")
-@Produces(MediaType.APPLICATION_JSON)
-interface FigmaRestClient {
+@Component
+class FigmaAuthClient(private val webClientBuilder: WebClient.Builder) {
 
-    @POST
-    @Path("/v1/oauth/token")
-    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
-    fun exchangeToken(
-        @HeaderParam("Authorization") authorization: String,
-        formData: String, // Send the form data string
-    ): Uni<FigmaOAuthTokenResponse>
+    private val webClient = webClientBuilder.baseUrl("https://api.figma.com").build()
 
-    @POST
-    @Path("/v1/oauth/token")
-    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
-    fun refreshToken(
-        @HeaderParam("Authorization") authorization: String,
-        @FormParam("refresh_token") refreshToken: String,
-        @FormParam("grant_type") grantType: String,
-    ): Uni<FigmaRefreshTokenResponse>
+    suspend fun exchangeToken(
+        clientId: String,
+        clientSecret: String,
+        code: String,
+        redirectUri: String,
+    ): FigmaOAuthTokenResponse {
+        val credentials = "$clientId:$clientSecret"
+        val encodedCredentials = Base64.getEncoder().encodeToString(credentials.toByteArray())
+        val authHeader = "Basic $encodedCredentials"
 
-    @GET
-    @Path("/v1/me")
-    @Consumes(MediaType.APPLICATION_JSON)
-    fun getMe(@HeaderParam("Authorization") authorization: String): Uni<FigmaUser>
+        val formData =
+            LinkedMultiValueMap<String, String>().apply {
+                add("redirect_uri", redirectUri)
+                add("code", code)
+                add("grant_type", "authorization_code")
+            }
+
+        return webClient
+            .post()
+            .uri("/v1/oauth/token")
+            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+            .header("Authorization", authHeader)
+            .body(BodyInserters.fromFormData(formData))
+            .retrieve()
+            .awaitBody<FigmaOAuthTokenResponse>()
+    }
+
+    suspend fun refreshToken(
+        clientId: String,
+        clientSecret: String,
+        refreshToken: String,
+    ): FigmaRefreshTokenResponse {
+        val credentials = "$clientId:$clientSecret"
+        val encodedCredentials = Base64.getEncoder().encodeToString(credentials.toByteArray())
+        val authHeader = "Basic $encodedCredentials"
+
+        val formData =
+            LinkedMultiValueMap<String, String>().apply {
+                add("refresh_token", refreshToken)
+                add("grant_type", "refresh_token")
+            }
+
+        return webClient
+            .post()
+            .uri("/v1/oauth/token")
+            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+            .header("Authorization", authHeader)
+            .body(BodyInserters.fromFormData(formData))
+            .retrieve()
+            .awaitBody<FigmaRefreshTokenResponse>()
+    }
 }
 
-/** Figma access scopes */
-enum class FigmaAccessScope(val value: String) {
-    CURRENT_USER_READ("current_user:read"),
-    FILE_COMMENTS_READ("file_comments:read"),
-    FILE_COMMENTS_WRITE("file_comments:write"),
-    FILE_CONTENT_READ("file_content:read"),
-    FILE_DEV_RESOURCES_READ("file_dev_resources:read"),
-    FILE_DEV_RESOURCES_WRITE("file_dev_resources:write"),
-    FILE_METADATA_READ("file_metadata:read"),
-    FILE_VARIABLES_READ("file_variables:read"),
-    FILE_VARIABLES_WRITE("file_variables:write"),
-    FILE_VERSIONS_READ("file_versions:read"),
-    LIBRARY_ANALYTICS_READ("library_analytics:read"),
-    LIBRARY_ASSETS_READ("library_assets:read"),
-    LIBRARY_CONTENT_READ("library_content:read"),
-    ORG_ACTIVITY_LOG_READ("org:activity_log_read"),
-    ORG_DISCOVERY_READ("org:discovery_read"),
-    PROJECTS_READ("projects:read"),
-    TEAM_LIBRARY_CONTENT_READ("team_library_content:read"),
-    WEBHOOKS_READ("webhooks:read"),
-    WEBHOOKS_WRITE("webhooks:write"),
+@Component
+class FigmaApiClient(private val webClientBuilder: WebClient.Builder) {
+
+    private val webClient = webClientBuilder.baseUrl("https://api.figma.com").build()
+
+    suspend fun getMe(authorization: String): FigmaUser {
+        return webClient
+            .get()
+            .uri("/v1/me")
+            .header("Authorization", authorization)
+            .accept(MediaType.APPLICATION_JSON)
+            .retrieve()
+            .awaitBody<FigmaUser>()
+    }
 }

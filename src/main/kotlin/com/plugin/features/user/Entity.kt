@@ -1,51 +1,70 @@
 package com.plugin.features.user
 
 import com.plugin.features.auth.core.SocialProvider
-import io.quarkus.hibernate.reactive.panache.kotlin.PanacheCompanion
-import io.quarkus.hibernate.reactive.panache.kotlin.PanacheEntityBase
-import io.quarkus.security.jpa.Username
-import jakarta.persistence.*
 import java.time.Instant
-import javax.annotation.concurrent.Immutable
+import java.util.UUID
+import org.jetbrains.exposed.v1.core.Table
+import org.jetbrains.exposed.v1.javatime.timestamp
 
-/** Database entity for user configuration */
-@Entity
-@Table(name = "Users")
-class UserEntity : PanacheEntityBase {
+// --------------------
+// Exposed Entities
+// --------------------
 
-    @Id @GeneratedValue(strategy = GenerationType.UUID) lateinit var id: String
+data class UserEntity(
+    var id: String = UUID.randomUUID().toString(),
+    var username: String? = null,
+    var name: String = "",
+    var role: UserRole = UserRole.USER,
+    var refreshToken: String = "",
+    var refreshTokenExpiresAt: Instant = Instant.now(),
+    var createdAt: Instant = Instant.now(),
+    var allowSavingCompletions: Boolean = false,
+    var encryptionKey: String? = null,
+    var encryptionKeyExpiresAt: Instant? = null,
+    var port: Int? = null,
+)
 
-    @Column(nullable = true, unique = true) @Username lateinit var username: String
+data class SocialLoginEntity(
+    var id: String = UUID.randomUUID().toString(),
+    var userId: String = "",
+    var providerUserId: String = "",
+    var provider: SocialProvider = SocialProvider.GITHUB,
+    var refreshToken: String = "",
+    var main: Boolean = false,
+    var refreshTokenExpiresAt: Instant = Instant.now(),
+)
 
-    @Column(nullable = false) lateinit var name: String
+// --------------------
+// Exposed Tables
+// --------------------
 
-    @Column(nullable = false, columnDefinition = "user_roles") @Enumerated(EnumType.STRING) lateinit var role: UserRole
+object UsersTable : Table("users") {
+    val id = varchar("id", 255)
+    val username = varchar("username", 255).nullable()
+    val name = varchar("name", 255)
+    val role = customEnumeration("role", "user_roles", { value -> UserRole.valueOf(value as String) }, { it })
+    val refreshToken = varchar("refresh_token", 255)
+    val refreshTokenExpiresAt = timestamp("refresh_token_expires_at")
+    val createdAt = timestamp("created_at")
+    val allowSavingCompletions = bool("allow_saving_completions")
+    val encryptionKey = varchar("encryption_key", 255).nullable()
+    val encryptionKeyExpiresAt = timestamp("encryption_key_expires_at").nullable()
+    val port = integer("port").nullable()
 
-    @Column(nullable = false) var allowSavingCompletions: Boolean = false
-
-    @Column(nullable = false) var createdAt: Instant = Instant.now()
-
-    @Column(nullable = true) var encryptionKey: String? = null
-
-    @Column(nullable = true) var encryptionKeyExpiresAt: Instant? = null
-
-    @Column(nullable = true) var port: Int? = null
-
-    companion object : PanacheCompanion<UserEntity> {}
+    override val primaryKey = PrimaryKey(id)
 }
 
-@Entity
-@Immutable
-@Table(name = "SocialLogins")
-class SocialLogins : PanacheEntityBase {
-    @Id lateinit var id: String
-    @Column(nullable = false) lateinit var userId: String
-    @Column(nullable = false, unique = true) lateinit var providerUserId: String
-    @Column(nullable = false, columnDefinition = "social_providers")
-    @Enumerated(EnumType.STRING)
-    lateinit var provider: SocialProvider
+object SocialLoginsTable : Table("social_logins") {
+    val id = varchar("id", 255)
+    val userId = varchar("user_id", 255).references(UsersTable.id)
+    val providerUserId = varchar("provider_user_id", 255)
+    val provider =
+        customEnumeration("provider", "social_providers", { value -> SocialProvider.valueOf(value as String) }, { it })
+    val refreshToken = varchar("refresh_token", 255)
+    val main = bool("main")
+    val refreshTokenExpiresAt = timestamp("refresh_token_expires_at")
 
-    companion object : PanacheCompanion<SocialLogins> {}
+    override val primaryKey = PrimaryKey(id)
 }
 
 enum class UserRole {

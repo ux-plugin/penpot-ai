@@ -1,120 +1,175 @@
 package com.plugin.features.user
 
-import com.plugin.features.auth.core.SocialLoginEntity
-import io.quarkus.hibernate.reactive.panache.Panache.withTransaction
-import io.quarkus.hibernate.reactive.panache.common.WithSession
-import io.quarkus.hibernate.reactive.panache.kotlin.PanacheRepository
-import io.smallrye.mutiny.Uni
-import jakarta.enterprise.context.ApplicationScoped
-import jakarta.ws.rs.NotFoundException
+import com.plugin.config.properties.UserProperties
+import com.plugin.features.auth.core.NotFoundException
 import java.time.Instant
-import org.eclipse.microprofile.config.inject.ConfigProperty
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.singleOrNull
+import kotlinx.coroutines.flow.toList
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.r2dbc.R2dbcDatabase
+import org.jetbrains.exposed.v1.r2dbc.deleteWhere
+import org.jetbrains.exposed.v1.r2dbc.insert
+import org.jetbrains.exposed.v1.r2dbc.selectAll
+import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.r2dbc.update
+import org.springframework.stereotype.Repository
 
-/** Repository implementation for user configurations using Panache */
-@ApplicationScoped
-class UserRepository(@param:ConfigProperty(name = "user.encryption-key-ttl-s") private val encryptionKeyTtl: Long) :
-    PanacheRepository<UserEntity> {
-    /**
-     * Get user configuration by user ID
-     *
-     * @param userId The ID of the user
-     * @return The user configuration
-     * @throws NotFoundException if the user configuration is not found
-     */
-    @WithSession
-    fun getUser(userId: String): Uni<GetUserResponse> {
-        return UserEntity.find("id", userId)
-            .project(GetUserResponse::class.java)
-            .firstResult()
-            .onItem()
-            .ifNull()
-            .failWith(NotFoundException("User $userId not found"))
-            .map { it }
-    }
+@Repository
+class UserRepository(private val database: R2dbcDatabase, private val userProperties: UserProperties) {
 
-    /**
-     * Update user configuration
-     *
-     * @param userId The id of the user
-     * @param userUpdate The user configuration to update
-     * @return The updated user configuration
-     * @throws NotFoundException if the user configuration is not found
-     */
-    @WithSession
-    fun updateUser(userId: String, userUpdate: UpdateUserRequest): Uni<Unit> {
-        return withTransaction {
-            find("id", userId)
-                .firstResult()
-                .onItem()
-                .ifNull()
-                .failWith(NotFoundException("User $userId not found"))
-                .chain { existingUser ->
-                    val newUserEntity = existingUser as UserEntity
-
-                    userUpdate.username?.let { newUserEntity.username = it }
-                    userUpdate.name?.let { newUserEntity.name = it }
-                    userUpdate.allowSavingCompletions?.let { newUserEntity.allowSavingCompletions = it }
-
-                    persistAndFlush(newUserEntity)
-                }
-                .map { it }
-                .replaceWith(Unit)
+    suspend fun getUser(userId: String): GetUserResponse =
+        suspendTransaction(database) {
+            UsersTable.selectAll()
+                .where { UsersTable.id eq userId }
+                .map { it.toUserEntity() }
+                .singleOrNull()
+                ?.let {
+                    GetUserResponse(
+                        id = it.id,
+                        username = it.username,
+                        name = it.name,
+                        role = it.role,
+                        allowSavingCompletions = it.allowSavingCompletions,
+                        port = it.port
+                    )
+                } ?: throw NotFoundException("User $userId not found")
         }
-    }
 
-    @WithSession
-    fun deleteUser(userId: String): Uni<Unit> {
-        return delete("id", userId).map { it }.replaceWith(Unit)
-    }
+    suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) =
+        suspendTransaction(database) {
+            val user =
+                UsersTable.selectAll().where { UsersTable.id eq userId }.map { it.toUserEntity() }.singleOrNull()
+                    ?: throw NotFoundException("User $userId not found")
 
-    @WithSession
-    fun getSocialLogins(userId: String): Uni<GetSocialLoginsResponse> {
-        return SocialLoginEntity.find("userId", userId).project(SocialLogin::class.java).list()
-    }
+            val newUsername = userUpdate.username ?: user.username
+            val newName = userUpdate.name ?: user.name
+            val newAllowSaving = userUpdate.allowSavingCompletions ?: user.allowSavingCompletions
 
-    @WithSession
-    fun getEncryptionKey(userId: String): Uni<EncryptionKeyResponse?> {
-        return find("id", userId).firstResult().map { user ->
-            if (user?.encryptionKey != null && user.encryptionKeyExpiresAt?.isAfter(Instant.now()) == true) {
-                EncryptionKeyResponse(key = user.encryptionKey!!, expiresAt = user.encryptionKeyExpiresAt!!)
+            UsersTable.update({ UsersTable.id eq userId }) {
+                it[username] = newUsername
+                it[name] = newName
+                it[allowSavingCompletions] = newAllowSaving
+            }
+        }
+
+    suspend fun deleteUser(userId: String) =
+        suspendTransaction(database) { UsersTable.deleteWhere { UsersTable.id eq userId } }
+
+    suspend fun getSocialLogins(userId: String): GetSocialLoginsResponse =
+        suspendTransaction(database) {
+            val logins =
+                SocialLoginsTable.selectAll()
+                    .where { SocialLoginsTable.userId eq userId }
+                    .map { it.toSocialLoginEntity() }
+                    .toList()
+
+            GetSocialLoginsResponse(logins.map { SocialLogin(it.id, it.provider) })
+        }
+
+    suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? =
+        suspendTransaction(database) {
+            UsersTable.selectAll()
+                .where { UsersTable.id eq userId }
+                .map { it.toUserEntity() }
+                .singleOrNull()
+                ?.let { user ->
+                    if (user.encryptionKey != null && user.encryptionKeyExpiresAt?.isAfter(Instant.now()) == true) {
+                        EncryptionKeyResponse(user.encryptionKey!!, user.encryptionKeyExpiresAt!!)
+                    } else null
+                } ?: throw NotFoundException("User $userId not found")
+        }
+
+    suspend fun saveEncryptionKey(userId: String, encryptionKey: String): EncryptionKeyResponse =
+        suspendTransaction(database) {
+            val expiresAt = Instant.now().plusSeconds(userProperties.encryptionKeyTtlS)
+
+            val updated =
+                UsersTable.update({ UsersTable.id eq userId }) {
+                    it[UsersTable.encryptionKey] = encryptionKey
+                    it[UsersTable.encryptionKeyExpiresAt] = expiresAt
+                }
+
+            if (updated == 0) throw NotFoundException("User $userId not found")
+            EncryptionKeyResponse(encryptionKey, expiresAt)
+        }
+
+    suspend fun getPort(userId: String): PortState? =
+        suspendTransaction(database) {
+            UsersTable.selectAll()
+                .where { UsersTable.id eq userId }
+                .map { it[UsersTable.port] }
+                .singleOrNull()
+                ?.let { port -> PortState(port) }
+        }
+
+    suspend fun savePort(userId: String, portState: PortState) =
+        suspendTransaction(database) {
+            val updated = UsersTable.update({ UsersTable.id eq userId }) { it[port] = portState.port }
+            if (updated == 0) throw NotFoundException("User $userId not found")
+        }
+
+    // Utility: Insert or update a user (used in dev resource)
+    suspend fun save(entity: UserEntity): UserEntity =
+        suspendTransaction(database) {
+            val existing =
+                UsersTable.selectAll().where { UsersTable.id eq entity.id }.map { it.toUserEntity() }.singleOrNull()
+
+            if (existing == null) {
+                UsersTable.insert {
+                    it[id] = entity.id
+                    it[username] = entity.username
+                    it[name] = entity.name
+                    it[role] = entity.role
+                    it[refreshToken] = entity.refreshToken
+                    it[refreshTokenExpiresAt] = entity.refreshTokenExpiresAt
+                    it[createdAt] = entity.createdAt
+                    it[allowSavingCompletions] = entity.allowSavingCompletions
+                    it[encryptionKey] = entity.encryptionKey
+                    it[encryptionKeyExpiresAt] = entity.encryptionKeyExpiresAt
+                    it[port] = entity.port
+                }
             } else {
-                null
-            }
-        }
-    }
-
-    @WithSession
-    fun saveEncryptionKey(userId: String, encryptionKey: String): Uni<EncryptionKeyResponse> {
-        return withTransaction {
-            find("id", userId).firstResult().flatMap { user ->
-                if (user == null) {
-                    Uni.createFrom().failure(NotFoundException("user does not exist"))
-                } else {
-                    user.encryptionKey = encryptionKey
-                    val expiresAt = Instant.now().plusSeconds(encryptionKeyTtl)
-                    user.encryptionKeyExpiresAt = expiresAt
-                    persistAndFlush(user).map { EncryptionKeyResponse(encryptionKey, expiresAt) }
+                UsersTable.update({ UsersTable.id eq entity.id }) {
+                    it[username] = entity.username
+                    it[name] = entity.name
+                    it[role] = entity.role
+                    it[refreshToken] = entity.refreshToken
+                    it[refreshTokenExpiresAt] = entity.refreshTokenExpiresAt
+                    it[allowSavingCompletions] = entity.allowSavingCompletions
+                    it[encryptionKey] = entity.encryptionKey
+                    it[encryptionKeyExpiresAt] = entity.encryptionKeyExpiresAt
+                    it[port] = entity.port
                 }
             }
+            entity
         }
-    }
 
-    @WithSession
-    fun getPort(userId: String): Uni<PortState?> {
-        return find("id", userId).firstResult().map { user -> user?.port?.let { PortState(it) } }
-    }
+    // --------- Mappers ---------
+    private fun ResultRow.toUserEntity() =
+        UserEntity(
+            id = this[UsersTable.id],
+            username = this[UsersTable.username],
+            name = this[UsersTable.name],
+            role = this[UsersTable.role],
+            refreshToken = this[UsersTable.refreshToken],
+            refreshTokenExpiresAt = this[UsersTable.refreshTokenExpiresAt],
+            createdAt = this[UsersTable.createdAt],
+            allowSavingCompletions = this[UsersTable.allowSavingCompletions],
+            encryptionKey = this[UsersTable.encryptionKey],
+            encryptionKeyExpiresAt = this[UsersTable.encryptionKeyExpiresAt],
+            port = this[UsersTable.port],
+        )
 
-    @WithSession
-    fun savePort(userId: String, portState: PortState): Uni<Void> {
-        return withTransaction {
-            find("id", userId).firstResult().flatMap { user ->
-                if (user == null) {
-                    Uni.createFrom().failure(NotFoundException("user does not exist"))
-                } else {
-                    user.port = portState.port
-                    persistAndFlush(user).replaceWithVoid()
-                }
-            }
-        }
-    }
+    private fun ResultRow.toSocialLoginEntity() =
+        SocialLoginEntity(
+            id = this[SocialLoginsTable.id],
+            userId = this[SocialLoginsTable.userId],
+            providerUserId = this[SocialLoginsTable.providerUserId],
+            provider = this[SocialLoginsTable.provider],
+            refreshToken = this[SocialLoginsTable.refreshToken],
+            main = this[SocialLoginsTable.main],
+            refreshTokenExpiresAt = this[SocialLoginsTable.refreshTokenExpiresAt],
+        )
 }

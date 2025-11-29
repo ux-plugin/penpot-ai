@@ -1,10 +1,14 @@
 package com.plugin.features.user
 
+import com.plugin.features.auth.core.SocialProvider
+
 data class GetUserResponse(
     val id: String,
     val name: String,
     val username: String?,
+    val role: UserRole,
     val allowSavingCompletions: Boolean,
+    val port: Int?
 )
 
 data class UpdateUserRequest(
@@ -13,10 +17,10 @@ data class UpdateUserRequest(
     val allowSavingCompletions: Boolean?,
 )
 
-data class SocialLogin(val provider: String, val id: String, val providerUserId: String)
+data class SocialLogin(val id: String, val provider: SocialProvider)
 
-typealias GetSocialLoginsResponse = List<SocialLogin>
+data class GetSocialLoginsResponse(val logins: List<SocialLogin>)
 
 data class EncryptionKeyResponse(val key: String, val expiresAt: java.time.Instant)
 
-data class PortState(val port: Int?)
+data class PortState(val port: Int)

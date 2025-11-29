@@ -1,197 +1,161 @@
 package com.plugin.features.user
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import io.quarkus.logging.Log
-import io.quarkus.redis.datasource.ReactiveRedisDataSource
-import io.quarkus.redis.datasource.pubsub.ReactivePubSubCommands
-import io.quarkus.security.Authenticated
-import io.smallrye.mutiny.coroutines.awaitSuspending
-import jakarta.enterprise.context.ApplicationScoped
-import jakarta.inject.Inject
-import jakarta.ws.rs.*
-import jakarta.ws.rs.core.MediaType
-import jakarta.ws.rs.core.Response
+import com.plugin.config.properties.UserProperties
+import com.plugin.features.auth.core.NotFoundException
 import java.util.*
 import javax.crypto.KeyGenerator
-import org.eclipse.microprofile.config.inject.ConfigProperty
-import org.eclipse.microprofile.jwt.JsonWebToken
+import org.springframework.data.redis.core.ReactiveRedisTemplate
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.security.oauth2.jwt.Jwt
+import org.springframework.stereotype.Service
+import org.springframework.web.bind.annotation.*
 
-/** Service for managing user configurations */
-@ApplicationScoped
-class UserService
-@Inject
-constructor(
-    private val userRepository: UserRepository,
-    val redis: ReactiveRedisDataSource,
+@Service
+class UserService(
+    val userRepository: UserRepository,
+    val reactiveRedisTemplate: ReactiveRedisTemplate<String, PortState>,
+    private val userProperties: UserProperties
 ) {
 
-    @ConfigProperty(name = "user.companion-app-key-prefix") lateinit var companionAppKeyPrefix: String
-
-    val portConfigPubSub: ReactivePubSubCommands<PortState> = redis.pubsub(PortState::class.java)
-
     suspend fun getUser(userId: String): GetUserResponse {
-        return userRepository.getUser(userId).awaitSuspending()
+        return userRepository.getUser(userId)
     }
 
     suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
-        userRepository.updateUser(userId, userUpdate).awaitSuspending()
+        userRepository.updateUser(userId, userUpdate)
     }
 
     suspend fun deleteUser(userId: String) {
-        userRepository.deleteUser(userId).awaitSuspending()
+        userRepository.deleteUser(userId)
     }
 
     suspend fun getSocialProfiles(userId: String): GetSocialLoginsResponse {
-        return userRepository.getSocialLogins(userId).awaitSuspending()
+        return userRepository.getSocialLogins(userId)
     }
 
     suspend fun getCurrentPort(userId: String): PortState? {
-        return userRepository.getPort(userId).awaitSuspending()
+        val someone = "LLC"
+        val port = userRepository.getPort(userId)
+        return port
     }
 
     suspend fun updatePort(userId: String, portState: PortState) {
-        // First, persist to database
-        userRepository.savePort(userId, portState).awaitSuspending()
-
-        // Then broadcast to Redis using pub/sub
-        portConfigPubSub.publish(companionAppKeyPrefix + userId, portState).awaitSuspending()
+        userRepository.savePort(userId, portState)
+        // Publish to Redis with proper error handling
+        try {
+            reactiveRedisTemplate.convertAndSend(userProperties.companionAppKeyPrefix + userId, portState).subscribe()
+        } catch (e: Exception) {
+            // Log error but don't fail the operation
+            println("Failed to publish port state to Redis: ${e.message}")
+        }
     }
 
     suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? {
-        return userRepository.getEncryptionKey(userId).awaitSuspending()
+        return userRepository.getEncryptionKey(userId)
     }
 
     suspend fun createEncryptionKey(userId: String): EncryptionKeyResponse {
         val keyGenerator = KeyGenerator.getInstance("AES")
         keyGenerator.init(256)
         val secretKey = keyGenerator.generateKey()
-
         val encryptionKey = Base64.getEncoder().encodeToString(secretKey.encoded)
-
-        return userRepository.saveEncryptionKey(userId, encryptionKey).awaitSuspending()
+        return userRepository.saveEncryptionKey(userId, encryptionKey)
     }
 }
 
-@Path("/user")
-@Produces(MediaType.APPLICATION_JSON)
-@ApplicationScoped
-@Authenticated
-class UserResource
-@Inject
-constructor(
-    private val userService: UserService,
-    private val jsonWebToken: JsonWebToken,
-    val objectMapper: ObjectMapper
-) {
+@RestController
+@RequestMapping("/user")
+class UserResource(private val userService: UserService) {
 
-    @GET
-    @Path("/info")
-    suspend fun getUser(): Response {
-        val userId = jsonWebToken.subject
-
+    @GetMapping("/info")
+    suspend fun getUser(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             val user = userService.getUser(userId)
-            Response.ok(user).build()
+            ResponseEntity.ok(user)
         } catch (e: NotFoundException) {
-            Log.error("Error $userId not found. $e")
-            Response.status(Response.Status.NOT_FOUND).build()
+            ResponseEntity.status(HttpStatus.NOT_FOUND).build<Unit>()
         } catch (e: Exception) {
-            Log.error("Failed to get user info.", e)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         }
     }
 
-    /** Update user configuration */
-    @POST
-    @Path("/update")
-    suspend fun updateUser(userUpdate: UpdateUserRequest): Response {
-        val userId = jsonWebToken.subject
-
+    @PostMapping("/update")
+    suspend fun updateUser(
+        @AuthenticationPrincipal jwt: Jwt,
+        @RequestBody userUpdate: UpdateUserRequest
+    ): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             userService.updateUser(userId, userUpdate)
-            Response.ok().build()
+            ResponseEntity.ok().build<Unit>()
         } catch (e: NotFoundException) {
-            Response.status(Response.Status.NOT_FOUND).build()
+            ResponseEntity.status(HttpStatus.NOT_FOUND).build<Unit>()
         } catch (e: Exception) {
-            Log.error("Failed to update user info.", e)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         }
     }
 
-    @DELETE
-    @Path("/delete")
-    suspend fun deleteUser(): Response {
-        val userId = jsonWebToken.subject
-
+    @DeleteMapping("/delete")
+    suspend fun deleteUser(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             userService.deleteUser(userId)
-            Response.ok().build()
+            ResponseEntity.ok().build<Unit>()
         } catch (e: NotFoundException) {
-            Response.status(Response.Status.NOT_FOUND).build()
+            ResponseEntity.status(HttpStatus.NOT_FOUND).build<Unit>()
         } catch (e: SecurityException) {
-            Response.status(Response.Status.UNAUTHORIZED).build()
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Unit>()
         } catch (e: Exception) {
-            Log.error("Failed to delete user", e)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         }
     }
 
-    @GET
-    @Path("/socials")
-    suspend fun getSocialUser(): Response {
-        val userId = jsonWebToken.subject
-
+    @GetMapping("/socials")
+    suspend fun getSocialUser(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             val profiles = userService.getSocialProfiles(userId)
-            Response.ok(profiles).build()
+            ResponseEntity.ok(profiles)
         } catch (e: Exception) {
-            Log.error("Failed to get social profiles", e)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         }
     }
 
-    @Path("/key")
-    @POST
-    @Consumes(MediaType.WILDCARD)
-    suspend fun generateKey(): Response {
-        val userId = jsonWebToken.subject
+    @PostMapping("/key")
+    suspend fun generateKey(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             val key = userService.createEncryptionKey(userId)
-            Response.ok(key).build()
-        } catch (t: Throwable) {
-            if (t is NotFoundException) {
-                Response.status(Response.Status.NOT_FOUND).entity("User not found").build()
-            } else {
-                Log.error("Error generating encryption key", t)
-                Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Internal server error").build()
-            }
+            ResponseEntity.ok(key)
+        } catch (e: NotFoundException) {
+            ResponseEntity.status(HttpStatus.NOT_FOUND).body("User not found")
+        } catch (e: Exception) {
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Internal server error")
         }
     }
 
-    @Path("/key")
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    suspend fun getKey(): Response {
-        val userId = jsonWebToken.subject
+    @GetMapping("/key")
+    suspend fun getKey(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             val key = userService.getEncryptionKey(userId)
-            Response.ok(key).build()
-        } catch (t: Throwable) {
-            Log.error("Error getting encryption key", t)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Internal server error").build()
+            ResponseEntity.ok(key)
+        } catch (e: Exception) {
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Internal server error")
         }
     }
 
-    @Path("/port")
-    @POST
-    suspend fun updatePort(portState: PortState): Response {
-        val userId = jsonWebToken.subject
+    @PostMapping("/port")
+    suspend fun updatePort(@AuthenticationPrincipal jwt: Jwt, @RequestBody portState: PortState): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             userService.updatePort(userId, portState)
-            Response.ok().build()
+            ResponseEntity.ok().build<Unit>()
         } catch (e: Exception) {
-            Log.error("Failed to update port", e)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         }
     }
 }

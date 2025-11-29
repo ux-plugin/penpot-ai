@@ -1,121 +1,90 @@
 package com.plugin.features.auth.github
 
-import com.plugin.features.auth.core.AccessTokenResponse
-import com.plugin.features.auth.core.AccountAlreadyLinkedException
-import com.plugin.features.auth.core.ConnectSocialProviderResponse
-import com.plugin.features.auth.core.ConnectSocialProviderResult
-import io.quarkus.logging.Log
-import io.quarkus.security.Authenticated
-import jakarta.enterprise.context.ApplicationScoped
-import jakarta.inject.Inject
-import jakarta.ws.rs.*
-import jakarta.ws.rs.core.MediaType
-import jakarta.ws.rs.core.Response
-import org.eclipse.microprofile.jwt.JsonWebToken
+import com.plugin.features.auth.core.*
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.security.oauth2.jwt.Jwt
+import org.springframework.web.bind.annotation.*
 
-/** REST resource for handling GitHub OAuth authentication. */
-@Path("/auth/github")
-@Produces(MediaType.APPLICATION_JSON)
-@Consumes(MediaType.APPLICATION_JSON)
-@ApplicationScoped
-class GitHubAuthResource
-@Inject
-constructor(
+@RestController
+@RequestMapping("/auth/github")
+class GitHubAuthResource(
     private val githubAuthService: GitHubAuthService,
-    private val jsonWebToken: JsonWebToken,
 ) {
 
-    @GET
-    @Path("/login")
-    suspend fun login(): Response {
+    @GetMapping("/login")
+    suspend fun login(): ResponseEntity<*> {
         return try {
             val response = githubAuthService.login()
-            Response.ok(response).build()
+            ResponseEntity.ok(response)
         } catch (e: Exception) {
-            Log.error("Failed to login", e)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Failed to login").build()
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to login")
         }
     }
 
-    @GET
-    @Path("/callback")
+    @GetMapping("/callback")
     suspend fun callback(
-        @QueryParam("code") code: String,
-        @QueryParam("state") state: String,
-    ): Response {
+        @RequestParam code: String,
+        @RequestParam state: String,
+    ): ResponseEntity<*> {
         return try {
             githubAuthService.authenticateUser(state, code)
-            Response.ok().build()
+            ResponseEntity.ok().build<Unit>()
         } catch (e: Exception) {
-            Log.error("Failed to authenticate", e)
-            Response.status(Response.Status.BAD_REQUEST).entity("Failed to authenticate").build()
+            ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Failed to authenticate")
         }
     }
 
-    @GET
-    @Path("/access-token")
-    @Authenticated
-    open suspend fun getAppAccessToken(): Response {
-        val readToken = jsonWebToken.subject
+    @GetMapping("/access-token")
+    suspend fun getAppAccessToken(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val readToken = jwt.subject
         val token = githubAuthService.readAccessToken(readToken)
-        return if (token == null || token.value == null) {
-            Log.error("Produced access token is null")
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+        return if (token == null || token.second.isEmpty()) {
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         } else {
-            Response.ok(AccessTokenResponse(token.value)).build()
+            ResponseEntity.ok(AccessTokenResponse(token.second))
         }
     }
 
-    @GET
-    @Path("/connect/init")
-    @Authenticated
-    open suspend fun connectInit(): Response {
-        val userId = jsonWebToken.subject
+    @GetMapping("/connect/init")
+    suspend fun connectInit(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             val connectResponse = githubAuthService.connectInitiate(userId)
-            Response.ok(connectResponse).build()
+            ResponseEntity.ok(connectResponse)
         } catch (e: Exception) {
-            Log.error("Failed to authenticate", e)
-            Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Failed to authenticate").build()
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to authenticate")
         }
     }
 
-    @GET
-    @Path("/connect/callback")
-    open suspend fun connectCallback(
-        @QueryParam("code") code: String,
-        @QueryParam("state") state: String,
-    ): Response {
+    @GetMapping("/connect/callback")
+    suspend fun connectCallback(
+        @RequestParam code: String,
+        @RequestParam state: String,
+    ): ResponseEntity<*> {
         return try {
-            val connectResponse = githubAuthService.connectSocialProfile(code = code, state = state)
-            Response.ok(connectResponse).build()
+            githubAuthService.connectSocialProfile(code = code, state = state)
+            ResponseEntity.ok().build<Unit>()
+        } catch (e: AccountAlreadyLinkedException) {
+            ResponseEntity.status(HttpStatus.CONFLICT).body("Account already linked.")
         } catch (e: Exception) {
-            when (e) {
-                is AccountAlreadyLinkedException ->
-                    Response.status(Response.Status.CONFLICT).entity("Account already linked.").build()
-                else -> {
-                    Log.error("Failed to link social login", e)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity("Failed to link account").build()
-                }
-            }
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to link account")
         }
     }
 
-    @GET
-    @Path("/connect/result")
-    @Authenticated
-    open suspend fun connectResult(): Response {
-        val userId = jsonWebToken.subject
-        try {
+    @GetMapping("/connect/result")
+    suspend fun connectResult(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val userId = jwt.subject
+        return try {
             val result = githubAuthService.getConnectResult(userId)
-            if (result == null || result.value != ConnectSocialProviderResult.SUCCESS.value) {
-                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            if (result == null || result.second != ConnectSocialProviderResult.SUCCESS.value) {
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
+            } else {
+                ResponseEntity.ok(ConnectSocialProviderResponse(result = ConnectSocialProviderResult.SUCCESS.value))
             }
-            return Response.ok(ConnectSocialProviderResponse(result = ConnectSocialProviderResult.SUCCESS.value))
-                .build()
         } catch (e: Exception) {
-            Log.error("Failed to get connect result", e)
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         }
     }
 }

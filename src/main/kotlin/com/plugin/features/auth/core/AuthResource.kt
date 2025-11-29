@@ -1,155 +1,108 @@
 package com.plugin.features.auth.core
 
-import io.quarkus.logging.Log
-import io.quarkus.security.Authenticated
-import jakarta.enterprise.context.ApplicationScoped
-import jakarta.inject.Inject
-import jakarta.ws.rs.*
-import jakarta.ws.rs.core.Cookie
-import jakarta.ws.rs.core.MediaType
-import jakarta.ws.rs.core.NewCookie
-import jakarta.ws.rs.core.Response
-import java.util.Date
-import org.eclipse.microprofile.jwt.JsonWebToken
+import java.time.Duration
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseCookie
+import org.springframework.http.ResponseEntity
+import org.springframework.http.server.reactive.ServerHttpResponse
+import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.security.oauth2.jwt.Jwt
+import org.springframework.web.bind.annotation.*
 
-@Path("/auth")
-@Produces(MediaType.APPLICATION_JSON)
-@ApplicationScoped
-class AuthResource @Inject constructor(private val authService: AuthService, private val jsonWebToken: JsonWebToken) {
-    /** Refresh an access token */
-    @POST
-    @Path("/access-token/refresh")
+@RestController
+@RequestMapping("/auth")
+class AuthResource(private val authService: AuthService) {
+
+    @PostMapping("/access-token/refresh")
     suspend fun refreshAccessToken(
-        @CookieParam("refresh_token") refreshTokenCookie: Cookie?,
-        @QueryParam("userId") userId: String,
-    ): Response {
-        // Check if a refresh token cookie exists
-        if (refreshTokenCookie == null || refreshTokenCookie.value.isNullOrEmpty()) {
-            return Response.status(Response.Status.UNAUTHORIZED)
-                .entity(AuthErrorResponse("Missing refresh token"))
-                .build()
+        @CookieValue(name = "refresh_token", required = false) refreshTokenCookie: String?,
+        @RequestParam userId: String
+    ): ResponseEntity<*> {
+        if (refreshTokenCookie.isNullOrEmpty()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(AuthErrorResponse("Missing refresh token"))
         }
 
-        val refreshTokenRequest = RefreshTokenRequest(refreshTokenCookie.value, userId)
+        val refreshTokenRequest = RefreshTokenRequest(refreshTokenCookie, userId)
 
         return try {
             val accessToken = authService.refreshToken(refreshTokenRequest)
-            Response.ok().entity(RefreshAccessTokenResponse(accessToken)).build()
+            ResponseEntity.ok(RefreshAccessTokenResponse(accessToken))
+        } catch (e: SecurityException) {
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(AuthErrorResponse())
         } catch (e: Exception) {
-            when (e) {
-                is SecurityException -> {
-                    Log.debug(e)
-                    Response.status(Response.Status.UNAUTHORIZED).entity(AuthErrorResponse()).build()
-                }
-                else -> {
-                    Log.error("Token refresh error", e)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity(AuthErrorResponse()).build()
-                }
-            }
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(AuthErrorResponse())
         }
     }
 
-    @GET
-    @Path("/refresh-token")
-    @Authenticated
-    open suspend fun getRefreshToken(): Response {
-        val userId: String = jsonWebToken.subject
+    @GetMapping("/refresh-token")
+    suspend fun getRefreshToken(@AuthenticationPrincipal jwt: Jwt, response: ServerHttpResponse): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             val refreshToken = authService.getRefreshToken(userId)
 
-            val refreshTokenCookie =
-                NewCookie.Builder("refresh_token")
-                    .value(refreshToken.refreshToken)
+            val cookie =
+                ResponseCookie.from("refresh_token", refreshToken.refreshToken)
                     .path("/")
-                    .expiry(Date.from(refreshToken.refreshTokenExpiresAt))
+                    .maxAge(Duration.between(java.time.Instant.now(), refreshToken.refreshTokenExpiresAt))
                     .httpOnly(true)
-                    .secure(true) // Requires HTTPS
+                    .secure(true)
                     .build()
 
-            Response.ok().cookie(refreshTokenCookie).build()
+            response.addCookie(cookie)
+            ResponseEntity.ok().build<Unit>()
+        } catch (e: NotFoundException) {
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Unit>()
+        } catch (e: SecurityException) {
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Unit>()
         } catch (e: Exception) {
-            when (e) {
-                is NotFoundException,
-                is SecurityException -> Response.status(Response.Status.UNAUTHORIZED).build()
-                else -> {
-                    Log.error("Failed to get refresh token", e)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
-                }
-            }
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         }
     }
 
-    @GET
-    @Path("/plugin-ui/refresh-token")
-    @Authenticated
-    open suspend fun getFigmaPluginRefreshToken(): Response {
-        val userId: String = jsonWebToken.subject
+    @GetMapping("/plugin-ui/refresh-token")
+    suspend fun getFigmaPluginRefreshToken(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             val refreshToken = authService.getRefreshToken(userId)
-
-            Response.ok(refreshToken).build()
+            ResponseEntity.ok(refreshToken)
+        } catch (e: NotFoundException) {
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Unit>()
+        } catch (e: SecurityException) {
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Unit>()
         } catch (e: Exception) {
-            when (e) {
-                is NotFoundException,
-                is SecurityException -> Response.status(Response.Status.UNAUTHORIZED).build()
-                else -> {
-                    Log.error("Failed to get refresh token", e)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).build()
-                }
-            }
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()
         }
     }
 
-    @POST
-    @Path("/plugin-ui/access-token/refresh")
-    suspend fun figmaPluginRefreshAccessToken(request: FigmaPluginRefreshAccessTokenRequest): Response {
+    @PostMapping("/plugin-ui/access-token/refresh")
+    suspend fun figmaPluginRefreshAccessToken(
+        @RequestBody request: FigmaPluginRefreshAccessTokenRequest
+    ): ResponseEntity<*> {
         val refreshTokenRequest = RefreshTokenRequest(request.refreshToken, request.userId)
 
         return try {
             val accessToken = authService.refreshToken(refreshTokenRequest)
-            Response.ok().entity(RefreshAccessTokenResponse(accessToken)).build()
+            ResponseEntity.ok(RefreshAccessTokenResponse(accessToken))
+        } catch (e: SecurityException) {
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(AuthErrorResponse())
         } catch (e: Exception) {
-            when (e) {
-                is SecurityException -> {
-                    Log.debug(e)
-                    Response.status(Response.Status.UNAUTHORIZED).entity(AuthErrorResponse()).build()
-                }
-                else -> {
-                    Log.error("Token refresh error", e)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity(AuthErrorResponse()).build()
-                }
-            }
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(AuthErrorResponse())
         }
     }
 
-    @DELETE
-    @Path("/socials/{id}/delete")
-    @Authenticated
-    suspend fun deleteSocialLogin(@QueryParam("id") id: String): Response {
-        val userId: String = jsonWebToken.subject
+    @DeleteMapping("/socials/{id}/delete")
+    suspend fun deleteSocialLogin(@AuthenticationPrincipal jwt: Jwt, @RequestParam id: String): ResponseEntity<*> {
+        val userId = jwt.subject
         return try {
             authService.deleteSocialLogin(userId, id)
-            Response.ok().build()
+            ResponseEntity.ok().build<Unit>()
+        } catch (e: NotAllowedException) {
+            ResponseEntity.status(HttpStatus.FORBIDDEN).body(AuthErrorResponse("Operation not allowed"))
+        } catch (e: NotFoundException) {
+            ResponseEntity.status(HttpStatus.NOT_FOUND).body(AuthErrorResponse("Could not find socialLogin"))
         } catch (e: Exception) {
-            when (e) {
-                is NotAllowedException -> {
-                    Log.debug(e)
-                    Response.status(Response.Status.FORBIDDEN)
-                        .entity(AuthErrorResponse("Operation not allowed"))
-                        .build()
-                }
-                is NotFoundException -> {
-                    Response.status(Response.Status.NOT_FOUND)
-                        .entity(AuthErrorResponse("Could not find socialLogin"))
-                        .build()
-                }
-                else -> {
-                    Log.error("Failed to delete social login", e)
-                    Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                        .entity(AuthErrorResponse("Could not delete socialLogin"))
-                        .build()
-                }
-            }
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(AuthErrorResponse("Could not delete socialLogin"))
         }
     }
 }
