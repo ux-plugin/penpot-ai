@@ -1,12 +1,12 @@
 package com.plugin.features.auth.github
 
 import com.plugin.config.JwtService
+import com.plugin.config.properties.AuthProperties
 import com.plugin.features.auth.core.*
-import org.springframework.beans.factory.annotation.Value
-import org.springframework.stereotype.Service
 import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
+import org.springframework.stereotype.Service
 
 @Service
 class GitHubAuthService(
@@ -15,41 +15,33 @@ class GitHubAuthService(
     private val authRepository: AuthRepository,
     private val redisRepository: RedisRepository,
     private val jwtService: JwtService,
-    @Value("\${auth.github.client-id}") private val clientId: String,
-    @Value("\${auth.github.client-secret}") private val clientSecret: String,
-    @Value("\${auth.github.login-redirect-uri}") private val loginRedirectUri: String,
-    @Value("\${auth.github.connect-redirect-uri}") private val connectRedirectUri: String,
-    @Value("\${auth.github.connect.result-key-prefix}") private val resultKeyPrefix: String,
-    @Value("\${auth.github.login.random-key.max-retries}") private val randomKeyGenerationMaxRetries: Int,
-    @Value("\${auth.github.login.timeout-sec}") private val loginTimeout: Long,
-    @Value("\${auth.github.rest-client.access-token.redis-key-prefix}") private val restClientAccessTokenKeyPrefix: String,
-    @Value("\${auth.github.read-token.redis-key-prefix}") private val readTokenPrefix: String,
-    @Value("\${auth.github.user-id.redis-key-prefix}") private val userIdPrefix: String,
-    @Value("\${auth.github.write-token.redis-key-prefix}") private val writeTokenPrefix: String,
-    @Value("\${auth.access-token-ttl-s}") private val accessTokenTtl: Long,
+    private val authProperties: AuthProperties,
 ) {
 
     suspend fun login(): OAuthInitResponse {
-        val readToken = redisRepository.generateUniqueKey(
-            readTokenPrefix,
-            randomKeyGenerationMaxRetries,
-            "",
-            2 * loginTimeout,
-        )
-        val writeToken = redisRepository.generateUniqueKey(
-            writeTokenPrefix,
-            randomKeyGenerationMaxRetries,
-            readToken,
-            2 * loginTimeout,
-        )
+        val readToken =
+            redisRepository.generateUniqueKey(
+                authProperties.github.readToken.redisKeyPrefix,
+                authProperties.github.login.randomKey.maxRetries,
+                "",
+                2 * authProperties.github.login.timeoutSec,
+            )
+        val writeToken =
+            redisRepository.generateUniqueKey(
+                authProperties.github.writeToken.redisKeyPrefix,
+                authProperties.github.login.randomKey.maxRetries,
+                readToken,
+                2 * authProperties.github.login.timeoutSec,
+            )
 
-        val readTokenJwt = jwtService.createToken(readToken, "GUEST", loginTimeout)
+        val readTokenJwt = jwtService.createToken(readToken, "GUEST", authProperties.github.login.timeoutSec)
 
-        val redirectUri = generateConnectUrl(
-            writeToken,
-            scopes = listOf(GitHubAccessScope.USER, GitHubAccessScope.USER_EMAIL),
-            redirectUri = loginRedirectUri,
-        )
+        val redirectUri =
+            generateConnectUrl(
+                writeToken,
+                scopes = listOf(GitHubAccessScope.USER, GitHubAccessScope.USER_EMAIL),
+                redirectUri = authProperties.github.loginRedirectUri,
+            )
         return OAuthInitResponse(readTokenJwt, redirectUri)
     }
 
@@ -58,41 +50,44 @@ class GitHubAuthService(
         scopes: List<GitHubAccessScope>,
         redirectUri: String,
     ): String {
-        return "https://github.com/login/oauth/authorize" +
-                "?client_id=${URLEncoder.encode(clientId, "UTF-8")}" +
-                "&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}" +
-                "&scope=${scopes.joinToString("%20") { URLEncoder.encode(it.value, "UTF-8") }}" +
-                "&state=${URLEncoder.encode(state, "UTF-8")}" +
-                "&allow_signup=true"
+        return buildString {
+            append("https://github.com/login/oauth/authorize")
+            append("?client_id=${URLEncoder.encode(authProperties.github.clientId, "UTF-8")}")
+            append("&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}")
+            append("&scope=${scopes.joinToString("%20") { URLEncoder.encode(it.value, "UTF-8") }}")
+            append("&state=${URLEncoder.encode(state, "UTF-8")}")
+            append("&allow_signup=true")
+        }
     }
 
     suspend fun exchangeCodeForToken(code: String, redirectUri: String): GitHubOAuthTokenResponse {
         return githubAuthClient.exchangeToken(
-            clientId = clientId,
-            clientSecret = clientSecret,
+            clientId = authProperties.github.clientId,
+            clientSecret = authProperties.github.clientSecret,
             code = code,
             redirectUri = redirectUri,
         )
     }
 
     suspend fun authenticateUser(state: String, code: String) {
-        val redisKey = writeTokenPrefix + state
-        val readToken = redisRepository.getValue(redisKey) 
-            ?: throw NotFoundException("Invalid state")
+        val redisKey = authProperties.github.writeToken.redisKeyPrefix + state
+        val readToken = redisRepository.getValue(redisKey) ?: throw NotFoundException("Invalid state")
 
-        val githubOAuthTokenResponse = exchangeCodeForToken(code = code, redirectUri = loginRedirectUri)
+        val githubOAuthTokenResponse =
+            exchangeCodeForToken(code = code, redirectUri = authProperties.github.loginRedirectUri)
         val userInfo = githubApiClient.getUser("Bearer ${githubOAuthTokenResponse.accessToken}")
 
         val refreshTokenExpiresAt = Instant.now().plusSeconds(githubOAuthTokenResponse.refreshTokenExpiresIn)
 
-        val user = authRepository.associateUserWithSocialProvider(
-            SocialProvider.GITHUB,
-            userInfo.id.toString(),
-            githubOAuthTokenResponse.refreshToken,
-            refreshTokenExpiresAt,
-        )
+        val user =
+            authRepository.associateUserWithSocialProvider(
+                SocialProvider.GITHUB,
+                userInfo.id.toString(),
+                githubOAuthTokenResponse.refreshToken,
+                refreshTokenExpiresAt,
+            )
 
-        val accessTokenKey = restClientAccessTokenKeyPrefix + user.id
+        val accessTokenKey = authProperties.github.restClient.accessToken.redisKeyPrefix + user.id
         redisRepository.setValueWithExpiration(
             accessTokenKey,
             githubOAuthTokenResponse.accessToken,
@@ -101,52 +96,57 @@ class GitHubAuthService(
 
         val appTokens = authRepository.createTokensForUser(user.id, role = user.role)
 
-        val queueName = restClientAccessTokenKeyPrefix + readToken
+        val queueName = authProperties.github.restClient.accessToken.redisKeyPrefix + readToken
         redisRepository.pushAccessToken(queueName, appTokens.accessToken)
     }
 
     suspend fun readAccessToken(readToken: String): Pair<String, String>? {
-        val queueName = restClientAccessTokenKeyPrefix + readToken
+        val queueName = authProperties.github.restClient.accessToken.redisKeyPrefix + readToken
         return redisRepository.readAccessToken(
             readToken = queueName,
-            timeout = Duration.ofSeconds(loginTimeout),
+            timeout = Duration.ofSeconds(authProperties.github.login.timeoutSec),
         )
     }
 
     suspend fun connectInitiate(userId: String): ConnectInitResponse {
-        val readToken = redisRepository.generateUniqueKey(
-            readTokenPrefix,
-            randomKeyGenerationMaxRetries,
-            "",
-            2 * loginTimeout,
-        )
-        val writeToken = redisRepository.generateUniqueKey(
-            writeTokenPrefix,
-            randomKeyGenerationMaxRetries,
-            readToken,
-            2 * loginTimeout,
-        )
+        val readToken =
+            redisRepository.generateUniqueKey(
+                authProperties.github.readToken.redisKeyPrefix,
+                authProperties.github.login.randomKey.maxRetries,
+                "",
+                2 * authProperties.github.login.timeoutSec,
+            )
+        val writeToken =
+            redisRepository.generateUniqueKey(
+                authProperties.github.writeToken.redisKeyPrefix,
+                authProperties.github.login.randomKey.maxRetries,
+                readToken,
+                2 * authProperties.github.login.timeoutSec,
+            )
         redisRepository.setValueWithExpiration(
-            userIdPrefix + writeToken,
+            authProperties.github.userId.resultKeyPrefix + writeToken,
             userId,
-            2 * loginTimeout,
+            2 * authProperties.github.login.timeoutSec,
         )
 
-        val redirectUri = generateConnectUrl(
-            writeToken,
-            scopes = listOf(GitHubAccessScope.USER, GitHubAccessScope.USER_EMAIL),
-            redirectUri = connectRedirectUri,
-        )
+        val redirectUri =
+            generateConnectUrl(
+                writeToken,
+                scopes = listOf(GitHubAccessScope.USER, GitHubAccessScope.USER_EMAIL),
+                redirectUri = authProperties.github.connectRedirectUri,
+            )
 
         return ConnectInitResponse(readToken, redirectUri)
     }
 
     suspend fun connectSocialProfile(code: String, state: String) {
-        val userId = redisRepository.getValue(userIdPrefix + state) 
-            ?: throw NotFoundException("Invalid state")
+        val userId =
+            redisRepository.getValue(authProperties.github.userId.resultKeyPrefix + state)
+                ?: throw NotFoundException("Invalid state")
 
         try {
-            val githubOAuthTokenResponse = exchangeCodeForToken(code = code, redirectUri = connectRedirectUri)
+            val githubOAuthTokenResponse =
+                exchangeCodeForToken(code = code, redirectUri = authProperties.github.connectRedirectUri)
             val userInfo = githubApiClient.getUser("Bearer ${githubOAuthTokenResponse.accessToken}")
             val refreshTokenExpiresAt = Instant.now().plusSeconds(githubOAuthTokenResponse.refreshTokenExpiresIn)
 
@@ -164,20 +164,20 @@ class GitHubAuthService(
                 )
             }
 
-            val queueName = resultKeyPrefix + userId
+            val queueName = authProperties.github.connect.resultKeyPrefix + userId
             redisRepository.pushAccessToken(queueName, ConnectSocialProviderResult.SUCCESS.value)
         } catch (e: Exception) {
-            val queueName = resultKeyPrefix + userId
+            val queueName = authProperties.github.connect.resultKeyPrefix + userId
             redisRepository.pushAccessToken(queueName, ConnectSocialProviderResult.FAILURE.value)
             throw e
         }
     }
 
     suspend fun getConnectResult(userId: String): Pair<String, String>? {
-        val queueName = resultKeyPrefix + userId
+        val queueName = authProperties.github.connect.resultKeyPrefix + userId
         return redisRepository.readAccessToken(
             readToken = queueName,
-            timeout = Duration.ofSeconds(loginTimeout),
+            timeout = Duration.ofSeconds(authProperties.github.login.timeoutSec),
         )
     }
 }

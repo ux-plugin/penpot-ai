@@ -1,16 +1,14 @@
 package com.plugin.features.auth.core
 
+import java.time.Duration
+import java.util.*
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import org.springframework.data.redis.core.ReactiveRedisTemplate
 import org.springframework.stereotype.Repository
-import java.time.Duration
-import java.util.*
 
 @Repository
-class RedisRepository(
-    private val reactiveRedisTemplate: ReactiveRedisTemplate<String, String>
-) {
+class RedisRepository(private val reactiveRedisTemplate: ReactiveRedisTemplate<String, String>) {
 
     suspend fun generateUniqueKey(
         prefix: String,
@@ -23,10 +21,12 @@ class RedisRepository(
             val uniqueToken = UUID.randomUUID().toString()
             val key = prefix + uniqueToken
             try {
-                val success = reactiveRedisTemplate.opsForValue()
-                    .setIfAbsent(key, valueOfKey, Duration.ofSeconds(expiresIn))
-                    .awaitSingle()
-                
+                val success =
+                    reactiveRedisTemplate
+                        .opsForValue()
+                        .setIfAbsent(key, valueOfKey, Duration.ofSeconds(expiresIn))
+                        .awaitSingle()
+
                 if (success) {
                     return uniqueToken
                 }
@@ -42,27 +42,22 @@ class RedisRepository(
         timeout: Duration,
     ): Pair<String, String>? {
         // Using rightPop with timeout for blocking operation
-        return reactiveRedisTemplate.opsForList()
+        return reactiveRedisTemplate
+            .opsForList()
             .rightPop(readToken, timeout)
             .map { value -> readToken to value }
             .awaitSingleOrNull()
     }
 
     suspend fun getValue(key: String): String? {
-        return reactiveRedisTemplate.opsForValue()
-            .get(key)
-            .awaitSingleOrNull()
+        return reactiveRedisTemplate.opsForValue().get(key).awaitSingleOrNull()
     }
 
     suspend fun setValueWithExpiration(key: String, value: String, expiresIn: Long) {
-        reactiveRedisTemplate.opsForValue()
-            .set(key, value, Duration.ofSeconds(expiresIn))
-            .awaitSingle()
+        reactiveRedisTemplate.opsForValue().set(key, value, Duration.ofSeconds(expiresIn)).awaitSingle()
     }
 
     suspend fun pushAccessToken(queueName: String, accessToken: String): Long {
-        return reactiveRedisTemplate.opsForList()
-            .leftPush(queueName, accessToken)
-            .awaitSingle()
+        return reactiveRedisTemplate.opsForList().leftPush(queueName, accessToken).awaitSingle()
     }
 }

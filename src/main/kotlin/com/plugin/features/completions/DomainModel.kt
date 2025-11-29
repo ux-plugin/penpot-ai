@@ -3,11 +3,7 @@ package com.plugin.features.completions
 import java.io.File
 
 /** Input for the AI agent pipeline */
-data class AgentPipelineInput(
-    val audioFile: File,
-    val cursorContext: String?,
-    val feId: String
-)
+data class AgentPipelineInput(val audioFile: File, val cursorContext: String?)
 
 /** Audio recording configuration */
 object AudioConfig {
@@ -60,10 +56,7 @@ object WavFileWriter {
     }
 
     private fun shortToLittleEndian(value: Int): ByteArray {
-        return byteArrayOf(
-            (value and 0xFF).toByte(),
-            (value shr 8 and 0xFF).toByte()
-        )
+        return byteArrayOf((value and 0xFF).toByte(), (value shr 8 and 0xFF).toByte())
     }
 }
 

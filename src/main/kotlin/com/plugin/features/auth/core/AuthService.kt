@@ -4,7 +4,7 @@ import org.springframework.stereotype.Service
 
 @Service
 class AuthService(private val authRepository: AuthRepository) {
-    
+
     suspend fun refreshToken(refreshTokenRequest: RefreshTokenRequest): String {
         return authRepository.refreshAccessToken(refreshTokenRequest)
     }

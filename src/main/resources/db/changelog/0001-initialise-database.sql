@@ -14,38 +14,28 @@ EXCEPTION
 END
 $$;
 
-CREATE
-OR REPLACE FUNCTION random_name()
-    RETURNS TEXT AS
-$$
-BEGIN
-RETURN 'User_' || substring(md5(random()::text), 1, 8);
-END
-$$
-LANGUAGE plpgsql;
-
 DO
 $$
 BEGIN
         RAISE
-NOTICE 'Creating table Users';
-CREATE TABLE Users
+NOTICE 'Creating table users';
+CREATE TABLE users
 (
-    id                     VARCHAR PRIMARY KEY,
-    username               VARCHAR UNIQUE,
-    name                   VARCHAR    NOT NULL DEFAULT random_name(),
-    role                   user_roles NOT NULL,
-    createdAt              TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    allowSavingCompletions BOOLEAN    NOT NULL DEFAULT FALSE,
-    encryptionKey          VARCHAR,
-    encryptionKeyExpiresAt TIMESTAMP,
-    refreshToken           VARCHAR,
-    refreshTokenExpiresAt  TIMESTAMP,
-    port                   INTEGER
+    id                         VARCHAR PRIMARY KEY,
+    username                   VARCHAR,
+    name                       VARCHAR    NOT NULL,
+    role                       user_roles NOT NULL,
+    created_at                 TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    allow_saving_completions   BOOLEAN    NOT NULL DEFAULT FALSE,
+    encryption_key             VARCHAR,
+    encryption_key_expires_at  TIMESTAMP,
+    refresh_token              VARCHAR,
+    refresh_token_expires_at   TIMESTAMP,
+    port                       INTEGER
 );
 Exception
         WHEN duplicate_object THEN
-            RAISE NOTICE 'Table Users already exists, skipping creation';
+            RAISE NOTICE 'Table users already exists, skipping creation';
 END
 $$;
 
@@ -54,19 +44,19 @@ DO
 $$
 BEGIN
         RAISE
-NOTICE 'Creating table ComponentCompletions';
-CREATE TABLE ComponentCompletions
+NOTICE 'Creating table component_completions';
+CREATE TABLE component_completions
 (
-    userId       VARCHAR,
-    CONSTRAINT fk_component_user FOREIGN KEY (userId) REFERENCES Users (id),
-    id           VARCHAR PRIMARY KEY,
-    prompt       TEXT      NOT NULL,
-    aiCompletion TEXT      NOT NULL,
-    createdAt    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    user_id       VARCHAR,
+    CONSTRAINT fk_component_user FOREIGN KEY (user_id) REFERENCES users (id),
+    id            VARCHAR PRIMARY KEY,
+    prompt        TEXT      NOT NULL,
+    ai_completion TEXT      NOT NULL,
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 Exception
         WHEN duplicate_object THEN
-            RAISE NOTICE 'Table ComponentCompletions already exists, skipping creation';
+            RAISE NOTICE 'Table component_completions already exists, skipping creation';
 END
 $$;
 
@@ -88,21 +78,21 @@ DO
 $$
 BEGIN
         RAISE
-NOTICE 'Creating table SocialLogins';
-CREATE TABLE SocialLogins
+NOTICE 'Creating table social_logins';
+CREATE TABLE social_logins
 (
-    id                    VARCHAR PRIMARY KEY,
-    providerUserId        VARCHAR UNIQUE   NOT NULL,
-    userId                VARCHAR          NOT NULL,
-    provider              social_providers NOT NULL,
-    refreshToken          VARCHAR,
-    refreshTokenExpiresAt TIMESTAMP        Not NULL,
-    main                  BOOLEAN          NOT NULL DEFAULT FALSE,
-    CONSTRAINT fk_social_user FOREIGN KEY (userId) REFERENCES Users (id)
+    id                        VARCHAR PRIMARY KEY,
+    provider_user_id          VARCHAR UNIQUE   NOT NULL,
+    user_id                   VARCHAR          NOT NULL,
+    provider                  social_providers NOT NULL,
+    refresh_token             VARCHAR,
+    refresh_token_expires_at  TIMESTAMP        Not NULL,
+    main                      BOOLEAN          NOT NULL DEFAULT FALSE,
+    CONSTRAINT fk_social_user FOREIGN KEY (user_id) REFERENCES users (id)
 );
 EXCEPTION
         WHEN duplicate_object THEN
-            RAISE NOTICE 'Table SocialLogins already exists, skipping creation';
+            RAISE NOTICE 'Table social_logins already exists, skipping creation';
 END
 $$;
 
@@ -111,11 +101,11 @@ DO
 $$
 BEGIN
         RAISE
-NOTICE 'Creating index idx_component_completions_userId_completionId';
-CREATE INDEX idx_component_completions_userId_completionId ON ComponentCompletions (userId, id);
+NOTICE 'Creating index idx_component_completions_user_id_id';
+CREATE INDEX idx_component_completions_user_id_id ON component_completions (user_id, id);
 EXCEPTION
         WHEN duplicate_object THEN
-            RAISE NOTICE 'Index idx_component_completions_userId_completionId already exists, skipping creation';
+            RAISE NOTICE 'Index idx_component_completions_user_id_id already exists, skipping creation';
 END
 $$;
 
@@ -123,10 +113,10 @@ DO
 $$
 BEGIN
         RAISE
-NOTICE 'Creating index idx_social_logins_userId';
-CREATE INDEX idx_social_logins_userId ON SocialLogins (userId);
+NOTICE 'Creating index idx_social_logins_user_id';
+CREATE INDEX idx_social_logins_user_id ON social_logins (user_id);
 EXCEPTION
         WHEN duplicate_object THEN
-            RAISE NOTICE 'Index idx_social_logins_userId already exists, skipping creation';
+            RAISE NOTICE 'Index idx_social_logins_user_id already exists, skipping creation';
 END
 $$;

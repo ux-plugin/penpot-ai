@@ -30,7 +30,7 @@ Thumbs.db
 *.log
 
 # Local configuration files
-.env
+.env.dev
 .env.local
 
 # Test files

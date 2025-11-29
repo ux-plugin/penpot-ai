@@ -1,90 +1,175 @@
 package com.plugin.features.user
 
+import com.plugin.config.properties.UserProperties
 import com.plugin.features.auth.core.NotFoundException
-import kotlinx.coroutines.reactor.awaitSingle
-import kotlinx.coroutines.reactor.awaitSingleOrNull
-import org.springframework.beans.factory.annotation.Value
-import org.springframework.stereotype.Repository
-import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
-import java.util.*
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.singleOrNull
+import kotlinx.coroutines.flow.toList
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.r2dbc.R2dbcDatabase
+import org.jetbrains.exposed.v1.r2dbc.deleteWhere
+import org.jetbrains.exposed.v1.r2dbc.insert
+import org.jetbrains.exposed.v1.r2dbc.selectAll
+import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.r2dbc.update
+import org.springframework.stereotype.Repository
 
 @Repository
-class UserRepository(
-    private val userR2dbcRepository: UserR2dbcRepository,
-    private val socialLoginsR2dbcRepository: SocialLoginsR2dbcRepository,
-    @Value("\${user.encryption-key-ttl-s}") private val encryptionKeyTtl: Long
-) {
-    
-    suspend fun getUser(userId: String): GetUserResponse {
-        val user = userR2dbcRepository.findById(userId).awaitSingleOrNull()
-            ?: throw NotFoundException("User $userId not found")
-        return GetUserResponse(
-            id = user.id,
-            username = user.username,
-            name = user.name,
-            role = user.role,
-            allowSavingCompletions = user.allowSavingCompletions,
-            port = user.port
-        )
-    }
+class UserRepository(private val database: R2dbcDatabase, private val userProperties: UserProperties) {
 
-    @Transactional
-    suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
-        val user = userR2dbcRepository.findById(userId).awaitSingleOrNull()
-            ?: throw NotFoundException("User $userId not found")
-        
-        userUpdate.username?.let { user.username = it }
-        userUpdate.name?.let { user.name = it }
-        userUpdate.allowSavingCompletions?.let { user.allowSavingCompletions = it }
-        
-        userR2dbcRepository.save(user).awaitSingle()
-    }
-
-    suspend fun deleteUser(userId: String) {
-        userR2dbcRepository.deleteById(userId).awaitSingleOrNull()
-    }
-
-    suspend fun getSocialLogins(userId: String): GetSocialLoginsResponse {
-        val logins = socialLoginsR2dbcRepository.findByUserId(userId).awaitSingleOrNull() ?: emptyList()
-        return GetSocialLoginsResponse(logins.map { SocialLogin(it.id, it.provider) })
-    }
-
-    suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? {
-        val user = userR2dbcRepository.findById(userId).awaitSingleOrNull()
-            ?: throw NotFoundException("User $userId not found")
-        
-        return if (user.encryptionKey != null && user.encryptionKeyExpiresAt?.isAfter(Instant.now()) == true) {
-            EncryptionKeyResponse(key = user.encryptionKey!!, expiresAt = user.encryptionKeyExpiresAt!!)
-        } else {
-            null
+    suspend fun getUser(userId: String): GetUserResponse =
+        suspendTransaction(database) {
+            UsersTable.selectAll()
+                .where { UsersTable.id eq userId }
+                .map { it.toUserEntity() }
+                .singleOrNull()
+                ?.let {
+                    GetUserResponse(
+                        id = it.id,
+                        username = it.username,
+                        name = it.name,
+                        role = it.role,
+                        allowSavingCompletions = it.allowSavingCompletions,
+                        port = it.port
+                    )
+                } ?: throw NotFoundException("User $userId not found")
         }
-    }
 
-    @Transactional
-    suspend fun saveEncryptionKey(userId: String, encryptionKey: String): EncryptionKeyResponse {
-        val user = userR2dbcRepository.findById(userId).awaitSingleOrNull()
-            ?: throw NotFoundException("User $userId not found")
-        
-        val expiresAt = Instant.now().plusSeconds(encryptionKeyTtl)
-        user.encryptionKey = encryptionKey
-        user.encryptionKeyExpiresAt = expiresAt
-        
-        userR2dbcRepository.save(user).awaitSingle()
-        return EncryptionKeyResponse(key = encryptionKey, expiresAt = expiresAt)
-    }
+    suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) =
+        suspendTransaction(database) {
+            val user =
+                UsersTable.selectAll().where { UsersTable.id eq userId }.map { it.toUserEntity() }.singleOrNull()
+                    ?: throw NotFoundException("User $userId not found")
 
-    suspend fun getPort(userId: String): PortState? {
-        val user = userR2dbcRepository.findById(userId).awaitSingleOrNull()
-        return user?.port?.let { PortState(it) }
-    }
+            val newUsername = userUpdate.username ?: user.username
+            val newName = userUpdate.name ?: user.name
+            val newAllowSaving = userUpdate.allowSavingCompletions ?: user.allowSavingCompletions
 
-    @Transactional
-    suspend fun savePort(userId: String, portState: PortState) {
-        val user = userR2dbcRepository.findById(userId).awaitSingleOrNull()
-            ?: throw NotFoundException("User $userId not found")
-        
-        user.port = portState.port
-        userR2dbcRepository.save(user).awaitSingle()
-    }
+            UsersTable.update({ UsersTable.id eq userId }) {
+                it[username] = newUsername
+                it[name] = newName
+                it[allowSavingCompletions] = newAllowSaving
+            }
+        }
+
+    suspend fun deleteUser(userId: String) =
+        suspendTransaction(database) { UsersTable.deleteWhere { UsersTable.id eq userId } }
+
+    suspend fun getSocialLogins(userId: String): GetSocialLoginsResponse =
+        suspendTransaction(database) {
+            val logins =
+                SocialLoginsTable.selectAll()
+                    .where { SocialLoginsTable.userId eq userId }
+                    .map { it.toSocialLoginEntity() }
+                    .toList()
+
+            GetSocialLoginsResponse(logins.map { SocialLogin(it.id, it.provider) })
+        }
+
+    suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? =
+        suspendTransaction(database) {
+            UsersTable.selectAll()
+                .where { UsersTable.id eq userId }
+                .map { it.toUserEntity() }
+                .singleOrNull()
+                ?.let { user ->
+                    if (user.encryptionKey != null && user.encryptionKeyExpiresAt?.isAfter(Instant.now()) == true) {
+                        EncryptionKeyResponse(user.encryptionKey!!, user.encryptionKeyExpiresAt!!)
+                    } else null
+                } ?: throw NotFoundException("User $userId not found")
+        }
+
+    suspend fun saveEncryptionKey(userId: String, encryptionKey: String): EncryptionKeyResponse =
+        suspendTransaction(database) {
+            val expiresAt = Instant.now().plusSeconds(userProperties.encryptionKeyTtlS)
+
+            val updated =
+                UsersTable.update({ UsersTable.id eq userId }) {
+                    it[UsersTable.encryptionKey] = encryptionKey
+                    it[UsersTable.encryptionKeyExpiresAt] = expiresAt
+                }
+
+            if (updated == 0) throw NotFoundException("User $userId not found")
+            EncryptionKeyResponse(encryptionKey, expiresAt)
+        }
+
+    suspend fun getPort(userId: String): PortState? =
+        suspendTransaction(database) {
+            UsersTable.selectAll()
+                .where { UsersTable.id eq userId }
+                .map { it[UsersTable.port] }
+                .singleOrNull()
+                ?.let { port -> PortState(port) }
+        }
+
+    suspend fun savePort(userId: String, portState: PortState) =
+        suspendTransaction(database) {
+            val updated = UsersTable.update({ UsersTable.id eq userId }) { it[port] = portState.port }
+            if (updated == 0) throw NotFoundException("User $userId not found")
+        }
+
+    // Utility: Insert or update a user (used in dev resource)
+    suspend fun save(entity: UserEntity): UserEntity =
+        suspendTransaction(database) {
+            val existing =
+                UsersTable.selectAll().where { UsersTable.id eq entity.id }.map { it.toUserEntity() }.singleOrNull()
+
+            if (existing == null) {
+                UsersTable.insert {
+                    it[id] = entity.id
+                    it[username] = entity.username
+                    it[name] = entity.name
+                    it[role] = entity.role
+                    it[refreshToken] = entity.refreshToken
+                    it[refreshTokenExpiresAt] = entity.refreshTokenExpiresAt
+                    it[createdAt] = entity.createdAt
+                    it[allowSavingCompletions] = entity.allowSavingCompletions
+                    it[encryptionKey] = entity.encryptionKey
+                    it[encryptionKeyExpiresAt] = entity.encryptionKeyExpiresAt
+                    it[port] = entity.port
+                }
+            } else {
+                UsersTable.update({ UsersTable.id eq entity.id }) {
+                    it[username] = entity.username
+                    it[name] = entity.name
+                    it[role] = entity.role
+                    it[refreshToken] = entity.refreshToken
+                    it[refreshTokenExpiresAt] = entity.refreshTokenExpiresAt
+                    it[allowSavingCompletions] = entity.allowSavingCompletions
+                    it[encryptionKey] = entity.encryptionKey
+                    it[encryptionKeyExpiresAt] = entity.encryptionKeyExpiresAt
+                    it[port] = entity.port
+                }
+            }
+            entity
+        }
+
+    // --------- Mappers ---------
+    private fun ResultRow.toUserEntity() =
+        UserEntity(
+            id = this[UsersTable.id],
+            username = this[UsersTable.username],
+            name = this[UsersTable.name],
+            role = this[UsersTable.role],
+            refreshToken = this[UsersTable.refreshToken],
+            refreshTokenExpiresAt = this[UsersTable.refreshTokenExpiresAt],
+            createdAt = this[UsersTable.createdAt],
+            allowSavingCompletions = this[UsersTable.allowSavingCompletions],
+            encryptionKey = this[UsersTable.encryptionKey],
+            encryptionKeyExpiresAt = this[UsersTable.encryptionKeyExpiresAt],
+            port = this[UsersTable.port],
+        )
+
+    private fun ResultRow.toSocialLoginEntity() =
+        SocialLoginEntity(
+            id = this[SocialLoginsTable.id],
+            userId = this[SocialLoginsTable.userId],
+            providerUserId = this[SocialLoginsTable.providerUserId],
+            provider = this[SocialLoginsTable.provider],
+            refreshToken = this[SocialLoginsTable.refreshToken],
+            main = this[SocialLoginsTable.main],
+            refreshTokenExpiresAt = this[SocialLoginsTable.refreshTokenExpiresAt],
+        )
 }

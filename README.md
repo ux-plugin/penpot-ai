@@ -170,15 +170,66 @@ This application was recently migrated from Quarkus to Spring Boot 4. See [SPRIN
 
 ## Docker Support
 
-Docker compose configuration available for local development:
+Docker Compose is configured for local development with PostgreSQL and Redis services.
+
+### Setup
+
+1. **Configure environment variables**:
+   - Copy `.env.example` to `.env`
+   - Fill in your actual API keys and credentials in `.env`
+
+2. **Start services**:
+   ```bash
+   # Start all services (builds app on first run)
+   docker-compose up -d
+   
+   # View logs
+   docker-compose logs -f app
+   
+   # Stop services
+   docker-compose down
+   
+   # Stop and remove volumes (resets database)
+   docker-compose down -v
+   ```
+
+3. **Rebuild after code changes**:
+   ```bash
+   docker-compose up -d --build
+   ```
+
+### Database Reset
+
+If you need to reset the database (e.g., after migration changes):
 
 ```bash
-# Start services
-docker-compose up -d
+# Remove all containers and volumes
+docker-compose down -v
 
-# Stop services
-docker-compose down
+# Start fresh
+docker-compose up -d
 ```
+
+This will:
+- Delete the old database
+- Create a new database
+- Run all Liquibase migrations from scratch
+
+### Services
+
+The Docker Compose setup includes:
+
+- **app**: Spring Boot application (port 8080)
+- **postgres**: PostgreSQL 15 database (port 5432)
+- **redis**: Redis 7 cache (port 6379)
+
+### Environment Variables
+
+Required environment variables in `.env`:
+- `OPENAI_API_KEY`, `OPENAI_PROJECT_ID`, `OPENAI_ORG_ID`
+- `FIREWORKS_API_KEY`
+- `AUTH_FIGMA_CLIENT_ID`, `AUTH_FIGMA_CLIENT_SECRET`
+- `AUTH_GITHUB_CLIENT_ID`, `AUTH_GITHUB_CLIENT_SECRET`
 
 ## License
 

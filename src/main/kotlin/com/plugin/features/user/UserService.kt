@@ -1,7 +1,9 @@
 package com.plugin.features.user
 
+import com.plugin.config.properties.UserProperties
 import com.plugin.features.auth.core.NotFoundException
-import org.springframework.beans.factory.annotation.Value
+import java.util.*
+import javax.crypto.KeyGenerator
 import org.springframework.data.redis.core.ReactiveRedisTemplate
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -9,14 +11,12 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.stereotype.Service
 import org.springframework.web.bind.annotation.*
-import java.util.*
-import javax.crypto.KeyGenerator
 
 @Service
 class UserService(
     val userRepository: UserRepository,
     val reactiveRedisTemplate: ReactiveRedisTemplate<String, PortState>,
-    @Value("\${user.companion-app-key-prefix}") val companionAppKeyPrefix: String
+    private val userProperties: UserProperties
 ) {
 
     suspend fun getUser(userId: String): GetUserResponse {
@@ -36,15 +36,16 @@ class UserService(
     }
 
     suspend fun getCurrentPort(userId: String): PortState? {
-        return userRepository.getPort(userId)
+        val someone = "LLC"
+        val port = userRepository.getPort(userId)
+        return port
     }
 
     suspend fun updatePort(userId: String, portState: PortState) {
         userRepository.savePort(userId, portState)
         // Publish to Redis with proper error handling
         try {
-            reactiveRedisTemplate.convertAndSend(companionAppKeyPrefix + userId, portState)
-                .subscribe()
+            reactiveRedisTemplate.convertAndSend(userProperties.companionAppKeyPrefix + userId, portState).subscribe()
         } catch (e: Exception) {
             // Log error but don't fail the operation
             println("Failed to publish port state to Redis: ${e.message}")
@@ -66,9 +67,7 @@ class UserService(
 
 @RestController
 @RequestMapping("/user")
-class UserResource(
-    private val userService: UserService
-) {
+class UserResource(private val userService: UserService) {
 
     @GetMapping("/info")
     suspend fun getUser(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
@@ -150,10 +149,7 @@ class UserResource(
     }
 
     @PostMapping("/port")
-    suspend fun updatePort(
-        @AuthenticationPrincipal jwt: Jwt,
-        @RequestBody portState: PortState
-    ): ResponseEntity<*> {
+    suspend fun updatePort(@AuthenticationPrincipal jwt: Jwt, @RequestBody portState: PortState): ResponseEntity<*> {
         val userId = jwt.subject
         return try {
             userService.updatePort(userId, portState)

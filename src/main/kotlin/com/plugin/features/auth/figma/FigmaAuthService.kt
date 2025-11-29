@@ -1,12 +1,12 @@
 package com.plugin.features.auth.figma
 
 import com.plugin.config.JwtService
+import com.plugin.config.properties.AuthProperties
 import com.plugin.features.auth.core.*
-import org.springframework.beans.factory.annotation.Value
-import org.springframework.stereotype.Service
 import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
+import org.springframework.stereotype.Service
 
 @Service
 class FigmaAuthService(
@@ -15,40 +15,34 @@ class FigmaAuthService(
     private val authRepository: AuthRepository,
     private val redisRepository: RedisRepository,
     private val jwtService: JwtService,
-    @Value("\${auth.figma.client-id}") private val clientId: String,
-    @Value("\${auth.figma.client-secret}") private val clientSecret: String,
-    @Value("\${auth.figma.login-redirect-uri}") private val loginRedirectUri: String,
-    @Value("\${auth.figma.connect-redirect-uri}") private val connectRedirectUri: String,
-    @Value("\${auth.figma.connect.redis-key-prefix}") private val resultKeyPrefix: String,
-    @Value("\${auth.figma.user-id.result-key-prefix}") private val userIdPrefix: String,
-    @Value("\${auth.figma.login.random-key.max-retries}") private val randomKeyGenerationMaxRetries: Int,
-    @Value("\${auth.figma.login.timeout-sec}") private val loginTimeout: Long,
-    @Value("\${auth.figma.rest-client.access-token.redis-key-prefix}") private val restClientAccessTokenKeyPrefix: String,
-    @Value("\${auth.figma.read-token.redis-key-prefix}") private val readTokenPrefix: String,
-    @Value("\${auth.figma.write-token.redis-key-prefix}") private val writeTokenPrefix: String,
+    authProperties: AuthProperties,
 ) {
+    private val figmaConfig = authProperties.figma
 
     suspend fun login(): OAuthInitResponse {
-        val readToken = redisRepository.generateUniqueKey(
-            readTokenPrefix,
-            randomKeyGenerationMaxRetries,
-            "",
-            2 * loginTimeout,
-        )
-        val writeToken = redisRepository.generateUniqueKey(
-            writeTokenPrefix,
-            randomKeyGenerationMaxRetries,
-            readToken,
-            2 * loginTimeout,
-        )
+        val readToken =
+            redisRepository.generateUniqueKey(
+                figmaConfig.readToken.redisKeyPrefix,
+                figmaConfig.login.randomKey.maxRetries,
+                "",
+                2 * figmaConfig.login.timeoutSec,
+            )
+        val writeToken =
+            redisRepository.generateUniqueKey(
+                figmaConfig.writeToken.redisKeyPrefix,
+                figmaConfig.login.randomKey.maxRetries,
+                readToken,
+                2 * figmaConfig.login.timeoutSec,
+            )
 
-        val readTokenJwt = jwtService.createToken(readToken, "GUEST", loginTimeout)
+        val readTokenJwt = jwtService.createToken(readToken, "GUEST", figmaConfig.login.timeoutSec)
 
-        val redirectUri = generateOAuthUrl(
-            writeToken,
-            scopes = listOf(FigmaAccessScope.CURRENT_USER_READ, FigmaAccessScope.FILE_CONTENT_READ),
-            redirectUri = loginRedirectUri,
-        )
+        val redirectUri =
+            generateOAuthUrl(
+                writeToken,
+                scopes = listOf(FigmaAccessScope.CURRENT_USER_READ, FigmaAccessScope.FILE_CONTENT_READ),
+                redirectUri = figmaConfig.loginRedirectUri,
+            )
         return OAuthInitResponse(readTokenJwt, redirectUri)
     }
 
@@ -57,41 +51,43 @@ class FigmaAuthService(
         scopes: List<FigmaAccessScope>,
         redirectUri: String,
     ): String {
-        return "https://www.figma.com/oauth" +
-                "?client_id=${URLEncoder.encode(clientId, "UTF-8")}" +
-                "&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}" +
-                "&scope=${scopes.joinToString("%2C") { URLEncoder.encode(it.value, "UTF-8") }}" +
-                "&state=${URLEncoder.encode(state, "UTF-8")}" +
-                "&response_type=code"
+        return buildString {
+            append(figmaConfig.authUrl)
+            append("?client_id=${URLEncoder.encode(figmaConfig.clientId, "UTF-8")}")
+            append("&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}")
+            append("&scope=${scopes.joinToString("%2C") { URLEncoder.encode(it.value, "UTF-8") }}")
+            append("&state=${URLEncoder.encode(state, "UTF-8")}")
+            append("&response_type=code")
+        }
     }
 
     suspend fun exchangeCodeForToken(code: String, redirectUri: String): FigmaOAuthTokenResponse {
         return figmaAuthClient.exchangeToken(
-            clientId = clientId,
-            clientSecret = clientSecret,
+            clientId = figmaConfig.clientId,
+            clientSecret = figmaConfig.clientSecret,
             code = code,
             redirectUri = redirectUri,
         )
     }
 
     suspend fun authenticateUser(state: String, code: String) {
-        val redisKey = writeTokenPrefix + state
-        val readToken = redisRepository.getValue(redisKey) 
-            ?: throw NotFoundException("Invalid state")
+        val redisKey = figmaConfig.writeToken.redisKeyPrefix + state
+        val readToken = redisRepository.getValue(redisKey) ?: throw NotFoundException("Invalid state")
 
-        val figmaOAuthTokenResponse = exchangeCodeForToken(code = code, redirectUri = loginRedirectUri)
+        val figmaOAuthTokenResponse = exchangeCodeForToken(code = code, redirectUri = figmaConfig.loginRedirectUri)
         val userInfo = figmaApiClient.getMe("Bearer ${figmaOAuthTokenResponse.accessToken}")
 
         val refreshTokenExpiresAt = Instant.now().plusSeconds(figmaOAuthTokenResponse.expiresIn)
 
-        val user = authRepository.associateUserWithSocialProvider(
-            SocialProvider.FIGMA,
-            userInfo.id,
-            figmaOAuthTokenResponse.refreshToken,
-            refreshTokenExpiresAt,
-        )
+        val user =
+            authRepository.associateUserWithSocialProvider(
+                SocialProvider.FIGMA,
+                userInfo.id,
+                figmaOAuthTokenResponse.refreshToken,
+                refreshTokenExpiresAt,
+            )
 
-        val accessTokenKey = restClientAccessTokenKeyPrefix + user.id
+        val accessTokenKey = figmaConfig.restClient.accessToken.redisKeyPrefix + user.id
         redisRepository.setValueWithExpiration(
             accessTokenKey,
             figmaOAuthTokenResponse.accessToken,
@@ -100,52 +96,57 @@ class FigmaAuthService(
 
         val appTokens = authRepository.createTokensForUser(user.id, role = user.role)
 
-        val queueName = restClientAccessTokenKeyPrefix + readToken
+        val queueName = figmaConfig.restClient.accessToken.redisKeyPrefix + readToken
         redisRepository.pushAccessToken(queueName, appTokens.accessToken)
     }
 
     suspend fun readAccessToken(readToken: String): Pair<String, String>? {
-        val queueName = restClientAccessTokenKeyPrefix + readToken
+        val queueName = figmaConfig.restClient.accessToken.redisKeyPrefix + readToken
         return redisRepository.readAccessToken(
             readToken = queueName,
-            timeout = Duration.ofSeconds(loginTimeout),
+            timeout = Duration.ofSeconds(figmaConfig.login.timeoutSec),
         )
     }
 
     suspend fun connectInitiate(userId: String): ConnectInitResponse {
-        val readToken = redisRepository.generateUniqueKey(
-            readTokenPrefix,
-            randomKeyGenerationMaxRetries,
-            "",
-            2 * loginTimeout,
-        )
-        val writeToken = redisRepository.generateUniqueKey(
-            writeTokenPrefix,
-            randomKeyGenerationMaxRetries,
-            readToken,
-            2 * loginTimeout,
-        )
+        val readToken =
+            redisRepository.generateUniqueKey(
+                figmaConfig.readToken.redisKeyPrefix,
+                figmaConfig.login.randomKey.maxRetries,
+                "",
+                2 * figmaConfig.login.timeoutSec,
+            )
+        val writeToken =
+            redisRepository.generateUniqueKey(
+                figmaConfig.writeToken.redisKeyPrefix,
+                figmaConfig.login.randomKey.maxRetries,
+                readToken,
+                2 * figmaConfig.login.timeoutSec,
+            )
         redisRepository.setValueWithExpiration(
-            userIdPrefix + writeToken,
+            figmaConfig.userId.resultKeyPrefix + writeToken,
             userId,
-            2 * loginTimeout,
+            2 * figmaConfig.login.timeoutSec,
         )
 
-        val redirectUri = generateOAuthUrl(
-            writeToken,
-            scopes = listOf(FigmaAccessScope.CURRENT_USER_READ, FigmaAccessScope.FILE_CONTENT_READ),
-            redirectUri = connectRedirectUri,
-        )
+        val redirectUri =
+            generateOAuthUrl(
+                writeToken,
+                scopes = listOf(FigmaAccessScope.CURRENT_USER_READ, FigmaAccessScope.FILE_CONTENT_READ),
+                redirectUri = figmaConfig.connectRedirectUri,
+            )
 
         return ConnectInitResponse(readToken, redirectUri)
     }
 
     suspend fun connectSocialProfile(code: String, state: String) {
-        val userId = redisRepository.getValue(userIdPrefix + state) 
-            ?: throw NotFoundException("Invalid state")
+        val userId =
+            redisRepository.getValue(figmaConfig.userId.resultKeyPrefix + state)
+                ?: throw NotFoundException("Invalid state")
 
         try {
-            val figmaOAuthTokenResponse = exchangeCodeForToken(code = code, redirectUri = connectRedirectUri)
+            val figmaOAuthTokenResponse =
+                exchangeCodeForToken(code = code, redirectUri = figmaConfig.connectRedirectUri)
             val userInfo = figmaApiClient.getMe("Bearer ${figmaOAuthTokenResponse.accessToken}")
             val refreshTokenExpiresAt = Instant.now().plusSeconds(figmaOAuthTokenResponse.expiresIn)
 
@@ -163,20 +164,20 @@ class FigmaAuthService(
                 )
             }
 
-            val queueName = resultKeyPrefix + userId
+            val queueName = figmaConfig.connect.redisKeyPrefix + userId
             redisRepository.pushAccessToken(queueName, ConnectSocialProviderResult.SUCCESS.value)
         } catch (e: Exception) {
-            val queueName = resultKeyPrefix + userId
+            val queueName = figmaConfig.connect.redisKeyPrefix + userId
             redisRepository.pushAccessToken(queueName, ConnectSocialProviderResult.FAILURE.value)
             throw e
         }
     }
 
     suspend fun getConnectResult(userId: String): Pair<String, String>? {
-        val queueName = resultKeyPrefix + userId
+        val queueName = figmaConfig.connect.redisKeyPrefix + userId
         return redisRepository.readAccessToken(
             readToken = queueName,
-            timeout = Duration.ofSeconds(loginTimeout),
+            timeout = Duration.ofSeconds(figmaConfig.login.timeoutSec),
         )
     }
 }
