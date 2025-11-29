@@ -71,34 +71,28 @@ export default defineConfig(({ command, mode }) => ({
       "@app": fileURLToPath(new URL("./src/plugin-ui/app", import.meta.url)),
       "@app/providers": fileURLToPath(new URL("./src/plugin-ui/app/providers", import.meta.url)),
 
-      // Feature aliases
-      "@auth": fileURLToPath(new URL("./src/plugin-ui/features/auth", import.meta.url)),
-      "@user": fileURLToPath(new URL("./src/plugin-ui/features/user", import.meta.url)),
-      "@companion": fileURLToPath(new URL("./src/plugin-ui/features/companion", import.meta.url)),
-      "@completions": fileURLToPath(new URL("./src/plugin-ui/features/completions", import.meta.url)),
-      "@status": fileURLToPath(new URL("./src/plugin-ui/features/status", import.meta.url)),
-
-      // Shared UI code
-      "@shared": fileURLToPath(new URL("./src/plugin-ui/shared", import.meta.url)),
-      "@ui": fileURLToPath(new URL("./src/plugin-ui/shared/components/ui", import.meta.url)),
-      "@components": fileURLToPath(new URL("./src/plugin-ui/shared/components", import.meta.url)),
-      "@stores": fileURLToPath(new URL("./src/plugin-ui/shared/stores", import.meta.url)),
-      "@api": fileURLToPath(new URL("./src/plugin-ui/shared/api", import.meta.url)),
-      "@utils": fileURLToPath(new URL("./src/plugin-ui/shared/utils", import.meta.url)),
+      // New Plugin UI structure
+      "@ui": fileURLToPath(new URL("./src/plugin-ui/components/ui", import.meta.url)),
+      "@components": fileURLToPath(new URL("./src/plugin-ui/components", import.meta.url)),
+      "@stores": fileURLToPath(new URL("./src/plugin-ui/stores", import.meta.url)),
+      "@api": fileURLToPath(new URL("./src/plugin-ui/api", import.meta.url)),
+      "@utils": fileURLToPath(new URL("./src/plugin-ui/utils", import.meta.url)),
 
       // Cross-environment shared code
       "@shared-core": fileURLToPath(new URL("./src/shared", import.meta.url)),
-      "@shared-types": fileURLToPath(new URL("./src/shared/types", import.meta.url)),
+      "@shared-types": fileURLToPath(new URL("./src/messaging/types", import.meta.url)),
       "@shared-constants": fileURLToPath(new URL("./src/shared/constants", import.meta.url)),
 
       // Plugin UI messaging and views
-      "@messaging": fileURLToPath(new URL("./src/plugin-ui/messaging", import.meta.url)),
+      "@messaging": fileURLToPath(new URL("./src/messaging", import.meta.url)),
       "@views": fileURLToPath(new URL("./src/plugin-ui/views", import.meta.url)),
       "@assets": fileURLToPath(new URL("./src/plugin-ui/assets", import.meta.url))
     }
   },
   define: {
     PLATFORM: JSON.stringify(mode === 'development' ? 'dev' : 'figma'),
+    // Make Buffer available globally for rsocket libraries
+    global: 'globalThis',
     // Only set NODE_ENV to production during builds
     ...(command === 'build' && {
       'process.env.NODE_ENV': JSON.stringify('production')
@@ -106,7 +100,13 @@ export default defineConfig(({ command, mode }) => ({
   },
   // Optimize dependency pre-bundling
   optimizeDeps: {
-    include: ['react', 'react-dom'],
-    exclude: []
+    include: ['react', 'react-dom', 'buffer'],
+    exclude: [],
+    esbuildOptions: {
+      // Node.js global polyfills for browser
+      define: {
+        global: 'globalThis'
+      }
+    }
   }
 }));

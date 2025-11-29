@@ -6,19 +6,19 @@ import {
   Maximize2,
   MessageSquare,
 } from "lucide-react";
-import { useUserSettingsStore } from '@user/stores/useUserSettingsStore.ts';
-import { useAuthenticationStore } from "@auth/stores/useAuthenticationStore";
-import { useUserConfigQuery } from "@user/api/fetchUserConfig.ts";
-import { useCompanionConnection } from "@companion/api";
-import { usePortUpdatesStore } from "@user/stores/usePortUpdatesStore.ts";
-import { ReactFlowCanvas } from '@/plugin-ui/features/reactflow/components/ReactFlowCanvas';
-import { StatusPanel } from '@status/components/StatusPanel';
-import { SettingsPanel } from '@user/components/SettingsPanel';
-import { ConversationPanel } from '@completions/components/ConversationPanel';
-import { uiMessageDispatcher } from '@messaging/UIMessageDispatcher';
-import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@shared-core/types/messageTypes';
-import { BackendServerStatus } from '@status/components/BackendServerStatus';
-import { CompanionAppStatus } from '@companion/components/CompanionAppStatus';
+import { useUserSettingsStore } from '@/plugin-ui/stores/useUserSettingsStore.ts';
+import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
+import { useUserConfigQuery } from "@/plugin-ui/api/user/fetchUserConfig.ts";
+import { useCompanionConnection } from "@/plugin-ui/api/companion";
+import { usePortUpdatesStore } from "@/plugin-ui/stores/usePortUpdatesStore.ts";
+import { ReactFlowCanvas } from '@/plugin-ui/components/completions/ReactFlowCanvas.tsx';
+import { StatusPanel } from '@/plugin-ui/components/status/StatusPanel';
+import { SettingsPanel } from '@/plugin-ui/components/user/SettingsPanel';
+import { ConversationPanel } from '@/plugin-ui/components/completions/ConversationPanel';
+import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
+import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@/messaging/types/messageTypes';
+import { BackendServerStatus } from '@/plugin-ui/components/status/BackendServerStatus';
+import { CompanionAppStatus } from '@/plugin-ui/components/CompanionAppStatus.tsx';
 
 function Home() {
   const { setUserConfig } = useUserSettingsStore();

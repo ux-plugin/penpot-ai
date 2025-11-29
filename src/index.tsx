@@ -1,3 +1,6 @@
+// Buffer polyfill must be imported first for RSocket support
+import './buffer-polyfill'
+
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 

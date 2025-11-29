@@ -56,6 +56,15 @@ importers:
       react-router-dom:
         specifier: ^7.7.1
         version: 7.9.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      rsocket-composite-metadata:
+        specifier: ^1.0.0-alpha.2
+        version: 1.0.0-alpha.3
+      rsocket-core:
+        specifier: ^1.0.0-alpha.2
+        version: 1.0.0-alpha-rxjs-adapter-optional-metadata.0
+      rsocket-websocket-client:
+        specifier: ^1.0.0-alpha.2
+        version: 1.0.0-alpha-rxjs-adapter-optional-metadata.0
       sonner:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -2563,6 +2572,15 @@ packages:
   router@2.2.0:
     resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
     engines: {node: '>= 18'}
+
+  rsocket-composite-metadata@1.0.0-alpha.3:
+    resolution: {integrity: sha512-o+msmc1pXnejLw4TDgMllynS9/L3TGJM25kqedTxqU6wVF9jnTA95w7T4scGwwX6qiAryT90HQGUaT+An44X3w==}
+
+  rsocket-core@1.0.0-alpha-rxjs-adapter-optional-metadata.0:
+    resolution: {integrity: sha512-FXieO2E8d4UC7mW7K01IRMtgwZ1BZk7l4ZEvgnD8xEKdt//9ks5IfiDZPvi1w9P4YFp/IrI7lL3dqhkOF0Ez/g==}
+
+  rsocket-websocket-client@1.0.0-alpha-rxjs-adapter-optional-metadata.0:
+    resolution: {integrity: sha512-CFnXY/DdP/tyDQbvgiGWk+v/A7t1aj6gqKmka8A0Qesb+NBy+1ck/Mwq68JNNhvWlmESGqPmErmPDJ9d3XeMOA==}
 
   run-parallel@1.2.0:
     resolution: {integrity: sha512-5l4VyZR86LZ/lDxZTR6jqL8AFE2S0IFLMP26AbjsLVADxHdhB/c0GUsH+y39UfCi3dzz8OlQuPmnaJOMoDHQBA==}
@@ -5323,6 +5341,16 @@ snapshots:
       path-to-regexp: 8.3.0
     transitivePeerDependencies:
       - supports-color
+
+  rsocket-composite-metadata@1.0.0-alpha.3:
+    dependencies:
+      rsocket-core: 1.0.0-alpha-rxjs-adapter-optional-metadata.0
+
+  rsocket-core@1.0.0-alpha-rxjs-adapter-optional-metadata.0: {}
+
+  rsocket-websocket-client@1.0.0-alpha-rxjs-adapter-optional-metadata.0:
+    dependencies:
+      rsocket-core: 1.0.0-alpha-rxjs-adapter-optional-metadata.0
 
   run-parallel@1.2.0:
     dependencies:

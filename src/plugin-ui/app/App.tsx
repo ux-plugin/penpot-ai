@@ -1,16 +1,16 @@
 import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
-import Login from "@auth/views/Login";
+import Login from "@views/Login.tsx";
 import Home from "@views/Home";
-import Settings from "@user/views/Settings";
-import { useAuthenticationStore } from "@auth/stores/useAuthenticationStore";
-import { usePortUpdatesStore } from "@user/stores/usePortUpdatesStore";
-import { useWebSocketStore } from "@shared/stores/useWebSocketStore";
-import { initializePortSubscription, cleanupPortSubscription } from "@user/api/portSubscriptionManager";
-import { handlePortUpdate } from "@companion/api";
-import { useCompletionsWebSocket } from "@completions/api";
-import { WindowResizeHandle } from '@/plugin-ui/shared/components/WindowResizeHandle';
-import { ResizeIconBottomRight } from '@/plugin-ui/shared/components/ResizeIcons';
+import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
+import { usePortUpdatesStore } from "@/plugin-ui/stores/usePortUpdatesStore.ts";
+import { initializePortSubscription, cleanupPortSubscription } from "@/plugin-ui/api/user/portSubscriptionManager";
+import { connectRSocket, disconnectRSocket } from "@api/rsocket.ts";
+import { handlePortUpdate } from "@/plugin-ui/api/companion";
+import { useCompletionsWebSocket, CompletionsWebSocketProvider } from "@/plugin-ui/api/completions";
+import { WindowResizeHandle } from '@/plugin-ui/components/WindowResizeHandle';
+import { ResizeIconBottomRight } from '@/plugin-ui/components/ResizeIcons';
+
 
 const NonAuthenticatedLayout = () => {
   const { isAuthenticated } = useAuthenticationStore();
@@ -22,21 +22,18 @@ const AuthenticatedLayout = () => {
   const { currentPort } = usePortUpdatesStore();
   const hasInitialized = useRef(false);
 
-  // Initialize WebSocket and port subscription when user authenticates
+  // Initialize RSocket and port subscription when user authenticates
   useEffect(() => {
     if (isAuthenticated && !hasInitialized.current) {
       console.log("User authenticated - running initialization");
 
-      // Initialize port subscription manager (auto-subscribes on connection)
-      console.log("Initializing port subscription manager...");
-      initializePortSubscription();
-      
-      // Connect to WebSocket
-      console.log("Starting WebSocket connection...");
-      const { connect } = useWebSocketStore.getState();
-      connect().catch((error) => {
-        console.error("Failed to connect to WebSocket:", error);
-      });
+      // Ensure RSocket connection and subscribe to ports stream
+      console.log("Initializing RSocket + port subscription manager...");
+      connectRSocket()
+        .then(() => initializePortSubscription())
+        .catch((error) => {
+          console.error("Failed to connect to RSocket:", error);
+        });
       
       hasInitialized.current = true;
     }
@@ -47,9 +44,8 @@ const AuthenticatedLayout = () => {
       // Clean up port subscription
       cleanupPortSubscription();
       
-      // Disconnect WebSocket
-      const { disconnect } = useWebSocketStore.getState();
-      disconnect();
+      // Disconnect RSocket (shared)
+      disconnectRSocket();
       
       hasInitialized.current = false;
     }
@@ -68,7 +64,7 @@ const AuthenticatedLayout = () => {
   return isAuthenticated ? <Outlet /> : <Navigate to="/login" replace />;
 };
 
-function App() {
+function AppContent() {
   const { isAuthenticated } = useAuthenticationStore();
   const [responsesCount, setResponsesCount] = useState(0);
 
@@ -90,16 +86,22 @@ function App() {
       console.log('🔌 WebSocket closed');
     },
     
-    onWebSocketError: (event) => {
-      console.error('❌ WebSocket error:', event);
+    onWebSocketError: (error) => {
+      console.error('❌ WebSocket error:', error);
     },
     
-    onCompletionResponse: (response) => {
-      console.log('📨 Backend completion response:', response);
-      // Count successful responses (those without errors)
-      if (!response.error) {
-        setResponsesCount((prev) => prev + 1);
-      }
+    onReasoningChunk: (reasoning) => {
+      console.log(`📨 Backend reasoning chunk:`, reasoning);
+    },
+    
+    onAction: (action) => {
+      console.log(`📨 Backend action:`, action);
+      // Count actions as responses
+      setResponsesCount((prev) => prev + 1);
+    },
+    
+    onText: (text) => {
+      console.log(`📨 Backend text chunk:`, text);
     },
   });
 
@@ -161,7 +163,6 @@ function App() {
 
         <Route element={<AuthenticatedLayout />}>
           <Route path="/home" element={<Home />} />
-          <Route path="/settings" element={<Settings />} />
         </Route>
 
         <Route
@@ -175,6 +176,15 @@ function App() {
         <ResizeIconBottomRight />
       </WindowResizeHandle>
     </>
+  );
+}
+
+// Wrap App with CompletionsWebSocketProvider
+function App() {
+  return (
+    <CompletionsWebSocketProvider>
+      <AppContent />
+    </CompletionsWebSocketProvider>
   );
 }
 

@@ -35,28 +35,20 @@
       "@app/*": ["./src/plugin-ui/app/*"],
       "@app/providers": ["./src/plugin-ui/app/providers"],
 
-      // Feature aliases
-      "@auth/*": ["./src/plugin-ui/features/auth/*"],
-      "@user/*": ["./src/plugin-ui/features/user/*"],
-      "@companion/*": ["./src/plugin-ui/features/companion/*"],
-      "@completions/*": ["./src/plugin-ui/features/completions/*"],
-      "@status/*": ["./src/plugin-ui/features/status/*"],
-
-      // Shared UI code
-      "@shared/*": ["./src/plugin-ui/shared/*"],
-      "@ui/*": ["./src/plugin-ui/shared/components/ui/*"],
-      "@components/*": ["./src/plugin-ui/shared/components/*"],
-      "@stores/*": ["./src/plugin-ui/shared/stores/*"],
-      "@api/*": ["./src/plugin-ui/shared/api/*"],
-      "@utils/*": ["./src/plugin-ui/shared/utils/*"],
+      // Plugin UI structure (post-refactor)
+      "@ui/*": ["./src/plugin-ui/components/ui/*"],
+      "@components/*": ["./src/plugin-ui/components/*"],
+      "@stores/*": ["./src/plugin-ui/stores/*"],
+      "@api/*": ["./src/plugin-ui/api/*"],
+      "@utils/*": ["./src/plugin-ui/utils/*"],
 
       // Cross-environment shared code
       "@shared-core/*": ["./src/shared/*"],
-      "@shared-types/*": ["./src/shared/types/*"],
+      "@shared-types/*": ["./src/messaging/types/*"],
       "@shared-constants/*": ["./src/shared/constants/*"],
 
       // Plugin UI messaging and views
-      "@messaging/*": ["./src/plugin-ui/messaging/*"],
+      "@messaging/*": ["./src/messaging/*"],
       "@views/*": ["./src/plugin-ui/views/*"],
       "@assets/*": ["./src/plugin-ui/assets/*"]
     },

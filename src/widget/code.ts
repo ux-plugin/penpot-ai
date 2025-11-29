@@ -5,7 +5,7 @@ import {
   CompleteRequest,
   MessageCategory,
   OperationMessageType,
-} from "@shared-core/types/messageTypes";
+} from "@/messaging/types/messageTypes";
 
 // Wrap in async IIFE to handle top-level await in esbuild IIFE format
 (async () => {
@@ -16,7 +16,7 @@ import {
     width: 500,
   });
 
-  const { codeMessageDispatcher, setupCodeMessageListener } = await import("@widget/messaging/CodeMessageDispatcher");
+  const { codeMessageDispatcher, setupCodeMessageListener } = await import("@widget/CodeMessageDispatcher.ts");
 
   // Initialize the message listener to receive messages from the UI
   setupCodeMessageListener();

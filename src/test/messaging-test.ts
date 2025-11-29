@@ -1,5 +1,5 @@
 // Test script to verify the new messaging system works correctly with enhanced type safety
-import { uiMessageDispatcher, uiStoreMessaging } from '@messaging/UIMessageDispatcher';
+import { uiMessageDispatcher, uiStoreMessaging } from '@/plugin-ui/UIMessageDispatcher.ts';
 import { 
   MessageCategory, 
   OperationMessageType, 
@@ -11,8 +11,8 @@ import {
   DrawRectangleResponse,
   CreateFrameResponse,
   InfoResponse
-} from '@shared-core/types/messageTypes';
-import { PersistableAuthState } from '@shared-core/types/authTypes';
+} from '@/messaging/types/messageTypes';
+import { PersistableAuthState } from '@/messaging/types/authTypes';
 
 // Test function to demonstrate enhanced messaging functionality with type safety
 export async function testMessaging(): Promise<void> {

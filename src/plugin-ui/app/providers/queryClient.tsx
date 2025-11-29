@@ -1,6 +1,6 @@
 import { QueryCache, QueryClient } from "@tanstack/react-query";
-import { useAuthenticationStore } from "@auth/stores/useAuthenticationStore.ts";
-import { showErrorToast } from "@shared/utils/showErrorToast";
+import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
+import { showErrorToast } from "@/plugin-ui/utils/showErrorToast";
 
 // Define a custom error class to carry the status code
 export class AuthError extends Error {

@@ -1,9 +1,9 @@
 // Authentication state management class for code.ts
 // Mirrors the UI store structure but adapted for the worker environment
 
-import { codeStoreMessaging } from '@widget/messaging/CodeMessageDispatcher';
+import { codeStoreMessaging } from '@widget/CodeMessageDispatcher.ts';
 import { IDesignPlatform } from '@widget/platform/IDesignPlatform';
-import { PersistableAuthState } from '@shared-core/types/authTypes';
+import { PersistableAuthState } from '@/messaging/types/authTypes';
 
 // Storage key for persisting the store
 const STORAGE_KEY = 'auth-store';
