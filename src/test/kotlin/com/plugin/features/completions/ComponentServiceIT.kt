@@ -17,7 +17,7 @@ package com.plugin.features.completions
 // import org.junit.jupiter.api.BeforeEach
 // import org.junit.jupiter.api.Test
 //
-/// ** Integration test for the Component service using Quarkus testing framework */
+// / ** Integration test for the Component service using Quarkus testing framework */
 // @QuarkusTest
 // @QuarkusTestResource(PostgresTestResourceManager::class)
 // @QuarkusTestResource(RedisTestResourceManager::class)

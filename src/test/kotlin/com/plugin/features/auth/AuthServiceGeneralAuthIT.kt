@@ -10,7 +10,7 @@ package com.plugin.features.auth
 // import org.junit.jupiter.api.BeforeEach
 // import org.junit.jupiter.api.Test
 //
-/// ** Integration tests for general (non-Figma) authentication endpoints. */
+// / ** Integration tests for general (non-Figma) authentication endpoints. */
 // @QuarkusTest
 // @QuarkusTestResource(PostgresTestResourceManager::class, parallel = true)
 // @QuarkusTestResource(RedisTestResourceManager::class, parallel = true)

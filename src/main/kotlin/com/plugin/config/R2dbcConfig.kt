@@ -16,7 +16,6 @@ import org.springframework.context.annotation.Configuration
 /** Configuration for R2DBC with Exposed */
 @Configuration
 class R2dbcConfig {
-
     /** Customize R2DBC connection factory options to support PostgreSQL enums */
     @Bean
     fun connectionFactoryOptionsBuilderCustomizer(): ConnectionFactoryOptionsBuilderCustomizer =
@@ -24,25 +23,24 @@ class R2dbcConfig {
             builder.option(
                 Option.valueOf("extensions"),
                 listOf(
-                    EnumCodec.builder()
+                    EnumCodec
+                        .builder()
                         .withEnum("user_roles", UserRole::class.java)
                         .withEnum("social_providers", SocialProvider::class.java)
-                        .build()
-                )
+                        .build(),
+                ),
             )
         }
 
     /** Configure Exposed R2DBC database instance */
     @Bean
-    fun exposedR2dbcDatabase(connectionFactory: ConnectionFactory): R2dbcDatabase {
-        return R2dbcDatabase.connect(
-            connectionFactory = connectionFactory,
-            databaseConfig =
-                R2dbcDatabaseConfig {
-                    defaultMaxAttempts = 3
-                    defaultR2dbcIsolationLevel = IsolationLevel.READ_COMMITTED
-                    explicitDialect = PostgreSQLDialect()
-                }
-        )
-    }
+    fun exposedR2dbcDatabase(connectionFactory: ConnectionFactory): R2dbcDatabase = R2dbcDatabase.connect(
+        connectionFactory = connectionFactory,
+        databaseConfig =
+        R2dbcDatabaseConfig {
+            defaultMaxAttempts = 3
+            defaultR2dbcIsolationLevel = IsolationLevel.READ_COMMITTED
+            explicitDialect = PostgreSQLDialect()
+        },
+    )
 }

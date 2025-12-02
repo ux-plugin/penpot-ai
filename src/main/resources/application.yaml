@@ -112,20 +112,26 @@ fireworks:
 
 # Agent configuration
 agent:
-  model:
-    name: ${AGENT_MODEL_NAME:gpt-4o-mini}
+  figma-design:
+    provider: ${FIGMA_DESIGN_PROVIDER:openai}
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      model-name: ${FIGMA_DESIGN_OPENAI_MODEL:gpt-5}
+      reasoning-effort: ${FIGMA_DESIGN_OPENAI_REASONING_EFFORT:medium}
+      return-thinking: ${FIGMA_DESIGN_OPENAI_RETURN_THINKING:true}
+      temperature: ${FIGMA_DESIGN_OPENAI_TEMPERATURE:}
+      max-tokens: ${FIGMA_DESIGN_OPENAI_MAX_TOKENS:}
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY}
+      model-name: ${FIGMA_DESIGN_ANTHROPIC_MODEL:claude-3-5-sonnet-20241022}
+      max-tokens: ${FIGMA_DESIGN_ANTHROPIC_MAX_TOKENS:4096}
+      temperature: ${FIGMA_DESIGN_ANTHROPIC_TEMPERATURE:}
+    gemini:
+      api-key: ${GEMINI_API_KEY}
+      model-name: ${FIGMA_DESIGN_GEMINI_MODEL:gemini-1.5-pro}
+      temperature: ${FIGMA_DESIGN_GEMINI_TEMPERATURE:0.7}
+      max-output-tokens: ${FIGMA_DESIGN_GEMINI_MAX_OUTPUT_TOKENS:}
 
-# Koog AI agent framework configuration
-koog:
-  fireworks:
-    api-key: ${FIREWORKS_API_KEY}
-  openai:
-    api-key: ${OPENAI_API_KEY}
-  llm:
-    model: ${KOOG_LLM_MODEL:gpt-4o-mini}
-    temperature: ${KOOG_LLM_TEMPERATURE:0.7}
-  agent:
-    max-iterations: ${KOOG_MAX_ITERATIONS:10}
 
 # JWT configuration
 jwt:
@@ -215,7 +221,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info  # Only expose minimal endpoints in production
+        include: health,info,refresh  # Only expose minimal endpoints in production
   endpoint:
     health:
       show-details: when-authorized  # Only show details when authenticated

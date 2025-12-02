@@ -1,10 +1,10 @@
 package com.plugin.features.auth.core
 
 import com.plugin.features.user.UserRole
-import java.time.Instant
-import java.util.UUID
 import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.javatime.timestamp
+import java.time.Instant
+import java.util.*
 
 /** Exposed entities and tables for auth/core */
 

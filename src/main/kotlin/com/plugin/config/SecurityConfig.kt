@@ -6,12 +6,6 @@ import com.nimbusds.jose.jwk.source.ImmutableJWKSet
 import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.SecurityContext
 import com.plugin.config.properties.JwtProperties
-import java.security.KeyFactory
-import java.security.interfaces.RSAPrivateKey
-import java.security.interfaces.RSAPublicKey
-import java.security.spec.PKCS8EncodedKeySpec
-import java.security.spec.X509EncodedKeySpec
-import java.util.Base64
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.io.ResourceLoader
@@ -23,33 +17,35 @@ import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder
 import org.springframework.security.oauth2.server.resource.web.server.authentication.ServerBearerTokenAuthenticationConverter
 import org.springframework.security.web.server.SecurityWebFilterChain
+import java.security.KeyFactory
+import java.security.interfaces.RSAPrivateKey
+import java.security.interfaces.RSAPublicKey
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.X509EncodedKeySpec
+import java.util.*
 
 @Configuration
 @EnableWebFluxSecurity
 @EnableReactiveMethodSecurity
 class SecurityConfig(private val jwtProperties: JwtProperties, private val resourceLoader: ResourceLoader) {
-
     @Bean
-    fun securityWebFilterChain(http: ServerHttpSecurity): SecurityWebFilterChain {
-        return http
-            .csrf { it.disable() }
-            .cors {}
-            .authorizeExchange { exchanges ->
-                exchanges
-                    .pathMatchers(HttpMethod.OPTIONS, "/**")
-                    .permitAll()
-                    .pathMatchers("/openapi/**", "/swagger-ui.html", "/swagger-ui/**", "/webjars/**", "/v3/api-docs/**")
-                    .permitAll()
-                    .pathMatchers("/auth/**")
-                    .permitAll()
-                    .pathMatchers("/dev/**")
-                    .permitAll()
-                    .anyExchange()
-                    .authenticated()
-            }
-            .oauth2ResourceServer { oauth2 -> oauth2.bearerTokenConverter(bearerTokenConverter()).jwt {} }
-            .build()
-    }
+    fun securityWebFilterChain(http: ServerHttpSecurity): SecurityWebFilterChain = http
+        .csrf { it.disable() }
+        .cors {}
+        .authorizeExchange { exchanges ->
+            exchanges
+                .pathMatchers(HttpMethod.OPTIONS, "/**")
+                .permitAll()
+                .pathMatchers("/openapi/**", "/swagger-ui.html", "/swagger-ui/**", "/webjars/**", "/v3/api-docs/**")
+                .permitAll()
+                .pathMatchers("/auth/**")
+                .permitAll()
+                .pathMatchers("/dev/**")
+                .permitAll()
+                .anyExchange()
+                .authenticated()
+        }.oauth2ResourceServer { oauth2 -> oauth2.bearerTokenConverter(bearerTokenConverter()).jwt {} }
+        .build()
 
     @Bean
     fun bearerTokenConverter(): ServerBearerTokenAuthenticationConverter {
@@ -70,7 +66,12 @@ class SecurityConfig(private val jwtProperties: JwtProperties, private val resou
 
     @Bean
     fun jwkSource(publicKey: RSAPublicKey, privateKey: RSAPrivateKey): JWKSource<SecurityContext> {
-        val rsaKey = RSAKey.Builder(publicKey).privateKey(privateKey).keyID("ux-plugin").build()
+        val rsaKey =
+            RSAKey
+                .Builder(publicKey)
+                .privateKey(privateKey)
+                .keyID("ux-plugin")
+                .build()
         return ImmutableJWKSet(JWKSet(rsaKey))
     }
 

@@ -1,10 +1,10 @@
 package com.plugin.features.user
 
 import com.plugin.features.auth.core.SocialProvider
-import java.time.Instant
-import java.util.UUID
 import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.javatime.timestamp
+import java.time.Instant
+import java.util.*
 
 // --------------------
 // Exposed Entities
@@ -70,5 +70,5 @@ object SocialLoginsTable : Table("social_logins") {
 enum class UserRole {
     ADMIN,
     USER,
-    GUEST
+    GUEST,
 }

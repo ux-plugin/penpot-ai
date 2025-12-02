@@ -4,7 +4,7 @@ package com.plugin.features.auth
 // import org.testcontainers.containers.GenericContainer
 // import org.testcontainers.utility.DockerImageName
 //
-/// ** Quarkus test resource that starts a Docker container for the mock GitHub API server. */
+// / ** Quarkus test resource that starts a Docker container for the mock GitHub API server. */
 // class MockGitHubAuthInfra : QuarkusTestResourceLifecycleManager {
 //    private lateinit var githubMockContainer: GenericContainer<*>
 //

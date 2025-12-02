@@ -2,11 +2,18 @@ package com.plugin.features.auth.figma
 
 import com.plugin.config.JwtService
 import com.plugin.config.properties.AuthProperties
-import com.plugin.features.auth.core.*
+import com.plugin.features.auth.core.AccountAlreadyLinkedException
+import com.plugin.features.auth.core.AuthRepository
+import com.plugin.features.auth.core.ConnectInitResponse
+import com.plugin.features.auth.core.ConnectSocialProviderResult
+import com.plugin.features.auth.core.NotFoundException
+import com.plugin.features.auth.core.OAuthInitResponse
+import com.plugin.features.auth.core.RedisRepository
+import com.plugin.features.auth.core.SocialProvider
+import org.springframework.stereotype.Service
 import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
-import org.springframework.stereotype.Service
 
 @Service
 class FigmaAuthService(
@@ -46,29 +53,21 @@ class FigmaAuthService(
         return OAuthInitResponse(readTokenJwt, redirectUri)
     }
 
-    fun generateOAuthUrl(
-        state: String,
-        scopes: List<FigmaAccessScope>,
-        redirectUri: String,
-    ): String {
-        return buildString {
-            append(figmaConfig.authUrl)
-            append("?client_id=${URLEncoder.encode(figmaConfig.clientId, "UTF-8")}")
-            append("&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}")
-            append("&scope=${scopes.joinToString("%2C") { URLEncoder.encode(it.value, "UTF-8") }}")
-            append("&state=${URLEncoder.encode(state, "UTF-8")}")
-            append("&response_type=code")
-        }
+    fun generateOAuthUrl(state: String, scopes: List<FigmaAccessScope>, redirectUri: String): String = buildString {
+        append(figmaConfig.authUrl)
+        append("?client_id=${URLEncoder.encode(figmaConfig.clientId, "UTF-8")}")
+        append("&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}")
+        append("&scope=${scopes.joinToString("%2C") { URLEncoder.encode(it.value, "UTF-8") }}")
+        append("&state=${URLEncoder.encode(state, "UTF-8")}")
+        append("&response_type=code")
     }
 
-    suspend fun exchangeCodeForToken(code: String, redirectUri: String): FigmaOAuthTokenResponse {
-        return figmaAuthClient.exchangeToken(
-            clientId = figmaConfig.clientId,
-            clientSecret = figmaConfig.clientSecret,
-            code = code,
-            redirectUri = redirectUri,
-        )
-    }
+    suspend fun exchangeCodeForToken(code: String, redirectUri: String): FigmaOAuthTokenResponse = figmaAuthClient.exchangeToken(
+        clientId = figmaConfig.clientId,
+        clientSecret = figmaConfig.clientSecret,
+        code = code,
+        redirectUri = redirectUri,
+    )
 
     suspend fun authenticateUser(state: String, code: String) {
         val redisKey = figmaConfig.writeToken.redisKeyPrefix + state

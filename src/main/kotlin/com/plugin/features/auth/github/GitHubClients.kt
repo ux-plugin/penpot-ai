@@ -9,15 +9,9 @@ import org.springframework.web.reactive.function.client.awaitBody
 
 @Component
 class GitHubAuthClient(private val webClientBuilder: WebClient.Builder) {
-
     private val webClient = webClientBuilder.baseUrl("https://github.com").build()
 
-    suspend fun exchangeToken(
-        clientId: String,
-        clientSecret: String,
-        code: String,
-        redirectUri: String,
-    ): GitHubOAuthTokenResponse {
+    suspend fun exchangeToken(clientId: String, clientSecret: String, code: String, redirectUri: String): GitHubOAuthTokenResponse {
         val formData =
             LinkedMultiValueMap<String, String>().apply {
                 add("client_id", clientId)
@@ -39,16 +33,13 @@ class GitHubAuthClient(private val webClientBuilder: WebClient.Builder) {
 
 @Component
 class GitHubApiClient(private val webClientBuilder: WebClient.Builder) {
-
     private val webClient = webClientBuilder.baseUrl("https://api.github.com").build()
 
-    suspend fun getUser(authorization: String): GitHubUser {
-        return webClient
-            .get()
-            .uri("/user")
-            .header("Authorization", authorization)
-            .accept(MediaType.APPLICATION_JSON)
-            .retrieve()
-            .awaitBody<GitHubUser>()
-    }
+    suspend fun getUser(authorization: String): GitHubUser = webClient
+        .get()
+        .uri("/user")
+        .header("Authorization", authorization)
+        .accept(MediaType.APPLICATION_JSON)
+        .retrieve()
+        .awaitBody<GitHubUser>()
 }

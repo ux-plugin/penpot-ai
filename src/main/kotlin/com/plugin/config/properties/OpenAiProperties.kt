@@ -11,7 +11,7 @@ import org.springframework.validation.annotation.Validated
 data class OpenAiProperties(
     @field:Valid @field:NotNull val api: ApiProperties,
     @field:Valid @field:NotNull val project: ProjectProperties,
-    @field:Valid @field:NotNull val org: OrgProperties
+    @field:Valid @field:NotNull val org: OrgProperties,
 ) {
     data class ApiProperties(@field:NotBlank val key: String)
 

@@ -30,7 +30,7 @@ package com.plugin.features.auth
 //
 // data class User(val id: String)
 //
-/// ** Integration tests for the Figma login flow and related endpoints. */
+// / ** Integration tests for the Figma login flow and related endpoints. */
 // @QuarkusTest
 // @TestProfile(FailFastFigmaAuthService::class)
 // @QuarkusTestResource(PostgresTestResourceManager::class, parallel = true)

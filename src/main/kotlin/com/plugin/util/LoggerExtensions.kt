@@ -18,9 +18,7 @@ import org.slf4j.LoggerFactory
  * }
  * ```
  */
-inline fun <reified T> T.logger(): Logger {
-    return LoggerFactory.getLogger(T::class.java)
-}
+inline fun <reified T> T.logger(): Logger = LoggerFactory.getLogger(T::class.java)
 
 /**
  * Create a logger for a specific class.
@@ -35,6 +33,4 @@ inline fun <reified T> T.logger(): Logger {
  * }
  * ```
  */
-inline fun <reified T> logger(): Logger {
-    return LoggerFactory.getLogger(T::class.java)
-}
+inline fun <reified T> logger(): Logger = LoggerFactory.getLogger(T::class.java)

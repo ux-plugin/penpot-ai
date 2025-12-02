@@ -18,7 +18,7 @@ data class OutgoingHttpExchange(
     val responseBody: String? = null,
     val requestBodyTruncated: Boolean = false,
     val responseBodyTruncated: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
 )
 
 /** Repository for storing outgoing HTTP exchanges in memory. Thread-safe implementation with a fixed capacity. */
@@ -34,9 +34,7 @@ class OutgoingHttpExchangeRepository(private val capacity: Int = 100) {
     }
 
     @Synchronized
-    fun getAll(): List<OutgoingHttpExchange> {
-        return exchanges.toList()
-    }
+    fun getAll(): List<OutgoingHttpExchange> = exchanges.toList()
 
     @Synchronized
     fun clear() {

@@ -12,11 +12,15 @@ import org.springframework.security.rsocket.core.PayloadSocketAcceptorIntercepto
 @EnableRSocketSecurity
 class RSocketSecurityConfig(private val jwtDecoder: ReactiveJwtDecoder) {
     @Bean
-    fun rsocketAuth(security: RSocketSecurity): PayloadSocketAcceptorInterceptor =
-        security
-            .authorizePayload { authz ->
-                authz.route("auth.**").permitAll().anyRequest().authenticated().anyExchange().permitAll()
-            }
-            .jwt { jwt -> jwt.authenticationManager(JwtReactiveAuthenticationManager(jwtDecoder)) }
-            .build()
+    fun rsocketAuth(security: RSocketSecurity): PayloadSocketAcceptorInterceptor = security
+        .authorizePayload { authz ->
+            authz
+                .route("auth.**")
+                .permitAll()
+                .anyRequest()
+                .authenticated()
+                .anyExchange()
+                .permitAll()
+        }.jwt { jwt -> jwt.authenticationManager(JwtReactiveAuthenticationManager(jwtDecoder)) }
+        .build()
 }

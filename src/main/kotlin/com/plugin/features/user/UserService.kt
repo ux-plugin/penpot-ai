@@ -2,26 +2,29 @@ package com.plugin.features.user
 
 import com.plugin.config.properties.UserProperties
 import com.plugin.features.auth.core.NotFoundException
-import java.util.*
-import javax.crypto.KeyGenerator
 import org.springframework.data.redis.core.ReactiveRedisTemplate
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.stereotype.Service
-import org.springframework.web.bind.annotation.*
+import org.springframework.web.bind.annotation.DeleteMapping
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
+import java.util.*
+import javax.crypto.KeyGenerator
 
 @Service
 class UserService(
     val userRepository: UserRepository,
     val reactiveRedisTemplate: ReactiveRedisTemplate<String, PortState>,
-    private val userProperties: UserProperties
+    private val userProperties: UserProperties,
 ) {
 
-    suspend fun getUser(userId: String): GetUserResponse {
-        return userRepository.getUser(userId)
-    }
+    suspend fun getUser(userId: String): GetUserResponse = userRepository.getUser(userId)
 
     suspend fun updateUser(userId: String, userUpdate: UpdateUserRequest) {
         userRepository.updateUser(userId, userUpdate)
@@ -31,9 +34,7 @@ class UserService(
         userRepository.deleteUser(userId)
     }
 
-    suspend fun getSocialProfiles(userId: String): GetSocialLoginsResponse {
-        return userRepository.getSocialLogins(userId)
-    }
+    suspend fun getSocialProfiles(userId: String): GetSocialLoginsResponse = userRepository.getSocialLogins(userId)
 
     suspend fun getCurrentPort(userId: String): PortState? {
         val someone = "LLC"
@@ -52,9 +53,7 @@ class UserService(
         }
     }
 
-    suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? {
-        return userRepository.getEncryptionKey(userId)
-    }
+    suspend fun getEncryptionKey(userId: String): EncryptionKeyResponse? = userRepository.getEncryptionKey(userId)
 
     suspend fun createEncryptionKey(userId: String): EncryptionKeyResponse {
         val keyGenerator = KeyGenerator.getInstance("AES")
@@ -83,10 +82,7 @@ class UserResource(private val userService: UserService) {
     }
 
     @PostMapping("/update")
-    suspend fun updateUser(
-        @AuthenticationPrincipal jwt: Jwt,
-        @RequestBody userUpdate: UpdateUserRequest
-    ): ResponseEntity<*> {
+    suspend fun updateUser(@AuthenticationPrincipal jwt: Jwt, @RequestBody userUpdate: UpdateUserRequest): ResponseEntity<*> {
         val userId = jwt.subject
         return try {
             userService.updateUser(userId, userUpdate)

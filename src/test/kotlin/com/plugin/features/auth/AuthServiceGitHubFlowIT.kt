@@ -28,7 +28,7 @@ package com.plugin.features.auth
 // to "2")
 // }
 //
-/// ** Integration tests for the GitHub login flow and related endpoints. */
+// / ** Integration tests for the GitHub login flow and related endpoints. */
 // @QuarkusTest
 // @TestProfile(FailFastGitHubAuthService::class)
 // @QuarkusTestResource(PostgresTestResourceManager::class, parallel = true)

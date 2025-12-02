@@ -1,8 +1,8 @@
 package com.plugin.features.completions
 
-import java.io.File
 import org.springframework.context.annotation.Profile
 import org.springframework.stereotype.Component
+import java.io.File
 
 /**
  * Production audio file strategy that uses temporary files. Files are automatically cleaned up after processing to
@@ -11,7 +11,6 @@ import org.springframework.stereotype.Component
 @Component
 @Profile("!dev")
 class ProdAudioFileStrategy : AudioFileStrategy {
-
     override fun createAudioFile(audioData: ByteArray, timestamp: Long): File {
         // Create a temporary file that will be automatically managed by the OS
         val file = File.createTempFile("audio_${timestamp}_", ".wav")

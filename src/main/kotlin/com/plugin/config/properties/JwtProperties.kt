@@ -12,7 +12,7 @@ import org.springframework.validation.annotation.Validated
 data class JwtProperties(
     @field:NotBlank val privateKeyLocation: String,
     @field:NotBlank val publicKeyLocation: String,
-    @field:Valid @field:NotNull val token: TokenProperties
+    @field:Valid @field:NotNull val token: TokenProperties,
 ) {
     data class TokenProperties(@field:Min(1) val lifespan: Long)
 }

@@ -46,19 +46,12 @@ object WavFileWriter {
         }
     }
 
-    private fun intToLittleEndian(value: Int): ByteArray {
-        return byteArrayOf(
-            (value and 0xFF).toByte(),
-            (value shr 8 and 0xFF).toByte(),
-            (value shr 16 and 0xFF).toByte(),
-            (value shr 24 and 0xFF).toByte()
-        )
-    }
+    private fun intToLittleEndian(value: Int): ByteArray = byteArrayOf(
+        (value and 0xFF).toByte(),
+        (value shr 8 and 0xFF).toByte(),
+        (value shr 16 and 0xFF).toByte(),
+        (value shr 24 and 0xFF).toByte(),
+    )
 
-    private fun shortToLittleEndian(value: Int): ByteArray {
-        return byteArrayOf((value and 0xFF).toByte(), (value shr 8 and 0xFF).toByte())
-    }
+    private fun shortToLittleEndian(value: Int): ByteArray = byteArrayOf((value and 0xFF).toByte(), (value shr 8 and 0xFF).toByte())
 }
-
-/** Port state for user connections */
-data class PortState(val port: Int?)

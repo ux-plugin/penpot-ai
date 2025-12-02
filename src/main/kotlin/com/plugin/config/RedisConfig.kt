@@ -12,13 +12,11 @@ import org.springframework.data.redis.serializer.StringRedisSerializer
 
 @Configuration
 class RedisConfig {
-
     @Bean
-    fun reactiveRedisTemplate(
-        connectionFactory: ReactiveRedisConnectionFactory
-    ): ReactiveRedisTemplate<String, String> {
+    fun reactiveRedisTemplate(connectionFactory: ReactiveRedisConnectionFactory): ReactiveRedisTemplate<String, String> {
         val serializationContext =
-            RedisSerializationContext.newSerializationContext<String, String>(StringRedisSerializer())
+            RedisSerializationContext
+                .newSerializationContext<String, String>(StringRedisSerializer())
                 .hashKey(StringRedisSerializer())
                 .hashValue(StringRedisSerializer())
                 .build()
@@ -29,11 +27,12 @@ class RedisConfig {
     @Bean
     fun portStateRedisTemplate(
         connectionFactory: ReactiveRedisConnectionFactory,
-        objectMapper: ObjectMapper
+        objectMapper: ObjectMapper,
     ): ReactiveRedisTemplate<String, PortState> {
         val serializer = Jackson2JsonRedisSerializer(objectMapper, PortState::class.java)
         val serializationContext =
-            RedisSerializationContext.newSerializationContext<String, PortState>(StringRedisSerializer())
+            RedisSerializationContext
+                .newSerializationContext<String, PortState>(StringRedisSerializer())
                 .value(serializer)
                 .hashValue(serializer)
                 .build()

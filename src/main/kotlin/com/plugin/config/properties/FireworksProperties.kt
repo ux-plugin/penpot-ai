@@ -10,7 +10,7 @@ import org.springframework.validation.annotation.Validated
 @Validated
 data class FireworksProperties(
     @field:Valid @field:NotNull val api: ApiProperties,
-    @field:Valid @field:NotNull val whisper: WhisperProperties
+    @field:Valid @field:NotNull val whisper: WhisperProperties,
 ) {
     data class ApiProperties(@field:NotBlank val key: String, @field:NotBlank val baseUrl: String)
 

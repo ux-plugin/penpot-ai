@@ -1,7 +1,6 @@
 package com.plugin.features.completions
 
 import com.plugin.config.properties.FireworksProperties
-import java.io.File
 import org.springframework.core.io.FileSystemResource
 import org.springframework.http.MediaType
 import org.springframework.http.client.MultipartBodyBuilder
@@ -9,15 +8,15 @@ import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.awaitBody
+import java.io.File
 
 data class FireworksTranscriptionResponse(val text: String)
 
 @Service
 class FireworksTranscriptionService(
     private val webClientBuilder: WebClient.Builder,
-    private val fireworksProperties: FireworksProperties
+    private val fireworksProperties: FireworksProperties,
 ) {
-
     private val webClient: WebClient by lazy { webClientBuilder.baseUrl(fireworksProperties.api.baseUrl).build() }
 
     suspend fun transcribe(audioFile: File): String {

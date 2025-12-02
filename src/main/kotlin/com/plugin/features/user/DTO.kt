@@ -8,14 +8,10 @@ data class GetUserResponse(
     val username: String?,
     val role: UserRole,
     val allowSavingCompletions: Boolean,
-    val port: Int?
+    val port: Int?,
 )
 
-data class UpdateUserRequest(
-    val name: String?,
-    val username: String?,
-    val allowSavingCompletions: Boolean?,
-)
+data class UpdateUserRequest(val name: String?, val username: String?, val allowSavingCompletions: Boolean?)
 
 data class SocialLogin(val id: String, val provider: SocialProvider)
 

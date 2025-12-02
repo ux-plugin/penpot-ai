@@ -2,9 +2,9 @@ package com.plugin.dev
 
 import com.plugin.features.completions.AudioFileStrategy
 import com.plugin.features.completions.WavFileWriter
-import java.io.File
 import org.springframework.context.annotation.Profile
 import org.springframework.stereotype.Component
+import java.io.File
 
 /**
  * Development audio file strategy that persists files to disk for debugging. Files are saved in the 'audio-recordings'
@@ -13,9 +13,8 @@ import org.springframework.stereotype.Component
 @Component
 @Profile("dev")
 class DevAudioFileStrategy : AudioFileStrategy {
-
     override fun createAudioFile(audioData: ByteArray, timestamp: Long): File {
-        val file = File("audio-recordings", "audio_${timestamp}.wav")
+        val file = File("audio-recordings", "audio_$timestamp.wav")
         file.parentFile?.mkdirs()
         WavFileWriter.writeWavFile(audioData, file)
         return file

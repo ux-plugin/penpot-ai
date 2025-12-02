@@ -1,7 +1,5 @@
 package com.plugin.dev
 
-import java.nio.charset.StandardCharsets
-import java.time.Instant
 import org.springframework.core.io.buffer.DataBufferFactory
 import org.springframework.core.io.buffer.DefaultDataBufferFactory
 import org.springframework.http.MediaType
@@ -11,6 +9,8 @@ import org.springframework.web.reactive.function.client.ExchangeFilterFunction
 import org.springframework.web.reactive.function.client.ExchangeFunction
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
+import java.nio.charset.StandardCharsets
+import java.time.Instant
 
 /**
  * WebClient filter that captures all outgoing HTTP requests and responses including request/response bodies for
@@ -18,7 +18,7 @@ import reactor.core.publisher.Mono
  */
 class OutgoingHttpExchangeFilter(
     private val repository: OutgoingHttpExchangeRepository,
-    private val maxBodySize: Int = 10240 // 10KB default
+    private val maxBodySize: Int = 10240, // 10KB default
 ) : ExchangeFilterFunction {
 
     private val dataBufferFactory: DataBufferFactory = DefaultDataBufferFactory()
@@ -44,7 +44,7 @@ class OutgoingHttpExchangeFilter(
                         uri = uri,
                         requestHeaders = requestHeaders,
                         requestBodyInfo = requestBodyInfo,
-                        startTime = startTime
+                        startTime = startTime,
                     )
                 }
                 .onErrorResume { error ->
@@ -62,7 +62,7 @@ class OutgoingHttpExchangeFilter(
                             responseBody = null,
                             requestBodyTruncated = requestBodyInfo.truncated,
                             responseBodyTruncated = false,
-                            error = error.message ?: error::class.simpleName
+                            error = error.message ?: error::class.simpleName,
                         )
                     repository.add(exchange)
                     Mono.error(error)
@@ -89,7 +89,7 @@ class OutgoingHttpExchangeFilter(
         uri: String,
         requestHeaders: Map<String, List<String>>?,
         requestBodyInfo: BodyInfo,
-        startTime: Long
+        startTime: Long,
     ): Mono<ClientResponse> {
         val timeTaken = System.currentTimeMillis() - startTime
         val statusCode = response.statusCode().value()
@@ -112,7 +112,7 @@ class OutgoingHttpExchangeFilter(
                     responseBody = null,
                     requestBodyTruncated = requestBodyInfo.truncated,
                     responseBodyTruncated = false,
-                    error = null
+                    error = null,
                 )
             repository.add(exchange)
             return Mono.just(response)
@@ -138,7 +138,7 @@ class OutgoingHttpExchangeFilter(
                         responseBody = capturedBody,
                         requestBodyTruncated = requestBodyInfo.truncated,
                         responseBodyTruncated = truncated,
-                        error = null
+                        error = null,
                     )
                 repository.add(exchange)
 
@@ -149,9 +149,9 @@ class OutgoingHttpExchangeFilter(
                         .body(
                             Flux.just(bodyString)
                                 .map { it.toByteArray(StandardCharsets.UTF_8) }
-                                .map { bytes -> dataBufferFactory.wrap(bytes) }
+                                .map { bytes -> dataBufferFactory.wrap(bytes) },
                         )
-                        .build()
+                        .build(),
                 )
             }
             .onErrorResume { error ->
@@ -169,7 +169,7 @@ class OutgoingHttpExchangeFilter(
                         responseBody = "[Failed to capture body: ${error.message}]",
                         requestBodyTruncated = requestBodyInfo.truncated,
                         responseBodyTruncated = false,
-                        error = null
+                        error = null,
                     )
                 repository.add(exchange)
                 Mono.just(response)
@@ -182,19 +182,19 @@ class OutgoingHttpExchangeFilter(
         // Capture text-based content types
         return contentType.type == "text" ||
             contentType.type == "application" &&
-                (contentType.subtype == "json" ||
+            (
+                contentType.subtype == "json" ||
                     contentType.subtype == "xml" ||
                     contentType.subtype == "x-www-form-urlencoded" ||
                     contentType.subtype.contains("json") ||
-                    contentType.subtype.contains("xml"))
+                    contentType.subtype.contains("xml")
+                )
     }
 
-    private fun truncateIfNeeded(body: String): Pair<String, Boolean> {
-        return if (body.length > maxBodySize) {
-            Pair(body.substring(0, maxBodySize) + "\n... [truncated]", true)
-        } else {
-            Pair(body, false)
-        }
+    private fun truncateIfNeeded(body: String): Pair<String, Boolean> = if (body.length > maxBodySize) {
+        Pair(body.substring(0, maxBodySize) + "\n... [truncated]", true)
+    } else {
+        Pair(body, false)
     }
 
     private data class BodyInfo(val body: String?, val truncated: Boolean)

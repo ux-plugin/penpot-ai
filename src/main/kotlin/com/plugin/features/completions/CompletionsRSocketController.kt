@@ -1,26 +1,20 @@
 package com.plugin.features.completions
 
-import java.io.ByteArrayOutputStream
-import java.util.Base64
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.withContext
 import org.springframework.messaging.handler.annotation.MessageMapping
 import org.springframework.stereotype.Controller
+import java.io.ByteArrayOutputStream
+import java.util.*
 
 data class CompletionStreamChunk(val drawnPath: String? = null, val audioChunkBase64: String, val timestamp: Long)
 
-data class CompletionStreamEvent(val text: String? = null, val done: Boolean = false)
-
 @Controller
-class CompletionsRSocketController(
-    private val ai: FigmaDesignAiService,
-    private val audioFileStrategy: AudioFileStrategy
-) {
-
+class CompletionsRSocketController(private val ai: FigmaDesignAiService, private val audioFileStrategy: AudioFileStrategy) {
     /** Request-Channel: client streams audio chunks, server streams AI response text. Route: "completions.stream" */
     @MessageMapping("completions.stream")
     suspend fun stream(request: Flow<CompletionStreamChunk>): Flow<CompletionStreamEvent> {
@@ -46,21 +40,48 @@ class CompletionsRSocketController(
                 AgentPipelineInput(audioFile = file, cursorContext = drawn.toString().ifBlank { null })
             }
 
-        // Stream results
-        return flow {
-                ai.streamDesignFromAudio(input).collect { chunk ->
-                    emit(CompletionStreamEvent(text = chunk, done = false))
-                }
-                emit(CompletionStreamEvent(text = null, done = true))
+        // Stream results using TokenStream callbacks with callbackFlow for proper async bridging
+        return callbackFlow {
+            val tokenStream = ai.streamDesignFromAudio(input)
+
+            tokenStream
+                .onPartialResponse { partialResponse ->
+                    trySend(CompletionStreamEvent(text = partialResponse))
+                }.onPartialThinking { reasoning ->
+                    trySend(CompletionStreamEvent(reasoning = reasoning.text()))
+                }.beforeToolExecution { toolExecution ->
+                    val toolRequest = toolExecution.request()
+                    trySend(
+                        CompletionStreamEvent(
+                            action =
+                            CompletionAction(
+                                action = toolRequest.name(),
+                                target = toolRequest.id(),
+                                params = toolRequest.arguments(),
+                            ),
+                        ),
+                    )
+                }.onError { error ->
+                    // Propagate the error and close the flow
+                    close(error)
+                }.onCompleteResponse { response ->
+                    // Successfully complete the flow
+                    close()
+                }.start()
+
+            // TokenStream doesn't provide a cancel method, so cleanup is minimal
+            awaitClose {
+                // The stream will naturally stop when the flow is cancelled
             }
-            .onCompletion {
-                if (audioFileStrategy.shouldCleanup()) {
-                    withContext(Dispatchers.IO) {
-                        try {
-                            input.audioFile.delete()
-                        } catch (_: Exception) {}
+        }.onCompletion {
+            if (audioFileStrategy.shouldCleanup()) {
+                withContext(Dispatchers.IO) {
+                    try {
+                        input.audioFile.delete()
+                    } catch (_: Exception) {
                     }
                 }
             }
+        }
     }
 }

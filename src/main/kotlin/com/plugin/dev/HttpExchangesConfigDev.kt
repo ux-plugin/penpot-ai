@@ -20,7 +20,6 @@ import org.springframework.context.annotation.Profile
 @Configuration
 @Profile("dev")
 class HttpExchangesConfigDev {
-
     /**
      * Creates an in-memory repository to store incoming HTTP request/response exchanges. Stores the last 100 HTTP
      * exchanges by default.
@@ -28,9 +27,7 @@ class HttpExchangesConfigDev {
      * @return HttpExchangeRepository configured for development
      */
     @Bean
-    fun httpExchangeRepository(): HttpExchangeRepository {
-        return InMemoryHttpExchangeRepository()
-    }
+    fun httpExchangeRepository(): HttpExchangeRepository = InMemoryHttpExchangeRepository()
 
     /**
      * Creates a repository to store outgoing HTTP exchanges (to external APIs). Stores the last 100 outgoing API calls.
@@ -38,9 +35,7 @@ class HttpExchangesConfigDev {
      * @return OutgoingHttpExchangeRepository configured for development
      */
     @Bean
-    fun outgoingHttpExchangeRepository(): OutgoingHttpExchangeRepository {
-        return OutgoingHttpExchangeRepository(capacity = 100)
-    }
+    fun outgoingHttpExchangeRepository(): OutgoingHttpExchangeRepository = OutgoingHttpExchangeRepository(capacity = 100)
 
     /**
      * Creates a filter to capture all outgoing HTTP requests/responses. Captures response bodies up to 10KB by default.
@@ -61,7 +56,6 @@ class HttpExchangesConfigDev {
      * @return WebClientCustomizer that adds the filter
      */
     @Bean
-    fun outgoingHttpExchangeWebClientCustomizer(filter: OutgoingHttpExchangeFilter): WebClientCustomizer {
-        return WebClientCustomizer { builder -> builder.filter(filter) }
-    }
+    fun outgoingHttpExchangeWebClientCustomizer(filter: OutgoingHttpExchangeFilter): WebClientCustomizer =
+        WebClientCustomizer { builder -> builder.filter(filter) }
 }

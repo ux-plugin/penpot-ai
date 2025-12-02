@@ -11,14 +11,11 @@ import org.springframework.security.web.server.util.matcher.ServerWebExchangeMat
 @Configuration
 @Profile("dev")
 class SecurityConfigDev {
-
     @Bean
     @Order(0) // Higher priority than default SecurityConfig
-    fun actuatorSecurityWebFilterChain(http: ServerHttpSecurity): SecurityWebFilterChain {
-        return http
-            .securityMatcher(ServerWebExchangeMatchers.pathMatchers("/actuator/**"))
-            .csrf { it.disable() }
-            .authorizeExchange { exchanges -> exchanges.anyExchange().permitAll() }
-            .build()
-    }
+    fun actuatorSecurityWebFilterChain(http: ServerHttpSecurity): SecurityWebFilterChain = http
+        .securityMatcher(ServerWebExchangeMatchers.pathMatchers("/actuator/**"))
+        .csrf { it.disable() }
+        .authorizeExchange { exchanges -> exchanges.anyExchange().permitAll() }
+        .build()
 }

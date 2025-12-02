@@ -1,39 +1,35 @@
 package com.plugin.features.auth.figma
 
-import com.plugin.features.auth.core.*
+import com.plugin.features.auth.core.AccessTokenResponse
+import com.plugin.features.auth.core.AccountAlreadyLinkedException
+import com.plugin.features.auth.core.ConnectSocialProviderResponse
+import com.plugin.features.auth.core.ConnectSocialProviderResult
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.oauth2.jwt.Jwt
-import org.springframework.web.bind.annotation.*
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.RestController
 
 @RestController
 @RequestMapping("/auth/figma")
-class FigmaAuthResource(
-    private val figmaAuthService: FigmaAuthService,
-) {
-
+class FigmaAuthResource(private val figmaAuthService: FigmaAuthService) {
     @GetMapping("/login")
-    suspend fun login(): ResponseEntity<*> {
-        return try {
-            val response = figmaAuthService.login()
-            ResponseEntity.ok(response)
-        } catch (e: Exception) {
-            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to login")
-        }
+    suspend fun login(): ResponseEntity<*> = try {
+        val response = figmaAuthService.login()
+        ResponseEntity.ok(response)
+    } catch (e: Exception) {
+        ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to login")
     }
 
     @GetMapping("/callback")
-    suspend fun callback(
-        @RequestParam code: String,
-        @RequestParam state: String,
-    ): ResponseEntity<*> {
-        return try {
-            figmaAuthService.authenticateUser(state, code)
-            ResponseEntity.ok().build<Unit>()
-        } catch (e: Exception) {
-            ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Failed to authenticate")
-        }
+    suspend fun callback(@RequestParam code: String, @RequestParam state: String): ResponseEntity<*> = try {
+        figmaAuthService.authenticateUser(state, code)
+        ResponseEntity.ok().build<Unit>()
+    } catch (e: Exception) {
+        ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Failed to authenticate")
     }
 
     @GetMapping("/access-token")
@@ -59,18 +55,13 @@ class FigmaAuthResource(
     }
 
     @GetMapping("/connect/callback")
-    suspend fun connectCallback(
-        @RequestParam code: String,
-        @RequestParam state: String,
-    ): ResponseEntity<*> {
-        return try {
-            figmaAuthService.connectSocialProfile(code = code, state = state)
-            ResponseEntity.ok().build<Unit>()
-        } catch (e: AccountAlreadyLinkedException) {
-            ResponseEntity.status(HttpStatus.CONFLICT).body("Account already linked.")
-        } catch (e: Exception) {
-            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to link account")
-        }
+    suspend fun connectCallback(@RequestParam code: String, @RequestParam state: String): ResponseEntity<*> = try {
+        figmaAuthService.connectSocialProfile(code = code, state = state)
+        ResponseEntity.ok().build<Unit>()
+    } catch (e: AccountAlreadyLinkedException) {
+        ResponseEntity.status(HttpStatus.CONFLICT).body("Account already linked.")
+    } catch (e: Exception) {
+        ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to link account")
     }
 
     @GetMapping("/connect/result")

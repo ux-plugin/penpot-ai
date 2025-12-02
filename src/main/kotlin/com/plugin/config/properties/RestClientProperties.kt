@@ -12,13 +12,13 @@ import org.springframework.validation.annotation.Validated
 data class RestClientProperties(
     @field:Valid @field:NotNull val aiServer: ServerProperties,
     @field:Valid @field:NotNull val githubApi: ServerProperties,
-    @field:Valid @field:NotNull val fireworksApi: FireworksApiProperties
+    @field:Valid @field:NotNull val fireworksApi: FireworksApiProperties,
 ) {
     data class ServerProperties(@field:NotBlank val url: String)
 
     data class FireworksApiProperties(
         @field:NotBlank val url: String,
         @field:Min(1) val connectTimeout: Long,
-        @field:Min(1) val readTimeout: Long
+        @field:Min(1) val readTimeout: Long,
     )
 }

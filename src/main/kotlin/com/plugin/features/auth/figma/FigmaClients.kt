@@ -1,24 +1,18 @@
 package com.plugin.features.auth.figma
 
-import java.util.Base64
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
 import org.springframework.util.LinkedMultiValueMap
 import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.awaitBody
+import java.util.*
 
 @Component
 class FigmaAuthClient(private val webClientBuilder: WebClient.Builder) {
-
     private val webClient = webClientBuilder.baseUrl("https://api.figma.com").build()
 
-    suspend fun exchangeToken(
-        clientId: String,
-        clientSecret: String,
-        code: String,
-        redirectUri: String,
-    ): FigmaOAuthTokenResponse {
+    suspend fun exchangeToken(clientId: String, clientSecret: String, code: String, redirectUri: String): FigmaOAuthTokenResponse {
         val credentials = "$clientId:$clientSecret"
         val encodedCredentials = Base64.getEncoder().encodeToString(credentials.toByteArray())
         val authHeader = "Basic $encodedCredentials"
@@ -40,11 +34,7 @@ class FigmaAuthClient(private val webClientBuilder: WebClient.Builder) {
             .awaitBody<FigmaOAuthTokenResponse>()
     }
 
-    suspend fun refreshToken(
-        clientId: String,
-        clientSecret: String,
-        refreshToken: String,
-    ): FigmaRefreshTokenResponse {
+    suspend fun refreshToken(clientId: String, clientSecret: String, refreshToken: String): FigmaRefreshTokenResponse {
         val credentials = "$clientId:$clientSecret"
         val encodedCredentials = Base64.getEncoder().encodeToString(credentials.toByteArray())
         val authHeader = "Basic $encodedCredentials"
@@ -68,16 +58,13 @@ class FigmaAuthClient(private val webClientBuilder: WebClient.Builder) {
 
 @Component
 class FigmaApiClient(private val webClientBuilder: WebClient.Builder) {
-
     private val webClient = webClientBuilder.baseUrl("https://api.figma.com").build()
 
-    suspend fun getMe(authorization: String): FigmaUser {
-        return webClient
-            .get()
-            .uri("/v1/me")
-            .header("Authorization", authorization)
-            .accept(MediaType.APPLICATION_JSON)
-            .retrieve()
-            .awaitBody<FigmaUser>()
-    }
+    suspend fun getMe(authorization: String): FigmaUser = webClient
+        .get()
+        .uri("/v1/me")
+        .header("Authorization", authorization)
+        .accept(MediaType.APPLICATION_JSON)
+        .retrieve()
+        .awaitBody<FigmaUser>()
 }

@@ -13,9 +13,8 @@ data class AuthProperties(
     @field:Min(1) val accessTokenTtlS: Long,
     @field:Min(1) val refreshTokenTtlS: Long,
     @field:Valid @field:NotNull val figma: FigmaProperties,
-    @field:Valid @field:NotNull val github: GitHubProperties
+    @field:Valid @field:NotNull val github: GitHubProperties,
 ) {
-
     data class FigmaProperties(
         @field:NotBlank val clientId: String,
         @field:NotBlank val clientSecret: String,
@@ -28,7 +27,7 @@ data class AuthProperties(
         @field:Valid @field:NotNull val login: LoginProperties,
         @field:Valid @field:NotNull val restClient: RestClientProperties,
         @field:Valid @field:NotNull val readToken: RedisKeyPrefixProperties,
-        @field:Valid @field:NotNull val writeToken: RedisKeyPrefixProperties
+        @field:Valid @field:NotNull val writeToken: RedisKeyPrefixProperties,
     )
 
     data class GitHubProperties(
@@ -43,17 +42,14 @@ data class AuthProperties(
         @field:Valid @field:NotNull val login: LoginProperties,
         @field:Valid @field:NotNull val restClient: RestClientProperties,
         @field:Valid @field:NotNull val readToken: RedisKeyPrefixProperties,
-        @field:Valid @field:NotNull val writeToken: RedisKeyPrefixProperties
+        @field:Valid @field:NotNull val writeToken: RedisKeyPrefixProperties,
     )
 
     data class RedisKeyPrefixProperties(@field:NotBlank val redisKeyPrefix: String)
 
     data class ResultKeyPrefixProperties(@field:NotBlank val resultKeyPrefix: String)
 
-    data class LoginProperties(
-        @field:Valid @field:NotNull val randomKey: RandomKeyProperties,
-        @field:Min(1) val timeoutSec: Long
-    ) {
+    data class LoginProperties(@field:Valid @field:NotNull val randomKey: RandomKeyProperties, @field:Min(1) val timeoutSec: Long) {
         data class RandomKeyProperties(@field:Min(1) val maxRetries: Int)
     }
 

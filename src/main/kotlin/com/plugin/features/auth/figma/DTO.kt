@@ -22,12 +22,7 @@ data class FigmaRefreshTokenResponse(
 )
 
 /** Figma user information */
-data class FigmaUser(
-    val id: String,
-    val handle: String,
-    @JsonProperty("img_url") val imgUrl: String,
-    val email: String,
-)
+data class FigmaUser(val id: String, val handle: String, @JsonProperty("img_url") val imgUrl: String, val email: String)
 
 /** Figma access scopes */
 enum class FigmaAccessScope(val value: String) {

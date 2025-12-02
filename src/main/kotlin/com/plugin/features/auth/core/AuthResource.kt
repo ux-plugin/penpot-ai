@@ -1,22 +1,28 @@
 package com.plugin.features.auth.core
 
-import java.time.Duration
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseCookie
 import org.springframework.http.ResponseEntity
 import org.springframework.http.server.reactive.ServerHttpResponse
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.oauth2.jwt.Jwt
-import org.springframework.web.bind.annotation.*
+import org.springframework.web.bind.annotation.CookieValue
+import org.springframework.web.bind.annotation.DeleteMapping
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.RestController
+import java.time.Duration
 
 @RestController
 @RequestMapping("/auth")
 class AuthResource(private val authService: AuthService) {
-
     @PostMapping("/access-token/refresh")
     suspend fun refreshAccessToken(
         @CookieValue(name = "refresh_token", required = false) refreshTokenCookie: String?,
-        @RequestParam userId: String
+        @RequestParam userId: String,
     ): ResponseEntity<*> {
         if (refreshTokenCookie.isNullOrEmpty()) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(AuthErrorResponse("Missing refresh token"))
@@ -41,7 +47,8 @@ class AuthResource(private val authService: AuthService) {
             val refreshToken = authService.getRefreshToken(userId)
 
             val cookie =
-                ResponseCookie.from("refresh_token", refreshToken.refreshToken)
+                ResponseCookie
+                    .from("refresh_token", refreshToken.refreshToken)
                     .path("/")
                     .maxAge(Duration.between(java.time.Instant.now(), refreshToken.refreshTokenExpiresAt))
                     .httpOnly(true)
@@ -75,9 +82,7 @@ class AuthResource(private val authService: AuthService) {
     }
 
     @PostMapping("/plugin-ui/access-token/refresh")
-    suspend fun figmaPluginRefreshAccessToken(
-        @RequestBody request: FigmaPluginRefreshAccessTokenRequest
-    ): ResponseEntity<*> {
+    suspend fun figmaPluginRefreshAccessToken(@RequestBody request: FigmaPluginRefreshAccessTokenRequest): ResponseEntity<*> {
         val refreshTokenRequest = RefreshTokenRequest(request.refreshToken, request.userId)
 
         return try {
@@ -101,7 +106,8 @@ class AuthResource(private val authService: AuthService) {
         } catch (e: NotFoundException) {
             ResponseEntity.status(HttpStatus.NOT_FOUND).body(AuthErrorResponse("Could not find socialLogin"))
         } catch (e: Exception) {
-            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+            ResponseEntity
+                .status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(AuthErrorResponse("Could not delete socialLogin"))
         }
     }

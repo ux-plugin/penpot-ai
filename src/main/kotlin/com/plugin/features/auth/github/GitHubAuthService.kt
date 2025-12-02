@@ -2,11 +2,18 @@ package com.plugin.features.auth.github
 
 import com.plugin.config.JwtService
 import com.plugin.config.properties.AuthProperties
-import com.plugin.features.auth.core.*
+import com.plugin.features.auth.core.AccountAlreadyLinkedException
+import com.plugin.features.auth.core.AuthRepository
+import com.plugin.features.auth.core.ConnectInitResponse
+import com.plugin.features.auth.core.ConnectSocialProviderResult
+import com.plugin.features.auth.core.NotFoundException
+import com.plugin.features.auth.core.OAuthInitResponse
+import com.plugin.features.auth.core.RedisRepository
+import com.plugin.features.auth.core.SocialProvider
+import org.springframework.stereotype.Service
 import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
-import org.springframework.stereotype.Service
 
 @Service
 class GitHubAuthService(
@@ -17,7 +24,6 @@ class GitHubAuthService(
     private val jwtService: JwtService,
     private val authProperties: AuthProperties,
 ) {
-
     suspend fun login(): OAuthInitResponse {
         val readToken =
             redisRepository.generateUniqueKey(
@@ -45,29 +51,21 @@ class GitHubAuthService(
         return OAuthInitResponse(readTokenJwt, redirectUri)
     }
 
-    fun generateConnectUrl(
-        state: String,
-        scopes: List<GitHubAccessScope>,
-        redirectUri: String,
-    ): String {
-        return buildString {
-            append("https://github.com/login/oauth/authorize")
-            append("?client_id=${URLEncoder.encode(authProperties.github.clientId, "UTF-8")}")
-            append("&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}")
-            append("&scope=${scopes.joinToString("%20") { URLEncoder.encode(it.value, "UTF-8") }}")
-            append("&state=${URLEncoder.encode(state, "UTF-8")}")
-            append("&allow_signup=true")
-        }
+    fun generateConnectUrl(state: String, scopes: List<GitHubAccessScope>, redirectUri: String): String = buildString {
+        append("https://github.com/login/oauth/authorize")
+        append("?client_id=${URLEncoder.encode(authProperties.github.clientId, "UTF-8")}")
+        append("&redirect_uri=${URLEncoder.encode(redirectUri, "UTF-8")}")
+        append("&scope=${scopes.joinToString("%20") { URLEncoder.encode(it.value, "UTF-8") }}")
+        append("&state=${URLEncoder.encode(state, "UTF-8")}")
+        append("&allow_signup=true")
     }
 
-    suspend fun exchangeCodeForToken(code: String, redirectUri: String): GitHubOAuthTokenResponse {
-        return githubAuthClient.exchangeToken(
-            clientId = authProperties.github.clientId,
-            clientSecret = authProperties.github.clientSecret,
-            code = code,
-            redirectUri = redirectUri,
-        )
-    }
+    suspend fun exchangeCodeForToken(code: String, redirectUri: String): GitHubOAuthTokenResponse = githubAuthClient.exchangeToken(
+        clientId = authProperties.github.clientId,
+        clientSecret = authProperties.github.clientSecret,
+        code = code,
+        redirectUri = redirectUri,
+    )
 
     suspend fun authenticateUser(state: String, code: String) {
         val redisKey = authProperties.github.writeToken.redisKeyPrefix + state

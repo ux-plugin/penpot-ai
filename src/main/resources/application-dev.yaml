@@ -6,29 +6,41 @@ spring:
     import: optional:file:.env.dev[.properties]
   autoconfigure:
     exclude: org.jetbrains.exposed.v1.spring.boot.autoconfigure.ExposedAutoConfiguration
+  
+  # Spring Boot DevTools configuration
+  devtools:
+    restart:
+      enabled: true                    # Enable automatic restart
+      poll-interval: 1000ms           # Check for changes every second
+      quiet-period: 400ms             # Wait 400ms before restarting
+      exclude: static/**,public/**    # Don't restart for static resources
+      additional-exclude: "*.log"     # Also exclude log files
+    livereload:
+      enabled: true                    # Enable LiveReload server
+      port: 35729                      # Default LiveReload port
 
 # Logging configuration (development)
 logging:
   level:
-    root: ${LOG_LEVEL:INFO}
-    com.plugin: ${APP_LOG_LEVEL:DEBUG}  # Your custom application logs
-    org.springframework: ${SPRING_LOG_LEVEL:INFO}
-    org.springframework.data.redis: ${REDIS_LOG_LEVEL:INFO}
-    org.springframework.web: ${WEB_LOG_LEVEL:INFO}
-    org.springframework.web.socket: ${WEBSOCKET_LOG_LEVEL:INFO}
-    org.springframework.web.reactive: ${REACTIVE_LOG_LEVEL:INFO}
-    org.springframework.web.reactive.function.client: ${REACTIVE_CLIENT_LOG_LEVEL:INFO}
-    io.lettuce: ${LETTUCE_LOG_LEVEL:INFO}
-    reactor.netty: ${NETTY_LOG_LEVEL:INFO}
-    reactor.netty.http.client: ${HTTP_CLIENT_LOG_LEVEL:INFO}
+    root: INFO
+    com.plugin: DEBUG  # Your custom application logs
+    org.springframework: INFO
+    org.springframework.data.redis: INFO
+    org.springframework.web: INFO
+    org.springframework.web.socket: INFO
+    org.springframework.web.reactive: INFO
+    org.springframework.web.reactive.function.client: INFO
+    io.lettuce: INFO
+    reactor.netty: INFO
+    reactor.netty.http.client: INFO
 
   # Liquibase configuration (development)
   liquibase:
     enabled: true
     change-log: classpath:db/changelog/master.yaml
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
-    user: ${DB_USERNAME:postgres}
-    password: ${DB_PASSWORD:password}
+    url: jdbc:postgresql://localhost:5432/figma_plugin
+    user: postgres
+    password: password
     drop-first: true  # WARNING: Drops all database objects before running migrations in dev
 
 # OpenAI configuration (development with defaults)
@@ -36,34 +48,41 @@ openai:
   api:
     key: ${OPENAI_API_KEY:sk-dummy-key-for-dev}
   project:
-    id: ${OPENAI_PROJECT_ID:dev-project}
+    id: dev-project
   org:
-    id: ${OPENAI_ORG_ID:dev-org}
+    id: dev-org
 
 # Fireworks AI configuration (development with defaults)
 fireworks:
   api:
     key: ${FIREWORKS_API_KEY:dummy-fireworks-key}
-    base-url: ${FIREWORKS_API_BASE_URL:https://audio-prod.api.fireworks.ai}
+    base-url: https://audio-prod.api.fireworks.ai
   whisper:
-    model: ${FIREWORKS_WHISPER_MODEL:whisper-v3}
+    model: whisper-v3
 
-# Agent configuration (development)
+# Agent configuration (development with static values)
 agent:
-  model:
-    name: ${AGENT_MODEL_NAME:gpt-4o-mini}
+  figma-design:
+    provider: anthropic
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      model-name: gpt-4o
+      reasoning-effort: medium
+      return-thinking: true
+      temperature: 0.7
+      max-tokens: 4096
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY}
+      model-name: claude-sonnet-4-20250514
+      max-tokens: 4096
+      thinking-budget-tokens: 2000
+      temperature: 1.0
+    gemini:
+      api-key: ${GEMINI_API_KEY}
+      model-name: gemini-2.0-flash-exp
+      temperature: 0.7
+      max-output-tokens: 8192
 
-# Koog AI agent framework configuration (development)
-koog:
-  fireworks:
-    api-key: ${FIREWORKS_API_KEY:dummy-fireworks-key}
-  openai:
-    api-key: ${OPENAI_API_KEY:sk-dummy-key-for-dev}
-  llm:
-    model: ${KOOG_LLM_MODEL:gpt-4o-mini}
-    temperature: ${KOOG_LLM_TEMPERATURE:0.7}
-  agent:
-    max-iterations: ${KOOG_MAX_ITERATIONS:10}
 
 # JWT configuration (development)
 jwt:
@@ -129,7 +148,7 @@ user:
 # REST Client configurations (development)
 rest-client:
   ai-server:
-    url: ${AI_SERVER_URL:http://localhost:8002}
+    url: http://localhost:8002
   github-api:
     url: https://api.github.com
   fireworks-api:

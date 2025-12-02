@@ -5,7 +5,7 @@ package com.plugin.features.completions
 // import org.testcontainers.containers.GenericContainer
 // import org.testcontainers.images.builder.ImageFromDockerfile
 //
-/// ** Quarkus test resource that starts a Docker container for the mock OpenAI API server. */
+// / ** Quarkus test resource that starts a Docker container for the mock OpenAI API server. */
 // class MockOpenAiInfra : QuarkusTestResourceLifecycleManager {
 //    private lateinit var aiMockContainer: GenericContainer<*>
 //
