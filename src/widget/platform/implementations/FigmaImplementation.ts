@@ -43,11 +43,20 @@ export class FigmaImplementation implements IDesignPlatform {
   currentPage = {
     get selection() {
       return figma.currentPage.selection;
+    },
+    get children() {
+      return figma.currentPage.children;
     }
   };
 
   on = (event: string, callback: () => void) => {
     figma.on(event as any, callback);
+  };
+
+  viewport = {
+    get bounds() {
+      return figma.viewport.bounds;
+    }
   };
 
   getStyleByIdAsync = async (id: string) => {

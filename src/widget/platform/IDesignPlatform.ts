@@ -1,3 +1,11 @@
+// Viewport bounds interface
+export interface ViewportBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 // Core interface that abstracts design platform APIs
 export interface IDesignPlatform {
   // UI Communication
@@ -21,8 +29,14 @@ export interface IDesignPlatform {
   // Selection & Events
   currentPage: {
     selection: readonly unknown[];
+    children: readonly any[];
   };
   on: (event: string, callback: () => void) => void;
+  
+  // Viewport
+  viewport: {
+    bounds: ViewportBounds;
+  };
   
   // Styles
   getStyleByIdAsync: (id: string) => Promise<any>;

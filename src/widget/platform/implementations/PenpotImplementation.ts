@@ -108,6 +108,27 @@ export class PenpotImplementation implements IDesignPlatform {
         return (globalThis as any).penpot.selection || [];
       }
       return [];
+    },
+    get children() {
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.page) {
+        return (globalThis as any).penpot.page.children || [];
+      }
+      return [];
+    }
+  };
+
+  viewport = {
+    get bounds() {
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.viewport) {
+        return (globalThis as any).penpot.viewport.bounds;
+      }
+      // Return default viewport bounds
+      return {
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1080
+      };
     }
   };
 

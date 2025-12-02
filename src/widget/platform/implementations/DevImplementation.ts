@@ -185,7 +185,17 @@ export class DevImplementation implements IDesignPlatform {
   };
 
   currentPage = {
-    selection: [] as any[]
+    selection: [] as any[],
+    children: [] as any[]
+  };
+
+  viewport = {
+    bounds: {
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080
+    }
   };
 
   on = (event: string, _callback: () => void) => {
