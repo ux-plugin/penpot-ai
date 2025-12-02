@@ -348,23 +348,31 @@ export function ConversationHistory() {
                         <span className="text-xs opacity-75">Audio message</span>
                       </div>
                     )}
-                    
+
                     {/* AI Message with reasoning */}
                     {message.type === 'ai' && (message.reasoning || message.text) ? (
-                      <div className="space-y-2">
+                      <div className="space-y-3">
                         {/* Collapsible Reasoning Section */}
-                        {message.reasoning && (
-                          <details className="bg-white rounded p-3 border border-gray-200">
-                            <summary className="cursor-pointer font-medium text-sm flex items-center gap-2 select-none">
+                        {(message.reasoning || (message.isStreaming && !message.text)) && (
+                          <details className="group" open={message.isStreaming}>
+                            <summary className="cursor-pointer font-medium text-sm flex items-center gap-1 list-none">
                               <span>Reasoning</span>
+                              <svg 
+                                className="w-4 h-4 transition-transform group-open:rotate-90" 
+                                fill="none" 
+                                stroke="currentColor" 
+                                viewBox="0 0 24 24"
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                              </svg>
                             </summary>
-                            <div className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">
+                            <div className="mt-2 p-3 bg-gray-800 text-gray-200 rounded border border-gray-700 text-sm whitespace-pre-wrap">
                               {message.reasoning}
                               {message.isStreaming && !message.text && <span className="animate-pulse ml-1">▋</span>}
                             </div>
                           </details>
                         )}
-                        
+
                         {/* Response Text */}
                         {message.text && (
                           <p className="text-sm whitespace-pre-wrap">
@@ -380,7 +388,7 @@ export function ConversationHistory() {
                         {message.isStreaming && <span className="animate-pulse ml-1">▋</span>}
                       </p>
                     )}
-                    
+
                     <p className={`text-xs mt-2 ${
                       message.type === 'user' ? 'text-gray-400' : 'text-gray-500'
                     }`}>
