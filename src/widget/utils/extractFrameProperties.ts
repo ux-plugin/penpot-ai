@@ -1,4 +1,4 @@
-import type { IDesignPlatform, ViewportBounds } from "@widget/platform/IDesignPlatform";
+import type { IDesignPlatform, ViewportBounds, BaseSceneNode } from "@widget/platform/IDesignPlatform";
 
 interface FrameProperties {
   id: string;
@@ -163,20 +163,13 @@ export function getFrameNodesInViewport(
   for (const child of currentPageChildren) {
     // Only process FRAME nodes
     if (child.type === "FRAME") {
-      const frameNode = child as FrameNode;
+      // Use BaseSceneNode properties for intersection check, then cast to FrameNode for getAllFrameProperties
+      const node = child as BaseSceneNode;
 
       // Check if this frame intersects with the viewport
-      if (
-        isNodeInViewport(
-          {
-            x: frameNode.x,
-            y: frameNode.y,
-            width: frameNode.width,
-            height: frameNode.height,
-          },
-          viewportBounds
-        )
-      ) {
+      if (isNodeInViewport(node, viewportBounds)) {
+        // Cast to FrameNode for the detailed property extraction
+        const frameNode = child as unknown as FrameNode;
         // Extract all properties of the frame and its children
         framesInViewport.push(getAllFrameProperties(frameNode));
       }

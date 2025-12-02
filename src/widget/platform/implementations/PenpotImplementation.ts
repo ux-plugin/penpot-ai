@@ -120,7 +120,17 @@ export class PenpotImplementation implements IDesignPlatform {
   viewport = {
     get bounds() {
       if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.viewport) {
-        return (globalThis as any).penpot.viewport.bounds;
+        const viewport = (globalThis as any).penpot.viewport;
+        // Validate that bounds exists and has the required properties
+        if (
+          viewport.bounds &&
+          typeof viewport.bounds.x === 'number' &&
+          typeof viewport.bounds.y === 'number' &&
+          typeof viewport.bounds.width === 'number' &&
+          typeof viewport.bounds.height === 'number'
+        ) {
+          return viewport.bounds;
+        }
       }
       // Return default viewport bounds
       return {
