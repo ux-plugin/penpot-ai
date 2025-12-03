@@ -47,9 +47,43 @@ export type ReactFlowFrameNode = Node<ReactFlowFrameNodeData, 'frame'>;
  * compatible with React Flow's Node interface, preserving essential
  * visual and layout information.
  *
+ * The returned node uses the 'frame' type, which should be registered
+ * with a custom FrameNode component in your ReactFlow instance.
+ *
  * @param frameNode - The Figma FrameNode data to convert
  * @param parentId - Optional parent node ID for nested frames
  * @returns A React Flow Node object representing the frame
+ *
+ * @example
+ * ```tsx
+ * import { createReactFlowNode } from '@utils/createReactFlowNode';
+ * import { FrameNode } from '@components/nodes';
+ * import { ReactFlow } from '@xyflow/react';
+ *
+ * // Register the custom node type
+ * const nodeTypes = { frame: FrameNode };
+ *
+ * // Create a node from frame data
+ * const frameData = {
+ *   id: '1:2',
+ *   name: 'My Frame',
+ *   type: 'FRAME',
+ *   visible: true,
+ *   locked: false,
+ *   x: 100,
+ *   y: 100,
+ *   width: 200,
+ *   height: 150,
+ *   rotation: 0,
+ *   layoutMode: 'VERTICAL',
+ *   opacity: 1
+ * };
+ *
+ * const node = createReactFlowNode(frameData);
+ *
+ * // Use in ReactFlow
+ * <ReactFlow nodes={[node]} nodeTypes={nodeTypes} />
+ * ```
  *
  * @see https://developers.figma.com/docs/plugins/api/FrameNode/
  * @see https://reactflow.dev/api-reference/types/node
