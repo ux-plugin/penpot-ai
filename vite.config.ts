@@ -3,9 +3,17 @@ import react from "@vitejs/plugin-react";
 import { viteSingleFile } from "vite-plugin-singlefile";
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath } from "node:url";
+import { nodePolyfills } from 'vite-plugin-node-polyfills'
 
 export default defineConfig(({ command, mode }) => ({
   plugins: [
+    nodePolyfills({
+      // Enable polyfills for specific Node.js APIs
+      include: ['buffer'],
+      globals: {
+        Buffer: true,
+      },
+    }),
     react({
       // Only apply production optimizations during build
       babel: command === 'build' ? {

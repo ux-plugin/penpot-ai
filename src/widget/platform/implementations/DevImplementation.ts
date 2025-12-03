@@ -1,4 +1,4 @@
-import { IDesignPlatform } from '../IDesignPlatform';
+import { IDesignPlatform, BaseSceneNode } from '../IDesignPlatform';
 
 export class DevImplementation implements IDesignPlatform {
   private _onmessage: ((message: any) => void | Promise<void>) | null = null;
@@ -185,7 +185,18 @@ export class DevImplementation implements IDesignPlatform {
   };
 
   currentPage = {
-    selection: [] as any[]
+    selection: [] as any[],
+    children: [] as BaseSceneNode[]
+  };
+
+  viewport = {
+    bounds: {
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080
+    },
+    zoom: 1.0
   };
 
   on = (event: string, _callback: () => void) => {

@@ -227,7 +227,7 @@ export class CompanionWebSocketClient {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(requestId);
         reject(new Error(`Command timeout: ${command} (${this.config.commandTimeout}ms)`));
-      }, this.config.commandTimeout);
+      }, this.config.commandTimeout) as unknown as number;
 
       // Store pending request
       this.pendingRequests.set(requestId, {

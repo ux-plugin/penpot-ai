@@ -15,7 +15,8 @@ export enum OperationMessageType {
   CHANGE_COLOR = 'change_color',
   RESIZE_ELEMENT = 'resize_element',
   CREATE_FRAME = 'create_frame',
-  COMPLETE = 'complete'
+  COMPLETE = 'complete',
+  GET_NODES_UNDER_UI = 'get_nodes_under_ui'
 }
 
 export enum SystemMessageType {
@@ -203,6 +204,40 @@ export interface ResizeElementResponse extends MessageResponse {
   };
 }
 
+// Get Nodes Under UI Request/Response
+export interface GetNodesUnderUIRequest extends MessageRequest {
+  category: MessageCategory.OPERATION;
+  type: OperationMessageType.GET_NODES_UNDER_UI;
+  payload: {
+    width: number;
+    height: number;
+  };
+}
+
+
+export interface GetNodesUnderUIResponse extends MessageResponse {
+  category: MessageCategory.OPERATION;
+  type: OperationMessageType.GET_NODES_UNDER_UI;
+  result: {
+    nodes: Array<{
+      id: string;
+      type: string;
+      name: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }>;
+    totalCount: number;
+    uiRegion: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+  };
+}
+
 // ====================
 // SYSTEM MESSAGE TYPES
 // ====================
@@ -359,6 +394,7 @@ export type Request =
   | CreateFrameRequest
   | CompleteRequest
   | ResizeElementRequest
+  | GetNodesUnderUIRequest
   | ErrorRequest
   | WarningRequest
   | InfoRequest
@@ -376,6 +412,7 @@ export type Response =
   | CreateFrameResponse
   | CompleteResponse
   | ResizeElementResponse
+  | GetNodesUnderUIResponse
   | ErrorResponse
   | WarningResponse
   | InfoResponse
@@ -383,6 +420,7 @@ export type Response =
   | WorkerTestResponse
   | ResizeResponse
   | GetPositionResponse;
+
 
 // Union of all message types
 export type Message = Request | Response;
@@ -420,6 +458,10 @@ export type RequestToResponseMap = {
   [OperationMessageType.RESIZE_ELEMENT]: {
     request: ResizeElementRequest;
     response: ResizeElementResponse;
+  };
+  [OperationMessageType.GET_NODES_UNDER_UI]: {
+    request: GetNodesUnderUIRequest;
+    response: GetNodesUnderUIResponse;
   };
   [SystemMessageType.ERROR]: {
     request: ErrorRequest;
