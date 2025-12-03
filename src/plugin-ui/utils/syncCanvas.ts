@@ -1,5 +1,5 @@
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
-import { MessageCategory, SystemMessageType, SyncCanvasRequest, SyncCanvasResponse, ExtractResultType } from '@/messaging/types/messageTypes';
+import { MessageCategory, SystemMessageType, SyncCanvasRequest, SyncCanvasResponse, ExtractResultType } from '@shared-types/messageTypes.ts';
 import { ReactFlowInstance } from '@xyflow/react';
 
 /**
