@@ -43,6 +43,9 @@ export class FigmaImplementation implements IDesignPlatform {
   currentPage = {
     get selection() {
       return figma.currentPage.selection;
+    },
+    get children() {
+      return figma.currentPage.children;
     }
   };
 
@@ -50,9 +53,19 @@ export class FigmaImplementation implements IDesignPlatform {
     figma.on(event as any, callback);
   };
 
+  viewport = {
+    get bounds() {
+      return figma.viewport.bounds;
+    },
+    get zoom() {
+      return figma.viewport.zoom;
+    }
+  };
+
   getStyleByIdAsync = async (id: string) => {
     return await figma.getStyleByIdAsync(id);
-  };
+  }
+
 
   storage = {
     setAsync: async (key: string, value: any) => {

@@ -18,6 +18,8 @@ import {
   ResizeResponse,
   GetPositionRequest,
   GetPositionResponse,
+  GetNodesUnderUIRequest,
+  GetNodesUnderUIResponse,
   Message,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
@@ -140,6 +142,110 @@ codeMessageDispatcher.registerHandler<
         width: frame.width,
         height: frame.height,
         name: frame.name
+      };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    GetNodesUnderUIRequest,
+    ExtractResultType<GetNodesUnderUIResponse>
+  >(
+    MessageCategory.OPERATION,
+    OperationMessageType.GET_NODES_UNDER_UI,
+    async (request: GetNodesUnderUIRequest): Promise<ExtractResultType<GetNodesUnderUIResponse>> => {
+      console.log('[CODE] GetNodesUnderUI request received');
+      
+      // Get UI position in canvas space
+      const position = await commands.ui.getPosition();
+      console.log('[CODE] UI position:', position);
+      
+      // Get UI dimensions from the request payload (in screen pixels)
+      const screenWidth = request.payload.width;
+      const screenHeight = request.payload.height;
+      console.log('[CODE] UI dimensions in screen pixels:', { screenWidth, screenHeight });
+      
+      // Get the current viewport zoom level
+      const zoom = commands.viewport.zoom;
+      console.log('[CODE] Current viewport zoom:', zoom);
+      
+      // Convert screen pixels to canvas units using zoom
+      // Formula: canvasUnits = screenPixels / zoom
+      const canvasWidth = screenWidth / zoom;
+      const canvasHeight = screenHeight / zoom;
+      console.log('[CODE] UI dimensions in canvas units:', { canvasWidth, canvasHeight });
+      
+      // Calculate the UI region in canvas space
+      const uiRegion = {
+        x: position.canvasSpace.x,
+        y: position.canvasSpace.y,
+        width: canvasWidth,
+        height: canvasHeight
+      };
+      
+      console.log('[CODE] UI region in canvas space:', uiRegion);
+      
+      // Function to check if a node intersects with the UI region
+      const isNodeInUIRegion = (node: any): boolean => {
+        if (!node || typeof node.x !== 'number' || typeof node.y !== 'number') {
+          return false;
+        }
+        
+        const nodeRight = node.x + (node.width || 0);
+        const nodeBottom = node.y + (node.height || 0);
+        const regionRight = uiRegion.x + uiRegion.width;
+        const regionBottom = uiRegion.y + uiRegion.height;
+        
+        // Check if the node's bounding box intersects with the UI region
+        return !(
+          nodeRight < uiRegion.x ||
+          node.x > regionRight ||
+          nodeBottom < uiRegion.y ||
+          node.y > regionBottom
+        );
+      };
+      
+      // Collect nodes that are under the UI
+      const nodesUnderUI: Array<{
+        id: string;
+        type: string;
+        name: string;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }> = [];
+      
+      // Iterate through all children of the current page
+      const pageChildren = commands.currentPage.children as any[];
+      for (const node of pageChildren) {
+        console.log(`[CODE] Checking node ${node.id || 'unnamed'}...`);
+        console.log(`[CODE] Node position: ${node.x}, ${node.y}`);
+        console.log(`[CODE] Node dimensions: ${isNodeInUIRegion(node)}`);
+        if (isNodeInUIRegion(node)) {
+          nodesUnderUI.push({
+            id: node.id || '',
+            type: node.type || 'UNKNOWN',
+            name: node.name || 'Unnamed',
+            x: node.x || 0,
+            y: node.y || 0,
+            width: node.width || 0,
+            height: node.height || 0
+          });
+        }
+      }
+      
+      console.log(`[CODE] Found ${nodesUnderUI.length} nodes under UI`);
+      
+      // Return structured response with exact type
+      return {
+        nodes: nodesUnderUI,
+        totalCount: nodesUnderUI.length,
+        uiRegion: {
+          x: uiRegion.x,
+          y: uiRegion.y,
+          width: uiRegion.width,
+          height: uiRegion.height
+        }
       };
     }
   );
