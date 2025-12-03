@@ -1,5 +1,6 @@
 import type { Node } from '@xyflow/react';
-import type { FrameProperties } from '@widget/utils/extractFrameProperties';
+
+import { FrameProperties } from "@/shared/types/types.ts";
 
 // Re-export FrameProperties for convenience
 export type { FrameProperties };

@@ -1,15 +1,15 @@
 import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import Login from "@views/Login.tsx";
-import Home from "@views/Home";
-import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
-import { usePortUpdatesStore } from "@/plugin-ui/stores/usePortUpdatesStore.ts";
-import { initializePortSubscription, cleanupPortSubscription } from "@/plugin-ui/api/user/portSubscriptionManager";
+import Home from "@views/Home.tsx";
+import { useAuthenticationStore } from "@stores/useAuthenticationStore.ts";
+import { usePortUpdatesStore } from "@stores/usePortUpdatesStore.ts";
+import { initializePortSubscription, cleanupPortSubscription } from "@api/user/portSubscriptionManager.ts";
 import { connectRSocket, disconnectRSocket } from "@api/rsocket.ts";
-import { handlePortUpdate } from "@/plugin-ui/api/companion";
-import { useCompletionsWebSocket, CompletionsWebSocketProvider } from "@/plugin-ui/api/completions";
-import { WindowResizeHandle } from '@/plugin-ui/components/WindowResizeHandle';
-import { ResizeIconBottomRight } from '@/plugin-ui/components/ResizeIcons';
+import { handlePortUpdate } from "@api/companion";
+import { useCompletionsWebSocket, CompletionsWebSocketProvider } from "@api/completions";
+import { WindowResizeHandle } from '@components/WindowResizeHandle.tsx';
+import { ResizeIconBottomRight } from '@components/ResizeIcons.tsx';
 
 
 const NonAuthenticatedLayout = () => {

@@ -7,7 +7,7 @@ import {
   StoreMessageType,
   StoreStateUpdateRequest,
   StoreStateUpdateResponse
-} from "@/messaging/types/messageTypes";
+} from "@/shared/types/messageTypes";
 
 // Enhanced store interface with generic state type (camelCase only)
 export interface StoreWithState<TState = any> {

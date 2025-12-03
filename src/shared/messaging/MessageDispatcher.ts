@@ -6,7 +6,7 @@ import {
   isRequest, 
   isResponse,
   HandlerNotFoundError,
-} from "@/messaging/types/messageTypes";
+} from "@/shared/types/messageTypes";
 
 export type RequestHandler<TReq extends Request = Request, TRes = any> =
   (request: TReq) => Promise<TRes> | TRes;
