@@ -52,12 +52,12 @@ export const FrameNode: React.FC<NodeProps<ReactFlowFrameNode>> = memo(
           {/* Status indicators */}
           <div className="flex gap-1 text-xs mt-1">
             {data.locked && (
-              <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded" aria-label="Locked">
+              <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded">
                 Locked
               </span>
             )}
             {!data.visible && (
-              <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded" aria-label="Hidden">
+              <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">
                 Hidden
               </span>
             )}
