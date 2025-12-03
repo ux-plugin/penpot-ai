@@ -3,6 +3,8 @@ import { Handle, Position, NodeProps } from '@xyflow/react';
 import type { ReactFlowFrameNode } from '@utils/createReactFlowNode';
 import { cn } from '@utils/utils';
 
+const LOCKED_OPACITY = 0.5;
+
 /**
  * Custom React component for rendering a Figma Frame in React Flow.
  * This component displays frame information and handles connections.
@@ -17,7 +19,7 @@ export const FrameNode: React.FC<NodeProps<ReactFlowFrameNode>> = memo(
           data.locked && 'cursor-not-allowed'
         )}
         style={{
-          opacity: data.locked ? 0.5 : data.opacity,
+          opacity: data.locked ? LOCKED_OPACITY : data.opacity,
           transform: `rotate(${data.rotation}deg)`,
         }}
       >
