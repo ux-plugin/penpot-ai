@@ -1,147 +1,104 @@
 import type { Node } from '@xyflow/react';
+import type { FrameProperties } from '@widget/utils/extractFrameProperties';
 
-/**
- * Data structure representing essential Figma FrameNode properties
- * that are relevant for creating a React Flow node.
- */
-export interface FrameNodeData {
-  id: string;
-  name: string;
-  type: string;
-  visible: boolean;
-  locked: boolean;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  rotation: number;
-  layoutMode: string;
-  opacity: number;
-  children?: FrameNodeData[];
-}
-
-/**
- * Extended data stored in the React Flow node's data property.
- * Contains the original frame properties plus any additional UI state.
- */
-export interface ReactFlowFrameNodeData extends Record<string, unknown> {
-  label: string;
-  frameType: string;
-  visible: boolean;
-  locked: boolean;
-  rotation: number;
-  layoutMode: string;
-  opacity: number;
-  originalId: string;
-}
+// Re-export FrameProperties for convenience
+export type { FrameProperties };
 
 /**
  * Type alias for a React Flow Node created from a Figma FrameNode.
  */
-export type ReactFlowFrameNode = Node<ReactFlowFrameNodeData, 'frame'>;
+export type ReactFlowFrameNode = Node<{ label: string }, 'default'>;
 
 /**
- * Creates a React Flow Node from Figma FrameNode information.
+ * Creates a React Flow Node from Figma FrameProperties.
  *
  * This function transforms Figma FrameNode properties into a format
- * compatible with React Flow's Node interface, preserving essential
- * visual and layout information.
+ * compatible with React Flow's Node interface, with styling applied
+ * directly in the node definition.
  *
- * The returned node uses the 'frame' type, which should be registered
- * with a custom FrameNode component in your ReactFlow instance.
- *
- * @param frameNode - The Figma FrameNode data to convert
+ * @param frameProperties - The Figma FrameProperties to convert
  * @param parentId - Optional parent node ID for nested frames
  * @returns A React Flow Node object representing the frame
  *
  * @example
  * ```tsx
  * import { createReactFlowNode } from '@utils/createReactFlowNode';
- * import { FrameNode } from '@components/nodes';
  * import { ReactFlow } from '@xyflow/react';
  *
- * // Register the custom node type
- * const nodeTypes = { frame: FrameNode };
- *
- * // Create a node from frame data
- * const frameData = {
- *   id: '1:2',
- *   name: 'My Frame',
- *   type: 'FRAME',
- *   visible: true,
- *   locked: false,
- *   x: 100,
- *   y: 100,
- *   width: 200,
- *   height: 150,
- *   rotation: 0,
- *   layoutMode: 'VERTICAL',
- *   opacity: 1
- * };
- *
- * const node = createReactFlowNode(frameData);
+ * // Create a node from frame properties
+ * const node = createReactFlowNode(frameProperties);
  *
  * // Use in ReactFlow
- * <ReactFlow nodes={[node]} nodeTypes={nodeTypes} />
+ * <ReactFlow nodes={[node]} />
  * ```
  *
  * @see https://developers.figma.com/docs/plugins/api/FrameNode/
  * @see https://reactflow.dev/api-reference/types/node
  */
 export function createReactFlowNode(
-  frameNode: FrameNodeData,
+  frameProperties: FrameProperties,
   parentId?: string
 ): ReactFlowFrameNode {
+  const locked = frameProperties.locked;
+  const visible = frameProperties.visible;
+  const opacity = locked ? 0.5 : frameProperties.opacity;
+  
   return {
-    id: frameNode.id,
-    type: 'frame',
+    id: frameProperties.id,
+    type: 'default',
     position: {
-      x: frameNode.x,
-      y: frameNode.y,
+      x: frameProperties.x,
+      y: frameProperties.y,
     },
     data: {
-      label: frameNode.name,
-      frameType: frameNode.type,
-      visible: frameNode.visible,
-      locked: frameNode.locked,
-      rotation: frameNode.rotation,
-      layoutMode: frameNode.layoutMode,
-      opacity: frameNode.opacity,
-      originalId: frameNode.id,
+      label: frameProperties.name,
     },
-    width: frameNode.width,
-    height: frameNode.height,
-    hidden: !frameNode.visible,
-    draggable: !frameNode.locked,
-    selectable: !frameNode.locked,
+    width: frameProperties.width,
+    height: frameProperties.height,
+    hidden: !visible,
+    draggable: !locked,
+    selectable: !locked,
+    style: {
+      backgroundColor: '#ffffff',
+      border: '2px solid #d1d5db',
+      borderRadius: '8px',
+      padding: '12px 16px',
+      minWidth: '150px',
+      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+      opacity: opacity,
+      transform: `rotate(${frameProperties.rotation}deg)`,
+      cursor: locked ? 'not-allowed' : 'grab',
+      fontSize: '14px',
+      fontWeight: 600,
+    },
     ...(parentId && { parentId }),
   };
 }
 
 /**
- * Creates React Flow Nodes from a FrameNode and all its nested children.
+ * Creates React Flow Nodes from FrameProperties and all its nested children.
  *
- * This function recursively processes a Figma FrameNode and its children,
+ * This function recursively processes Figma FrameProperties and its children,
  * creating a flat array of React Flow nodes suitable for use with React Flow.
  *
- * @param frameNode - The root Figma FrameNode data to convert
+ * @param frameProperties - The root Figma FrameProperties to convert
  * @param parentId - Optional parent node ID for the root frame
  * @returns An array of React Flow Node objects
  */
 export function createReactFlowNodesFromFrame(
-  frameNode: FrameNodeData,
+  frameProperties: FrameProperties,
   parentId?: string
 ): ReactFlowFrameNode[] {
   const nodes: ReactFlowFrameNode[] = [];
 
   // Create node for the current frame
-  const currentNode = createReactFlowNode(frameNode, parentId);
+  const currentNode = createReactFlowNode(frameProperties, parentId);
   nodes.push(currentNode);
 
   // Recursively process children
-  if (frameNode.children && frameNode.children.length > 0) {
-    for (const child of frameNode.children) {
-      const childNodes = createReactFlowNodesFromFrame(child, frameNode.id);
+  if (frameProperties.children && frameProperties.children.length > 0) {
+    for (const child of frameProperties.children) {
+      const childNodes = createReactFlowNodesFromFrame(child, frameProperties.id);
       nodes.push(...childNodes);
     }
   }

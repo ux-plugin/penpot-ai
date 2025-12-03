@@ -1,6 +1,6 @@
 import type { IDesignPlatform, ViewportBounds, BaseSceneNode } from "@widget/platform/IDesignPlatform";
 
-interface FrameProperties {
+export interface FrameProperties {
   id: string;
   name: string;
   type: string;

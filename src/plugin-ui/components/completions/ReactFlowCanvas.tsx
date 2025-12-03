@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import {
   ReactFlow,
   Background,
@@ -10,7 +10,6 @@ import {
   BackgroundVariant,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { FrameNode } from '@components/nodes';
 
 interface ReactFlowCanvasProps {
   topRightContent?: React.ReactNode;
@@ -28,9 +27,6 @@ export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
   const [nodes, ,onNodesChange] = useNodesState([]);
   const [edges, ,onEdgesChange] = useEdgesState([]);
 
-  // Register custom node types
-  const nodeTypes = useMemo(() => ({ frame: FrameNode }), []);
-
   return (
     <div className="w-full h-full">
       <ReactFlow
@@ -38,7 +34,6 @@ export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        nodeTypes={nodeTypes}
         fitView
         className="bg-gray-50"
         proOptions={{ hideAttribution: true }}
