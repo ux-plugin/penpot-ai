@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
 import type { ReactFlowFrameNode } from '@utils/createReactFlowNode';
+import { cn } from '@utils/utils';
 
 /**
  * Custom React component for rendering a Figma Frame in React Flow.
@@ -10,13 +11,13 @@ export const FrameNode: React.FC<NodeProps<ReactFlowFrameNode>> = memo(
   ({ data, isConnectable, selected }) => {
     return (
       <div
-        className={`
-          px-4 py-3 shadow-lg rounded-lg border-2 bg-white min-w-[150px]
-          ${selected ? 'border-blue-500' : 'border-gray-300'}
-          ${data.locked ? 'opacity-50 cursor-not-allowed' : ''}
-        `}
+        className={cn(
+          'px-4 py-3 shadow-lg rounded-lg border-2 bg-white min-w-[150px]',
+          selected ? 'border-blue-500' : 'border-gray-300',
+          data.locked && 'cursor-not-allowed'
+        )}
         style={{
-          opacity: data.opacity,
+          opacity: data.locked ? 0.5 : data.opacity,
           transform: `rotate(${data.rotation}deg)`,
         }}
       >
