@@ -3,7 +3,7 @@
 
 import { codeStoreMessaging } from '@widget/CodeMessageDispatcher.ts';
 import { IDesignPlatform } from '@widget/platform/IDesignPlatform';
-import { PersistableAuthState } from '@/messaging/types/authTypes';
+import { PersistableAuthState } from '@/shared/types/authTypes';
 
 // Storage key for persisting the store
 const STORAGE_KEY = 'auth-store';

@@ -1,5 +1,5 @@
-import { UniversalMessageDispatcher } from '@/messaging/messaging/MessageDispatcher.ts';
-import { StoreMessaging } from '@/messaging/messaging/StoreMessaging.ts';
+import { UniversalMessageDispatcher } from '@/shared/messaging/MessageDispatcher.ts';
+import { StoreMessaging } from '@/shared/messaging/StoreMessaging.ts';
 import { 
   MessageCategory, 
   OperationMessageType, 

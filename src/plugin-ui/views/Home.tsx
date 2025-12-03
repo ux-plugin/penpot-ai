@@ -16,7 +16,7 @@ import { StatusPanel } from '@/plugin-ui/components/status/StatusPanel';
 import { SettingsPanel } from '@/plugin-ui/components/user/SettingsPanel';
 import { ConversationPanel } from '@/plugin-ui/components/completions/ConversationPanel';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
-import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@/messaging/types/messageTypes';
+import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@/shared/types/messageTypes';
 import { BackendServerStatus } from '@/plugin-ui/components/status/BackendServerStatus';
 import { CompanionAppStatus } from '@/plugin-ui/components/CompanionAppStatus.tsx';
 
@@ -52,7 +52,7 @@ function Home() {
 
 
   const handleMinimizeWindow = async () => {
-    // Minimize to minimum possible size
+    // Minimize to the minimum possible size
     try {
       await uiMessageDispatcher.sendRequest<
         Omit<ResizeRequest, 'id' | 'timestamp' | 'source'>,

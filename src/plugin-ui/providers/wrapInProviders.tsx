@@ -1,7 +1,7 @@
 import { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { queryClient } from "@app/providers/queryClient.tsx";
+import { queryClient } from "@/plugin-ui/providers/queryClient.tsx";
 import { Toaster } from 'sonner';
 
 interface WrapInProvidersProps {

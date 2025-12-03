@@ -11,8 +11,8 @@ import {
   DrawRectangleResponse,
   CreateFrameResponse,
   InfoResponse
-} from '@/messaging/types/messageTypes';
-import { PersistableAuthState } from '@/messaging/types/authTypes';
+} from '@/shared/types/messageTypes';
+import { PersistableAuthState } from '@/shared/types/authTypes';
 
 // Test function to demonstrate enhanced messaging functionality with type safety
 export async function testMessaging(): Promise<void> {

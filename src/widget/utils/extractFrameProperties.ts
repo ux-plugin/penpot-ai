@@ -1,53 +1,9 @@
-import type { IDesignPlatform, ViewportBounds, BaseSceneNode } from "@widget/platform/IDesignPlatform";
-
-interface FrameProperties {
-  id: string;
-  name: string;
-  type: string;
-  visible: boolean;
-  locked: boolean;
-
-  // Position and size
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  rotation: number;
-
-  // Layout properties
-  layoutMode: string;
-  layoutAlign: string;
-  layoutGrow: number;
-  primaryAxisSizingMode: string;
-  counterAxisSizingMode: string;
-  primaryAxisAlignItems: string;
-  counterAxisAlignItems: string;
-  paddingLeft: number;
-  paddingRight: number;
-  paddingTop: number;
-  paddingBottom: number;
-  itemSpacing: number;
-
-  // Style properties
-  fills: symbol | ReadonlyArray<Paint>;
-  strokes: ReadonlyArray<Paint>;
-  strokeWeight: number | symbol;
-  strokeAlign: string;
-  cornerRadius: number | PluginAPI["mixed"];
-  opacity: number;
-  blendMode: BlendMode;
-
-  // Style IDs
-  fillStyleId: string | symbol;
-  strokeStyleId: string;
-  effectStyleId: string;
-
-  // Effects and other styles
-  effects: ReadonlyArray<Effect>;
-
-  // Children
-  children: FrameProperties[];
-}
+import type {
+  BaseSceneNode,
+  IDesignPlatform,
+  ViewportBounds,
+} from "@widget/platform/IDesignPlatform";
+import { FrameProperties } from "@/shared/types/types.ts";
 
 export function getAllFrameProperties(frameNode: FrameNode): FrameProperties {
   const frameProperties: FrameProperties = {
@@ -118,7 +74,7 @@ export function getAllFrameProperties(frameNode: FrameNode): FrameProperties {
  */
 function isNodeInViewport(
   node: { x: number; y: number; width: number; height: number },
-  viewportBounds: ViewportBounds
+  viewportBounds: ViewportBounds,
 ): boolean {
   const nodeRight = node.x + node.width;
   const nodeBottom = node.y + node.height;
@@ -138,14 +94,14 @@ function isNodeInViewport(
 /**
  * Extracts all FrameNodes that are visible in the current user viewport,
  * along with their children (recursively).
- * 
+ *
  * This function iterates through all top-level children of the current page
  * and returns the properties of FrameNodes whose bounding boxes intersect
  * with the current viewport bounds.
- * 
+ *
  * @param commands - The design platform instance (e.g., Figma, Penpot, or Dev)
  * @returns An array of FrameProperties for frames visible in the viewport
- * 
+ *
  * @example
  * ```typescript
  * const commands = await platform.getInstance();
@@ -154,7 +110,7 @@ function isNodeInViewport(
  * ```
  */
 export function getFrameNodesInViewport(
-  commands: IDesignPlatform
+  commands: IDesignPlatform,
 ): FrameProperties[] {
   const viewportBounds = commands.viewport.bounds;
   const currentPageChildren = commands.currentPage.children;

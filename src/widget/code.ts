@@ -5,7 +5,7 @@ import {
   CompleteRequest,
   MessageCategory,
   OperationMessageType,
-} from "@/messaging/types/messageTypes";
+} from "@/shared/types/messageTypes";
 
 // Wrap in async IIFE to handle top-level await in esbuild IIFE format
 (async () => {

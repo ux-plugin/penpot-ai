@@ -2,8 +2,8 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './index.css'
-import App from '@app/App'
-import wrapInProviders from '@app/providers/wrapInProviders'
+import App from '@/plugin-ui/App.tsx'
+import wrapInProviders from '@/plugin-ui/providers/wrapInProviders'
 
 const root = document.getElementById('root')
 ReactDOM.createRoot(root!).render(
