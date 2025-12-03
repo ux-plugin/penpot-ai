@@ -10,6 +10,24 @@ export type { FrameProperties };
 export type ReactFlowFrameNode = Node<{ label: string }, 'default'>;
 
 /**
+ * Constants for node styling
+ */
+const LOCKED_OPACITY = 0.5;
+
+const NODE_STYLES = {
+  backgroundColor: '#ffffff',
+  border: '2px solid #d1d5db',
+  borderRadius: '8px',
+  padding: '12px 16px',
+  minWidth: '150px',
+  boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+  fontSize: '14px',
+  fontWeight: 600,
+  cursorNormal: 'grab',
+  cursorLocked: 'not-allowed',
+} as const;
+
+/**
  * Creates a React Flow Node from Figma FrameProperties.
  *
  * This function transforms Figma FrameNode properties into a format
@@ -41,7 +59,7 @@ export function createReactFlowNode(
 ): ReactFlowFrameNode {
   const locked = frameProperties.locked;
   const visible = frameProperties.visible;
-  const opacity = locked ? 0.5 : frameProperties.opacity;
+  const opacity = locked ? LOCKED_OPACITY : frameProperties.opacity;
   
   return {
     id: frameProperties.id,
@@ -59,17 +77,17 @@ export function createReactFlowNode(
     draggable: !locked,
     selectable: !locked,
     style: {
-      backgroundColor: '#ffffff',
-      border: '2px solid #d1d5db',
-      borderRadius: '8px',
-      padding: '12px 16px',
-      minWidth: '150px',
-      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+      backgroundColor: NODE_STYLES.backgroundColor,
+      border: NODE_STYLES.border,
+      borderRadius: NODE_STYLES.borderRadius,
+      padding: NODE_STYLES.padding,
+      minWidth: NODE_STYLES.minWidth,
+      boxShadow: NODE_STYLES.boxShadow,
       opacity: opacity,
       transform: `rotate(${frameProperties.rotation}deg)`,
-      cursor: locked ? 'not-allowed' : 'grab',
-      fontSize: '14px',
-      fontWeight: 600,
+      cursor: locked ? NODE_STYLES.cursorLocked : NODE_STYLES.cursorNormal,
+      fontSize: NODE_STYLES.fontSize,
+      fontWeight: NODE_STYLES.fontWeight,
     },
     ...(parentId && { parentId }),
   };
