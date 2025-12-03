@@ -4,7 +4,7 @@ export type JsonValue =
   | boolean
   | null
   | { readonly [key: string]: JsonValue }
-  | Array<JsonValue>
+  | Array<JsonValue>;
 
 export enum MessageType {
   complete,
@@ -28,7 +28,7 @@ export interface BaseResponse {
 
 export interface CompletionRequest extends BaseRequest {
   type: MessageType.complete;
-  object: Partial<FrameNode> & {parent: string, fillStyleId: string};
+  object: Partial<FrameNode> & { parent: string; fillStyleId: string };
 }
 
 export interface CompletionResponse extends BaseResponse {
@@ -63,7 +63,8 @@ export interface StorageGetRequest extends BaseRequest {
   key: string;
 }
 
-export interface StorageGetResponse<TRes extends JsonValue> extends BaseResponse {
+export interface StorageGetResponse<TRes extends JsonValue>
+  extends BaseResponse {
   type: MessageType.storageGet;
   result: TRes;
 }
@@ -78,7 +79,6 @@ export interface CloseResponse extends BaseResponse {
   result: boolean;
 }
 
-
 export type Request =
   | CompletionRequest
   | StorageSaveRequest
@@ -86,4 +86,51 @@ export type Request =
   | StorageGetRequest
   | CloseRequest;
 
+export interface FrameProperties {
+  id: string;
+  name: string;
+  type: string;
+  visible: boolean;
+  locked: boolean;
 
+  // Position and size
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+
+  // Layout properties
+  layoutMode: string;
+  layoutAlign: string;
+  layoutGrow: number;
+  primaryAxisSizingMode: string;
+  counterAxisSizingMode: string;
+  primaryAxisAlignItems: string;
+  counterAxisAlignItems: string;
+  paddingLeft: number;
+  paddingRight: number;
+  paddingTop: number;
+  paddingBottom: number;
+  itemSpacing: number;
+
+  // Style properties
+  fills: symbol | ReadonlyArray<Paint>;
+  strokes: ReadonlyArray<Paint>;
+  strokeWeight: number | symbol;
+  strokeAlign: string;
+  cornerRadius: number | PluginAPI["mixed"];
+  opacity: number;
+  blendMode: BlendMode;
+
+  // Style IDs
+  fillStyleId: string | symbol;
+  strokeStyleId: string;
+  effectStyleId: string;
+
+  // Effects and other styles
+  effects: ReadonlyArray<Effect>;
+
+  // Children
+  children: FrameProperties[];
+}
