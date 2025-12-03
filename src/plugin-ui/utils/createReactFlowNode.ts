@@ -21,7 +21,7 @@ const NODE_STYLES = {
   padding: '12px 16px',
   minWidth: '150px',
   boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
-  fontSize: '14px',
+  fontSize: 14,
   fontWeight: 600,
   cursorNormal: 'grab',
   cursorLocked: 'not-allowed',
@@ -60,7 +60,7 @@ export function createReactFlowNode(
   const locked = frameProperties.locked;
   const visible = frameProperties.visible;
   const opacity = locked ? LOCKED_OPACITY : frameProperties.opacity;
-  
+
   return {
     id: frameProperties.id,
     type: 'default',
