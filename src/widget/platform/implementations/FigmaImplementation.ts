@@ -56,12 +56,16 @@ export class FigmaImplementation implements IDesignPlatform {
   viewport = {
     get bounds() {
       return figma.viewport.bounds;
+    },
+    get zoom() {
+      return figma.viewport.zoom;
     }
   };
 
   getStyleByIdAsync = async (id: string) => {
     return await figma.getStyleByIdAsync(id);
-  };
+  }
+
 
   storage = {
     setAsync: async (key: string, value: any) => {

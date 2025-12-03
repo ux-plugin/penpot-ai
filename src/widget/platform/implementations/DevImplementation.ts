@@ -195,7 +195,8 @@ export class DevImplementation implements IDesignPlatform {
       y: 0,
       width: 1920,
       height: 1080
-    }
+    },
+    zoom: 1.0
   };
 
   on = (event: string, _callback: () => void) => {

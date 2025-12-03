@@ -139,6 +139,16 @@ export class PenpotImplementation implements IDesignPlatform {
         width: 1920,
         height: 1080
       };
+    },
+    get zoom() {
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.viewport) {
+        const viewport = (globalThis as any).penpot.viewport;
+        if (typeof viewport.zoom === 'number') {
+          return viewport.zoom;
+        }
+      }
+      // Return default zoom level
+      return 1.0;
     }
   };
 
