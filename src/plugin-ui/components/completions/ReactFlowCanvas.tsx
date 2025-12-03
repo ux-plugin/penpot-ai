@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -8,8 +8,11 @@ import {
   useNodesState,
   useEdgesState,
   BackgroundVariant,
+  useReactFlow,
+  ReactFlowProvider,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { syncCanvasWithFigma } from '@/plugin-ui/utils/syncCanvas';
 
 interface ReactFlowCanvasProps {
   topRightContent?: React.ReactNode;
@@ -18,7 +21,7 @@ interface ReactFlowCanvasProps {
   topLeftContent?: React.ReactNode;
 }
 
-export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
+const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   topRightContent,
   bottomRightContent,
   centerRightContent,
@@ -26,6 +29,26 @@ export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
 }) => {
   const [nodes, ,onNodesChange] = useNodesState([]);
   const [edges, ,onEdgesChange] = useEdgesState([]);
+  const reactFlowInstance = useReactFlow();
+  const hasSynced = useRef(false);
+
+  // Sync canvas position on mount
+  useEffect(() => {
+    const performSync = async () => {
+      if (!hasSynced.current && reactFlowInstance) {
+        try {
+          await syncCanvasWithFigma(reactFlowInstance);
+          hasSynced.current = true;
+        } catch (error) {
+          console.error('[ReactFlowCanvas] Failed to sync canvas on mount:', error);
+        }
+      }
+    };
+    
+    // Wait a bit for ReactFlow to initialize
+    const timeoutId = setTimeout(performSync, 100);
+    return () => clearTimeout(timeoutId);
+  }, [reactFlowInstance]);
 
   return (
     <div className="w-full h-full">
@@ -34,7 +57,7 @@ export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        fitView
+        fitView={false}
         className="bg-gray-50"
         proOptions={{ hideAttribution: true }}
       >
@@ -75,5 +98,13 @@ export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = ({
         )}
       </ReactFlow>
     </div>
+  );
+};
+
+export const ReactFlowCanvas: React.FC<ReactFlowCanvasProps> = (props) => {
+  return (
+    <ReactFlowProvider>
+      <ReactFlowCanvasInner {...props} />
+    </ReactFlowProvider>
   );
 };
