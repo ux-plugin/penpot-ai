@@ -88,11 +88,11 @@ export default defineConfig(({ command, mode }) => ({
 
       // Cross-environment shared code
       "@shared-core": fileURLToPath(new URL("./src/shared", import.meta.url)),
-      "@shared-types": fileURLToPath(new URL("./src/messaging/types", import.meta.url)),
+      "@shared-types": fileURLToPath(new URL("./src/shared/types", import.meta.url)),
       "@shared-constants": fileURLToPath(new URL("./src/shared/constants", import.meta.url)),
 
       // Plugin UI messaging and views
-      "@messaging": fileURLToPath(new URL("./src/messaging", import.meta.url)),
+      "@shared": fileURLToPath(new URL("./src/shared", import.meta.url)),
       "@views": fileURLToPath(new URL("./src/plugin-ui/views", import.meta.url)),
       "@assets": fileURLToPath(new URL("./src/plugin-ui/assets", import.meta.url))
     }

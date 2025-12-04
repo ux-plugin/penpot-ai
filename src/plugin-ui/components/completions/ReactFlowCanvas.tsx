@@ -31,6 +31,8 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   const [edges, ,onEdgesChange] = useEdgesState([]);
   const reactFlowInstance = useReactFlow();
   const hasSynced = useRef(false);
+  const syncIntervalRef = useRef<number | null>(null);
+  const isCursorInsideRef = useRef(true);
 
   // Sync canvas position on mount
   useEffect(() => {
@@ -48,6 +50,52 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
     // Wait a bit for ReactFlow to initialize
     const timeoutId = setTimeout(performSync, 100);
     return () => clearTimeout(timeoutId);
+  }, [reactFlowInstance]);
+
+  // Set up cursor enter/leave event listeners
+  useEffect(() => {
+    const handleMouseEnter = () => {
+      console.log('[ReactFlowCanvas] Cursor entered window - stopping periodic sync');
+      isCursorInsideRef.current = true;
+      
+      // Clear the interval when cursor enters the window
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+        syncIntervalRef.current = null;
+      }
+    };
+
+    const handleMouseLeave = () => {
+      console.log('[ReactFlowCanvas] Cursor left window - starting periodic sync');
+      isCursorInsideRef.current = false;
+      
+      // Start periodic sync when cursor leaves the window
+      if (!syncIntervalRef.current && reactFlowInstance) {
+        syncIntervalRef.current = setInterval(async () => {
+          try {
+            await syncCanvasWithFigma(reactFlowInstance);
+          } catch (error) {
+            console.error('[ReactFlowCanvas] Periodic sync failed:', error);
+          }
+        }, 1000) as unknown as number; // Sync every 1 second
+      }
+    };
+
+    // Add event listeners to document to catch cursor leaving window
+    document.addEventListener('mouseenter', handleMouseEnter);
+    document.addEventListener('mouseleave', handleMouseLeave);
+
+    // Cleanup
+    return () => {
+      document.removeEventListener('mouseenter', handleMouseEnter);
+      document.removeEventListener('mouseleave', handleMouseLeave);
+      
+      // Clear interval on unmount
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+        syncIntervalRef.current = null;
+      }
+    };
   }, [reactFlowInstance]);
 
   return (
