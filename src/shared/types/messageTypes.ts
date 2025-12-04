@@ -26,7 +26,8 @@ export enum SystemMessageType {
   PLUGIN_READY = 'plugin_ready',
   WORKER_TEST = 'worker_test',
   RESIZE = 'resize',
-  GET_POSITION = 'get_position'
+  GET_POSITION = 'get_position',
+  SYNC_CANVAS = 'sync_canvas'
 }
 
 // Base message request interface
@@ -381,6 +382,22 @@ export interface GetPositionResponse extends MessageResponse {
   };
 }
 
+// Sync Canvas Request/Response
+export interface SyncCanvasRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.SYNC_CANVAS;
+  payload: {};
+}
+
+export interface SyncCanvasResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.SYNC_CANVAS;
+  result: {
+    canvasPosition: { x: number; y: number };
+    zoom: number;
+  };
+}
+
 // =================
 // UNION TYPES
 // =================
@@ -401,7 +418,8 @@ export type Request =
   | PluginReadyRequest
   | WorkerTestRequest
   | ResizeRequest
-  | GetPositionRequest;
+  | GetPositionRequest
+  | SyncCanvasRequest;
 
 // All response types
 export type Response = 
@@ -419,7 +437,8 @@ export type Response =
   | PluginReadyResponse
   | WorkerTestResponse
   | ResizeResponse
-  | GetPositionResponse;
+  | GetPositionResponse
+  | SyncCanvasResponse;
 
 
 // Union of all message types
@@ -490,6 +509,10 @@ export type RequestToResponseMap = {
   [SystemMessageType.GET_POSITION]: {
     request: GetPositionRequest;
     response: GetPositionResponse;
+  };
+  [SystemMessageType.SYNC_CANVAS]: {
+    request: SyncCanvasRequest;
+    response: SyncCanvasResponse;
   };
 };
 

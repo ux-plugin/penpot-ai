@@ -44,11 +44,11 @@
 
       // Cross-environment shared code
       "@shared-core/*": ["./src/shared/*"],
-      "@shared-types/*": ["./src/messaging/types/*"],
+      "@shared-types/*": ["./src/shared/types/*"],
       "@shared-constants/*": ["./src/shared/constants/*"],
 
       // Plugin UI messaging and views
-      "@messaging/*": ["./src/messaging/*"],
+      "@shared/*": ["./src/shared/*"],
       "@views/*": ["./src/plugin-ui/views/*"],
       "@assets/*": ["./src/plugin-ui/assets/*"]
     },

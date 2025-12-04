@@ -20,6 +20,8 @@ import {
   GetPositionResponse,
   GetNodesUnderUIRequest,
   GetNodesUnderUIResponse,
+  SyncCanvasRequest,
+  SyncCanvasResponse,
   Message,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
@@ -333,6 +335,46 @@ codeMessageDispatcher.registerHandler<
       
       // Return structured response with exact type
       return position;
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    SyncCanvasRequest,
+    ExtractResultType<SyncCanvasResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.SYNC_CANVAS,
+    async (_: SyncCanvasRequest): Promise<ExtractResultType<SyncCanvasResponse>> => {
+      console.log('[CODE] SyncCanvas request received');
+      
+      // Get UI position in both window space and canvas space
+      const position = await commands.ui.getPosition();
+      console.log('[CODE] UI Position:', position);
+      
+      // Get viewport zoom level
+      const zoom = commands.viewport.zoom;
+      console.log('[CODE] Viewport zoom:', zoom);
+      
+      // The UI header is 24 pixels, so we need to adjust the canvas position
+      // The canvasSpace position is where the window's top-left is in canvas coordinates
+      // We need to adjust by 24 pixels (converted to canvas units) to account for the header
+      const HEADER_HEIGHT_PX = 24;
+      const headerHeightInCanvasUnits = HEADER_HEIGHT_PX / zoom;
+      
+      // Calculate the adjusted canvas position (where the ReactFlow canvas should start)
+      const canvasPosition = {
+        x: position.canvasSpace.x,
+        y: position.canvasSpace.y + headerHeightInCanvasUnits
+      };
+      
+      console.log('[CODE] Adjusted canvas position (accounting for 24px header):', canvasPosition);
+      console.log('[CODE] Header height in canvas units:', headerHeightInCanvasUnits);
+      
+      // Return structured response with exact type
+      return {
+        canvasPosition,
+        zoom
+      };
     }
   );
 })();
