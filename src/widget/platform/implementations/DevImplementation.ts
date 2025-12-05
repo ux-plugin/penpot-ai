@@ -102,6 +102,23 @@ export class DevImplementation implements IDesignPlatform {
         }
       }
     });
+
+    // Set up proper getter/setter for viewport zoom and center with correct scope
+    Object.defineProperty(this.viewport, 'zoom', {
+      get: () => this._viewportZoom,
+      set: (value: number) => {
+        this._viewportZoom = value;
+        console.log('[DEV] Viewport zoom set to:', value);
+      }
+    });
+
+    Object.defineProperty(this.viewport, 'center', {
+      get: () => this._viewportCenter,
+      set: (value: { x: number; y: number }) => {
+        this._viewportCenter = value;
+        console.log('[DEV] Viewport center set to:', value);
+      }
+    });
   }
 
   closePlugin = () => {
@@ -189,6 +206,9 @@ export class DevImplementation implements IDesignPlatform {
     children: [] as BaseSceneNode[]
   };
 
+  private _viewportZoom = 1.0;
+  private _viewportCenter = { x: 0, y: 0 };
+
   viewport = {
     bounds: {
       x: 0,
@@ -196,7 +216,8 @@ export class DevImplementation implements IDesignPlatform {
       width: 1920,
       height: 1080
     },
-    zoom: 1.0
+    zoom: 1.0,
+    center: { x: 0, y: 0 }
   };
 
   on = (event: string, _callback: () => void) => {

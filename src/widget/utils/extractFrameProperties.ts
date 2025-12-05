@@ -92,6 +92,42 @@ function isNodeInViewport(
 }
 
 /**
+ * Extracts all FrameNodes from the current page (entire canvas),
+ * along with their children (recursively).
+ *
+ * Unlike getFrameNodesInViewport, this function returns ALL frames
+ * on the canvas regardless of viewport visibility.
+ *
+ * @param commands - The design platform instance (e.g., Figma, Penpot, or Dev)
+ * @returns An array of FrameProperties for all frames on the canvas
+ *
+ * @example
+ * ```typescript
+ * const commands = await platform.getInstance();
+ * const allFrames = getAllFrameNodes(commands);
+ * console.log('All frames on canvas:', allFrames);
+ * ```
+ */
+export function getAllFrameNodes(
+  commands: IDesignPlatform,
+): FrameProperties[] {
+  const currentPageChildren = commands.currentPage.children;
+  const allFrames: FrameProperties[] = [];
+
+  for (const child of currentPageChildren) {
+    // Only process FRAME nodes
+    if (child.type === "FRAME") {
+      // Cast to FrameNode for the detailed property extraction
+      const frameNode = child as unknown as FrameNode;
+      // Extract all properties of the frame and its children
+      allFrames.push(getAllFrameProperties(frameNode));
+    }
+  }
+
+  return allFrames;
+}
+
+/**
  * Extracts all FrameNodes that are visible in the current user viewport,
  * along with their children (recursively).
  *

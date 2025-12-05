@@ -59,6 +59,15 @@ export class FigmaImplementation implements IDesignPlatform {
     },
     get zoom() {
       return figma.viewport.zoom;
+    },
+    set zoom(value: number) {
+      figma.viewport.zoom = value;
+    },
+    get center() {
+      return figma.viewport.center;
+    },
+    set center(value: { x: number; y: number }) {
+      figma.viewport.center = value;
     }
   };
 

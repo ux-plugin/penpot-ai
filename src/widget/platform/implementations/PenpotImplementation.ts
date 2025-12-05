@@ -149,6 +149,26 @@ export class PenpotImplementation implements IDesignPlatform {
       }
       // Return default zoom level
       return 1.0;
+    },
+    set zoom(value: number) {
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.viewport) {
+        (globalThis as any).penpot.viewport.zoom = value;
+      }
+    },
+    get center() {
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.viewport) {
+        const viewport = (globalThis as any).penpot.viewport;
+        if (viewport.center && typeof viewport.center.x === 'number' && typeof viewport.center.y === 'number') {
+          return viewport.center;
+        }
+      }
+      // Return default center
+      return { x: 0, y: 0 };
+    },
+    set center(value: { x: number; y: number }) {
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.viewport) {
+        (globalThis as any).penpot.viewport.center = value;
+      }
     }
   };
 

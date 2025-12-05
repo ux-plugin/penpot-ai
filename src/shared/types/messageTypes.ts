@@ -27,7 +27,9 @@ export enum SystemMessageType {
   WORKER_TEST = 'worker_test',
   RESIZE = 'resize',
   GET_POSITION = 'get_position',
-  SYNC_CANVAS = 'sync_canvas'
+  SYNC_CANVAS = 'sync_canvas',
+  UPDATE_VIEWPORT = 'update_viewport',
+  GET_VIEWPORT_BOUNDS = 'get_viewport_bounds'
 }
 
 // Base message request interface
@@ -398,6 +400,48 @@ export interface SyncCanvasResponse extends MessageResponse {
   };
 }
 
+// Update Viewport Request/Response
+export interface UpdateViewportRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.UPDATE_VIEWPORT;
+  payload: {
+    center: { x: number; y: number };
+    zoom: number;
+  };
+}
+
+export interface UpdateViewportResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.UPDATE_VIEWPORT;
+  result: {
+    updated: boolean;
+    center: { x: number; y: number };
+    zoom: number;
+  };
+}
+
+// Get Viewport Bounds Request/Response
+export interface GetViewportBoundsRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.GET_VIEWPORT_BOUNDS;
+  payload: {};
+}
+
+export interface GetViewportBoundsResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.GET_VIEWPORT_BOUNDS;
+  result: {
+    bounds: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    center: { x: number; y: number };
+    zoom: number;
+  };
+}
+
 // =================
 // UNION TYPES
 // =================
@@ -419,7 +463,9 @@ export type Request =
   | WorkerTestRequest
   | ResizeRequest
   | GetPositionRequest
-  | SyncCanvasRequest;
+  | SyncCanvasRequest
+  | UpdateViewportRequest
+  | GetViewportBoundsRequest;
 
 // All response types
 export type Response = 
@@ -438,7 +484,9 @@ export type Response =
   | WorkerTestResponse
   | ResizeResponse
   | GetPositionResponse
-  | SyncCanvasResponse;
+  | SyncCanvasResponse
+  | UpdateViewportResponse
+  | GetViewportBoundsResponse;
 
 
 // Union of all message types
@@ -513,6 +561,14 @@ export type RequestToResponseMap = {
   [SystemMessageType.SYNC_CANVAS]: {
     request: SyncCanvasRequest;
     response: SyncCanvasResponse;
+  };
+  [SystemMessageType.UPDATE_VIEWPORT]: {
+    request: UpdateViewportRequest;
+    response: UpdateViewportResponse;
+  };
+  [SystemMessageType.GET_VIEWPORT_BOUNDS]: {
+    request: GetViewportBoundsRequest;
+    response: GetViewportBoundsResponse;
   };
 };
 

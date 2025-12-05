@@ -22,6 +22,10 @@ import {
   GetNodesUnderUIResponse,
   SyncCanvasRequest,
   SyncCanvasResponse,
+  UpdateViewportRequest,
+  UpdateViewportResponse,
+  GetViewportBoundsRequest,
+  GetViewportBoundsResponse,
   Message,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
@@ -373,6 +377,64 @@ codeMessageDispatcher.registerHandler<
       // Return structured response with exact type
       return {
         canvasPosition,
+        zoom
+      };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    UpdateViewportRequest,
+    ExtractResultType<UpdateViewportResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.UPDATE_VIEWPORT,
+    async (request: UpdateViewportRequest): Promise<ExtractResultType<UpdateViewportResponse>> => {
+      console.log('[CODE] UpdateViewport request received:', request.payload);
+      
+      const { center, zoom } = request.payload;
+      
+      // Update Figma viewport center and zoom
+      commands.viewport.center = center;
+      commands.viewport.zoom = zoom;
+      
+      console.log('[CODE] Viewport updated to center:', center, 'zoom:', zoom);
+      
+      // Return structured response with exact type
+      return {
+        updated: true,
+        center: commands.viewport.center,
+        zoom: commands.viewport.zoom
+      };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    GetViewportBoundsRequest,
+    ExtractResultType<GetViewportBoundsResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.GET_VIEWPORT_BOUNDS,
+    async (_: GetViewportBoundsRequest): Promise<ExtractResultType<GetViewportBoundsResponse>> => {
+      console.log('[CODE] GetViewportBounds request received');
+      
+      // Get viewport bounds, center, and zoom
+      const bounds = commands.viewport.bounds;
+      const center = commands.viewport.center;
+      const zoom = commands.viewport.zoom;
+      
+      console.log('[CODE] Viewport bounds:', bounds);
+      console.log('[CODE] Viewport center:', center);
+      console.log('[CODE] Viewport zoom:', zoom);
+      
+      // Return structured response with exact type
+      return {
+        bounds: {
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height
+        },
+        center: { x: center.x, y: center.y },
         zoom
       };
     }

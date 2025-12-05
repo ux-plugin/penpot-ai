@@ -46,6 +46,7 @@ export interface IDesignPlatform {
   viewport: {
     bounds: ViewportBounds;
     zoom: number;
+    center: { x: number; y: number };
   };
   
   // Styles

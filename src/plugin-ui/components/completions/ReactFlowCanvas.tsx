@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import {
   ReactFlow,
   Background,
@@ -10,9 +10,13 @@ import {
   BackgroundVariant,
   useReactFlow,
   ReactFlowProvider,
+  OnMove,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { syncCanvasWithFigma } from '@/plugin-ui/utils/syncCanvas';
+import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
+import { MessageCategory, SystemMessageType, ExtractResultType, UpdateViewportResponse, GetViewportBoundsResponse } from '@shared-types/messageTypes';
+import { Button } from '@/plugin-ui/components/ui/button';
 
 interface ReactFlowCanvasProps {
   topRightContent?: React.ReactNode;
@@ -33,6 +37,74 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   const hasSynced = useRef(false);
   const syncIntervalRef = useRef<number | null>(null);
   const isCursorInsideRef = useRef(true);
+  const isSyncingFromFigma = useRef(false);
+
+  // Handle viewport changes in ReactFlow - sync to Figma
+  const handleMove = useCallback<OnMove>((_, viewport) => {
+    if (!reactFlowInstance) return;
+    
+    // Skip sending updates to Figma if we're currently syncing FROM Figma
+    // This prevents an infinite loop where periodic sync triggers onMove which triggers Figma update
+    if (isSyncingFromFigma.current) {
+      console.log('[ReactFlowCanvas] Skipping Figma update - syncing from Figma');
+      return;
+    }
+    
+    const { x, y, zoom } = viewport;
+    
+    // Use async IIFE to handle the async operations
+    (async () => {
+      try {
+        const centerX = -x / zoom;
+        const centerY = -y / zoom;
+        
+        console.log('[ReactFlowCanvas] Viewport moved:', { x, y, zoom });
+        console.log('[ReactFlowCanvas] Calculated Figma center:', { centerX, centerY });
+        
+        // Send update to Figma
+        await uiMessageDispatcher.sendRequest<
+          Omit<any, 'id' | 'timestamp' | 'source'>,
+          ExtractResultType<UpdateViewportResponse>
+        >({
+          category: MessageCategory.SYSTEM,
+          type: SystemMessageType.UPDATE_VIEWPORT,
+          payload: {
+            center: { x: centerX, y: centerY },
+            zoom: zoom
+          }
+        });
+        
+        console.log('[ReactFlowCanvas] Figma viewport updated successfully');
+      } catch (error) {
+        console.error('[ReactFlowCanvas] Failed to update Figma viewport:', error);
+      }
+    })();
+  }, [reactFlowInstance]);
+
+  // Handle print viewport bounds button click
+  const handlePrintBounds = useCallback(async () => {
+    try {
+      const result = await uiMessageDispatcher.sendRequest<
+        Omit<any, 'id' | 'timestamp' | 'source'>,
+        ExtractResultType<GetViewportBoundsResponse>
+      >({
+        category: MessageCategory.SYSTEM,
+        type: SystemMessageType.GET_VIEWPORT_BOUNDS,
+        payload: {}
+      });
+      
+      console.log('[ReactFlowCanvas] ========== VIEWPORT BOUNDS ==========');
+      console.log('[ReactFlowCanvas] Bounds:', result.bounds);
+      console.log('[ReactFlowCanvas] Center:', result.center);
+      console.log('[ReactFlowCanvas] Zoom:', result.zoom);
+      console.log('[ReactFlowCanvas] =====================================');
+      
+      // Also show as alert for user visibility
+      alert(`Viewport Bounds:\n\nBounds: x=${result.bounds.x}, y=${result.bounds.y}, width=${result.bounds.width}, height=${result.bounds.height}\n\nCenter: x=${result.center.x}, y=${result.center.y}\n\nZoom: ${result.zoom}\n\nCheck console for details.`);
+    } catch (error) {
+      console.error('[ReactFlowCanvas] Failed to get viewport bounds:', error);
+    }
+  }, []);
 
   // Sync canvas position on mount
   useEffect(() => {
@@ -73,9 +145,14 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
       if (!syncIntervalRef.current && reactFlowInstance) {
         syncIntervalRef.current = setInterval(async () => {
           try {
+            // Set flag to prevent onMove from updating Figma during sync
+            isSyncingFromFigma.current = true;
             await syncCanvasWithFigma(reactFlowInstance);
           } catch (error) {
             console.error('[ReactFlowCanvas] Periodic sync failed:', error);
+          } finally {
+            // Always reset the flag after sync completes
+            isSyncingFromFigma.current = false;
           }
         }, 1000) as unknown as number; // Sync every 1 second
       }
@@ -105,7 +182,10 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onMove={handleMove}
         fitView={false}
+        minZoom={0.2}
+        maxZoom={2}
         className="bg-gray-50"
         proOptions={{ hideAttribution: true }}
       >
@@ -120,6 +200,18 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
           nodeColor="#9ca3af"
           maskColor="rgb(0, 0, 0, 0.1)"
         />
+        
+        {/* Viewport Bounds Button */}
+        <Panel position="top-center">
+          <Button 
+            onClick={handlePrintBounds}
+            variant="outline"
+            size="sm"
+            className="bg-white shadow-sm"
+          >
+            Print Viewport Bounds
+          </Button>
+        </Panel>
         
         {/* Top-Right Panel for buttons */}
         {topRightContent && (

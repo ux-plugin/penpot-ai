@@ -124,3 +124,42 @@ export function createReactFlowNodesFromFrame(
 
   return nodes;
 }
+
+/**
+ * Transforms an array of FrameProperties into a flat array of React Flow nodes.
+ *
+ * This is a convenience function that processes multiple root frames and their
+ * nested children, creating a single flat array of React Flow nodes suitable
+ * for direct use with ReactFlow.
+ *
+ * @param framePropertiesArray - Array of root FrameProperties to convert
+ * @returns A flat array of all React Flow Node objects
+ *
+ * @example
+ * ```tsx
+ * import { getAllFrameNodes } from '@widget/utils/extractFrameProperties';
+ * import { transformAllFramesToReactFlowNodes } from '@utils/createReactFlowNode';
+ * import { ReactFlow } from '@xyflow/react';
+ *
+ * // Get all frames from canvas
+ * const allFrames = getAllFrameNodes(commands);
+ * 
+ * // Transform to ReactFlow nodes
+ * const reactFlowNodes = transformAllFramesToReactFlowNodes(allFrames);
+ *
+ * // Use in ReactFlow
+ * <ReactFlow nodes={reactFlowNodes} />
+ * ```
+ */
+export function transformAllFramesToReactFlowNodes(
+  framePropertiesArray: FrameProperties[]
+): ReactFlowFrameNode[] {
+  const allNodes: ReactFlowFrameNode[] = [];
+
+  for (const frameProperties of framePropertiesArray) {
+    const nodes = createReactFlowNodesFromFrame(frameProperties);
+    allNodes.push(...nodes);
+  }
+
+  return allNodes;
+}
