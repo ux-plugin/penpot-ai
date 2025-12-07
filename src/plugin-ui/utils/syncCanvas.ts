@@ -1,16 +1,21 @@
-import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
-import { MessageCategory, SystemMessageType, SyncCanvasRequest, SyncCanvasResponse, ExtractResultType } from '@shared-types/messageTypes.ts';
-import { ReactFlowInstance } from '@xyflow/react';
+import { uiMessageDispatcher } from "@/plugin-ui/UIMessageDispatcher.ts";
+import {
+  ExtractResultType,
+  MessageCategory,
+  SyncCanvasRequest,
+  SyncCanvasResponse,
+  SystemMessageType
+} from "@shared-types/messageTypes.ts";
+import { Viewport } from "@xyflow/react";
 
 /**
  * Syncs the ReactFlow canvas position and zoom with the Figma canvas.
  * This ensures the top-left corner of the ReactFlow canvas aligns with the
- * same coordinates as the Figma canvas beneath it, accounting for the 24px header.
- * 
- * @param reactFlowInstance - The ReactFlow instance to sync
+ * same coordinates as the Figma canvas beneath it, accounting for the 40 px header.
+ *
  * @returns Promise that resolves when sync is complete
  */
-export async function syncCanvasWithFigma(reactFlowInstance: ReactFlowInstance): Promise<void> {
+export async function syncCanvasWithFigma(): Promise<Viewport> {
   try {
     console.log('[SYNC] Starting canvas sync...');
     
@@ -29,19 +34,16 @@ export async function syncCanvasWithFigma(reactFlowInstance: ReactFlowInstance):
     const { canvasPosition, zoom } = result;
     
     // Set the ReactFlow viewport to match Figma's canvas
-    // The canvasPosition already accounts for the 24px header adjustment
-    reactFlowInstance.setViewport({
-      x: -canvasPosition.x,  // Negative because ReactFlow viewport x is the opposite direction
-      y: -canvasPosition.y,  // Negative because ReactFlow viewport y is the opposite direction
+    // ReactFlow viewport uses transformation matrix where:
+    // - x and y are translation offsets (not absolute positions)
+    // - To position canvas coordinate (cx, cy) at screen position (0, 0):
+    //   viewport = { x: -cx * zoom, y: -cy * zoom, zoom }
+    return {
+      x: -canvasPosition.x * zoom,
+      y: -canvasPosition.y * zoom,
       zoom: zoom
-    });
-    
-    console.log('[SYNC] Canvas synced successfully');
-    console.log('[SYNC] ReactFlow viewport set to:', {
-      x: -canvasPosition.x,
-      y: -canvasPosition.y,
-      zoom: zoom
-    });
+    };
+
   } catch (error) {
     console.error('[SYNC] Failed to sync canvas:', error);
     throw error;

@@ -26,12 +26,15 @@ import {
   UpdateViewportResponse,
   GetViewportBoundsRequest,
   GetViewportBoundsResponse,
+  GetAllFrameNodesRequest,
+  GetAllFrameNodesResponse,
   Message,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
 import { platform } from '@widget/platform';
 import { IDesignPlatform } from '@widget/platform/IDesignPlatform.ts';
 import { AuthStateManagementClass } from '@widget/stores/AuthStateManagementClass.ts';
+import { getAllFrameNodes } from '@widget/utils/extractFrameProperties.ts';
 
 // Initialize everything inside an async IIFE to handle top-level await
 let codeMessageDispatcher: UniversalMessageDispatcher;
@@ -359,10 +362,10 @@ codeMessageDispatcher.registerHandler<
       const zoom = commands.viewport.zoom;
       console.log('[CODE] Viewport zoom:', zoom);
       
-      // The UI header is 24 pixels, so we need to adjust the canvas position
+      // The UI header is 40 pixels, so we need to adjust the canvas position
       // The canvasSpace position is where the window's top-left is in canvas coordinates
-      // We need to adjust by 24 pixels (converted to canvas units) to account for the header
-      const HEADER_HEIGHT_PX = 24;
+      // We need to adjust by 40 pixels (converted to canvas units) to account for the header
+      const HEADER_HEIGHT_PX = 40;
       const headerHeightInCanvasUnits = HEADER_HEIGHT_PX / zoom;
       
       // Calculate the adjusted canvas position (where the ReactFlow canvas should start)
@@ -371,7 +374,7 @@ codeMessageDispatcher.registerHandler<
         y: position.canvasSpace.y + headerHeightInCanvasUnits
       };
       
-      console.log('[CODE] Adjusted canvas position (accounting for 24px header):', canvasPosition);
+      console.log('[CODE] Adjusted canvas position (accounting for 40px header):', canvasPosition);
       console.log('[CODE] Header height in canvas units:', headerHeightInCanvasUnits);
       
       // Return structured response with exact type
@@ -391,13 +394,39 @@ codeMessageDispatcher.registerHandler<
     async (request: UpdateViewportRequest): Promise<ExtractResultType<UpdateViewportResponse>> => {
       console.log('[CODE] UpdateViewport request received:', request.payload);
       
-      const { center, zoom } = request.payload;
+      const { transform, zoom, zoomFocalPoint } = request.payload;
+      const oldZoom = commands.viewport.zoom;
+      const { x: current_x, y: current_y } = commands.viewport.center;
+      
+      let new_center: { x: number; y: number };
+      
+      if (zoomFocalPoint) {
+        // This is a zoom operation with a focal point
+        // Calculate new center to keep the focal point fixed on screen
+        // Formula: new_center = focal_point + (old_center - focal_point) * (old_zoom / new_zoom)
+        console.log('[CODE] Zoom operation with focal point:', zoomFocalPoint);
+        console.log('[CODE] Old center:', { x: current_x, y: current_y }, 'Old zoom:', oldZoom);
+        console.log('[CODE] New zoom:', zoom);
+        
+        const zoomRatio = oldZoom / zoom;
+        new_center = {
+          x: zoomFocalPoint.x + (current_x - zoomFocalPoint.x) * zoomRatio,
+          y: zoomFocalPoint.y + (current_y - zoomFocalPoint.y) * zoomRatio
+        };
+        
+        console.log('[CODE] Calculated new center:', new_center);
+      } else {
+        // This is a pan operation (no zoom change or no focal point)
+        // Transform is already in canvas-space coordinates, add directly to center
+        new_center = { x: current_x + transform.x, y: current_y + transform.y };
+        console.log('[CODE] Pan operation - new center:', new_center);
+      }
       
       // Update Figma viewport center and zoom
-      commands.viewport.center = center;
       commands.viewport.zoom = zoom;
-      
-      console.log('[CODE] Viewport updated to center:', center, 'zoom:', zoom);
+      commands.viewport.center = new_center;
+
+      console.log('[CODE] Viewport updated to center:', new_center, 'zoom:', zoom);
       
       // Return structured response with exact type
       return {
@@ -436,6 +465,28 @@ codeMessageDispatcher.registerHandler<
         },
         center: { x: center.x, y: center.y },
         zoom
+      };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    GetAllFrameNodesRequest,
+    ExtractResultType<GetAllFrameNodesResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.GET_ALL_FRAME_NODES,
+    async (_: GetAllFrameNodesRequest): Promise<ExtractResultType<GetAllFrameNodesResponse>> => {
+      console.log('[CODE] GetAllFrameNodes request received');
+      
+      // Extract all frame nodes from the canvas
+      const frames = getAllFrameNodes(commands);
+      
+      console.log(`[CODE] Extracted ${frames.length} frames from canvas`);
+      
+      // Return structured response with exact type
+      return {
+        frames,
+        totalCount: frames.length
       };
     }
   );

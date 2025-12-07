@@ -1,32 +1,15 @@
-import type { Node } from '@xyflow/react';
-
 import { FrameProperties } from "@/shared/types/types.ts";
+import { FigmaNodeType } from "../../../ReactFlowFrameNode.tsx";
 
 // Re-export FrameProperties for convenience
 export type { FrameProperties };
-
-/**
- * Type alias for a React Flow Node created from a Figma FrameNode.
- */
-export type ReactFlowFrameNode = Node<{ label: string }, 'default'>;
 
 /**
  * Constants for node styling
  */
 const LOCKED_OPACITY = 0.5;
 
-const NODE_STYLES = {
-  backgroundColor: '#ffffff',
-  border: '2px solid #d1d5db',
-  borderRadius: '8px',
-  padding: '12px 16px',
-  minWidth: '150px',
-  boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
-  fontSize: 14,
-  fontWeight: 600,
-  cursorNormal: 'grab',
-  cursorLocked: 'not-allowed',
-} as const;
+
 
 /**
  * Creates a React Flow Node from Figma FrameProperties.
@@ -56,41 +39,29 @@ const NODE_STYLES = {
  */
 export function createReactFlowNode(
   frameProperties: FrameProperties,
-  parentId?: string
-): ReactFlowFrameNode {
+): FigmaNodeType {
   const locked = frameProperties.locked;
-  const visible = frameProperties.visible;
   const opacity = locked ? LOCKED_OPACITY : frameProperties.opacity;
 
   return {
     id: frameProperties.id,
-    type: 'default',
+    type: 'figmaNode',
     position: {
       x: frameProperties.x,
       y: frameProperties.y,
     },
     data: {
       label: frameProperties.name,
+      locked: locked,
+      visible: frameProperties.visible,
+      opacity: opacity,
+      rotation: frameProperties.rotation,
     },
     width: frameProperties.width,
     height: frameProperties.height,
-    hidden: !visible,
-    draggable: !locked,
-    selectable: !locked,
-    style: {
-      backgroundColor: NODE_STYLES.backgroundColor,
-      border: NODE_STYLES.border,
-      borderRadius: NODE_STYLES.borderRadius,
-      padding: NODE_STYLES.padding,
-      minWidth: NODE_STYLES.minWidth,
-      boxShadow: NODE_STYLES.boxShadow,
-      opacity: opacity,
-      transform: `rotate(${frameProperties.rotation}deg)`,
-      cursor: locked ? NODE_STYLES.cursorLocked : NODE_STYLES.cursorNormal,
-      fontSize: NODE_STYLES.fontSize,
-      fontWeight: NODE_STYLES.fontWeight,
-    },
-    ...(parentId && { parentId }),
+    hidden: false,
+    draggable: false,
+    selectable: false,
   };
 }
 
@@ -106,18 +77,17 @@ export function createReactFlowNode(
  */
 export function createReactFlowNodesFromFrame(
   frameProperties: FrameProperties,
-  parentId?: string
-): ReactFlowFrameNode[] {
-  const nodes: ReactFlowFrameNode[] = [];
+): FigmaNodeType[] {
+  const nodes: FigmaNodeType[] = [];
 
   // Create node for the current frame
-  const currentNode = createReactFlowNode(frameProperties, parentId);
+  const currentNode = createReactFlowNode(frameProperties);
   nodes.push(currentNode);
 
   // Recursively process children
   if (frameProperties.children && frameProperties.children.length > 0) {
     for (const child of frameProperties.children) {
-      const childNodes = createReactFlowNodesFromFrame(child, frameProperties.id);
+      const childNodes = createReactFlowNodesFromFrame(child);
       nodes.push(...childNodes);
     }
   }
@@ -153,8 +123,8 @@ export function createReactFlowNodesFromFrame(
  */
 export function transformAllFramesToReactFlowNodes(
   framePropertiesArray: FrameProperties[]
-): ReactFlowFrameNode[] {
-  const allNodes: ReactFlowFrameNode[] = [];
+): FigmaNodeType[] {
+  const allNodes: FigmaNodeType[] = [];
 
   for (const frameProperties of framePropertiesArray) {
     const nodes = createReactFlowNodesFromFrame(frameProperties);
@@ -163,3 +133,4 @@ export function transformAllFramesToReactFlowNodes(
 
   return allNodes;
 }
+

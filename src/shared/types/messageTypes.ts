@@ -1,4 +1,6 @@
 // Pure Request/Response message type system for scalable communication between UI and code.ts
+import { FrameProperties } from './types';
+
 export enum MessageCategory {
   STORE = 'store',
   OPERATION = 'operation', 
@@ -29,7 +31,8 @@ export enum SystemMessageType {
   GET_POSITION = 'get_position',
   SYNC_CANVAS = 'sync_canvas',
   UPDATE_VIEWPORT = 'update_viewport',
-  GET_VIEWPORT_BOUNDS = 'get_viewport_bounds'
+  GET_VIEWPORT_BOUNDS = 'get_viewport_bounds',
+  GET_ALL_FRAME_NODES = 'get_all_frame_nodes'
 }
 
 // Base message request interface
@@ -405,8 +408,9 @@ export interface UpdateViewportRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.UPDATE_VIEWPORT;
   payload: {
-    center: { x: number; y: number };
+    transform: { x: number; y: number };
     zoom: number;
+    zoomFocalPoint?: { x: number; y: number }; // Canvas coordinates of zoom focal point
   };
 }
 
@@ -442,6 +446,22 @@ export interface GetViewportBoundsResponse extends MessageResponse {
   };
 }
 
+// Get All Frame Nodes Request/Response
+export interface GetAllFrameNodesRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.GET_ALL_FRAME_NODES;
+  payload: {};
+}
+
+export interface GetAllFrameNodesResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.GET_ALL_FRAME_NODES;
+  result: {
+    frames: FrameProperties[];
+    totalCount: number;
+  };
+}
+
 // =================
 // UNION TYPES
 // =================
@@ -465,7 +485,8 @@ export type Request =
   | GetPositionRequest
   | SyncCanvasRequest
   | UpdateViewportRequest
-  | GetViewportBoundsRequest;
+  | GetViewportBoundsRequest
+  | GetAllFrameNodesRequest;
 
 // All response types
 export type Response = 
@@ -486,7 +507,8 @@ export type Response =
   | GetPositionResponse
   | SyncCanvasResponse
   | UpdateViewportResponse
-  | GetViewportBoundsResponse;
+  | GetViewportBoundsResponse
+  | GetAllFrameNodesResponse;
 
 
 // Union of all message types
@@ -569,6 +591,10 @@ export type RequestToResponseMap = {
   [SystemMessageType.GET_VIEWPORT_BOUNDS]: {
     request: GetViewportBoundsRequest;
     response: GetViewportBoundsResponse;
+  };
+  [SystemMessageType.GET_ALL_FRAME_NODES]: {
+    request: GetAllFrameNodesRequest;
+    response: GetAllFrameNodesResponse;
   };
 };
 
