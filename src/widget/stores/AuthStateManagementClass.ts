@@ -26,18 +26,13 @@ export class AuthStateManagementClass {
     
     this.loadFromStorage().then(state => {
       this.data = state || this.data;
-      console.log('[AUTH STATE] Loaded state from storage:', this.data);
     })
-    
-    console.log('[AUTH STATE] Authentication state management initialized');
   }
 
   /**
    * Set the state and save it to local storage with enhanced type safety
    */
   setState = async (payload: Partial<PersistableAuthState>): Promise<void> => {
-    console.log('[AUTH STATE] Received state update:', payload);
-    
     if (!payload || typeof payload !== 'object') {
       throw new Error('Invalid payload: must be a valid state object');
     }
@@ -51,7 +46,6 @@ export class AuthStateManagementClass {
 
     // Regular state update
     this.data = { ...this.data, ...payload };
-    console.log('[AUTH STATE] State updated:', this.data);
 
     return this.saveToStorage();
 
@@ -62,7 +56,6 @@ export class AuthStateManagementClass {
    * This method is called when the UI requests current state
    */
   getState = (): PersistableAuthState => {
-    console.log('[AUTH STATE] State requested, returning:', this.data);
     return { ...this.data };
   };
 
@@ -71,16 +64,12 @@ export class AuthStateManagementClass {
    * This method updates the local state and sends a message to the UI to synchronize
    */
   setUpdate = async (payload: Partial<PersistableAuthState>): Promise<void> => {
-    console.log('[AUTH STATE] Received setUpdate request:', payload);
-
     // Update local state
     this.data = { ...this.data, ...payload };
-    console.log('[AUTH STATE] Local state updated:', this.data);
 
     try {
       // Send state update message to UI
-      const result = await codeStoreMessaging.updateState('authentication', payload);
-      console.log('[AUTH STATE] State synchronized with UI:', result);
+      await codeStoreMessaging.updateState('authentication', payload);
 
       return this.saveToStorage();
     } catch (error) {
@@ -102,7 +91,6 @@ export class AuthStateManagementClass {
         authProvider: this.data.authProvider,
       };
       await this.commands.storage.setAsync(STORAGE_KEY, stateToSave);
-      console.log('[AUTH STATE] State saved to storage:', stateToSave);
     } catch (error) {
       console.error('[AUTH STATE] Error saving to storage:', error);
       throw error;
@@ -127,11 +115,9 @@ export class AuthStateManagementClass {
         
         // Update local state
         this.data = { ...this.data, ...loadedState };
-        console.log('[AUTH STATE] State loaded from storage:', loadedState);
         return loadedState;
       }
       
-      console.log('[AUTH STATE] No stored state found');
       return {
         userId: null,
         accessToken: null,
@@ -160,8 +146,6 @@ export class AuthStateManagementClass {
         refreshTokenExpiresAt: null,
         authProvider: null,
       };
-      
-      console.log('[AUTH STATE] Storage cleared and state reset');
     } catch (error) {
       console.error('[AUTH STATE] Error clearing storage:', error);
       throw error;

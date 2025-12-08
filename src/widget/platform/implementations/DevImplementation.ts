@@ -6,18 +6,16 @@ export class DevImplementation implements IDesignPlatform {
   ui = {
     onmessage: null as ((message: any) => void | Promise<void>) | null,
     postMessage: (message: any) => {
-      console.log('[DEV] Posting message to parent:', message);
       // In worker context, post back to main thread
       // Wrap the message in pluginMessage structure to match UI expectations
       if (typeof self !== 'undefined' && 'postMessage' in self) {
         self.postMessage({ pluginMessage: message });
       }
     },
-    showUI: (_html: string, options = {}) => {
-      console.log('[DEV] ShowUI called (no-op in dev):', { options });
+    showUI: (_html: string, _ = {}) => {
+      // No-op in dev mode
     },
     resize: (width: number, height: number) => {
-      console.log('[DEV] Resize called:', { width, height });
       // Post resize event to parent/host for dev environment
       if (typeof self !== 'undefined' && 'postMessage' in self) {
         self.postMessage({ 
@@ -28,7 +26,6 @@ export class DevImplementation implements IDesignPlatform {
       }
     },
     reposition: (x: number, y: number) => {
-      console.log('[DEV] Reposition called:', { x, y });
       // Post reposition event to parent/host for dev environment
       if (typeof self !== 'undefined' && 'postMessage' in self) {
         self.postMessage({ 
@@ -39,7 +36,6 @@ export class DevImplementation implements IDesignPlatform {
       }
     },
     getPosition: async (): Promise<{ windowSpace: { x: number; y: number }; canvasSpace: { x: number; y: number } }> => {
-      console.log('[DEV] GetPosition called');
       // Post get position request to parent/host for dev environment
       if (typeof self !== 'undefined' && 'postMessage' in self) {
         return new Promise<{ windowSpace: { x: number; y: number }; canvasSpace: { x: number; y: number } }>((resolve) => {
@@ -86,13 +82,11 @@ export class DevImplementation implements IDesignPlatform {
     Object.defineProperty(this.ui, 'onmessage', {
       get: () => this._onmessage,
       set: (handler: ((message: any) => void | Promise<void>) | null) => {
-        console.log('[DEV] Setting onmessage handler');
         this._onmessage = handler;
         
         // Set up worker message listener if we're in a worker context
         if (typeof self !== 'undefined' && 'addEventListener' in self) {
           self.addEventListener('message', async (event: MessageEvent) => {
-            console.log('[DEV] Worker received message:', event.data);
             if (this._onmessage) {
               // Extract the pluginMessage from the event data to match UI structure
               const message = event.data.pluginMessage || event.data;
@@ -108,7 +102,6 @@ export class DevImplementation implements IDesignPlatform {
       get: () => this._viewportZoom,
       set: (value: number) => {
         this._viewportZoom = value;
-        console.log('[DEV] Viewport zoom set to:', value);
       }
     });
 
@@ -116,17 +109,15 @@ export class DevImplementation implements IDesignPlatform {
       get: () => this._viewportCenter,
       set: (value: { x: number; y: number }) => {
         this._viewportCenter = value;
-        console.log('[DEV] Viewport center set to:', value);
       }
     });
   }
 
   closePlugin = () => {
-    console.log('[DEV] ClosePlugin called (no-op in dev)');
+    // No-op in dev mode
   };
 
   getNodeByIdAsync = async (id: string) => {
-    console.log('[DEV] GetNodeByIdAsync called:', id);
     return {
       id,
       type: 'FRAME',
@@ -139,7 +130,6 @@ export class DevImplementation implements IDesignPlatform {
   };
 
   createFrame = () => {
-    console.log('[DEV] CreateFrame called');
     const mockFrame = {
       id: `frame_${Date.now()}`,
       type: 'FRAME',
@@ -182,7 +172,6 @@ export class DevImplementation implements IDesignPlatform {
   };
 
   createRectangle = () => {
-    console.log('[DEV] CreateRectangle called');
     const mockRectangle = {
       id: `rect_${Date.now()}`,
       type: 'RECTANGLE',
@@ -220,13 +209,11 @@ export class DevImplementation implements IDesignPlatform {
     center: { x: 0, y: 0 }
   };
 
-  on = (event: string, _callback: () => void) => {
-    console.log('[DEV] Event listener registered:', event);
+  on = (_: string, _callback: () => void) => {
     // In dev mode, we could simulate events or ignore them
   };
 
   getStyleByIdAsync = async (id: string) => {
-    console.log('[DEV] GetStyleByIdAsync called:', id);
     return {
       id,
       name: `MockStyle_${id}`,
@@ -236,7 +223,6 @@ export class DevImplementation implements IDesignPlatform {
 
   storage = {
     setAsync: async (key: string, value: any) => {
-      console.log('[DEV] Storage setAsync:', key, value);
       try {
         // Check if we're in a worker with the async bridge
         const storage = (globalThis as any).localStorageAsync || localStorage;
@@ -251,7 +237,6 @@ export class DevImplementation implements IDesignPlatform {
       }
     },
     getAsync: async (key: string) => {
-      console.log('[DEV] Storage getAsync:', key);
       try {
         // Check if we're in a worker with the async bridge
         const storage = (globalThis as any).localStorageAsync || localStorage;
@@ -262,7 +247,6 @@ export class DevImplementation implements IDesignPlatform {
           item = storage.getItem(key);
         }
         const value = item ? JSON.parse(item) : undefined;
-        console.log('[DEV] Storage retrieved:', value);
         return value;
       } catch (error) {
         console.error('[DEV] localStorage getItem failed:', error);
@@ -270,7 +254,6 @@ export class DevImplementation implements IDesignPlatform {
       }
     },
     deleteAsync: async (key: string) => {
-      console.log('[DEV] Storage deleteAsync:', key);
       try {
         // Check if we're in a worker with the async bridge
         const storage = (globalThis as any).localStorageAsync || localStorage;
