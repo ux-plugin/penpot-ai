@@ -25,10 +25,7 @@ const AuthenticatedLayout = () => {
   // Initialize RSocket and port subscription when user authenticates
   useEffect(() => {
     if (isAuthenticated && !hasInitialized.current) {
-      console.log("User authenticated - running initialization");
-
       // Ensure RSocket connection and subscribe to ports stream
-      console.log("Initializing RSocket + port subscription manager...");
       connectRSocket()
         .then(() => initializePortSubscription())
         .catch((error) => {
@@ -39,8 +36,6 @@ const AuthenticatedLayout = () => {
     }
 
     if (!isAuthenticated && hasInitialized.current) {
-      console.log("User logged out - cleaning up");
-      
       // Clean up port subscription
       cleanupPortSubscription();
       
@@ -54,7 +49,6 @@ const AuthenticatedLayout = () => {
   // Handle port changes (only when authenticated)
   useEffect(() => {
     if (isAuthenticated && currentPort) {
-      console.log(`Port changed to ${currentPort}, triggering reconnection...`);
       handlePortUpdate(currentPort).catch((error) => {
         console.error('Failed to reconnect after port update:', error);
       });
@@ -73,35 +67,32 @@ function AppContent() {
     startRecordingAndStreaming,
     stopRecordingAndStreaming,
     isRecording,
-    isWebSocketConnected,
     recordingError,
     webSocketError,
   } = useCompletionsWebSocket({
     onWebSocketOpen: () => {
-      console.log('✅ WebSocket connected to backend!');
       setResponsesCount(0);
     },
     
     onWebSocketClose: () => {
-      console.log('🔌 WebSocket closed');
+      // WebSocket closed
     },
     
     onWebSocketError: (error) => {
       console.error('❌ WebSocket error:', error);
     },
     
-    onReasoningChunk: (reasoning) => {
-      console.log(`📨 Backend reasoning chunk:`, reasoning);
+    onReasoningChunk: () => {
+      // Reasoning chunk received
     },
     
-    onAction: (action) => {
-      console.log(`📨 Backend action:`, action);
+    onAction: () => {
       // Count actions as responses
       setResponsesCount((prev) => prev + 1);
     },
     
-    onText: (text) => {
-      console.log(`📨 Backend text chunk:`, text);
+    onText: () => {
+      // Text chunk received
     },
   });
 
@@ -115,13 +106,6 @@ function AppContent() {
     }
   }, [recordingError, webSocketError]);
 
-  // Log streaming status
-  useEffect(() => {
-    if (isRecording && isWebSocketConnected) {
-      console.log('🎙️ Streaming active - Recording:', isRecording, 'WebSocket:', isWebSocketConnected);
-    }
-  }, [isRecording, isWebSocketConnected]);
-
   // Keyboard shortcut for audio recording and streaming
   useEffect(() => {
     const handleKeyDown = async (event: KeyboardEvent) => {
@@ -130,14 +114,10 @@ function AppContent() {
         event.preventDefault();
         
         if (isRecording) {
-          console.log('⏹️ Stopping recording and WebSocket...');
           stopRecordingAndStreaming();
-          console.log(`✅ Stopped. Total responses received: ${responsesCount}`);
         } else {
-          console.log('🎙️ Starting recording and WebSocket streaming...');
           try {
             await startRecordingAndStreaming();
-            console.log('✅ Recording and streaming started successfully');
           } catch (error) {
             console.error('❌ Failed to start recording and streaming:', error);
           }
@@ -145,11 +125,9 @@ function AppContent() {
       }
     };
 
-    console.log('🎯 Keyboard listener initialized (Cmd/Ctrl+K for audio streaming)');
     window.addEventListener('keydown', handleKeyDown);
     
     return () => {
-      console.log('🧹 Keyboard listener cleaned up');
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isRecording, startRecordingAndStreaming, stopRecordingAndStreaming, responsesCount]);

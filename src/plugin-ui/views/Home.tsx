@@ -42,9 +42,7 @@ function Home() {
 
   useEffect(() => {
     if (currentPort) {
-      connect().then(() => {
-        console.log("Reconnected to companion app");
-      }).catch((error) => {
+      connect().catch((error) => {
         console.error('Reconnection failed:', error);
       });
     }
@@ -65,7 +63,6 @@ function Home() {
           height: 24
         }
       });
-      console.log('Window minimized to 24x24');
     } catch (error) {
       console.error('Failed to minimize window:', error);
     }
@@ -86,7 +83,6 @@ function Home() {
           height: 10000
         }
       });
-      console.log('Window maximized to fill viewport');
     } catch (error) {
       console.error('Failed to maximize window:', error);
     }

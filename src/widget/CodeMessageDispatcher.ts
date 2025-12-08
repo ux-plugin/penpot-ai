@@ -86,7 +86,6 @@ let setupCodeMessageListener: () => void;
       if (color) {
         rect.fills = [{ type: 'SOLID', color }];
       }
-      console.log('Rectangle created:', rect.id);
       
       // Return structured response with exact type
       return {
@@ -111,7 +110,6 @@ codeMessageDispatcher.registerHandler<
       const node = await commands.getNodeByIdAsync(nodeId);
       if (node && 'fills' in node) {
         node.fills = [{ type: 'SOLID', color }];
-        console.log('Color changed for node:', nodeId);
         
         // Return structured response with exact type
         return {
@@ -142,8 +140,6 @@ codeMessageDispatcher.registerHandler<
       }
       if (name) frame.name = name;
       
-      console.log('Frame created:', frame.id);
-      
       // Return structured response with exact type
       return {
         frameId: frame.id,
@@ -164,26 +160,20 @@ codeMessageDispatcher.registerHandler<
     MessageCategory.OPERATION,
     OperationMessageType.GET_NODES_UNDER_UI,
     async (request: GetNodesUnderUIRequest): Promise<ExtractResultType<GetNodesUnderUIResponse>> => {
-      console.log('[CODE] GetNodesUnderUI request received');
-      
       // Get UI position in canvas space
       const position = await commands.ui.getPosition();
-      console.log('[CODE] UI position:', position);
       
       // Get UI dimensions from the request payload (in screen pixels)
       const screenWidth = request.payload.width;
       const screenHeight = request.payload.height;
-      console.log('[CODE] UI dimensions in screen pixels:', { screenWidth, screenHeight });
       
       // Get the current viewport zoom level
       const zoom = commands.viewport.zoom;
-      console.log('[CODE] Current viewport zoom:', zoom);
       
       // Convert screen pixels to canvas units using zoom
       // Formula: canvasUnits = screenPixels / zoom
       const canvasWidth = screenWidth / zoom;
       const canvasHeight = screenHeight / zoom;
-      console.log('[CODE] UI dimensions in canvas units:', { canvasWidth, canvasHeight });
       
       // Calculate the UI region in canvas space
       const uiRegion = {
@@ -192,8 +182,6 @@ codeMessageDispatcher.registerHandler<
         width: canvasWidth,
         height: canvasHeight
       };
-      
-      console.log('[CODE] UI region in canvas space:', uiRegion);
       
       // Function to check if a node intersects with the UI region
       const isNodeInUIRegion = (node: any): boolean => {
@@ -229,9 +217,6 @@ codeMessageDispatcher.registerHandler<
       // Iterate through all children of the current page
       const pageChildren = commands.currentPage.children as any[];
       for (const node of pageChildren) {
-        console.log(`[CODE] Checking node ${node.id || 'unnamed'}...`);
-        console.log(`[CODE] Node position: ${node.x}, ${node.y}`);
-        console.log(`[CODE] Node dimensions: ${isNodeInUIRegion(node)}`);
         if (isNodeInUIRegion(node)) {
           nodesUnderUI.push({
             id: node.id || '',
@@ -244,8 +229,6 @@ codeMessageDispatcher.registerHandler<
           });
         }
       }
-      
-      console.log(`[CODE] Found ${nodesUnderUI.length} nodes under UI`);
       
       // Return structured response with exact type
       return {
@@ -287,9 +270,6 @@ codeMessageDispatcher.registerHandler<
     MessageCategory.SYSTEM,
     SystemMessageType.WORKER_TEST,
     async (request: WorkerTestRequest): Promise<ExtractResultType<WorkerTestResponse>> => {
-      console.log('[CODE] Worker test message received:', request.payload.message);
-      console.log('[CODE] Full request payload:', request.payload);
-      
       // Return structured response with exact type
       return {
         received: true,
@@ -307,7 +287,6 @@ codeMessageDispatcher.registerHandler<
     SystemMessageType.RESIZE,
     async (request: ResizeRequest): Promise<ExtractResultType<ResizeResponse>> => {
       const { width, height, x, y } = request.payload;
-      console.log('[CODE] Resize request received:', { width, height, x, y });
       
       // Call the platform-specific resize method
       commands.ui.resize(width, height);
@@ -335,12 +314,8 @@ codeMessageDispatcher.registerHandler<
     MessageCategory.SYSTEM,
     SystemMessageType.GET_POSITION,
     async (_: GetPositionRequest): Promise<ExtractResultType<GetPositionResponse>> => {
-      console.log('[CODE] GetPosition request received');
-      
       // Call the platform-specific getPosition method
       const position = await commands.ui.getPosition();
-      
-      console.log('[CODE] Position retrieved:', position);
       
       // Return structured response with exact type
       return position;
@@ -354,15 +329,11 @@ codeMessageDispatcher.registerHandler<
     MessageCategory.SYSTEM,
     SystemMessageType.SYNC_CANVAS,
     async (_: SyncCanvasRequest): Promise<ExtractResultType<SyncCanvasResponse>> => {
-      console.log('[CODE] SyncCanvas request received');
-      
       // Get UI position in both window space and canvas space
       const position = await commands.ui.getPosition();
-      console.log('[CODE] UI Position:', position);
       
       // Get viewport zoom level
       const zoom = commands.viewport.zoom;
-      console.log('[CODE] Viewport zoom:', zoom);
       
       // The UI header is 40 pixels, so we need to adjust the canvas position
       // The canvasSpace position is where the window's top-left is in canvas coordinates
@@ -375,9 +346,6 @@ codeMessageDispatcher.registerHandler<
         x: position.canvasSpace.x,
         y: position.canvasSpace.y + headerHeightInCanvasUnits
       };
-      
-      console.log('[CODE] Adjusted canvas position (accounting for 40px header):', canvasPosition);
-      console.log('[CODE] Header height in canvas units:', headerHeightInCanvasUnits);
       
       // Return structured response with exact type
       return {
@@ -394,8 +362,6 @@ codeMessageDispatcher.registerHandler<
     MessageCategory.SYSTEM,
     SystemMessageType.UPDATE_VIEWPORT,
     async (request: UpdateViewportRequest): Promise<ExtractResultType<UpdateViewportResponse>> => {
-      console.log('[CODE] UpdateViewport request received:', request.payload);
-      
       const { transform, zoom, zoomFocalPoint } = request.payload;
       const oldZoom = commands.viewport.zoom;
       const { x: current_x, y: current_y } = commands.viewport.center;
@@ -406,29 +372,20 @@ codeMessageDispatcher.registerHandler<
         // This is a zoom operation with a focal point
         // Calculate new center to keep the focal point fixed on screen
         // Formula: new_center = focal_point + (old_center - focal_point) * (old_zoom / new_zoom)
-        console.log('[CODE] Zoom operation with focal point:', zoomFocalPoint);
-        console.log('[CODE] Old center:', { x: current_x, y: current_y }, 'Old zoom:', oldZoom);
-        console.log('[CODE] New zoom:', zoom);
-        
         const zoomRatio = oldZoom / zoom;
         new_center = {
           x: zoomFocalPoint.x + (current_x - zoomFocalPoint.x) * zoomRatio,
           y: zoomFocalPoint.y + (current_y - zoomFocalPoint.y) * zoomRatio
         };
-        
-        console.log('[CODE] Calculated new center:', new_center);
       } else {
         // This is a pan operation (no zoom change or no focal point)
         // Transform is already in canvas-space coordinates, add directly to center
         new_center = { x: current_x + transform.x, y: current_y + transform.y };
-        console.log('[CODE] Pan operation - new center:', new_center);
       }
       
       // Update Figma viewport center and zoom
       commands.viewport.zoom = zoom;
       commands.viewport.center = new_center;
-
-      console.log('[CODE] Viewport updated to center:', new_center, 'zoom:', zoom);
       
       // Return structured response with exact type
       return {
@@ -446,16 +403,10 @@ codeMessageDispatcher.registerHandler<
     MessageCategory.SYSTEM,
     SystemMessageType.GET_VIEWPORT_BOUNDS,
     async (_: GetViewportBoundsRequest): Promise<ExtractResultType<GetViewportBoundsResponse>> => {
-      console.log('[CODE] GetViewportBounds request received');
-      
       // Get viewport bounds, center, and zoom
       const bounds = commands.viewport.bounds;
       const center = commands.viewport.center;
       const zoom = commands.viewport.zoom;
-      
-      console.log('[CODE] Viewport bounds:', bounds);
-      console.log('[CODE] Viewport center:', center);
-      console.log('[CODE] Viewport zoom:', zoom);
       
       // Return structured response with exact type
       return {
@@ -478,12 +429,8 @@ codeMessageDispatcher.registerHandler<
     MessageCategory.SYSTEM,
     SystemMessageType.GET_ALL_FRAME_NODES,
     async (_: GetAllFrameNodesRequest): Promise<ExtractResultType<GetAllFrameNodesResponse>> => {
-      console.log('[CODE] GetAllFrameNodes request received');
-      
       // Extract all frame nodes from the canvas
       const frames = getAllFrameNodes(commands);
-      
-      console.log(`[CODE] Extracted ${frames.length} frames from canvas`);
       
       // Return structured response with exact type
       return {
