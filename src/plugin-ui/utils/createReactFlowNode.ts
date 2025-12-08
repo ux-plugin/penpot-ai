@@ -226,5 +226,3 @@ export function transformAllTextsToReactFlowNodes(
 
   return allNodes;
 }
-
-
