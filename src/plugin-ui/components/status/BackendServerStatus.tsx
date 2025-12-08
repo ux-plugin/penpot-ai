@@ -80,22 +80,19 @@ export const BackendServerStatus: React.FC<BackendServerStatusProps> = ({
   };
 
   const handleConnect = async () => {
-    console.log('Connecting to backend server (RSocket)...');
     setIsConnecting(true);
     setError(null);
     try {
       await connectRSocket();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to connect';
-      console.log('Failed to connect to backend server:', e);
+      console.error('Failed to connect to backend server:', e);
       setError(msg);
       setIsConnecting(false);
     }
-    console.log('finished connecting');
   };
 
   const handleDisconnect = () => {
-    console.log('Disconnecting from backend server (RSocket)...');
     disconnectRSocket();
   };
 

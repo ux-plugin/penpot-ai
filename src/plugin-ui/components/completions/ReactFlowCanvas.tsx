@@ -11,7 +11,6 @@ import {
   useReactFlow,
   ReactFlowProvider,
   OnMove,
-  useViewport,
   Viewport,
   Edge,
 } from "@xyflow/react";
@@ -22,12 +21,10 @@ import {
   MessageCategory,
   SystemMessageType,
   ExtractResultType,
-  GetViewportBoundsResponse,
   GetAllFrameNodesResponse,
   UpdateViewportResponse,
   UpdateViewportRequest,
 } from "@shared-types/messageTypes";
-import { Button } from '@/plugin-ui/components/ui/button';
 import {
   transformAllFramesToReactFlowNodes,
 } from "@/plugin-ui/utils/createReactFlowNode";
@@ -53,7 +50,6 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   const [edges, ,onEdgesChange] = useEdgesState<Edge>([]);
   const currentViewport = useRef<Viewport>({x: 0, y:0, zoom: 1} as Viewport);
   const reactFlowInstance = useReactFlow();
-  const viewport = useViewport();
   const containerRef = useRef<HTMLDivElement>(null);
   const hasSynced = useRef(false);
   const firstSyncRef = useRef(true);
@@ -68,8 +64,6 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   // Load all nodes from Figma
   const loadAllNodes = useCallback(async () => {
     try {
-      console.log('[ReactFlowCanvas] Loading all frame nodes...');
-      
       const result = await uiMessageDispatcher.sendRequest<
         Omit<any, 'id' | 'timestamp' | 'source'>,
         ExtractResultType<GetAllFrameNodesResponse>
@@ -79,16 +73,11 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         payload: {}
       });
       
-      console.log(`[ReactFlowCanvas] Received ${result.totalCount} frames from Figma`);
-      
       // Transform FrameProperties to ReactFlow nodes
       const reactFlowNodes = transformAllFramesToReactFlowNodes(result.frames);
-      console.log('new nodes:', reactFlowNodes)
       
       // Update nodes state
       setNodes(reactFlowNodes);
-      
-      console.log('[ReactFlowCanvas] Nodes loaded successfully');
     } catch (error) {
       console.error('[ReactFlowCanvas] Failed to load nodes:', error);
     }
@@ -107,13 +96,11 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
     // Skip sending updates to Figma if we're currently syncing FROM Figma
     // This prevents an infinite loop where periodic sync triggers onMove which triggers Figma update
     if (isSyncingFromFigma.current) {
-      console.log('[ReactFlowCanvas] Skipping Figma update - syncing from Figma');
       return;
     }
 
     // Only sync to Figma when cursor is inside the screen
     if (!isCursorInsideRef.current) {
-      console.log('[ReactFlowCanvas] Skipping Figma update - cursor outside screen');
       return;
     }
 
@@ -160,11 +147,6 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
           const mouseFocalPointY = relativeY / oldZoom + oldCanvasPos.y;
           
           zoomFocalPoint = { x: mouseFocalPointX, y: mouseFocalPointY };
-          
-          console.log('[ReactFlowCanvas] Zoom operation detected');
-          console.log('[ReactFlowCanvas] Mouse screen pos:', lastMousePosition.current);
-          console.log('[ReactFlowCanvas] Mouse canvas pos (focal point):', zoomFocalPoint);
-          console.log('[ReactFlowCanvas] Zoom change:', oldZoom, '->', zoom);
         }
         
         // Send update to Figma
@@ -181,37 +163,11 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
           }
         });
         currentViewport.current = viewport;
-        console.log('[ReactFlowCanvas] Figma viewport updated successfully');
       } catch (error) {
         console.error('[ReactFlowCanvas] Failed to update Figma viewport:', error);
       }
     })();
   }, [reactFlowInstance]);
-
-  // Handle print viewport bounds button click
-  const handlePrintBounds = useCallback(async () => {
-    try {
-      const result = await uiMessageDispatcher.sendRequest<
-        Omit<any, 'id' | 'timestamp' | 'source'>,
-        ExtractResultType<GetViewportBoundsResponse>
-      >({
-        category: MessageCategory.SYSTEM,
-        type: SystemMessageType.GET_VIEWPORT_BOUNDS,
-        payload: {}
-      });
-      
-      console.log('[ReactFlowCanvas] ========== VIEWPORT BOUNDS ==========');
-      console.log('[ReactFlowCanvas] Bounds:', result.bounds);
-      console.log('[ReactFlowCanvas] Center:', result.center);
-      console.log('[ReactFlowCanvas] Zoom:', result.zoom);
-      console.log('[ReactFlowCanvas] =====================================');
-      
-      // Also show as alert for user visibility
-      alert(`Viewport Bounds:\n\nBounds: x=${result.bounds.x}, y=${result.bounds.y}, width=${result.bounds.width}, height=${result.bounds.height}\n\nCenter: x=${result.center.x}, y=${result.center.y}\n\nZoom: ${result.zoom}\n\nCheck console for details.`);
-    } catch (error) {
-      console.error('[ReactFlowCanvas] Failed to get viewport bounds:', error);
-    }
-  }, []);
 
   // Load all nodes on mount
   useEffect(() => {
@@ -228,8 +184,6 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
           reactFlowInstance.setViewport( newViewport );
           currentViewport.current = newViewport;
           hasSynced.current = true;
-
-          console.log('[ReactFlowCanvas] Canvas synced successfully on mount');
         } catch (error) {
           console.error('[ReactFlowCanvas] Failed to sync canvas on mount:', error);
         }
@@ -258,7 +212,6 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   // Set up cursor enter/leave event listeners
   useEffect(() => {
     const handleMouseEnter = async () => {
-      console.log('[ReactFlowCanvas] Cursor entered window - stopping periodic sync');
       isCursorInsideRef.current = true;
 
       // Clear the interval when cursor enters the window
@@ -274,7 +227,6 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         reactFlowInstance.setViewport( newViewport );
         currentViewport.current = newViewport;
         hasSynced.current = true;
-        console.log('[ReactFlowCanvas] Canvas synced successfully on mouse enter');
       } catch (error) {
         console.error('[ReactFlowCanvas] Failed to sync on mouse enter:', error);
       } finally {
@@ -283,7 +235,6 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
     };
 
     const handleMouseLeave = () => {
-      console.log('[ReactFlowCanvas] Cursor left window - starting periodic sync');
       isCursorInsideRef.current = false;
 
       // Start periodic sync when cursor leaves the window
@@ -349,47 +300,6 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
           nodeColor="#9ca3af"
           maskColor="rgb(0, 0, 0, 0.1)"
         />
-        
-        {/* Viewport Coordinates Display with Node List */}
-        <Panel position="bottom-center" className="bg-white/95 px-4 py-3 rounded shadow-sm text-xs font-mono max-h-[300px] overflow-y-auto">
-          <div className="text-gray-700 font-semibold mb-2 border-b border-gray-300 pb-2">
-            Viewport: x={viewport.x.toFixed(0)}, y={viewport.y.toFixed(0)} | Nodes: {nodes.length}
-          </div>
-          <div className="space-y-1 max-h-[200px] overflow-y-auto">
-            {nodes.map((node) => (
-              <div key={node.id} className="text-gray-600 text-[10px] leading-tight">
-                <span className="font-semibold text-gray-800">{node.data.label}</span>
-                {' → '}
-                <span>x:{node.position.x.toFixed(0)}, y:{node.position.y.toFixed(0)}</span>
-                {node.width && node.height && (
-                  <span className="text-gray-500"> ({node.width.toFixed(0)}×{node.height.toFixed(0)})</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        {/* Top Center Buttons */}
-        <Panel position="top-center">
-          <div className="flex gap-2">
-            <Button 
-              onClick={loadAllNodes}
-              variant="outline"
-              size="sm"
-              className="bg-white shadow-sm"
-            >
-              Refresh Nodes
-            </Button>
-            <Button 
-              onClick={handlePrintBounds}
-              variant="outline"
-              size="sm"
-              className="bg-white shadow-sm"
-            >
-              Print Viewport Bounds
-            </Button>
-          </div>
-        </Panel>
         
         {/* Top-Right Panel for buttons */}
         {topRightContent && (

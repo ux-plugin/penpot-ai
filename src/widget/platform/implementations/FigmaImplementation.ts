@@ -4,22 +4,18 @@ export class FigmaImplementation implements IDesignPlatform {
   ui = {
     onmessage: null as ((message: any) => void | Promise<void>) | null,
     postMessage: (message: any) => {
-      console.log('[FIGMA] Sending UI message:', message);
       figma.ui.postMessage(message);
     },
     showUI: (html: string, options = {}) => {
       figma.showUI(html, Object.assign({ width: 500, height: 500 }, options));
     },
     resize: (width: number, height: number) => {
-      console.log('[FIGMA] Resizing UI to:', { width, height });
       figma.ui.resize(width, height);
     },
     reposition: (x: number, y: number) => {
-      console.log('[FIGMA] Repositioning UI to:', { x, y });
       figma.ui.reposition(x, y);
     },
     getPosition: async () => {
-      console.log('[FIGMA] Getting UI position');
       return figma.ui.getPosition();
     }
   };
