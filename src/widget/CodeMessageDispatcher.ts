@@ -26,17 +26,15 @@ import {
   UpdateViewportResponse,
   GetViewportBoundsRequest,
   GetViewportBoundsResponse,
-  GetAllFrameNodesRequest,
-  GetAllFrameNodesResponse,
-  GetAllTextNodesRequest,
-  GetAllTextNodesResponse,
+  GetAllNodesRequest,
+  GetAllNodesResponse,
   Message,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
 import { platform } from '@widget/platform';
 import { IDesignPlatform } from '@widget/platform/IDesignPlatform.ts';
 import { AuthStateManagementClass } from '@widget/stores/AuthStateManagementClass.ts';
-import { getAllFrameNodes, getAllTextNodes } from '@widget/utils/extractFrameProperties.ts';
+import { getAllNodes } from '@widget/utils/extractFrameProperties.ts';
 
 // Initialize everything inside an async IIFE to handle top-level await
 let codeMessageDispatcher: UniversalMessageDispatcher;
@@ -423,41 +421,24 @@ codeMessageDispatcher.registerHandler<
   );
 
   codeMessageDispatcher.registerHandler<
-    GetAllFrameNodesRequest,
-    ExtractResultType<GetAllFrameNodesResponse>
+    GetAllNodesRequest,
+    ExtractResultType<GetAllNodesResponse>
   >(
     MessageCategory.SYSTEM,
-    SystemMessageType.GET_ALL_FRAME_NODES,
-    async (_: GetAllFrameNodesRequest): Promise<ExtractResultType<GetAllFrameNodesResponse>> => {
-      // Extract all frame nodes from the canvas
-      const frames = getAllFrameNodes(commands);
+    SystemMessageType.GET_ALL_NODES,
+    async (_: GetAllNodesRequest): Promise<ExtractResultType<GetAllNodesResponse>> => {
+      console.log('[CODE] GetAllNodes request received');
+      
+      // Extract all frame and text nodes from the canvas
+      const { frames, texts } = getAllNodes(commands);
+      
+      console.log(`[CODE] Extracted ${frames.length} frames and ${texts.length} text nodes from canvas`);
       
       // Return structured response with exact type
       return {
         frames,
-        totalCount: frames.length
-      };
-    }
-  );
-
-  codeMessageDispatcher.registerHandler<
-    GetAllTextNodesRequest,
-    ExtractResultType<GetAllTextNodesResponse>
-  >(
-    MessageCategory.SYSTEM,
-    SystemMessageType.GET_ALL_TEXT_NODES,
-    async (_: GetAllTextNodesRequest): Promise<ExtractResultType<GetAllTextNodesResponse>> => {
-      console.log('[CODE] GetAllTextNodes request received');
-      
-      // Extract all text nodes from the canvas
-      const texts = getAllTextNodes(commands);
-      
-      console.log(`[CODE] Extracted ${texts.length} text nodes from canvas`);
-      
-      // Return structured response with exact type
-      return {
         texts,
-        totalCount: texts.length
+        totalCount: frames.length + texts.length
       };
     }
   );

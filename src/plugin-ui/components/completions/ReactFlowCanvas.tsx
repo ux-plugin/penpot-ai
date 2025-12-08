@@ -21,8 +21,8 @@ import {
   MessageCategory,
   SystemMessageType,
   ExtractResultType,
-  GetAllFrameNodesResponse,
-  GetAllTextNodesResponse,
+  GetAllNodesResponse,
+  GetViewportBoundsResponse,
   UpdateViewportResponse,
   UpdateViewportRequest,
 } from "@shared-types/messageTypes";
@@ -68,40 +68,31 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   // Load all nodes from Figma
   const loadAllNodes = useCallback(async () => {
     try {
+      console.log('[ReactFlowCanvas] Loading all nodes...');
+      
       const result = await uiMessageDispatcher.sendRequest<
         Omit<any, 'id' | 'timestamp' | 'source'>,
-        ExtractResultType<GetAllFrameNodesResponse>
+        ExtractResultType<GetAllNodesResponse>
       >({
         category: MessageCategory.SYSTEM,
-        type: SystemMessageType.GET_ALL_FRAME_NODES,
+        type: SystemMessageType.GET_ALL_NODES,
         payload: {}
       });
       
-      // Load text nodes
-      const textResult = await uiMessageDispatcher.sendRequest<
-        Omit<any, 'id' | 'timestamp' | 'source'>,
-        ExtractResultType<GetAllTextNodesResponse>
-      >({
-        category: MessageCategory.SYSTEM,
-        type: SystemMessageType.GET_ALL_TEXT_NODES,
-        payload: {}
-      });
+      console.log(`[ReactFlowCanvas] Received ${result.frames.length} frames and ${result.texts.length} text nodes from Figma`);
       
-      // Transform FrameProperties to ReactFlow nodes
-      const frameNodes = transformAllFramesToReactFlowNodes(frameResult.frames);
-      const textNodes = transformAllTextsToReactFlowNodes(textResult.texts);
+      // Transform to ReactFlow nodes
+      const frameNodes = transformAllFramesToReactFlowNodes(result.frames);
+      const textNodes = transformAllTextsToReactFlowNodes(result.texts);
       
       // Combine all nodes
       const allNodes = [...frameNodes, ...textNodes];
+      console.log('new nodes:', allNodes);
       
       // Update nodes state
       setNodes(allNodes);
       
-      // Transform FrameProperties to ReactFlow nodes
-      const reactFlowNodes = transformAllFramesToReactFlowNodes(result.frames);
-      
-      // Update nodes state
-      setNodes(reactFlowNodes);
+      console.log('[ReactFlowCanvas] Nodes loaded successfully');
     } catch (error) {
       console.error('[ReactFlowCanvas] Failed to load nodes:', error);
     }

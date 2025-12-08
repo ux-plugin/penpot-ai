@@ -32,8 +32,7 @@ export enum SystemMessageType {
   SYNC_CANVAS = 'sync_canvas',
   UPDATE_VIEWPORT = 'update_viewport',
   GET_VIEWPORT_BOUNDS = 'get_viewport_bounds',
-  GET_ALL_FRAME_NODES = 'get_all_frame_nodes',
-  GET_ALL_TEXT_NODES = 'get_all_text_nodes'
+  GET_ALL_NODES = 'get_all_nodes'
 }
 
 // Base message request interface
@@ -447,33 +446,18 @@ export interface GetViewportBoundsResponse extends MessageResponse {
   };
 }
 
-// Get All Frame Nodes Request/Response
-export interface GetAllFrameNodesRequest extends MessageRequest {
+// Get All Nodes Request/Response
+export interface GetAllNodesRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
-  type: SystemMessageType.GET_ALL_FRAME_NODES;
+  type: SystemMessageType.GET_ALL_NODES;
   payload: {};
 }
 
-export interface GetAllFrameNodesResponse extends MessageResponse {
+export interface GetAllNodesResponse extends MessageResponse {
   category: MessageCategory.SYSTEM;
-  type: SystemMessageType.GET_ALL_FRAME_NODES;
+  type: SystemMessageType.GET_ALL_NODES;
   result: {
     frames: FrameProperties[];
-    totalCount: number;
-  };
-}
-
-// Get All Text Nodes Request/Response
-export interface GetAllTextNodesRequest extends MessageRequest {
-  category: MessageCategory.SYSTEM;
-  type: SystemMessageType.GET_ALL_TEXT_NODES;
-  payload: {};
-}
-
-export interface GetAllTextNodesResponse extends MessageResponse {
-  category: MessageCategory.SYSTEM;
-  type: SystemMessageType.GET_ALL_TEXT_NODES;
-  result: {
     texts: TextProperties[];
     totalCount: number;
   };
@@ -503,8 +487,7 @@ export type Request =
   | SyncCanvasRequest
   | UpdateViewportRequest
   | GetViewportBoundsRequest
-  | GetAllFrameNodesRequest
-  | GetAllTextNodesRequest;
+  | GetAllNodesRequest;
 
 // All response types
 export type Response = 
@@ -526,8 +509,7 @@ export type Response =
   | SyncCanvasResponse
   | UpdateViewportResponse
   | GetViewportBoundsResponse
-  | GetAllFrameNodesResponse
-  | GetAllTextNodesResponse;
+  | GetAllNodesResponse;
 
 
 // Union of all message types
@@ -611,13 +593,9 @@ export type RequestToResponseMap = {
     request: GetViewportBoundsRequest;
     response: GetViewportBoundsResponse;
   };
-  [SystemMessageType.GET_ALL_FRAME_NODES]: {
-    request: GetAllFrameNodesRequest;
-    response: GetAllFrameNodesResponse;
-  };
-  [SystemMessageType.GET_ALL_TEXT_NODES]: {
-    request: GetAllTextNodesRequest;
-    response: GetAllTextNodesResponse;
+  [SystemMessageType.GET_ALL_NODES]: {
+    request: GetAllNodesRequest;
+    response: GetAllNodesResponse;
   };
 };
 

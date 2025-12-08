@@ -303,3 +303,42 @@ export function getTextNodesInViewport(
 
   return textsInViewport;
 }
+
+/**
+ * Extracts all FrameNodes and TextNodes from the current page (entire canvas).
+ *
+ * This function returns ALL frames and text nodes on the canvas regardless of viewport visibility.
+ *
+ * @param commands - The design platform instance (e.g., Figma, Penpot, or Dev)
+ * @returns An object containing arrays of both FrameProperties and TextProperties
+ *
+ * @example
+ * ```typescript
+ * const commands = await platform.getInstance();
+ * const allNodes = getAllNodes(commands);
+ * console.log('All nodes on canvas:', allNodes);
+ * console.log(`Found ${allNodes.frames.length} frames and ${allNodes.texts.length} text nodes`);
+ * ```
+ */
+export function getAllNodes(
+  commands: IDesignPlatform,
+): { frames: FrameProperties[]; texts: TextProperties[] } {
+  const currentPageChildren = commands.currentPage.children;
+  const allFrames: FrameProperties[] = [];
+  const allTexts: TextProperties[] = [];
+
+  for (const child of currentPageChildren) {
+    // Process FRAME nodes
+    if (child.type === "FRAME") {
+      const frameNode = child as unknown as FrameNode;
+      allFrames.push(getAllFrameProperties(frameNode));
+    }
+    // Process TEXT nodes
+    else if (child.type === "TEXT") {
+      const textNode = child as unknown as TextNode;
+      allTexts.push(getAllTextProperties(textNode));
+    }
+  }
+
+  return { frames: allFrames, texts: allTexts };
+}
