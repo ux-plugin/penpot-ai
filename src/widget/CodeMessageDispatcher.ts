@@ -28,13 +28,15 @@ import {
   GetViewportBoundsResponse,
   GetAllFrameNodesRequest,
   GetAllFrameNodesResponse,
+  GetAllTextNodesRequest,
+  GetAllTextNodesResponse,
   Message,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
 import { platform } from '@widget/platform';
 import { IDesignPlatform } from '@widget/platform/IDesignPlatform.ts';
 import { AuthStateManagementClass } from '@widget/stores/AuthStateManagementClass.ts';
-import { getAllFrameNodes } from '@widget/utils/extractFrameProperties.ts';
+import { getAllFrameNodes, getAllTextNodes } from '@widget/utils/extractFrameProperties.ts';
 
 // Initialize everything inside an async IIFE to handle top-level await
 let codeMessageDispatcher: UniversalMessageDispatcher;
@@ -487,6 +489,28 @@ codeMessageDispatcher.registerHandler<
       return {
         frames,
         totalCount: frames.length
+      };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    GetAllTextNodesRequest,
+    ExtractResultType<GetAllTextNodesResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.GET_ALL_TEXT_NODES,
+    async (_: GetAllTextNodesRequest): Promise<ExtractResultType<GetAllTextNodesResponse>> => {
+      console.log('[CODE] GetAllTextNodes request received');
+      
+      // Extract all text nodes from the canvas
+      const texts = getAllTextNodes(commands);
+      
+      console.log(`[CODE] Extracted ${texts.length} text nodes from canvas`);
+      
+      // Return structured response with exact type
+      return {
+        texts,
+        totalCount: texts.length
       };
     }
   );

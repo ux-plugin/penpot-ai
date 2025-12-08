@@ -3,7 +3,7 @@ import type {
   IDesignPlatform,
   ViewportBounds,
 } from "@widget/platform/IDesignPlatform";
-import { FrameProperties } from "@/shared/types/types.ts";
+import { FrameProperties, TextProperties } from "@/shared/types/types.ts";
 
 export function getAllFrameProperties(frameNode: FrameNode): FrameProperties {
   const frameProperties: FrameProperties = {
@@ -169,4 +169,137 @@ export function getFrameNodesInViewport(
   }
 
   return framesInViewport;
+}
+
+/**
+ * Extracts all properties from a TextNode.
+ * 
+ * @param textNode - The TextNode to extract properties from
+ * @returns TextProperties object containing all text node properties
+ * 
+ * @see https://developers.figma.com/docs/plugins/api/TextNode/
+ */
+export function getAllTextProperties(textNode: TextNode): TextProperties {
+  const textProperties: TextProperties = {
+    id: textNode.id,
+    name: textNode.name,
+    type: textNode.type,
+    visible: textNode.visible,
+    locked: textNode.locked,
+
+    // Position and size
+    x: textNode.x,
+    y: textNode.y,
+    width: textNode.width,
+    height: textNode.height,
+    rotation: textNode.rotation,
+
+    // Text content
+    characters: textNode.characters,
+
+    // Text style properties
+    fontSize: textNode.fontSize,
+    fontName: textNode.fontName,
+    textAlignHorizontal: textNode.textAlignHorizontal,
+    textAlignVertical: textNode.textAlignVertical,
+    letterSpacing: textNode.letterSpacing,
+    lineHeight: textNode.lineHeight,
+    textCase: textNode.textCase,
+    textDecoration: textNode.textDecoration,
+
+    // Style properties
+    fills: textNode.fills,
+    strokes: textNode.strokes,
+    strokeWeight: textNode.strokeWeight,
+    opacity: textNode.opacity,
+    blendMode: textNode.blendMode,
+
+    // Style IDs
+    fillStyleId: textNode.fillStyleId,
+    strokeStyleId: textNode.strokeStyleId,
+    effectStyleId: textNode.effectStyleId,
+    textStyleId: textNode.textStyleId,
+
+    // Effects
+    effects: textNode.effects,
+  };
+
+  return textProperties;
+}
+
+/**
+ * Extracts all TextNodes from the current page (entire canvas).
+ *
+ * This function returns ALL text nodes on the canvas regardless of viewport visibility.
+ *
+ * @param commands - The design platform instance (e.g., Figma, Penpot, or Dev)
+ * @returns An array of TextProperties for all text nodes on the canvas
+ *
+ * @example
+ * ```typescript
+ * const commands = await platform.getInstance();
+ * const allTexts = getAllTextNodes(commands);
+ * console.log('All text nodes on canvas:', allTexts);
+ * ```
+ */
+export function getAllTextNodes(
+  commands: IDesignPlatform,
+): TextProperties[] {
+  const currentPageChildren = commands.currentPage.children;
+  const allTexts: TextProperties[] = [];
+
+  for (const child of currentPageChildren) {
+    // Only process TEXT nodes
+    if (child.type === "TEXT") {
+      // Cast to TextNode for the detailed property extraction
+      const textNode = child as unknown as TextNode;
+      // Extract all properties of the text node
+      allTexts.push(getAllTextProperties(textNode));
+    }
+  }
+
+  return allTexts;
+}
+
+/**
+ * Extracts all TextNodes that are visible in the current user viewport.
+ *
+ * This function iterates through all top-level children of the current page
+ * and returns the properties of TextNodes whose bounding boxes intersect
+ * with the current viewport bounds.
+ *
+ * @param commands - The design platform instance (e.g., Figma, Penpot, or Dev)
+ * @returns An array of TextProperties for text nodes visible in the viewport
+ *
+ * @example
+ * ```typescript
+ * const commands = await platform.getInstance();
+ * const visibleTexts = getTextNodesInViewport(commands);
+ * console.log('Text nodes in viewport:', visibleTexts);
+ * ```
+ */
+export function getTextNodesInViewport(
+  commands: IDesignPlatform,
+): TextProperties[] {
+  const viewportBounds = commands.viewport.bounds;
+  const currentPageChildren = commands.currentPage.children;
+  const textsInViewport: TextProperties[] = [];
+
+  for (const child of currentPageChildren) {
+    // Only process TEXT nodes
+    if (child.type === "TEXT") {
+      // Use BaseSceneNode properties for intersection check
+      const node = child as BaseSceneNode;
+
+      // Check if this text node intersects with the viewport
+      if (isNodeInViewport(node, viewportBounds)) {
+        // Cast to TextNode for the detailed property extraction
+        const textNode = child as unknown as TextNode;
+        // Extract all properties of the text node
+        textsInViewport.push(getAllTextProperties(textNode));
+      }
+    }
+  }
+
+  return textsInViewport;
 }

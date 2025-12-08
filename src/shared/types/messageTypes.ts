@@ -1,5 +1,5 @@
 // Pure Request/Response message type system for scalable communication between UI and code.ts
-import { FrameProperties } from './types';
+import { FrameProperties, TextProperties } from './types';
 
 export enum MessageCategory {
   STORE = 'store',
@@ -32,7 +32,8 @@ export enum SystemMessageType {
   SYNC_CANVAS = 'sync_canvas',
   UPDATE_VIEWPORT = 'update_viewport',
   GET_VIEWPORT_BOUNDS = 'get_viewport_bounds',
-  GET_ALL_FRAME_NODES = 'get_all_frame_nodes'
+  GET_ALL_FRAME_NODES = 'get_all_frame_nodes',
+  GET_ALL_TEXT_NODES = 'get_all_text_nodes'
 }
 
 // Base message request interface
@@ -462,6 +463,22 @@ export interface GetAllFrameNodesResponse extends MessageResponse {
   };
 }
 
+// Get All Text Nodes Request/Response
+export interface GetAllTextNodesRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.GET_ALL_TEXT_NODES;
+  payload: {};
+}
+
+export interface GetAllTextNodesResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.GET_ALL_TEXT_NODES;
+  result: {
+    texts: TextProperties[];
+    totalCount: number;
+  };
+}
+
 // =================
 // UNION TYPES
 // =================
@@ -486,7 +503,8 @@ export type Request =
   | SyncCanvasRequest
   | UpdateViewportRequest
   | GetViewportBoundsRequest
-  | GetAllFrameNodesRequest;
+  | GetAllFrameNodesRequest
+  | GetAllTextNodesRequest;
 
 // All response types
 export type Response = 
@@ -508,7 +526,8 @@ export type Response =
   | SyncCanvasResponse
   | UpdateViewportResponse
   | GetViewportBoundsResponse
-  | GetAllFrameNodesResponse;
+  | GetAllFrameNodesResponse
+  | GetAllTextNodesResponse;
 
 
 // Union of all message types
@@ -595,6 +614,10 @@ export type RequestToResponseMap = {
   [SystemMessageType.GET_ALL_FRAME_NODES]: {
     request: GetAllFrameNodesRequest;
     response: GetAllFrameNodesResponse;
+  };
+  [SystemMessageType.GET_ALL_TEXT_NODES]: {
+    request: GetAllTextNodesRequest;
+    response: GetAllTextNodesResponse;
   };
 };
 

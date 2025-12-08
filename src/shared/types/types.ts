@@ -134,3 +134,47 @@ export interface FrameProperties {
   // Children
   children: FrameProperties[];
 }
+
+export interface TextProperties {
+  id: string;
+  name: string;
+  type: string;
+  visible: boolean;
+  locked: boolean;
+
+  // Position and size
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+
+  // Text content
+  characters: string;
+  
+  // Text style properties
+  fontSize: number | symbol;
+  fontName: FontName | symbol;
+  textAlignHorizontal: string;
+  textAlignVertical: string;
+  letterSpacing: LetterSpacing | symbol;
+  lineHeight: LineHeight | symbol;
+  textCase: TextCase | symbol;
+  textDecoration: TextDecoration | symbol;
+
+  // Style properties
+  fills: symbol | ReadonlyArray<Paint>;
+  strokes: ReadonlyArray<Paint>;
+  strokeWeight: number | symbol;
+  opacity: number;
+  blendMode: BlendMode;
+
+  // Style IDs
+  fillStyleId: string | symbol;
+  strokeStyleId: string;
+  effectStyleId: string;
+  textStyleId: string | symbol;
+
+  // Effects
+  effects: ReadonlyArray<Effect>;
+}

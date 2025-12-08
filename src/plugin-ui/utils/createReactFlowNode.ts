@@ -1,8 +1,8 @@
-import { FrameProperties } from "@/shared/types/types.ts";
+import { FrameProperties, TextProperties } from "@/shared/types/types.ts";
 import { FigmaNodeType } from "../../../ReactFlowFrameNode.tsx";
 
-// Re-export FrameProperties for convenience
-export type { FrameProperties };
+// Re-export for convenience
+export type { FrameProperties, TextProperties };
 
 /**
  * Constants for node styling
@@ -133,4 +133,98 @@ export function transformAllFramesToReactFlowNodes(
 
   return allNodes;
 }
+
+/**
+ * Creates a React Flow Node from Figma TextProperties.
+ *
+ * This function transforms Figma TextNode properties into a format
+ * compatible with React Flow's Node interface, with styling applied
+ * directly in the node definition.
+ *
+ * @param textProperties - The Figma TextProperties to convert
+ * @returns A React Flow Node object representing the text node
+ *
+ * @example
+ * ```tsx
+ * import { createReactFlowTextNode } from '@utils/createReactFlowNode';
+ * import { ReactFlow } from '@xyflow/react';
+ *
+ * // Create a node from text properties
+ * const node = createReactFlowTextNode(textProperties);
+ *
+ * // Use in ReactFlow
+ * <ReactFlow nodes={[node]} />
+ * ```
+ *
+ * @see https://developers.figma.com/docs/plugins/api/TextNode/
+ * @see https://reactflow.dev/api-reference/types/node
+ */
+export function createReactFlowTextNode(
+  textProperties: TextProperties,
+): FigmaNodeType {
+  const locked = textProperties.locked;
+  const opacity = locked ? LOCKED_OPACITY : textProperties.opacity;
+
+  return {
+    id: textProperties.id,
+    type: 'textNode',
+    position: {
+      x: textProperties.x,
+      y: textProperties.y,
+    },
+    data: {
+      label: textProperties.name,
+      locked: locked,
+      visible: textProperties.visible,
+      opacity: opacity,
+      rotation: textProperties.rotation,
+      nodeType: 'TEXT',
+      text: textProperties.characters,
+    },
+    width: textProperties.width,
+    height: textProperties.height,
+    hidden: false,
+    draggable: false,
+    selectable: false,
+  };
+}
+
+/**
+ * Transforms an array of TextProperties into an array of React Flow nodes.
+ *
+ * This is a convenience function that processes text nodes, creating
+ * an array of React Flow nodes suitable for direct use with ReactFlow.
+ *
+ * @param textPropertiesArray - Array of TextProperties to convert
+ * @returns An array of all React Flow Node objects
+ *
+ * @example
+ * ```tsx
+ * import { getAllTextNodes } from '@widget/utils/extractFrameProperties';
+ * import { transformAllTextsToReactFlowNodes } from '@utils/createReactFlowNode';
+ * import { ReactFlow } from '@xyflow/react';
+ *
+ * // Get all text nodes from canvas
+ * const allTexts = getAllTextNodes(commands);
+ * 
+ * // Transform to ReactFlow nodes
+ * const reactFlowNodes = transformAllTextsToReactFlowNodes(allTexts);
+ *
+ * // Use in ReactFlow
+ * <ReactFlow nodes={reactFlowNodes} />
+ * ```
+ */
+export function transformAllTextsToReactFlowNodes(
+  textPropertiesArray: TextProperties[]
+): FigmaNodeType[] {
+  const allNodes: FigmaNodeType[] = [];
+
+  for (const textProperties of textPropertiesArray) {
+    const node = createReactFlowTextNode(textProperties);
+    allNodes.push(node);
+  }
+
+  return allNodes;
+}
+
 

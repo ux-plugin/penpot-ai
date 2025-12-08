@@ -24,16 +24,19 @@ import {
   ExtractResultType,
   GetViewportBoundsResponse,
   GetAllFrameNodesResponse,
+  GetAllTextNodesResponse,
   UpdateViewportResponse,
   UpdateViewportRequest,
 } from "@shared-types/messageTypes";
 import { Button } from '@/plugin-ui/components/ui/button';
 import {
   transformAllFramesToReactFlowNodes,
+  transformAllTextsToReactFlowNodes,
 } from "@/plugin-ui/utils/createReactFlowNode";
 import {
   FigmaNodeType,
   ReactFlowFrameNode,
+  ReactFlowTextNode,
 } from "../../../../ReactFlowFrameNode.tsx";
 
 interface ReactFlowCanvasProps {
@@ -63,14 +66,16 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   const lastMousePosition = useRef<{ x: number; y: number } | null>(null);
 
   const nodeTypes = React.useMemo(() => ({
-    figmaNode: ReactFlowFrameNode
+    figmaNode: ReactFlowFrameNode,
+    textNode: ReactFlowTextNode
   }), []);
   // Load all nodes from Figma
   const loadAllNodes = useCallback(async () => {
     try {
-      console.log('[ReactFlowCanvas] Loading all frame nodes...');
+      console.log('[ReactFlowCanvas] Loading all frame and text nodes...');
       
-      const result = await uiMessageDispatcher.sendRequest<
+      // Load frame nodes
+      const frameResult = await uiMessageDispatcher.sendRequest<
         Omit<any, 'id' | 'timestamp' | 'source'>,
         ExtractResultType<GetAllFrameNodesResponse>
       >({
@@ -79,14 +84,30 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         payload: {}
       });
       
-      console.log(`[ReactFlowCanvas] Received ${result.totalCount} frames from Figma`);
+      console.log(`[ReactFlowCanvas] Received ${frameResult.totalCount} frames from Figma`);
+      
+      // Load text nodes
+      const textResult = await uiMessageDispatcher.sendRequest<
+        Omit<any, 'id' | 'timestamp' | 'source'>,
+        ExtractResultType<GetAllTextNodesResponse>
+      >({
+        category: MessageCategory.SYSTEM,
+        type: SystemMessageType.GET_ALL_TEXT_NODES,
+        payload: {}
+      });
+      
+      console.log(`[ReactFlowCanvas] Received ${textResult.totalCount} text nodes from Figma`);
       
       // Transform FrameProperties to ReactFlow nodes
-      const reactFlowNodes = transformAllFramesToReactFlowNodes(result.frames);
-      console.log('new nodes:', reactFlowNodes)
+      const frameNodes = transformAllFramesToReactFlowNodes(frameResult.frames);
+      const textNodes = transformAllTextsToReactFlowNodes(textResult.texts);
+      
+      // Combine all nodes
+      const allNodes = [...frameNodes, ...textNodes];
+      console.log('new nodes:', allNodes)
       
       // Update nodes state
-      setNodes(reactFlowNodes);
+      setNodes(allNodes);
       
       console.log('[ReactFlowCanvas] Nodes loaded successfully');
     } catch (error) {

@@ -11,12 +11,14 @@ export interface FigmaNodeData extends Record<string, unknown> {
   visible?: boolean;
   opacity?: number;
   rotation?: number;
+  nodeType?: 'FRAME' | 'TEXT';
+  text?: string;
 }
 
 /**
- * Type for a React Flow Node created from a Figma FrameNode.
+ * Type for a React Flow Node created from a Figma FrameNode or TextNode.
  */
-export type FigmaNodeType = Node<FigmaNodeData, 'figmaNode'>;
+export type FigmaNodeType = Node<FigmaNodeData, 'figmaNode' | 'textNode'>;
 
 /**
  * Constants for node styling
@@ -93,3 +95,76 @@ export const ReactFlowFrameNode = memo((props: NodeProps<Node<FigmaNodeData>>) =
 });
 
 ReactFlowFrameNode.displayName = 'ReactFlowFrameNode';
+
+/**
+ * React Flow Text Node Component
+ * 
+ * A memoized React component that renders a Figma text node as a React Flow node.
+ * Supports locked state, visibility, rotation, and displays text content.
+ * 
+ * @param props - NodeProps containing node data and dimensions
+ * @returns A styled node component with handles for connections
+ */
+export const ReactFlowTextNode = memo((props: NodeProps<Node<FigmaNodeData>>) => {
+  const { data, width = 150, positionAbsoluteX, positionAbsoluteY } = props;
+  const locked = data?.locked ?? false;
+  const opacity = locked ? LOCKED_OPACITY : (data?.opacity ?? 1);
+  const rotation = data?.rotation ?? 0;
+  const label = data?.label ?? '';
+  const text = data?.text ?? '';
+
+  console.log(`[ReactFlowTextNode] Rendering text node "${label}" at position:`, {
+    x: positionAbsoluteX,
+    y: positionAbsoluteY,
+    label,
+    text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+  });
+
+  return (
+    <div
+      className="figma-text-node"
+      style={{
+        backgroundColor: '#f3f4f6',
+        border: '2px dashed #9ca3af',
+        borderRadius: '4px',
+        padding: '8px 12px',
+        minWidth: typeof width === 'number' ? width : NODE_STYLES.minWidth,
+        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+        opacity: opacity,
+        transform: `rotate(${rotation}deg)`,
+        cursor: locked ? NODE_STYLES.cursorLocked : NODE_STYLES.cursorNormal,
+        fontSize: NODE_STYLES.fontSize,
+        fontWeight: NODE_STYLES.fontWeight,
+      }}
+    >
+      <div className="figma-text-node-content">
+        <div className="figma-text-node-label" style={{ fontWeight: 700, marginBottom: '4px', color: '#4b5563' }}>
+          {label}
+        </div>
+        <div className="figma-text-node-text" style={{ 
+          fontSize: '12px', 
+          color: '#6b7280',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          maxHeight: '100px',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }}>
+          {text}
+        </div>
+      </div>
+      <HandleComponent
+        type="target"
+        position={PositionEnum.Top}
+        style={{ opacity: 0 }}
+      />
+      <HandleComponent
+        type="source"
+        position={PositionEnum.Bottom}
+        style={{ opacity: 0 }}
+      />
+    </div>
+  );
+});
+
+ReactFlowTextNode.displayName = 'ReactFlowTextNode';
