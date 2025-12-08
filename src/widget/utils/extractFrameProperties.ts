@@ -5,7 +5,7 @@ import type {
 } from "@widget/platform/IDesignPlatform";
 import { FrameProperties } from "@/shared/types/types.ts";
 
-export function getAllFrameProperties(frameNode: FrameNode): FrameProperties {
+export function getAllFrameProperties(frameNode: FrameNode | ComponentNode | ComponentSetNode): FrameProperties {
   const frameProperties: FrameProperties = {
     id: frameNode.id,
     name: frameNode.name,
@@ -55,10 +55,10 @@ export function getAllFrameProperties(frameNode: FrameNode): FrameProperties {
     children: [],
   };
 
-  // Recursively get properties of all children frames
+  // Recursively get properties of all children frames, components, and component sets
   frameNode.children.forEach((child) => {
-    if (child.type === "FRAME") {
-      frameProperties.children.push(getAllFrameProperties(child as FrameNode));
+    if (child.type === "FRAME" || child.type === "COMPONENT" || child.type === "COMPONENT_SET") {
+      frameProperties.children.push(getAllFrameProperties(child as FrameNode | ComponentNode | ComponentSetNode));
     }
   });
 
@@ -92,20 +92,20 @@ function isNodeInViewport(
 }
 
 /**
- * Extracts all FrameNodes from the current page (entire canvas),
+ * Extracts all FrameNodes, ComponentNodes, and ComponentSetNodes from the current page (entire canvas),
  * along with their children (recursively).
  *
- * Unlike getFrameNodesInViewport, this function returns ALL frames
+ * Unlike getFrameNodesInViewport, this function returns ALL frames, components, and component sets
  * on the canvas regardless of viewport visibility.
  *
  * @param commands - The design platform instance (e.g., Figma, Penpot, or Dev)
- * @returns An array of FrameProperties for all frames on the canvas
+ * @returns An array of FrameProperties for all frames, components, and component sets on the canvas
  *
  * @example
  * ```typescript
  * const commands = await platform.getInstance();
  * const allFrames = getAllFrameNodes(commands);
- * console.log('All frames on canvas:', allFrames);
+ * console.log('All frames, components, and component sets on canvas:', allFrames);
  * ```
  */
 export function getAllFrameNodes(
@@ -115,11 +115,11 @@ export function getAllFrameNodes(
   const allFrames: FrameProperties[] = [];
 
   for (const child of currentPageChildren) {
-    // Only process FRAME nodes
-    if (child.type === "FRAME") {
-      // Cast to FrameNode for the detailed property extraction
-      const frameNode = child as unknown as FrameNode;
-      // Extract all properties of the frame and its children
+    // Process FRAME, COMPONENT, and COMPONENT_SET nodes
+    if (child.type === "FRAME" || child.type === "COMPONENT" || child.type === "COMPONENT_SET") {
+      // Cast to appropriate type for the detailed property extraction
+      const frameNode = child as unknown as FrameNode | ComponentNode | ComponentSetNode;
+      // Extract all properties of the frame/component and its children
       allFrames.push(getAllFrameProperties(frameNode));
     }
   }
@@ -128,21 +128,21 @@ export function getAllFrameNodes(
 }
 
 /**
- * Extracts all FrameNodes that are visible in the current user viewport,
+ * Extracts all FrameNodes, ComponentNodes, and ComponentSetNodes that are visible in the current user viewport,
  * along with their children (recursively).
  *
  * This function iterates through all top-level children of the current page
- * and returns the properties of FrameNodes whose bounding boxes intersect
+ * and returns the properties of FrameNodes, ComponentNodes, and ComponentSetNodes whose bounding boxes intersect
  * with the current viewport bounds.
  *
  * @param commands - The design platform instance (e.g., Figma, Penpot, or Dev)
- * @returns An array of FrameProperties for frames visible in the viewport
+ * @returns An array of FrameProperties for frames, components, and component sets visible in the viewport
  *
  * @example
  * ```typescript
  * const commands = await platform.getInstance();
  * const visibleFrames = getFrameNodesInViewport(commands);
- * console.log('Frames in viewport:', visibleFrames);
+ * console.log('Frames, components, and component sets in viewport:', visibleFrames);
  * ```
  */
 export function getFrameNodesInViewport(
@@ -153,16 +153,16 @@ export function getFrameNodesInViewport(
   const framesInViewport: FrameProperties[] = [];
 
   for (const child of currentPageChildren) {
-    // Only process FRAME nodes
-    if (child.type === "FRAME") {
-      // Use BaseSceneNode properties for intersection check, then cast to FrameNode for getAllFrameProperties
+    // Process FRAME, COMPONENT, and COMPONENT_SET nodes
+    if (child.type === "FRAME" || child.type === "COMPONENT" || child.type === "COMPONENT_SET") {
+      // Use BaseSceneNode properties for intersection check, then cast for getAllFrameProperties
       const node = child as BaseSceneNode;
 
-      // Check if this frame intersects with the viewport
+      // Check if this frame/component intersects with the viewport
       if (isNodeInViewport(node, viewportBounds)) {
-        // Cast to FrameNode for the detailed property extraction
-        const frameNode = child as unknown as FrameNode;
-        // Extract all properties of the frame and its children
+        // Cast to appropriate type for the detailed property extraction
+        const frameNode = child as unknown as FrameNode | ComponentNode | ComponentSetNode;
+        // Extract all properties of the frame/component and its children
         framesInViewport.push(getAllFrameProperties(frameNode));
       }
     }

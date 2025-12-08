@@ -14,13 +14,13 @@ const LOCKED_OPACITY = 0.5;
 /**
  * Creates a React Flow Node from Figma FrameProperties.
  *
- * This function transforms Figma FrameNode properties into a format
+ * This function transforms Figma FrameNode, ComponentNode, or ComponentSetNode properties into a format
  * compatible with React Flow's Node interface, with styling applied
  * directly in the node definition.
  *
  * @param frameProperties - The Figma FrameProperties to convert
  * @param parentId - Optional parent node ID for nested frames
- * @returns A React Flow Node object representing the frame
+ * @returns A React Flow Node object representing the frame/component
  *
  * @example
  * ```tsx
@@ -35,6 +35,8 @@ const LOCKED_OPACITY = 0.5;
  * ```
  *
  * @see https://developers.figma.com/docs/plugins/api/FrameNode/
+ * @see https://developers.figma.com/docs/plugins/api/ComponentNode/
+ * @see https://developers.figma.com/docs/plugins/api/ComponentSetNode/
  * @see https://reactflow.dev/api-reference/types/node
  */
 export function createReactFlowNode(
@@ -56,6 +58,7 @@ export function createReactFlowNode(
       visible: frameProperties.visible,
       opacity: opacity,
       rotation: frameProperties.rotation,
+      nodeType: frameProperties.type as 'FRAME' | 'COMPONENT' | 'COMPONENT_SET',
     },
     width: frameProperties.width,
     height: frameProperties.height,
@@ -68,7 +71,8 @@ export function createReactFlowNode(
 /**
  * Creates React Flow Nodes from FrameProperties and all its nested children.
  *
- * This function recursively processes Figma FrameProperties and its children,
+ * This function recursively processes Figma FrameProperties (which can represent
+ * FrameNode, ComponentNode, or ComponentSetNode) and its children,
  * creating a flat array of React Flow nodes suitable for use with React Flow.
  *
  * @param frameProperties - The root Figma FrameProperties to convert
@@ -80,7 +84,7 @@ export function createReactFlowNodesFromFrame(
 ): FigmaNodeType[] {
   const nodes: FigmaNodeType[] = [];
 
-  // Create node for the current frame
+  // Create node for the current frame/component
   const currentNode = createReactFlowNode(frameProperties);
   nodes.push(currentNode);
 
@@ -98,9 +102,9 @@ export function createReactFlowNodesFromFrame(
 /**
  * Transforms an array of FrameProperties into a flat array of React Flow nodes.
  *
- * This is a convenience function that processes multiple root frames and their
- * nested children, creating a single flat array of React Flow nodes suitable
- * for direct use with ReactFlow.
+ * This is a convenience function that processes multiple root frames (which can be
+ * FrameNode, ComponentNode, or ComponentSetNode) and their nested children,
+ * creating a single flat array of React Flow nodes suitable for direct use with ReactFlow.
  *
  * @param framePropertiesArray - Array of root FrameProperties to convert
  * @returns A flat array of all React Flow Node objects
@@ -111,7 +115,7 @@ export function createReactFlowNodesFromFrame(
  * import { transformAllFramesToReactFlowNodes } from '@utils/createReactFlowNode';
  * import { ReactFlow } from '@xyflow/react';
  *
- * // Get all frames from canvas
+ * // Get all frames, components, and component sets from canvas
  * const allFrames = getAllFrameNodes(commands);
  * 
  * // Transform to ReactFlow nodes
