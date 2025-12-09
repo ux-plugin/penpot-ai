@@ -34,7 +34,6 @@ import {
 import { platform } from '@widget/platform';
 import { IDesignPlatform } from '@widget/platform/IDesignPlatform.ts';
 import { AuthStateManagementClass } from '@widget/stores/AuthStateManagementClass.ts';
-import { getAllNodes } from '@widget/utils/extractFrameProperties.ts';
 
 // Initialize everything inside an async IIFE to handle top-level await
 let codeMessageDispatcher: UniversalMessageDispatcher;
@@ -429,16 +428,15 @@ codeMessageDispatcher.registerHandler<
     async (_: GetAllNodesRequest): Promise<ExtractResultType<GetAllNodesResponse>> => {
       console.log('[CODE] GetAllNodes request received');
       
-      // Extract all frame and text nodes from the canvas
-      const { frames, texts } = getAllNodes(commands);
+      // Get all nodes from the platform implementation (with hierarchy preserved)
+      const nodes = commands.getAllNodes();
       
-      console.log(`[CODE] Extracted ${frames.length} frames and ${texts.length} text nodes from canvas`);
+      console.log(`[CODE] Extracted ${nodes.length} nodes from canvas`);
       
       // Return structured response with exact type
       return {
-        frames,
-        texts,
-        totalCount: frames.length + texts.length
+        nodes,
+        totalCount: nodes.length
       };
     }
   );

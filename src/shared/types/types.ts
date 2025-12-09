@@ -86,10 +86,10 @@ export type Request =
   | StorageGetRequest
   | CloseRequest;
 
-export interface FrameProperties {
+export interface FrameNodeType {
   id: string;
   name: string;
-  type: string;
+  type: 'FRAME';
   visible: boolean;
   locked: boolean;
 
@@ -131,14 +131,14 @@ export interface FrameProperties {
   // Effects and other styles
   effects: ReadonlyArray<Effect>;
 
-  // Children
-  children: FrameProperties[];
+  // Children - can be frames or text nodes
+  children: DesignNode[];
 }
 
-export interface TextProperties {
+export interface TextNodeType {
   id: string;
   name: string;
-  type: string;
+  type: 'TEXT';
   visible: boolean;
   locked: boolean;
 
@@ -178,3 +178,10 @@ export interface TextProperties {
   // Effects
   effects: ReadonlyArray<Effect>;
 }
+
+// Union type for design nodes
+export type DesignNode = FrameNodeType | TextNodeType;
+
+// Legacy aliases for backwards compatibility
+export type FrameProperties = FrameNodeType;
+export type TextProperties = TextNodeType;

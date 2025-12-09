@@ -1,8 +1,8 @@
-import { FrameProperties, TextProperties } from "@/shared/types/types.ts";
+import { DesignNode, FrameNodeType, TextNodeType } from "@/shared/types/types.ts";
 import { FigmaNodeType } from "../../../ReactFlowFrameNode.tsx";
 
 // Re-export for convenience
-export type { FrameProperties, TextProperties };
+export type { DesignNode, FrameNodeType, TextNodeType };
 
 /**
  * Constants for node styling
@@ -222,6 +222,90 @@ export function transformAllTextsToReactFlowNodes(
   for (const textProperties of textPropertiesArray) {
     const node = createReactFlowTextNode(textProperties);
     allNodes.push(node);
+  }
+
+  return allNodes;
+}
+
+/**
+ * Transforms a DesignNode (frame or text) into React Flow nodes, including children recursively.
+ *
+ * This function handles the unified DesignNode type and preserves the hierarchy
+ * by recursively transforming children.
+ *
+ * @param node - A DesignNode (FrameNodeType or TextNodeType) to convert
+ * @returns An array of React Flow Node objects (flattened for ReactFlow)
+ *
+ * @example
+ * ```tsx
+ * import { transformDesignNodeToReactFlowNodes } from '@utils/createReactFlowNode';
+ * import { ReactFlow } from '@xyflow/react';
+ *
+ * // Transform a design node with children
+ * const reactFlowNodes = transformDesignNodeToReactFlowNodes(designNode);
+ *
+ * // Use in ReactFlow
+ * <ReactFlow nodes={reactFlowNodes} />
+ * ```
+ */
+export function transformDesignNodeToReactFlowNodes(
+  node: DesignNode
+): FigmaNodeType[] {
+  const nodes: FigmaNodeType[] = [];
+
+  if (node.type === 'FRAME') {
+    // Create the frame node
+    const frameNode = createReactFlowNode(node as FrameNodeType);
+    nodes.push(frameNode);
+
+    // Recursively process children if they exist
+    if (node.children && node.children.length > 0) {
+      for (const child of node.children) {
+        const childNodes = transformDesignNodeToReactFlowNodes(child);
+        nodes.push(...childNodes);
+      }
+    }
+  } else if (node.type === 'TEXT') {
+    // Create the text node
+    const textNode = createReactFlowTextNode(node as TextNodeType);
+    nodes.push(textNode);
+  }
+
+  return nodes;
+}
+
+/**
+ * Transforms an array of DesignNodes into a flat array of React Flow nodes.
+ *
+ * This is the main transformation function that handles the unified node list
+ * and preserves hierarchies for frames with children.
+ *
+ * @param designNodes - Array of DesignNodes to convert
+ * @returns A flat array of all React Flow Node objects
+ *
+ * @example
+ * ```tsx
+ * import { transformDesignNodesToReactFlowNodes } from '@utils/createReactFlowNode';
+ * import { ReactFlow } from '@xyflow/react';
+ *
+ * // Get all nodes from the API
+ * const { nodes } = await getAllNodesResponse();
+ * 
+ * // Transform to ReactFlow nodes
+ * const reactFlowNodes = transformDesignNodesToReactFlowNodes(nodes);
+ *
+ * // Use in ReactFlow
+ * <ReactFlow nodes={reactFlowNodes} />
+ * ```
+ */
+export function transformDesignNodesToReactFlowNodes(
+  designNodes: DesignNode[]
+): FigmaNodeType[] {
+  const allNodes: FigmaNodeType[] = [];
+
+  for (const node of designNodes) {
+    const nodes = transformDesignNodeToReactFlowNodes(node);
+    allNodes.push(...nodes);
   }
 
   return allNodes;

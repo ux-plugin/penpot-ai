@@ -1,5 +1,5 @@
 // Pure Request/Response message type system for scalable communication between UI and code.ts
-import { FrameProperties, TextProperties } from './types';
+import { DesignNode } from './types';
 
 export enum MessageCategory {
   STORE = 'store',
@@ -457,8 +457,7 @@ export interface GetAllNodesResponse extends MessageResponse {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.GET_ALL_NODES;
   result: {
-    frames: FrameProperties[];
-    texts: TextProperties[];
+    nodes: DesignNode[];
     totalCount: number;
   };
 }

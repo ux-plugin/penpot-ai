@@ -27,8 +27,7 @@ import {
   UpdateViewportRequest,
 } from "@shared-types/messageTypes";
 import {
-  transformAllFramesToReactFlowNodes,
-  transformAllTextsToReactFlowNodes,
+  transformDesignNodesToReactFlowNodes,
 } from "@/plugin-ui/utils/createReactFlowNode";
 import {
   FigmaNodeType,
@@ -79,18 +78,14 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         payload: {}
       });
       
-      console.log(`[ReactFlowCanvas] Received ${result.frames.length} frames and ${result.texts.length} text nodes from Figma`);
+      console.log(`[ReactFlowCanvas] Received ${result.nodes.length} nodes from Figma (total: ${result.totalCount})`);
       
-      // Transform to ReactFlow nodes
-      const frameNodes = transformAllFramesToReactFlowNodes(result.frames);
-      const textNodes = transformAllTextsToReactFlowNodes(result.texts);
-      
-      // Combine all nodes
-      const allNodes = [...frameNodes, ...textNodes];
-      console.log('new nodes:', allNodes);
+      // Transform DesignNodes to ReactFlow nodes (with hierarchy preserved)
+      const reactFlowNodes = transformDesignNodesToReactFlowNodes(result.nodes);
+      console.log('transformed nodes:', reactFlowNodes);
       
       // Update nodes state
-      setNodes(allNodes);
+      setNodes(reactFlowNodes);
       
       console.log('[ReactFlowCanvas] Nodes loaded successfully');
     } catch (error) {
