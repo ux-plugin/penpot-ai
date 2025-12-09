@@ -135,13 +135,13 @@ export function transformAllFramesToReactFlowNodes(
 }
 
 /**
- * Creates a React Flow Node from Figma TextProperties.
+ * Creates a React Flow Node from Figma TextNodeType.
  *
  * This function transforms Figma TextNode properties into a format
  * compatible with React Flow's Node interface, with styling applied
  * directly in the node definition.
  *
- * @param textProperties - The Figma TextProperties to convert
+ * @param textProperties - The Figma TextNodeType to convert
  * @returns A React Flow Node object representing the text node
  *
  * @example
@@ -190,12 +190,12 @@ export function createReactFlowTextNode(
 }
 
 /**
- * Transforms an array of TextProperties into an array of React Flow nodes.
+ * Transforms an array of TextNodeType into an array of React Flow nodes.
  *
  * This is a convenience function that processes text nodes, creating
  * an array of React Flow nodes suitable for direct use with ReactFlow.
  *
- * @param textPropertiesArray - Array of TextProperties to convert
+ * @param textPropertiesArray - Array of TextNodeType to convert
  * @returns An array of all React Flow Node objects
  *
  * @example
