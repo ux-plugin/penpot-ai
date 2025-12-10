@@ -107,15 +107,17 @@ export function createReactFlowNodesFromFrame(
  *
  * @example
  * ```tsx
- * import { getAllFrameNodes } from '@widget/utils/extractFrameProperties';
+ * import { platform } from '@widget/platform';
  * import { transformAllFramesToReactFlowNodes } from '@utils/createReactFlowNode';
  * import { ReactFlow } from '@xyflow/react';
  *
- * // Get all frames from canvas
- * const allFrames = getAllFrameNodes(commands);
+ * // Get all nodes from platform (platform-specific implementation)
+ * const commands = await platform.getInstance();
+ * const allNodes = commands.getAllNodes();
+ * const frames = allNodes.filter(node => node.type === 'FRAME');
  * 
  * // Transform to ReactFlow nodes
- * const reactFlowNodes = transformAllFramesToReactFlowNodes(allFrames);
+ * const reactFlowNodes = transformAllFramesToReactFlowNodes(frames);
  *
  * // Use in ReactFlow
  * <ReactFlow nodes={reactFlowNodes} />
@@ -200,15 +202,17 @@ export function createReactFlowTextNode(
  *
  * @example
  * ```tsx
- * import { getAllTextNodes } from '@widget/utils/extractFrameProperties';
+ * import { platform } from '@widget/platform';
  * import { transformAllTextsToReactFlowNodes } from '@utils/createReactFlowNode';
  * import { ReactFlow } from '@xyflow/react';
  *
- * // Get all text nodes from canvas
- * const allTexts = getAllTextNodes(commands);
+ * // Get all nodes from platform (platform-specific implementation)
+ * const commands = await platform.getInstance();
+ * const allNodes = commands.getAllNodes();
+ * const texts = allNodes.filter(node => node.type === 'TEXT');
  * 
  * // Transform to ReactFlow nodes
- * const reactFlowNodes = transformAllTextsToReactFlowNodes(allTexts);
+ * const reactFlowNodes = transformAllTextsToReactFlowNodes(texts);
  *
  * // Use in ReactFlow
  * <ReactFlow nodes={reactFlowNodes} />
