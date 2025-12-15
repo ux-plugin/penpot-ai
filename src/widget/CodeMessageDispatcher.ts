@@ -429,9 +429,7 @@ codeMessageDispatcher.registerHandler<
       console.log('[CODE] GetAllNodes request received');
       
       // Get all nodes from the platform implementation (with hierarchy preserved)
-      const nodes = commands.getAllNodes();
-      
-      console.log(`[CODE] Extracted ${nodes.length} nodes from canvas`);
+      const nodes = await commands.getAllNodes();
       
       // Return structured response with exact type
       return {

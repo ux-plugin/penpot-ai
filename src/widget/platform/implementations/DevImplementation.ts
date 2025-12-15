@@ -194,7 +194,7 @@ export class DevImplementation implements IDesignPlatform {
   /**
    * Get all nodes - stub implementation for dev mode
    */
-  getAllNodes = (): DesignNode[] => {
+  getAllNodes = async (): Promise<DesignNode[]> => {
     // Return empty array in dev mode
     return [];
   };

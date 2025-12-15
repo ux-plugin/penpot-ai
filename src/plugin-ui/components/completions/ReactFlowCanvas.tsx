@@ -16,24 +16,21 @@ import {
 } from "@xyflow/react";
 import '@xyflow/react/dist/style.css';
 import { syncCanvasWithFigma } from '@/plugin-ui/utils/syncCanvas';
+import { loadAllNodes } from '@/plugin-ui/utils/loadNodes';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
 import {
   MessageCategory,
   SystemMessageType,
   ExtractResultType,
-  GetAllNodesResponse,
-  GetViewportBoundsResponse,
   UpdateViewportResponse,
   UpdateViewportRequest,
 } from "@shared-types/messageTypes";
 import {
-  transformDesignNodesToReactFlowNodes,
-} from "@/plugin-ui/utils/createReactFlowNode";
-import {
-  FigmaNodeType,
   ReactFlowFrameNode,
   ReactFlowTextNode,
-} from "../../../../ReactFlowFrameNode.tsx";
+} from "@/plugin-ui/components/nodes";
+import { DesignNode } from "@shared-types/types.ts";
+import { parseSVGToProps } from "@utils/figmaStyleConversions.tsx";
 
 interface ReactFlowCanvasProps {
   topRightContent?: React.ReactNode;
@@ -48,7 +45,7 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   centerRightContent,
   topLeftContent,
 }) => {
-  const [nodes, setNodes, onNodesChange] = useNodesState<FigmaNodeType>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<DesignNode>([]);
   const [edges, ,onEdgesChange] = useEdgesState<Edge>([]);
   const currentViewport = useRef<Viewport>({x: 0, y:0, zoom: 1} as Viewport);
   const reactFlowInstance = useReactFlow();
@@ -64,28 +61,22 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
     figmaNode: ReactFlowFrameNode,
     textNode: ReactFlowTextNode
   }), []);
+  
   // Load all nodes from Figma
-  const loadAllNodes = useCallback(async () => {
+  const loadNodes = useCallback(async () => {
     try {
-      console.log('[ReactFlowCanvas] Loading all nodes...');
-      
-      const result = await uiMessageDispatcher.sendRequest<
-        Omit<any, 'id' | 'timestamp' | 'source'>,
-        ExtractResultType<GetAllNodesResponse>
-      >({
-        category: MessageCategory.SYSTEM,
-        type: SystemMessageType.GET_ALL_NODES,
-        payload: {}
+      const result = await loadAllNodes();
+
+      const newNodes = result.nodes.map((node) => {
+        if (node.type === "textNode") {
+          node.data.svgElement =
+            parseSVGToProps(node.data.svg) ?? undefined;
+        }
+        return node;
       });
-      
-      console.log(`[ReactFlowCanvas] Received ${result.nodes.length} nodes from Figma (total: ${result.totalCount})`);
-      
-      // Transform DesignNodes to ReactFlow nodes (with hierarchy preserved)
-      const reactFlowNodes = transformDesignNodesToReactFlowNodes(result.nodes);
-      console.log('transformed nodes:', reactFlowNodes);
-      
-      // Update nodes state
-      setNodes(reactFlowNodes);
+
+      // Use pre-transformed ReactFlow nodes from the platform
+      setNodes(newNodes);
       
       console.log('[ReactFlowCanvas] Nodes loaded successfully');
     } catch (error) {
@@ -181,8 +172,8 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
 
   // Load all nodes on mount
   useEffect(() => {
-    loadAllNodes();
-  }, [loadAllNodes]);
+    loadNodes();
+  }, [loadNodes]);
 
   // Sync canvas position on mount
   useEffect(() => {
@@ -285,8 +276,8 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   }, [reactFlowInstance]);
 
   return (
-    <div ref={containerRef} className="w-full h-full">
-      <ReactFlow<FigmaNodeType>
+    <div ref={containerRef} className="relative h-full w-full">
+      <ReactFlow<DesignNode>
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
@@ -299,25 +290,28 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         draggable={false}
         proOptions={{ hideAttribution: true }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d1d5db" />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={16}
+          size={1}
+          color="#d1d5db"
+        />
         <Controls
           position="bottom-left"
-          className="bg-white border border-gray-200 rounded-lg shadow-sm"
+          className="rounded-lg border border-gray-200 bg-white shadow-sm"
         />
         <MiniMap
           position="bottom-right"
-          className="bg-white border border-gray-200 rounded-lg shadow-sm"
+          className="rounded-lg border border-gray-200 bg-white shadow-sm"
           nodeColor="#9ca3af"
           maskColor="rgb(0, 0, 0, 0.1)"
         />
-        
+
         {/* Top-Right Panel for buttons */}
         {topRightContent && (
-          <Panel position="top-right">
-            {topRightContent}
-          </Panel>
+          <Panel position="top-right">{topRightContent}</Panel>
         )}
-        
+
         {/* Bottom-Right Panel for help button */}
         {bottomRightContent && (
           <Panel position="bottom-right" className="mb-2">

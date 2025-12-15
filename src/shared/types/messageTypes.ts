@@ -1,5 +1,5 @@
 // Pure Request/Response message type system for scalable communication between UI and code.ts
-import { DesignNode } from './types';
+import type { DesignNode } from './types';
 
 export enum MessageCategory {
   STORE = 'store',

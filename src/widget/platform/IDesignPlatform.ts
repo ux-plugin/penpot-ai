@@ -15,7 +15,7 @@ export interface BaseSceneNode {
   height: number;
 }
 
-// Import DesignNode type for getAllNodes return type
+// Import types from shared
 import type { DesignNode } from '@/shared/types/types';
 
 // Core interface that abstracts design platform APIs
@@ -37,7 +37,7 @@ export interface IDesignPlatform {
   getNodeByIdAsync: (id: string) => Promise<any>;
   createFrame: () => any;
   createRectangle: () => any;
-  getAllNodes: () => DesignNode[];
+  getAllNodes: () => Promise<DesignNode[]>;
   
   // Selection & Events
   currentPage: {
