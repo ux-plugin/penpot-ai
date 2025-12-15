@@ -1,4 +1,5 @@
 import { IDesignPlatform, BaseSceneNode } from '../IDesignPlatform';
+import type { DesignNode } from '@/shared/types/types';
 
 export class DevImplementation implements IDesignPlatform {
   private _onmessage: ((message: any) => void | Promise<void>) | null = null;
@@ -188,6 +189,14 @@ export class DevImplementation implements IDesignPlatform {
       }
     };
     return mockRectangle;
+  };
+
+  /**
+   * Get all nodes - stub implementation for dev mode
+   */
+  getAllNodes = async (): Promise<DesignNode[]> => {
+    // Return empty array in dev mode
+    return [];
   };
 
   currentPage = {

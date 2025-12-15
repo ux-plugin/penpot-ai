@@ -1,4 +1,5 @@
-import { IDesignPlatform } from '../IDesignPlatform';
+import { IDesignPlatform } from "@widget/platform";
+import type { DesignNode } from '@/shared/types/types';
 
 export class PenpotImplementation implements IDesignPlatform {
   private _onmessage: ((message: any) => void | Promise<void>) | null = null;
@@ -89,6 +90,14 @@ export class PenpotImplementation implements IDesignPlatform {
       return (globalThis as any).penpot.createRectangle();
     }
     return null;
+  };
+
+  /**
+   * Get all nodes - stub implementation for Penpot (not yet implemented)
+   */
+  getAllNodes = async (): Promise<DesignNode[]> => {
+    // Return empty array - Penpot implementation not yet done
+    return [];
   };
 
   currentPage = {

@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --open dev.html",
-    "build": "tsc -b && vite build && npm run build:main",
-    "build:main": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap --minify --tree-shaking=true",
+    "build": "tsc -b && vite build && npm run bundle:prod",
+    "bundle:prod": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap --minify --tree-shaking=true",
+    "build:debug": "VITE_ENABLE_BUILD_DEBUG=true tsc -b && VITE_ENABLE_BUILD_DEBUG=true vite build && VITE_ENABLE_BUILD_DEBUG=true npm run bundle:debug",
+    "bundle:debug": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap --tree-shaking=true",
     "preview": "vite preview",
     "build:watch": "watch 'npm run build' src"
   },

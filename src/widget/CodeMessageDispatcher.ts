@@ -26,15 +26,14 @@ import {
   UpdateViewportResponse,
   GetViewportBoundsRequest,
   GetViewportBoundsResponse,
-  GetAllFrameNodesRequest,
-  GetAllFrameNodesResponse,
+  GetAllNodesRequest,
+  GetAllNodesResponse,
   Message,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
 import { platform } from '@widget/platform';
 import { IDesignPlatform } from '@widget/platform/IDesignPlatform.ts';
 import { AuthStateManagementClass } from '@widget/stores/AuthStateManagementClass.ts';
-import { getAllFrameNodes } from '@widget/utils/extractFrameProperties.ts';
 
 // Initialize everything inside an async IIFE to handle top-level await
 let codeMessageDispatcher: UniversalMessageDispatcher;
@@ -421,19 +420,21 @@ codeMessageDispatcher.registerHandler<
   );
 
   codeMessageDispatcher.registerHandler<
-    GetAllFrameNodesRequest,
-    ExtractResultType<GetAllFrameNodesResponse>
+    GetAllNodesRequest,
+    ExtractResultType<GetAllNodesResponse>
   >(
     MessageCategory.SYSTEM,
-    SystemMessageType.GET_ALL_FRAME_NODES,
-    async (_: GetAllFrameNodesRequest): Promise<ExtractResultType<GetAllFrameNodesResponse>> => {
-      // Extract all frame nodes from the canvas
-      const frames = getAllFrameNodes(commands);
+    SystemMessageType.GET_ALL_NODES,
+    async (_: GetAllNodesRequest): Promise<ExtractResultType<GetAllNodesResponse>> => {
+      console.log('[CODE] GetAllNodes request received');
+      
+      // Get all nodes from the platform implementation (with hierarchy preserved)
+      const nodes = await commands.getAllNodes();
       
       // Return structured response with exact type
       return {
-        frames,
-        totalCount: frames.length
+        nodes,
+        totalCount: nodes.length
       };
     }
   );

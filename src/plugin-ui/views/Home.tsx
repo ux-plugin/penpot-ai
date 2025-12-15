@@ -5,6 +5,7 @@ import {
   Minimize2,
   Maximize2,
   MessageSquare,
+  Bug,
 } from "lucide-react";
 import { useUserSettingsStore } from '@/plugin-ui/stores/useUserSettingsStore.ts';
 import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
@@ -15,10 +16,13 @@ import { ReactFlowCanvas } from '@/plugin-ui/components/completions/ReactFlowCan
 import { StatusPanel } from '@/plugin-ui/components/status/StatusPanel';
 import { SettingsPanel } from '@/plugin-ui/components/user/SettingsPanel';
 import { ConversationPanel } from '@/plugin-ui/components/completions/ConversationPanel';
+import { NodeDebugPanel } from '@/plugin-ui/components/nodes/NodeDebugPanel';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
-import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@/shared/types/messageTypes';
+import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse, GetAllNodesResponse } from '@/shared/types/messageTypes';
 import { BackendServerStatus } from '@/plugin-ui/components/status/BackendServerStatus';
 import { CompanionAppStatus } from '@/plugin-ui/components/CompanionAppStatus.tsx';
+import { DesignNode } from "@shared-types/types.ts";
+import { parseSVGToProps } from "@utils/figmaStyleConversions.tsx";
 
 function Home() {
   const { setUserConfig } = useUserSettingsStore();
@@ -29,6 +33,8 @@ function Home() {
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   const [conversationPanelOpen, setConversationPanelOpen] = useState(false);
+  const [debugPanelOpen, setDebugPanelOpen] = useState(false);
+  const [nodes, setNodes] = useState<DesignNode[]>([]);
 
   const { data: userConfig } = useUserConfigQuery({ enabled: true });
 
@@ -48,6 +54,39 @@ function Home() {
     }
   }, [currentPort]);
 
+  // Load nodes when debug panel is opened
+  useEffect(() => {
+    const loadNodes = async () => {
+      if (debugPanelOpen && import.meta.env.VITE_ENABLE_BUILD_DEBUG === "true") {
+        try {
+          const result = await uiMessageDispatcher.sendRequest<
+            Omit<any, 'id' | 'timestamp' | 'source'>,
+            ExtractResultType<GetAllNodesResponse>
+          >({
+            category: MessageCategory.SYSTEM,
+            type: SystemMessageType.GET_ALL_NODES,
+            payload: {}
+          });
+          const nodes = result.nodes.map((node) => {
+              if (node.type === "textNode") {
+                console.log("the textNode: ", node);
+                node.data.svgElement =
+                  parseSVGToProps(node.data.svg) ?? undefined;
+                console.log("the textNode with svgElement: ", node);
+              }
+              return node;
+            });
+          console.log("the nodes: ", nodes);
+          setNodes(
+            nodes
+          );
+        } catch (error) {
+          console.error('[Home] Failed to load nodes for debug panel:', error);
+        }
+      }
+    };
+    loadNodes();
+  }, [debugPanelOpen]);
 
   const handleMinimizeWindow = async () => {
     // Minimize to the minimum possible size
@@ -137,6 +176,19 @@ function Home() {
               >
                 <Settings className="h-5 w-5" />
               </Button>
+
+              {/* Debug Button - only shown when VITE_ENABLE_BUILD_DEBUG is true */}
+              {import.meta.env.VITE_ENABLE_BUILD_DEBUG === "true" && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="bg-white hover:bg-gray-50 text-gray-900 border-gray-300 rounded-full shadow-sm"
+                  onClick={() => setDebugPanelOpen(!debugPanelOpen)}
+                  title="Debug Panel"
+                >
+                  <Bug className="h-5 w-5" />
+                </Button>
+              )}
             </div>
           }
           topLeftContent={
@@ -167,6 +219,14 @@ function Home() {
         isOpen={conversationPanelOpen}
         onClose={() => setConversationPanelOpen(false)}
       />
+      {/* Debug Panel - only shown when VITE_ENABLE_BUILD_DEBUG is true */}
+      {import.meta.env.VITE_ENABLE_BUILD_DEBUG === "true" && (
+        <NodeDebugPanel 
+          nodes={nodes} 
+          isOpen={debugPanelOpen}
+          onClose={() => setDebugPanelOpen(false)}
+        />
+      )}
     </div>
   );
 }
