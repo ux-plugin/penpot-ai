@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --open dev.html",
-    "build": "tsc -b && vite build && npm run build:main",
-    "build:main": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap --minify --tree-shaking=true",
+    "build": "tsc -b && vite build && npm run bundle:prod",
+    "bundle:prod": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap --minify --tree-shaking=true",
+    "build:debug": "VITE_ENABLE_BUILD_DEBUG=true tsc -b && VITE_ENABLE_BUILD_DEBUG=true vite build && VITE_ENABLE_BUILD_DEBUG=true npm run bundle:debug",
+    "bundle:debug": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap --tree-shaking=true",
     "preview": "vite preview",
     "build:watch": "watch 'npm run build' src"
   },
@@ -16,6 +18,7 @@
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-label": "^2.1.7",
     "@radix-ui/react-slot": "^1.2.3",
+    "@sentry/react": "^10.29.0",
     "@tailwindcss/vite": "^4.0.17",
     "@tanstack/react-query": "^5.83.0",
     "@xyflow/react": "^12.9.2",

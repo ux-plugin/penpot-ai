@@ -7,6 +7,85 @@ import {
   OperationMessageType,
 } from "@/shared/types/messageTypes";
 
+// ============================================
+// TESTING ONLY: Generic Node Logging Function
+// ============================================
+
+
+
+/**
+ * Log detailed information about selected nodes
+ * For testing purposes only - Currently only shows fills property
+ */
+function logSelectedNodes(commands: any): void {
+  const selection = commands.currentPage.selection;
+  
+  console.log('\n' + '='.repeat(60));
+  console.log('NODE SELECTION - FILLS (Testing)');
+  console.log('='.repeat(60));
+  console.log(`Selected ${selection.length} node(s)\n`);
+  
+  if (selection.length === 0) {
+    console.log('No nodes selected');
+    console.log('='.repeat(60) + '\n');
+    return;
+  }
+  
+  selection.forEach((node: any, index: number) => {
+    console.log(`\n--- NODE ${index + 1} ---`);
+    console.log(`Type: ${node.type}`);
+    console.log(`Name: ${node.name}`);
+    console.log(`ID: ${node.id}`);
+    
+    // Log fills property
+    console.log('\nFills:');
+    if (typeof node.fills === 'symbol') {
+      console.log('  Symbol(figma.mixed) - This node has mixed fills (different parts have different colors)');
+      console.log('  Raw value:', node.fills);
+      
+      // For text nodes with mixed fills, try to get fill segments
+      if (node.type === 'TEXT' && typeof node.getStyledTextSegments === 'function') {
+        try {
+          const segments = node.getStyledTextSegments(['fills', 'textDecoration']);
+          console.log('  Text segments with different fills:');
+          segments.forEach((segment: any, idx: number) => {
+            console.log(`    Segment ${idx + 1}:`, segment);
+          });
+        } catch (e) {
+          console.log('  Could not retrieve text segments:', e);
+        }
+      }
+    } else {
+      console.log(" ", node);
+      // For text nodes with mixed fills, try to get fill segments
+      if (
+        node.type === "TEXT" &&
+        typeof node.getStyledTextSegments === "function"
+      ) {
+        try {
+          const segments = node.getStyledTextSegments([
+            "fills",
+            "textDecoration",
+          ]);
+          console.log(segments);
+          console.log("  Text segments with different fills:");
+          segments.forEach((segment: any, idx: number) => {
+            console.log(`    Segment ${idx + 1}:`, segment);
+          });
+        } catch (e) {
+          console.log("  Could not retrieve text segments:", e);
+        }
+      }
+    }
+  });
+  
+  console.log('\n' + '='.repeat(60) + '\n');
+}
+
+// ============================================
+// END TESTING CODE
+// ============================================
+
 // Wrap in async IIFE to handle top-level await in esbuild IIFE format
 (async () => {
   const commands = await platform.getInstance();
@@ -20,6 +99,18 @@ import {
 
   // Initialize the message listener to receive messages from the UI
   setupCodeMessageListener();
+
+  // ============================================
+  // TESTING ONLY: Setup selection change listener
+  // ============================================
+  commands.on('selectionchange', () => {
+    logSelectedNodes(commands);
+  });
+  
+  // Log initial selection
+  console.log('Selection logging initialized (Testing Mode)');
+  logSelectedNodes(commands);
+  // ============================================
 
 
   async function handleCompletion({payload: object}: CompleteRequest): Promise<void> {

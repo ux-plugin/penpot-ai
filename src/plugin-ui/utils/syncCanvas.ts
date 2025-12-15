@@ -17,8 +17,6 @@ import { Viewport } from "@xyflow/react";
  */
 export async function syncCanvasWithFigma(): Promise<Viewport> {
   try {
-    console.log('[SYNC] Starting canvas sync...');
-    
     // Request canvas sync data from Figma
     const result = await uiMessageDispatcher.sendRequest<
       Omit<SyncCanvasRequest, 'id' | 'timestamp' | 'source'>,
@@ -28,8 +26,6 @@ export async function syncCanvasWithFigma(): Promise<Viewport> {
       type: SystemMessageType.SYNC_CANVAS,
       payload: {}
     });
-
-    console.log('[SYNC] Received sync data from Figma:', result);
     
     const { canvasPosition, zoom } = result;
     

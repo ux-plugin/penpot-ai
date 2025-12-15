@@ -1,5 +1,5 @@
 // Pure Request/Response message type system for scalable communication between UI and code.ts
-import { FrameProperties } from './types';
+import type { DesignNode } from './types';
 
 export enum MessageCategory {
   STORE = 'store',
@@ -32,7 +32,7 @@ export enum SystemMessageType {
   SYNC_CANVAS = 'sync_canvas',
   UPDATE_VIEWPORT = 'update_viewport',
   GET_VIEWPORT_BOUNDS = 'get_viewport_bounds',
-  GET_ALL_FRAME_NODES = 'get_all_frame_nodes'
+  GET_ALL_NODES = 'get_all_nodes'
 }
 
 // Base message request interface
@@ -446,18 +446,18 @@ export interface GetViewportBoundsResponse extends MessageResponse {
   };
 }
 
-// Get All Frame Nodes Request/Response
-export interface GetAllFrameNodesRequest extends MessageRequest {
+// Get All Nodes Request/Response
+export interface GetAllNodesRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
-  type: SystemMessageType.GET_ALL_FRAME_NODES;
+  type: SystemMessageType.GET_ALL_NODES;
   payload: {};
 }
 
-export interface GetAllFrameNodesResponse extends MessageResponse {
+export interface GetAllNodesResponse extends MessageResponse {
   category: MessageCategory.SYSTEM;
-  type: SystemMessageType.GET_ALL_FRAME_NODES;
+  type: SystemMessageType.GET_ALL_NODES;
   result: {
-    frames: FrameProperties[];
+    nodes: DesignNode[];
     totalCount: number;
   };
 }
@@ -486,7 +486,7 @@ export type Request =
   | SyncCanvasRequest
   | UpdateViewportRequest
   | GetViewportBoundsRequest
-  | GetAllFrameNodesRequest;
+  | GetAllNodesRequest;
 
 // All response types
 export type Response = 
@@ -508,7 +508,7 @@ export type Response =
   | SyncCanvasResponse
   | UpdateViewportResponse
   | GetViewportBoundsResponse
-  | GetAllFrameNodesResponse;
+  | GetAllNodesResponse;
 
 
 // Union of all message types
@@ -592,9 +592,9 @@ export type RequestToResponseMap = {
     request: GetViewportBoundsRequest;
     response: GetViewportBoundsResponse;
   };
-  [SystemMessageType.GET_ALL_FRAME_NODES]: {
-    request: GetAllFrameNodesRequest;
-    response: GetAllFrameNodesResponse;
+  [SystemMessageType.GET_ALL_NODES]: {
+    request: GetAllNodesRequest;
+    response: GetAllNodesResponse;
   };
 };
 

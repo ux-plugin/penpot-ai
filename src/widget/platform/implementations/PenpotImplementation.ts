@@ -1,4 +1,5 @@
-import { IDesignPlatform } from '../IDesignPlatform';
+import { IDesignPlatform } from "@widget/platform";
+import type { DesignNode } from '@/shared/types/types';
 
 export class PenpotImplementation implements IDesignPlatform {
   private _onmessage: ((message: any) => void | Promise<void>) | null = null;
@@ -6,35 +7,30 @@ export class PenpotImplementation implements IDesignPlatform {
   ui = {
     onmessage: null as ((message: any) => void | Promise<void>) | null,
     postMessage: (message: any) => {
-      console.log('[PENPOT] Posting message:', message);
       // Penpot's postMessage API - assuming similar to Figma
       if (typeof (globalThis as any).penpot !== 'undefined') {
         (globalThis as any).penpot.ui.postMessage(message);
       }
     },
     showUI: (html: string, options = {}) => {
-      console.log('[PENPOT] ShowUI called:', { options });
       // Penpot's showUI API - assuming similar to Figma
       if (typeof (globalThis as any).penpot !== 'undefined') {
         (globalThis as any).penpot.ui.open(html, Object.assign({ width: 500, height: 500 }, options));
       }
     },
     resize: (width: number, height: number) => {
-      console.log('[PENPOT] Resize called:', { width, height });
       // Penpot's resize API - assuming similar to Figma
       if (typeof (globalThis as any).penpot !== 'undefined') {
         (globalThis as any).penpot.ui.resize(width, height);
       }
     },
     reposition: (x: number, y: number) => {
-      console.log('[PENPOT] Reposition called:', { x, y });
       // Penpot's reposition API - assuming similar to Figma
       if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.ui.reposition) {
         (globalThis as any).penpot.ui.reposition(x, y);
       }
     },
     getPosition: async () => {
-      console.log('[PENPOT] GetPosition called');
       // Penpot's getPosition API - assuming similar to Figma
       if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.ui.getPosition) {
         return await (globalThis as any).penpot.ui.getPosition();
@@ -52,13 +48,11 @@ export class PenpotImplementation implements IDesignPlatform {
     Object.defineProperty(this.ui, 'onmessage', {
       get: () => this._onmessage,
       set: (handler: ((message: any) => void | Promise<void>) | null) => {
-        console.log('[PENPOT] Setting onmessage handler');
         this._onmessage = handler;
         
         // Set up Penpot message listener
         if (typeof (globalThis as any).penpot !== 'undefined') {
           (globalThis as any).penpot.ui.onMessage.addListener(async (message: any) => {
-            console.log('[PENPOT] Received message:', message);
             if (this._onmessage) {
               await this._onmessage(message);
             }
@@ -69,14 +63,12 @@ export class PenpotImplementation implements IDesignPlatform {
   }
 
   closePlugin = () => {
-    console.log('[PENPOT] ClosePlugin called');
     if (typeof (globalThis as any).penpot !== 'undefined') {
       (globalThis as any).penpot.closePlugin();
     }
   };
 
   getNodeByIdAsync = async (id: string) => {
-    console.log('[PENPOT] GetNodeByIdAsync called:', id);
     // Penpot's node lookup API - assuming similar to Figma
     if (typeof (globalThis as any).penpot !== 'undefined') {
       return await (globalThis as any).penpot.getShapeById(id);
@@ -85,7 +77,6 @@ export class PenpotImplementation implements IDesignPlatform {
   };
 
   createFrame = () => {
-    console.log('[PENPOT] CreateFrame called');
     // Penpot's frame creation API
     if (typeof (globalThis as any).penpot !== 'undefined') {
       return (globalThis as any).penpot.createFrame();
@@ -94,12 +85,19 @@ export class PenpotImplementation implements IDesignPlatform {
   };
 
   createRectangle = () => {
-    console.log('[PENPOT] CreateRectangle called');
     // Penpot's rectangle creation API
     if (typeof (globalThis as any).penpot !== 'undefined') {
       return (globalThis as any).penpot.createRectangle();
     }
     return null;
+  };
+
+  /**
+   * Get all nodes - stub implementation for Penpot (not yet implemented)
+   */
+  getAllNodes = async (): Promise<DesignNode[]> => {
+    // Return empty array - Penpot implementation not yet done
+    return [];
   };
 
   currentPage = {
@@ -173,7 +171,6 @@ export class PenpotImplementation implements IDesignPlatform {
   };
 
   on = (event: string, callback: () => void) => {
-    console.log('[PENPOT] Event listener registered:', event);
     // Penpot's event listener API
     if (typeof (globalThis as any).penpot !== 'undefined') {
       (globalThis as any).penpot.on(event, callback);
@@ -181,7 +178,6 @@ export class PenpotImplementation implements IDesignPlatform {
   };
 
   getStyleByIdAsync = async (id: string) => {
-    console.log('[PENPOT] GetStyleByIdAsync called:', id);
     // Penpot's style lookup API
     if (typeof (globalThis as any).penpot !== 'undefined') {
       return await (globalThis as any).penpot.getLibraryColorById(id);
@@ -191,7 +187,6 @@ export class PenpotImplementation implements IDesignPlatform {
 
   storage = {
     setAsync: async (key: string, value: any) => {
-      console.log('[PENPOT] Storage setAsync:', key, value);
       // Penpot's storage API - may use localStorage or plugin-specific storage
       if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.storage) {
         await (globalThis as any).penpot.storage.set(key, value);
@@ -200,7 +195,6 @@ export class PenpotImplementation implements IDesignPlatform {
       }
     },
     getAsync: async (key: string) => {
-      console.log('[PENPOT] Storage getAsync:', key);
       // Penpot's storage API
       if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.storage) {
         return await (globalThis as any).penpot.storage.get(key);
@@ -210,7 +204,6 @@ export class PenpotImplementation implements IDesignPlatform {
       }
     },
     deleteAsync: async (key: string) => {
-      console.log('[PENPOT] Storage deleteAsync:', key);
       // Penpot's storage API
       if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.storage) {
         await (globalThis as any).penpot.storage.delete(key);

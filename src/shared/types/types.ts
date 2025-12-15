@@ -1,3 +1,5 @@
+import { ReactFlowFrameNodeType, TextNodeType } from "@components/nodes";
+
 export type JsonValue =
   | string
   | number
@@ -86,51 +88,7 @@ export type Request =
   | StorageGetRequest
   | CloseRequest;
 
-export interface FrameProperties {
-  id: string;
-  name: string;
-  type: string;
-  visible: boolean;
-  locked: boolean;
 
-  // Position and size
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  rotation: number;
-
-  // Layout properties
-  layoutMode: string;
-  layoutAlign: string;
-  layoutGrow: number;
-  primaryAxisSizingMode: string;
-  counterAxisSizingMode: string;
-  primaryAxisAlignItems: string;
-  counterAxisAlignItems: string;
-  paddingLeft: number;
-  paddingRight: number;
-  paddingTop: number;
-  paddingBottom: number;
-  itemSpacing: number;
-
-  // Style properties
-  fills: symbol | ReadonlyArray<Paint>;
-  strokes: ReadonlyArray<Paint>;
-  strokeWeight: number | symbol;
-  strokeAlign: string;
-  cornerRadius: number | PluginAPI["mixed"];
-  opacity: number;
-  blendMode: BlendMode;
-
-  // Style IDs
-  fillStyleId: string | symbol;
-  strokeStyleId: string;
-  effectStyleId: string;
-
-  // Effects and other styles
-  effects: ReadonlyArray<Effect>;
-
-  // Children
-  children: FrameProperties[];
-}
+export type DesignNode = ReactFlowFrameNodeType | TextNodeType;
+export type FrameNodeProperties = ReactFlowFrameNodeType;
+export type TextNodeProperties = TextNodeType;
