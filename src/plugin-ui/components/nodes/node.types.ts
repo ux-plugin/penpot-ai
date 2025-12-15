@@ -10,6 +10,7 @@ export interface FrameNodeData extends Record<string, unknown> {
   opacity?: number;
   rotation?: number;
   name?: string;
+  nodeType?: 'FRAME' | 'COMPONENT' | 'COMPONENT_SET';
   
   // Dimensions
   width?: number;
@@ -60,7 +61,7 @@ export interface FrameNodeData extends Record<string, unknown> {
 }
 
 /**
- * Type for a React Flow Node created from a Figma FrameNode.
+ * Type for a React Flow Node created from a Figma FrameNode, ComponentNode, or ComponentSetNode.
  */
 export type ReactFlowFrameNodeType = Node<FrameNodeData, 'figmaNode'>;
 
