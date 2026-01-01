@@ -14,6 +14,21 @@ import {
 const LOCKED_OPACITY = 0.5;
 const HIDDEN_OPACITY = 0.3;
 
+const NODE_TYPE_STYLES = {
+  FRAME: {
+    borderColor: '#d1d5db',
+    backgroundColor: '#ffffff',
+  },
+  COMPONENT: {
+    borderColor: '#8b5cf6',
+    backgroundColor: '#f5f3ff',
+  },
+  COMPONENT_SET: {
+    borderColor: '#a855f7',
+    backgroundColor: '#faf5ff',
+  },
+} as const;
+
 /**
  * Converts Figma corner radius to CSS border-radius
  */
@@ -159,14 +174,16 @@ const convertPaddingToCSS = (
 /**
  * React Flow Frame Node Component
  * 
- * A memoized React component that renders a Figma frame as a React Flow node.
+ * A memoized React component that renders a Figma frame, component, or component set as a React Flow node.
  * Supports all FrameNodeData properties including:
- * - Basic: locked, visible, opacity, rotation, name, label, width, height
+ * - Basic: locked, visible, opacity, rotation, name, label, width, height, nodeType
  * - Fill/Background: fills, fillStyleId
  * - Stroke/Border: strokes, strokeWeight, strokeAlign, strokeStyleId
  * - Corner radius: cornerRadius (individual corners)
  * - Visual effects: blendMode, effects, effectStyleId
  * - Layout: layoutMode, alignments, padding, itemSpacing
+ * 
+ * Different node types (FRAME, COMPONENT, COMPONENT_SET) are visually distinguished by border and background colors.
  * 
  * @param props - NodeProps containing node data and dimensions
  * @returns A styled node component with handles for connections
@@ -181,16 +198,20 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
   const rotation = data?.rotation ?? 0;
   const label = data?.label ?? '';
   const name = data?.name ?? label;
+  const nodeType = data?.nodeType ?? 'FRAME';
   
   // Dimensions
   const nodeWidth = data?.width ?? width;
   const nodeHeight = data?.height;
   
-  // Fill/Background properties
-  const backgroundColor = data?.fills?.[0] ? convertPaintToCSS(data.fills[0]) : '#ffffff';
+  // Get type-specific styling
+  const typeStyles = NODE_TYPE_STYLES[nodeType];
   
-  // Stroke/Border properties
-  const strokeColor = data?.strokes?.[0] ? convertPaintToCSS(data.strokes[0]) : '#d1d5db';
+  // Fill/Background properties - use type-specific background if no custom fills
+  const backgroundColor = data?.fills?.[0] ? convertPaintToCSS(data.fills[0]) : typeStyles.backgroundColor;
+  
+  // Stroke/Border properties - use type-specific border color if no custom strokes
+  const strokeColor = data?.strokes?.[0] ? convertPaintToCSS(data.strokes[0]) : typeStyles.borderColor;
   const { borderWidth, boxSizing } = convertStrokeWeightToCSS(data?.strokeWeight, data?.strokeAlign);
   const borderStyle = data?.strokes && data.strokes.length > 0 ? 'solid' : 'solid';
   
@@ -220,11 +241,12 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
   // Calculate final opacity based on visibility and locked state
   const finalOpacity = !visible ? HIDDEN_OPACITY : (locked ? LOCKED_OPACITY : baseOpacity);
 
-  console.log(`[ReactFlowFrameNode] Rendering frame node "${label}" at position:`, {
+  console.log(`[ReactFlowFrameNode] Rendering ${nodeType} node "${label}" at position:`, {
     x: positionAbsoluteX,
     y: positionAbsoluteY,
     label,
     name,
+    nodeType,
     visible,
     locked,
     opacity: finalOpacity,
@@ -259,6 +281,11 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
       data-stroke-style-id={data?.strokeStyleId}
       data-effect-style-id={data?.effectStyleId}
     >
+      {nodeType !== 'FRAME' && (
+        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+          {nodeType === 'COMPONENT' ? '◆ Component' : '◆ Component Set'}
+        </div>
+      )}
       <HandleComponent
         type="target"
         position={PositionEnum.Top}

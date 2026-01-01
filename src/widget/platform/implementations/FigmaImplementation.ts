@@ -40,9 +40,9 @@ export class FigmaImplementation implements IDesignPlatform {
   };
 
   /**
-   * Extract all properties from a Figma FrameNode (without processing children)
+   * Extract all properties from a Figma FrameNode, ComponentNode, or ComponentSetNode (without processing children)
    */
-  private extractFrameNodeProperties(frameNode: FrameNode, parentId?: string): ReactFlowFrameNodeType {
+  private extractFrameNodeProperties(frameNode: FrameNode | ComponentNode | ComponentSetNode, parentId?: string): ReactFlowFrameNodeType {
     // Normalize strokeWeight to always be an object with 4 values
     let normalizedStrokeWeight:
       | { top: number; right: number; bottom: number; left: number }
@@ -109,6 +109,7 @@ export class FigmaImplementation implements IDesignPlatform {
         visible: frameNode.visible,
         opacity: frameNode.opacity,
         rotation: frameNode.rotation,
+        nodeType: frameNode.type as 'FRAME' | 'COMPONENT' | 'COMPONENT_SET',
 
         // Dimensions
         width: frameNode.width,
@@ -252,9 +253,9 @@ export class FigmaImplementation implements IDesignPlatform {
 
   private async transformNodesToDesignNodes(currentPageChildren: ReadonlyArray<SceneNode>, nodes: DesignNode[], parentId?: string) {
     for (const child of currentPageChildren) {
-      if (child.type === "FRAME") {
-        const frameNode = child as FrameNode;
-        // Add the frame to the flat array
+      if (child.type === "FRAME" || child.type === "COMPONENT" || child.type === "COMPONENT_SET") {
+        const frameNode = child as FrameNode | ComponentNode | ComponentSetNode;
+        // Add the frame/component to the flat array
         nodes.push(this.extractFrameNodeProperties(frameNode, parentId));
         // Recursively process children and add them to the flat array
         await this.transformNodesToDesignNodes(frameNode.children, nodes, frameNode.id);
