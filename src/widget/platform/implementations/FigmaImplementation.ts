@@ -2,7 +2,6 @@ import { IDesignPlatform } from "@widget/platform";
 import type { DesignNode } from "@/shared/types/types";
 import { ReactFlowFrameNodeType, TextNodeType } from "@components/nodes";
 
-
 export class FigmaImplementation implements IDesignPlatform {
   ui = {
     onmessage: null as ((message: any) => void | Promise<void>) | null,
@@ -20,7 +19,7 @@ export class FigmaImplementation implements IDesignPlatform {
     },
     getPosition: async () => {
       return figma.ui.getPosition();
-    }
+    },
   };
 
   closePlugin = () => {
@@ -42,7 +41,10 @@ export class FigmaImplementation implements IDesignPlatform {
   /**
    * Extract all properties from a Figma FrameNode, ComponentNode, or ComponentSetNode (without processing children)
    */
-  private async extractFrameNodeProperties(frameNode: FrameNode | ComponentNode | ComponentSetNode, parentId?: string): Promise<ReactFlowFrameNodeType> {
+  private async extractFrameNodeProperties(
+    frameNode: FrameNode | ComponentNode | ComponentSetNode,
+    parentId?: string,
+  ): Promise<ReactFlowFrameNodeType> {
     // Normalize strokeWeight to always be an object with 4 values
     let normalizedStrokeWeight:
       | { top: number; right: number; bottom: number; left: number }
@@ -95,13 +97,15 @@ export class FigmaImplementation implements IDesignPlatform {
     }
 
     // Measure SVG export time
-    const svgExportStartTime = performance.now();
+    const svgExportStartTime = Date.now();
     const svg = await frameNode.exportAsync({
-      format: "SVG"
+      format: "SVG",
     });
-    const svgExportEndTime = performance.now();
+    const svgExportEndTime = Date.now();
     const svgExportDuration = svgExportEndTime - svgExportStartTime;
-    console.log(`[SVG Export] Frame node "${frameNode.name}" (${frameNode.id}): ${svgExportDuration.toFixed(2)}ms`);
+    console.log(
+      `[SVG Export] Frame node "${frameNode.name}" (${frameNode.id}): ${svgExportDuration.toFixed(2)}ms`,
+    );
 
     return {
       id: frameNode.id,
@@ -118,7 +122,7 @@ export class FigmaImplementation implements IDesignPlatform {
         visible: frameNode.visible,
         opacity: frameNode.opacity,
         rotation: frameNode.rotation,
-        nodeType: frameNode.type as 'FRAME' | 'COMPONENT' | 'COMPONENT_SET',
+        nodeType: frameNode.type as "FRAME" | "COMPONENT" | "COMPONENT_SET",
 
         // Dimensions
         width: frameNode.width,
@@ -157,7 +161,7 @@ export class FigmaImplementation implements IDesignPlatform {
         // Children - empty array, children are added to top level instead
         children: [],
 
-        svg: svg
+        svg: svg,
       },
       width: frameNode.width,
       height: frameNode.height,
@@ -169,44 +173,49 @@ export class FigmaImplementation implements IDesignPlatform {
   /**
    * Extract all properties from a Figma TextNode
    */
-  private async extractTextProperties(textNode: TextNode, parentId?: string): Promise<TextNodeType> {
+  private async extractTextProperties(
+    textNode: TextNode,
+    parentId?: string,
+  ): Promise<TextNodeType> {
     // Extract styled text segments with all available properties
     const segments = textNode.getStyledTextSegments([
-      'fontSize',
-      'fontName',
-      'fontWeight',
-      'textDecoration',
-      'textDecorationStyle',
-      'textDecorationOffset',
-      'textDecorationThickness',
-      'textDecorationColor',
-      'textDecorationSkipInk',
-      'textCase',
-      'lineHeight',
-      'letterSpacing',
-      'fills',
-      'textStyleId',
-      'fillStyleId',
-      'listOptions',
-      'listSpacing',
-      'indentation',
-      'paragraphIndent',
-      'paragraphSpacing',
-      'hyperlink',
-      'openTypeFeatures',
-      'boundVariables',
-      'textStyleOverrides',
+      "fontSize",
+      "fontName",
+      "fontWeight",
+      "textDecoration",
+      "textDecorationStyle",
+      "textDecorationOffset",
+      "textDecorationThickness",
+      "textDecorationColor",
+      "textDecorationSkipInk",
+      "textCase",
+      "lineHeight",
+      "letterSpacing",
+      "fills",
+      "textStyleId",
+      "fillStyleId",
+      "listOptions",
+      "listSpacing",
+      "indentation",
+      "paragraphIndent",
+      "paragraphSpacing",
+      "hyperlink",
+      "openTypeFeatures",
+      "boundVariables",
+      "textStyleOverrides",
     ]);
 
     // Measure SVG export time
-    const svgExportStartTime = performance.now();
+    const svgExportStartTime = Date.now();
     const svg = await textNode.exportAsync({
       format: "SVG_STRING",
       svgOutlineText: true,
     });
-    const svgExportEndTime = performance.now();
+    const svgExportEndTime = Date.now();
     const svgExportDuration = svgExportEndTime - svgExportStartTime;
-    console.log(`[SVG Export] Text node "${textNode.name}" (${textNode.id}): ${svgExportDuration.toFixed(2)}ms`);
+    console.log(
+      `[SVG Export] Text node "${textNode.name}" (${textNode.id}): ${svgExportDuration.toFixed(2)}ms`,
+    );
 
     return {
       id: textNode.id,
@@ -268,15 +277,25 @@ export class FigmaImplementation implements IDesignPlatform {
     return nodes;
   };
 
-  private async transformNodesToDesignNodes(currentPageChildren: ReadonlyArray<SceneNode>, nodes: DesignNode[], parentId?: string) {
+  private async transformNodesToDesignNodes(
+    currentPageChildren: ReadonlyArray<SceneNode>,
+    nodes: DesignNode[],
+    parentId?: string,
+  ) {
     for (const child of currentPageChildren) {
-      if (child.type === "FRAME" || child.type === "COMPONENT" || child.type === "COMPONENT_SET") {
+      if (
+        child.type === "FRAME" ||
+        child.type === "COMPONENT" ||
+        child.type === "COMPONENT_SET"
+      ) {
         const frameNode = child as FrameNode | ComponentNode | ComponentSetNode;
         // Add the frame/component to the flat array (without processing children)
         nodes.push(await this.extractFrameNodeProperties(frameNode, parentId));
       } else if (child.type === "TEXT") {
         // Add the text node to the flat array
-        nodes.push(await this.extractTextProperties(child as TextNode, parentId));
+        nodes.push(
+          await this.extractTextProperties(child as TextNode, parentId),
+        );
       }
     }
   }
@@ -287,7 +306,7 @@ export class FigmaImplementation implements IDesignPlatform {
     },
     get children() {
       return figma.currentPage.children;
-    }
+    },
   };
 
   on = (event: string, callback: () => void) => {
@@ -309,13 +328,12 @@ export class FigmaImplementation implements IDesignPlatform {
     },
     set center(value: { x: number; y: number }) {
       figma.viewport.center = value;
-    }
+    },
   };
 
   getStyleByIdAsync = async (id: string) => {
     return await figma.getStyleByIdAsync(id);
-  }
-
+  };
 
   storage = {
     setAsync: async (key: string, value: any) => {
@@ -326,16 +344,16 @@ export class FigmaImplementation implements IDesignPlatform {
     },
     deleteAsync: async (key: string) => {
       return await figma.clientStorage.deleteAsync(key);
-    }
+    },
   };
 
   constructor() {
     // Bridge figma.ui.onmessage to our interface
-    Object.defineProperty(this.ui, 'onmessage', {
+    Object.defineProperty(this.ui, "onmessage", {
       get: () => figma.ui.onmessage,
       set: (handler) => {
         figma.ui.onmessage = handler;
-      }
+      },
     });
   }
 }

@@ -3,7 +3,7 @@ import {
   ExtractResultType,
   MessageCategory,
   GetAllNodesResponse,
-  SystemMessageType
+  SystemMessageType,
 } from "@shared-types/messageTypes.ts";
 import { DesignNode } from "@shared-types/types.ts";
 
@@ -13,25 +13,30 @@ import { DesignNode } from "@shared-types/types.ts";
  *
  * @returns Promise that resolves with the nodes array and total count
  */
-export async function loadAllNodes(): Promise<{ nodes: DesignNode[]; totalCount: number }> {
+export async function loadAllNodes(): Promise<{
+  nodes: DesignNode[];
+  totalCount: number;
+}> {
   try {
     const result = await uiMessageDispatcher.sendRequest<
-      Omit<any, 'id' | 'timestamp' | 'source'>,
+      Omit<any, "id" | "timestamp" | "source">,
       ExtractResultType<GetAllNodesResponse>
     >({
       category: MessageCategory.SYSTEM,
       type: SystemMessageType.GET_ALL_NODES,
-      payload: {}
+      payload: {},
     });
-    
-    console.log(`[loadNodes] Received ${result.nodes.length} ReactFlow nodes (total: ${result.totalCount})`);
+
+    console.log(
+      `[loadNodes] Received ${result.nodes.length} ReactFlow nodes (total: ${result.totalCount})`,
+    );
 
     return {
       nodes: result.nodes,
-      totalCount: result.totalCount
+      totalCount: result.totalCount,
     };
   } catch (error) {
-    console.error('[loadNodes] Failed to load nodes:', error);
+    console.error("[loadNodes] Failed to load nodes:", error);
     throw error;
   }
 }
