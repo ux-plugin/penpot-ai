@@ -217,3 +217,32 @@ export function parseSVGToProps(svgString?: string) {
 
   return svgElement
 }
+
+/**
+ * Converts SVG data (string or Uint8Array) to a string for rendering
+ */
+export function convertSVGToString(svg?: string | Uint8Array): string | null {
+  if (!svg) return null;
+  
+  if (typeof svg === 'string') {
+    return parseSVGString(svg);
+  }
+  
+  // Convert Uint8Array to string
+  const decoder = new TextDecoder('utf-8');
+  return decoder.decode(svg);
+}
+
+/**
+ * Converts SVG data (string or Uint8Array) to SVGElement
+ */
+export function parseSVGToElement(svg?: string | Uint8Array): SVGElement | null {
+  const svgString = convertSVGToString(svg);
+  if (!svgString) return null;
+  
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgString, 'image/svg+xml');
+  const svgElement = doc.querySelector('svg');
+  
+  return svgElement || null;
+}

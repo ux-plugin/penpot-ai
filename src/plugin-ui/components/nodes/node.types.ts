@@ -58,6 +58,10 @@ export interface FrameNodeData extends Record<string, unknown> {
   
   // Children - recursively nested nodes
   children?: Array<ReactFlowFrameNodeType | TextNodeType>;
+
+  // SVG vectors
+  svg?: string | Uint8Array;
+  svgElement?: SVGElement;
 }
 
 /**

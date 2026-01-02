@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo, useRef, useEffect } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import { Handle as HandleComponent, Position as PositionEnum } from '@xyflow/react';
 import type { ReactFlowFrameNodeType } from "./node.types";
@@ -6,6 +6,8 @@ import {
   convertBlendModeToCSS,
   convertEffectsToCSS,
   convertPaintToCSS,
+  parseSVGToElement,
+  convertSVGToString,
 } from "@utils/figmaStyleConversions.tsx";
 
 /**
@@ -34,14 +36,14 @@ const NODE_TYPE_STYLES = {
  */
 const convertCornerRadiusToCSS = (cornerRadius?: { topLeft: number; topRight: number; bottomLeft: number; bottomRight: number }): string | undefined => {
   if (!cornerRadius) return undefined;
-  
+
   const { topLeft, topRight, bottomRight, bottomLeft } = cornerRadius;
-  
+
   // If all corners are the same, return a single value
   if (topLeft === topRight && topRight === bottomRight && bottomRight === bottomLeft) {
     return `${topLeft}px`;
   }
-  
+
   // Return individual corner values (top-left, top-right, bottom-right, bottom-left)
   return `${topLeft}px ${topRight}px ${bottomRight}px ${bottomLeft}px`;
 };
@@ -55,21 +57,21 @@ const convertStrokeWeightToCSS = (
   strokeAlign?: 'INSIDE' | 'OUTSIDE' | 'CENTER'
 ): { borderWidth?: string; boxSizing?: 'border-box' | 'content-box' } => {
   if (!strokeWeight) return {};
-  
+
   const { top, right, bottom, left } = strokeWeight;
-  
+
   // For simplicity, we'll use border-box for INSIDE (default CSS behavior)
   // OUTSIDE would need additional wrapping or box-shadow technique
   // CENTER is close to default border behavior
   const boxSizing = strokeAlign === 'INSIDE' ? 'border-box' : 'border-box';
-  
+
   // If all sides are the same, return a single value
   if (top === right && right === bottom && bottom === left) {
     return { borderWidth: `${top}px`, boxSizing };
   }
-  
+
   // Return individual border widths (top, right, bottom, left)
-  return { 
+  return {
     borderWidth: `${top}px ${right}px ${bottom}px ${left}px`,
     boxSizing
   };
@@ -83,17 +85,17 @@ const convertLayoutModeToCSS = (
   primaryAxisAlignItems?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN',
   counterAxisAlignItems?: 'MIN' | 'CENTER' | 'MAX' | 'BASELINE',
   itemSpacing?: number
-): { 
-  display?: string; 
-  flexDirection?: 'row' | 'column'; 
-  justifyContent?: string; 
+): {
+  display?: string;
+  flexDirection?: 'row' | 'column';
+  justifyContent?: string;
   alignItems?: string;
   gap?: string;
 } => {
   if (!layoutMode || layoutMode === 'NONE') {
     return {};
   }
-  
+
   const result: {
     display?: string;
     flexDirection?: 'row' | 'column';
@@ -101,7 +103,7 @@ const convertLayoutModeToCSS = (
     alignItems?: string;
     gap?: string;
   } = {};
-  
+
   if (layoutMode === 'HORIZONTAL') {
     result.display = 'flex';
     result.flexDirection = 'row';
@@ -111,7 +113,7 @@ const convertLayoutModeToCSS = (
   } else if (layoutMode === 'GRID') {
     result.display = 'grid';
   }
-  
+
   // Convert primary axis alignment (justify-content for flex)
   if (primaryAxisAlignItems) {
     const alignMap: Record<string, string> = {
@@ -122,7 +124,7 @@ const convertLayoutModeToCSS = (
     };
     result.justifyContent = alignMap[primaryAxisAlignItems];
   }
-  
+
   // Convert counter axis alignment (align-items for flex)
   if (counterAxisAlignItems) {
     const alignMap: Record<string, string> = {
@@ -133,12 +135,12 @@ const convertLayoutModeToCSS = (
     };
     result.alignItems = alignMap[counterAxisAlignItems];
   }
-  
+
   // Item spacing becomes gap
   if (itemSpacing !== undefined) {
     result.gap = `${itemSpacing}px`;
   }
-  
+
   return result;
 };
 
@@ -152,21 +154,21 @@ const convertPaddingToCSS = (
   paddingLeft?: number
 ): string | undefined => {
   // If no padding values provided, return undefined
-  if (paddingTop === undefined && paddingRight === undefined && 
-      paddingBottom === undefined && paddingLeft === undefined) {
+  if (paddingTop === undefined && paddingRight === undefined &&
+    paddingBottom === undefined && paddingLeft === undefined) {
     return undefined;
   }
-  
+
   const top = paddingTop ?? 0;
   const right = paddingRight ?? 0;
   const bottom = paddingBottom ?? 0;
   const left = paddingLeft ?? 0;
-  
+
   // If all sides are the same, return a single value
   if (top === right && right === bottom && bottom === left) {
     return `${top}px`;
   }
-  
+
   // Return individual padding values (top, right, bottom, left)
   return `${top}px ${right}px ${bottom}px ${left}px`;
 };
@@ -189,8 +191,43 @@ const convertPaddingToCSS = (
  * @returns A styled node component with handles for connections
  */
 export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>) => {
-  const { data, width = 150, positionAbsoluteX, positionAbsoluteY } = props;
-  
+  const { data, width = 150, positionAbsoluteX, positionAbsoluteY, selected } = props;
+  const svgContainerRef = useRef<HTMLDivElement>(null);
+
+  // Parse SVG element if available
+  const svgElement = useMemo(() => {
+    if (data?.svgElement) {
+      return data.svgElement;
+    }
+    if (data?.svg) {
+      return parseSVGToElement(data.svg);
+    }
+    return null;
+  }, [data?.svg, data?.svgElement]);
+
+  // Convert SVG to string for rendering
+  const svgString = useMemo(() => {
+    if (data?.svg) {
+      return convertSVGToString(data.svg);
+    }
+    return null;
+  }, [data?.svg]);
+
+  // Render SVG element into container
+  useEffect(() => {
+    if (svgElement && svgContainerRef.current) {
+      // Clear existing content
+      svgContainerRef.current.innerHTML = '';
+      // Clone and append SVG element
+      const clonedSvg = svgElement.cloneNode(true) as SVGElement;
+      // Ensure SVG scales to container
+      clonedSvg.setAttribute('width', '100%');
+      clonedSvg.setAttribute('height', '100%');
+      clonedSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      svgContainerRef.current.appendChild(clonedSvg);
+    }
+  }, [svgElement]);
+
   // Basic properties
   const locked = data?.locked ?? false;
   const visible = data?.visible ?? true;
@@ -199,29 +236,29 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
   const label = data?.label ?? '';
   const name = data?.name ?? label;
   const nodeType = data?.nodeType ?? 'FRAME';
-  
+
   // Dimensions
   const nodeWidth = data?.width ?? width;
   const nodeHeight = data?.height;
-  
+
   // Get type-specific styling
   const typeStyles = NODE_TYPE_STYLES[nodeType];
-  
+
   // Fill/Background properties - use type-specific background if no custom fills
   const backgroundColor = data?.fills?.[0] ? convertPaintToCSS(data.fills[0]) : typeStyles.backgroundColor;
-  
+
   // Stroke/Border properties - use type-specific border color if no custom strokes
   const strokeColor = data?.strokes?.[0] ? convertPaintToCSS(data.strokes[0]) : typeStyles.borderColor;
   const { borderWidth, boxSizing } = convertStrokeWeightToCSS(data?.strokeWeight, data?.strokeAlign);
   const borderStyle = data?.strokes && data.strokes.length > 0 ? 'solid' : 'solid';
-  
+
   // Corner radius
   const borderRadius = convertCornerRadiusToCSS(data?.cornerRadius) ?? '8px';
-  
+
   // Visual effects
   const blendMode = convertBlendModeToCSS(data?.blendMode);
   const { boxShadow, filter } = convertEffectsToCSS(data?.effects);
-  
+
   // Layout properties
   const layoutStyles = convertLayoutModeToCSS(
     data?.layoutMode,
@@ -229,7 +266,7 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
     data?.counterAxisAlignItems,
     data?.itemSpacing
   );
-  
+
   // Padding
   const padding = convertPaddingToCSS(
     data?.paddingTop,
@@ -237,7 +274,7 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
     data?.paddingBottom,
     data?.paddingLeft
   ) ?? '12px 16px';
-  
+
   // Calculate final opacity based on visibility and locked state
   const finalOpacity = !visible ? HIDDEN_OPACITY : (locked ? LOCKED_OPACITY : baseOpacity);
 
@@ -254,11 +291,52 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
     layoutMode: data?.layoutMode,
     width: nodeWidth,
     height: nodeHeight,
+    hasSvg: !!svgElement || !!svgString,
   });
 
+  // If SVG is available, render it in a transparent selectable box
+  if (svgElement || svgString) {
+    return (
+      <div
+        className="bg-transparent transition-[background-color,border-color] duration-200 ease-in-out border-2 border-transparent rounded hover:bg-blue-500/10 hover:border-blue-500/30 data-[selected=true]:bg-blue-500/15 data-[selected=true]:border-blue-500/50"
+        style={{
+          width: nodeWidth,
+          height: nodeHeight,
+          opacity: finalOpacity,
+          transform: `rotate(${rotation}deg)`,
+          pointerEvents: visible ? 'auto' : 'none',
+          position: 'relative',
+        }}
+        data-selected={selected}
+      >
+        <div
+          ref={svgContainerRef}
+          style={{
+            width: '100%',
+            height: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          dangerouslySetInnerHTML={svgString ? { __html: svgString } : undefined}
+        />
+        <HandleComponent
+          type="target"
+          position={PositionEnum.Top}
+          style={{ opacity: 0 }}
+        />
+        <HandleComponent
+          type="source"
+          position={PositionEnum.Bottom}
+          style={{ opacity: 0 }}
+        />
+      </div>
+    );
+  }
+
+  // Otherwise, render the styled frame
   return (
     <div
-      className="figma-node"
       style={{
         backgroundColor,
         border: `${borderWidth ?? '2px'} ${borderStyle} ${strokeColor}`,
