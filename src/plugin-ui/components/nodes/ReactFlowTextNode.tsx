@@ -1,25 +1,17 @@
-import React, { memo, useMemo, useRef, useEffect } from "react";
+import { memo, useMemo, useRef, useEffect } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { Handle as HandleComponent, Position as PositionEnum } from "@xyflow/react";
 import type { TextNodeType } from "./node.types";
 import {
-  convertTextAlignToCSS,
-  convertVerticalAlignToCSS,
   parseSVGToElement,
   convertSVGToString,
 } from "@utils/figmaStyleConversions";
 
 /**
- * Constants for node styling
- */
-const LOCKED_OPACITY = 0.5;
-const HIDDEN_OPACITY = 0.3;
-
-/**
  * React Flow Text Node Component
  */
 export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
-  const { data, width, height, positionAbsoluteX, positionAbsoluteY, selected } = props;
+  const { data, width, height, positionAbsoluteX, positionAbsoluteY, parentId } = props;
   const svgContainerRef = useRef<HTMLDivElement>(null);
 
   // Parse SVG element if available
@@ -42,9 +34,6 @@ export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
   }, [data?.svg]);
 
   // Basic properties
-  const locked = data?.locked ?? false;
-  const visible = data?.visible ?? true;
-  const baseOpacity = data?.opacity ?? 1;
   const rotation = data?.rotation ?? 0;
   const label = data?.label ?? "";
   const name = data?.name ?? label;
@@ -52,113 +41,100 @@ export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
   // Text content (prefer text, fallback to characters)
   const textContent = data?.text ?? data?.characters ?? "";
 
-  // Text alignment
-  const textAlign = convertTextAlignToCSS(data?.textAlignHorizontal);
-  const verticalAlign = convertVerticalAlignToCSS(data?.textAlignVertical);
-
-  // Calculate final opacity based on visibility and locked state
-  const finalOpacity = !visible ? HIDDEN_OPACITY : locked ? LOCKED_OPACITY : baseOpacity;
-
-  // Rich text segments
-  const hasSegments = data?.segments && data.segments.length > 0;
-
   // Render SVG element into container
   useEffect(() => {
-    if (svgElement && svgContainerRef.current) {
-      // Clear existing content
-      svgContainerRef.current.innerHTML = '';
+    if (!svgContainerRef.current) return;
+
+    // Clear existing content first
+    svgContainerRef.current.innerHTML = '';
+
+    // Handle SVG rendering: prefer svgElement, fallback to parsing svgString
+    let elementToRender: SVGElement | null = null;
+
+    if (svgElement) {
+      // Use the already parsed SVG element
+      elementToRender = svgElement;
+    } else if (svgString) {
+      // Parse the SVG string to an element (svgString is already converted from data.svg)
+      const parsed = parseSVGToElement(svgString);
+      if (parsed) {
+        elementToRender = parsed;
+      }
+    }
+
+    if (elementToRender) {
       // Clone and append SVG element
-      const clonedSvg = svgElement.cloneNode(true) as SVGElement;
+      const clonedSvg = elementToRender.cloneNode(true) as SVGElement;
       // Ensure SVG scales to container
       clonedSvg.setAttribute('width', '100%');
       clonedSvg.setAttribute('height', '100%');
       clonedSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
       svgContainerRef.current.appendChild(clonedSvg);
     }
-  }, [svgElement]);
+  }, [svgElement, svgString]);
 
   console.log(`[ReactFlowTextNode] Rendering text node "${label}" at position:`, {
     x: positionAbsoluteX,
     y: positionAbsoluteY,
     label,
     name,
-    visible,
-    locked,
-    opacity: finalOpacity,
     rotation,
-    textAlign,
-    verticalAlign,
-    hasSegments,
-    segmentCount: data?.segments?.length ?? 0,
     text: textContent.substring(0, 50) + (textContent.length > 50 ? "..." : ""),
     hasSvg: !!svgElement || !!svgString,
+    parentId,
+    renderMode: data?.renderMode,
   });
 
-  // If SVG is available, render it in a transparent selectable box
-  if (svgElement || svgString) {
+  // Determine rendering mode
+  // Use explicit renderMode if set (set by FigmaImplementation during tree traversal)
+  // Default to 'svg' if not set (text nodes typically always use SVG)
+  const renderMode = data?.renderMode || 'svg';
+
+  // Handle bounding-box mode (descendants of SVG nodes)
+  if (renderMode === 'bounding-box') {
     return (
       <div
-        className="bg-transparent transition-[background-color,border-color] duration-200 ease-in-out border-2 border-transparent rounded hover:bg-blue-500/10 hover:border-blue-500/30 data-[selected=true]:bg-blue-500/15 data-[selected=true]:border-blue-500/50"
+        className="border border-transparent transition-colors duration-200 hover:border-blue-500"
         style={{
           width: width,
           height: height,
-          opacity: finalOpacity,
           transform: `rotate(${rotation}deg)`,
-          pointerEvents: visible ? "auto" : "none",
-          position: "relative",
         }}
-        data-selected={selected}
         data-stroke-style-id={data?.strokeStyleId}
         data-effect-style-id={data?.effectStyleId}
+        data-render-mode="bounding-box"
       >
-        <div
-          ref={svgContainerRef}
-          style={{
-            width: '100%',
-            height: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-          dangerouslySetInnerHTML={svgString ? { __html: svgString } : undefined}
-        />
         <HandleComponent type="target" position={PositionEnum.Top} style={{ opacity: 0 }} />
         <HandleComponent type="source" position={PositionEnum.Bottom} style={{ opacity: 0 }} />
       </div>
     );
   }
 
-  return (
-    <div
-      style={{
-        width: width,
-        height: height,
-        opacity: finalOpacity,
-        transform: `rotate(${rotation}deg)`,
-        pointerEvents: visible ? "auto" : "none",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: verticalAlign,
-        position: "relative",
-      }}
-      data-stroke-style-id={data?.strokeStyleId}
-      data-effect-style-id={data?.effectStyleId}
-    >
-      {/* Render rich text segments or plain text */}
+  // Handle SVG rendering mode (text nodes typically use SVG)
+  if (renderMode === 'svg' && (svgElement || svgString)) {
+    return (
       <div
-        style={
-          {
-            textAlign: textAlign,
-          } as React.CSSProperties
-        }
+        style={{
+          width: width,
+          height: height,
+          transform: `rotate(${rotation}deg)`,
+        }}
+        data-stroke-style-id={data?.strokeStyleId}
+        data-effect-style-id={data?.effectStyleId}
+        data-render-mode="svg"
       >
-        {textContent}
+        <div
+          ref={svgContainerRef}
+          style={{
+            width: '100%',
+            height: '100%',
+          }}
+        />
+        <HandleComponent type="target" position={PositionEnum.Top} style={{ opacity: 0 }} />
+        <HandleComponent type="source" position={PositionEnum.Bottom} style={{ opacity: 0 }} />
       </div>
-
-      <HandleComponent type="target" position={PositionEnum.Top} style={{ opacity: 0 }} />
-      <HandleComponent type="source" position={PositionEnum.Bottom} style={{ opacity: 0 }} />
-    </div>
-  );
+    );
+  }
 });
 
 ReactFlowTextNode.displayName = "ReactFlowTextNode";

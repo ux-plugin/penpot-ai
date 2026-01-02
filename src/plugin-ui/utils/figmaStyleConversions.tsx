@@ -3,7 +3,7 @@
  * These functions help transform Figma design properties into browser-compatible CSS styles
  */
 
-import type { StyledTextSegment } from "@components/nodes/node.types.ts";
+import type { StyledTextSegment, FrameNodeData } from "@components/nodes/node.types.ts";
 import React from "react";
 
 /**
@@ -15,7 +15,7 @@ export const convertPaintToCSS = (paint: Paint): string => {
     const opacity = paint.opacity ?? 1;
     return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${opacity})`;
   }
-  
+
   if (paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL' || paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND') {
     // For gradients, return the first color as a fallback
     const firstStop = paint.gradientStops?.[0];
@@ -24,7 +24,7 @@ export const convertPaintToCSS = (paint: Paint): string => {
       return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
     }
   }
-  
+
   // Default fallback
   return 'transparent';
 };
@@ -36,7 +36,7 @@ export const convertBlendModeToCSS = (blendMode?: BlendMode): string | undefined
   if (!blendMode || blendMode === 'PASS_THROUGH' || blendMode === 'NORMAL') {
     return undefined;
   }
-  
+
   const blendModeMap: Record<string, string> = {
     'DARKEN': 'darken',
     'MULTIPLY': 'multiply',
@@ -54,7 +54,7 @@ export const convertBlendModeToCSS = (blendMode?: BlendMode): string | undefined
     'COLOR': 'color',
     'LUMINOSITY': 'luminosity',
   };
-  
+
   return blendModeMap[blendMode];
 };
 
@@ -65,37 +65,37 @@ export const convertEffectsToCSS = (effects?: readonly Effect[]): { boxShadow?: 
   if (!effects || effects.length === 0) {
     return {};
   }
-  
+
   const shadows: string[] = [];
   const filters: string[] = [];
-  
+
   effects.forEach(effect => {
     if (!effect.visible) return;
-    
+
     if (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW') {
       const { offset, radius, color } = effect;
       const x = offset?.x ?? 0;
       const y = offset?.y ?? 0;
       const blur = radius ?? 0;
-      const colorStr = color 
+      const colorStr = color
         ? `rgba(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)}, ${color.a ?? 1})`
         : 'rgba(0, 0, 0, 0.25)';
-      
+
       const inset = effect.type === 'INNER_SHADOW' ? 'inset ' : '';
       shadows.push(`${inset}${x}px ${y}px ${blur}px ${colorStr}`);
     }
-    
+
     if (effect.type === 'LAYER_BLUR') {
       const blur = effect.radius ?? 0;
       filters.push(`blur(${blur}px)`);
     }
-    
+
     if (effect.type === 'BACKGROUND_BLUR') {
       const blur = effect.radius ?? 0;
       filters.push(`blur(${blur}px)`);
     }
   });
-  
+
   return {
     boxShadow: shadows.length > 0 ? shadows.join(', ') : undefined,
     filter: filters.length > 0 ? filters.join(' ') : undefined,
@@ -127,7 +127,7 @@ export const convertVerticalAlignToCSS = (align?: 'TOP' | 'CENTER' | 'BOTTOM'): 
     'CENTER': 'center',
     'BOTTOM': 'flex-end',
   };
-  
+
   return alignMap[align ?? 'TOP'] ?? 'flex-start';
 };
 /**
@@ -148,22 +148,22 @@ export const renderStyledSegment = (
     fontFamily: segment.fontName?.family ?? undefined,
     fontStyle: segment.fontName.style ?? undefined,
     textTransform: segment.textCase === 'UPPER' ? 'uppercase'
-                 : segment.textCase === 'LOWER' ? 'lowercase'
-                 : segment.textCase === 'TITLE' ? 'capitalize'
-                 : undefined,
+      : segment.textCase === 'LOWER' ? 'lowercase'
+        : segment.textCase === 'TITLE' ? 'capitalize'
+          : undefined,
     textDecoration: segment.textDecoration === 'UNDERLINE' ? 'underline'
-                  : segment.textDecoration === 'STRIKETHROUGH' ? 'line-through'
-                  : undefined,
+      : segment.textDecoration === 'STRIKETHROUGH' ? 'line-through'
+        : undefined,
     letterSpacing: segment.letterSpacing?.unit === 'PIXELS'
-                 ? `${segment.letterSpacing.value}px`
-                 : segment.letterSpacing?.unit === 'PERCENT'
-                 ? `${segment.letterSpacing.value}%`
-                 : undefined,
+      ? `${segment.letterSpacing.value}px`
+      : segment.letterSpacing?.unit === 'PERCENT'
+        ? `${segment.letterSpacing.value}%`
+        : undefined,
     lineHeight: segment.lineHeight?.unit === 'PIXELS'
-              ? `${segment.lineHeight.value}px`
-              : segment.lineHeight?.unit === 'PERCENT'
-              ? `${segment.lineHeight.value}%`
-              : undefined,
+      ? `${segment.lineHeight.value}px`
+      : segment.lineHeight?.unit === 'PERCENT'
+        ? `${segment.lineHeight.value}%`
+        : undefined,
     color: segment.fills?.[0] ? convertPaintToCSS(segment.fills[0]) : undefined,
     WebkitTextStrokeWidth: strokeWeight ? `${strokeWeight}px` : undefined,
     WebkitTextStrokeColor: strokeColor,
@@ -223,11 +223,11 @@ export function parseSVGToProps(svgString?: string) {
  */
 export function convertSVGToString(svg?: string | Uint8Array): string | null {
   if (!svg) return null;
-  
+
   if (typeof svg === 'string') {
     return parseSVGString(svg);
   }
-  
+
   // Convert Uint8Array to string
   const decoder = new TextDecoder('utf-8');
   return decoder.decode(svg);
@@ -239,10 +239,101 @@ export function convertSVGToString(svg?: string | Uint8Array): string | null {
 export function parseSVGToElement(svg?: string | Uint8Array): SVGElement | null {
   const svgString = convertSVGToString(svg);
   if (!svgString) return null;
-  
+
   const parser = new DOMParser();
   const doc = parser.parseFromString(svgString, 'image/svg+xml');
   const svgElement = doc.querySelector('svg');
-  
+
   return svgElement || null;
+}
+
+/**
+ * Converts a Figma Frame Node's data to CSS styles for rendering
+ * Only handles simple cases (solid fills, basic strokes, simple effects)
+ * Complex cases (gradients, blurs, etc.) should use SVG export
+ * 
+ * @param nodeData - The frame node data to convert
+ * @returns CSS properties object for React styling
+ */
+export function convertFrameNodeToCSS(nodeData: FrameNodeData): React.CSSProperties {
+  const style: React.CSSProperties = {
+    width: nodeData.width,
+    height: nodeData.height,
+    opacity: nodeData.opacity,
+    transform: nodeData.rotation ? `rotate(${nodeData.rotation}deg)` : undefined,
+    mixBlendMode: convertBlendModeToCSS(nodeData.blendMode) as any,
+  };
+
+  // Handle fills (only solid colors)
+  if (nodeData.fills && nodeData.fills.length > 0) {
+    const firstFill = nodeData.fills[0];
+    // Only use CSS for solid fills
+    if (firstFill.type === 'SOLID') {
+      style.backgroundColor = convertPaintToCSS(firstFill);
+    } else {
+      // For non-solid fills, we can't render with CSS
+      // This should have been caught by shouldUseSVG()
+      style.backgroundColor = 'transparent';
+    }
+  } else {
+    style.backgroundColor = 'transparent';
+  }
+
+  // Handle strokes (simple strokes only)
+  if (nodeData.strokes && nodeData.strokes.length > 0 && nodeData.strokeWeight) {
+    const strokePaint = nodeData.strokes[0];
+    const strokeColor = convertPaintToCSS(strokePaint);
+
+    // Handle uniform stroke weight
+    const { top, right, bottom, left } = nodeData.strokeWeight;
+    const isUniform = top === right && right === bottom && bottom === left;
+
+    if (isUniform && top > 0) {
+      // Use border for uniform strokes
+      const strokeAlign = nodeData.strokeAlign || 'INSIDE';
+
+      if (strokeAlign === 'CENTER') {
+        style.border = `${top}px solid ${strokeColor}`;
+      } else if (strokeAlign === 'INSIDE') {
+        style.border = `${top}px solid ${strokeColor}`;
+        style.boxSizing = 'border-box';
+      } else {
+        // OUTSIDE - use outline instead
+        style.outline = `${top}px solid ${strokeColor}`;
+        style.outlineOffset = `-${top}px`;
+      }
+    } else if (!isUniform) {
+      // Non-uniform strokes are complex, but we can approximate with border
+      // This is a fallback - ideally should use SVG
+      style.borderTop = `${top}px solid ${strokeColor}`;
+      style.borderRight = `${right}px solid ${strokeColor}`;
+      style.borderBottom = `${bottom}px solid ${strokeColor}`;
+      style.borderLeft = `${left}px solid ${strokeColor}`;
+    }
+  }
+
+  // Handle corner radius
+  if (nodeData.cornerRadius) {
+    const { topLeft, topRight, bottomRight, bottomLeft } = nodeData.cornerRadius;
+    const isUniform = topLeft === topRight && topRight === bottomRight && bottomRight === bottomLeft;
+
+    if (isUniform) {
+      style.borderRadius = `${topLeft}px`;
+    } else {
+      style.borderRadius = `${topLeft}px ${topRight}px ${bottomRight}px ${bottomLeft}px`;
+    }
+  }
+
+  // Handle effects (simple shadows only)
+  const effects = convertEffectsToCSS(nodeData.effects);
+  if (effects.boxShadow) {
+    style.boxShadow = effects.boxShadow;
+  }
+  if (effects.filter) {
+    // Note: CSS filters may not perfectly match Figma effects
+    // For complex filters, SVG is preferred
+    style.filter = effects.filter;
+  }
+
+  return style;
 }
