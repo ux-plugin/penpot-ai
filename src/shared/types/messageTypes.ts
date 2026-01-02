@@ -32,7 +32,8 @@ export enum SystemMessageType {
   SYNC_CANVAS = 'sync_canvas',
   UPDATE_VIEWPORT = 'update_viewport',
   GET_VIEWPORT_BOUNDS = 'get_viewport_bounds',
-  GET_ALL_NODES = 'get_all_nodes'
+  GET_ALL_NODES = 'get_all_nodes',
+  EXPORT_NODE_SVGS = 'export_node_svgs'
 }
 
 // Base message request interface
@@ -450,7 +451,9 @@ export interface GetViewportBoundsResponse extends MessageResponse {
 export interface GetAllNodesRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.GET_ALL_NODES;
-  payload: {};
+  payload: {
+    includeSVG?: boolean;
+  };
 }
 
 export interface GetAllNodesResponse extends MessageResponse {
@@ -459,6 +462,22 @@ export interface GetAllNodesResponse extends MessageResponse {
   result: {
     nodes: DesignNode[];
     totalCount: number;
+  };
+}
+
+export interface ExportNodeSVGsRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.EXPORT_NODE_SVGS;
+  payload: {
+    nodeIds: string[];
+  };
+}
+
+export interface ExportNodeSVGsResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.EXPORT_NODE_SVGS;
+  result: {
+    svgs: Array<{ nodeId: string; svg: string | Uint8Array | null }>;
   };
 }
 
@@ -486,7 +505,8 @@ export type Request =
   | SyncCanvasRequest
   | UpdateViewportRequest
   | GetViewportBoundsRequest
-  | GetAllNodesRequest;
+  | GetAllNodesRequest
+  | ExportNodeSVGsRequest;
 
 // All response types
 export type Response = 
@@ -508,7 +528,8 @@ export type Response =
   | SyncCanvasResponse
   | UpdateViewportResponse
   | GetViewportBoundsResponse
-  | GetAllNodesResponse;
+  | GetAllNodesResponse
+  | ExportNodeSVGsResponse;
 
 
 // Union of all message types
@@ -595,6 +616,10 @@ export type RequestToResponseMap = {
   [SystemMessageType.GET_ALL_NODES]: {
     request: GetAllNodesRequest;
     response: GetAllNodesResponse;
+  };
+  [SystemMessageType.EXPORT_NODE_SVGS]: {
+    request: ExportNodeSVGsRequest;
+    response: ExportNodeSVGsResponse;
   };
 };
 

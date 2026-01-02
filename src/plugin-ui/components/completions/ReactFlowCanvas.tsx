@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react";
 import '@xyflow/react/dist/style.css';
 import { syncCanvasWithFigma } from '@/plugin-ui/utils/syncCanvas';
-import { loadAllNodes } from '@/plugin-ui/utils/loadNodes';
+import { loadAllNodes, loadNodeSVGs } from '@/plugin-ui/utils/loadNodes';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
 import {
   MessageCategory,
@@ -30,7 +30,7 @@ import {
   ReactFlowTextNode,
 } from "@/plugin-ui/components/nodes";
 import { DesignNode } from "@shared-types/types.ts";
-import { parseSVGToProps } from "@utils/figmaStyleConversions.tsx";
+import { parseSVGToElement } from "@utils/figmaStyleConversions.tsx";
 
 interface ReactFlowCanvasProps {
   topRightContent?: React.ReactNode;
@@ -46,8 +46,8 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   topLeftContent,
 }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState<DesignNode>([]);
-  const [edges, ,onEdgesChange] = useEdgesState<Edge>([]);
-  const currentViewport = useRef<Viewport>({x: 0, y:0, zoom: 1} as Viewport);
+  const [edges, , onEdgesChange] = useEdgesState<Edge>([]);
+  const currentViewport = useRef<Viewport>({ x: 0, y: 0, zoom: 1 } as Viewport);
   const reactFlowInstance = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
   const hasSynced = useRef(false);
@@ -61,23 +61,78 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
     figmaNode: ReactFlowFrameNode,
     textNode: ReactFlowTextNode
   }), []);
-  
-  // Load all nodes from Figma
+
+  // Load all nodes from Figma with progressive rendering
   const loadNodes = useCallback(async () => {
     try {
-      const result = await loadAllNodes();
+      // Phase 1: Load nodes with basic properties only (fast, no SVG)
+      console.log('[ReactFlowCanvas] Loading nodes with basic properties...');
+      const result = await loadAllNodes(false);
 
       const newNodes = result.nodes.map((node) => {
-        if (node.type === "textNode") {
-          node.data.svgElement =
-            parseSVGToProps(node.data.svg) ?? undefined;
-        }
+        // Ensure nodes are selectable
+        node.selectable = true;
         return node;
       });
 
-      // Use pre-transformed ReactFlow nodes from the platform
+      // Render nodes immediately with basic properties
       setNodes(newNodes);
-      
+      console.log(`[ReactFlowCanvas] ${newNodes.length} nodes rendered with basic properties`);
+
+      // Phase 2: Load SVGs in parallel and update nodes progressively
+      if (newNodes.length > 0) {
+        console.log('[ReactFlowCanvas] Loading SVGs in parallel...');
+        const nodeIds = newNodes.map(node => node.id);
+
+        try {
+          const svgResults = await loadNodeSVGs(nodeIds);
+
+          // Update nodes with SVGs
+          setNodes((currentNodes) => {
+            return currentNodes.map((node) => {
+              const svgResult = svgResults.find(s => s.nodeId === node.id);
+              if (svgResult && svgResult.svg !== null) {
+                // Handle different node types
+                if (node.type === 'figmaNode') {
+                  // Frame nodes can have Uint8Array or string SVG
+                  const updatedNode: DesignNode = {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      svg: svgResult.svg,
+                    },
+                  };
+                  if (updatedNode.data.svg) {
+                    updatedNode.data.svgElement = parseSVGToElement(updatedNode.data.svg) ?? undefined;
+                  }
+                  return updatedNode;
+                } else if (node.type === 'textNode') {
+                  // Text nodes should have string SVG
+                  const updatedNode: DesignNode = {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      svg: typeof svgResult.svg === 'string' ? svgResult.svg : undefined,
+                    },
+                  };
+                  if (updatedNode.data.svg) {
+                    updatedNode.data.svgElement = parseSVGToElement(updatedNode.data.svg) ?? undefined;
+                  }
+                  return updatedNode;
+                }
+              }
+              return node;
+            });
+          });
+
+          const svgCount = svgResults.filter(s => s.svg !== null).length;
+          console.log(`[ReactFlowCanvas] Updated ${svgCount} nodes with SVGs`);
+        } catch (svgError) {
+          console.error('[ReactFlowCanvas] Failed to load SVGs:', svgError);
+          // Continue with nodes that don't have SVGs
+        }
+      }
+
       console.log('[ReactFlowCanvas] Nodes loaded successfully');
     } catch (error) {
       console.error('[ReactFlowCanvas] Failed to load nodes:', error);
@@ -107,7 +162,7 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
 
     const { x, y, zoom } = viewport;
     const oldZoom = currentViewport.current.zoom;
-    
+
     // Detect if this is a zoom operation (zoom changed) or a pan operation (only x/y changed)
     const isZoomOperation = Math.abs(zoom - oldZoom) > 0.0001;
 
@@ -117,12 +172,12 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
       x: -currentViewport.current.x / currentViewport.current.zoom,
       y: -currentViewport.current.y / currentViewport.current.zoom
     };
-    
+
     const newCanvasPos = {
       x: -x / zoom,
       y: -y / zoom
     };
-    
+
     // Calculate delta in canvas space (zoom-independent)
     const canvasDelta = {
       x: newCanvasPos.x - oldCanvasPos.x,
@@ -133,23 +188,23 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
     (async () => {
       try {
         let zoomFocalPoint: { x: number; y: number } | undefined;
-        
+
         if (isZoomOperation && lastMousePosition.current && containerRef.current) {
           // Get the container's bounding rectangle
           const containerRect = containerRef.current.getBoundingClientRect();
-          
+
           // Convert screen mouse position to position relative to ReactFlow container
           const relativeX = lastMousePosition.current.x - containerRect.left;
           const relativeY = lastMousePosition.current.y - containerRect.top;
-          
+
           // Convert screen position to canvas coordinates using the OLD viewport
           // Formula: canvasPos = screenPos / oldZoom + topLeftCanvasPos
           const mouseFocalPointX = relativeX / oldZoom + oldCanvasPos.x;
           const mouseFocalPointY = relativeY / oldZoom + oldCanvasPos.y;
-          
+
           zoomFocalPoint = { x: mouseFocalPointX, y: mouseFocalPointY };
         }
-        
+
         // Send update to Figma
         await uiMessageDispatcher.sendRequest<
           Omit<UpdateViewportRequest, 'id' | 'timestamp' | 'source'>,
@@ -182,7 +237,7 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         try {
           const newViewport = await syncCanvasWithFigma()
 
-          reactFlowInstance.setViewport( newViewport );
+          reactFlowInstance.setViewport(newViewport);
           currentViewport.current = newViewport;
           hasSynced.current = true;
         } catch (error) {
@@ -225,7 +280,7 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
       try {
         isSyncingFromFigma.current = true;
         const newViewport = await syncCanvasWithFigma()
-        reactFlowInstance.setViewport( newViewport );
+        reactFlowInstance.setViewport(newViewport);
         currentViewport.current = newViewport;
         hasSynced.current = true;
       } catch (error) {
@@ -245,7 +300,7 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
             // Set flag to prevent onMove from updating Figma during sync
             isSyncingFromFigma.current = true;
             const newViewport = await syncCanvasWithFigma()
-            reactFlowInstance.setViewport( newViewport );
+            reactFlowInstance.setViewport(newViewport);
             currentViewport.current = newViewport;
             hasSynced.current = true;
           } catch (error) {
@@ -287,7 +342,7 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         fitView={false}
         minZoom={0.02}
         maxZoom={256}
-        draggable={false}
+        nodesDraggable={false}
         proOptions={{ hideAttribution: true }}
       >
         <Background

@@ -37,7 +37,8 @@ export interface IDesignPlatform {
   getNodeByIdAsync: (id: string) => Promise<any>;
   createFrame: () => any;
   createRectangle: () => any;
-  getAllNodes: () => Promise<DesignNode[]>;
+  getAllNodes: (includeSVG?: boolean) => Promise<DesignNode[]>;
+  exportNodeSVGs?: (nodeIds: string[]) => Promise<Array<{ nodeId: string; svg: string | Uint8Array | null }>>;
   
   // Selection & Events
   currentPage: {

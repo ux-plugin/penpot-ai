@@ -39,12 +39,12 @@ export class FigmaImplementation implements IDesignPlatform {
   };
 
   /**
-   * Extract all properties from a Figma FrameNode, ComponentNode, or ComponentSetNode (without processing children)
+   * Extract basic properties from a Figma FrameNode, ComponentNode, or ComponentSetNode (without SVG)
    */
-  private async extractFrameNodeProperties(
+  private extractFrameNodeBasicProperties(
     frameNode: FrameNode | ComponentNode | ComponentSetNode,
     parentId?: string,
-  ): Promise<ReactFlowFrameNodeType> {
+  ): ReactFlowFrameNodeType {
     // Normalize strokeWeight to always be an object with 4 values
     let normalizedStrokeWeight:
       | { top: number; right: number; bottom: number; left: number }
@@ -95,17 +95,6 @@ export class FigmaImplementation implements IDesignPlatform {
         };
       }
     }
-
-    // Measure SVG export time
-    const svgExportStartTime = Date.now();
-    const svg = await frameNode.exportAsync({
-      format: "SVG",
-    });
-    const svgExportEndTime = Date.now();
-    const svgExportDuration = svgExportEndTime - svgExportStartTime;
-    console.log(
-      `[SVG Export] Frame node "${frameNode.name}" (${frameNode.id}): ${svgExportDuration.toFixed(2)}ms`,
-    );
 
     return {
       id: frameNode.id,
@@ -160,8 +149,6 @@ export class FigmaImplementation implements IDesignPlatform {
 
         // Children - empty array, children are added to top level instead
         children: [],
-
-        svg: svg,
       },
       width: frameNode.width,
       height: frameNode.height,
@@ -171,12 +158,30 @@ export class FigmaImplementation implements IDesignPlatform {
   }
 
   /**
-   * Extract all properties from a Figma TextNode
+   * Export SVG for a FrameNode, ComponentNode, or ComponentSetNode
    */
-  private async extractTextProperties(
+  private async exportFrameNodeSVG(
+    frameNode: FrameNode | ComponentNode | ComponentSetNode,
+  ): Promise<Uint8Array> {
+    const svgExportStartTime = Date.now();
+    const svg = await frameNode.exportAsync({
+      format: "SVG",
+    });
+    const svgExportEndTime = Date.now();
+    const svgExportDuration = svgExportEndTime - svgExportStartTime;
+    console.log(
+      `[SVG Export] Frame node "${frameNode.name}" (${frameNode.id}): ${svgExportDuration.toFixed(2)}ms`,
+    );
+    return svg;
+  }
+
+  /**
+   * Extract basic properties from a Figma TextNode (without SVG)
+   */
+  private extractTextNodeBasicProperties(
     textNode: TextNode,
     parentId?: string,
-  ): Promise<TextNodeType> {
+  ): TextNodeType {
     // Extract styled text segments with all available properties
     const segments = textNode.getStyledTextSegments([
       "fontSize",
@@ -204,18 +209,6 @@ export class FigmaImplementation implements IDesignPlatform {
       "boundVariables",
       "textStyleOverrides",
     ]);
-
-    // Measure SVG export time
-    const svgExportStartTime = Date.now();
-    const svg = await textNode.exportAsync({
-      format: "SVG_STRING",
-      svgOutlineText: true,
-    });
-    const svgExportEndTime = Date.now();
-    const svgExportDuration = svgExportEndTime - svgExportStartTime;
-    console.log(
-      `[SVG Export] Text node "${textNode.name}" (${textNode.id}): ${svgExportDuration.toFixed(2)}ms`,
-    );
 
     return {
       id: textNode.id,
@@ -255,8 +248,6 @@ export class FigmaImplementation implements IDesignPlatform {
 
         // Styled text segments - each segment has its own styles
         segments: segments,
-
-        svg: svg,
       },
       width: textNode.width,
       height: textNode.height,
@@ -266,18 +257,45 @@ export class FigmaImplementation implements IDesignPlatform {
   }
 
   /**
-   * Get all nodes (frames and texts) from the current page - top level only
+   * Export SVG for a TextNode
    */
-  getAllNodes = async (): Promise<DesignNode[]> => {
+  private async exportTextNodeSVG(textNode: TextNode): Promise<string> {
+    const svgExportStartTime = Date.now();
+    const svg = await textNode.exportAsync({
+      format: "SVG_STRING",
+      svgOutlineText: true,
+    });
+    const svgExportEndTime = Date.now();
+    const svgExportDuration = svgExportEndTime - svgExportStartTime;
+    console.log(
+      `[SVG Export] Text node "${textNode.name}" (${textNode.id}): ${svgExportDuration.toFixed(2)}ms`,
+    );
+    return svg;
+  }
+
+  /**
+   * Get all nodes (frames and texts) from the current page - top level only
+   * Extracts basic properties first (without SVG) for faster initial rendering
+   */
+  getAllNodes = async (includeSVG: boolean = false): Promise<DesignNode[]> => {
     const nodes: DesignNode[] = [];
     const currentPageChildren = figma.currentPage.children;
 
-    await this.transformNodesToDesignNodes(currentPageChildren, nodes);
+    // First pass: Extract all basic properties (fast, synchronous)
+    this.transformNodesToDesignNodesBasic(currentPageChildren, nodes);
+
+    // Second pass: Export SVGs in parallel if requested
+    if (includeSVG) {
+      await this.addSVGsToNodes(nodes);
+    }
 
     return nodes;
   };
 
-  private async transformNodesToDesignNodes(
+  /**
+   * Transform nodes to DesignNodes with basic properties only (no SVG)
+   */
+  private transformNodesToDesignNodesBasic(
     currentPageChildren: ReadonlyArray<SceneNode>,
     nodes: DesignNode[],
     parentId?: string,
@@ -290,15 +308,100 @@ export class FigmaImplementation implements IDesignPlatform {
       ) {
         const frameNode = child as FrameNode | ComponentNode | ComponentSetNode;
         // Add the frame/component to the flat array (without processing children)
-        nodes.push(await this.extractFrameNodeProperties(frameNode, parentId));
+        nodes.push(this.extractFrameNodeBasicProperties(frameNode, parentId));
       } else if (child.type === "TEXT") {
         // Add the text node to the flat array
         nodes.push(
-          await this.extractTextProperties(child as TextNode, parentId),
+          this.extractTextNodeBasicProperties(child as TextNode, parentId),
         );
       }
     }
   }
+
+  /**
+   * Add SVGs to nodes in parallel
+   */
+  private async addSVGsToNodes(nodes: DesignNode[]): Promise<void> {
+    const svgPromises = nodes.map(async (node) => {
+      try {
+        const figmaNode = await figma.getNodeByIdAsync(node.id);
+        if (!figmaNode) {
+          console.warn(
+            `[FigmaImplementation] Node ${node.id} not found for SVG export`,
+          );
+          return;
+        }
+
+        if (
+          figmaNode.type === "FRAME" ||
+          figmaNode.type === "COMPONENT" ||
+          figmaNode.type === "COMPONENT_SET"
+        ) {
+          const svg = await this.exportFrameNodeSVG(
+            figmaNode as FrameNode | ComponentNode | ComponentSetNode,
+          );
+          if (node.type === "figmaNode") {
+            node.data.svg = svg;
+          }
+        } else if (figmaNode.type === "TEXT") {
+          const svg = await this.exportTextNodeSVG(figmaNode as TextNode);
+          if (node.type === "textNode") {
+            node.data.svg = svg;
+          }
+        }
+      } catch (error) {
+        console.error(
+          `[FigmaImplementation] Failed to export SVG for node ${node.id}:`,
+          error,
+        );
+      }
+    });
+
+    await Promise.all(svgPromises);
+  }
+
+  /**
+   * Export SVGs for specific node IDs in parallel
+   */
+  exportNodeSVGs = async (
+    nodeIds: string[],
+  ): Promise<Array<{ nodeId: string; svg: string | Uint8Array | null }>> => {
+    const svgPromises = nodeIds.map(async (nodeId) => {
+      try {
+        const figmaNode = await figma.getNodeByIdAsync(nodeId);
+        if (!figmaNode) {
+          console.warn(
+            `[FigmaImplementation] Node ${nodeId} not found for SVG export`,
+          );
+          return { nodeId, svg: null };
+        }
+
+        if (
+          figmaNode.type === "FRAME" ||
+          figmaNode.type === "COMPONENT" ||
+          figmaNode.type === "COMPONENT_SET"
+        ) {
+          const svg = await this.exportFrameNodeSVG(
+            figmaNode as FrameNode | ComponentNode | ComponentSetNode,
+          );
+          return { nodeId, svg };
+        } else if (figmaNode.type === "TEXT") {
+          const svg = await this.exportTextNodeSVG(figmaNode as TextNode);
+          return { nodeId, svg };
+        }
+
+        return { nodeId, svg: null };
+      } catch (error) {
+        console.error(
+          `[FigmaImplementation] Failed to export SVG for node ${nodeId}:`,
+          error,
+        );
+        return { nodeId, svg: null };
+      }
+    });
+
+    return Promise.all(svgPromises);
+  };
 
   currentPage = {
     get selection() {

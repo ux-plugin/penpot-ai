@@ -28,6 +28,8 @@ import {
   GetViewportBoundsResponse,
   GetAllNodesRequest,
   GetAllNodesResponse,
+  ExportNodeSVGsRequest,
+  ExportNodeSVGsResponse,
   Message,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
@@ -425,17 +427,42 @@ codeMessageDispatcher.registerHandler<
   >(
     MessageCategory.SYSTEM,
     SystemMessageType.GET_ALL_NODES,
-    async (_: GetAllNodesRequest): Promise<ExtractResultType<GetAllNodesResponse>> => {
-      console.log('[CODE] GetAllNodes request received');
+    async (request: GetAllNodesRequest): Promise<ExtractResultType<GetAllNodesResponse>> => {
+      console.log('[CODE] GetAllNodes request received', { includeSVG: request.payload.includeSVG });
       
-      // Get all nodes from the platform implementation (with hierarchy preserved)
-      const nodes = await commands.getAllNodes();
+      // Get all nodes from the platform implementation (with optional SVG)
+      const nodes = await commands.getAllNodes(request.payload.includeSVG ?? false);
       
       // Return structured response with exact type
       return {
         nodes,
         totalCount: nodes.length
       };
+    }
+  );
+
+  codeMessageDispatcher.registerHandler<
+    ExportNodeSVGsRequest,
+    ExtractResultType<ExportNodeSVGsResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.EXPORT_NODE_SVGS,
+    async (request: ExportNodeSVGsRequest): Promise<ExtractResultType<ExportNodeSVGsResponse>> => {
+      console.log('[CODE] ExportNodeSVGs request received', { nodeIds: request.payload.nodeIds.length });
+      
+      // Export SVGs in parallel using the platform implementation
+      if (commands.exportNodeSVGs) {
+        const svgs = await commands.exportNodeSVGs(request.payload.nodeIds);
+        return {
+          svgs
+        };
+      } else {
+        // Fallback: return empty array if method not available
+        console.warn('[CODE] exportNodeSVGs not available on platform');
+        return {
+          svgs: request.payload.nodeIds.map(nodeId => ({ nodeId, svg: null }))
+        };
+      }
     }
   );
 })();
