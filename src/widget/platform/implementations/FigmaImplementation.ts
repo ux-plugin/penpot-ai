@@ -42,7 +42,7 @@ export class FigmaImplementation implements IDesignPlatform {
   /**
    * Extract all properties from a Figma FrameNode, ComponentNode, or ComponentSetNode (without processing children)
    */
-  private extractFrameNodeProperties(frameNode: FrameNode | ComponentNode | ComponentSetNode, parentId?: string): ReactFlowFrameNodeType {
+  private async extractFrameNodeProperties(frameNode: FrameNode | ComponentNode | ComponentSetNode, parentId?: string): Promise<ReactFlowFrameNodeType> {
     // Normalize strokeWeight to always be an object with 4 values
     let normalizedStrokeWeight:
       | { top: number; right: number; bottom: number; left: number }
@@ -93,6 +93,15 @@ export class FigmaImplementation implements IDesignPlatform {
         };
       }
     }
+
+    // Measure SVG export time
+    const svgExportStartTime = performance.now();
+    const svg = await frameNode.exportAsync({
+      format: "SVG"
+    });
+    const svgExportEndTime = performance.now();
+    const svgExportDuration = svgExportEndTime - svgExportStartTime;
+    console.log(`[SVG Export] Frame node "${frameNode.name}" (${frameNode.id}): ${svgExportDuration.toFixed(2)}ms`);
 
     return {
       id: frameNode.id,
@@ -148,6 +157,7 @@ export class FigmaImplementation implements IDesignPlatform {
         // Children - empty array, children are added to top level instead
         children: [],
 
+        svg: svg
       },
       width: frameNode.width,
       height: frameNode.height,
@@ -188,6 +198,16 @@ export class FigmaImplementation implements IDesignPlatform {
       'textStyleOverrides',
     ]);
 
+    // Measure SVG export time
+    const svgExportStartTime = performance.now();
+    const svg = await textNode.exportAsync({
+      format: "SVG_STRING",
+      svgOutlineText: true,
+    });
+    const svgExportEndTime = performance.now();
+    const svgExportDuration = svgExportEndTime - svgExportStartTime;
+    console.log(`[SVG Export] Text node "${textNode.name}" (${textNode.id}): ${svgExportDuration.toFixed(2)}ms`);
+
     return {
       id: textNode.id,
       type: "textNode" as const,
@@ -227,10 +247,7 @@ export class FigmaImplementation implements IDesignPlatform {
         // Styled text segments - each segment has its own styles
         segments: segments,
 
-        svg: await textNode.exportAsync({
-          format: "SVG_STRING",
-          svgOutlineText: true,
-        }),
+        svg: svg,
       },
       width: textNode.width,
       height: textNode.height,
@@ -240,7 +257,7 @@ export class FigmaImplementation implements IDesignPlatform {
   }
 
   /**
-   * Get all nodes (frames and texts) from the current page with hierarchy preserved
+   * Get all nodes (frames and texts) from the current page - top level only
    */
   getAllNodes = async (): Promise<DesignNode[]> => {
     const nodes: DesignNode[] = [];
@@ -255,10 +272,8 @@ export class FigmaImplementation implements IDesignPlatform {
     for (const child of currentPageChildren) {
       if (child.type === "FRAME" || child.type === "COMPONENT" || child.type === "COMPONENT_SET") {
         const frameNode = child as FrameNode | ComponentNode | ComponentSetNode;
-        // Add the frame/component to the flat array
-        nodes.push(this.extractFrameNodeProperties(frameNode, parentId));
-        // Recursively process children and add them to the flat array
-        await this.transformNodesToDesignNodes(frameNode.children, nodes, frameNode.id);
+        // Add the frame/component to the flat array (without processing children)
+        nodes.push(await this.extractFrameNodeProperties(frameNode, parentId));
       } else if (child.type === "TEXT") {
         // Add the text node to the flat array
         nodes.push(await this.extractTextProperties(child as TextNode, parentId));
