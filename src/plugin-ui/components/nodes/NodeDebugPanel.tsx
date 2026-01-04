@@ -30,7 +30,7 @@ export const NodeDebugPanel: React.FC<NodeDebugPanelProps> = ({ nodes, isOpen, o
   // Filter nodes based on search query
   const filteredNodes = useMemo(() => {
     if (!searchQuery.trim()) return nodes;
-    
+
     const query = searchQuery.toLowerCase();
     return nodes.filter(node => {
       const name = (node.data?.name || node.data?.label || node.id).toString().toLowerCase();
@@ -48,6 +48,7 @@ export const NodeDebugPanel: React.FC<NodeDebugPanelProps> = ({ nodes, isOpen, o
   const getNodeTypeLabel = (node: DesignNode) => {
     if (node.type === 'figmaNode') return 'Frame';
     if (node.type === 'textNode') return 'Text';
+    if (node.type === 'svgNode') return 'SVG';
     return 'Unknown';
   };
 

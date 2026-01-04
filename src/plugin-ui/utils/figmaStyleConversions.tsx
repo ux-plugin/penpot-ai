@@ -295,12 +295,14 @@ export function convertFrameNodeToCSS(nodeData: FrameNodeData): React.CSSPropert
       if (strokeAlign === 'CENTER') {
         style.border = `${top}px solid ${strokeColor}`;
       } else if (strokeAlign === 'INSIDE') {
-        style.border = `${top}px solid ${strokeColor}`;
-        style.boxSizing = 'border-box';
+        // For INSIDE strokes, Figma draws the stroke inside the bounds without changing visual size
+        // Use inset box-shadow to draw inside without affecting layout dimensions
+        // This matches Figma's behavior where INSIDE stroke doesn't change the visual size
+        style.boxShadow = `inset 0 0 0 ${top}px ${strokeColor}`;
       } else {
-        // OUTSIDE - use outline instead
-        style.outline = `${top}px solid ${strokeColor}`;
-        style.outlineOffset = `-${top}px`;
+        // OUTSIDE - use box-shadow with spread to draw outside the bounds
+        // This better matches Figma's OUTSIDE stroke rendering than outline
+        style.boxShadow = `0 0 0 ${top}px ${strokeColor}`;
       }
     } else if (!isUniform) {
       // Non-uniform strokes are complex, but we can approximate with border
@@ -327,7 +329,14 @@ export function convertFrameNodeToCSS(nodeData: FrameNodeData): React.CSSPropert
   // Handle effects (simple shadows only)
   const effects = convertEffectsToCSS(nodeData.effects);
   if (effects.boxShadow) {
-    style.boxShadow = effects.boxShadow;
+    // Combine stroke boxShadow (if exists) with effect boxShadow
+    // Stroke boxShadow uses inset for INSIDE strokes, effects use regular shadows
+    if (style.boxShadow) {
+      // Combine both shadows: stroke (inset) first, then effect shadows
+      style.boxShadow = `${style.boxShadow}, ${effects.boxShadow}`;
+    } else {
+      style.boxShadow = effects.boxShadow;
+    }
   }
   if (effects.filter) {
     // Note: CSS filters may not perfectly match Figma effects

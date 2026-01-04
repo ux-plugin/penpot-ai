@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react";
 import '@xyflow/react/dist/style.css';
 import { syncCanvasWithFigma } from '@/plugin-ui/utils/syncCanvas';
-import { loadAllNodes, loadNodeSVGs } from '@/plugin-ui/utils/loadNodes';
+import { loadAllNodes } from '@/plugin-ui/utils/loadNodes';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
 import {
   MessageCategory,
@@ -28,9 +28,9 @@ import {
 import {
   ReactFlowFrameNode,
   ReactFlowTextNode,
+  ReactFlowSVGNode,
 } from "@/plugin-ui/components/nodes";
 import { DesignNode } from "@shared-types/types.ts";
-import { parseSVGToElement } from "@utils/figmaStyleConversions.tsx";
 
 interface ReactFlowCanvasProps {
   topRightContent?: React.ReactNode;
@@ -59,13 +59,15 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
 
   const nodeTypes = React.useMemo(() => ({
     figmaNode: ReactFlowFrameNode,
-    textNode: ReactFlowTextNode
+    textNode: ReactFlowTextNode,
+    svgNode: ReactFlowSVGNode
   }), []);
 
-  // Load all nodes from Figma with progressive rendering
+  // Load all nodes from Figma (SVGs are loaded lazily by individual node components)
   const loadNodes = useCallback(async () => {
     try {
-      // Phase 1: Load nodes with basic properties only (fast, no SVG)
+      // Load nodes with basic properties only (fast, no SVG)
+      // SVGs will be loaded on-demand by individual node components when they render
       console.log('[ReactFlowCanvas] Loading nodes with basic properties...');
       const result = await loadAllNodes(false);
 
@@ -76,62 +78,9 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
       });
 
       // Render nodes immediately with basic properties
+      // Nodes with renderMode === 'svg' will request their SVG via useLazySVG hook
       setNodes(newNodes);
-      console.log(`[ReactFlowCanvas] ${newNodes.length} nodes rendered with basic properties`);
-
-      // Phase 2: Load SVGs in parallel and update nodes progressively
-      if (newNodes.length > 0) {
-        console.log('[ReactFlowCanvas] Loading SVGs in parallel...');
-        const nodeIds = newNodes.map(node => node.id);
-
-        try {
-          const svgResults = await loadNodeSVGs(nodeIds);
-
-          // Update nodes with SVGs
-          setNodes((currentNodes) => {
-            return currentNodes.map((node) => {
-              const svgResult = svgResults.find(s => s.nodeId === node.id);
-              if (svgResult && svgResult.svg !== null) {
-                // Handle different node types
-                if (node.type === 'figmaNode') {
-                  // Frame nodes can have Uint8Array or string SVG
-                  const updatedNode: DesignNode = {
-                    ...node,
-                    data: {
-                      ...node.data,
-                      svg: svgResult.svg,
-                    },
-                  };
-                  if (updatedNode.data.svg) {
-                    updatedNode.data.svgElement = parseSVGToElement(updatedNode.data.svg) ?? undefined;
-                  }
-                  return updatedNode;
-                } else if (node.type === 'textNode') {
-                  // Text nodes should have string SVG
-                  const updatedNode: DesignNode = {
-                    ...node,
-                    data: {
-                      ...node.data,
-                      svg: typeof svgResult.svg === 'string' ? svgResult.svg : undefined,
-                    },
-                  };
-                  if (updatedNode.data.svg) {
-                    updatedNode.data.svgElement = parseSVGToElement(updatedNode.data.svg) ?? undefined;
-                  }
-                  return updatedNode;
-                }
-              }
-              return node;
-            });
-          });
-
-          const svgCount = svgResults.filter(s => s.svg !== null).length;
-          console.log(`[ReactFlowCanvas] Updated ${svgCount} nodes with SVGs`);
-        } catch (svgError) {
-          console.error('[ReactFlowCanvas] Failed to load SVGs:', svgError);
-          // Continue with nodes that don't have SVGs
-        }
-      }
+      console.log(`[ReactFlowCanvas] ${newNodes.length} nodes rendered with basic properties. SVGs will load on-demand.`);
 
       console.log('[ReactFlowCanvas] Nodes loaded successfully');
     } catch (error) {

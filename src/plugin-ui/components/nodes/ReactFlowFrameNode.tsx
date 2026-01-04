@@ -7,6 +7,8 @@ import {
   convertSVGToString,
   convertFrameNodeToCSS,
 } from "@utils/figmaStyleConversions.tsx";
+import { useLazySVG } from "@/plugin-ui/hooks/useLazySVG";
+import { SpinnerOverlay } from "@ui/spinner";
 
 /**
  * React Flow Frame Node Component
@@ -18,7 +20,7 @@ import {
  * @returns A minimal node component with handles for connections
  */
 export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>) => {
-  const { data, width = 150, positionAbsoluteX, positionAbsoluteY, parentId } = props;
+  const { id, data, width = 150, height = 150, positionAbsoluteX, positionAbsoluteY, parentId } = props;
   const svgContainerRef = useRef<HTMLDivElement>(null);
 
   // Parse SVG element if available
@@ -78,10 +80,6 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
   const name = data?.name ?? label;
   const nodeType = data?.nodeType ?? 'FRAME';
 
-  // Dimensions
-  const nodeWidth = data?.width ?? width;
-  const nodeHeight = data?.height;
-
   console.log(`[ReactFlowFrameNode] Rendering ${nodeType} node "${label}" at position:`, {
     x: positionAbsoluteX,
     y: positionAbsoluteY,
@@ -89,8 +87,8 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
     name,
     nodeType,
     rotation,
-    width: nodeWidth,
-    height: nodeHeight,
+    width: width,
+    height: height,
     hasSvg: !!svgElement || !!svgString,
     parentId,
   });
@@ -100,14 +98,20 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
   // Default to 'css' if not set (shouldn't happen after tree traversal)
   const renderMode = data?.renderMode || 'css';
 
+  // Check if node has SVG
+  const hasSVG = !!(svgElement || svgString);
+
+  // Lazy load SVG if needed
+  const { isLoading: isLoadingSVG } = useLazySVG(id, renderMode, hasSVG);
+
   // Handle bounding-box mode (descendants of SVG nodes)
   if (renderMode === 'bounding-box') {
     return (
       <div
         className="border border-transparent transition-colors duration-200 hover:border-blue-500"
         style={{
-          width: nodeWidth,
-          height: nodeHeight,
+          width: width,
+          height: height,
           transform: `rotate(${rotation}deg)`,
         }}
         data-fill-style-id={typeof data?.fillStyleId === 'string' ? data.fillStyleId : undefined}
@@ -130,23 +134,27 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
   }
 
   // Handle SVG rendering mode
-  if (renderMode === 'svg' && (svgElement || svgString)) {
+  if (renderMode === 'svg') {
     return (
       <div
         style={{
-          width: nodeWidth,
-          height: nodeHeight,
+          width: width,
+          height: height,
           transform: `rotate(${rotation}deg)`,
+          position: 'relative',
         }}
         data-render-mode="svg"
       >
-        <div
-          ref={svgContainerRef}
-          style={{
-            width: '100%',
-            height: '100%',
-          }}
-        />
+        {(svgElement || svgString) && (
+          <div
+            ref={svgContainerRef}
+            style={{
+              width: '100%',
+              height: '100%',
+            }}
+          />
+        )}
+        {isLoadingSVG && <SpinnerOverlay />}
         <HandleComponent
           type="target"
           position={PositionEnum.Top}

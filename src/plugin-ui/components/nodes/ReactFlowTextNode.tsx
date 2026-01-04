@@ -6,12 +6,14 @@ import {
   parseSVGToElement,
   convertSVGToString,
 } from "@utils/figmaStyleConversions";
+import { useLazySVG } from "@/plugin-ui/hooks/useLazySVG";
+import { SpinnerOverlay } from "@ui/spinner";
 
 /**
  * React Flow Text Node Component
  */
 export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
-  const { data, width, height, positionAbsoluteX, positionAbsoluteY, parentId } = props;
+  const { id, data, width, height, positionAbsoluteX, positionAbsoluteY, parentId } = props;
   const svgContainerRef = useRef<HTMLDivElement>(null);
 
   // Parse SVG element if available
@@ -90,6 +92,12 @@ export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
   // Default to 'svg' if not set (text nodes typically always use SVG)
   const renderMode = data?.renderMode || 'svg';
 
+  // Check if node has SVG
+  const hasSVG = !!(svgElement || svgString);
+
+  // Lazy load SVG if needed
+  const { isLoading: isLoadingSVG } = useLazySVG(id, renderMode, hasSVG);
+
   // Handle bounding-box mode (descendants of SVG nodes)
   if (renderMode === 'bounding-box') {
     return (
@@ -111,30 +119,49 @@ export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
   }
 
   // Handle SVG rendering mode (text nodes typically use SVG)
-  if (renderMode === 'svg' && (svgElement || svgString)) {
+  if (renderMode === 'svg') {
     return (
       <div
         style={{
           width: width,
           height: height,
           transform: `rotate(${rotation}deg)`,
+          position: 'relative',
         }}
         data-stroke-style-id={data?.strokeStyleId}
         data-effect-style-id={data?.effectStyleId}
         data-render-mode="svg"
       >
-        <div
-          ref={svgContainerRef}
-          style={{
-            width: '100%',
-            height: '100%',
-          }}
-        />
+        {(svgElement || svgString) && (
+          <div
+            ref={svgContainerRef}
+            style={{
+              width: '100%',
+              height: '100%',
+            }}
+          />
+        )}
+        {isLoadingSVG && <SpinnerOverlay />}
         <HandleComponent type="target" position={PositionEnum.Top} style={{ opacity: 0 }} />
         <HandleComponent type="source" position={PositionEnum.Bottom} style={{ opacity: 0 }} />
       </div>
     );
   }
+
+  // Fallback: if no SVG available, render text with CSS (shouldn't happen but provides fallback)
+  return (
+    <div
+      style={{
+        width: width,
+        height: height,
+        transform: `rotate(${rotation}deg)`,
+      }}
+      data-render-mode="fallback"
+    >
+      <HandleComponent type="target" position={PositionEnum.Top} style={{ opacity: 0 }} />
+      <HandleComponent type="source" position={PositionEnum.Bottom} style={{ opacity: 0 }} />
+    </div>
+  );
 });
 
 ReactFlowTextNode.displayName = "ReactFlowTextNode";

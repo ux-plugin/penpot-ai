@@ -1,6 +1,10 @@
 import { IDesignPlatform } from "@widget/platform";
 import type { DesignNode } from "@/shared/types/types";
-import { ReactFlowFrameNodeType, TextNodeType } from "@components/nodes";
+import {
+  ReactFlowFrameNodeType,
+  TextNodeType,
+  SVGNodeType,
+} from "@components/nodes";
 
 export class FigmaImplementation implements IDesignPlatform {
   ui = {
@@ -161,19 +165,58 @@ export class FigmaImplementation implements IDesignPlatform {
    * Export SVG for a FrameNode, ComponentNode, ComponentSetNode, GroupNode, or InstanceNode
    * Optimized with svgSimplifyStroke for faster export performance
    */
-  private async exportFrameNodeSVG(
-    frameNode:
-      | FrameNode
-      | ComponentNode
-      | ComponentSetNode
-      | GroupNode
-      | InstanceNode,
-  ): Promise<Uint8Array> {
-    const svg = await frameNode.exportAsync({
-      format: "SVG",
+  private async exportNodeToSVG(node: SceneNode): Promise<string> {
+    const svg = await node.exportAsync({
+      format: "SVG_STRING",
       svgSimplifyStroke: true, // Simplifies strokes for faster export
     });
     return svg;
+  }
+
+  /**
+   * Extract basic properties from a Figma SVG/Vector Node (without SVG)
+   * Handles BooleanOperationNode, LineNode, PolygonNode, RectangleNode, VectorNode
+   */
+  private extractSVGNodeBasicProperties(
+    svgNode:
+      | BooleanOperationNode
+      | LineNode
+      | PolygonNode
+      | RectangleNode
+      | VectorNode,
+    parentId?: string,
+  ): SVGNodeType {
+    return {
+      id: svgNode.id,
+      type: "svgNode",
+      parentId: parentId,
+      position: {
+        x: svgNode.x,
+        y: svgNode.y,
+      },
+      data: {
+        label: svgNode.name,
+        name: svgNode.name,
+        locked: svgNode.locked,
+        visible: svgNode.visible,
+        opacity: svgNode.opacity,
+        rotation: svgNode.rotation,
+        nodeType: svgNode.type as
+          | "BOOLEAN_OPERATION"
+          | "LINE"
+          | "POLYGON"
+          | "RECTANGLE"
+          | "VECTOR",
+
+        // Dimensions
+        width: svgNode.width,
+        height: svgNode.height,
+      },
+      width: svgNode.width,
+      height: svgNode.height,
+      draggable: false,
+      selectable: false,
+    };
   }
 
   /**
@@ -258,22 +301,14 @@ export class FigmaImplementation implements IDesignPlatform {
   }
 
   /**
-   * Export SVG for a TextNode
-   */
-  private async exportTextNodeSVG(textNode: TextNode): Promise<string> {
-    const svg = await textNode.exportAsync({
-      format: "SVG_STRING",
-      svgOutlineText: true,
-    });
-    return svg;
-  }
-
-  /**
    * Get all nodes (frames, components, texts, groups, instances) from the current page recursively
    * Extracts basic properties first (without SVG) for faster initial rendering
    * Recursively traverses all child nodes maintaining a flat array structure with parentId references
+   * SVG export is handled separately via exportNodeSVGs() for lazy loading
+   *
+   * @param _includeSVG - Kept for backward compatibility but ignored (SVGs load lazily)
    */
-  getAllNodes = async (includeSVG: boolean = false): Promise<DesignNode[]> => {
+  getAllNodes = async (_includeSVG: boolean = false): Promise<DesignNode[]> => {
     const nodes: DesignNode[] = [];
     const currentPageChildren = figma.currentPage.children;
 
@@ -283,10 +318,8 @@ export class FigmaImplementation implements IDesignPlatform {
     // Second pass: Propagate rendering modes through the tree
     this.propagateRenderingModes(nodes);
 
-    // Third pass: Export SVGs in parallel if requested
-    if (includeSVG) {
-      await this.addSVGsToNodes(nodes);
-    }
+    // SVG export is now handled lazily via exportNodeSVGs() when nodes render
+    // includeSVG parameter is kept for backward compatibility but ignored
 
     return nodes;
   };
@@ -326,6 +359,25 @@ export class FigmaImplementation implements IDesignPlatform {
         // Add the text node to the flat array
         nodes.push(
           this.extractTextNodeBasicProperties(child as TextNode, parentId),
+        );
+      } else if (
+        child.type === "BOOLEAN_OPERATION" ||
+        child.type === "LINE" ||
+        child.type === "POLYGON" ||
+        child.type === "RECTANGLE" ||
+        child.type === "VECTOR"
+      ) {
+        // Add SVG/vector nodes to the flat array
+        nodes.push(
+          this.extractSVGNodeBasicProperties(
+            child as
+              | BooleanOperationNode
+              | LineNode
+              | PolygonNode
+              | RectangleNode
+              | VectorNode,
+            parentId,
+          ),
         );
       } else if (child.type === "GROUP" || child.type === "INSTANCE") {
         // Handle GROUP and INSTANCE nodes - they can have children but may not have all frame properties
@@ -389,7 +441,6 @@ export class FigmaImplementation implements IDesignPlatform {
           );
         }
       }
-      // Note: Other node types (RECTANGLE, ELLIPSE, etc.) don't have children, so we skip them
     }
   }
 
@@ -422,16 +473,14 @@ export class FigmaImplementation implements IDesignPlatform {
       parentMode: "css" | "svg" | "bounding-box" | null,
     ): void => {
       // Determine rendering mode based on parent
-      if (parentMode === "svg") {
-        // If parent uses SVG, this node and all descendants become bounding boxes
-        if (node.type === "figmaNode") {
-          node.data.renderMode = "bounding-box";
-        } else if (node.type === "textNode") {
-          node.data.renderMode = "bounding-box";
-        }
+      if (parentMode === "svg" || parentMode === "bounding-box") {
+        node.data.renderMode = "bounding-box";
       } else {
-        // Text nodes always need SVG for accurate text rendering
-        if (node.type === "textNode") {
+        // SVG nodes always need SVG for accurate vector graphics rendering
+        if (node.type === "svgNode") {
+          node.data.renderMode = "svg";
+        } else if (node.type === "textNode") {
+          // Text nodes always need SVG for accurate text rendering
           node.data.renderMode = "svg";
         } else if (node.type === "figmaNode") {
           // For frame nodes, determine based on complexity
@@ -451,7 +500,9 @@ export class FigmaImplementation implements IDesignPlatform {
           ? node.data.renderMode
           : node.type === "textNode"
             ? node.data.renderMode
-            : "css"
+            : node.type === "svgNode"
+              ? node.data.renderMode
+              : "css"
       ) as "css" | "svg" | "bounding-box";
 
       // Process children recursively
@@ -474,8 +525,15 @@ export class FigmaImplementation implements IDesignPlatform {
    * Simple nodes can be rendered with CSS, complex nodes need SVG
    */
   private shouldExportSVG(node: DesignNode): boolean {
-    if (node.type !== "figmaNode") {
+    if (node.type === "svgNode") {
+      // SVG nodes always need SVG for accurate vector graphics rendering
+      return true;
+    }
+    if (node.type === "textNode") {
       // Text nodes always need SVG for accurate rendering
+      return true;
+    }
+    if (node.type !== "figmaNode") {
       return true;
     }
 
@@ -545,237 +603,25 @@ export class FigmaImplementation implements IDesignPlatform {
   }
 
   /**
-   * Add SVGs to nodes in parallel
-   * Only exports SVGs for nodes with renderMode === 'svg'
-   * Nodes with renderMode === 'css' or 'bounding-box' are skipped
-   */
-  private async addSVGsToNodes(nodes: DesignNode[]): Promise<void> {
-    // Filter to only nodes that need SVG export (renderMode === 'svg')
-    const nodesNeedingSVG = nodes.filter((node) => {
-      if (node.type === "figmaNode") {
-        return node.data.renderMode === "svg";
-      } else if (node.type === "textNode") {
-        return node.data.renderMode === "svg";
-      }
-      return false;
-    });
-
-    if (nodesNeedingSVG.length === 0) {
-      console.log("[SVG Export] No nodes need SVG export");
-      return;
-    }
-
-    const nodesUsingCSS = nodes.filter((node) => {
-      if (node.type === "figmaNode") {
-        return node.data.renderMode === "css";
-      } else if (node.type === "textNode") {
-        return node.data.renderMode === "css";
-      }
-      return false;
-    });
-
-    const nodesUsingBoundingBox = nodes.filter((node) => {
-      if (node.type === "figmaNode") {
-        return node.data.renderMode === "bounding-box";
-      } else if (node.type === "textNode") {
-        return node.data.renderMode === "bounding-box";
-      }
-      return false;
-    });
-
-    console.log(
-      `[SVG Export] ${nodesNeedingSVG.length} nodes need SVG export, ${nodesUsingCSS.length} nodes will use CSS rendering, ${nodesUsingBoundingBox.length} nodes will use bounding-box rendering`,
-    );
-
-    // Only export SVG for nodes that need it
-    const svgPromises = nodesNeedingSVG.map(async (node) => {
-      const nodeExportStartTime = Date.now();
-      try {
-        const figmaNode = await figma.getNodeByIdAsync(node.id);
-        if (!figmaNode) {
-          console.warn(
-            `[FigmaImplementation] Node ${node.id} not found for SVG export`,
-          );
-          return;
-        }
-
-        if (
-          figmaNode.type === "FRAME" ||
-          figmaNode.type === "COMPONENT" ||
-          figmaNode.type === "COMPONENT_SET" ||
-          figmaNode.type === "GROUP" ||
-          figmaNode.type === "INSTANCE"
-        ) {
-          // All container node types can be exported as SVG
-          const svg = await this.exportFrameNodeSVG(
-            figmaNode as
-              | FrameNode
-              | ComponentNode
-              | ComponentSetNode
-              | GroupNode
-              | InstanceNode,
-          );
-          const nodeExportEndTime = Date.now();
-          const nodeExportDuration = nodeExportEndTime - nodeExportStartTime;
-          console.log(
-            `[SVG Export] Top-level frame node "${figmaNode.name}" (${figmaNode.id}): ${nodeExportDuration.toFixed(2)}ms`,
-          );
-          if (node.type === "figmaNode") {
-            node.data.svg = svg;
-          }
-        } else if (figmaNode.type === "TEXT") {
-          const svg = await this.exportTextNodeSVG(figmaNode as TextNode);
-          const nodeExportEndTime = Date.now();
-          const nodeExportDuration = nodeExportEndTime - nodeExportStartTime;
-          console.log(
-            `[SVG Export] Top-level text node "${figmaNode.name}" (${figmaNode.id}): ${nodeExportDuration.toFixed(2)}ms`,
-          );
-          if (node.type === "textNode") {
-            node.data.svg = svg;
-          }
-        }
-      } catch (error) {
-        console.error(
-          `[FigmaImplementation] Failed to export SVG for node ${node.id}:`,
-          error,
-        );
-      }
-    });
-
-    await Promise.all(svgPromises);
-  }
-
-  /**
    * Export SVGs for specific node IDs in parallel
-   * Only exports SVGs for top-level nodes (nodes whose parent is the current page) that require SVG rendering
+   * Used for lazy loading SVGs when nodes are rendered
+   *
+   * @param nodeIds - Array of node IDs to export SVGs for
+   * @returns Promise that resolves with SVG data for each node
    */
   exportNodeSVGs = async (
     nodeIds: string[],
   ): Promise<Array<{ nodeId: string; svg: string | Uint8Array | null }>> => {
-    // Filter to only export the specific node "378:7305"
-    nodeIds = nodeIds.filter((nodeId) => nodeId === "302:2446");
-
-    // Filter to only top-level nodes (nodes whose parent is the current page)
-    const topLevelNodeIds: string[] = [];
-    const nodeIdChecks = nodeIds.map(async (nodeId) => {
-      try {
-        const figmaNode = await figma.getNodeByIdAsync(nodeId);
-        if (!figmaNode) {
-          return false;
-        }
-        // Top-level nodes have the current page as their parent
-        return figmaNode.parent === figma.currentPage;
-      } catch (error) {
-        return false;
-      }
-    });
-
-    const isTopLevelResults = await Promise.all(nodeIdChecks);
-    nodeIds.forEach((nodeId, index) => {
-      if (isTopLevelResults[index]) {
-        topLevelNodeIds.push(nodeId);
-      }
-    });
-
-    if (topLevelNodeIds.length === 0) {
-      console.log("[SVG Export] No top-level nodes to export");
-      return nodeIds.map((nodeId) => ({ nodeId, svg: null }));
+    if (nodeIds.length === 0) {
+      return [];
     }
 
-    // Check which nodes need SVG export based on complexity
-    const nodesNeedingSVG: string[] = [];
-    const nodeComplexityChecks = topLevelNodeIds.map(async (nodeId) => {
-      try {
-        const figmaNode = await figma.getNodeByIdAsync(nodeId);
-        if (!figmaNode) {
-          return { nodeId, needsSVG: false };
-        }
-
-        // Check complexity based on node type
-        if (
-          figmaNode.type === "FRAME" ||
-          figmaNode.type === "COMPONENT" ||
-          figmaNode.type === "COMPONENT_SET" ||
-          figmaNode.type === "INSTANCE"
-        ) {
-          const frameNode = figmaNode as
-            | FrameNode
-            | ComponentNode
-            | ComponentSetNode
-            | InstanceNode;
-
-          // Check for complexity indicators
-          const hasGradients = (frameNode.fills as readonly Paint[])?.some(
-            (fill) =>
-              fill.type === "GRADIENT_LINEAR" ||
-              fill.type === "GRADIENT_RADIAL" ||
-              fill.type === "GRADIENT_ANGULAR" ||
-              fill.type === "GRADIENT_DIAMOND" ||
-              fill.type === "IMAGE",
-          );
-
-          const hasComplexEffects = frameNode.effects?.some((effect) => {
-            if (!effect.visible) return false;
-            return (
-              effect.type === "LAYER_BLUR" || effect.type === "BACKGROUND_BLUR"
-            );
-          });
-
-          const shadowCount =
-            frameNode.effects?.filter(
-              (e) =>
-                e.visible &&
-                (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW"),
-            ).length || 0;
-
-          const hasBlendMode =
-            frameNode.blendMode &&
-            frameNode.blendMode !== "NORMAL" &&
-            frameNode.blendMode !== "PASS_THROUGH";
-
-          const isComponent =
-            figmaNode.type === "COMPONENT" ||
-            figmaNode.type === "COMPONENT_SET";
-
-          const needsSVG =
-            hasGradients ||
-            hasComplexEffects ||
-            shadowCount > 1 ||
-            hasBlendMode ||
-            isComponent ||
-            (frameNode.children && frameNode.children.length >= 10);
-
-          return { nodeId, needsSVG };
-        } else if (figmaNode.type === "GROUP") {
-          // Groups are generally simple, but check children count
-          const groupNode = figmaNode as GroupNode;
-          const needsSVG =
-            groupNode.children && groupNode.children.length >= 10;
-          return { nodeId, needsSVG };
-        } else if (figmaNode.type === "TEXT") {
-          // Text nodes always need SVG for accurate rendering
-          return { nodeId, needsSVG: true };
-        }
-
-        return { nodeId, needsSVG: false };
-      } catch (error) {
-        return { nodeId, needsSVG: false };
-      }
-    });
-
-    const complexityResults = await Promise.all(nodeComplexityChecks);
-    complexityResults.forEach(({ nodeId, needsSVG }) => {
-      if (needsSVG) {
-        nodesNeedingSVG.push(nodeId);
-      }
-    });
-
     console.log(
-      `[SVG Export] ${nodesNeedingSVG.length} nodes need SVG export out of ${topLevelNodeIds.length} top-level nodes`,
+      `[FigmaImplementation] Exporting SVGs for ${nodeIds.length} nodes`,
     );
 
-    const svgPromises = nodesNeedingSVG.map(async (nodeId) => {
-      const nodeExportStartTime = Date.now();
+    // Export SVGs in parallel
+    const svgPromises = nodeIds.map(async (nodeId) => {
       try {
         const figmaNode = await figma.getNodeByIdAsync(nodeId);
         if (!figmaNode) {
@@ -785,38 +631,8 @@ export class FigmaImplementation implements IDesignPlatform {
           return { nodeId, svg: null };
         }
 
-        if (
-          figmaNode.type === "FRAME" ||
-          figmaNode.type === "COMPONENT" ||
-          figmaNode.type === "COMPONENT_SET" ||
-          figmaNode.type === "GROUP" ||
-          figmaNode.type === "INSTANCE"
-        ) {
-          const svg = await this.exportFrameNodeSVG(
-            figmaNode as
-              | FrameNode
-              | ComponentNode
-              | ComponentSetNode
-              | GroupNode
-              | InstanceNode,
-          );
-          const nodeExportEndTime = Date.now();
-          const nodeExportDuration = nodeExportEndTime - nodeExportStartTime;
-          console.log(
-            `[SVG Export] Top-level frame node "${figmaNode.name}" (${figmaNode.id}): ${nodeExportDuration.toFixed(2)}ms`,
-          );
-          return { nodeId, svg };
-        } else if (figmaNode.type === "TEXT") {
-          const svg = await this.exportTextNodeSVG(figmaNode as TextNode);
-          const nodeExportEndTime = Date.now();
-          const nodeExportDuration = nodeExportEndTime - nodeExportStartTime;
-          console.log(
-            `[SVG Export] Top-level text node "${figmaNode.name}" (${figmaNode.id}): ${nodeExportDuration.toFixed(2)}ms`,
-          );
-          return { nodeId, svg };
-        }
-
-        return { nodeId, svg: null };
+        const svg = await this.exportNodeToSVG(figmaNode as SceneNode);
+        return { nodeId, svg };
       } catch (error) {
         console.error(
           `[FigmaImplementation] Failed to export SVG for node ${nodeId}:`,
@@ -827,13 +643,12 @@ export class FigmaImplementation implements IDesignPlatform {
     });
 
     const results = await Promise.all(svgPromises);
+    const successCount = results.filter((r) => r.svg !== null).length;
+    console.log(
+      `[FigmaImplementation] Successfully exported ${successCount} SVGs out of ${nodeIds.length} nodes`,
+    );
 
-    // Return results for all requested nodeIds, with null for non-top-level nodes
-    const resultMap = new Map(results.map((r) => [r.nodeId, r.svg]));
-    return nodeIds.map((nodeId) => ({
-      nodeId,
-      svg: resultMap.get(nodeId) ?? null,
-    }));
+    return results;
   };
 
   currentPage = {

@@ -1,4 +1,4 @@
-import { ReactFlowFrameNodeType, TextNodeType } from "@components/nodes";
+import { ReactFlowFrameNodeType, TextNodeType, SVGNodeType } from "@components/nodes";
 
 export type JsonValue =
   | string
@@ -89,6 +89,6 @@ export type Request =
   | CloseRequest;
 
 
-export type DesignNode = ReactFlowFrameNodeType | TextNodeType;
+export type DesignNode = ReactFlowFrameNodeType | TextNodeType | SVGNodeType;
 export type FrameNodeProperties = ReactFlowFrameNodeType;
 export type TextNodeProperties = TextNodeType;

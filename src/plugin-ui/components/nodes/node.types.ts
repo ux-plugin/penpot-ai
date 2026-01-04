@@ -173,3 +173,33 @@ export interface TextNodeData extends Record<string, unknown> {
  * Type for a React Flow Node created from a Figma TextNode.
  */
 export type TextNodeType = Node<TextNodeData, "textNode">;
+
+/**
+ * Interface for Figma SVG/Vector Node data
+ * Used for BooleanOperationNode, LineNode, PolygonNode, RectangleNode, VectorNode
+ */
+export interface SVGNodeData extends Record<string, unknown> {
+  label: string;
+  locked?: boolean;
+  visible?: boolean;
+  opacity?: number;
+  rotation?: number;
+  name?: string;
+  nodeType?: "BOOLEAN_OPERATION" | "LINE" | "POLYGON" | "RECTANGLE" | "VECTOR";
+
+  // Dimensions
+  width?: number;
+  height?: number;
+
+  // SVG vectors
+  svg?: string | Uint8Array;
+  svgElement?: SVGElement;
+
+  // Rendering mode: 'css' for simple nodes (fast), 'svg' for complex nodes (accurate), 'bounding-box' for descendants of SVG nodes
+  renderMode?: "css" | "svg" | "bounding-box";
+}
+
+/**
+ * Type for a React Flow Node created from a Figma BooleanOperationNode, LineNode, PolygonNode, RectangleNode, or VectorNode.
+ */
+export type SVGNodeType = Node<SVGNodeData, "svgNode">;
