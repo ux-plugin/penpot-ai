@@ -13,7 +13,7 @@ import { SpinnerOverlay } from "@ui/spinner";
  * React Flow Text Node Component
  */
 export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
-  const { id, data, width, height, positionAbsoluteX, positionAbsoluteY, parentId } = props;
+  const { id, data, width, height } = props;
   const svgContainerRef = useRef<HTMLDivElement>(null);
 
   // Parse SVG element if available
@@ -37,55 +37,43 @@ export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
 
   // Basic properties
   const rotation = data?.rotation ?? 0;
-  const label = data?.label ?? "";
-  const name = data?.name ?? label;
-
-  // Text content (prefer text, fallback to characters)
-  const textContent = data?.text ?? data?.characters ?? "";
 
   // Render SVG element into container
   useEffect(() => {
     if (!svgContainerRef.current) return;
 
-    // Clear existing content first
-    svgContainerRef.current.innerHTML = '';
+    try {
+      // Clear existing content first
+      svgContainerRef.current.innerHTML = '';
 
-    // Handle SVG rendering: prefer svgElement, fallback to parsing svgString
-    let elementToRender: SVGElement | null = null;
+      // Handle SVG rendering: prefer svgElement, fallback to parsing svgString
+      let elementToRender: SVGElement | null = null;
 
-    if (svgElement) {
-      // Use the already parsed SVG element
-      elementToRender = svgElement;
-    } else if (svgString) {
-      // Parse the SVG string to an element (svgString is already converted from data.svg)
-      const parsed = parseSVGToElement(svgString);
-      if (parsed) {
-        elementToRender = parsed;
+      if (svgElement) {
+        // Use the already parsed SVG element
+        elementToRender = svgElement;
+      } else if (svgString) {
+        // Parse the SVG string to an element (svgString is already converted from data.svg)
+        const parsed = parseSVGToElement(svgString);
+        if (parsed) {
+          elementToRender = parsed;
+        }
       }
-    }
 
-    if (elementToRender) {
-      // Clone and append SVG element
-      const clonedSvg = elementToRender.cloneNode(true) as SVGElement;
-      // Ensure SVG scales to container
-      clonedSvg.setAttribute('width', '100%');
-      clonedSvg.setAttribute('height', '100%');
-      clonedSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-      svgContainerRef.current.appendChild(clonedSvg);
+      if (elementToRender) {
+        // Clone and append SVG element
+        const clonedSvg = elementToRender.cloneNode(true) as SVGElement;
+        // Ensure SVG scales to container
+        clonedSvg.setAttribute('width', '100%');
+        clonedSvg.setAttribute('height', '100%');
+        clonedSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        svgContainerRef.current.appendChild(clonedSvg);
+      }
+    } catch (error) {
+      console.error('[ReactFlowTextNode] Error in DOM manipulation:', error);
     }
   }, [svgElement, svgString]);
 
-  console.log(`[ReactFlowTextNode] Rendering text node "${label}" at position:`, {
-    x: positionAbsoluteX,
-    y: positionAbsoluteY,
-    label,
-    name,
-    rotation,
-    text: textContent.substring(0, 50) + (textContent.length > 50 ? "..." : ""),
-    hasSvg: !!svgElement || !!svgString,
-    parentId,
-    renderMode: data?.renderMode,
-  });
 
   // Determine rendering mode
   // Use explicit renderMode if set (set by FigmaImplementation during tree traversal)

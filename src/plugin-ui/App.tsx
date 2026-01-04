@@ -31,17 +31,17 @@ const AuthenticatedLayout = () => {
         .catch((error) => {
           console.error("Failed to connect to RSocket:", error);
         });
-      
+
       hasInitialized.current = true;
     }
 
     if (!isAuthenticated && hasInitialized.current) {
       // Clean up port subscription
       cleanupPortSubscription();
-      
+
       // Disconnect RSocket (shared)
       disconnectRSocket();
-      
+
       hasInitialized.current = false;
     }
   }, [isAuthenticated]);
@@ -73,24 +73,24 @@ function AppContent() {
     onWebSocketOpen: () => {
       setResponsesCount(0);
     },
-    
+
     onWebSocketClose: () => {
       // WebSocket closed
     },
-    
+
     onWebSocketError: (error) => {
       console.error('❌ WebSocket error:', error);
     },
-    
+
     onReasoningChunk: () => {
       // Reasoning chunk received
     },
-    
+
     onAction: () => {
       // Count actions as responses
       setResponsesCount((prev) => prev + 1);
     },
-    
+
     onText: () => {
       // Text chunk received
     },
@@ -112,7 +112,7 @@ function AppContent() {
       // Toggle recording with Ctrl+K or Cmd+K
       if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
         event.preventDefault();
-        
+
         if (isRecording) {
           stopRecordingAndStreaming();
         } else {
@@ -126,7 +126,7 @@ function AppContent() {
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
@@ -148,7 +148,7 @@ function AppContent() {
           element={isAuthenticated ? <Navigate to="/home" replace /> : <Navigate to="/login" replace />}
         />
       </Routes>
-      
+
       {/* Resize handle available on all pages */}
       <WindowResizeHandle>
         <ResizeIconBottomRight />

@@ -10,7 +10,8 @@ import {
   BackgroundVariant,
   useReactFlow,
   ReactFlowProvider,
-  OnMove,
+  OnMoveStart,
+  OnMoveEnd,
   Viewport,
   Edge,
 } from "@xyflow/react";
@@ -56,6 +57,8 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
   const isCursorInsideRef = useRef(true);
   const isSyncingFromFigma = useRef(false);
   const lastMousePosition = useRef<{ x: number; y: number } | null>(null);
+  const isViewportUpdateInProgress = useRef<boolean>(false);
+  const isMovingRef = useRef<boolean>(false);
 
   const nodeTypes = React.useMemo(() => ({
     figmaNode: ReactFlowFrameNode,
@@ -80,43 +83,33 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
       // Render nodes immediately with basic properties
       // Nodes with renderMode === 'svg' will request their SVG via useLazySVG hook
       setNodes(newNodes);
+
+      // Fit view to show all nodes after loading (if reactFlowInstance is available)
+      if (reactFlowInstance && newNodes.length > 0) {
+        setTimeout(() => {
+          reactFlowInstance.fitView({ padding: 0.1, duration: 0 });
+        }, 100);
+      }
       console.log(`[ReactFlowCanvas] ${newNodes.length} nodes rendered with basic properties. SVGs will load on-demand.`);
 
       console.log('[ReactFlowCanvas] Nodes loaded successfully');
     } catch (error) {
       console.error('[ReactFlowCanvas] Failed to load nodes:', error);
     }
-  }, [setNodes]);
+  }, [setNodes, reactFlowInstance]);
 
-  // Handle viewport changes in ReactFlow - sync to Figma
-  const handleMove = useCallback<OnMove>((_, viewport) => {
-    if (!hasSynced.current) return;
-    if (!reactFlowInstance) return;
-
-    if (firstSyncRef.current) {
-      firstSyncRef.current = false
+  // Function to send viewport updates to Figma
+  const sendViewportUpdate = useCallback(async (viewport: Viewport, isZoomOperation: boolean) => {
+    // Skip if another update is already in progress (prevents request queuing)
+    if (isViewportUpdateInProgress.current && !isZoomOperation) {
       return;
     }
 
-    // Skip sending updates to Figma if we're currently syncing FROM Figma
-    // This prevents an infinite loop where periodic sync triggers onMove which triggers Figma update
-    if (isSyncingFromFigma.current) {
-      return;
-    }
-
-    // Only sync to Figma when cursor is inside the screen
-    if (!isCursorInsideRef.current) {
-      return;
-    }
-
+    isViewportUpdateInProgress.current = true;
     const { x, y, zoom } = viewport;
     const oldZoom = currentViewport.current.zoom;
 
-    // Detect if this is a zoom operation (zoom changed) or a pan operation (only x/y changed)
-    const isZoomOperation = Math.abs(zoom - oldZoom) > 0.0001;
-
     // Calculate canvas positions from viewports
-    // ReactFlow viewport to canvas position: canvas_x = -viewport.x / viewport.zoom
     const oldCanvasPos = {
       x: -currentViewport.current.x / currentViewport.current.zoom,
       y: -currentViewport.current.y / currentViewport.current.zoom
@@ -133,46 +126,96 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
       y: newCanvasPos.y - oldCanvasPos.y
     };
 
-    // Use async IIFE to handle the async operations
-    (async () => {
-      try {
-        let zoomFocalPoint: { x: number; y: number } | undefined;
+    try {
+      let zoomFocalPoint: { x: number; y: number } | undefined;
 
-        if (isZoomOperation && lastMousePosition.current && containerRef.current) {
-          // Get the container's bounding rectangle
+      if (isZoomOperation && lastMousePosition.current && containerRef.current) {
+        try {
           const containerRect = containerRef.current.getBoundingClientRect();
-
-          // Convert screen mouse position to position relative to ReactFlow container
           const relativeX = lastMousePosition.current.x - containerRect.left;
           const relativeY = lastMousePosition.current.y - containerRect.top;
-
-          // Convert screen position to canvas coordinates using the OLD viewport
-          // Formula: canvasPos = screenPos / oldZoom + topLeftCanvasPos
           const mouseFocalPointX = relativeX / oldZoom + oldCanvasPos.x;
           const mouseFocalPointY = relativeY / oldZoom + oldCanvasPos.y;
-
           zoomFocalPoint = { x: mouseFocalPointX, y: mouseFocalPointY };
+        } catch (error) {
+          console.error('[ReactFlowCanvas] Error calling getBoundingClientRect:', error);
         }
-
-        // Send update to Figma
-        await uiMessageDispatcher.sendRequest<
-          Omit<UpdateViewportRequest, 'id' | 'timestamp' | 'source'>,
-          ExtractResultType<UpdateViewportResponse>
-        >({
-          category: MessageCategory.SYSTEM,
-          type: SystemMessageType.UPDATE_VIEWPORT,
-          payload: {
-            transform: canvasDelta,
-            zoom: zoom,
-            zoomFocalPoint: zoomFocalPoint
-          }
-        });
-        currentViewport.current = viewport;
-      } catch (error) {
-        console.error('[ReactFlowCanvas] Failed to update Figma viewport:', error);
       }
-    })();
-  }, [reactFlowInstance]);
+
+      await uiMessageDispatcher.sendRequest<
+        Omit<UpdateViewportRequest, 'id' | 'timestamp' | 'source'>,
+        ExtractResultType<UpdateViewportResponse>
+      >({
+        category: MessageCategory.SYSTEM,
+        type: SystemMessageType.UPDATE_VIEWPORT,
+        payload: {
+          transform: canvasDelta,
+          zoom: zoom,
+          zoomFocalPoint: zoomFocalPoint
+        }
+      });
+      currentViewport.current = viewport;
+      isViewportUpdateInProgress.current = false;
+    } catch (error) {
+      console.error('[ReactFlowCanvas] Failed to update Figma viewport:', error);
+      isViewportUpdateInProgress.current = false;
+    }
+  }, [nodes.length]);
+
+  // Handle viewport move start - sync to Figma
+  const handleMoveStart = useCallback<OnMoveStart>((_, viewport) => {
+    if (!hasSynced.current) return;
+    if (!reactFlowInstance) return;
+
+    if (firstSyncRef.current) {
+      firstSyncRef.current = false;
+      return;
+    }
+
+    // Skip sending updates to Figma if we're currently syncing FROM Figma
+    if (isSyncingFromFigma.current) {
+      return;
+    }
+
+    // Only sync to Figma when cursor is inside the screen
+    if (!isCursorInsideRef.current) {
+      return;
+    }
+
+    isMovingRef.current = true;
+    const { zoom } = viewport;
+    const oldZoom = currentViewport.current.zoom;
+    const isZoomOperation = Math.abs(zoom - oldZoom) > 0.0001;
+
+    // Send viewport update on move start
+    sendViewportUpdate(viewport, isZoomOperation);
+  }, [reactFlowInstance, sendViewportUpdate, nodes.length]);
+
+  // Handle viewport move end - sync final position to Figma
+  const handleMoveEnd = useCallback<OnMoveEnd>((_, viewport) => {
+    if (!hasSynced.current) return;
+    if (!reactFlowInstance) return;
+
+    // Skip sending updates to Figma if we're currently syncing FROM Figma
+    if (isSyncingFromFigma.current) {
+      isMovingRef.current = false;
+      return;
+    }
+
+    // Only sync to Figma when cursor is inside the screen
+    if (!isCursorInsideRef.current) {
+      isMovingRef.current = false;
+      return;
+    }
+
+    isMovingRef.current = false;
+    const { zoom } = viewport;
+    const oldZoom = currentViewport.current.zoom;
+    const isZoomOperation = Math.abs(zoom - oldZoom) > 0.0001;
+
+    // Send final viewport update on move end
+    sendViewportUpdate(viewport, isZoomOperation);
+  }, [reactFlowInstance, sendViewportUpdate, nodes.length]);
 
   // Load all nodes on mount
   useEffect(() => {
@@ -246,7 +289,7 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
       if (!syncIntervalRef.current && reactFlowInstance) {
         syncIntervalRef.current = setInterval(async () => {
           try {
-            // Set flag to prevent onMove from updating Figma during sync
+            // Set flag to prevent onMoveStart/onMoveEnd from updating Figma during sync
             isSyncingFromFigma.current = true;
             const newViewport = await syncCanvasWithFigma()
             reactFlowInstance.setViewport(newViewport);
@@ -276,8 +319,10 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         clearInterval(syncIntervalRef.current);
         syncIntervalRef.current = null;
       }
+
     };
   }, [reactFlowInstance]);
+
 
   return (
     <div ref={containerRef} className="relative h-full w-full">
@@ -287,7 +332,8 @@ const ReactFlowCanvasInner: React.FC<ReactFlowCanvasProps> = ({
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onMove={handleMove}
+        onMoveStart={handleMoveStart}
+        onMoveEnd={handleMoveEnd}
         fitView={false}
         minZoom={0.02}
         maxZoom={256}

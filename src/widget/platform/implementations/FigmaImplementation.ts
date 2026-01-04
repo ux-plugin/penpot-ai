@@ -309,17 +309,98 @@ export class FigmaImplementation implements IDesignPlatform {
    * @param _includeSVG - Kept for backward compatibility but ignored (SVGs load lazily)
    */
   getAllNodes = async (_includeSVG: boolean = false): Promise<DesignNode[]> => {
+    // #region agent log
+    const startTime = Date.now();
+    fetch("http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "FigmaImplementation.ts:311",
+        message: "getAllNodes started",
+        data: { includeSVG: _includeSVG },
+        timestamp: Date.now(),
+        sessionId: "debug-session",
+        runId: "post-fix",
+        hypothesisId: "A",
+      }),
+    }).catch(() => {});
+    // #endregion
     const nodes: DesignNode[] = [];
     const currentPageChildren = figma.currentPage.children;
 
     // First pass: Extract all basic properties (fast, synchronous)
+    // #region agent log
+    const transformStartTime = Date.now();
+    // #endregion
     this.transformNodesToDesignNodesBasic(currentPageChildren, nodes);
+    // #region agent log
+    const transformEndTime = Date.now();
+    fetch("http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "FigmaImplementation.ts:316",
+        message: "transformNodesToDesignNodesBasic completed",
+        data: {
+          nodeCount: nodes.length,
+          transformTime: transformEndTime - transformStartTime,
+        },
+        timestamp: Date.now(),
+        sessionId: "debug-session",
+        runId: "post-fix",
+        hypothesisId: "A",
+      }),
+    }).catch(() => {});
+    // #endregion
 
     // Second pass: Propagate rendering modes through the tree
+    // #region agent log
+    const propagateStartTime = Date.now();
+    // #endregion
     this.propagateRenderingModes(nodes);
+    // #region agent log
+    const propagateEndTime = Date.now();
+    fetch("http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "FigmaImplementation.ts:319",
+        message: "propagateRenderingModes completed",
+        data: {
+          nodeCount: nodes.length,
+          propagateTime: propagateEndTime - propagateStartTime,
+        },
+        timestamp: Date.now(),
+        sessionId: "debug-session",
+        runId: "post-fix",
+        hypothesisId: "E",
+      }),
+    }).catch(() => {});
+    // #endregion
 
     // SVG export is now handled lazily via exportNodeSVGs() when nodes render
     // includeSVG parameter is kept for backward compatibility but ignored
+    // #region agent log
+    const endTime = Date.now();
+    fetch("http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "FigmaImplementation.ts:324",
+        message: "getAllNodes completed",
+        data: {
+          nodeCount: nodes.length,
+          totalTime: endTime - startTime,
+          transformTime: transformEndTime - transformStartTime,
+          propagateTime: propagateEndTime - propagateStartTime,
+        },
+        timestamp: Date.now(),
+        sessionId: "debug-session",
+        runId: "post-fix",
+        hypothesisId: "A",
+      }),
+    }).catch(() => {});
+    // #endregion
 
     return nodes;
   };

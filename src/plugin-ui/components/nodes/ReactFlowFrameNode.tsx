@@ -20,7 +20,7 @@ import { SpinnerOverlay } from "@ui/spinner";
  * @returns A minimal node component with handles for connections
  */
 export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>) => {
-  const { id, data, width = 150, height = 150, positionAbsoluteX, positionAbsoluteY, parentId } = props;
+  const { id, data, width = 150, height = 150 } = props;
   const svgContainerRef = useRef<HTMLDivElement>(null);
 
   // Parse SVG element if available
@@ -46,52 +46,40 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
   useEffect(() => {
     if (!svgContainerRef.current) return;
 
-    // Clear existing content first
-    svgContainerRef.current.innerHTML = '';
+    try {
+      // Clear existing content first
+      svgContainerRef.current.innerHTML = '';
 
-    // Handle SVG rendering: prefer svgElement, fallback to parsing svgString
-    let elementToRender: SVGElement | null = null;
+      // Handle SVG rendering: prefer svgElement, fallback to parsing svgString
+      let elementToRender: SVGElement | null = null;
 
-    if (svgElement) {
-      // Use the already parsed SVG element
-      elementToRender = svgElement;
-    } else if (svgString) {
-      // Parse the SVG string to an element (svgString is already converted from data.svg)
-      const parsed = parseSVGToElement(svgString);
-      if (parsed) {
-        elementToRender = parsed;
+      if (svgElement) {
+        // Use the already parsed SVG element
+        elementToRender = svgElement;
+      } else if (svgString) {
+        // Parse the SVG string to an element (svgString is already converted from data.svg)
+        const parsed = parseSVGToElement(svgString);
+        if (parsed) {
+          elementToRender = parsed;
+        }
       }
-    }
 
-    if (elementToRender) {
-      // Clone and append SVG element
-      const clonedSvg = elementToRender.cloneNode(true) as SVGElement;
-      // Ensure SVG scales to container
-      clonedSvg.setAttribute('width', '100%');
-      clonedSvg.setAttribute('height', '100%');
-      clonedSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-      svgContainerRef.current.appendChild(clonedSvg);
+      if (elementToRender) {
+        // Clone and append SVG element
+        const clonedSvg = elementToRender.cloneNode(true) as SVGElement;
+        // Ensure SVG scales to container
+        clonedSvg.setAttribute('width', '100%');
+        clonedSvg.setAttribute('height', '100%');
+        clonedSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        svgContainerRef.current.appendChild(clonedSvg);
+      }
+    } catch (error) {
+      console.error('[ReactFlowFrameNode] Error in DOM manipulation:', error);
     }
   }, [svgElement, svgString]);
 
   // Basic properties
   const rotation = data?.rotation ?? 0;
-  const label = data?.label ?? '';
-  const name = data?.name ?? label;
-  const nodeType = data?.nodeType ?? 'FRAME';
-
-  console.log(`[ReactFlowFrameNode] Rendering ${nodeType} node "${label}" at position:`, {
-    x: positionAbsoluteX,
-    y: positionAbsoluteY,
-    label,
-    name,
-    nodeType,
-    rotation,
-    width: width,
-    height: height,
-    hasSvg: !!svgElement || !!svgString,
-    parentId,
-  });
 
   // Determine rendering mode
   // Use explicit renderMode if set (set by FigmaImplementation during tree traversal)
@@ -196,7 +184,29 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
     );
   }
 
-
+  // Fallback: default to CSS rendering if renderMode is unexpected
+  const cssStyles = convertFrameNodeToCSS(data);
+  return (
+    <div
+      className="border border-transparent transition-colors duration-200 hover:border-blue-500"
+      style={cssStyles}
+      data-fill-style-id={typeof data?.fillStyleId === 'string' ? data.fillStyleId : undefined}
+      data-stroke-style-id={data?.strokeStyleId}
+      data-effect-style-id={data?.effectStyleId}
+      data-render-mode="fallback"
+    >
+      <HandleComponent
+        type="target"
+        position={PositionEnum.Top}
+        style={{ opacity: 0 }}
+      />
+      <HandleComponent
+        type="source"
+        position={PositionEnum.Bottom}
+        style={{ opacity: 0 }}
+      />
+    </div>
+  );
 });
 
 ReactFlowFrameNode.displayName = 'ReactFlowFrameNode';

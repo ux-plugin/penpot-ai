@@ -288,7 +288,11 @@ codeMessageDispatcher.registerHandler<
       const { width, height, x, y } = request.payload;
       
       // Call the platform-specific resize method
+      const now = Date.now();
       commands.ui.resize(width, height);
+      const endTime = Date.now();
+      const duration = endTime - now;
+      console.log('[CODE] Resize request completed in', duration, 'ms');
       
       // If position is provided, reposition the window
       if (x !== undefined && y !== undefined) {
