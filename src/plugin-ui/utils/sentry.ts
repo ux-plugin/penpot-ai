@@ -4,9 +4,9 @@ import * as Sentry from "@sentry/react";
 export function initSentry() {
   // Only initialize if DSN is provided via environment variable
   const dsn = import.meta.env.VITE_SENTRY_DSN;
-  
+
   if (!dsn) {
-    console.warn('[Sentry] No DSN provided. Error tracking is disabled.');
+    console.warn("[Sentry] No DSN provided. Error tracking is disabled.");
     return;
   }
 
@@ -25,7 +25,7 @@ export function initSentry() {
     replaysSessionSampleRate: 0.1, // Sample 10% of sessions
     replaysOnErrorSampleRate: 1.0, // Sample 100% of sessions with errors
     // Environment
-    environment: import.meta.env.MODE || 'production',
+    environment: import.meta.env.MODE || "production",
     // Release tracking
     release: import.meta.env.VITE_APP_VERSION,
   });

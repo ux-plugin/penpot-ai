@@ -137,6 +137,7 @@ export const ReactFlowSVGNode = memo((props: NodeProps<SVGNodeType>) => {
     // SVG nodes are always rendered as SVG - no CSS fallback
     return (
         <div
+            className="border border-transparent transition-colors duration-200 hover:border-blue-500"
             style={{
                 width: width,
                 height: height,

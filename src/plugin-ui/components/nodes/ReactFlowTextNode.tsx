@@ -122,6 +122,7 @@ export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
   if (renderMode === 'svg') {
     return (
       <div
+        className="border border-transparent transition-colors duration-200 hover:border-blue-500"
         style={{
           width: width,
           height: height,
@@ -151,6 +152,7 @@ export const ReactFlowTextNode = memo((props: NodeProps<TextNodeType>) => {
   // Fallback: if no SVG available, render text with CSS (shouldn't happen but provides fallback)
   return (
     <div
+      className="border border-transparent transition-colors duration-200 hover:border-blue-500"
       style={{
         width: width,
         height: height,

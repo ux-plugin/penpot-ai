@@ -1,12 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { viteSingleFile } from "vite-plugin-singlefile";
-import tailwindcss from '@tailwindcss/vite'
+import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { nodePolyfills } from 'vite-plugin-node-polyfills'
+import { nodePolyfills } from "vite-plugin-node-polyfills";
+import { visualizer } from "rollup-plugin-visualizer";
+import { writeFileSync, statSync } from "fs";
+import { join } from "path";
 
 export default defineConfig(({ command, mode }) => {
-  const isDebugBuild = process.env.VITE_ENABLE_BUILD_DEBUG === 'true';
+  const isDebugBuild = process.env.VITE_ENABLE_BUILD_DEBUG === "true";
 
   return {
     plugins: [
@@ -34,6 +37,249 @@ export default defineConfig(({ command, mode }) => {
       }),
       tailwindcss(),
       viteSingleFile(),
+      // Bundle analyzer - generates stats.html and logs bundle info
+      visualizer({
+        filename: "./dist/stats.html",
+        open: false,
+        gzipSize: true,
+        brotliSize: true,
+      }),
+      // Custom plugin to log bundle size information
+      {
+        name: "bundle-size-logger",
+        generateBundle(options, bundle) {
+          // #region agent log
+          const logData = {
+            sessionId: "debug-session",
+            runId: "bundle-analysis",
+            hypothesisId: "A",
+            location: "vite.config.ts:generateBundle",
+            message: "Bundle generation started",
+            data: {
+              outputFormat: options.format,
+              bundleKeys: Object.keys(bundle),
+              bundleCount: Object.keys(bundle).length,
+            },
+            timestamp: Date.now(),
+          };
+          fetch(
+            "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(logData),
+            },
+          ).catch(() => {});
+          // #endregion
+
+          const bundleInfo: Array<{
+            name: string;
+            size: number;
+            gzipSize?: number;
+          }> = [];
+
+          for (const [fileName, chunk] of Object.entries(bundle)) {
+            if (chunk.type === "chunk") {
+              const size = Buffer.byteLength(chunk.code, "utf8");
+              bundleInfo.push({
+                name: fileName,
+                size,
+              });
+
+              // #region agent log
+              const chunkLogData = {
+                sessionId: "debug-session",
+                runId: "bundle-analysis",
+                hypothesisId: "B",
+                location: "vite.config.ts:generateBundle",
+                message: "Chunk size analysis",
+                data: {
+                  fileName,
+                  size,
+                  sizeKB: (size / 1024).toFixed(2),
+                  modules: Object.keys(chunk.modules || {}).slice(0, 10), // Top 10 modules
+                  moduleCount: Object.keys(chunk.modules || {}).length,
+                },
+                timestamp: Date.now(),
+              };
+              fetch(
+                "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(chunkLogData),
+                },
+              ).catch(() => {});
+              // #endregion
+            } else if (chunk.type === "asset") {
+              const size = chunk.source
+                ? Buffer.byteLength(chunk.source.toString(), "utf8")
+                : 0;
+              bundleInfo.push({
+                name: fileName,
+                size,
+              });
+            }
+          }
+
+          // Log largest dependencies from modules
+          const moduleSizes: Record<string, number> = {};
+          for (const chunk of Object.values(bundle)) {
+            if (chunk.type === "chunk") {
+              // Calculate size contribution per module
+              const chunkSize = Buffer.byteLength(chunk.code, "utf8");
+              const moduleIds = Object.keys(chunk.modules || {});
+              const sizePerModule =
+                moduleIds.length > 0 ? chunkSize / moduleIds.length : 0;
+
+              for (const moduleId of moduleIds) {
+                // Extract package name from node_modules path
+                const nodeModulesMatch = moduleId.match(
+                  /node_modules\/(@[^/]+\/[^/]+|[^/]+)/,
+                );
+                if (nodeModulesMatch) {
+                  const pkgName = nodeModulesMatch[1];
+                  moduleSizes[pkgName] =
+                    (moduleSizes[pkgName] || 0) + sizePerModule;
+                } else {
+                  // For source files, use a more precise match
+                  const sourceMatch = moduleId.match(/src\/([^?]+)/);
+                  if (sourceMatch) {
+                    moduleSizes[`src:${sourceMatch[1]}`] =
+                      (moduleSizes[`src:${sourceMatch[1]}`] || 0) +
+                      sizePerModule;
+                  } else {
+                    moduleSizes[moduleId] =
+                      (moduleSizes[moduleId] || 0) + sizePerModule;
+                  }
+                }
+              }
+            }
+          }
+
+          // Sort by size and log top 20
+          const topModules = Object.entries(moduleSizes)
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 20)
+            .map(([name, size]) => ({ name, size: size / 1024 }));
+
+          // #region agent log
+          const topModulesLogData = {
+            sessionId: "debug-session",
+            runId: "bundle-analysis",
+            hypothesisId: "C",
+            location: "vite.config.ts:generateBundle",
+            message: "Top 20 largest dependencies",
+            data: {
+              topModules,
+              totalModules: Object.keys(moduleSizes).length,
+            },
+            timestamp: Date.now(),
+          };
+          fetch(
+            "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(topModulesLogData),
+            },
+          ).catch(() => {});
+          // #endregion
+
+          // Write bundle info to file for analysis
+          const totalSize = bundleInfo.reduce(
+            (sum, item) => sum + item.size,
+            0,
+          );
+          const bundleReport = {
+            totalSize,
+            totalSizeKB: (totalSize / 1024).toFixed(2),
+            totalSizeMB: (totalSize / 1024 / 1024).toFixed(2),
+            bundles: bundleInfo.map((item) => ({
+              ...item,
+              sizeKB: (item.size / 1024).toFixed(2),
+            })),
+            topModules,
+          };
+
+          writeFileSync(
+            join(process.cwd(), "dist", "bundle-analysis.json"),
+            JSON.stringify(bundleReport, null, 2),
+          );
+        },
+        writeBundle() {
+          // #region agent log
+          const writeLogData = {
+            sessionId: "debug-session",
+            runId: "bundle-analysis",
+            hypothesisId: "D",
+            location: "vite.config.ts:writeBundle",
+            message: "Bundle write completed",
+            data: {
+              analysisFile: "dist/bundle-analysis.json",
+              statsFile: "dist/stats.html",
+            },
+            timestamp: Date.now(),
+          };
+          fetch(
+            "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(writeLogData),
+            },
+          ).catch(() => {});
+          // #endregion
+        },
+        closeBundle() {
+          // Measure final bundle file sizes
+          const distPath = join(process.cwd(), "dist");
+
+          try {
+            const files = ["index.html"];
+            const fileSizes: Record<string, number> = {};
+
+            for (const file of files) {
+              const filePath = join(distPath, file);
+              try {
+                const stats = statSync(filePath);
+                fileSizes[file] = stats.size;
+              } catch (e) {
+                // File might not exist
+              }
+            }
+
+            // #region agent log
+            const finalSizeLogData = {
+              sessionId: "debug-session",
+              runId: "bundle-analysis",
+              hypothesisId: "E",
+              location: "vite.config.ts:closeBundle",
+              message: "Final bundle file sizes",
+              data: {
+                fileSizes: Object.entries(fileSizes).map(([name, size]) => ({
+                  name,
+                  size,
+                  sizeKB: (size / 1024).toFixed(2),
+                  sizeMB: (size / 1024 / 1024).toFixed(2),
+                })),
+              },
+              timestamp: Date.now(),
+            };
+            fetch(
+              "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(finalSizeLogData),
+              },
+            ).catch(() => {});
+            // #endregion
+          } catch (e) {
+            // Ignore errors in measurement
+          }
+        },
+      },
     ],
     build: {
       sourcemap: isDebugBuild ? "inline" : false,
@@ -73,6 +319,10 @@ export default defineConfig(({ command, mode }) => {
       // Better asset handling
       assetsInlineLimit: 4096, // Inline assets smaller than 4kb
       reportCompressedSize: true, // Show gzip size in build output
+      // Exclude dev dependencies from bundle
+      commonjsOptions: {
+        exclude: ["ts-json-schema-generator"],
+      },
     },
     resolve: {
       alias: {
@@ -139,9 +389,10 @@ export default defineConfig(({ command, mode }) => {
       // Make Buffer available globally for rsocket libraries
       global: "globalThis",
       // Only set NODE_ENV to production during non-debug builds
-      ...(command === "build" && !isDebugBuild && {
-        "process.env.NODE_ENV": JSON.stringify("production"),
-      }),
+      ...(command === "build" &&
+        !isDebugBuild && {
+          "process.env.NODE_ENV": JSON.stringify("production"),
+        }),
     },
     // Optimize dependency pre-bundling
     optimizeDeps: {
@@ -155,4 +406,4 @@ export default defineConfig(({ command, mode }) => {
       },
     },
   };
-})
+});

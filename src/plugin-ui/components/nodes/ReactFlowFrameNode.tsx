@@ -137,6 +137,7 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
   if (renderMode === 'svg') {
     return (
       <div
+        className="border border-transparent transition-colors duration-200 hover:border-blue-500"
         style={{
           width: width,
           height: height,
@@ -174,6 +175,7 @@ export const ReactFlowFrameNode = memo((props: NodeProps<ReactFlowFrameNodeType>
     const cssStyles = convertFrameNodeToCSS(data);
     return (
       <div
+        className="border border-transparent transition-colors duration-200 hover:border-blue-500"
         style={cssStyles}
         data-fill-style-id={typeof data?.fillStyleId === 'string' ? data.fillStyleId : undefined}
         data-stroke-style-id={data?.strokeStyleId}
