@@ -1,7 +1,6 @@
 import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import Login from "@views/Login.tsx";
-// import Home from "@views/Home.tsx";
 import HomePixi from "@views/HomePixi.tsx";
 import { useAuthenticationStore } from "@stores/useAuthenticationStore.ts";
 import { usePortUpdatesStore } from "@stores/usePortUpdatesStore.ts";
@@ -141,7 +140,6 @@ function AppContent() {
         </Route>
 
         <Route element={<AuthenticatedLayout />}>
-          {/* <Route path="/home" element={<Home />} /> */}
           <Route path="/home" element={<HomePixi />} />
         </Route>
 

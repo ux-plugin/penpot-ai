@@ -204,13 +204,6 @@ function HomePixi() {
         />
       </div>
 
-      {/* PixiJS indicator badge */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10">
-        <div className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-medium border border-green-200 shadow-sm">
-          PixiJS (GPU Accelerated)
-        </div>
-      </div>
-
       <StatusPanel
         isOpen={statusPanelOpen}
         onClose={() => setStatusPanelOpen(false)}

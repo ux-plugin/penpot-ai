@@ -433,13 +433,6 @@ export const PixiCanvas: React.FC<PixiCanvasProps> = ({
           </svg>
         </button>
       </div>
-
-      {/* Minimap placeholder - simplified for PixiJS */}
-      <div className="absolute bottom-4 right-4 z-10 w-32 h-24 rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
-        <div className="w-full h-full bg-gray-50 flex items-center justify-center text-xs text-gray-400">
-          Minimap
-        </div>
-      </div>
     </div>
   );
 };
