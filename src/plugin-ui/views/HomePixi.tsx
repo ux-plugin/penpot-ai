@@ -7,14 +7,14 @@ import {
   Maximize2,
   MessageSquare,
   Bug,
-  Zap,
+  Layers,
 } from "lucide-react";
 import { useUserSettingsStore } from '@/plugin-ui/stores/useUserSettingsStore.ts';
 import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
 import { useUserConfigQuery } from "@/plugin-ui/api/user/fetchUserConfig.ts";
 import { useCompanionConnection } from "@/plugin-ui/api/companion";
 import { usePortUpdatesStore } from "@/plugin-ui/stores/usePortUpdatesStore.ts";
-import { ReactFlowCanvas } from '@/plugin-ui/components/completions/ReactFlowCanvas.tsx';
+import { PixiCanvas } from '@/plugin-ui/components/completions/PixiCanvas.tsx';
 import { StatusPanel } from '@/plugin-ui/components/status/StatusPanel';
 import { SettingsPanel } from '@/plugin-ui/components/user/SettingsPanel';
 import { ConversationPanel } from '@/plugin-ui/components/completions/ConversationPanel';
@@ -26,7 +26,7 @@ import { CompanionAppStatus } from '@/plugin-ui/components/CompanionAppStatus.ts
 import { DesignNode } from "@shared-types/types.ts";
 import { parseSVGToProps } from "@utils/figmaStyleConversions.tsx";
 
-function Home() {
+function HomePixi() {
   const navigate = useNavigate();
   const { setUserConfig } = useUserSettingsStore();
   const { setUserId } = useAuthenticationStore();
@@ -55,7 +55,7 @@ function Home() {
         console.error('Reconnection failed:', error);
       });
     }
-  }, [currentPort]);
+  }, [currentPort, connect]);
 
   // Load nodes when debug panel is opened
   useEffect(() => {
@@ -70,7 +70,7 @@ function Home() {
             type: SystemMessageType.GET_ALL_NODES,
             payload: {}
           });
-          const nodes = result.nodes.map((node) => {
+          const processedNodes = result.nodes.map((node) => {
               if (node.type === "textNode") {
                 console.log("the textNode: ", node);
                 node.data.svgElement =
@@ -79,12 +79,10 @@ function Home() {
               }
               return node;
             });
-          console.log("the nodes: ", nodes);
-          setNodes(
-            nodes
-          );
+          console.log("the nodes: ", processedNodes);
+          setNodes(processedNodes);
         } catch (error) {
-          console.error('[Home] Failed to load nodes for debug panel:', error);
+          console.error('[HomePixi] Failed to load nodes for debug panel:', error);
         }
       }
     };
@@ -92,7 +90,6 @@ function Home() {
   }, [debugPanelOpen]);
 
   const handleMinimizeWindow = async () => {
-    // Minimize to the minimum possible size
     try {
       await uiMessageDispatcher.sendRequest<
         Omit<ResizeRequest, 'id' | 'timestamp' | 'source'>,
@@ -111,8 +108,6 @@ function Home() {
   };
 
   const handleMaximizeWindow = async () => {
-    // Maximize to fill available viewport space
-    // Figma will automatically constrain to viewport bounds
     try {
       await uiMessageDispatcher.sendRequest<
         Omit<ResizeRequest, 'id' | 'timestamp' | 'source'>,
@@ -130,26 +125,26 @@ function Home() {
     }
   };
 
-  const handleSwitchToPixi = () => {
-    navigate('/home/pixi');
+  const handleSwitchToReactFlow = () => {
+    navigate('/home');
   };
 
   return (
     <div className="relative w-full h-screen bg-white overflow-hidden min-w-[650px] min-h-[400px]">
-      {/* ReactFlow Canvas - Full Screen */}
+      {/* PixiJS Canvas - Full Screen */}
       <div className="absolute inset-0">
-        <ReactFlowCanvas
+        <PixiCanvas
           topRightContent={
             <div className="flex items-center gap-2">
-              {/* Switch to PixiJS Button */}
+              {/* Switch to ReactFlow Button */}
               <Button
                 variant="outline"
                 size="icon"
-                className="bg-green-50 hover:bg-green-100 text-green-600 border-green-300 rounded-full shadow-sm"
-                onClick={handleSwitchToPixi}
-                title="Switch to PixiJS Canvas (GPU Accelerated)"
+                className="bg-blue-50 hover:bg-blue-100 text-blue-600 border-blue-300 rounded-full shadow-sm"
+                onClick={handleSwitchToReactFlow}
+                title="Switch to React Flow Canvas"
               >
-                <Zap className="h-5 w-5" />
+                <Layers className="h-5 w-5" />
               </Button>
 
               {/* Companion App Status */}
@@ -225,6 +220,14 @@ function Home() {
           }
         />
       </div>
+
+      {/* PixiJS indicator badge */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10">
+        <div className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-medium border border-green-200 shadow-sm">
+          PixiJS (GPU Accelerated)
+        </div>
+      </div>
+
       <StatusPanel
         isOpen={statusPanelOpen}
         onClose={() => setStatusPanelOpen(false)}
@@ -249,4 +252,5 @@ function Home() {
   );
 }
 
-export default Home;
+export default HomePixi;
+
