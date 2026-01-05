@@ -20,9 +20,6 @@ export async function loadAllNodes(includeSVG: boolean = false): Promise<{
   totalCount: number;
 }> {
   try {
-    // Yield control to browser before making request to prevent blocking
-    await new Promise(resolve => setTimeout(resolve, 0));
-    
     const result = await uiMessageDispatcher.sendRequest<
       Omit<any, "id" | "timestamp" | "source">,
       ExtractResultType<GetAllNodesResponse>
