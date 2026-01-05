@@ -10,7 +10,7 @@ import { DesignNode } from "@shared-types/types.ts";
 
 /**
  * Loads all nodes from Figma/design platform.
- * Retrieves pre-transformed ReactFlow nodes ready for rendering.
+ * Retrieves pre-transformed design nodes ready for rendering.
  *
  * @param includeSVG - Whether to include SVG exports (slower but complete)
  * @returns Promise that resolves with the nodes array and total count
@@ -32,7 +32,7 @@ export async function loadAllNodes(includeSVG: boolean = false): Promise<{
     });
 
     console.log(
-      `[loadNodes] Received ${result.nodes.length} ReactFlow nodes (total: ${result.totalCount}, includeSVG: ${includeSVG})`,
+      `[loadNodes] Received ${result.nodes.length} design nodes (total: ${result.totalCount}, includeSVG: ${includeSVG})`,
     );
 
     return {

@@ -54,7 +54,7 @@ export const PixiCanvas: React.FC<PixiCanvasProps> = ({
   const nodesRef = useRef<DesignNode[]>([]);
   const isLoadingNodes = useRef<boolean>(false);
 
-  // Convert PixiJS viewport to ReactFlow-compatible viewport format
+  // Convert PixiJS viewport to viewport format
   const getViewportFromPixi = useCallback((): PixiViewport => {
     if (!viewportRef.current) {
       return { x: 0, y: 0, zoom: 1 };

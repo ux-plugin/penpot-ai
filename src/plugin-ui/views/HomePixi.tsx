@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Button } from '@ui/button';
 import {
   Settings,
@@ -7,7 +6,6 @@ import {
   Maximize2,
   MessageSquare,
   Bug,
-  Layers,
 } from "lucide-react";
 import { useUserSettingsStore } from '@/plugin-ui/stores/useUserSettingsStore.ts';
 import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
@@ -27,7 +25,6 @@ import { DesignNode } from "@shared-types/types.ts";
 import { parseSVGToProps } from "@utils/figmaStyleConversions.tsx";
 
 function HomePixi() {
-  const navigate = useNavigate();
   const { setUserConfig } = useUserSettingsStore();
   const { setUserId } = useAuthenticationStore();
   const { connect } = useCompanionConnection();
@@ -71,14 +68,14 @@ function HomePixi() {
             payload: {}
           });
           const processedNodes = result.nodes.map((node) => {
-              if (node.type === "textNode") {
-                console.log("the textNode: ", node);
-                node.data.svgElement =
-                  parseSVGToProps(node.data.svg) ?? undefined;
-                console.log("the textNode with svgElement: ", node);
-              }
-              return node;
-            });
+            if (node.type === "textNode") {
+              console.log("the textNode: ", node);
+              node.data.svgElement =
+                parseSVGToProps(node.data.svg) ?? undefined;
+              console.log("the textNode with svgElement: ", node);
+            }
+            return node;
+          });
           console.log("the nodes: ", processedNodes);
           setNodes(processedNodes);
         } catch (error) {
@@ -125,9 +122,6 @@ function HomePixi() {
     }
   };
 
-  const handleSwitchToReactFlow = () => {
-    navigate('/home');
-  };
 
   return (
     <div className="relative w-full h-screen bg-white overflow-hidden min-w-[650px] min-h-[400px]">
@@ -136,17 +130,6 @@ function HomePixi() {
         <PixiCanvas
           topRightContent={
             <div className="flex items-center gap-2">
-              {/* Switch to ReactFlow Button */}
-              <Button
-                variant="outline"
-                size="icon"
-                className="bg-blue-50 hover:bg-blue-100 text-blue-600 border-blue-300 rounded-full shadow-sm"
-                onClick={handleSwitchToReactFlow}
-                title="Switch to React Flow Canvas"
-              >
-                <Layers className="h-5 w-5" />
-              </Button>
-
               {/* Companion App Status */}
               <div onClick={() => setStatusPanelOpen(!statusPanelOpen)}>
                 <CompanionAppStatus variant="icon" className="bg-white border border-gray-300 shadow-sm" />
@@ -242,8 +225,8 @@ function HomePixi() {
       />
       {/* Debug Panel - only shown when VITE_ENABLE_BUILD_DEBUG is true */}
       {import.meta.env.VITE_ENABLE_BUILD_DEBUG === "true" && (
-        <NodeDebugPanel 
-          nodes={nodes} 
+        <NodeDebugPanel
+          nodes={nodes}
           isOpen={debugPanelOpen}
           onClose={() => setDebugPanelOpen(false)}
         />

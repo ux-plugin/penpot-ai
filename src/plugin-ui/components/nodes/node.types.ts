@@ -1,4 +1,19 @@
-import type { Node } from "@xyflow/react";
+/**
+ * Generic node structure for design nodes
+ */
+export interface BaseDesignNode {
+  id: string;
+  type: "figmaNode" | "textNode" | "svgNode";
+  parentId?: string;
+  position: {
+    x: number;
+    y: number;
+  };
+  width?: number;
+  height?: number;
+  draggable?: boolean;
+  selectable?: boolean;
+}
 
 /**
  * Interface for Figma Frame Node data
@@ -57,7 +72,7 @@ export interface FrameNodeData extends Record<string, unknown> {
   effects?: readonly Effect[];
 
   // Children - recursively nested nodes
-  children?: Array<ReactFlowFrameNodeType | TextNodeType>;
+  children?: Array<FrameNodeType | TextNodeType>;
 
   // SVG vectors
   svg?: string | Uint8Array;
@@ -68,9 +83,12 @@ export interface FrameNodeData extends Record<string, unknown> {
 }
 
 /**
- * Type for a React Flow Node created from a Figma FrameNode, ComponentNode, or ComponentSetNode.
+ * Type for a design node created from a Figma FrameNode, ComponentNode, or ComponentSetNode.
  */
-export type ReactFlowFrameNodeType = Node<FrameNodeData, "figmaNode">;
+export type FrameNodeType = BaseDesignNode & {
+  type: "figmaNode";
+  data: FrameNodeData;
+};
 
 /**
  * Interface for a styled text segment within a TextNode
@@ -170,9 +188,12 @@ export interface TextNodeData extends Record<string, unknown> {
 }
 
 /**
- * Type for a React Flow Node created from a Figma TextNode.
+ * Type for a design node created from a Figma TextNode.
  */
-export type TextNodeType = Node<TextNodeData, "textNode">;
+export type TextNodeType = BaseDesignNode & {
+  type: "textNode";
+  data: TextNodeData;
+};
 
 /**
  * Interface for Figma SVG/Vector Node data
@@ -200,6 +221,9 @@ export interface SVGNodeData extends Record<string, unknown> {
 }
 
 /**
- * Type for a React Flow Node created from a Figma BooleanOperationNode, LineNode, PolygonNode, RectangleNode, or VectorNode.
+ * Type for a design node created from a Figma BooleanOperationNode, LineNode, PolygonNode, RectangleNode, or VectorNode.
  */
-export type SVGNodeType = Node<SVGNodeData, "svgNode">;
+export type SVGNodeType = BaseDesignNode & {
+  type: "svgNode";
+  data: SVGNodeData;
+};

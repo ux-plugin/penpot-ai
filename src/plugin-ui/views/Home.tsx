@@ -14,7 +14,7 @@ import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStor
 import { useUserConfigQuery } from "@/plugin-ui/api/user/fetchUserConfig.ts";
 import { useCompanionConnection } from "@/plugin-ui/api/companion";
 import { usePortUpdatesStore } from "@/plugin-ui/stores/usePortUpdatesStore.ts";
-import { ReactFlowCanvas } from '@/plugin-ui/components/completions/ReactFlowCanvas.tsx';
+import { PixiCanvas } from '@/plugin-ui/components/completions/PixiCanvas.tsx';
 import { StatusPanel } from '@/plugin-ui/components/status/StatusPanel';
 import { SettingsPanel } from '@/plugin-ui/components/user/SettingsPanel';
 import { ConversationPanel } from '@/plugin-ui/components/completions/ConversationPanel';
@@ -136,9 +136,9 @@ function Home() {
 
   return (
     <div className="relative w-full h-screen bg-white overflow-hidden min-w-[650px] min-h-[400px]">
-      {/* ReactFlow Canvas - Full Screen */}
+      {/* PixiJS Canvas - Full Screen */}
       <div className="absolute inset-0">
-        <ReactFlowCanvas
+        <PixiCanvas
           topRightContent={
             <div className="flex items-center gap-2">
               {/* Switch to PixiJS Button */}
