@@ -12,7 +12,7 @@ import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStor
 import { useUserConfigQuery } from "@/plugin-ui/api/user/fetchUserConfig.ts";
 import { useCompanionConnection } from "@/plugin-ui/api/companion";
 import { usePortUpdatesStore } from "@/plugin-ui/stores/usePortUpdatesStore.ts";
-import { PixiCanvas } from '@/plugin-ui/components/completions/PixiCanvas.tsx';
+import { PixiCanvas } from '@/plugin-ui/components/PixiCanvas';
 import { StatusPanel } from '@/plugin-ui/components/status/StatusPanel';
 import { SettingsPanel } from '@/plugin-ui/components/user/SettingsPanel';
 import { ConversationPanel } from '@/plugin-ui/components/completions/ConversationPanel';

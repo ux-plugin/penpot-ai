@@ -3,9 +3,11 @@
  *
  * Converts Figma node properties to PixiJS graphics for GPU-accelerated rendering.
  * Handles fills, strokes, corner radius, blend modes, and SVG textures.
+ * Returns React component props for use with @pixi/react.
  */
 
-import { Graphics, Sprite, Assets, Container } from "pixi.js";
+import React from "react";
+import { Graphics, Sprite, Assets, Container, Texture } from "pixi.js";
 import type { BLEND_MODES } from "pixi.js";
 import type { DesignNode } from "@shared-types/types";
 import type {
@@ -342,7 +344,313 @@ export function createLoadingPlaceholder(
 }
 
 /**
- * Render a single node to a PixiJS Container
+ * React component props for a PixiJS node
+ */
+export interface PixiNodeComponentProps {
+  key: string;
+  x: number;
+  y: number;
+  rotation?: number;
+  alpha?: number;
+  blendMode?: BLEND_MODES;
+  eventMode?: "static" | "dynamic" | "passive" | "auto" | "none";
+  cursor?: string;
+  onPointerDown?: (event: any) => void;
+  onPointerEnter?: (event: any) => void;
+  onPointerLeave?: (event: any) => void;
+  children?: React.ReactNode;
+}
+
+/**
+ * Props for a pixiGraphics component
+ */
+export interface PixiGraphicsProps extends PixiNodeComponentProps {
+  draw: (graphics: Graphics) => void;
+}
+
+/**
+ * Props for a pixiSprite component
+ */
+export interface PixiSpriteProps extends PixiNodeComponentProps {
+  texture: Texture;
+  width: number;
+  height: number;
+}
+
+/**
+ * Union type for node component props
+ */
+export type NodeComponentProps = PixiGraphicsProps | PixiSpriteProps;
+
+/**
+ * Create a draw function for Graphics component from FrameNodeData
+ */
+function createFrameDrawFunction(
+  data: FrameNodeData,
+  width: number,
+  height: number,
+): (graphics: Graphics) => void {
+  return (g: Graphics) => {
+    // Get corner radius
+    const cr = data.cornerRadius || {
+      topLeft: 0,
+      topRight: 0,
+      bottomRight: 0,
+      bottomLeft: 0,
+    };
+    const { topLeft, topRight, bottomRight, bottomLeft } = cr;
+    const isUniformRadius =
+      topLeft === topRight &&
+      topRight === bottomRight &&
+      bottomRight === bottomLeft;
+
+    // Handle fills
+    if (data.fills && data.fills.length > 0) {
+      const fill = data.fills[0] as Paint;
+      if (fill.visible !== false && fill.type === "SOLID" && fill.color) {
+        const color = figmaColorToHex(fill.color);
+        const alpha = fill.opacity ?? 1;
+        g.fill({ color, alpha });
+      } else {
+        g.fill({ color: 0xffffff, alpha: 0 });
+      }
+    } else {
+      g.fill({ color: 0xffffff, alpha: 0 });
+    }
+
+    // Draw shape
+    if (isUniformRadius && topLeft > 0) {
+      g.roundRect(0, 0, width, height, topLeft);
+    } else if (
+      !isUniformRadius &&
+      (topLeft > 0 || topRight > 0 || bottomRight > 0 || bottomLeft > 0)
+    ) {
+      drawRoundedRectWithCorners(
+        g,
+        0,
+        0,
+        width,
+        height,
+        topLeft,
+        topRight,
+        bottomRight,
+        bottomLeft,
+      );
+    } else {
+      g.rect(0, 0, width, height);
+    }
+    g.fill();
+
+    // Handle strokes
+    if (data.strokes && data.strokes.length > 0 && data.strokeWeight) {
+      const stroke = data.strokes[0] as Paint;
+      if (stroke.visible !== false && stroke.type === "SOLID" && stroke.color) {
+        const strokeColor = figmaColorToHex(stroke.color);
+        const strokeWidth = data.strokeWeight.top || 1;
+
+        // Stroke alignment: 0 = outer, 0.5 = center, 1 = inner
+        const alignment =
+          data.strokeAlign === "INSIDE"
+            ? 1
+            : data.strokeAlign === "OUTSIDE"
+              ? 0
+              : 0.5;
+
+        g.stroke({ color: strokeColor, width: strokeWidth, alignment });
+
+        // Redraw shape for stroke
+        if (isUniformRadius && topLeft > 0) {
+          g.roundRect(0, 0, width, height, topLeft);
+        } else if (
+          !isUniformRadius &&
+          (topLeft > 0 || topRight > 0 || bottomRight > 0 || bottomLeft > 0)
+        ) {
+          drawRoundedRectWithCorners(
+            g,
+            0,
+            0,
+            width,
+            height,
+            topLeft,
+            topRight,
+            bottomRight,
+            bottomLeft,
+          );
+        } else {
+          g.rect(0, 0, width, height);
+        }
+        g.stroke();
+      }
+    }
+  };
+}
+
+/**
+ * Create a draw function for bounding box Graphics component
+ */
+function createBoundingBoxDrawFunction(
+  width: number,
+  height: number,
+): (graphics: Graphics) => void {
+  return (g: Graphics) => {
+    g.fill({ color: 0x3b82f6, alpha: 0 });
+    g.rect(0, 0, width, height);
+    g.fill();
+  };
+}
+
+/**
+ * Create a draw function for loading placeholder Graphics component
+ */
+function createLoadingPlaceholderDrawFunction(
+  width: number,
+  height: number,
+): (graphics: Graphics) => void {
+  return (g: Graphics) => {
+    g.fill({ color: 0xf3f4f6, alpha: 1 });
+    g.rect(0, 0, width, height);
+    g.fill();
+
+    // Draw loading indicator (simple border)
+    g.stroke({ color: 0xd1d5db, width: 1 });
+    g.rect(0, 0, width, height);
+    g.stroke();
+  };
+}
+
+/**
+ * Load SVG texture for sprite component
+ */
+export async function loadSVGTexture(
+  svg: string | Uint8Array,
+): Promise<Texture> {
+  const svgString =
+    typeof svg === "string" ? svg : new TextDecoder().decode(svg);
+
+  // Create blob URL from SVG
+  const svgBlob = new Blob([svgString], {
+    type: "image/svg+xml;charset=utf-8",
+  });
+  const url = URL.createObjectURL(svgBlob);
+
+  try {
+    // Load texture
+    const texture = await Assets.load(url);
+    return texture;
+  } finally {
+    // Clean up blob URL
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * Render a single node to React component props
+ */
+export async function renderNodeToComponentProps(
+  node: AbsoluteNode,
+  onNodeClick?: (nodeId: string) => void,
+): Promise<NodeComponentProps> {
+  try {
+    const { width, height, data } = node;
+    const renderMode = data.renderMode || "css";
+
+    const baseProps: PixiNodeComponentProps = {
+      key: node.id,
+      x: node.absoluteX,
+      y: node.absoluteY,
+      rotation: ((data.rotation || 0) * Math.PI) / 180,
+      alpha: data.opacity ?? 1,
+      eventMode: "static",
+      cursor: "pointer",
+    };
+
+    // Apply blend mode
+    if (data.blendMode && typeof data.blendMode === "string") {
+      const blendMode = figmaToPixiBlendMode[data.blendMode];
+      if (blendMode) {
+        baseProps.blendMode = blendMode;
+      }
+    }
+
+    // Click handler
+    if (onNodeClick) {
+      baseProps.onPointerDown = () => onNodeClick(node.id);
+    }
+
+    // Hover effect
+    const originalAlpha = data.opacity ?? 1;
+    baseProps.onPointerEnter = (event: any) => {
+      if (event.target) {
+        event.target.alpha = Math.max(0.7, originalAlpha - 0.2);
+      }
+    };
+    baseProps.onPointerLeave = (event: any) => {
+      if (event.target) {
+        event.target.alpha = originalAlpha;
+      }
+    };
+
+    if (renderMode === "svg" && data.svg) {
+      // Render as SVG sprite
+      try {
+        const texture = await loadSVGTexture(data.svg);
+        const spriteProps: PixiSpriteProps = {
+          ...baseProps,
+          texture,
+          width,
+          height,
+        };
+        return spriteProps;
+      } catch (error) {
+        console.error(
+          `[PixiRenderer] Failed to load SVG for node ${node.id}:`,
+          error,
+        );
+        // Fall through to graphics rendering
+      }
+    }
+
+    // Render as graphics (frame, bounding box, or fallback)
+    let drawFunction: (graphics: Graphics) => void;
+    if (renderMode === "bounding-box") {
+      drawFunction = createBoundingBoxDrawFunction(width, height);
+    } else if (renderMode === "svg" && data.svg) {
+      // Fallback to loading placeholder if SVG failed
+      drawFunction = createLoadingPlaceholderDrawFunction(width, height);
+    } else {
+      // Render as frame with fills/strokes (css mode or fallback)
+      drawFunction = createFrameDrawFunction(
+        data as FrameNodeData,
+        width,
+        height,
+      );
+    }
+
+    const graphicsProps: PixiGraphicsProps = {
+      ...baseProps,
+      draw: drawFunction,
+    };
+
+    return graphicsProps;
+  } catch (error) {
+    console.error(`[PixiRenderer] Failed to render node ${node.id}:`, error);
+    // Return a placeholder graphics component
+    return {
+      key: node.id,
+      x: node.absoluteX,
+      y: node.absoluteY,
+      draw: createLoadingPlaceholderDrawFunction(
+        node.width || 100,
+        node.height || 100,
+      ),
+      eventMode: "static",
+    };
+  }
+}
+
+/**
+ * Legacy function: Render a single node to a PixiJS Container
+ * @deprecated Use renderNodeToComponentProps instead
  */
 export async function renderNodeToContainer(
   node: AbsoluteNode,
@@ -422,7 +730,26 @@ export async function renderNodeToContainer(
 }
 
 /**
- * Batch render all nodes to containers
+ * Batch render all nodes to React component props
+ */
+export async function renderAllNodesToComponentProps(
+  nodes: DesignNode[],
+  onNodeClick?: (nodeId: string) => void,
+): Promise<NodeComponentProps[]> {
+  // Compute absolute positions
+  const absoluteNodes = computeAbsolutePositions(nodes);
+
+  // Render all nodes in parallel
+  const componentProps = await Promise.all(
+    absoluteNodes.map((node) => renderNodeToComponentProps(node, onNodeClick)),
+  );
+
+  return componentProps;
+}
+
+/**
+ * Legacy function: Batch render all nodes to containers
+ * @deprecated Use renderAllNodesToComponentProps instead
  */
 export async function renderAllNodes(
   nodes: DesignNode[],
