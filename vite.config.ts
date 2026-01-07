@@ -397,7 +397,7 @@ export default defineConfig(({ command, mode }) => {
     // Optimize dependency pre-bundling
     optimizeDeps: {
       include: ["react", "react-dom", "buffer"],
-      exclude: [],
+      exclude: ["canvaskit-wasm"], // Exclude WASM module from pre-bundling
       esbuildOptions: {
         // Node.js global polyfills for browser
         define: {
@@ -405,5 +405,7 @@ export default defineConfig(({ command, mode }) => {
         },
       },
     },
+    // Handle WASM files
+    assetsInclude: ["**/*.wasm"],
   };
 });
