@@ -604,7 +604,7 @@ export class FigmaImplementation implements IDesignPlatform {
    */
   exportNodeSVGs = async (
     nodeIds: string[],
-  ): Promise<Array<{ nodeId: string; svg: string | Uint8Array | null }>> => {
+  ): Promise<Array<{ nodeId: string; svg: string | null }>> => {
     if (nodeIds.length === 0) {
       return [];
     }

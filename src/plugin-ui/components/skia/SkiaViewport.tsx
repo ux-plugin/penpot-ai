@@ -5,7 +5,7 @@
  * Mirrors the behavior of PixiViewport for consistent Figma coordinate system.
  */
 
-import React, {
+import {
     forwardRef,
     useEffect,
     useImperativeHandle,

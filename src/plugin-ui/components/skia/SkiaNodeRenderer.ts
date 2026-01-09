@@ -88,7 +88,7 @@ export function createRoundedRectPath(
   bottomRight: number,
   bottomLeft: number,
 ): Path {
-  const path = new canvasKit.Path();
+  const path = new canvasKit.PathBuilder();
 
   // Clamp radii to not exceed half of width/height
   const maxRadius = Math.min(width / 2, height / 2);
@@ -143,7 +143,7 @@ export function createRoundedRectPath(
     path.close();
   }
 
-  return path;
+  return path.detach();
 }
 
 /**

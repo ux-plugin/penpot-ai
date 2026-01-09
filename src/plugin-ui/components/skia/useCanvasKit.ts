@@ -7,6 +7,8 @@
 
 import { useState, useEffect, useRef } from "react";
 import CanvasKitInit, { CanvasKit } from "canvaskit-wasm";
+// Import WASM file URL using Vite's ?url suffix - this ensures version match with JS glue code
+import canvasKitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
 
 // Singleton instance to avoid reloading WASM
 let canvasKitInstance: CanvasKit | null = null;
@@ -26,8 +28,8 @@ async function initCanvasKit(): Promise<CanvasKit> {
 
   initPromise = CanvasKitInit({
     locateFile: (file: string) => {
-      // Use the WASM file from node_modules
-      return `https://unpkg.com/canvaskit-wasm@0.40.0/bin/${file}`;
+      // Use the imported WASM URL to ensure version match with JS glue code
+      return file.endsWith(".wasm") ? canvasKitWasmUrl : file;
     },
   });
 

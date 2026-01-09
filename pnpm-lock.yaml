@@ -39,8 +39,8 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       canvaskit-wasm:
-        specifier: ^0.40.0
-        version: 0.40.0
+        specifier: file:canvaskit-wasm-0.40.0.tgz
+        version: file:canvaskit-wasm-0.40.0.tgz
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -1524,8 +1524,9 @@ packages:
   caniuse-lite@1.0.30001748:
     resolution: {integrity: sha512-5P5UgAr0+aBmNiplks08JLw+AW/XG/SurlgZLgB1dDLfAw7EfRGxIwzPHxdSCGY/BTKDqIVyJL87cCN6s0ZR0w==}
 
-  canvaskit-wasm@0.40.0:
-    resolution: {integrity: sha512-Od2o+ZmoEw9PBdN/yCGvzfu0WVqlufBPEWNG452wY7E9aT8RBE+ChpZF526doOlg7zumO4iCS+RAeht4P0Gbpw==}
+  canvaskit-wasm@file:canvaskit-wasm-0.40.0.tgz:
+    resolution: {integrity: sha512-LRWdcW0731rmfbJmnVP99NJV7DfmWZNXWLtMe/syUUNlrksFbX0tOV1QbJhqfSnexF3vhhsR60oWH1tiN/dWbg==, tarball: file:canvaskit-wasm-0.40.0.tgz}
+    version: 0.40.0
 
   chalk@4.1.2:
     resolution: {integrity: sha512-oKnbhFyRIXpUuez8iBMmyEa4nbj4IOQyuhc/wy9kY7/WVPcwIO9VA668Pu8RkO7+0G76SLROeyw9CpQ061i4mA==}
@@ -4830,7 +4831,7 @@ snapshots:
 
   caniuse-lite@1.0.30001748: {}
 
-  canvaskit-wasm@0.40.0:
+  canvaskit-wasm@file:canvaskit-wasm-0.40.0.tgz:
     dependencies:
       '@webgpu/types': 0.1.21
 

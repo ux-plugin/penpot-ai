@@ -477,7 +477,7 @@ export interface ExportNodeSVGsResponse extends MessageResponse {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.EXPORT_NODE_SVGS;
   result: {
-    svgs: Array<{ nodeId: string; svg: string | Uint8Array | null }>;
+    svgs: Array<{ nodeId: string; svg: string | null }>;
   };
 }
 

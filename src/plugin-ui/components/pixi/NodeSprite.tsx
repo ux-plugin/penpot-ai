@@ -10,13 +10,12 @@ import type { AbsoluteNode } from '@/plugin-ui/utils/pixiNodeRenderer';
 import { figmaToPixiBlendMode } from '@/plugin-ui/utils/pixiNodeRenderer';
 
 /**
- * Load SVG texture from string or Uint8Array
+ * Load SVG texture from string
  */
 export async function loadSVGTexture(
-  svg: string | Uint8Array
+  svg: string
 ): Promise<Texture> {
-  const svgString =
-    typeof svg === 'string' ? svg : new TextDecoder().decode(svg);
+  const svgString = svg;
 
   // Validate SVG string
   if (!svgString || svgString.trim().length === 0) {

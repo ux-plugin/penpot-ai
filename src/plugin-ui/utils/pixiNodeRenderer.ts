@@ -297,12 +297,11 @@ export function drawBoundingBox(width: number, height: number): Graphics {
  * Create a Sprite from an SVG string
  */
 export async function createSVGSprite(
-  svg: string | Uint8Array,
+  svg: string,
   width: number,
   height: number,
 ): Promise<Sprite> {
-  const svgString =
-    typeof svg === "string" ? svg : new TextDecoder().decode(svg);
+  const svgString = svg;
 
   // Create blob URL from SVG
   const svgBlob = new Blob([svgString], {
@@ -521,11 +520,8 @@ function createLoadingPlaceholderDrawFunction(
 /**
  * Load SVG texture for sprite component
  */
-export async function loadSVGTexture(
-  svg: string | Uint8Array,
-): Promise<Texture> {
-  const svgString =
-    typeof svg === "string" ? svg : new TextDecoder().decode(svg);
+export async function loadSVGTexture(svg: string): Promise<Texture> {
+  const svgString = svg;
 
   // Create blob URL from SVG
   const svgBlob = new Blob([svgString], {

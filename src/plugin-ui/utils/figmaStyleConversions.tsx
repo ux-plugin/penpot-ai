@@ -219,24 +219,18 @@ export function parseSVGToProps(svgString?: string) {
 }
 
 /**
- * Converts SVG data (string or Uint8Array) to a string for rendering
+ * Converts SVG data to a string for rendering
  */
-export function convertSVGToString(svg?: string | Uint8Array): string | null {
+export function convertSVGToString(svg?: string): string | null {
   if (!svg) return null;
 
-  if (typeof svg === 'string') {
-    return parseSVGString(svg);
-  }
-
-  // Convert Uint8Array to string
-  const decoder = new TextDecoder('utf-8');
-  return decoder.decode(svg);
+  return parseSVGString(svg);
 }
 
 /**
- * Converts SVG data (string or Uint8Array) to SVGElement
+ * Converts SVG data to SVGElement
  */
-export function parseSVGToElement(svg?: string | Uint8Array): SVGElement | null {
+export function parseSVGToElement(svg?: string): SVGElement | null {
   const svgString = convertSVGToString(svg);
   if (!svgString) return null;
 

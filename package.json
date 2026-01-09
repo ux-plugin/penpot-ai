@@ -23,7 +23,7 @@
     "@tailwindcss/vite": "^4.0.17",
     "@tanstack/react-query": "^5.83.0",
     "buffer": "^6.0.3",
-    "canvaskit-wasm": "^0.40.0",
+    "canvaskit-wasm": "file:canvaskit-wasm-0.40.0.tgz",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.537.0",

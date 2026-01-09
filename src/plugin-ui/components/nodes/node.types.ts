@@ -75,7 +75,7 @@ export interface FrameNodeData extends Record<string, unknown> {
   children?: Array<FrameNodeType | TextNodeType>;
 
   // SVG vectors
-  svg?: string | Uint8Array;
+  svg?: string;
   svgElement?: SVGElement;
 
   // Rendering mode: 'css' for simple nodes (fast), 'svg' for complex nodes (accurate), 'bounding-box' for descendants of SVG nodes
@@ -213,7 +213,7 @@ export interface SVGNodeData extends Record<string, unknown> {
   height?: number;
 
   // SVG vectors
-  svg?: string | Uint8Array;
+  svg?: string;
   svgElement?: SVGElement;
 
   // Rendering mode: 'css' for simple nodes (fast), 'svg' for complex nodes (accurate), 'bounding-box' for descendants of SVG nodes

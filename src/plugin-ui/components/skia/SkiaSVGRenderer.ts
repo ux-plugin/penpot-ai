@@ -189,21 +189,15 @@ function extractStrokeProps(
 export function renderSVG(
   canvasKit: CanvasKit,
   canvas: Canvas,
-  svgString: string | Uint8Array,
+  svgString: string,
   x: number,
   y: number,
   width: number,
   height: number,
   opacity: number = 1,
 ): boolean {
-  // Convert Uint8Array to string if needed
-  const svgStr =
-    typeof svgString === "string"
-      ? svgString
-      : new TextDecoder().decode(svgString);
-
   // Parse SVG
-  const parsed = parseSVG(canvasKit, svgStr);
+  const parsed = parseSVG(canvasKit, svgString);
 
   if (!parsed) {
     // Fallback: draw a placeholder rectangle
@@ -250,7 +244,7 @@ export function renderSVG(
     }
 
     // Draw fill
-    const fillColor = extractFillColor(canvasKit, svgStr);
+    const fillColor = extractFillColor(canvasKit, svgString);
     if (fillColor) {
       const fillPaint = new canvasKit.Paint();
       fillPaint.setStyle(canvasKit.PaintStyle.Fill);
@@ -262,7 +256,7 @@ export function renderSVG(
     }
 
     // Draw stroke
-    const strokeProps = extractStrokeProps(canvasKit, svgStr);
+    const strokeProps = extractStrokeProps(canvasKit, svgString);
     if (strokeProps) {
       const strokePaint = new canvasKit.Paint();
       strokePaint.setStyle(canvasKit.PaintStyle.Stroke);

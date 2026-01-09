@@ -53,7 +53,7 @@ export async function loadAllNodes(includeSVG: boolean = false): Promise<{
  */
 export async function loadNodeSVGs(
   nodeIds: string[],
-): Promise<Array<{ nodeId: string; svg: string | Uint8Array | null }>> {
+): Promise<Array<{ nodeId: string; svg: string | null }>> {
   try {
     const result = await uiMessageDispatcher.sendRequest<
       Omit<any, "id" | "timestamp" | "source">,
