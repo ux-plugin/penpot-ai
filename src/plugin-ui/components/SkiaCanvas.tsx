@@ -366,14 +366,14 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
     if (viewportRef.current) {
       const state = viewportRef.current.getViewport();
       const newScale = Math.min(state.scale * 1.5, 256);
-      
+
       // Zoom towards center
       const centerX = containerDimensions.width / 2;
       const centerY = containerDimensions.height / 2;
       const scaleRatio = newScale / state.scale;
       const newX = centerX - (centerX - state.x) * scaleRatio;
       const newY = centerY - (centerY - state.y) * scaleRatio;
-      
+
       viewportRef.current.setViewport(newX, newY, newScale);
       handleViewportChanged({ x: newX, y: newY, scale: newScale });
     }
@@ -383,14 +383,14 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
     if (viewportRef.current) {
       const state = viewportRef.current.getViewport();
       const newScale = Math.max(state.scale / 1.5, 0.02);
-      
+
       // Zoom towards center
       const centerX = containerDimensions.width / 2;
       const centerY = containerDimensions.height / 2;
       const scaleRatio = newScale / state.scale;
       const newX = centerX - (centerX - state.x) * scaleRatio;
       const newY = centerY - (centerY - state.y) * scaleRatio;
-      
+
       viewportRef.current.setViewport(newX, newY, newScale);
       handleViewportChanged({ x: newX, y: newY, scale: newScale });
     }

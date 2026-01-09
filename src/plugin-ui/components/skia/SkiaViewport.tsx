@@ -5,7 +5,7 @@
  * Mirrors the behavior of PixiViewport for consistent Figma coordinate system.
  */
 
-import {
+import React, {
     forwardRef,
     useEffect,
     useImperativeHandle,
@@ -118,6 +118,7 @@ export const SkiaViewport = forwardRef<SkiaViewportRef, SkiaViewportProps>(
             const surface = surfaceRef.current;
             const canvas = surface.getCanvas();
             const state = viewportStateRef.current;
+            const dpr = window.devicePixelRatio || 1;
 
             // Clear canvas
             canvas.clear(canvasKit.BLACK);
@@ -127,8 +128,12 @@ export const SkiaViewport = forwardRef<SkiaViewportRef, SkiaViewportProps>(
 
             // Apply viewport transformation (pan + zoom)
             // This matches Figma's coordinate system: origin top-left, Y-axis down
-            canvas.translate(state.x, state.y);
-            canvas.scale(state.scale, state.scale);
+            // Scale both translation and zoom by DPR since:
+            // - Canvas is rendered at DPR resolution (e.g., 1452x1180 at 2x)
+            // - Viewport state is in CSS pixel space (e.g., 726x590)
+            // - We need 1 CSS pixel of movement = 1 CSS pixel of visual movement
+            canvas.translate(state.x * dpr, state.y * dpr);
+            canvas.scale(state.scale * dpr, state.scale * dpr);
 
             // Call render callback
             if (onRenderRef.current) {
