@@ -12,7 +12,7 @@ import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStor
 import { useUserConfigQuery } from "@/plugin-ui/api/user/fetchUserConfig.ts";
 import { useCompanionConnection } from "@/plugin-ui/api/companion";
 import { usePortUpdatesStore } from "@/plugin-ui/stores/usePortUpdatesStore.ts";
-import { CanvasSwitcher } from '@/plugin-ui/components/CanvasSwitcher';
+import { SkiaCanvas } from '@/plugin-ui/components/SkiaCanvas';
 import { StatusPanel } from '@/plugin-ui/components/status/StatusPanel';
 import { SettingsPanel } from '@/plugin-ui/components/user/SettingsPanel';
 import { ConversationPanel } from '@/plugin-ui/components/completions/ConversationPanel';
@@ -125,10 +125,9 @@ function HomePixi() {
 
   return (
     <div className="relative w-full h-screen bg-white overflow-hidden min-w-[650px] min-h-[400px]">
-      {/* Canvas - Full Screen (Switchable between Pixi and Skia) */}
+      {/* Canvas - Full Screen (Skia rendering) */}
       <div className="absolute inset-0">
-        <CanvasSwitcher
-          defaultRenderer="pixi"
+        <SkiaCanvas
           topRightContent={
             <div className="flex items-center gap-2">
               {/* Companion App Status */}

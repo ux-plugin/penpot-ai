@@ -6,7 +6,7 @@
  */
 
 import type { CanvasKit, Canvas, SVGDOM } from "canvaskit-wasm";
-import type { AbsoluteNode } from "@/plugin-ui/utils/pixiNodeRenderer";
+import type { AbsoluteNode } from "@/plugin-ui/utils/nodeRendererUtils";
 
 /**
  * SVG cache to avoid re-parsing the same SVG multiple times

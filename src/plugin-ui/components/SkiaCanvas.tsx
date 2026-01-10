@@ -19,7 +19,7 @@ import {
   UpdateViewportRequest,
 } from '@shared-types/messageTypes';
 import { DesignNode } from '@shared-types/types';
-import { computeAbsolutePositions, type AbsoluteNode } from '@/plugin-ui/utils/pixiNodeRenderer';
+import { computeAbsolutePositions, type AbsoluteNode } from '@/plugin-ui/utils/nodeRendererUtils';
 import {
   useCanvasKit,
   SkiaViewport,

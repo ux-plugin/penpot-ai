@@ -12,7 +12,7 @@ import type { FrameNodeData } from "@components/nodes/node.types";
 import {
   computeAbsolutePositions,
   type AbsoluteNode,
-} from "@/plugin-ui/utils/pixiNodeRenderer";
+} from "@/plugin-ui/utils/nodeRendererUtils";
 
 /**
  * Color interface from Figma
