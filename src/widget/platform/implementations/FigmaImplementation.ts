@@ -460,6 +460,12 @@ export class FigmaImplementation implements IDesignPlatform {
       }
     }
 
+    // Helper to check if a node has any text node children
+    const hasTextChild = (nodeId: string): boolean => {
+      const children = childrenMap.get(nodeId) || [];
+      return children.some((child) => child.type === "textNode");
+    };
+
     // Process root nodes (nodes without parentId)
     const processNode = (
       node: DesignNode,
@@ -476,8 +482,11 @@ export class FigmaImplementation implements IDesignPlatform {
           // Text nodes always need SVG for accurate text rendering
           node.data.renderMode = "svg";
         } else if (node.type === "figmaNode") {
-          // For frame nodes, determine based on complexity
-          if (parentMode === "css") {
+          // For frame nodes, check if any child is a text node
+          if (hasTextChild(node.id)) {
+            // Parent of text node always uses SVG for better text rendering
+            node.data.renderMode = "svg";
+          } else if (parentMode === "css") {
             // If parent uses CSS, child can be CSS or SVG based on complexity
             node.data.renderMode = this.shouldExportSVG(node) ? "svg" : "css";
           } else {
