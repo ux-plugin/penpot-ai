@@ -5,6 +5,7 @@ import {
   CompleteRequest,
   MessageCategory,
   OperationMessageType,
+  SystemMessageType,
 } from "@/shared/types/messageTypes";
 
 // ============================================
@@ -134,15 +135,132 @@ async function logSelectedNodes(commands: any): Promise<void> {
   setupCodeMessageListener();
 
   // ============================================
+  // Node Change Tracking: Listen to Figma events and notify UI
+  // ============================================
+
+  // Handle page node changes (property changes, creates, deletes)
+  // Using PageNode.on("nodechange") as recommended by Figma API
+  // See: https://developers.figma.com/docs/plugins/api/properties/PageNode-on/
+  commands.currentPage.on("nodechange", async (event: any) => {
+    try {
+      const nodeChanges = event?.nodeChanges || [];
+      if (nodeChanges.length === 0) return;
+
+      // Collect all changed node IDs and categorize changes
+      const createdNodeIds: string[] = [];
+      const deletedNodeIds: string[] = [];
+      const updatedNodeIds: string[] = [];
+
+      for (const change of nodeChanges) {
+        if (change.type === "CREATE") {
+          const nodeId = change.node?.id;
+          if (nodeId) {
+            createdNodeIds.push(nodeId);
+          }
+        } else if (change.type === "DELETE") {
+          const nodeId = change.node?.id || change.id;
+          if (nodeId) {
+            deletedNodeIds.push(nodeId);
+          }
+        } else if (change.type === "PROPERTY_CHANGE") {
+          const nodeId = change.node?.id;
+          if (nodeId) {
+            updatedNodeIds.push(nodeId);
+          }
+        }
+      }
+
+      // Batch fetch nodes for creates and updates together
+      const nodesNeedingFetch = [...createdNodeIds, ...updatedNodeIds];
+      let fetchedNodes: any[] = [];
+      if (nodesNeedingFetch.length > 0) {
+        // Get all nodes and filter to changed ones
+        const allNodes = await commands.getAllNodes(false);
+        fetchedNodes = allNodes.filter((node) =>
+          nodesNeedingFetch.includes(node.id),
+        );
+      }
+
+      // Handle creates
+      if (createdNodeIds.length > 0) {
+        const createdNodes = fetchedNodes.filter((node) =>
+          createdNodeIds.includes(node.id),
+        );
+
+        await codeMessageDispatcher.sendRequest({
+          category: MessageCategory.SYSTEM,
+          type: SystemMessageType.NODE_CHANGED,
+          payload: {
+            changeType: "create",
+            nodeIds: createdNodeIds,
+            nodes: createdNodes,
+          },
+        });
+      }
+
+      // Handle deletes
+      if (deletedNodeIds.length > 0) {
+        await codeMessageDispatcher.sendRequest({
+          category: MessageCategory.SYSTEM,
+          type: SystemMessageType.NODE_CHANGED,
+          payload: {
+            changeType: "delete",
+            nodeIds: deletedNodeIds,
+          },
+        });
+      }
+
+      // Handle property updates
+      if (updatedNodeIds.length > 0) {
+        const updatedNodes = fetchedNodes.filter((node) =>
+          updatedNodeIds.includes(node.id),
+        );
+
+        await codeMessageDispatcher.sendRequest({
+          category: MessageCategory.SYSTEM,
+          type: SystemMessageType.NODE_CHANGED,
+          payload: {
+            changeType: "property",
+            nodeIds: updatedNodeIds,
+            nodes: updatedNodes,
+          },
+        });
+      }
+    } catch (error) {
+      console.error("[code.ts] Error handling nodechange:", error);
+    }
+  });
+
+  // Handle selection changes
+  commands.on("selectionchange", async () => {
+    try {
+      const selectedIds = commands.currentPage.selection.map(
+        (node: any) => node.id,
+      );
+
+      await codeMessageDispatcher.sendRequest({
+        category: MessageCategory.SYSTEM,
+        type: SystemMessageType.SELECTION_CHANGED,
+        payload: {
+          selectedNodeIds: selectedIds,
+        },
+      });
+    } catch (error) {
+      console.error("[code.ts] Error handling selectionchange:", error);
+    }
+  });
+
+  // ============================================
   // TESTING ONLY: Setup selection change listener
   // ============================================
-  commands.on("selectionchange", async () => {
+  // Keep the testing code but wrap it to avoid conflicts
+  const originalSelectionChange = async () => {
     await logSelectedNodes(commands);
-  });
+  };
 
   // Log initial selection
   console.log("Selection logging initialized (Testing Mode)");
-  await logSelectedNodes(commands);
+  await originalSelectionChange();
   // ============================================
 
   async function handleCompletion({

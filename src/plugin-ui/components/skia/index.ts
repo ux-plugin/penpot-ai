@@ -28,4 +28,5 @@ export {
   parseSVG,
   clearSVGCache,
 } from './SkiaSVGRenderer';
+export { CanvasOverlay } from './CanvasOverlay';
 

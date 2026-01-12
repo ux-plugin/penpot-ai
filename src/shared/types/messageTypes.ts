@@ -33,7 +33,9 @@ export enum SystemMessageType {
   UPDATE_VIEWPORT = 'update_viewport',
   GET_VIEWPORT_BOUNDS = 'get_viewport_bounds',
   GET_ALL_NODES = 'get_all_nodes',
-  EXPORT_NODE_SVGS = 'export_node_svgs'
+  EXPORT_NODE_SVGS = 'export_node_svgs',
+  NODE_CHANGED = 'node_changed',
+  SELECTION_CHANGED = 'selection_changed'
 }
 
 // Base message request interface
@@ -481,6 +483,42 @@ export interface ExportNodeSVGsResponse extends MessageResponse {
   };
 }
 
+// Node Changed Request/Response
+export interface NodeChangedRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.NODE_CHANGED;
+  payload: {
+    changeType: 'property' | 'create' | 'delete';
+    nodeIds: string[];
+    nodes?: DesignNode[];  // Full node data for creates/updates
+  };
+}
+
+export interface NodeChangedResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.NODE_CHANGED;
+  result: {
+    handled: boolean;
+  };
+}
+
+// Selection Changed Request/Response
+export interface SelectionChangedRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.SELECTION_CHANGED;
+  payload: {
+    selectedNodeIds: string[];
+  };
+}
+
+export interface SelectionChangedResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.SELECTION_CHANGED;
+  result: {
+    handled: boolean;
+  };
+}
+
 // =================
 // UNION TYPES
 // =================
@@ -506,7 +544,9 @@ export type Request =
   | UpdateViewportRequest
   | GetViewportBoundsRequest
   | GetAllNodesRequest
-  | ExportNodeSVGsRequest;
+  | ExportNodeSVGsRequest
+  | NodeChangedRequest
+  | SelectionChangedRequest;
 
 // All response types
 export type Response = 
@@ -529,7 +569,9 @@ export type Response =
   | UpdateViewportResponse
   | GetViewportBoundsResponse
   | GetAllNodesResponse
-  | ExportNodeSVGsResponse;
+  | ExportNodeSVGsResponse
+  | NodeChangedResponse
+  | SelectionChangedResponse;
 
 
 // Union of all message types
@@ -620,6 +662,14 @@ export type RequestToResponseMap = {
   [SystemMessageType.EXPORT_NODE_SVGS]: {
     request: ExportNodeSVGsRequest;
     response: ExportNodeSVGsResponse;
+  };
+  [SystemMessageType.NODE_CHANGED]: {
+    request: NodeChangedRequest;
+    response: NodeChangedResponse;
+  };
+  [SystemMessageType.SELECTION_CHANGED]: {
+    request: SelectionChangedRequest;
+    response: SelectionChangedResponse;
   };
 };
 

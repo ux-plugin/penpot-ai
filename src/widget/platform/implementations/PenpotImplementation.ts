@@ -112,6 +112,18 @@ export class PenpotImplementation implements IDesignPlatform {
         return (globalThis as any).penpot.page.children || [];
       }
       return [];
+    },
+    on: (event: string, callback: ((event?: any) => void) | (() => void)) => {
+      // Penpot's page event listener API - assuming similar to Figma's PageNode.on()
+      if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.page) {
+        const page = (globalThis as any).penpot.page;
+        if (page.on) {
+          page.on(event, callback);
+        } else if (page.addEventListener) {
+          // Alternative API if Penpot uses addEventListener
+          page.addEventListener(event, callback);
+        }
+      }
     }
   };
 

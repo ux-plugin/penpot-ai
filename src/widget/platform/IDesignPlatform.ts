@@ -44,8 +44,9 @@ export interface IDesignPlatform {
   currentPage: {
     selection: readonly unknown[];
     children: readonly BaseSceneNode[];
+    on: (event: string, callback: ((event?: any) => void) | (() => void)) => void;
   };
-  on: (event: string, callback: () => void) => void;
+  on: (event: string, callback: ((event?: any) => void) | (() => void)) => void;
   
   // Viewport
   viewport: {

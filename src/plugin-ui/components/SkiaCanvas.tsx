@@ -9,8 +9,8 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import type { Canvas } from 'canvaskit-wasm';
 import { syncCanvasWithFigma } from '@/plugin-ui/utils/syncCanvas';
-import { loadAllNodes, loadNodeSVGs } from '@/plugin-ui/utils/loadNodes';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
+import { nodeManager } from '@/plugin-ui/stores/NodeManager';
 import {
   MessageCategory,
   SystemMessageType,
@@ -28,12 +28,17 @@ import {
   renderAbsoluteNodes,
   renderSVGNode,
 } from './skia';
+import { CanvasOverlay } from './skia/CanvasOverlay';
 
 interface SkiaCanvasProps {
   topRightContent?: React.ReactNode;
   bottomRightContent?: React.ReactNode;
   centerRightContent?: React.ReactNode;
   topLeftContent?: React.ReactNode;
+  /** Callback when a node is clicked on the overlay */
+  onNodeClick?: (node: DesignNode) => void;
+  /** Callback when a node is hovered on the overlay (null when hover leaves) */
+  onNodeHover?: (node: DesignNode | null) => void;
 }
 
 export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
@@ -41,6 +46,8 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
   bottomRightContent,
   centerRightContent,
   topLeftContent,
+  onNodeClick,
+  onNodeHover,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<SkiaViewportRef>(null);
@@ -60,6 +67,9 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
 
   // State for container dimensions
   const [containerDimensions, setContainerDimensions] = useState({ width: 800, height: 600 });
+
+  // State for overlay viewport (needed for re-rendering overlay on viewport changes)
+  const [overlayViewport, setOverlayViewport] = useState<ViewportState>({ x: 0, y: 0, scale: 1 });
 
   // Update container dimensions on mount and resize
   useEffect(() => {
@@ -82,6 +92,7 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
     if (!viewportRef.current) return;
     viewportRef.current.setViewport(vp.x, vp.y, vp.scale);
     currentViewport.current = vp;
+    setOverlayViewport(vp); // Update overlay viewport state
   }, []);
 
   // Send viewport update to Figma
@@ -149,6 +160,9 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
 
   // Handle viewport changes from SkiaViewport
   const handleViewportChanged = useCallback((viewport: ViewportState) => {
+    // Update overlay viewport state immediately for responsive hover/click
+    setOverlayViewport(viewport);
+
     if (!hasSynced.current) return;
     if (isSyncingFromFigma.current) return;
     if (!isCursorInsideRef.current) return;
@@ -204,29 +218,22 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
     try {
       console.log(`[SkiaCanvas] Loading SVGs for ${svgNodeIds.length} nodes...`);
 
-      // Request SVGs in batches
-      const batchSize = 50;
-      for (let i = 0; i < svgNodeIds.length; i += batchSize) {
-        const batch = svgNodeIds.slice(i, i + batchSize);
-        const svgResults = await loadNodeSVGs(batch);
+      // Request SVGs from NodeManager (it will handle caching and re-export)
+      await nodeManager.requestSVGs(svgNodeIds);
 
-        // Process each SVG result
-        for (const svgResult of svgResults) {
-          if (!svgResult.svg) continue;
-
-          // Find the corresponding node and update its SVG data
-          const nodeIndex = absoluteNodesRef.current.findIndex(n => n.id === svgResult.nodeId);
+      // Update local refs with SVGs from cache
+      for (const nodeId of svgNodeIds) {
+        const svg = nodeManager.getSVG(nodeId);
+        if (svg) {
+          const nodeIndex = absoluteNodesRef.current.findIndex(n => n.id === nodeId);
           if (nodeIndex !== -1) {
-            absoluteNodesRef.current[nodeIndex].data.svg = svgResult.svg;
+            absoluteNodesRef.current[nodeIndex].data.svg = svg;
           }
         }
-
-        // Request redraw after each batch
-        viewportRef.current?.requestDraw();
-
-        // Yield control after each batch
-        await new Promise(resolve => setTimeout(resolve, 0));
       }
+
+      // Request redraw
+      viewportRef.current?.requestDraw();
 
       console.log(`[SkiaCanvas] Completed lazy SVG loading for ${svgNodeIds.length} nodes`);
     } catch (error) {
@@ -234,66 +241,63 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
     }
   }, [canvasKit]);
 
-  // Load and render nodes
+  // Update nodes from NodeManager cache
+  const updateNodesFromCache = useCallback(() => {
+    if (!canvasKit || !viewportRef.current) return;
+
+    const allNodes = nodeManager.getAllNodes();
+    nodesRef.current = allNodes;
+
+    // Compute absolute positions
+    absoluteNodesRef.current = computeAbsolutePositions(allNodes);
+
+    // Track SVG nodes for lazy loading
+    const svgNodeIds: string[] = [];
+    for (const node of absoluteNodesRef.current) {
+      if (node.data.renderMode === 'svg' && !node.data.svg) {
+        svgNodeIds.push(node.id);
+      }
+    }
+
+    console.log(`[SkiaCanvas] Updated ${allNodes.length} nodes from cache`);
+
+    // Request redraw
+    viewportRef.current.requestDraw();
+
+    // Load SVGs lazily for nodes that need them
+    if (svgNodeIds.length > 0) {
+      loadAndRenderSVGs(svgNodeIds);
+    }
+  }, [canvasKit, loadAndRenderSVGs]);
+
+  // Load and render nodes (initial load)
   const loadNodes = useCallback(async () => {
     if (!canvasKit || !viewportRef.current) return;
     if (isLoadingNodes.current) return;
 
     isLoadingNodes.current = true;
     try {
-      console.log('[SkiaCanvas] Loading nodes...');
+      console.log('[SkiaCanvas] Initializing NodeManager...');
 
-      // Add a timeout wrapper
-      const loadNodesPromise = loadAllNodes(false);
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error('loadAllNodes timeout after 10 seconds'));
-        }, 10000);
-      });
+      // Initialize NodeManager (loads all nodes)
+      await nodeManager.initialize();
 
-      let result;
-      try {
-        result = await Promise.race([loadNodesPromise, timeoutPromise]);
-      } catch (error) {
-        console.error('[SkiaCanvas] loadAllNodes failed or timed out:', error);
-        result = { nodes: [], totalCount: 0 };
-      }
-
-      nodesRef.current = result.nodes;
-
-      // Compute absolute positions
-      absoluteNodesRef.current = computeAbsolutePositions(result.nodes);
-
-      // Track SVG nodes for lazy loading
-      const svgNodeIds: string[] = [];
-      for (const node of absoluteNodesRef.current) {
-        if (node.data.renderMode === 'svg') {
-          svgNodeIds.push(node.id);
-        }
-      }
-
-      console.log(`[SkiaCanvas] ${result.nodes.length} nodes loaded`);
-
-      // Request initial render
-      viewportRef.current.requestDraw();
-
-      // Load SVGs lazily
-      if (svgNodeIds.length > 0) {
-        loadAndRenderSVGs(svgNodeIds);
-      }
+      // Update from cache
+      updateNodesFromCache();
 
       // Sync viewport after loading
-      if (result.nodes.length > 0) {
+      const allNodes = nodeManager.getAllNodes();
+      if (allNodes.length > 0) {
         setTimeout(() => {
           syncFromFigma();
         }, 100);
       }
     } catch (error) {
-      console.error('[SkiaCanvas] Failed to load nodes:', error);
+      console.error('[SkiaCanvas] Failed to initialize NodeManager:', error);
     } finally {
       isLoadingNodes.current = false;
     }
-  }, [canvasKit, syncFromFigma, loadAndRenderSVGs]);
+  }, [canvasKit, syncFromFigma, updateNodesFromCache]);
 
   // Handle viewport ready callback
   const handleViewportReady = useCallback((_ref: SkiaViewportRef) => {
@@ -306,6 +310,30 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
       }, 100);
     });
   }, [loadNodes]);
+
+  // Subscribe to NodeManager changes
+  useEffect(() => {
+    const unsubscribe = nodeManager.subscribe((event) => {
+      if (event.type === 'nodes_changed') {
+        console.log('[SkiaCanvas] Nodes changed, updating...');
+        updateNodesFromCache();
+      } else if (event.type === 'svg_loaded' && event.nodeIds) {
+        // Update SVG data for nodes that just got their SVGs loaded
+        for (const nodeId of event.nodeIds) {
+          const svg = nodeManager.getSVG(nodeId);
+          if (svg) {
+            const nodeIndex = absoluteNodesRef.current.findIndex(n => n.id === nodeId);
+            if (nodeIndex !== -1) {
+              absoluteNodesRef.current[nodeIndex].data.svg = svg;
+            }
+          }
+        }
+        viewportRef.current?.requestDraw();
+      }
+    });
+
+    return unsubscribe;
+  }, [updateNodesFromCache]);
 
   // Track mouse position for zoom focal point
   useEffect(() => {
@@ -438,6 +466,15 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
         onZoomed={handleViewportChanged}
         onViewportReady={handleViewportReady}
         onRender={handleRender}
+      />
+
+      {/* DOM Overlay for node interactions */}
+      <CanvasOverlay
+        viewport={overlayViewport}
+        width={containerDimensions.width}
+        height={containerDimensions.height}
+        onNodeClick={onNodeClick}
+        onNodeHover={onNodeHover}
       />
 
       {/* Overlay panels */}

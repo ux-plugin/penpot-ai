@@ -10,8 +10,13 @@ import {
   ErrorResponse,
   WorkerTestRequest,
   WorkerTestResponse,
+  NodeChangedRequest,
+  NodeChangedResponse,
+  SelectionChangedRequest,
+  SelectionChangedResponse,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
+import { nodeManager } from '@/plugin-ui/stores/NodeManager';
 // Create UI message dispatcher
 export const uiMessageDispatcher = new UniversalMessageDispatcher(
   'ui',
@@ -81,6 +86,36 @@ uiMessageDispatcher.registerHandler<
       received: true,
       echoed: `UI received: "${request.payload.message}"`,
       processedBy: 'ui' as const
+    };
+  }
+);
+
+// Register node change handler
+uiMessageDispatcher.registerHandler<
+  NodeChangedRequest,
+  ExtractResultType<NodeChangedResponse>
+>(
+  MessageCategory.SYSTEM,
+  SystemMessageType.NODE_CHANGED,
+  async (request: NodeChangedRequest): Promise<ExtractResultType<NodeChangedResponse>> => {
+    await nodeManager.handleNodeChange(request.payload);
+    return {
+      handled: true
+    };
+  }
+);
+
+// Register selection change handler
+uiMessageDispatcher.registerHandler<
+  SelectionChangedRequest,
+  ExtractResultType<SelectionChangedResponse>
+>(
+  MessageCategory.SYSTEM,
+  SystemMessageType.SELECTION_CHANGED,
+  async (request: SelectionChangedRequest): Promise<ExtractResultType<SelectionChangedResponse>> => {
+    nodeManager.handleSelectionChange(request.payload);
+    return {
+      handled: true
     };
   }
 );

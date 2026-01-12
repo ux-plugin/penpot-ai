@@ -660,6 +660,9 @@ export class FigmaImplementation implements IDesignPlatform {
     get children() {
       return figma.currentPage.children;
     },
+    on: (event: string, callback: ((event?: any) => void) | (() => void)) => {
+      figma.currentPage.on(event as any, callback as any);
+    },
   };
 
   on = (event: string, callback: () => void) => {

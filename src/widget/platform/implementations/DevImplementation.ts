@@ -216,6 +216,9 @@ export class DevImplementation implements IDesignPlatform {
   currentPage = {
     selection: [] as any[],
     children: [] as BaseSceneNode[],
+    on: (_event: string, _callback: ((event?: any) => void) | (() => void)) => {
+      // No-op in dev mode - could simulate events if needed
+    },
   };
 
   private _viewportZoom = 1.0;
