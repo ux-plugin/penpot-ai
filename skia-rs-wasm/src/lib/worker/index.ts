@@ -5,11 +5,13 @@
 
 import type { WorkerState, IndexedPage, QueryParams, WorkerMessage, SerializedMessage } from './types'
 import type { WorkerUpdateTextRectPayload } from '../renderer/types'
+import type { IndexChange } from '@skia-rs-wasm/common'
 import type { PenpotNode, Point, Matrix, PenpotPage } from '@penpot-exporter/types'
 import { flattenPageToIndexed } from './types'
 import { handler, registerHandler } from './impl'
 import { encode, decode } from './messages'
 import * as selection from './selection'
+import { processChanges } from './process-changes'
 import { makeRect, rectToPoints, pointsToRect } from './geometry/rect'
 import { shapeToCenter } from './geometry/shapes'
 import { point } from './geometry/point'
@@ -70,7 +72,8 @@ registerHandler('index/initialize', (message: WorkerMessage) => {
 
 registerHandler('index/update', (message: WorkerMessage) => {
   const pageId = message.payload?.pageId as string | undefined
-  // const changes = message.payload?.changes as any[] | undefined // TODO: implement change processing
+  const changes = message.payload?.changes as Array<Record<string, unknown>> | undefined
+  const fullPage = message.payload?.page as PenpotPage | undefined
 
   if (!pageId) {
     return null
@@ -84,12 +87,20 @@ registerHandler('index/update', (message: WorkerMessage) => {
       return null
     }
 
-    // Simplified: in full implementation, would process changes
-    // For now, assume newPage is provided or reconstructed
-    const newPage = message.payload?.page as PenpotPage | undefined
-
-    if (newPage) {
-      const indexedNew = flattenPageToIndexed(newPage)
+    if (changes && changes.length > 0) {
+      // Incremental path: apply changes to existing page
+      const data = processChanges(
+        { pagesIndex: { [pageId]: oldPage } },
+        changes as IndexChange[]
+      )
+      const newPage = data.pagesIndex[pageId]
+      if (newPage) {
+        state.pagesIndex[pageId] = newPage
+        state.selection = selection.updatePage(state.selection, oldPage, newPage)
+      }
+    } else if (fullPage) {
+      // Legacy path: full page replacement
+      const indexedNew = flattenPageToIndexed(fullPage)
       state.pagesIndex[pageId] = indexedNew
       state.selection = selection.updatePage(state.selection, oldPage, indexedNew)
     }

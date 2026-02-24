@@ -3,6 +3,7 @@
  */
 
 import type { PenpotNode, PenpotPage } from '@penpot-exporter/types'
+import type { IndexChange } from '@skia-rs-wasm/common'
 import { useWorkspaceStore } from './workspace-store'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -72,15 +73,23 @@ async function syncRendererAfterUpdate(
 export interface PageCommitPayload {
   pageId: string
   updatedPage: PenpotPage
+  /** Optional incremental changes; when provided, worker uses incremental index update */
+  changes?: IndexChange[]
 }
 
 export async function commitPageUpdate(payload: PageCommitPayload): Promise<void> {
-  const { pageId, updatedPage } = payload
+  const { pageId, updatedPage, changes } = payload
   const state = useWorkspaceStore.getState()
   const { documentModel, workerClient, renderer } = state
   if (!documentModel) return
   const oldPage = documentModel.getPage(pageId)
   documentModel.setPage(pageId, updatedPage)
-  if (workerClient) await workerClient.updatePage(pageId, updatedPage)
+  if (workerClient) {
+    if (changes && changes.length > 0) {
+      await workerClient.updatePageWithChanges(pageId, changes)
+    } else {
+      await workerClient.updatePage(pageId, updatedPage)
+    }
+  }
   if (renderer) await syncRendererAfterUpdate(renderer, oldPage, updatedPage)
 }

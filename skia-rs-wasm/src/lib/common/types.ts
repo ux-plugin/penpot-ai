@@ -187,10 +187,28 @@ export interface WorkerIndexInitializePayload {
   page: PenpotPage
 }
 
-/** Payload for index/update command. */
+/** Change object for incremental index updates (matches common/files/changes format) */
+export interface IndexChange {
+  type: 'add-obj' | 'mod-obj' | 'del-obj' | 'reorder-children'
+  id?: string
+  obj?: PenpotNode
+  'page-id'?: string
+  pageId?: string
+  'parent-id'?: string
+  'frame-id'?: string
+  operations?: Array<{ type: 'assign' | 'set'; value?: Record<string, unknown>; attr?: string; val?: unknown }>
+  shapes?: string[]
+  index?: number
+  [key: string]: unknown
+}
+
+/** Payload for index/update command. Supports full page (legacy) or incremental changes. */
 export interface WorkerIndexUpdatePayload {
   pageId: string
-  page: PenpotPage
+  /** Full page replacement (legacy path) */
+  page?: PenpotPage
+  /** Incremental changes (preferred when available) */
+  changes?: IndexChange[]
 }
 
 /** Payload for index/update-text-rect command. */
@@ -264,6 +282,8 @@ export interface WorkerClient {
   configure(config: WorkerConfig): Promise<void>
   addPage(page: PenpotPage): Promise<void>
   updatePage(pageId: string, page: PenpotPage): Promise<void>
+  /** Update page index incrementally via changes (preferred for small edits) */
+  updatePageWithChanges(pageId: string, changes: IndexChange[]): Promise<void>
   onMessage(callback: (message: WorkerMessage) => void): () => void
   destroy(): void
 }

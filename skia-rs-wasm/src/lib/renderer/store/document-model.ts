@@ -5,10 +5,13 @@
  */
 
 import type { PenpotDocument, PenpotNode, PenpotPage } from '@penpot-exporter/types'
+import type { IndexChange } from '@skia-rs-wasm/common'
 import { useWorkspaceStore } from './workspace-store'
 import { useWorkspaceDevStore } from './workspace-dev-store'
 import { Viewport } from '../viewport'
 import { commitPageUpdate } from './commit'
+
+const ZERO_UUID = '00000000-0000-0000-0000-000000000000'
 
 const EMPTY_NODES: PenpotNode[] = []
 const EMPTY_MAP: Record<string, PenpotNode> = {}
@@ -175,8 +178,23 @@ export class DocumentModel {
     const pageId = state.pageId
     const page = pageId ? this.pageMap.get(pageId) : undefined
     if (!pageId || !page) return
+    const rootFrame = page.children?.[0]
+    const frameId = rootFrame?.id ?? ZERO_UUID
+    const parentIds = (rootFrame as { shapes?: string[] })?.shapes ?? (rootFrame as { children?: PenpotNode[] })?.children?.map((c) => c.id).filter(Boolean) ?? []
+    const index = parentIds.length
     const children = [...(page.children ?? []), node]
-    await commitPageUpdate({ pageId, updatedPage: { ...page, children } })
+    const changes: IndexChange[] = [
+      {
+        type: 'add-obj',
+        id: node.id,
+        obj: node,
+        'page-id': pageId,
+        'frame-id': frameId,
+        'parent-id': frameId,
+        index,
+      },
+    ]
+    await commitPageUpdate({ pageId, updatedPage: { ...page, children }, changes })
   }
 
   async updateNode(nodeId: string, updates: Partial<PenpotNode>): Promise<void> {
@@ -187,7 +205,16 @@ export class DocumentModel {
     const children = (page.children ?? []).map((n: PenpotNode) =>
       n.id === nodeId ? { ...n, ...updates } : n
     )
-    await commitPageUpdate({ pageId, updatedPage: { ...page, children } })
+    const operations = Object.entries(updates).map(([attr, val]) => ({
+      type: 'set' as const,
+      attr,
+      val,
+    }))
+    const changes: IndexChange[] =
+      operations.length > 0
+        ? [{ type: 'mod-obj', id: nodeId, 'page-id': pageId, operations }]
+        : []
+    await commitPageUpdate({ pageId, updatedPage: { ...page, children }, changes })
   }
 
   async deleteNode(nodeId: string): Promise<void> {
@@ -196,6 +223,7 @@ export class DocumentModel {
     const page = pageId ? this.pageMap.get(pageId) : undefined
     if (!pageId || !page) return
     const children = (page.children ?? []).filter((n: PenpotNode) => n.id !== nodeId)
-    await commitPageUpdate({ pageId, updatedPage: { ...page, children } })
+    const changes: IndexChange[] = [{ type: 'del-obj', id: nodeId, 'page-id': pageId }]
+    await commitPageUpdate({ pageId, updatedPage: { ...page, children }, changes })
   }
 }
