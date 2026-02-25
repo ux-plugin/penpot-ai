@@ -188,9 +188,9 @@ export class DocumentModel {
         type: 'add-obj',
         id: node.id,
         obj: node,
-        'page-id': pageId,
-        'frame-id': frameId,
-        'parent-id': frameId,
+        pageId,
+        frameId,
+        parentId: frameId,
         index,
       },
     ]
@@ -212,7 +212,7 @@ export class DocumentModel {
     }))
     const changes: IndexChange[] =
       operations.length > 0
-        ? [{ type: 'mod-obj', id: nodeId, 'page-id': pageId, operations }]
+        ? [{ type: 'mod-obj', id: nodeId, pageId, operations }]
         : []
     await commitPageUpdate({ pageId, updatedPage: { ...page, children }, changes })
   }
@@ -223,7 +223,7 @@ export class DocumentModel {
     const page = pageId ? this.pageMap.get(pageId) : undefined
     if (!pageId || !page) return
     const children = (page.children ?? []).filter((n: PenpotNode) => n.id !== nodeId)
-    const changes: IndexChange[] = [{ type: 'del-obj', id: nodeId, 'page-id': pageId }]
+    const changes: IndexChange[] = [{ type: 'del-obj', id: nodeId, pageId }]
     await commitPageUpdate({ pageId, updatedPage: { ...page, children }, changes })
   }
 }

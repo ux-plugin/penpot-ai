@@ -187,15 +187,14 @@ export interface WorkerIndexInitializePayload {
   page: PenpotPage
 }
 
-/** Change object for incremental index updates (matches common/files/changes format) */
+/** Change object for incremental index updates */
 export interface IndexChange {
   type: 'add-obj' | 'mod-obj' | 'del-obj' | 'reorder-children'
   id?: string
   obj?: PenpotNode
-  'page-id'?: string
   pageId?: string
-  'parent-id'?: string
-  'frame-id'?: string
+  parentId?: string
+  frameId?: string
   operations?: Array<{ type: 'assign' | 'set'; value?: Record<string, unknown>; attr?: string; val?: unknown }>
   shapes?: string[]
   index?: number

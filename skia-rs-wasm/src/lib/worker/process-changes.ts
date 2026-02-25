@@ -31,9 +31,9 @@ export interface AddObjChange {
   type: 'add-obj'
   id: string
   obj: PenpotNode
-  'page-id'?: string
-  'frame-id'?: string
-  'parent-id'?: string
+  pageId?: string
+  frameId?: string
+  parentId?: string
   index?: number
   ignoreTouched?: boolean
 }
@@ -41,21 +41,21 @@ export interface AddObjChange {
 export interface ModObjChange {
   type: 'mod-obj'
   id: string
-  'page-id'?: string
+  pageId?: string
   operations: Operation[]
 }
 
 export interface DelObjChange {
   type: 'del-obj'
   id: string
-  'page-id'?: string
+  pageId?: string
   ignoreTouched?: boolean
 }
 
 export interface ReorderChildrenChange {
   type: 'reorder-children'
-  'page-id'?: string
-  'parent-id': string
+  pageId?: string
+  parentId: string
   shapes: string[]
 }
 
@@ -66,14 +66,14 @@ function normalizeChange(c: IndexChange): Change | null {
   const type = c.type
   if (!type || !['add-obj', 'mod-obj', 'del-obj', 'reorder-children'].includes(type)) return null
 
-  const pageId = c['page-id'] ?? c.pageId
+  const pageId = c.pageId
   if (!pageId) return null
 
-  const base = { 'page-id': pageId } as Record<string, unknown>
+  const base = { pageId } as Record<string, unknown>
 
   if (type === 'add-obj') {
     if (!c.id || !c.obj) return null
-    return { ...base, type, id: c.id, obj: c.obj, 'frame-id': c['frame-id'], 'parent-id': c['parent-id'], index: c.index } as AddObjChange
+    return { ...base, type, id: c.id, obj: c.obj, frameId: c.frameId, parentId: c.parentId, index: c.index } as AddObjChange
   }
   if (type === 'mod-obj') {
     if (!c.id || !Array.isArray(c.operations)) return null
@@ -84,8 +84,8 @@ function normalizeChange(c: IndexChange): Change | null {
     return { ...base, type, id: c.id } as DelObjChange
   }
   if (type === 'reorder-children') {
-    if (!c['parent-id'] || !Array.isArray(c.shapes)) return null
-    return { ...base, type, 'parent-id': c['parent-id'], shapes: c.shapes } as ReorderChildrenChange
+    if (!c.parentId || !Array.isArray(c.shapes)) return null
+    return { ...base, type, parentId: c.parentId, shapes: c.shapes } as ReorderChildrenChange
   }
   return null
 }
@@ -130,18 +130,18 @@ function processAddObj(
   page: IndexedPage,
   change: AddObjChange
 ): IndexedPage {
-  const { id, obj, 'frame-id': frameId, 'parent-id': parentId, index } = change
+  const { id, obj, frameId, parentId, index } = change
   const objects = { ...page.objects }
 
   const effectiveParentId = parentId ?? frameId ?? ZERO_UUID
   const effectiveFrameId = frameId ?? (objects[effectiveParentId] ? effectiveParentId : ZERO_UUID)
 
-  const shapeWithRefs: PenpotNode = {
+  const shapeWithRefs = {
     ...obj,
     id,
     'frame-id': effectiveFrameId in objects ? effectiveFrameId : ZERO_UUID,
     'parent-id': effectiveParentId in objects ? effectiveParentId : ZERO_UUID,
-  }
+  } as PenpotNode
 
   objects[id] = shapeWithRefs
 
@@ -206,7 +206,7 @@ function processReorderChildren(
   page: IndexedPage,
   change: ReorderChildrenChange
 ): IndexedPage {
-  const { 'parent-id': parentId, shapes: newOrder } = change
+  const { parentId, shapes: newOrder } = change
   const objects = { ...page.objects }
   const parent = objects[parentId]
   if (!parent) return page
@@ -226,8 +226,7 @@ function processReorderChildren(
 }
 
 function getPageId(change: Change): string | undefined {
-  const c = change as { 'page-id'?: string; pageId?: string }
-  return c['page-id'] ?? c.pageId
+  return (change as { pageId?: string }).pageId
 }
 
 function processChange(
