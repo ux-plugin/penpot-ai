@@ -22,7 +22,6 @@
     "@tailwindcss/vite": "^4.0.17",
     "@tanstack/react-query": "^5.83.0",
     "buffer": "^6.0.3",
-    "canvaskit-wasm": "file:canvaskit-wasm-0.40.0.tgz",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.537.0",
@@ -39,7 +38,15 @@
     "tailwindcss-animate": "^1.0.7",
     "ts-json-schema-generator": "^2.3.0",
     "tw-animate-css": "^1.3.6",
-    "zustand": "^5.0.7"
+    "zustand": "^5.0.7",
+    "penpot-exporter": "file:../skia-rs-wasm/packages/penpot-exporter-figma-plugin",
+    "skia-rs-wasm": "file:../skia-rs-wasm",
+    "figma-adapter": "file:../skia-rs-wasm/packages/figma-adapter"
+  },
+  "pnpm": {
+    "overrides": {
+      "skia-rs-wasm": "file:../skia-rs-wasm"
+    }
   },
   "devDependencies": {
     "@figma/eslint-plugin-figma-plugins": "^0.15.0",

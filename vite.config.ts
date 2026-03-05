@@ -5,8 +5,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { visualizer } from "rollup-plugin-visualizer";
-import { writeFileSync, statSync } from "fs";
-import { join } from "path";
+import { writeFileSync, statSync, copyFileSync, mkdirSync, readdirSync } from "fs";
+import { join, dirname } from "path";
 
 export default defineConfig(({ command, mode }) => {
   const isDebugBuild = process.env.VITE_ENABLE_BUILD_DEBUG === "true";
@@ -37,6 +37,23 @@ export default defineConfig(({ command, mode }) => {
       }),
       tailwindcss(),
       viteSingleFile(),
+      // Copy skia-rs-wasm WASM assets to dist for plugin
+      {
+        name: "copy-wasm",
+        closeBundle() {
+          try {
+            const __dirname = dirname(fileURLToPath(import.meta.url));
+            const src = join(__dirname, "..", "skia-rs-wasm", "public", "wasm");
+            const dest = join(__dirname, "dist", "wasm");
+            mkdirSync(dest, { recursive: true });
+            for (const name of readdirSync(src)) {
+              copyFileSync(join(src, name), join(dest, name));
+            }
+          } catch (e) {
+            console.warn("[copy-wasm] Skip copying WASM (e.g. skia-rs-wasm not present):", e);
+          }
+        },
+      },
       // Bundle analyzer - generates stats.html and logs bundle info
       visualizer({
         filename: "./dist/stats.html",
@@ -397,7 +414,6 @@ export default defineConfig(({ command, mode }) => {
     // Optimize dependency pre-bundling
     optimizeDeps: {
       include: ["react", "react-dom", "buffer"],
-      exclude: ["canvaskit-wasm"], // Exclude WASM module from pre-bundling
       esbuildOptions: {
         // Node.js global polyfills for browser
         define: {

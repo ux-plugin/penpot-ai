@@ -30,9 +30,12 @@ import {
   GetAllNodesResponse,
   ExportNodeSVGsRequest,
   ExportNodeSVGsResponse,
+  RequestPenpotPageRequest,
+  RequestPenpotPageResponse,
   Message,
   ExtractResultType,
 } from "@shared-types/messageTypes.ts";
+import { translatePage } from "figma-adapter";
 import { platform } from "@widget/platform";
 import { IDesignPlatform } from "@widget/platform/IDesignPlatform.ts";
 import { AuthStateManagementClass } from "@widget/stores/AuthStateManagementClass.ts";
@@ -375,6 +378,21 @@ let setupCodeMessageListener: () => void;
         canvasPosition,
         zoom,
       };
+    },
+  );
+
+  codeMessageDispatcher.registerHandler<
+    RequestPenpotPageRequest,
+    ExtractResultType<RequestPenpotPageResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.REQUEST_PENPOT_PAGE,
+    async (
+      _: RequestPenpotPageRequest,
+    ): Promise<ExtractResultType<RequestPenpotPageResponse>> => {
+      const pageNode = commands.currentPage as PageNode;
+      const page = await translatePage(pageNode);
+      return { page: page as unknown as Record<string, unknown> };
     },
   );
 

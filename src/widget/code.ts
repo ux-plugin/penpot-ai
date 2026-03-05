@@ -7,6 +7,7 @@ import {
   OperationMessageType,
   SystemMessageType,
 } from "@/shared/types/messageTypes";
+import { translateNodeChange } from "figma-adapter";
 
 // ============================================
 // TESTING ONLY: Generic Node Logging Function
@@ -223,6 +224,22 @@ async function logSelectedNodes(commands: any): Promise<void> {
             changeType: "property",
             nodeIds: updatedNodeIds,
             nodes: updatedNodes,
+          },
+        });
+      }
+
+      // Send Penpot/skia-rs-wasm incremental changes for the canvas
+      const currentPage = commands.currentPage as { id?: string } | undefined;
+      const penpotChanges = await translateNodeChange(event, {
+        pageId: currentPage?.id,
+      });
+      if (penpotChanges.length > 0) {
+        await codeMessageDispatcher.sendRequest({
+          category: MessageCategory.SYSTEM,
+          type: SystemMessageType.APPLY_PENPOT_CHANGES,
+          payload: {
+            changes: penpotChanges as unknown as Record<string, unknown>[],
+            pageId: currentPage?.id,
           },
         });
       }

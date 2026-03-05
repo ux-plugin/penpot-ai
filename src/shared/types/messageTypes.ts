@@ -35,7 +35,10 @@ export enum SystemMessageType {
   GET_ALL_NODES = 'get_all_nodes',
   EXPORT_NODE_SVGS = 'export_node_svgs',
   NODE_CHANGED = 'node_changed',
-  SELECTION_CHANGED = 'selection_changed'
+  SELECTION_CHANGED = 'selection_changed',
+  SET_PENPOT_PAGE = 'set_penpot_page',
+  APPLY_PENPOT_CHANGES = 'apply_penpot_changes',
+  REQUEST_PENPOT_PAGE = 'request_penpot_page'
 }
 
 // Base message request interface
@@ -519,6 +522,56 @@ export interface SelectionChangedResponse extends MessageResponse {
   };
 }
 
+// Set Penpot Page (code → UI): full page for skia-rs-wasm document. Payload is serialized PenpotPage.
+export interface SetPenpotPageRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.SET_PENPOT_PAGE;
+  payload: {
+    page: Record<string, unknown>;
+  };
+}
+
+export interface SetPenpotPageResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.SET_PENPOT_PAGE;
+  result: {
+    handled: boolean;
+  };
+}
+
+// Apply Penpot Changes (code → UI): incremental changes for skia-rs-wasm.
+export interface ApplyPenpotChangesRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.APPLY_PENPOT_CHANGES;
+  payload: {
+    changes: Record<string, unknown>[];
+    pageId?: string;
+  };
+}
+
+export interface ApplyPenpotChangesResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.APPLY_PENPOT_CHANGES;
+  result: {
+    handled: boolean;
+  };
+}
+
+// Request Penpot Page (UI → code): UI requests current page for skia-rs-wasm; code responds with page.
+export interface RequestPenpotPageRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.REQUEST_PENPOT_PAGE;
+  payload: Record<string, never>;
+}
+
+export interface RequestPenpotPageResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.REQUEST_PENPOT_PAGE;
+  result: {
+    page: Record<string, unknown>;
+  };
+}
+
 // =================
 // UNION TYPES
 // =================
@@ -546,7 +599,10 @@ export type Request =
   | GetAllNodesRequest
   | ExportNodeSVGsRequest
   | NodeChangedRequest
-  | SelectionChangedRequest;
+  | SelectionChangedRequest
+  | SetPenpotPageRequest
+  | ApplyPenpotChangesRequest
+  | RequestPenpotPageRequest;
 
 // All response types
 export type Response = 
@@ -571,7 +627,10 @@ export type Response =
   | GetAllNodesResponse
   | ExportNodeSVGsResponse
   | NodeChangedResponse
-  | SelectionChangedResponse;
+  | SelectionChangedResponse
+  | SetPenpotPageResponse
+  | ApplyPenpotChangesResponse
+  | RequestPenpotPageResponse;
 
 
 // Union of all message types
@@ -670,6 +729,18 @@ export type RequestToResponseMap = {
   [SystemMessageType.SELECTION_CHANGED]: {
     request: SelectionChangedRequest;
     response: SelectionChangedResponse;
+  };
+  [SystemMessageType.SET_PENPOT_PAGE]: {
+    request: SetPenpotPageRequest;
+    response: SetPenpotPageResponse;
+  };
+  [SystemMessageType.APPLY_PENPOT_CHANGES]: {
+    request: ApplyPenpotChangesRequest;
+    response: ApplyPenpotChangesResponse;
+  };
+  [SystemMessageType.REQUEST_PENPOT_PAGE]: {
+    request: RequestPenpotPageRequest;
+    response: RequestPenpotPageResponse;
   };
 };
 
