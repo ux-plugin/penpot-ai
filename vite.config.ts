@@ -5,7 +5,13 @@ import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { visualizer } from "rollup-plugin-visualizer";
-import { writeFileSync, statSync, copyFileSync, mkdirSync, readdirSync } from "fs";
+import {
+  writeFileSync,
+  statSync,
+  copyFileSync,
+  mkdirSync,
+  readdirSync,
+} from "fs";
 import { join, dirname } from "path";
 
 export default defineConfig(({ command, mode }) => {
@@ -50,7 +56,10 @@ export default defineConfig(({ command, mode }) => {
               copyFileSync(join(src, name), join(dest, name));
             }
           } catch (e) {
-            console.warn("[copy-wasm] Skip copying WASM (e.g. skia-rs-wasm not present):", e);
+            console.warn(
+              "[copy-wasm] Skip copying WASM (e.g. skia-rs-wasm not present):",
+              e,
+            );
           }
         },
       },
@@ -343,6 +352,19 @@ export default defineConfig(({ command, mode }) => {
     },
     resolve: {
       alias: {
+        // Penpot-exporter (workspace) aliases – so Vite can resolve when transforming that package’s source
+        "@common": fileURLToPath(
+          new URL(
+            "../skia-rs-wasm/packages/penpot-exporter-figma-plugin/common",
+            import.meta.url,
+          ),
+        ),
+        "@plugin": fileURLToPath(
+          new URL(
+            "../skia-rs-wasm/packages/penpot-exporter-figma-plugin/plugin-src",
+            import.meta.url,
+          ),
+        ),
         // Root alias
         "@": fileURLToPath(new URL("./src", import.meta.url)),
 
