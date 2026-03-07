@@ -26,7 +26,10 @@ export interface FigmaLoginAuthData {
  */
 export async function getFigmaLogin(signal?: AbortSignal): Promise<FigmaLoginAuthData> {
   try {
-    const baseUrl = resolveBackendUrl()
+    const baseUrl = resolveBackendUrl();
+    if (!baseUrl) {
+      throw new Error('Backend not configured. Set VITE_BACKEND_URL in your .env file.');
+    }
 
     const initLoginResponse = await fetch(`${baseUrl}/auth/figma/login`, {
       method: "GET",

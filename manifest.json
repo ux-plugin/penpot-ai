@@ -9,12 +9,12 @@
   "editorType": [
     "figma"
   ],
-  "ui": "dist/index.html",
+  "ui": "dist/redirect.html",
   "networkAccess": {
     "allowedDomains": [
       "none"
     ],
-    "reasoning": "This plugin does not require network access.",
+    "reasoning": "When using VITE_CDN_URL, add your CDN host to allowedDomains (e.g. [\"https://your-cdn.example.com\"]). For dev, devAllowedDomains [\"*\"] allows all.",
     "devAllowedDomains": [
       "*"
     ]

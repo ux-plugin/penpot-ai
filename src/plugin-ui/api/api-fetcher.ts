@@ -20,8 +20,11 @@ export async function apiFetch(
   options?: RequestInit,
   includeAuth: boolean = true
 ): Promise<Response> {
-  const authStore = useAuthenticationStore.getState();
   const baseUrl = resolveBackendUrl();
+  if (!baseUrl) {
+    throw new Error('Backend not configured. Set VITE_BACKEND_URL in your .env file.');
+  }
+  const authStore = useAuthenticationStore.getState();
   const url = `${baseUrl}${endpoint}`;
 
   let headers: HeadersInit = {

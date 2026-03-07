@@ -10,7 +10,10 @@
     "build:debug": "VITE_ENABLE_BUILD_DEBUG=true tsc -b && VITE_ENABLE_BUILD_DEBUG=true vite build && VITE_ENABLE_BUILD_DEBUG=true npm run bundle:debug",
     "bundle:debug": "esbuild --target=es2015 --format=iife src/widget/code.ts --bundle --outfile=dist/code.js --sourcemap --tree-shaking=true",
     "preview": "vite preview",
-    "build:watch": "watch 'npm run build' src"
+    "build:watch": "watch 'npm run build' src",
+    "cdn:publish": "./scripts/cdn-publish.sh",
+    "cdn:build": "./scripts/publish-cdn.sh",
+    "cdn:up": "docker run -p 8080:8080 figma-plugin-cdn"
   },
   "dependencies": {
     "@hookform/resolvers": "^4.1.3",

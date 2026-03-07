@@ -390,9 +390,14 @@ let setupCodeMessageListener: () => void;
     async (
       _: RequestPenpotPageRequest,
     ): Promise<ExtractResultType<RequestPenpotPageResponse>> => {
-      const pageNode = commands.currentPage as PageNode;
-      const page = await translatePage(pageNode);
-      return { page: page as unknown as Record<string, unknown> };
+      try {
+        const pageNode = commands.currentPage as PageNode;
+        const page = await translatePage(pageNode);
+        return { page: (page ?? null) as unknown as Record<string, unknown> };
+      } catch (err) {
+        console.warn('[CodeMessageDispatcher] REQUEST_PENPOT_PAGE failed:', err);
+        return { page: null as unknown as Record<string, unknown> };
+      }
     },
   );
 

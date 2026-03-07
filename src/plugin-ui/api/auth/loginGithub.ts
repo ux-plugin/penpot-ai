@@ -26,7 +26,10 @@ export interface GithubLoginAuthData {
  */
 export async function getGithubLogin(signal?: AbortSignal): Promise<GithubLoginAuthData> {
   try {
-    const baseUrl = resolveBackendUrl()
+    const baseUrl = resolveBackendUrl();
+    if (!baseUrl) {
+      throw new Error('Backend not configured. Set VITE_BACKEND_URL in your .env file.');
+    }
 
     const initLoginResponse = await fetch(`${baseUrl}/auth/github/login`, {
       method: "GET",

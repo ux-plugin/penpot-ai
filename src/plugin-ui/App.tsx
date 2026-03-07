@@ -6,6 +6,7 @@ import { useAuthenticationStore } from "@stores/useAuthenticationStore.ts";
 import { usePortUpdatesStore } from "@stores/usePortUpdatesStore.ts";
 import { initializePortSubscription, cleanupPortSubscription } from "@api/user/portSubscriptionManager.ts";
 import { connectRSocket, disconnectRSocket } from "@api/rsocket.ts";
+import { resolveBackendUrl } from "@api/auth/utils.ts";
 import { handlePortUpdate } from "@api/companion";
 import { useCompletionsWebSocket, CompletionsWebSocketProvider } from "@api/completions";
 import { WindowResizeHandle } from '@components/WindowResizeHandle.tsx';
@@ -22,16 +23,17 @@ const AuthenticatedLayout = () => {
   const { currentPort } = usePortUpdatesStore();
   const hasInitialized = useRef(false);
 
-  // Initialize RSocket and port subscription when user authenticates
+  // Initialize RSocket and port subscription when user authenticates (only if backend is configured)
   useEffect(() => {
     if (isAuthenticated && !hasInitialized.current) {
-      // Ensure RSocket connection and subscribe to ports stream
-      connectRSocket()
-        .then(() => initializePortSubscription())
-        .catch((error) => {
-          console.error("Failed to connect to RSocket:", error);
-        });
-
+      const backendUrl = resolveBackendUrl();
+      if (backendUrl) {
+        connectRSocket()
+          .then(() => initializePortSubscription())
+          .catch((error) => {
+            console.error("Failed to connect to RSocket:", error);
+          });
+      }
       hasInitialized.current = true;
     }
 

@@ -11,11 +11,26 @@ import {
   copyFileSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
 } from "fs";
 import { join, dirname } from "path";
 
+function getPluginId(): string {
+  const fromEnv = process.env.VITE_PLUGIN_ID;
+  if (fromEnv) return fromEnv;
+  try {
+    const manifestPath = join(dirname(fileURLToPath(import.meta.url)), "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+    return manifest?.id ?? "*";
+  } catch {
+    return "*";
+  }
+}
+
 export default defineConfig(({ command, mode }) => {
   const isDebugBuild = process.env.VITE_ENABLE_BUILD_DEBUG === "true";
+  const pluginUiUrl = process.env.VITE_PLUGIN_UI_URL as string | undefined;
+  const pluginId = getPluginId();
 
   return {
     plugins: [
@@ -61,6 +76,30 @@ export default defineConfig(({ command, mode }) => {
               e,
             );
           }
+        },
+      },
+      // When VITE_PLUGIN_UI_URL is set: write redirect.html and dist/manifest.json for remote UI
+      {
+        name: "remote-ui-artifacts",
+        closeBundle() {
+          if (!pluginUiUrl) return;
+          const distDir = join(process.cwd(), "dist");
+          let redirectTarget = pluginUiUrl.replace(/\/+$/, "");
+          try {
+            const u = new URL(redirectTarget);
+            if (u.hostname === "localhost") {
+              u.hostname = "127.0.0.1";
+              redirectTarget = u.toString();
+            }
+          } catch {
+            // keep redirectTarget as-is
+          }
+          const redirectHtml = `<!DOCTYPE html><html><head></head><body><script>window.location.href = ${JSON.stringify(redirectTarget)};</script></body></html>`;
+          writeFileSync(join(distDir, "redirect.html"), redirectHtml, "utf-8");
+          const manifestPath = join(process.cwd(), "manifest.json");
+          const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+          const remoteManifest = { ...manifest, ui: "redirect.html" };
+          writeFileSync(join(distDir, "manifest.json"), JSON.stringify(remoteManifest, null, 2), "utf-8");
         },
       },
       // Bundle analyzer - generates stats.html and logs bundle info
@@ -425,6 +464,7 @@ export default defineConfig(({ command, mode }) => {
     },
     define: {
       PLATFORM: JSON.stringify(mode === "development" ? "dev" : "figma"),
+      "import.meta.env.VITE_PLUGIN_ID": JSON.stringify(pluginId),
       // Make Buffer available globally for rsocket libraries
       global: "globalThis",
       // Only set NODE_ENV to production during non-debug builds

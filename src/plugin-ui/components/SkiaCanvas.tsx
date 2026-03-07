@@ -30,7 +30,7 @@ import {
   RequestPenpotPageResponse,
 } from '@shared-types/messageTypes';
 import type { DesignNode } from '@shared-types/types';
-import type { PenpotPage, Change } from 'penpot-exporter/lib';
+import type { PenpotPage, Change } from 'penpot-exporter/types';
 
 interface SkiaCanvasProps {
   topRightContent?: React.ReactNode;
@@ -45,6 +45,21 @@ interface SkiaCanvasProps {
   workerScriptUrl?: string;
 }
 
+const rawCdnUrl = (import.meta.env.VITE_CDN_URL as string | undefined)?.replace(/\/+$/, '');
+const cdnUrl = (() => {
+  if (!rawCdnUrl) return undefined;
+  try {
+    const u = new URL(rawCdnUrl);
+    if (u.hostname === 'localhost') {
+      u.hostname = '127.0.0.1';
+      return u.toString();
+    }
+    return rawCdnUrl;
+  } catch {
+    return rawCdnUrl;
+  }
+})();
+
 export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
   topRightContent,
   bottomRightContent,
@@ -52,9 +67,11 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
   topLeftContent,
   onNodeClick: _onNodeClick,
   onNodeHover: _onNodeHover,
-  wasmPath = './wasm/render-wasm.js',
-  workerScriptUrl,
+  wasmPath: wasmPathProp,
+  workerScriptUrl: workerScriptUrlProp,
 }) => {
+  const wasmPath = wasmPathProp ?? (cdnUrl ? `${cdnUrl}/wasm/render-wasm.js` : './wasm/render-wasm.js');
+  const workerScriptUrl = workerScriptUrlProp ?? (cdnUrl ? `${cdnUrl}/worker.js` : undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const pendingPageRef = useRef<PenpotPage | null>(null);
   const lastViewportRef = useRef<{ panX: number; panY: number; zoom: number } | null>(null);
@@ -115,12 +132,12 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
             missingFonts: [],
             isShared: false,
           };
-          setDocument(doc).catch((err) => console.warn('[SkiaCanvas] setDocument failed:', err));
+          setDocument(doc).catch((err: unknown) => console.warn('[SkiaCanvas] setDocument failed:', err));
         } else {
           pendingPageRef.current = page;
         }
       })
-      .catch((err) => console.warn('[SkiaCanvas] REQUEST_PENPOT_PAGE failed:', err));
+      .catch((err: unknown) => console.warn('[SkiaCanvas] REQUEST_PENPOT_PAGE failed:', err));
     return () => {
       cancelled = true;
     };
@@ -166,7 +183,7 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
       async (request: ApplyPenpotChangesRequest) => {
         const changes = request.payload.changes as unknown as Change[];
         const pageId = request.payload.pageId;
-        const model = useWorkspaceStore.getState().documentModel;
+        const model = useWorkspaceStore((s: WorkspaceState) => s.documentModel);
         if (model && changes.length > 0) {
           await applyChanges(changes, pageId != null ? { pageId } : undefined);
         }

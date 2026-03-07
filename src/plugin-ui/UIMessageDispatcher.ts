@@ -17,10 +17,14 @@ import {
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
 import { nodeManager } from '@/plugin-ui/stores/NodeManager';
-// Create UI message dispatcher
+// Create UI message dispatcher (pluginId required for non-null origin iframes per Figma docs)
 export const uiMessageDispatcher = new UniversalMessageDispatcher(
   'ui',
-  (message) => parent.postMessage({ pluginMessage: message }, '*')
+  (message) =>
+    parent.postMessage(
+      { pluginMessage: message, pluginId: import.meta.env.VITE_PLUGIN_ID ?? '*' },
+      '*'
+    )
 );
 
 // Create store messaging

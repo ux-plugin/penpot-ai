@@ -1,12 +1,10 @@
 /**
  * Resolves the backend URL from environment variables.
- * Throws an error if VITE_BACKEND_URL is not set.
+ * Returns undefined when VITE_BACKEND_URL is not set (plugin remains loadable).
  */
-export function resolveBackendUrl(): string {
+export function resolveBackendUrl(): string | undefined {
   const url = import.meta.env.VITE_BACKEND_URL as string | undefined
-  if (!url) {
-    throw new Error("VITE_BACKEND_URL is not set. Define it in your .env.development.local/.env.development.local.local file.")
-  }
+  if (!url || typeof url !== 'string') return undefined
   // Ensure no trailing slash
-  return url.replace(/\/+$/, "")
+  return url.replace(/\/+$/, '')
 }

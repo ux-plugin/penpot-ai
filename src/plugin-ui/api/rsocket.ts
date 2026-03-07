@@ -48,7 +48,10 @@ let isRefreshingToken = false;
 let refreshPromise: Promise<string> | null = null;
 
 function buildRSocketUrl(): string {
-  const httpBase = resolveBackendUrl(); // e.g., http://localhost:8003
+  const httpBase = resolveBackendUrl();
+  if (!httpBase) {
+    throw new Error('Backend not configured. Set VITE_BACKEND_URL in your .env file.');
+  }
   const wsBase = httpBase.replace(/^http/, 'ws');
   return `${wsBase}/rsocket`;
 }
@@ -79,6 +82,7 @@ async function refreshAccessToken(): Promise<string> {
       }
 
       const baseUrl = resolveBackendUrl();
+      if (!baseUrl) throw new Error('Backend not configured');
       const response = await fetch(`${baseUrl}/auth/plugin-ui/access-token/refresh`, {
         method: 'POST',
         headers: {
@@ -184,10 +188,15 @@ function buildRequestMetadata(route: string, jwt: string): Buffer {
 
 /**
  * Connect (or reuse) an RSocket connection.
+ * Throws if VITE_BACKEND_URL is not set.
  */
 export async function connectRSocket(): Promise<RSocket> {
   if (rsocketConnection) {
     return rsocketConnection;
+  }
+
+  if (!resolveBackendUrl()) {
+    throw new Error('Backend not configured. Set VITE_BACKEND_URL in your .env file.');
   }
 
   const jwt = getJwt();
