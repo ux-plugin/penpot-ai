@@ -1,4 +1,4 @@
-import { useState, useEffect, ReactNode } from 'react';
+import { useState, useEffect, useCallback, ReactNode } from 'react';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
 import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@shared-types/messageTypes.ts';
 
@@ -49,22 +49,26 @@ export function WindowResizeHandle({
     }
   };
 
-  const handleResizeEnd = () => {
+  const handleResizeEnd = useCallback(() => {
     setIsResizing(false);
-  };
+  }, []);
 
   // Add global event listeners for resize dragging
   useEffect(() => {
     if (isResizing) {
       window.addEventListener('mousemove', handleResizeMove);
       window.addEventListener('mouseup', handleResizeEnd);
+      window.addEventListener('blur', handleResizeEnd);
+      document.documentElement.addEventListener('mouseleave', handleResizeEnd);
 
       return () => {
         window.removeEventListener('mousemove', handleResizeMove);
         window.removeEventListener('mouseup', handleResizeEnd);
+        window.removeEventListener('blur', handleResizeEnd);
+        document.documentElement.removeEventListener('mouseleave', handleResizeEnd);
       };
     }
-  }, [isResizing]);
+  }, [isResizing, handleResizeEnd]);
 
   return (
     <div

@@ -5,6 +5,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/cdn-lib.sh"
 
+build_plugin
 build_worker
 prepare_content
 echo "[cdn] Done. Content in $CONTENT_DIR. Run cdn:build to build the Docker image."

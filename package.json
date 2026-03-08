@@ -13,7 +13,7 @@
     "build:watch": "watch 'npm run build' src",
     "cdn:publish": "./scripts/cdn-publish.sh",
     "cdn:build": "./scripts/publish-cdn.sh",
-    "cdn:up": "docker run -p 8080:8080 figma-plugin-cdn"
+    "cdn:up": "./scripts/cdn-up.sh"
   },
   "dependencies": {
     "@hookform/resolvers": "^4.1.3",

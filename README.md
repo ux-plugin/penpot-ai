@@ -11,14 +11,14 @@ Copy `.env.example` to `.env.development.local` and set as needed:
 
 ## Docker CDN (WASM + worker)
 
-- **cdn:publish** – Builds the worker and fills `cdn/content/` (index.html, wasm/, worker.js). Use when you serve that folder with your own nginx or static host (no Docker).
-- **cdn:build** – Same as cdn:publish, then builds the Docker image.
+- **cdn:up** – Build Docker image and run the CDN container if it is not already running (idempotent; starts existing container if stopped).
+- **cdn:publish** – Build worker and prepare content, publish them to `cdn/content/`. Use when you serve that folder with your own nginx or static host (no Docker).
+- **cdn:build** – Same as cdn:publish, then builds the Docker image (no run).
 
 To serve WASM and the worker from a CDN so the plugin can load them in Figma:
 
-1. Build and run the CDN container:
+1. Build and run the CDN container (one command; skips rebuild if container already exists):
    ```bash
-   pnpm -F figma_plugin_fe run cdn:build
    pnpm -F figma_plugin_fe run cdn:up
    ```
    The CDN listens on port 8080 (e.g. `http://localhost:8080`).

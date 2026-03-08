@@ -294,10 +294,6 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
           </svg>
         </button>
       </div>
-
-      <div className="absolute bottom-4 left-16 z-10 px-2 py-1 rounded bg-purple-600 text-white text-xs font-medium">
-        Skia
-      </div>
     </div>
   );
 };

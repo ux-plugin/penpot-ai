@@ -7,9 +7,26 @@ REPO_ROOT="$(cd "$PLUGIN_DIR/.." && pwd)"
 SKIA_DIR="$REPO_ROOT/skia-rs-wasm"
 CONTENT_DIR="$PLUGIN_DIR/cdn/content"
 
+# Load .env so VITE_* and other vars are used by build_plugin and child processes
+if [ -f "$PLUGIN_DIR/.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "$PLUGIN_DIR/.env"
+  set +a
+fi
+
 build_worker() {
   echo "[cdn] Building worker..."
   pnpm --filter skia-rs-wasm run build:worker
+}
+
+build_plugin() {
+  echo "[cdn] Building plugin UI..."
+  local base_url="${VITE_PLUGIN_UI_URL:-http://127.0.0.1:8080}"
+  export VITE_PLUGIN_UI_URL="$base_url"
+  export VITE_CDN_URL="${VITE_CDN_URL:-$base_url}"
+  (cd "$REPO_ROOT" && pnpm --filter figma_plugin_fe run build)
+  echo "[cdn] Plugin build done (dist has index.html, redirect.html)"
 }
 
 prepare_content() {
@@ -18,6 +35,10 @@ prepare_content() {
   if [ -f "$PLUGIN_DIR/dist/index.html" ]; then
     cp "$PLUGIN_DIR/dist/index.html" "$CONTENT_DIR/"
     echo "[cdn] Copied index.html (plugin UI)"
+  fi
+  if [ -f "$PLUGIN_DIR/dist/redirect.html" ]; then
+    cp "$PLUGIN_DIR/dist/redirect.html" "$CONTENT_DIR/"
+    echo "[cdn] Copied redirect.html"
   fi
   if [ -d "$PLUGIN_DIR/dist/wasm" ]; then
     cp -r "$PLUGIN_DIR/dist/wasm/"* "$CONTENT_DIR/wasm/"
