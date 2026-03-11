@@ -37,6 +37,7 @@ export enum SystemMessageType {
   NODE_CHANGED = 'node_changed',
   SELECTION_CHANGED = 'selection_changed',
   SET_PENPOT_PAGE = 'set_penpot_page',
+  ADD_PENPOT_PAGE = 'add_penpot_page',
   APPLY_PENPOT_CHANGES = 'apply_penpot_changes',
   REQUEST_PENPOT_PAGE = 'request_penpot_page'
 }
@@ -539,7 +540,24 @@ export interface SetPenpotPageResponse extends MessageResponse {
   };
 }
 
-// Apply Penpot Changes (code → UI): incremental changes for skia-rs-wasm.
+// Add Penpot Page (code → UI): add a new page to existing document via skia-rs-wasm page-crud addPage.
+export interface AddPenpotPageRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.ADD_PENPOT_PAGE;
+  payload: {
+    page: Record<string, unknown>;
+  };
+}
+
+export interface AddPenpotPageResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.ADD_PENPOT_PAGE;
+  result: {
+    handled: boolean;
+  };
+}
+
+// Apply Penpot Changes (code → UI): incremental changes for skia-rs-wasm (page-crud applyChanges).
 export interface ApplyPenpotChangesRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.APPLY_PENPOT_CHANGES;
@@ -601,6 +619,7 @@ export type Request =
   | NodeChangedRequest
   | SelectionChangedRequest
   | SetPenpotPageRequest
+  | AddPenpotPageRequest
   | ApplyPenpotChangesRequest
   | RequestPenpotPageRequest;
 
@@ -629,6 +648,7 @@ export type Response =
   | NodeChangedResponse
   | SelectionChangedResponse
   | SetPenpotPageResponse
+  | AddPenpotPageResponse
   | ApplyPenpotChangesResponse
   | RequestPenpotPageResponse;
 
@@ -733,6 +753,10 @@ export type RequestToResponseMap = {
   [SystemMessageType.SET_PENPOT_PAGE]: {
     request: SetPenpotPageRequest;
     response: SetPenpotPageResponse;
+  };
+  [SystemMessageType.ADD_PENPOT_PAGE]: {
+    request: AddPenpotPageRequest;
+    response: AddPenpotPageResponse;
   };
   [SystemMessageType.APPLY_PENPOT_CHANGES]: {
     request: ApplyPenpotChangesRequest;

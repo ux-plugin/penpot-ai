@@ -2,28 +2,27 @@
  * SkiaCanvas Component
  *
  * Renders the design using skia-rs-wasm (WASM renderer + worker).
- * Document data comes from the plugin main thread via SET_PENPOT_PAGE and APPLY_PENPOT_CHANGES.
+ * Document data comes from the plugin main thread via SET_PENPOT_PAGE, ADD_PENPOT_PAGE, and APPLY_PENPOT_CHANGES (skia-rs-wasm page-crud).
  * Supports pan/zoom and syncs viewport with Figma when provided.
  */
 
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import type { WorkspaceState } from 'skia-rs-wasm';
 import {
   CanvasWrapper,
   setDocument,
+  addPage,
   applyChanges,
   useWorkspaceStore,
 } from 'skia-rs-wasm';
-import { syncCanvasWithFigma } from '@/plugin-ui/utils/syncCanvas';
+import { useFigmaViewportSync } from '@/plugin-ui/hooks/useFigmaViewportSync';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
 import {
   MessageCategory,
   SystemMessageType,
   ExtractResultType,
-  UpdateViewportResponse,
-  UpdateViewportRequest,
-  SetPenpotPageRequest,
-  SetPenpotPageResponse,
+  AddPenpotPageRequest,
+  AddPenpotPageResponse,
   ApplyPenpotChangesRequest,
   ApplyPenpotChangesResponse,
   RequestPenpotPageRequest,
@@ -73,40 +72,33 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
   const wasmPath = wasmPathProp ?? (cdnUrl ? `${cdnUrl}/wasm/render-wasm.js` : './wasm/render-wasm.js');
   const workerScriptUrl = workerScriptUrlProp ?? (cdnUrl ? `${cdnUrl}/worker.js` : undefined);
   const containerRef = useRef<HTMLDivElement>(null);
-  const pendingPageRef = useRef<PenpotPage | null>(null);
-  const lastViewportRef = useRef<{ panX: number; panY: number; zoom: number } | null>(null);
-  const isViewportUpdateInProgressRef = useRef(false);
+  const { zoomIn, zoomOut } = useFigmaViewportSync();
 
-  const viewport = useWorkspaceStore((s: WorkspaceState) => s.viewport);
-  const viewportVersion = useWorkspaceStore((s: WorkspaceState) => s.viewportVersion);
   const documentModel = useWorkspaceStore((s: WorkspaceState) => s.documentModel);
+  const renderer = useWorkspaceStore((s: WorkspaceState) => s.renderer);
+  const workerClient = useWorkspaceStore((s: WorkspaceState) => s.workerClient);
+  const wasmModule = useWorkspaceStore((s: WorkspaceState) => s.wasmModule);
 
-  const applyPendingPage = useCallback(async () => {
-    const page = pendingPageRef.current;
-    if (!page || !documentModel) return;
-    pendingPageRef.current = null;
-    const doc = {
-      name: '',
-      children: [page],
-      components: {},
-      images: {},
-      paintStyles: {},
-      textStyles: {},
-      componentProperties: {},
-      externalLibraries: {},
-      missingFonts: [],
-      isShared: false,
-    };
-    await setDocument(doc);
-  }, [documentModel]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoadingDocument, setIsLoadingDocument] = useState(false);
 
-  useEffect(() => {
-    if (!documentModel) return;
-    applyPendingPage();
-  }, [documentModel, applyPendingPage]);
+  const buildDocFromPage = useCallback((page: PenpotPage) => ({
+    name: '',
+    children: [page],
+    components: {},
+    images: {},
+    paintStyles: {},
+    textStyles: {},
+    componentProperties: {},
+    externalLibraries: {},
+    missingFonts: [],
+    isShared: false,
+  }), []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const handleLoadDocument = useCallback(() => {
+    if (!renderer || !workerClient || !wasmModule) return;
+    setLoadError(null);
+    setIsLoadingDocument(true);
     uiMessageDispatcher
       .sendRequest<
         Omit<RequestPenpotPageRequest, 'id' | 'timestamp' | 'source'>,
@@ -117,59 +109,36 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
         payload: {},
       })
       .then((result) => {
-        if (cancelled || !result?.page) return;
-        const page = result.page as unknown as PenpotPage;
-        if (documentModel) {
-          const doc = {
-            name: '',
-            children: [page],
-            components: {},
-            images: {},
-            paintStyles: {},
-            textStyles: {},
-            componentProperties: {},
-            externalLibraries: {},
-            missingFonts: [],
-            isShared: false,
-          };
-          setDocument(doc).catch((err: unknown) => console.warn('[SkiaCanvas] setDocument failed:', err));
-        } else {
-          pendingPageRef.current = page;
+        if (!result?.page) {
+          setLoadError('No page received');
+          return;
         }
+        const page = result.page as unknown as PenpotPage;
+        setDocument(buildDocFromPage(page))
+          .then(() => setLoadError(null))
+          .catch((err: unknown) => {
+            console.warn('[SkiaCanvas] setDocument failed:', err);
+            setLoadError(err instanceof Error ? err.message : 'Failed to load document');
+          });
       })
-      .catch((err: unknown) => console.warn('[SkiaCanvas] REQUEST_PENPOT_PAGE failed:', err));
-    return () => {
-      cancelled = true;
-    };
-  }, [documentModel]);
+      .catch((err: unknown) => {
+        console.warn('[SkiaCanvas] REQUEST_PENPOT_PAGE failed:', err);
+        setLoadError(err instanceof Error ? err.message : 'Request failed');
+      })
+      .finally(() => setIsLoadingDocument(false));
+  }, [renderer, workerClient, wasmModule, buildDocFromPage]);
 
   useEffect(() => {
+
     uiMessageDispatcher.registerHandler<
-      SetPenpotPageRequest,
-      ExtractResultType<SetPenpotPageResponse>
+      AddPenpotPageRequest,
+      ExtractResultType<AddPenpotPageResponse>
     >(
       MessageCategory.SYSTEM,
-      SystemMessageType.SET_PENPOT_PAGE,
-      async (request: SetPenpotPageRequest) => {
+      SystemMessageType.ADD_PENPOT_PAGE,
+      async (request: AddPenpotPageRequest) => {
         const page = request.payload.page as unknown as PenpotPage;
-        const model = useWorkspaceStore.getState().documentModel;
-        if (model) {
-          const doc = {
-            name: '',
-            children: [page],
-            components: {},
-            images: {},
-            paintStyles: {},
-            textStyles: {},
-            componentProperties: {},
-            externalLibraries: {},
-            missingFonts: [],
-            isShared: false,
-          };
-          await setDocument(doc);
-        } else {
-          pendingPageRef.current = page;
-        }
+        await addPage(page);
         return { handled: true };
       }
     );
@@ -191,51 +160,6 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
       }
     );
   }, []);
-
-  useEffect(() => {
-    if (!viewport || isViewportUpdateInProgressRef.current) return;
-    const zoom = viewport.zoom;
-    const panX = viewport.panX;
-    const panY = viewport.panY;
-    const last = lastViewportRef.current;
-    lastViewportRef.current = { panX, panY, zoom };
-    if (last == null) return;
-
-    const canvasDelta = { x: panX - last.panX, y: panY - last.panY };
-    uiMessageDispatcher
-      .sendRequest<
-        Omit<UpdateViewportRequest, 'id' | 'timestamp' | 'source'>,
-        ExtractResultType<UpdateViewportResponse>
-      >({
-        category: MessageCategory.SYSTEM,
-        type: SystemMessageType.UPDATE_VIEWPORT,
-        payload: { transform: canvasDelta, zoom, zoomFocalPoint: undefined },
-      })
-      .catch((err) => console.warn('[SkiaCanvas] Viewport sync failed:', err));
-  }, [viewportVersion]);
-
-  useEffect(() => {
-    if (!viewport) return;
-    let cancelled = false;
-    isViewportUpdateInProgressRef.current = true;
-    syncCanvasWithFigma()
-      .then((vp) => {
-        if (cancelled) return;
-        const store = useWorkspaceStore.getState();
-        if (store.viewport) {
-          store.viewport.setPan(-vp.x / vp.zoom, -vp.y / vp.zoom);
-          store.viewport.setZoom(vp.zoom);
-          store.bumpViewportVersion();
-          lastViewportRef.current = { panX: store.viewport.panX, panY: store.viewport.panY, zoom: store.viewport.zoom };
-        }
-      })
-      .finally(() => {
-        isViewportUpdateInProgressRef.current = false;
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [viewport]);
 
   return (
     <div ref={containerRef} className="relative h-full w-full">
@@ -260,18 +184,29 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
         </div>
       )}
 
+      {!documentModel && (
+        <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
+          <button
+            type="button"
+            className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Load the current Penpot page into the canvas"
+            disabled={!renderer || !workerClient || !wasmModule || isLoadingDocument}
+            onClick={handleLoadDocument}
+          >
+            {isLoadingDocument ? 'Loading…' : 'Load document'}
+          </button>
+          {loadError && (
+            <p className="max-w-[200px] text-xs text-red-600">{loadError}</p>
+          )}
+        </div>
+      )}
+
       <div className="absolute bottom-4 left-4 z-10 flex flex-col gap-1 rounded-lg border border-gray-200 bg-white shadow-sm">
         <button
           type="button"
           className="p-2 hover:bg-gray-100 rounded-t-lg"
           title="Zoom In"
-          onClick={() => {
-            const store = useWorkspaceStore.getState();
-            if (store.viewport) {
-              store.viewport.zoomAt({ x: 0, y: 0 }, 1.5);
-              store.bumpViewportVersion();
-            }
-          }}
+          onClick={zoomIn}
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -281,13 +216,7 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
           type="button"
           className="p-2 hover:bg-gray-100 rounded-b-lg"
           title="Zoom Out"
-          onClick={() => {
-            const store = useWorkspaceStore.getState();
-            if (store.viewport) {
-              store.viewport.zoomAt({ x: 0, y: 0 }, 1 / 1.5);
-              store.bumpViewportVersion();
-            }
-          }}
+          onClick={zoomOut}
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />

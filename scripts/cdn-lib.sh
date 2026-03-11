@@ -29,6 +29,15 @@ build_plugin() {
   echo "[cdn] Plugin build done (dist has index.html, redirect.html)"
 }
 
+build_plugin_debug() {
+  echo "[cdn] Building plugin UI (debug)..."
+  local base_url="${VITE_PLUGIN_UI_URL:-http://127.0.0.1:8080}"
+  export VITE_PLUGIN_UI_URL="$base_url"
+  export VITE_CDN_URL="${VITE_CDN_URL:-$base_url}"
+  (cd "$REPO_ROOT" && pnpm --filter figma_plugin_fe run build:debug)
+  echo "[cdn] Plugin build done (debug, dist has index.html, redirect.html)"
+}
+
 prepare_content() {
   echo "[cdn] Preparing content..."
   mkdir -p "$CONTENT_DIR/wasm"

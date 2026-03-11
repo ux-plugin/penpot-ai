@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { resetViewport } from 'skia-rs-wasm';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
 import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@shared-types/messageTypes.ts';
-
-let _lastMoveLog = 0;
 
 interface WindowResizeHandleProps {
   minWidth?: number;
@@ -24,17 +23,11 @@ export function WindowResizeHandle({
     e.preventDefault();
     pointerIdRef.current = e.pointerId;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/f0136137-81f1-4f6e-a7b5-217ac99b12a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'WindowResizeHandle.tsx:handleResizeStart',message:'resize_start',data:{},timestamp:Date.now(),hypothesisId:'H-D'})}).catch(()=>{});
-    // #endregion
     setIsResizing(true);
   };
 
   const handleResizeMove = async (e: PointerEvent) => {
     if (!isResizing) return;
-    // #region agent log
-    const now = Date.now(); if (now - _lastMoveLog > 150) { _lastMoveLog = now; fetch('http://127.0.0.1:7245/ingest/f0136137-81f1-4f6e-a7b5-217ac99b12a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'WindowResizeHandle.tsx:handleResizeMove',message:'resize_move',data:{clientX:e.clientX,clientY:e.clientY},timestamp:now,hypothesisId:'H-D'})}).catch(()=>{}); }
-    // #endregion
     // Content area size from cursor; add scrollbar size so requested size gives the desired content area
     const scrollbarW = window.innerWidth - document.documentElement.clientWidth;
     const scrollbarH = window.innerHeight - document.documentElement.clientHeight;
@@ -67,25 +60,23 @@ export function WindowResizeHandle({
 
   const handleResizeEnd = useCallback(() => {
     if (handleRef.current != null && pointerIdRef.current != null) {
-      try { handleRef.current.releasePointerCapture(pointerIdRef.current); } catch (_) {}
+      try { handleRef.current.releasePointerCapture(pointerIdRef.current); } catch (_) { }
       pointerIdRef.current = null;
     }
     setIsResizing(false);
+    resetViewport();
   }, []);
 
-  const endWithSource = useCallback((source: string) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/f0136137-81f1-4f6e-a7b5-217ac99b12a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'WindowResizeHandle.tsx:endWithSource',message:'resize_end',data:{source},timestamp:Date.now(),hypothesisId:'H-A'})}).catch(()=>{});
-    // #endregion
+  const endWithSource = useCallback(() => {
     handleResizeEnd();
   }, [handleResizeEnd]);
 
   // Global listeners: pointer capture keeps events on this doc when pointer leaves, so we don't end on mouseleave
   useEffect(() => {
     if (isResizing) {
-      const onPointerUp = () => endWithSource('pointerup');
-      const onPointerCancel = () => endWithSource('pointercancel');
-      const onBlur = () => endWithSource('blur');
+      const onPointerUp = () => endWithSource();
+      const onPointerCancel = () => endWithSource();
+      const onBlur = () => endWithSource();
       window.addEventListener('pointermove', handleResizeMove);
       window.addEventListener('pointerup', onPointerUp);
       window.addEventListener('pointercancel', onPointerCancel);
@@ -93,9 +84,6 @@ export function WindowResizeHandle({
       // Do NOT listen to mouseleave - it fires when cursor leaves the (shrinking) window and aborted resize (log evidence)
 
       return () => {
-        // #region agent log
-        fetch('http://127.0.0.1:7245/ingest/f0136137-81f1-4f6e-a7b5-217ac99b12a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'WindowResizeHandle.tsx:effect_cleanup',message:'resize_effect_cleanup',data:{},timestamp:Date.now(),hypothesisId:'H-C'})}).catch(()=>{});
-        // #endregion
         window.removeEventListener('pointermove', handleResizeMove);
         window.removeEventListener('pointerup', onPointerUp);
         window.removeEventListener('pointercancel', onPointerCancel);

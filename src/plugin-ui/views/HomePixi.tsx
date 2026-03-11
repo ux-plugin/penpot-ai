@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@ui/button';
 import {
   Settings,
@@ -7,6 +7,8 @@ import {
   MessageSquare,
   Bug,
 } from "lucide-react";
+import { useWorkspaceStore } from 'skia-rs-wasm';
+import type { WorkspaceState } from 'skia-rs-wasm';
 import { useUserSettingsStore } from '@/plugin-ui/stores/useUserSettingsStore.ts';
 import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
 import { useUserConfigQuery } from "@/plugin-ui/api/user/fetchUserConfig.ts";
@@ -17,6 +19,7 @@ import { StatusPanel } from '@/plugin-ui/components/status/StatusPanel';
 import { SettingsPanel } from '@/plugin-ui/components/user/SettingsPanel';
 import { ConversationPanel } from '@/plugin-ui/components/completions/ConversationPanel';
 import { NodeDebugPanel } from '@/plugin-ui/components/nodes/NodeDebugPanel';
+import { DevViewportAndDocumentOverlay } from '@/plugin-ui/components/dev/DevViewportAndDocumentOverlay';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
 import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse, GetAllNodesResponse } from '@/shared/types/messageTypes';
 import { BackendServerStatus } from '@/plugin-ui/components/status/BackendServerStatus';
@@ -35,6 +38,14 @@ function HomePixi() {
   const [conversationPanelOpen, setConversationPanelOpen] = useState(false);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [nodes, setNodes] = useState<DesignNode[]>([]);
+
+  const documentModel = useWorkspaceStore((s: WorkspaceState) => s.documentModel);
+  const pageId = useWorkspaceStore((s: WorkspaceState) => s.pageId);
+  const documentModelNodes = useMemo(() => {
+    if (!documentModel || !pageId) return [];
+    const page = documentModel.getPage(pageId);
+    return Object.values(page?.objects ?? {});
+  }, [documentModel, pageId]);
 
   const { data: userConfig } = useUserConfigQuery({ enabled: true });
 
@@ -220,9 +231,14 @@ function HomePixi() {
       {import.meta.env.VITE_ENABLE_BUILD_DEBUG === "true" && (
         <NodeDebugPanel
           nodes={nodes}
+          documentModelNodes={documentModelNodes}
           isOpen={debugPanelOpen}
           onClose={() => setDebugPanelOpen(false)}
         />
+      )}
+      {/* Dev overlay: viewport, zoom, documentModel content - only when VITE_ENABLE_BUILD_DEBUG */}
+      {import.meta.env.VITE_ENABLE_BUILD_DEBUG === "true" && (
+        <DevViewportAndDocumentOverlay />
       )}
     </div>
   );
