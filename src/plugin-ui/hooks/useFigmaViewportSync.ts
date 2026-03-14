@@ -1,14 +1,14 @@
-import { useRef, useEffect, useCallback } from 'react';
-import { useWorkspaceStore, setPan, setZoom, zoomAt } from 'skia-rs-wasm';
-import { syncCanvasWithFigma } from '@/plugin-ui/utils/syncCanvas';
-import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
+import { useRef, useEffect, useCallback } from "react";
+import { useWorkspaceStore, setPan, setZoom, zoomAt } from "skia-rs-wasm";
+import { syncCanvasWithFigma } from "@/plugin-ui/utils/syncCanvas";
+import { uiMessageDispatcher } from "@/plugin-ui/UIMessageDispatcher";
 import {
   MessageCategory,
   SystemMessageType,
   ExtractResultType,
   UpdateViewportRequest,
   UpdateViewportResponse,
-} from '@shared-types/messageTypes';
+} from "@shared-types/messageTypes";
 
 /**
  * Handles two-way viewport sync with Figma:
@@ -16,11 +16,18 @@ import {
  * - Syncs FROM Figma on initial viewport availability and when the pointer re-enters the document (after leaving).
  * Exposes zoomIn/zoomOut handlers for UI controls.
  */
-export function useFigmaViewportSync(): { zoomIn: () => void; zoomOut: () => void } {
+export function useFigmaViewportSync(): {
+  zoomIn: () => void;
+  zoomOut: () => void;
+} {
   const viewport = useWorkspaceStore((s) => s.viewport);
   const isPanning = useWorkspaceStore((s) => s.isPanning);
 
-  const lastViewportRef = useRef<{ panX: number; panY: number; zoom: number } | null>(null);
+  const lastViewportRef = useRef<{
+    panX: number;
+    panY: number;
+    zoom: number;
+  } | null>(null);
   const isViewportUpdateInProgressRef = useRef(false);
   const hasInitialSyncedRef = useRef(false);
   const pointerLeftDocumentRef = useRef(false);
@@ -63,14 +70,20 @@ export function useFigmaViewportSync(): { zoomIn: () => void; zoomOut: () => voi
 
     uiMessageDispatcher
       .sendRequest<
-        Omit<UpdateViewportRequest, 'id' | 'timestamp' | 'source'>,
+        Omit<UpdateViewportRequest, "id" | "timestamp" | "source">,
         ExtractResultType<UpdateViewportResponse>
       >({
         category: MessageCategory.SYSTEM,
         type: SystemMessageType.UPDATE_VIEWPORT,
-        payload: { transform: zoomChanged ? { x: 0, y: 0 } : canvasDelta, zoom, zoomFocalPoint },
+        payload: {
+          transform: zoomChanged ? { x: 0, y: 0 } : canvasDelta,
+          zoom,
+          zoomFocalPoint,
+        },
       })
-      .catch((err) => console.warn('[useFigmaViewportSync] Viewport sync failed:', err));
+      .catch((err) =>
+        console.warn("[useFigmaViewportSync] Viewport sync failed:", err),
+      );
   }, [viewport, isPanning]);
 
   // Effect B: Initial sync FROM Figma only once when viewport first becomes available.
@@ -113,7 +126,9 @@ export function useFigmaViewportSync(): { zoomIn: () => void; zoomOut: () => voi
         setZoom(vp.zoom);
         lastViewportRef.current = { panX, panY, zoom: vp.zoom };
       })
-      .catch((err) => console.warn('[useFigmaViewportSync] Sync from Figma failed:', err))
+      .catch((err) =>
+        console.warn("[useFigmaViewportSync] Sync from Figma failed:", err),
+      )
       .finally(() => {
         isViewportUpdateInProgressRef.current = false;
       });
@@ -134,7 +149,10 @@ export function useFigmaViewportSync(): { zoomIn: () => void; zoomOut: () => voi
       ) {
         pointerLeftDocumentRef.current = true;
         if (!syncIntervalRef.current) {
-          syncIntervalRef.current = setInterval(() => runSyncFromFigmaRef.current(), 500);
+          syncIntervalRef.current = setInterval(
+            () => runSyncFromFigmaRef.current(),
+            500,
+          );
         }
       }
     };
@@ -148,11 +166,11 @@ export function useFigmaViewportSync(): { zoomIn: () => void; zoomOut: () => voi
         runSyncFromFigmaRef.current();
       }
     };
-    document.addEventListener('pointerleave', onPointerLeave, true);
-    document.addEventListener('pointermove', onPointerMove, true);
+    document.addEventListener("pointerleave", onPointerLeave, true);
+    document.addEventListener("pointermove", onPointerMove, true);
     return () => {
-      document.removeEventListener('pointerleave', onPointerLeave, true);
-      document.removeEventListener('pointermove', onPointerMove, true);
+      document.removeEventListener("pointerleave", onPointerLeave, true);
+      document.removeEventListener("pointermove", onPointerMove, true);
       if (syncIntervalRef.current) {
         clearInterval(syncIntervalRef.current);
         syncIntervalRef.current = null;

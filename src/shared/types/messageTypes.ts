@@ -1,45 +1,45 @@
 // Pure Request/Response message type system for scalable communication between UI and code.ts
-import type { DesignNode } from './types';
+import type { DesignNode } from "./types";
 
 export enum MessageCategory {
-  STORE = 'store',
-  OPERATION = 'operation', 
-  SYSTEM = 'system'
+  STORE = "store",
+  OPERATION = "operation",
+  SYSTEM = "system",
 }
 
 export enum StoreMessageType {
-  STATE_UPDATE = 'state_update',
-  GET_STATE = 'get_state'
+  STATE_UPDATE = "state_update",
+  GET_STATE = "get_state",
 }
 
 export enum OperationMessageType {
-  DRAW_RECTANGLE = 'draw_rectangle',
-  CHANGE_COLOR = 'change_color',
-  RESIZE_ELEMENT = 'resize_element',
-  CREATE_FRAME = 'create_frame',
-  COMPLETE = 'complete',
-  GET_NODES_UNDER_UI = 'get_nodes_under_ui'
+  DRAW_RECTANGLE = "draw_rectangle",
+  CHANGE_COLOR = "change_color",
+  RESIZE_ELEMENT = "resize_element",
+  CREATE_FRAME = "create_frame",
+  COMPLETE = "complete",
+  GET_NODES_UNDER_UI = "get_nodes_under_ui",
 }
 
 export enum SystemMessageType {
-  ERROR = 'error',
-  WARNING = 'warning',
-  INFO = 'info',
-  PLUGIN_READY = 'plugin_ready',
-  WORKER_TEST = 'worker_test',
-  RESIZE = 'resize',
-  GET_POSITION = 'get_position',
-  SYNC_CANVAS = 'sync_canvas',
-  UPDATE_VIEWPORT = 'update_viewport',
-  GET_VIEWPORT_BOUNDS = 'get_viewport_bounds',
-  GET_ALL_NODES = 'get_all_nodes',
-  EXPORT_NODE_SVGS = 'export_node_svgs',
-  NODE_CHANGED = 'node_changed',
-  SELECTION_CHANGED = 'selection_changed',
-  SET_PENPOT_PAGE = 'set_penpot_page',
-  ADD_PENPOT_PAGE = 'add_penpot_page',
-  APPLY_PENPOT_CHANGES = 'apply_penpot_changes',
-  REQUEST_PENPOT_PAGE = 'request_penpot_page'
+  ERROR = "error",
+  WARNING = "warning",
+  INFO = "info",
+  PLUGIN_READY = "plugin_ready",
+  WORKER_TEST = "worker_test",
+  RESIZE = "resize",
+  GET_POSITION = "get_position",
+  SYNC_CANVAS = "sync_canvas",
+  UPDATE_VIEWPORT = "update_viewport",
+  GET_VIEWPORT_BOUNDS = "get_viewport_bounds",
+  GET_ALL_NODES = "get_all_nodes",
+  EXPORT_NODE_SVGS = "export_node_svgs",
+  NODE_CHANGED = "node_changed",
+  SELECTION_CHANGED = "selection_changed",
+  SET_PENPOT_PAGE = "set_penpot_page",
+  ADD_PENPOT_PAGE = "add_penpot_page",
+  APPLY_PENPOT_CHANGES = "apply_penpot_changes",
+  REQUEST_PENPOT_PAGE = "request_penpot_page",
 }
 
 // Base message request interface
@@ -48,7 +48,7 @@ export interface MessageRequest {
   type: string;
   category: MessageCategory;
   timestamp: number;
-  source: 'ui' | 'code';
+  source: "ui" | "code";
 }
 
 // Base message response interface
@@ -57,7 +57,7 @@ export interface MessageResponse {
   type: string;
   category: MessageCategory;
   timestamp: number;
-  source: 'ui' | 'code';
+  source: "ui" | "code";
   success: boolean;
   error?: string;
   result?: any;
@@ -83,7 +83,6 @@ export interface StoreStateUpdateResponse extends MessageResponse {
     updated: boolean;
   };
 }
-
 
 // Store Get State Request/Response
 export interface StoreGetStateRequest extends MessageRequest {
@@ -183,7 +182,7 @@ export interface CreateFrameResponse extends MessageResponse {
 export interface CompleteRequest extends MessageRequest {
   category: MessageCategory.OPERATION;
   type: OperationMessageType.COMPLETE;
-  payload: Partial<FrameNode> & {parent: string, fillStyleId: string};
+  payload: Partial<FrameNode> & { parent: string; fillStyleId: string };
 }
 
 export interface CompleteResponse extends MessageResponse {
@@ -227,7 +226,6 @@ export interface GetNodesUnderUIRequest extends MessageRequest {
   };
 }
 
-
 export interface GetNodesUnderUIResponse extends MessageResponse {
   category: MessageCategory.OPERATION;
   type: OperationMessageType.GET_NODES_UNDER_UI;
@@ -260,7 +258,7 @@ export interface ErrorRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.ERROR;
   payload: {
-    level: 'error';
+    level: "error";
     message: string;
     details?: any;
   };
@@ -280,7 +278,7 @@ export interface WarningRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.WARNING;
   payload: {
-    level: 'warning';
+    level: "warning";
     message: string;
     details?: any;
   };
@@ -300,7 +298,7 @@ export interface InfoRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.INFO;
   payload: {
-    level: 'info';
+    level: "info";
     message: string;
     details?: any;
   };
@@ -350,7 +348,7 @@ export interface WorkerTestResponse extends MessageResponse {
   result: {
     received: boolean;
     echoed: string;
-    processedBy: 'ui' | 'code';
+    processedBy: "ui" | "code";
   };
 }
 
@@ -492,9 +490,9 @@ export interface NodeChangedRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.NODE_CHANGED;
   payload: {
-    changeType: 'property' | 'create' | 'delete';
+    changeType: "property" | "create" | "delete";
     nodeIds: string[];
-    nodes?: DesignNode[];  // Full node data for creates/updates
+    nodes?: DesignNode[]; // Full node data for creates/updates
   };
 }
 
@@ -595,7 +593,7 @@ export interface RequestPenpotPageResponse extends MessageResponse {
 // =================
 
 // All request types
-export type Request = 
+export type Request =
   | StoreStateUpdateRequest
   | StoreGetStateRequest
   | DrawRectangleRequest
@@ -624,7 +622,7 @@ export type Request =
   | RequestPenpotPageRequest;
 
 // All response types
-export type Response = 
+export type Response =
   | StoreStateUpdateResponse
   | StoreGetStateResponse
   | DrawRectangleResponse
@@ -651,7 +649,6 @@ export type Response =
   | AddPenpotPageResponse
   | ApplyPenpotChangesResponse
   | RequestPenpotPageResponse;
-
 
 // Union of all message types
 export type Message = Request | Response;
@@ -769,37 +766,45 @@ export type RequestToResponseMap = {
 };
 
 // Utility type to extract request type from message type
-export type ExtractRequestType<T extends keyof RequestToResponseMap> = 
-  RequestToResponseMap[T]['request'];
+export type ExtractRequestType<T extends keyof RequestToResponseMap> =
+  RequestToResponseMap[T]["request"];
 
 // Utility type to extract response type from message type
-export type ExtractResponseType<T extends keyof RequestToResponseMap> = 
-  RequestToResponseMap[T]['response'];
+export type ExtractResponseType<T extends keyof RequestToResponseMap> =
+  RequestToResponseMap[T]["response"];
 
 // Utility type to extract result type from response
-export type ExtractResultType<T extends Response> = 
-  T extends { result: infer R } ? R : never;
+export type ExtractResultType<T extends Response> = T extends {
+  result: infer R;
+}
+  ? R
+  : never;
 
 // Enhanced type-safe message creator utilities
-export type MessageRequestCreator<T extends keyof RequestToResponseMap> = 
-  Omit<ExtractRequestType<T>, 'id' | 'timestamp' | 'source'>;
+export type MessageRequestCreator<T extends keyof RequestToResponseMap> = Omit<
+  ExtractRequestType<T>,
+  "id" | "timestamp" | "source"
+>;
 
-export type MessageResponseResult<T extends keyof RequestToResponseMap> = 
+export type MessageResponseResult<T extends keyof RequestToResponseMap> =
   ExtractResultType<ExtractResponseType<T>>;
 
 // Conditional type for strict payload validation
-export type ValidatedPayload<T extends Request> = 
-  T extends { payload: infer P } ? P : never;
+export type ValidatedPayload<T extends Request> = T extends { payload: infer P }
+  ? P
+  : never;
 
 // Type guard factory for specific message types
 export function createMessageTypeGuard<T extends keyof RequestToResponseMap>(
   category: MessageCategory,
-  type: T
+  type: T,
 ) {
   return (message: Message): message is ExtractRequestType<T> => {
-    return isRequest(message) && 
-           message.category === category && 
-           message.type === type;
+    return (
+      isRequest(message) &&
+      message.category === category &&
+      message.type === type
+    );
   };
 }
 
@@ -811,47 +816,68 @@ export interface TypedError<T = any> extends Error {
 }
 
 export class MessageValidationError extends Error implements TypedError {
-  code = 'MESSAGE_VALIDATION_ERROR';
+  code = "MESSAGE_VALIDATION_ERROR";
   timestamp: number;
-  
-  constructor(message: string, public context?: any) {
+
+  constructor(
+    message: string,
+    public context?: any,
+  ) {
     super(message);
-    this.name = 'MessageValidationError';
+    this.name = "MessageValidationError";
     this.timestamp = Math.floor(Date.now() / 1000);
   }
 }
 
 export class HandlerNotFoundError extends Error implements TypedError {
-  code = 'HANDLER_NOT_FOUND_ERROR';
+  code = "HANDLER_NOT_FOUND_ERROR";
   timestamp: number;
-  
-  constructor(category: MessageCategory, type: string, public context?: any) {
+
+  constructor(
+    category: MessageCategory,
+    type: string,
+    public context?: any,
+  ) {
     super(`No handler found for ${category}:${type}`);
-    this.name = 'HandlerNotFoundError';
+    this.name = "HandlerNotFoundError";
     this.timestamp = Math.floor(Date.now() / 1000);
   }
 }
 
 // Type guards for request/response identification
 export function isRequest(message: Message): message is Request {
-  return !('success' in message);
+  return !("success" in message);
 }
 
 export function isResponse(message: Message): message is Response {
-  return 'success' in message;
+  return "success" in message;
 }
 
 // Enhanced type guards with specific type checking
-export function isStoreMessage(message: Message): message is StoreStateUpdateRequest | StoreGetStateRequest {
+export function isStoreMessage(
+  message: Message,
+): message is StoreStateUpdateRequest | StoreGetStateRequest {
   return message.category === MessageCategory.STORE;
 }
 
-export function isOperationMessage(message: Message): message is 
-  DrawRectangleRequest | ChangeColorRequest | CreateFrameRequest | CompleteRequest | ResizeElementRequest {
+export function isOperationMessage(
+  message: Message,
+): message is
+  | DrawRectangleRequest
+  | ChangeColorRequest
+  | CreateFrameRequest
+  | CompleteRequest
+  | ResizeElementRequest {
   return message.category === MessageCategory.OPERATION;
 }
 
-export function isSystemMessage(message: Message): message is 
-  ErrorRequest | WarningRequest | InfoRequest | PluginReadyRequest | WorkerTestRequest {
+export function isSystemMessage(
+  message: Message,
+): message is
+  | ErrorRequest
+  | WarningRequest
+  | InfoRequest
+  | PluginReadyRequest
+  | WorkerTestRequest {
   return message.category === MessageCategory.SYSTEM;
 }

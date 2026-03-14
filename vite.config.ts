@@ -7,7 +7,6 @@ import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { visualizer } from "rollup-plugin-visualizer";
 import {
   writeFileSync,
-  statSync,
   copyFileSync,
   mkdirSync,
   readdirSync,
@@ -113,30 +112,6 @@ export default defineConfig(({ command, mode }) => {
       {
         name: "bundle-size-logger",
         generateBundle(options, bundle) {
-          // #region agent log
-          const logData = {
-            sessionId: "debug-session",
-            runId: "bundle-analysis",
-            hypothesisId: "A",
-            location: "vite.config.ts:generateBundle",
-            message: "Bundle generation started",
-            data: {
-              outputFormat: options.format,
-              bundleKeys: Object.keys(bundle),
-              bundleCount: Object.keys(bundle).length,
-            },
-            timestamp: Date.now(),
-          };
-          fetch(
-            "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(logData),
-            },
-          ).catch(() => {});
-          // #endregion
-
           const bundleInfo: Array<{
             name: string;
             size: number;
@@ -150,32 +125,6 @@ export default defineConfig(({ command, mode }) => {
                 name: fileName,
                 size,
               });
-
-              // #region agent log
-              const chunkLogData = {
-                sessionId: "debug-session",
-                runId: "bundle-analysis",
-                hypothesisId: "B",
-                location: "vite.config.ts:generateBundle",
-                message: "Chunk size analysis",
-                data: {
-                  fileName,
-                  size,
-                  sizeKB: (size / 1024).toFixed(2),
-                  modules: Object.keys(chunk.modules || {}).slice(0, 10), // Top 10 modules
-                  moduleCount: Object.keys(chunk.modules || {}).length,
-                },
-                timestamp: Date.now(),
-              };
-              fetch(
-                "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
-                {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(chunkLogData),
-                },
-              ).catch(() => {});
-              // #endregion
             } else if (chunk.type === "asset") {
               const size = chunk.source
                 ? Buffer.byteLength(chunk.source.toString(), "utf8")
@@ -228,29 +177,6 @@ export default defineConfig(({ command, mode }) => {
             .slice(0, 20)
             .map(([name, size]) => ({ name, size: size / 1024 }));
 
-          // #region agent log
-          const topModulesLogData = {
-            sessionId: "debug-session",
-            runId: "bundle-analysis",
-            hypothesisId: "C",
-            location: "vite.config.ts:generateBundle",
-            message: "Top 20 largest dependencies",
-            data: {
-              topModules,
-              totalModules: Object.keys(moduleSizes).length,
-            },
-            timestamp: Date.now(),
-          };
-          fetch(
-            "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(topModulesLogData),
-            },
-          ).catch(() => {});
-          // #endregion
-
           // Write bundle info to file for analysis
           const totalSize = bundleInfo.reduce(
             (sum, item) => sum + item.size,
@@ -271,78 +197,6 @@ export default defineConfig(({ command, mode }) => {
             join(process.cwd(), "dist", "bundle-analysis.json"),
             JSON.stringify(bundleReport, null, 2),
           );
-        },
-        writeBundle() {
-          // #region agent log
-          const writeLogData = {
-            sessionId: "debug-session",
-            runId: "bundle-analysis",
-            hypothesisId: "D",
-            location: "vite.config.ts:writeBundle",
-            message: "Bundle write completed",
-            data: {
-              analysisFile: "dist/bundle-analysis.json",
-              statsFile: "dist/stats.html",
-            },
-            timestamp: Date.now(),
-          };
-          fetch(
-            "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(writeLogData),
-            },
-          ).catch(() => {});
-          // #endregion
-        },
-        closeBundle() {
-          // Measure final bundle file sizes
-          const distPath = join(process.cwd(), "dist");
-
-          try {
-            const files = ["index.html"];
-            const fileSizes: Record<string, number> = {};
-
-            for (const file of files) {
-              const filePath = join(distPath, file);
-              try {
-                const stats = statSync(filePath);
-                fileSizes[file] = stats.size;
-              } catch (e) {
-                // File might not exist
-              }
-            }
-
-            // #region agent log
-            const finalSizeLogData = {
-              sessionId: "debug-session",
-              runId: "bundle-analysis",
-              hypothesisId: "E",
-              location: "vite.config.ts:closeBundle",
-              message: "Final bundle file sizes",
-              data: {
-                fileSizes: Object.entries(fileSizes).map(([name, size]) => ({
-                  name,
-                  size,
-                  sizeKB: (size / 1024).toFixed(2),
-                  sizeMB: (size / 1024 / 1024).toFixed(2),
-                })),
-              },
-              timestamp: Date.now(),
-            };
-            fetch(
-              "http://127.0.0.1:7242/ingest/0b4f4d77-e759-49ec-b706-781edfa8b8f5",
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(finalSizeLogData),
-              },
-            ).catch(() => {});
-            // #endregion
-          } catch (e) {
-            // Ignore errors in measurement
-          }
         },
       },
     ],

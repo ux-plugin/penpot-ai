@@ -1,0 +1,10 @@
+services:
+  cdn:
+    build:
+      context: ./cdn
+      dockerfile: Dockerfile
+    ports:
+      - "${CDN_PORT:-8080}:8080"
+    volumes:
+      - ./cdn/content:/usr/share/nginx/html:ro
+    container_name: figma-plugin-cdn

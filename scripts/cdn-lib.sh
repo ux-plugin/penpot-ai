@@ -15,6 +15,41 @@ if [ -f "$PLUGIN_DIR/.env" ]; then
   set +a
 fi
 
+# Build render-wasm (Rust + Emscripten) via Docker (penpotapp/devenv has EMSDK).
+build_wasm() {
+  echo "[cdn] Building render-wasm (WASM + JS glue) via Docker..."
+  if ! docker run --rm \
+    -e NODE_ENV=production \
+    -v "$REPO_ROOT:/home/penpot/penpot:z" \
+    -w /home/penpot/penpot/render-wasm \
+    penpotapp/devenv:latest \
+    sudo -EH -u penpot ./build; then
+    echo "[cdn] ERROR: render-wasm Docker build failed." >&2
+    echo "[cdn] Run: docker pull penpotapp/devenv:latest" >&2
+    return 1
+  fi
+  echo "[cdn] render-wasm build done"
+}
+
+
+build_skia_rs_wasm() {
+  echo "[cdn] Building skia-rs-wasm (library + worker)..."
+  (cd "$REPO_ROOT" && pnpm --filter skia-rs-wasm run build)
+  echo "[cdn] skia-rs-wasm build done"
+}
+
+build_exporter() {
+  echo "[cdn] Building penpot-exporter (lib)..."
+  (cd "$REPO_ROOT" && pnpm --filter penpot-exporter run build:lib)
+  echo "[cdn] penpot-exporter build done"
+}
+
+build_figma_adapter() {
+  echo "[cdn] Building figma-adapter..."
+  (cd "$REPO_ROOT" && pnpm --filter figma-adapter run build)
+  echo "[cdn] figma-adapter build done"
+}
+
 build_worker() {
   echo "[cdn] Building worker..."
   pnpm --filter skia-rs-wasm run build:worker
@@ -49,13 +84,14 @@ prepare_content() {
     cp "$PLUGIN_DIR/dist/redirect.html" "$CONTENT_DIR/"
     echo "[cdn] Copied redirect.html"
   fi
-  if [ -d "$PLUGIN_DIR/dist/wasm" ]; then
-    cp -r "$PLUGIN_DIR/dist/wasm/"* "$CONTENT_DIR/wasm/"
-    echo "[cdn] Copied wasm/ from figma_plugin_fe/dist/wasm"
-  elif [ -d "$SKIA_DIR/public/wasm" ]; then
-    cp -r "$SKIA_DIR/public/wasm/"* "$CONTENT_DIR/wasm/"
-    echo "[cdn] Copied wasm/ from skia-rs-wasm/public/wasm"
+  # WASM artifacts: canonical source is skia-rs-wasm/public/wasm (populated by render-wasm build)
+  if [ ! -f "$SKIA_DIR/public/wasm/render-wasm.js" ] || [ ! -f "$SKIA_DIR/public/wasm/render-wasm.wasm" ]; then
+    echo "[cdn] ERROR: WASM artifacts not found in $SKIA_DIR/public/wasm" >&2
+    echo "[cdn] Run the render-wasm build first: pnpm run build:wasm (from frontend) or ./build (from render-wasm/)" >&2
+    return 1
   fi
+  cp -r "$SKIA_DIR/public/wasm/"* "$CONTENT_DIR/wasm/"
+  echo "[cdn] Copied wasm/ from skia-rs-wasm/public/wasm (render-wasm build output)"
   if [ -f "$SKIA_DIR/dist/worker.js" ]; then
     cp "$SKIA_DIR/dist/worker.js" "$CONTENT_DIR/worker.js"
     echo "[cdn] Copied worker.js"

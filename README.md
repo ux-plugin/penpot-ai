@@ -5,13 +5,14 @@
 Copy `.env.example` to `.env.development.local` and set as needed:
 
 - **VITE_BACKEND_URL** – Backend base URL for API and RSocket (e.g. `http://localhost:8003`). No trailing slash. If unset, the plugin still loads; backend features will show "Backend not configured".
+- **CDN_PORT** – Port for the CDN container when using `cdn:up` (Docker Compose). Must match the port in `VITE_CDN_URL` and `VITE_PLUGIN_UI_URL`. Default 8080 if unset.
 - **VITE_CDN_URL** – Base URL for WASM and worker assets when serving them from a CDN. No trailing slash. If unset, the plugin uses relative paths (may not work in the Figma plugin iframe).
 - **VITE_PLUGIN_UI_URL** – When set, the build is for "remote UI": the UI is served from this origin (e.g. nginx). Build writes `dist/redirect.html` and `dist/manifest.json` with `"ui": "redirect.html"`. Use that manifest when installing the plugin so the iframe redirects to this URL (non-null origin; fixes worker load). No trailing slash.
 - **VITE_PLUGIN_ID** – Plugin ID for postMessage when using non-null origin. Defaults to `manifest.json` `"id"` when unset.
 
 ## Docker CDN (WASM + worker)
 
-- **cdn:up** – Build Docker image and run the CDN container if it is not already running (idempotent; starts existing container if stopped).
+- **cdn:up** – Run `docker compose up -d --build` to build and run the CDN container. Compose loads `.env` and uses `CDN_PORT` for the port mapping. Idempotent: no-op if already running.
 - **cdn:publish** – Build worker and prepare content, publish them to `cdn/content/`. Use when you serve that folder with your own nginx or static host (no Docker).
 - **cdn:build** – Same as cdn:publish, then builds the Docker image (no run).
 
@@ -21,7 +22,7 @@ To serve WASM and the worker from a CDN so the plugin can load them in Figma:
    ```bash
    pnpm -F figma_plugin_fe run cdn:up
    ```
-   The CDN listens on port 8080 (e.g. `http://localhost:8080`).
+   The CDN listens on `CDN_PORT` from `.env` (default 8080, e.g. `http://localhost:8080`).
 
 2. Build the plugin with the CDN URL:
    ```bash
@@ -54,3 +55,23 @@ To run the plugin UI from nginx so the iframe has a real origin (fixes "Script c
 4. **Install the plugin in Figma** using the "remote UI" build: the plugin package must include `code.js`, `redirect.html`, and **`dist/manifest.json`** (the generated one with `"ui": "redirect.html"`). When the user opens the plugin, the iframe loads the redirect page, then navigates to `VITE_PLUGIN_UI_URL`, so the UI runs from nginx with a non-null origin and the worker loads correctly. Messages from the UI include `pluginId` per Figma’s non-null origin iframe requirements.
 
 For local dev without nginx, leave **VITE_PLUGIN_UI_URL** unset (null origin; use inlined worker if needed).
+
+## WASM/JS mismatch (invoke_viiiiifffi error)
+
+If you see `LinkError: Import "env" "invoke_viiiiifffi": function import requires a callable`, the WASM binary and JS glue are out of sync (e.g. after changing render-wasm Rust code).
+
+**Fix:** Run the full build so WASM and JS are rebuilt together:
+
+```bash
+pnpm -F figma_plugin_fe run cdn:publish
+```
+
+This runs: render-wasm build (Docker) → skia-rs-wasm → plugin → prepare content.
+
+**Then restart the CDN** so it serves the new content:
+
+```bash
+pnpm -F figma_plugin_fe run cdn:up   # or: docker compose -f figma_plugin_fe/docker-compose.yml down && ... up
+```
+
+In Figma, close and reopen the plugin (or refresh the plugin iframe) to load the new assets.

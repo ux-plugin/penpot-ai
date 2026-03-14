@@ -13,7 +13,7 @@
     "build:watch": "watch 'npm run build' src",
     "cdn:publish": "./scripts/cdn-publish.sh",
     "cdn:publish:debug": "./scripts/cdn-publish-debug.sh",
-    "cdn:up": "./scripts/cdn-up.sh"
+    "cdn:up": "docker compose up -d --build"
   },
   "dependencies": {
     "@hookform/resolvers": "^4.1.3",

@@ -395,7 +395,10 @@ let setupCodeMessageListener: () => void;
         const page = await translatePage(pageNode);
         return { page: (page ?? null) as unknown as Record<string, unknown> };
       } catch (err) {
-        console.warn('[CodeMessageDispatcher] REQUEST_PENPOT_PAGE failed:', err);
+        console.warn(
+          "[CodeMessageDispatcher] REQUEST_PENPOT_PAGE failed:",
+          err,
+        );
         return { page: null as unknown as Record<string, unknown> };
       }
     },
