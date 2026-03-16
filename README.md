@@ -13,8 +13,12 @@ Copy `.env.example` to `.env.development.local` and set as needed:
 ## Docker CDN (WASM + worker)
 
 - **cdn:up** – Run `docker compose up -d --build` to build and run the CDN container. Compose loads `.env` and uses `CDN_PORT` for the port mapping. Idempotent: no-op if already running.
-- **cdn:publish** – Build worker and prepare content, publish them to `cdn/content/`. Use when you serve that folder with your own nginx or static host (no Docker).
-- **cdn:build** – Same as cdn:publish, then builds the Docker image (no run).
+- **cdn:publish** – Build selected targets and optionally prepare content to `cdn/content/`. Accepts build targets (`wasm`, `skia`, `exporter`, `adapter`, `plugin`) and `--publish` to copy artifacts after building. With no args: build all and prepare content (same as before). Examples:
+  - `pnpm run cdn:publish` — build all and prepare content.
+  - `pnpm run cdn:publish -- wasm` — build only WASM.
+  - `pnpm run cdn:publish -- wasm skia exporter` — build only those three.
+  - `pnpm run cdn:publish -- wasm skia plugin --publish` — build those three, then prepare content.
+- **cdn:build** – Same as cdn:publish (all + prepare content), then builds the Docker image (no run).
 
 To serve WASM and the worker from a CDN so the plugin can load them in Figma:
 
@@ -66,7 +70,7 @@ If you see `LinkError: Import "env" "invoke_viiiiifffi": function import require
 pnpm -F figma_plugin_fe run cdn:publish
 ```
 
-This runs: render-wasm build (Docker) → skia-rs-wasm → plugin → prepare content.
+With no arguments this runs: render-wasm build (Docker) → skia-rs-wasm → exporter → figma-adapter → plugin → prepare content.
 
 **Then restart the CDN** so it serves the new content:
 

@@ -107,6 +107,10 @@ function shapesToRect(shapes) {
     if (points && points.length > 0) {
       return pointsToRect(points);
     }
+    const sr = shape.selrect;
+    if (sr && typeof sr.x === "number" && typeof sr.y === "number" && sr.width > 0 && sr.height > 0) {
+      return sr;
+    }
     return null;
   }).filter((rect) => rect !== null);
   return joinRects(rects);
@@ -808,6 +812,9 @@ function isPointInsideNonzero(p, lines) {
   return wn !== 0;
 }
 function overlapsRectPoints(rect, points) {
+  if (points.length === 0) {
+    return false;
+  }
   const rectPoints = rectToPoints(rect);
   if (!rectPoints || rectPoints.length === 0) {
     return false;
@@ -1079,6 +1086,10 @@ function overlaps(shape, rect, usingSelrect = false) {
     case "path":
     case "bool": {
       const points = shape.points || [];
+      if (points.length === 0) {
+        const pts = getShapePointsForOverlap(shape);
+        return pts.length > 0 && overlapsRectPoints(adjustedRect, pts) && overlapsPath(shape, adjustedRect, true);
+      }
       return overlapsRectPoints(adjustedRect, points) && overlapsPath(shape, adjustedRect, true);
     }
     case "circle":

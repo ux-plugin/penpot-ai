@@ -76,28 +76,38 @@ build_plugin_debug() {
 prepare_content() {
   echo "[cdn] Preparing content..."
   mkdir -p "$CONTENT_DIR/wasm"
+  local copied_any=0
   if [ -f "$PLUGIN_DIR/dist/index.html" ]; then
     cp "$PLUGIN_DIR/dist/index.html" "$CONTENT_DIR/"
     echo "[cdn] Copied index.html (plugin UI)"
+    copied_any=1
+  else
+    echo "[cdn] WARN: index.html not found (build plugin first)" >&2
   fi
   if [ -f "$PLUGIN_DIR/dist/redirect.html" ]; then
     cp "$PLUGIN_DIR/dist/redirect.html" "$CONTENT_DIR/"
     echo "[cdn] Copied redirect.html"
+    copied_any=1
+  else
+    echo "[cdn] WARN: redirect.html not found (build plugin first)" >&2
   fi
   # WASM artifacts: canonical source is skia-rs-wasm/public/wasm (populated by render-wasm build)
-  if [ ! -f "$SKIA_DIR/public/wasm/render-wasm.js" ] || [ ! -f "$SKIA_DIR/public/wasm/render-wasm.wasm" ]; then
-    echo "[cdn] ERROR: WASM artifacts not found in $SKIA_DIR/public/wasm" >&2
-    echo "[cdn] Run the render-wasm build first: pnpm run build:wasm (from frontend) or ./build (from render-wasm/)" >&2
-    return 1
+  if [ -f "$SKIA_DIR/public/wasm/render-wasm.js" ] && [ -f "$SKIA_DIR/public/wasm/render-wasm.wasm" ]; then
+    cp -r "$SKIA_DIR/public/wasm/"* "$CONTENT_DIR/wasm/"
+    echo "[cdn] Copied wasm/ from skia-rs-wasm/public/wasm (render-wasm build output)"
+    copied_any=1
+  else
+    echo "[cdn] WARN: WASM artifacts not found in $SKIA_DIR/public/wasm (run wasm build first)" >&2
   fi
-  cp -r "$SKIA_DIR/public/wasm/"* "$CONTENT_DIR/wasm/"
-  echo "[cdn] Copied wasm/ from skia-rs-wasm/public/wasm (render-wasm build output)"
   if [ -f "$SKIA_DIR/dist/worker.js" ]; then
     cp "$SKIA_DIR/dist/worker.js" "$CONTENT_DIR/worker.js"
     echo "[cdn] Copied worker.js"
+    copied_any=1
   else
-    echo "[cdn] ERROR: skia-rs-wasm/dist/worker.js not found. Run: pnpm -F skia-rs-wasm run build:worker" >&2
-    return 1
+    echo "[cdn] WARN: skia-rs-wasm/dist/worker.js not found (run skia build first)" >&2
+  fi
+  if [ "$copied_any" -eq 0 ]; then
+    echo "[cdn] WARN: No content was copied; build at least wasm+skia or plugin first" >&2
   fi
 }
 
