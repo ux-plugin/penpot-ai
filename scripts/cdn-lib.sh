@@ -20,6 +20,7 @@ build_wasm() {
   echo "[cdn] Building render-wasm (WASM + JS glue) via Docker..."
   if ! docker run --rm \
     -e NODE_ENV=production \
+    -e CI=true \
     -v "$REPO_ROOT:/home/penpot/penpot:z" \
     -w /home/penpot/penpot/render-wasm \
     penpotapp/devenv:latest \
