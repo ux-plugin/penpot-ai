@@ -101,6 +101,11 @@ export class PenpotImplementation implements IDesignPlatform {
   };
 
   currentPage = {
+    get id() {
+      const page = (globalThis as any).penpot?.page;
+      if (page && typeof page.id === 'string') return page.id;
+      return '';
+    },
     get selection() {
       if (typeof (globalThis as any).penpot !== 'undefined') {
         return (globalThis as any).penpot.selection || [];
@@ -124,7 +129,15 @@ export class PenpotImplementation implements IDesignPlatform {
           page.addEventListener(event, callback);
         }
       }
-    }
+    },
+    off: (event: string, callback: ((event?: any) => void) | (() => void)) => {
+      const page = (globalThis as any).penpot?.page;
+      if (page?.off) {
+        page.off(event, callback);
+      } else if (page?.removeEventListener) {
+        page.removeEventListener(event, callback);
+      }
+    },
   };
 
   viewport = {

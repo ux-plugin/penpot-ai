@@ -654,6 +654,9 @@ export class FigmaImplementation implements IDesignPlatform {
   };
 
   currentPage = {
+    get id() {
+      return figma.currentPage.id;
+    },
     get selection() {
       return figma.currentPage.selection;
     },
@@ -662,6 +665,9 @@ export class FigmaImplementation implements IDesignPlatform {
     },
     on: (event: string, callback: ((event?: any) => void) | (() => void)) => {
       figma.currentPage.on(event as any, callback as any);
+    },
+    off: (event: string, callback: ((event?: any) => void) | (() => void)) => {
+      figma.currentPage.off(event as any, callback as any);
     },
   };
 

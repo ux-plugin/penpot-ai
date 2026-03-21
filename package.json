@@ -43,8 +43,7 @@
     "tw-animate-css": "^1.3.6",
     "zustand": "^5.0.7",
     "penpot-exporter": "workspace:*",
-    "skia-rs-wasm": "workspace:*",
-    "figma-adapter": "workspace:*"
+    "skia-rs-wasm": "workspace:*"
   },
   "devDependencies": {
     "@figma/eslint-plugin-figma-plugins": "^0.15.0",

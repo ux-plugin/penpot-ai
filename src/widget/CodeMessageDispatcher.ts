@@ -35,7 +35,7 @@ import {
   Message,
   ExtractResultType,
 } from "@shared-types/messageTypes.ts";
-import { translatePage } from "figma-adapter";
+import { translatePage } from "penpot-exporter/figma-adapter";
 import { platform } from "@widget/platform";
 import { IDesignPlatform } from "@widget/platform/IDesignPlatform.ts";
 import { AuthStateManagementClass } from "@widget/stores/AuthStateManagementClass.ts";

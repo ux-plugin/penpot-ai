@@ -1,13 +1,119 @@
 // Import platform abstraction for cross-environment compatibility
 // Use direct path since worker bypasses Vite aliases
 import { platform } from "@widget/platform";
+import type { IDesignPlatform } from "@widget/platform/IDesignPlatform.ts";
 import {
   CompleteRequest,
   MessageCategory,
   OperationMessageType,
   SystemMessageType,
 } from "@/shared/types/messageTypes";
-import { translateNodeChange } from "figma-adapter";
+import { translateNodeChange } from "penpot-exporter/figma-adapter";
+
+type CodeMessageBridge = { sendRequest: (message: any) => Promise<unknown> };
+
+/**
+ * Applies Figma page nodechange to UI: NodeManager payloads + Penpot incremental changes.
+ * `pageId` is the Figma PageNode.id (for the current canvas page). Penpot page ids differ; the iframe applies
+ * incremental changes using workspace `pageId` (see SkiaCanvas APPLY_PENPOT_CHANGES handler).
+ */
+async function handleNodeChangeForPage(
+  _figmaPageId: string | undefined,
+  event: any,
+  commands: IDesignPlatform,
+  codeMessageDispatcher: CodeMessageBridge,
+): Promise<void> {
+  const nodeChanges = event?.nodeChanges || [];
+  if (nodeChanges.length === 0) return;
+
+  const createdNodeIds: string[] = [];
+  const deletedNodeIds: string[] = [];
+  const updatedNodeIds: string[] = [];
+
+  for (const change of nodeChanges) {
+    if (change.type === "CREATE") {
+      const nodeId = change.node?.id;
+      if (nodeId) {
+        createdNodeIds.push(nodeId);
+      }
+    } else if (change.type === "DELETE") {
+      const nodeId = change.node?.id || change.id;
+      if (nodeId) {
+        deletedNodeIds.push(nodeId);
+      }
+    } else if (change.type === "PROPERTY_CHANGE") {
+      const nodeId = change.node?.id;
+      if (nodeId) {
+        updatedNodeIds.push(nodeId);
+      }
+    }
+  }
+
+  const nodesNeedingFetch = [...createdNodeIds, ...updatedNodeIds];
+  let fetchedNodes: any[] = [];
+  if (nodesNeedingFetch.length > 0) {
+    const allNodes = await commands.getAllNodes(false);
+    fetchedNodes = allNodes.filter((node) =>
+      nodesNeedingFetch.includes(node.id),
+    );
+  }
+
+  if (createdNodeIds.length > 0) {
+    const createdNodes = fetchedNodes.filter((node) =>
+      createdNodeIds.includes(node.id),
+    );
+
+    await codeMessageDispatcher.sendRequest({
+      category: MessageCategory.SYSTEM,
+      type: SystemMessageType.NODE_CHANGED,
+      payload: {
+        changeType: "create",
+        nodeIds: createdNodeIds,
+        nodes: createdNodes,
+      },
+    });
+  }
+
+  if (deletedNodeIds.length > 0) {
+    await codeMessageDispatcher.sendRequest({
+      category: MessageCategory.SYSTEM,
+      type: SystemMessageType.NODE_CHANGED,
+      payload: {
+        changeType: "delete",
+        nodeIds: deletedNodeIds,
+      },
+    });
+  }
+
+  if (updatedNodeIds.length > 0) {
+    const updatedNodes = fetchedNodes.filter((node) =>
+      updatedNodeIds.includes(node.id),
+    );
+
+    await codeMessageDispatcher.sendRequest({
+      category: MessageCategory.SYSTEM,
+      type: SystemMessageType.NODE_CHANGED,
+      payload: {
+        changeType: "property",
+        nodeIds: updatedNodeIds,
+        nodes: updatedNodes,
+      },
+    });
+  }
+
+  // Do not pass Figma PageNode.id into translateNodeChange — translatePage uses a Penpot UUID as page id;
+  // DocumentModel.pageMap is keyed by that id. The UI applies changes using workspace pageId.
+  const penpotChanges = await translateNodeChange(event, {});
+  if (penpotChanges.length > 0) {
+    await codeMessageDispatcher.sendRequest({
+      category: MessageCategory.SYSTEM,
+      type: SystemMessageType.APPLY_PENPOT_CHANGES,
+      payload: {
+        changes: penpotChanges as unknown as Record<string, unknown>[],
+      },
+    });
+  }
+}
 
 // ============================================
 // TESTING ONLY: Generic Node Logging Function
@@ -139,114 +245,48 @@ async function logSelectedNodes(commands: any): Promise<void> {
   // Node Change Tracking: Listen to Figma events and notify UI
   // ============================================
 
-  // Handle page node changes (property changes, creates, deletes)
-  // Using PageNode.on("nodechange") as recommended by Figma API
-  // See: https://developers.figma.com/docs/plugins/api/properties/PageNode-on/
-  commands.currentPage.on("nodechange", async (event: any) => {
-    try {
-      const nodeChanges = event?.nodeChanges || [];
-      if (nodeChanges.length === 0) return;
-
-      // Collect all changed node IDs and categorize changes
-      const createdNodeIds: string[] = [];
-      const deletedNodeIds: string[] = [];
-      const updatedNodeIds: string[] = [];
-
-      for (const change of nodeChanges) {
-        if (change.type === "CREATE") {
-          const nodeId = change.node?.id;
-          if (nodeId) {
-            createdNodeIds.push(nodeId);
-          }
-        } else if (change.type === "DELETE") {
-          const nodeId = change.node?.id || change.id;
-          if (nodeId) {
-            deletedNodeIds.push(nodeId);
-          }
-        } else if (change.type === "PROPERTY_CHANGE") {
-          const nodeId = change.node?.id;
-          if (nodeId) {
-            updatedNodeIds.push(nodeId);
-          }
-        }
-      }
-
-      // Batch fetch nodes for creates and updates together
-      const nodesNeedingFetch = [...createdNodeIds, ...updatedNodeIds];
-      let fetchedNodes: any[] = [];
-      if (nodesNeedingFetch.length > 0) {
-        // Get all nodes and filter to changed ones
-        const allNodes = await commands.getAllNodes(false);
-        fetchedNodes = allNodes.filter((node) =>
-          nodesNeedingFetch.includes(node.id),
+  // PageNode.on("nodechange") — see https://developers.figma.com/docs/plugins/api/properties/PageNode-on/
+  // In Figma: keep one subscription on the active page; rebind on currentpagechange (off must target the same PageNode).
+  if (typeof figma !== "undefined") {
+    let subscribedPage: PageNode | null = null;
+    const nodeChangeHandler = async (event: NodeChangeEvent) => {
+      try {
+        const pageId = subscribedPage?.id;
+        await handleNodeChangeForPage(
+          pageId,
+          event,
+          commands,
+          codeMessageDispatcher,
         );
+      } catch (error) {
+        console.error("[code.ts] Error handling nodechange:", error);
       }
-
-      // Handle creates
-      if (createdNodeIds.length > 0) {
-        const createdNodes = fetchedNodes.filter((node) =>
-          createdNodeIds.includes(node.id),
+    };
+    const rebindNodeChangeToCurrentFigmaPage = () => {
+      if (subscribedPage) {
+        subscribedPage.off("nodechange", nodeChangeHandler);
+      }
+      subscribedPage = figma.currentPage;
+      subscribedPage.on("nodechange", nodeChangeHandler);
+    };
+    rebindNodeChangeToCurrentFigmaPage();
+    figma.on("currentpagechange", rebindNodeChangeToCurrentFigmaPage);
+  } else {
+    commands.currentPage.on("nodechange", async (event: any) => {
+      try {
+        const rawId = commands.currentPage.id;
+        const pageId = rawId.length > 0 ? rawId : undefined;
+        await handleNodeChangeForPage(
+          pageId,
+          event,
+          commands,
+          codeMessageDispatcher,
         );
-
-        await codeMessageDispatcher.sendRequest({
-          category: MessageCategory.SYSTEM,
-          type: SystemMessageType.NODE_CHANGED,
-          payload: {
-            changeType: "create",
-            nodeIds: createdNodeIds,
-            nodes: createdNodes,
-          },
-        });
+      } catch (error) {
+        console.error("[code.ts] Error handling nodechange:", error);
       }
-
-      // Handle deletes
-      if (deletedNodeIds.length > 0) {
-        await codeMessageDispatcher.sendRequest({
-          category: MessageCategory.SYSTEM,
-          type: SystemMessageType.NODE_CHANGED,
-          payload: {
-            changeType: "delete",
-            nodeIds: deletedNodeIds,
-          },
-        });
-      }
-
-      // Handle property updates
-      if (updatedNodeIds.length > 0) {
-        const updatedNodes = fetchedNodes.filter((node) =>
-          updatedNodeIds.includes(node.id),
-        );
-
-        await codeMessageDispatcher.sendRequest({
-          category: MessageCategory.SYSTEM,
-          type: SystemMessageType.NODE_CHANGED,
-          payload: {
-            changeType: "property",
-            nodeIds: updatedNodeIds,
-            nodes: updatedNodes,
-          },
-        });
-      }
-
-      // Send Penpot/skia-rs-wasm incremental changes for the canvas
-      const currentPage = commands.currentPage as { id?: string } | undefined;
-      const penpotChanges = await translateNodeChange(event, {
-        pageId: currentPage?.id,
-      });
-      if (penpotChanges.length > 0) {
-        await codeMessageDispatcher.sendRequest({
-          category: MessageCategory.SYSTEM,
-          type: SystemMessageType.APPLY_PENPOT_CHANGES,
-          payload: {
-            changes: penpotChanges as unknown as Record<string, unknown>[],
-            pageId: currentPage?.id,
-          },
-        });
-      }
-    } catch (error) {
-      console.error("[code.ts] Error handling nodechange:", error);
-    }
-  });
+    });
+  }
 
   // Handle selection changes
   commands.on("selectionchange", async () => {

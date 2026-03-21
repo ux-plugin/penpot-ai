@@ -46,9 +46,8 @@ build_exporter() {
 }
 
 build_figma_adapter() {
-  echo "[cdn] Building figma-adapter..."
-  (cd "$REPO_ROOT" && pnpm --filter figma-adapter run build)
-  echo "[cdn] figma-adapter build done"
+  echo "[cdn] figma-adapter is built with penpot-exporter (build:lib)..."
+  build_exporter
 }
 
 build_worker() {

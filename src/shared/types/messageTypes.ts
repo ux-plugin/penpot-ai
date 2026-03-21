@@ -844,6 +844,31 @@ export class HandlerNotFoundError extends Error implements TypedError {
   }
 }
 
+/**
+ * True when `pluginMessage` uses our UI↔code protocol.
+ * Figma and other hosts may post unrelated objects (e.g. `{ type: "PROGRESS_CURRENT_ITEM" }`)
+ * without `category`; those must be ignored — otherwise `isRequest` treats them as requests
+ * and the dispatcher logs "No handler found for undefined:…".
+ */
+export function isPluginFrameMessage(message: unknown): message is Message {
+  if (message === null || typeof message !== "object") return false;
+  const m = message as Record<string, unknown>;
+  if (typeof m.id !== "string" || m.id.length === 0) return false;
+  if (typeof m.type !== "string") return false;
+  const cat = m.category;
+  if (
+    cat !== MessageCategory.STORE &&
+    cat !== MessageCategory.OPERATION &&
+    cat !== MessageCategory.SYSTEM
+  ) {
+    return false;
+  }
+  if ("success" in m) {
+    return typeof m.success === "boolean";
+  }
+  return true;
+}
+
 // Type guards for request/response identification
 export function isRequest(message: Message): message is Request {
   return !("success" in message);

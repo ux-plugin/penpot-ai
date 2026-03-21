@@ -50,9 +50,16 @@ export interface IDesignPlatform {
 
   // Selection & Events
   currentPage: {
+    /** Stable design surface page id (Figma: PageNode.id; dev stubs: empty). Used with translatePage / incremental changes. */
+    readonly id: string;
     selection: readonly unknown[];
     children: readonly BaseSceneNode[];
     on: (
+      event: string,
+      callback: ((event?: any) => void) | (() => void),
+    ) => void;
+    /** Remove a listener from the current page (Figma); no-op where unsupported. */
+    off?: (
       event: string,
       callback: ((event?: any) => void) | (() => void),
     ) => void;

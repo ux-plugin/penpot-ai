@@ -1,10 +1,10 @@
-import { 
-  Request, 
-  Response, 
-  Message, 
-  MessageCategory, 
-  isRequest, 
+import {
+  Request,
+  Response,
+  MessageCategory,
+  isRequest,
   isResponse,
+  isPluginFrameMessage,
   HandlerNotFoundError,
 } from "@/shared/types/messageTypes";
 
@@ -107,7 +107,10 @@ export class UniversalMessageDispatcher {
   /**
    * Handle incoming messages (requests and responses)
    */
-  public async handleMessage(message: Message): Promise<void> {
+  public async handleMessage(message: unknown): Promise<void> {
+    if (!isPluginFrameMessage(message)) {
+      return;
+    }
     try {
       if (isResponse(message)) {
         await this.handleResponse(message);
@@ -115,9 +118,8 @@ export class UniversalMessageDispatcher {
         await this.handleRequest(message);
       }
     } catch (error) {
-      console.error('Error handling message:', error);
-      
-      // Send an error response if this was a request
+      console.error("Error handling message:", error);
+
       if (isRequest(message)) {
         this.sendResponse(message, null, this.getErrorMessage(error));
       }

@@ -9,7 +9,6 @@ build_wasm
 verify_wasm_glue
 build_skia_rs_wasm
 build_exporter
-build_figma_adapter
 build_plugin_debug
 prepare_content
 echo "[cdn] Done (debug). Content in $CONTENT_DIR. Run cdn:build to build the Docker image."

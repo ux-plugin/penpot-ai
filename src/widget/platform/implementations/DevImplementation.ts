@@ -214,10 +214,14 @@ export class DevImplementation implements IDesignPlatform {
   };
 
   currentPage = {
+    id: "",
     selection: [] as any[],
     children: [] as BaseSceneNode[],
     on: (_event: string, _callback: ((event?: any) => void) | (() => void)) => {
       // No-op in dev mode - could simulate events if needed
+    },
+    off: (_event: string, _callback: ((event?: any) => void) | (() => void)) => {
+      // No-op in dev mode
     },
   };
 
