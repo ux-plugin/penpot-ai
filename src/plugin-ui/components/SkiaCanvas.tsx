@@ -31,76 +31,6 @@ import {
 import type { DesignNode } from '@shared-types/types';
 import type { PenpotPage, Change } from 'penpot-exporter/types';
 
-/** Debug: summarize Penpot page tree for text fills + frame/page background (hypotheses H1–H3, H5). */
-function collectPenpotPageDebug(page: Record<string, unknown>): {
-  background: unknown;
-  firstFrame: { fillsLen: number; fillStyleId?: unknown } | null;
-  textSamples: Array<{
-    charactersLen: number;
-    contentHasChildren: boolean;
-    span0FillsLen: number;
-    span0HasFillStyleId: boolean;
-  }>;
-} {
-  const textSamples: Array<{
-    charactersLen: number;
-    contentHasChildren: boolean;
-    span0FillsLen: number;
-    span0HasFillStyleId: boolean;
-  }> = [];
-  let firstFrame: { fillsLen: number; fillStyleId?: unknown } | null = null;
-
-  const visit = (node: Record<string, unknown>) => {
-    const t = node.type;
-    if (t === 'frame' && !firstFrame) {
-      const fills = node.fills;
-      firstFrame = {
-        fillsLen: Array.isArray(fills) ? fills.length : -1,
-        fillStyleId: node.fillStyleId,
-      };
-    }
-    if (t === 'text') {
-      const content = node.content as Record<string, unknown> | undefined;
-      const rootKids = content?.children as unknown[] | undefined;
-      const paragraphSet = rootKids?.[0] as Record<string, unknown> | undefined;
-      const psetKids = paragraphSet?.children as unknown[] | undefined;
-      const paragraph = psetKids?.[0] as Record<string, unknown> | undefined;
-      const spans = paragraph?.children as unknown[] | undefined;
-      const span0 = spans?.[0] as Record<string, unknown> | undefined;
-      const ch = (node as { characters?: string }).characters;
-      textSamples.push({
-        charactersLen: typeof ch === 'string' ? ch.length : 0,
-        contentHasChildren: Array.isArray(rootKids) && rootKids.length > 0,
-        span0FillsLen: Array.isArray(span0?.fills) ? (span0.fills as unknown[]).length : -1,
-        span0HasFillStyleId: !!(
-          span0 &&
-          span0.fillStyleId &&
-          String(span0.fillStyleId).length > 0
-        ),
-      });
-    }
-    const kids = node.children as unknown[] | undefined;
-    if (Array.isArray(kids)) {
-      for (const c of kids) {
-        if (c && typeof c === 'object') visit(c as Record<string, unknown>);
-      }
-    }
-  };
-
-  const top = page.children as unknown[] | undefined;
-  if (Array.isArray(top)) {
-    for (const c of top) {
-      if (c && typeof c === 'object') visit(c as Record<string, unknown>);
-    }
-  }
-
-  return {
-    background: page.background,
-    firstFrame,
-    textSamples: textSamples.slice(0, 12),
-  };
-}
-
 interface SkiaCanvasProps {
   topRightContent?: React.ReactNode;
   bottomRightContent?: React.ReactNode;
@@ -184,30 +114,6 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
           return;
         }
         const page = result.page as unknown as PenpotPage;
-        // #region agent log
-        {
-          const dbg = collectPenpotPageDebug(page as unknown as Record<string, unknown>);
-          fetch('http://127.0.0.1:7245/ingest/c70ec86b-9ad9-405f-b916-1c6ac9ad8098', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Debug-Session-Id': '05c835',
-            },
-            body: JSON.stringify({
-              sessionId: '05c835',
-              runId: 'pre-fix',
-              hypothesisId: 'H1-H5',
-              location: 'SkiaCanvas.tsx:REQUEST_PENPOT_PAGE',
-              message: 'Penpot page payload after Figma translatePage',
-              data: {
-                ...dbg,
-                textNodeCount: dbg.textSamples.length,
-              },
-              timestamp: Date.now(),
-            }),
-          }).catch(() => {});
-        }
-        // #endregion
         setDocument(buildDocFromPage(page))
           .then(() => setLoadError(null))
           .catch((err: unknown) => {
