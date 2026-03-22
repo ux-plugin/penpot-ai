@@ -215,8 +215,11 @@ export class DevImplementation implements IDesignPlatform {
 
   currentPage = {
     id: "",
+    name: "",
+    backgrounds: [] as readonly unknown[],
     selection: [] as any[],
     children: [] as BaseSceneNode[],
+    loadAsync: async () => {},
     on: (_event: string, _callback: ((event?: any) => void) | (() => void)) => {
       // No-op in dev mode - could simulate events if needed
     },

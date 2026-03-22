@@ -106,6 +106,18 @@ export class PenpotImplementation implements IDesignPlatform {
       if (page && typeof page.id === 'string') return page.id;
       return '';
     },
+    get name() {
+      const page = (globalThis as any).penpot?.page;
+      if (page && typeof page.name === 'string') return page.name;
+      return '';
+    },
+    get backgrounds() {
+      const page = (globalThis as any).penpot?.page;
+      if (page?.backgrounds && Array.isArray(page.backgrounds)) {
+        return page.backgrounds as readonly unknown[];
+      }
+      return [];
+    },
     get selection() {
       if (typeof (globalThis as any).penpot !== 'undefined') {
         return (globalThis as any).penpot.selection || [];
@@ -117,6 +129,12 @@ export class PenpotImplementation implements IDesignPlatform {
         return (globalThis as any).penpot.page.children || [];
       }
       return [];
+    },
+    loadAsync: async () => {
+      const page = (globalThis as any).penpot?.page;
+      if (page && typeof page.loadAsync === 'function') {
+        await page.loadAsync();
+      }
     },
     on: (event: string, callback: ((event?: any) => void) | (() => void)) => {
       // Penpot's page event listener API - assuming similar to Figma's PageNode.on()

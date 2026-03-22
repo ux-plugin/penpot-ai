@@ -391,8 +391,7 @@ let setupCodeMessageListener: () => void;
       _: RequestPenpotPageRequest,
     ): Promise<ExtractResultType<RequestPenpotPageResponse>> => {
       try {
-        const pageNode = commands.currentPage as PageNode;
-        const page = await translatePage(pageNode);
+        const page = await translatePage(commands.currentPage as PageNode);
         return { page: (page ?? null) as unknown as Record<string, unknown> };
       } catch (err) {
         console.warn(

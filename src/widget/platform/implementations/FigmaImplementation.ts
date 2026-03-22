@@ -657,12 +657,19 @@ export class FigmaImplementation implements IDesignPlatform {
     get id() {
       return figma.currentPage.id;
     },
+    get name() {
+      return figma.currentPage.name;
+    },
+    get backgrounds() {
+      return figma.currentPage.backgrounds;
+    },
     get selection() {
       return figma.currentPage.selection;
     },
     get children() {
       return figma.currentPage.children;
     },
+    loadAsync: () => figma.currentPage.loadAsync(),
     on: (event: string, callback: ((event?: any) => void) | (() => void)) => {
       figma.currentPage.on(event as any, callback as any);
     },

@@ -52,8 +52,14 @@ export interface IDesignPlatform {
   currentPage: {
     /** Stable design surface page id (Figma: PageNode.id; dev stubs: empty). Used with translatePage / incremental changes. */
     readonly id: string;
+    /** Page title (Figma PageNode.name). */
+    readonly name: string;
+    /** Design canvas background paints (Figma PageNode.backgrounds); empty when none or unsupported. */
+    readonly backgrounds: readonly unknown[];
     selection: readonly unknown[];
     children: readonly BaseSceneNode[];
+    /** Load page subtree / metadata before reading backgrounds (Figma PageNode.loadAsync). */
+    loadAsync: () => Promise<void>;
     on: (
       event: string,
       callback: ((event?: any) => void) | (() => void),
