@@ -36,6 +36,7 @@ export enum SystemMessageType {
   EXPORT_NODE_SVGS = "export_node_svgs",
   NODE_CHANGED = "node_changed",
   SELECTION_CHANGED = "selection_changed",
+  SET_FIGMA_SELECTION = "set_figma_selection",
   SET_PENPOT_PAGE = "set_penpot_page",
   ADD_PENPOT_PAGE = "add_penpot_page",
   APPLY_PENPOT_CHANGES = "apply_penpot_changes",
@@ -510,12 +511,30 @@ export interface SelectionChangedRequest extends MessageRequest {
   type: SystemMessageType.SELECTION_CHANGED;
   payload: {
     selectedNodeIds: string[];
+    penpotIds: string[];
   };
 }
 
 export interface SelectionChangedResponse extends MessageResponse {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.SELECTION_CHANGED;
+  result: {
+    handled: boolean;
+  };
+}
+
+// Set Figma Selection (UI → code): sync plugin canvas selection to Figma
+export interface SetFigmaSelectionRequest extends MessageRequest {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.SET_FIGMA_SELECTION;
+  payload: {
+    penpotIds: string[];
+  };
+}
+
+export interface SetFigmaSelectionResponse extends MessageResponse {
+  category: MessageCategory.SYSTEM;
+  type: SystemMessageType.SET_FIGMA_SELECTION;
   result: {
     handled: boolean;
   };
@@ -616,6 +635,7 @@ export type Request =
   | ExportNodeSVGsRequest
   | NodeChangedRequest
   | SelectionChangedRequest
+  | SetFigmaSelectionRequest
   | SetPenpotPageRequest
   | AddPenpotPageRequest
   | ApplyPenpotChangesRequest
@@ -645,6 +665,7 @@ export type Response =
   | ExportNodeSVGsResponse
   | NodeChangedResponse
   | SelectionChangedResponse
+  | SetFigmaSelectionResponse
   | SetPenpotPageResponse
   | AddPenpotPageResponse
   | ApplyPenpotChangesResponse

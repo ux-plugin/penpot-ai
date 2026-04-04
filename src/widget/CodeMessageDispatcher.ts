@@ -32,10 +32,13 @@ import {
   ExportNodeSVGsResponse,
   RequestPenpotPageRequest,
   RequestPenpotPageResponse,
+  SetFigmaSelectionRequest,
+  SetFigmaSelectionResponse,
   Message,
   ExtractResultType,
 } from "@shared-types/messageTypes.ts";
-import { translatePage } from "penpot-exporter/figma-adapter";
+import { translatePage, reverseLookupFigmaId } from "penpot-exporter/figma-adapter";
+import { markIgnoreNextSelectionChange } from "@widget/selectionSyncGuard.ts";
 import { platform } from "@widget/platform";
 import { IDesignPlatform } from "@widget/platform/IDesignPlatform.ts";
 import { AuthStateManagementClass } from "@widget/stores/AuthStateManagementClass.ts";
@@ -361,11 +364,10 @@ let setupCodeMessageListener: () => void;
       // Get viewport zoom level
       const zoom = commands.viewport.zoom;
 
-      // The UI header is 40 pixels, so we need to adjust the canvas position
-      // The canvasSpace position is where the window's top-left is in canvas coordinates
-      // We need to adjust by 40 pixels (converted to canvas units) to account for the header
-      const HEADER_HEIGHT_PX = 40;
-      const headerHeightInCanvasUnits = HEADER_HEIGHT_PX / zoom;
+      // Adjust for the platform-specific header bar above the iframe content area.
+      // canvasSpace gives the window's top-left in canvas coordinates; shift down
+      // by the header height (converted to canvas units) to get the content origin.
+      const headerHeightInCanvasUnits = commands.uiHeaderHeight / zoom;
 
       // Calculate the adjusted canvas position (where the canvas should start)
       const canvasPosition = {
@@ -400,6 +402,38 @@ let setupCodeMessageListener: () => void;
         );
         return { page: null as unknown as Record<string, unknown> };
       }
+    },
+  );
+
+  // Set Figma selection from plugin canvas (UI → code)
+  codeMessageDispatcher.registerHandler<
+    SetFigmaSelectionRequest,
+    ExtractResultType<SetFigmaSelectionResponse>
+  >(
+    MessageCategory.SYSTEM,
+    SystemMessageType.SET_FIGMA_SELECTION,
+    async (
+      request: SetFigmaSelectionRequest,
+    ): Promise<ExtractResultType<SetFigmaSelectionResponse>> => {
+      const { penpotIds } = request.payload;
+
+      const figmaNodes: unknown[] = [];
+      for (const penpotId of penpotIds) {
+        const figmaId = reverseLookupFigmaId(penpotId);
+        if (figmaId) {
+          try {
+            const node = await commands.getNodeByIdAsync(figmaId);
+            if (node) figmaNodes.push(node);
+          } catch {
+            // Node may have been deleted
+          }
+        }
+      }
+
+      markIgnoreNextSelectionChange();
+      commands.currentPage.setSelection?.(figmaNodes);
+
+      return { handled: true };
     },
   );
 

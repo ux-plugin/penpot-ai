@@ -666,6 +666,9 @@ export class FigmaImplementation implements IDesignPlatform {
     get selection() {
       return figma.currentPage.selection;
     },
+    setSelection(nodes: unknown[]) {
+      figma.currentPage.selection = nodes as SceneNode[];
+    },
     get children() {
       return figma.currentPage.children;
     },
@@ -681,6 +684,8 @@ export class FigmaImplementation implements IDesignPlatform {
   on = (event: string, callback: () => void) => {
     figma.on(event as any, callback);
   };
+
+  uiHeaderHeight = 40;
 
   viewport = {
     get bounds() {

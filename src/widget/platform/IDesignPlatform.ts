@@ -57,6 +57,7 @@ export interface IDesignPlatform {
     /** Design canvas background paints (Figma PageNode.backgrounds); empty when none or unsupported. */
     readonly backgrounds: readonly unknown[];
     selection: readonly unknown[];
+    setSelection?: (nodes: unknown[]) => void;
     children: readonly BaseSceneNode[];
     /** Load page subtree / metadata before reading backgrounds (Figma PageNode.loadAsync). */
     loadAsync: () => Promise<void>;
@@ -78,6 +79,9 @@ export interface IDesignPlatform {
     zoom: number;
     center: { x: number; y: number };
   };
+
+  /** Height (in CSS pixels) of the platform's plugin/widget header bar above the iframe content area. */
+  uiHeaderHeight: number;
 
   // Styles
   getStyleByIdAsync: (id: string) => Promise<any>;

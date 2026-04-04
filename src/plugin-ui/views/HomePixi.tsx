@@ -7,8 +7,7 @@ import {
   MessageSquare,
   Bug,
 } from "lucide-react";
-import { useWorkspaceStore } from 'skia-rs-wasm';
-import type { WorkspaceState } from 'skia-rs-wasm';
+import { docProxy, documentModel, useSnapshot } from 'skia-rs-wasm';
 import { useUserSettingsStore } from '@/plugin-ui/stores/useUserSettingsStore.ts';
 import { useAuthenticationStore } from "@/plugin-ui/stores/useAuthenticationStore.ts";
 import { useUserConfigQuery } from "@/plugin-ui/api/user/fetchUserConfig.ts";
@@ -39,13 +38,12 @@ function HomePixi() {
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [nodes, setNodes] = useState<DesignNode[]>([]);
 
-  const documentModel = useWorkspaceStore((s: WorkspaceState) => s.documentModel);
-  const pageId = useWorkspaceStore((s: WorkspaceState) => s.pageId);
+  const doc = useSnapshot(docProxy);
   const documentModelNodes = useMemo(() => {
-    if (!documentModel || !pageId) return [];
-    const page = documentModel.getPage(pageId);
+    if (!doc.meta || !doc.currentPageId) return [];
+    const page = documentModel.getPage(doc.currentPageId);
     return Object.values(page?.objects ?? {});
-  }, [documentModel, pageId]);
+  }, [doc.meta, doc.currentPageId]);
 
   const { data: userConfig } = useUserConfigQuery({ enabled: true });
 

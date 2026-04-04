@@ -7,14 +7,17 @@
  */
 
 import React, { useEffect, useRef, useCallback, useState } from 'react';
-import type { WorkspaceState } from 'skia-rs-wasm';
 import {
   CanvasWrapper,
   setDocument,
   addPage,
   applyChanges,
   useWorkspaceStore,
+  docProxy,
+  useSnapshot,
+  EditorOverlays,
 } from 'skia-rs-wasm';
+import type { WorkspaceState } from 'skia-rs-wasm';
 import { useFigmaViewportSync } from '@/plugin-ui/hooks/useFigmaViewportSync';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher';
 import {
@@ -74,7 +77,7 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const { zoomIn, zoomOut } = useFigmaViewportSync();
 
-  const documentModel = useWorkspaceStore((s: WorkspaceState) => s.documentModel);
+  const doc = useSnapshot(docProxy);
   const renderer = useWorkspaceStore((s: WorkspaceState) => s.renderer);
   const workerClient = useWorkspaceStore((s: WorkspaceState) => s.workerClient);
   const wasmModule = useWorkspaceStore((s: WorkspaceState) => s.wasmModule);
@@ -151,10 +154,8 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
       SystemMessageType.APPLY_PENPOT_CHANGES,
       async (request: ApplyPenpotChangesRequest) => {
         const changes = request.payload.changes as unknown as Change[];
-        // Must use getState() — hooks cannot run inside async message handlers (React #321).
-        const model = useWorkspaceStore.getState().documentModel;
-        const storePageId = useWorkspaceStore.getState().pageId;
-        if (model && changes.length > 0) {
+        const storePageId = docProxy.currentPageId;
+        if (changes.length > 0) {
           await applyChanges(
             changes,
             storePageId != null ? { pageId: storePageId } : undefined,
@@ -171,6 +172,11 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
         containerClassName="absolute inset-0"
         wasmPath={wasmPath}
         workerScriptUrl={workerScriptUrl}
+        overlays={
+          import.meta.env.VITE_ENABLE_EDITOR_PANELS === 'true'
+            ? <EditorOverlays />
+            : undefined
+        }
       />
 
       {topRightContent && (
@@ -188,7 +194,7 @@ export const SkiaCanvas: React.FC<SkiaCanvasProps> = ({
         </div>
       )}
 
-      {!documentModel && (
+      {!doc.meta && (
         <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
           <button
             type="button"

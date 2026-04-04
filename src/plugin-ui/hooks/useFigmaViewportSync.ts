@@ -1,6 +1,14 @@
 import { useRef, useEffect, useCallback } from "react";
-import { useWorkspaceStore, setPan, setZoom, zoomAt } from "skia-rs-wasm";
-import { syncCanvasWithFigma } from "@/plugin-ui/utils/syncCanvas";
+import {
+  viewport as viewportSignal,
+  useSignalCoalesced,
+  setViewport,
+  zoomAt,
+} from "skia-rs-wasm";
+import {
+  syncCanvasWithFigma,
+  type Viewport as FigmaCanvasViewport,
+} from "@/plugin-ui/utils/syncCanvas";
 import { uiMessageDispatcher } from "@/plugin-ui/UIMessageDispatcher";
 import {
   MessageCategory,
@@ -9,6 +17,18 @@ import {
   UpdateViewportRequest,
   UpdateViewportResponse,
 } from "@shared-types/messageTypes";
+
+function workspacePanZoomFromFigma(vp: FigmaCanvasViewport) {
+  const panX = -vp.x / vp.zoom;
+  const panY = -vp.y / vp.zoom;
+  return { panX, panY, zoom: vp.zoom };
+}
+
+function applyFigmaViewportToCanvas(vp: FigmaCanvasViewport) {
+  const next = workspacePanZoomFromFigma(vp);
+  setViewport(next.panX, next.panY, next.zoom);
+  return next;
+}
 
 /**
  * Handles two-way viewport sync with Figma:
@@ -20,8 +40,7 @@ export function useFigmaViewportSync(): {
   zoomIn: () => void;
   zoomOut: () => void;
 } {
-  const viewport = useWorkspaceStore((s) => s.viewport);
-  const isPanning = useWorkspaceStore((s) => s.isPanning);
+  const viewport = useSignalCoalesced(viewportSignal);
 
   const lastViewportRef = useRef<{
     panX: number;
@@ -34,8 +53,7 @@ export function useFigmaViewportSync(): {
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const runSyncFromFigmaRef = useRef<() => void>(() => {});
 
-  // Effect A: Sync viewport TO Figma when viewport reference changes.
-  // During active pan we skip syncing and only sync when pan ends (for performance).
+  // Sync viewport TO Figma when coalesced viewport changes (RAF-batched via useSignalCoalesced).
   useEffect(() => {
     if (!viewport || isViewportUpdateInProgressRef.current) return;
     const zoom = viewport.zoom;
@@ -48,17 +66,15 @@ export function useFigmaViewportSync(): {
     }
 
     const canvasDelta = { x: panX - last.panX, y: panY - last.panY };
-    const zoomChanged = zoom !== last.zoom;
-    if (!zoomChanged && isPanning) return;
+    const EPS = 1e-4;
+    const zoomChanged = Math.abs(zoom - last.zoom) > EPS;
+    const panChanged =
+      Math.abs(canvasDelta.x) > EPS || Math.abs(canvasDelta.y) > EPS;
 
-    // Only update last when we actually send, so pan-end sync gets correct delta from last sent position
+    if (!zoomChanged && !panChanged) return;
+
     lastViewportRef.current = { panX, panY, zoom };
 
-    // When zoom changes, back-compute the world focal point that was held fixed during
-    // the zoom gesture. Sending it lets Figma apply the correct zoom-at-point formula
-    // instead of incorrectly treating the top-left delta as a center delta.
-    // Derivation: panX_old + focalX/oldZoom = panX_new + focalX/newZoom
-    //   => focalX = (panX_new * newZoom - panX_old * oldZoom) / (newZoom - oldZoom)
     let zoomFocalPoint: { x: number; y: number } | undefined;
     if (zoomChanged) {
       const dz = zoom - last.zoom;
@@ -84,11 +100,9 @@ export function useFigmaViewportSync(): {
       .catch((err) =>
         console.warn("[useFigmaViewportSync] Viewport sync failed:", err),
       );
-  }, [viewport, isPanning]);
+  }, [viewport]);
 
-  // Effect B: Initial sync FROM Figma only once when viewport first becomes available.
-  // Do not run on every viewport change (that caused a loop: viewport change → sync from Figma → setPan/setZoom → viewport change → repeat).
-  // Sync from Figma also runs on pointer re-enter and every 500ms when pointer is outside the canvas.
+  // Initial sync FROM Figma once when viewport first becomes available.
   useEffect(() => {
     if (!viewport) {
       hasInitialSyncedRef.current = false;
@@ -101,14 +115,15 @@ export function useFigmaViewportSync(): {
     syncCanvasWithFigma()
       .then((vp) => {
         if (cancelled) return;
-        const panX = -vp.x / vp.zoom;
-        const panY = -vp.y / vp.zoom;
-        setPan(panX, panY);
-        setZoom(vp.zoom);
-        lastViewportRef.current = { panX, panY, zoom: vp.zoom };
+        lastViewportRef.current = applyFigmaViewportToCanvas(vp);
       })
       .finally(() => {
-        isViewportUpdateInProgressRef.current = false;
+        // Delay clearing the guard until after the next RAF so the coalesced
+        // viewport signal (which also fires on RAF) is suppressed and doesn't
+        // bounce the update back to Figma.
+        requestAnimationFrame(() => {
+          isViewportUpdateInProgressRef.current = false;
+        });
       });
     return () => {
       cancelled = true;
@@ -120,26 +135,23 @@ export function useFigmaViewportSync(): {
     isViewportUpdateInProgressRef.current = true;
     syncCanvasWithFigma()
       .then((vp) => {
-        const panX = -vp.x / vp.zoom;
-        const panY = -vp.y / vp.zoom;
-        setPan(panX, panY);
-        setZoom(vp.zoom);
-        lastViewportRef.current = { panX, panY, zoom: vp.zoom };
+        lastViewportRef.current = applyFigmaViewportToCanvas(vp);
       })
       .catch((err) =>
         console.warn("[useFigmaViewportSync] Sync from Figma failed:", err),
       )
       .finally(() => {
-        isViewportUpdateInProgressRef.current = false;
+        // Delay clearing the guard until after the next RAF so the coalesced
+        // viewport signal (which also fires on RAF) is suppressed and doesn't
+        // bounce the update back to Figma.
+        requestAnimationFrame(() => {
+          isViewportUpdateInProgressRef.current = false;
+        });
       });
   }, [viewport]);
 
-  // Keep ref updated so interval always calls latest sync (without re-running effect and clearing interval)
   runSyncFromFigmaRef.current = runSyncFromFigma;
 
-  // Pointer leave/reenter: sync from Figma on re-enter and on interval while pointer is out.
-  // Use ref for runSyncFromFigma so this effect does not depend on viewport; otherwise viewport
-  // changes (e.g. after initial sync) would re-run the effect, clear the interval, and timer sync would stop.
   useEffect(() => {
     const onPointerLeave = (e: PointerEvent) => {
       if (

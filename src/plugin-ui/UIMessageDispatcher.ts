@@ -1,9 +1,9 @@
 import { UniversalMessageDispatcher } from '@/shared/messaging/MessageDispatcher.ts';
 import { StoreMessaging } from '@/shared/messaging/StoreMessaging.ts';
-import { 
-  MessageCategory, 
-  OperationMessageType, 
-  SystemMessageType, 
+import {
+  MessageCategory,
+  OperationMessageType,
+  SystemMessageType,
   DrawRectangleRequest,
   DrawRectangleResponse,
   ErrorRequest,
@@ -14,9 +14,12 @@ import {
   NodeChangedResponse,
   SelectionChangedRequest,
   SelectionChangedResponse,
+  SetFigmaSelectionRequest,
+  SetFigmaSelectionResponse,
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
 import { nodeManager } from '@/plugin-ui/stores/NodeManager';
+import { setSelectedIds, docProxy, subscribe } from 'skia-rs-wasm';
 // Create UI message dispatcher (pluginId required for non-null origin iframes per Figma docs)
 export const uiMessageDispatcher = new UniversalMessageDispatcher(
   'ui',
@@ -109,7 +112,15 @@ uiMessageDispatcher.registerHandler<
   }
 );
 
-// Register selection change handler
+// UI-side guard to prevent selection sync loops
+const selectionSyncGuard = {
+  _ignoring: false,
+  startIgnoring() { this._ignoring = true; },
+  stopIgnoring() { this._ignoring = false; },
+  isIgnoring() { return this._ignoring; },
+};
+
+// Register selection change handler (Figma -> Plugin)
 uiMessageDispatcher.registerHandler<
   SelectionChangedRequest,
   ExtractResultType<SelectionChangedResponse>
@@ -117,9 +128,46 @@ uiMessageDispatcher.registerHandler<
   MessageCategory.SYSTEM,
   SystemMessageType.SELECTION_CHANGED,
   async (request: SelectionChangedRequest): Promise<ExtractResultType<SelectionChangedResponse>> => {
+    if (selectionSyncGuard.isIgnoring()) {
+      return { handled: true };
+    }
+
+    selectionSyncGuard.startIgnoring();
+
     nodeManager.handleSelectionChange(request.payload);
-    return {
-      handled: true
-    };
+
+    const penpotIds = request.payload.penpotIds;
+    if (penpotIds && penpotIds.length > 0) {
+      setSelectedIds(new Set(penpotIds));
+    } else {
+      setSelectedIds(new Set());
+    }
+
+    return { handled: true };
   }
 );
+
+// Sync plugin canvas selection -> Figma via Valtio subscriber
+let lastSyncedIds = '';
+subscribe(docProxy, () => {
+  const currentIds = Array.from(docProxy.selectedIds).sort().join(',');
+  if (currentIds === lastSyncedIds) return;
+  lastSyncedIds = currentIds;
+
+  if (selectionSyncGuard.isIgnoring()) {
+    selectionSyncGuard.stopIgnoring();
+    return;
+  }
+
+  const penpotIds = Array.from(docProxy.selectedIds);
+  uiMessageDispatcher.sendRequest<
+    Omit<SetFigmaSelectionRequest, 'id' | 'timestamp' | 'source'>,
+    ExtractResultType<SetFigmaSelectionResponse>
+  >({
+    category: MessageCategory.SYSTEM,
+    type: SystemMessageType.SET_FIGMA_SELECTION,
+    payload: { penpotIds },
+  }).catch((err) =>
+    console.warn('[SelectionSync] Failed to set Figma selection:', err),
+  );
+});

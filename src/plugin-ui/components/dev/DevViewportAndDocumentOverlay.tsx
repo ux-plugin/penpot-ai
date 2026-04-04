@@ -5,8 +5,14 @@
 
 import { useState, useMemo } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { useWorkspaceStore } from 'skia-rs-wasm';
-import type { WorkspaceState } from 'skia-rs-wasm';
+import {
+  docProxy,
+  documentModel,
+  useSnapshot,
+  viewport as viewportSignal,
+  useSignalCoalesced,
+} from 'skia-rs-wasm';
+import type { DocumentModel } from 'skia-rs-wasm';
 
 /** Minimal shape for display (documentModel.getPage returns IndexedPage). */
 interface PageSummary {
@@ -16,11 +22,11 @@ interface PageSummary {
 }
 
 function safeGetPageSummary(
-  documentModel: WorkspaceState['documentModel'],
+  model: DocumentModel,
   pageId: string | null
 ): PageSummary | null {
-  if (!documentModel || !pageId) return null;
-  const page = documentModel.getPage(pageId);
+  if (!pageId) return null;
+  const page = model.getPage(pageId);
   if (!page || !('objects' in page)) return null;
   const objects = page.objects as Record<string, { id?: string; type?: string; name?: string }>;
   return {
@@ -52,16 +58,16 @@ function safeJsonSummary(obj: unknown, maxDepth: number): string {
 }
 
 export function DevViewportAndDocumentOverlay() {
-  const viewport = useWorkspaceStore((s: WorkspaceState) => s.viewport);
-  const pageId = useWorkspaceStore((s: WorkspaceState) => s.pageId);
-  const documentModel = useWorkspaceStore((s: WorkspaceState) => s.documentModel);
+  const viewport = useSignalCoalesced(viewportSignal);
+  const doc = useSnapshot(docProxy);
+  const pageId = doc.currentPageId;
 
   const [expandedDoc, setExpandedDoc] = useState(false);
   const [expandJson, setExpandJson] = useState(false);
 
   const pageSummary = useMemo(
     () => safeGetPageSummary(documentModel, pageId),
-    [documentModel, pageId]
+    [pageId]
   );
 
   if (import.meta.env.VITE_ENABLE_BUILD_DEBUG !== 'true') {
@@ -85,7 +91,7 @@ export function DevViewportAndDocumentOverlay() {
         </span>
       </div>
       <div className="border-t border-gray-700 pt-1.5">
-        {!documentModel || !pageId ? (
+        {!doc.meta || !pageId ? (
           <span className="text-gray-500">Document not loaded</span>
         ) : !pageSummary ? (
           <span className="text-gray-500">Page not found</span>

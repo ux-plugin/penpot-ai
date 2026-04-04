@@ -158,6 +158,8 @@ export class PenpotImplementation implements IDesignPlatform {
     },
   };
 
+  uiHeaderHeight = 0;
+
   viewport = {
     get bounds() {
       if (typeof (globalThis as any).penpot !== 'undefined' && (globalThis as any).penpot.viewport) {

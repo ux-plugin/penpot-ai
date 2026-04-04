@@ -218,6 +218,7 @@ export class DevImplementation implements IDesignPlatform {
     name: "",
     backgrounds: [] as readonly unknown[],
     selection: [] as any[],
+    setSelection(_nodes: unknown[]) {},
     children: [] as BaseSceneNode[],
     loadAsync: async () => {},
     on: (_event: string, _callback: ((event?: any) => void) | (() => void)) => {
@@ -227,6 +228,8 @@ export class DevImplementation implements IDesignPlatform {
       // No-op in dev mode
     },
   };
+
+  uiHeaderHeight = 0;
 
   private _viewportZoom = 1.0;
   private _viewportCenter = { x: 0, y: 0 };

@@ -8,7 +8,8 @@ import {
   OperationMessageType,
   SystemMessageType,
 } from "@/shared/types/messageTypes";
-import { translateNodeChange } from "penpot-exporter/figma-adapter";
+import { translateNodeChange, penpotIdForSelectionSync } from "penpot-exporter/figma-adapter";
+import { shouldIgnoreSelectionChange } from "@widget/selectionSyncGuard.ts";
 
 type CodeMessageBridge = { sendRequest: (message: any) => Promise<unknown> };
 
@@ -290,9 +291,12 @@ async function logSelectedNodes(commands: any): Promise<void> {
 
   // Handle selection changes
   commands.on("selectionchange", async () => {
+    if (shouldIgnoreSelectionChange()) return;
     try {
-      const selectedIds = commands.currentPage.selection.map(
-        (node: any) => node.id,
+      const selectedNodes = commands.currentPage.selection;
+      const selectedIds = selectedNodes.map((node: any) => node.id);
+      const penpotIds = selectedNodes.map((node: any) =>
+        penpotIdForSelectionSync(node as SceneNode),
       );
 
       await codeMessageDispatcher.sendRequest({
@@ -300,6 +304,7 @@ async function logSelectedNodes(commands: any): Promise<void> {
         type: SystemMessageType.SELECTION_CHANGED,
         payload: {
           selectedNodeIds: selectedIds,
+          penpotIds,
         },
       });
     } catch (error) {
