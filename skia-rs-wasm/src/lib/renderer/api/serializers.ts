@@ -88,6 +88,12 @@ const RawBlurType: Record<string, number> = {
   'background-blur': 1,
 }
 
+const RawNoiseType: Record<string, number> = {
+  'monotone': 0,
+  'duotone': 1,
+  'multitone': 2,
+}
+
 const RawVerticalAlign: Record<string, number> = {
   top: 0,
   center: 1,
@@ -268,6 +274,14 @@ export function translateShadowStyle(style: string | undefined): number {
 export function translateBlurType(type: string | undefined): number {
   if (!type) return RawBlurType['layer-blur']
   return RawBlurType[type] ?? RawBlurType['layer-blur']
+}
+
+/**
+ * Translates noise type to WASM enum
+ */
+export function translateNoiseType(type: string | undefined): number {
+  if (!type) return RawNoiseType['monotone']
+  return RawNoiseType[type] ?? RawNoiseType['monotone']
 }
 
 /**

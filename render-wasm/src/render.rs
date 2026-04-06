@@ -5,6 +5,7 @@ mod fonts;
 mod gpu_state;
 pub mod grid_layout;
 mod images;
+mod noise;
 mod options;
 mod shadows;
 mod strokes;
@@ -1153,6 +1154,8 @@ impl RenderState {
                         innershadows_surface_id,
                     );
                 }
+
+                noise::render_shape_noise(self, shape, fills_surface_id);
 
                 if blur_filter_for_layers.is_some() {
                     self.surfaces.canvas(innershadows_surface_id).restore();

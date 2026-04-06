@@ -18,6 +18,7 @@ mod frames;
 mod groups;
 mod layouts;
 pub mod modifiers;
+pub mod noise;
 mod paths;
 mod rects;
 mod shadows;
@@ -39,6 +40,7 @@ pub use frames::*;
 pub use groups::*;
 pub use layouts::*;
 pub use modifiers::*;
+pub use noise::{NoiseEffect, NoiseType};
 pub use paths::*;
 pub use rects::*;
 pub use shadows::*;
@@ -191,6 +193,7 @@ pub struct Shape {
     pub svg: Option<skia::svg::Dom>,
     pub svg_attrs: Option<SvgAttrs>,
     pub shadows: Vec<Shadow>,
+    pub noise: Option<NoiseEffect>,
     pub layout_item: Option<LayoutItem>,
     pub bounds: OnceCell<math::Bounds>,
     pub extrect_cache: RefCell<Option<(math::Rect, u32)>>,
@@ -292,6 +295,7 @@ impl Shape {
             svg: None,
             svg_attrs: None,
             shadows: Vec::with_capacity(1),
+            noise: None,
             layout_item: None,
             bounds: OnceCell::new(),
             extrect_cache: RefCell::new(None),
@@ -627,6 +631,10 @@ impl Shape {
     pub fn set_blur(&mut self, blur: Option<Blur>) {
         self.invalidate_extrect();
         self.blur = blur;
+    }
+
+    pub fn set_noise(&mut self, noise: Option<NoiseEffect>) {
+        self.noise = noise;
     }
 
     pub fn add_child(&mut self, id: Uuid) {

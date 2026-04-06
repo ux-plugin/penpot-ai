@@ -1,19 +1,20 @@
 import { useCallback } from 'react'
-import type { Blur, Fill, Shadow } from 'penpot-exporter/types'
+import type { Fill, Shadow } from 'penpot-exporter/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { fillSwatchBackground } from '../../FillEditor/fill-swatch-background'
 import { isColorFill } from '../../../renderer/api/constants'
 import { normalizeHex } from '../../../renderer/properties/panel-utils'
-import type { EffectItem, EffectKind } from '../../../renderer/properties/panel-utils'
-import { DEFAULT_SHADOW, DEFAULT_BLUR } from '../../../renderer/properties/panel-utils'
+import type { EffectItem, EffectKind, Noise } from '../../../renderer/properties/panel-utils'
+import { DEFAULT_SHADOW, DEFAULT_BLUR, DEFAULT_NOISE } from '../../../renderer/properties/panel-utils'
 import { useColorEditorFor } from '../use-color-editor'
 
 const EFFECT_KIND_OPTIONS: { value: EffectKind; label: string }[] = [
   { value: 'drop-shadow', label: 'Drop shadow' },
   { value: 'inner-shadow', label: 'Inner shadow' },
   { value: 'layer-blur', label: 'Layer blur' },
+  { value: 'noise', label: 'Noise' },
 ]
 
 /** Convert Shadow color to a Fill so FillEditor can be reused. */
@@ -44,14 +45,24 @@ function fillToShadowColor(fill: Fill, existing: Shadow): Shadow {
   }
 }
 
+/** Extract the hidden flag from any effect item. */
+function getEffectHidden(item: EffectItem): boolean {
+  if (item.kind === 'layer-blur') return item.blur.hidden
+  if (item.kind === 'noise') return item.noise.hidden ?? false
+  return item.shadow.hidden
+}
+
 /** Convert between effect kinds, preserving hidden state. */
 function convertEffect(current: EffectItem, newKind: EffectKind): EffectItem {
-  const hidden = current.kind === 'layer-blur' ? current.blur.hidden : current.shadow.hidden
+  const hidden = getEffectHidden(current)
 
+  if (newKind === 'noise') {
+    return { kind: 'noise', noise: { ...DEFAULT_NOISE, hidden } }
+  }
   if (newKind === 'layer-blur') {
     return { kind: 'layer-blur', blur: { ...DEFAULT_BLUR, hidden } }
   }
-  if (current.kind === 'layer-blur') {
+  if (current.kind === 'layer-blur' || current.kind === 'noise') {
     return { kind: newKind, shadow: { ...DEFAULT_SHADOW, style: newKind, hidden } }
   }
   // Shadow → Shadow (different style)
@@ -67,9 +78,11 @@ export interface EffectRowProps {
 }
 
 export function EffectRow({ effect, index, readOnly, onChange, onRemove }: EffectRowProps) {
-  const isShadow = effect.kind !== 'layer-blur'
+  const isShadow = effect.kind === 'drop-shadow' || effect.kind === 'inner-shadow'
+  const isNoise = effect.kind === 'noise'
   const shadow = isShadow ? effect.shadow : null
-  const blur = !isShadow ? effect.blur : null
+  const blur = effect.kind === 'layer-blur' ? effect.blur : null
+  const noise = isNoise ? effect.noise : null
 
   const { isActive: expanded, openEditor, closeEditor } = useColorEditorFor('shadow', index)
 
@@ -87,8 +100,8 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
   const handleKindChange = useCallback(
     (newKind: EffectKind) => {
       if (newKind === effect.kind) return
-      // Close shadow color editor if switching away from shadow
-      if (expanded && newKind === 'layer-blur') closeEditor()
+      // Close shadow color editor if switching away from shadow kinds
+      if (expanded && (newKind === 'layer-blur' || newKind === 'noise')) closeEditor()
       onChange(convertEffect(effect, newKind), index)
     },
     [effect, index, onChange, expanded, closeEditor],
@@ -122,6 +135,14 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
     [shadow, isSolid, handleShadowUpdate],
   )
 
+  const handleNoiseUpdate = useCallback(
+    (partial: Partial<Noise>) => {
+      if (!noise) return
+      onChange({ kind: 'noise', noise: { ...noise, ...partial } }, index)
+    },
+    [noise, index, onChange],
+  )
+
   const toggleExpand = useCallback(
     (e: React.MouseEvent) => {
       if (readOnly || !shadow) return
@@ -151,6 +172,13 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
               aria-hidden
             />
           )}
+          {isNoise && noise && (
+            <div
+              className="size-5 shrink-0 rounded border border-border"
+              style={{ background: noise.color?.color ?? '#000000' }}
+              aria-hidden
+            />
+          )}
           <span className="text-xs text-muted-foreground">
             {EFFECT_KIND_OPTIONS.find((o) => o.value === effect.kind)?.label ?? 'Effect'}
           </span>
@@ -176,6 +204,13 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
             title={expanded ? 'Close shadow color editor' : 'Open shadow color editor'}
             aria-expanded={expanded}
             aria-label="Toggle shadow color editor"
+          />
+        )}
+        {isNoise && noise && (
+          <div
+            className="size-5 shrink-0 rounded border border-border"
+            style={{ background: noise.color?.color ?? '#000000' }}
+            aria-hidden
           />
         )}
         <select
@@ -285,6 +320,126 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
             title="Blur value"
           />
         </div>
+      )}
+
+      {/* Noise-specific controls */}
+      {isNoise && noise && (
+        <>
+          {/* Row 2: noise subtype + size */}
+          <div className="flex min-h-7 items-center gap-1.5">
+            <select
+              className="border-input bg-background h-7 min-w-0 flex-1 rounded-md border px-1.5 text-xs"
+              value={noise.noiseType ?? 'monotone'}
+              onChange={(e) => handleNoiseUpdate({ noiseType: e.target.value as Noise['noiseType'] })}
+              title="Noise type"
+            >
+              <option value="monotone">Monotone</option>
+              <option value="duotone">Duotone</option>
+              <option value="multitone">Multitone</option>
+            </select>
+            <span className="shrink-0 text-xs text-muted-foreground">Size</span>
+            <Input
+              type="number"
+              className="h-7 w-16 shrink-0 px-1 text-xs"
+              min={1}
+              max={500}
+              step={1}
+              value={noise.noiseSize ?? 50}
+              onChange={(e) =>
+                handleNoiseUpdate({ noiseSize: Math.max(1, Math.min(500, parseFloat(e.target.value) || 1)) })
+              }
+              title="Noise size"
+            />
+          </div>
+
+          {/* Row 3: primary color hex */}
+          <div className="flex min-h-7 items-center gap-1.5">
+            <span className="shrink-0 text-xs text-muted-foreground">Color</span>
+            <Input
+              type="text"
+              className="h-7 min-w-0 flex-1 font-mono text-xs"
+              value={noise.color?.color ?? '#000000'}
+              placeholder="#RRGGBB"
+              onChange={(e) => {
+                const v = e.target.value.trim()
+                if (/^#[0-9A-Fa-f]{6}$/.test(v) || /^#[0-9A-Fa-f]{3}$/.test(v)) {
+                  handleNoiseUpdate({ color: { ...noise.color, color: normalizeHex(v) } })
+                }
+              }}
+              title="Primary color"
+            />
+            <span className="shrink-0 text-xs text-muted-foreground">%</span>
+            <Input
+              type="number"
+              className="h-7 w-12 shrink-0 px-1 text-xs"
+              min={0}
+              max={100}
+              value={Math.round((noise.color?.opacity ?? 1) * 100)}
+              onChange={(e) =>
+                handleNoiseUpdate({
+                  color: { ...noise.color, opacity: Math.max(0, Math.min(100, Number(e.target.value))) / 100 },
+                })
+              }
+              title="Primary color opacity"
+            />
+          </div>
+
+          {/* Row 4: density (hidden for monotone) */}
+          {noise.noiseType !== 'monotone' && (
+            <div className="flex min-h-7 items-center gap-1.5">
+              <span className="shrink-0 text-xs text-muted-foreground">Density</span>
+              <Input
+                type="number"
+                className="h-7 w-20 shrink-0 px-1 text-xs"
+                min={0}
+                max={1}
+                step={0.01}
+                value={noise.density ?? 0.5}
+                onChange={(e) =>
+                  handleNoiseUpdate({ density: Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)) })
+                }
+                title="Density"
+              />
+            </div>
+          )}
+
+          {/* Row 5: secondary color (duotone only) */}
+          {noise.noiseType === 'duotone' && (
+            <div className="flex min-h-7 items-center gap-1.5">
+              <span className="shrink-0 text-xs text-muted-foreground">Secondary</span>
+              <Input
+                type="text"
+                className="h-7 min-w-0 flex-1 font-mono text-xs"
+                value={noise.secondaryColor?.color ?? '#ffffff'}
+                placeholder="#RRGGBB"
+                onChange={(e) => {
+                  const v = e.target.value.trim()
+                  if (/^#[0-9A-Fa-f]{6}$/.test(v) || /^#[0-9A-Fa-f]{3}$/.test(v)) {
+                    handleNoiseUpdate({ secondaryColor: { ...noise.secondaryColor, color: normalizeHex(v) } })
+                  }
+                }}
+                title="Secondary color"
+              />
+              <span className="shrink-0 text-xs text-muted-foreground">%</span>
+              <Input
+                type="number"
+                className="h-7 w-12 shrink-0 px-1 text-xs"
+                min={0}
+                max={100}
+                value={Math.round((noise.secondaryColor?.opacity ?? 1) * 100)}
+                onChange={(e) =>
+                  handleNoiseUpdate({
+                    secondaryColor: {
+                      ...noise.secondaryColor,
+                      opacity: Math.max(0, Math.min(100, Number(e.target.value))) / 100,
+                    },
+                  })
+                }
+                title="Secondary color opacity"
+              />
+            </div>
+          )}
+        </>
       )}
     </div>
   )

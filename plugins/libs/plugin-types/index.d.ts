@@ -202,6 +202,43 @@ export interface Blur {
 }
 
 /**
+ * Represents a noise effect applied to a shape.
+ */
+export interface Noise {
+  /**
+   * The optional unique identifier for the noise effect.
+   */
+  id?: string;
+  /**
+   * The subtype of noise.
+   * - 'monotone': single-color grain (default).
+   * - 'duotone': two-color grain blended by density.
+   * - 'multitone': multi-pass grain with varying blend modes.
+   */
+  noiseType?: 'monotone' | 'duotone' | 'multitone';
+  /**
+   * Grain size in pixels (1–500). Defaults to 50.
+   */
+  noiseSize?: number;
+  /**
+   * Density / blend strength (0–1). Used for duotone and multitone. Defaults to 0.5.
+   */
+  density?: number;
+  /**
+   * Primary color of the noise grain.
+   */
+  color?: Color;
+  /**
+   * Secondary color, used for duotone and multitone subtypes.
+   */
+  secondaryColor?: Color;
+  /**
+   * Specifies whether the noise effect is hidden. Defaults to false.
+   */
+  hidden?: boolean;
+}
+
+/**
  * Represents a board in Penpot.
  * This interface extends `ShapeBase` and includes properties and methods specific to board.
  */
@@ -3680,6 +3717,11 @@ export interface ShapeBase extends PluginData {
    * The blur effect applied to the shape.
    */
   blur?: Blur;
+
+  /**
+   * The noise effect applied to the shape.
+   */
+  noise?: Noise;
 
   /**
    * The export settings of the shape.
