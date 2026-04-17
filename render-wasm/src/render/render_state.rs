@@ -203,6 +203,7 @@ impl NodeRenderState {
 /// - `enter(...)` / `exit(...)` should be called when entering and leaving shape
 ///   render contexts.
 /// - `is_active()` returns whether the current shape is being rendered in focus.
+#[derive(Clone)]
 pub struct FocusMode {
     shapes: Vec<Uuid>,
     active: bool,

@@ -1036,6 +1036,18 @@ impl RenderState {
     ) -> Result<(Vec<u8>, i32, i32)> {
         let target_surface = SurfaceId::Export;
 
+        // `render_shape_pixels` is used by the workspace to render thumbnails
+        // using the same WASM renderer instance. It must not leak any state
+        // into the main viewport renderer (focus mode, render context, tile
+        // tracking, etc.). Save → run export → restore.
+        let saved_focus_mode = self.focus_mode.clone();
+        let saved_export_context = self.export_context;
+        let saved_render_area = self.render_area;
+        let saved_render_area_with_margins = self.render_area_with_margins;
+        let saved_current_tile = self.current_tile;
+        let saved_nested_fills = std::mem::take(&mut self.nested_fills);
+        let saved_preview_mode = self.preview_mode;
+
         self.focus_mode.clear();
 
         self.surfaces
@@ -1072,6 +1084,22 @@ impl RenderState {
             )
             .expect("PNG encode failed");
         let skia::ISize { width, height } = image.dimensions();
+
+        // Restore workspace state.
+        self.focus_mode = saved_focus_mode;
+        self.export_context = saved_export_context;
+        self.render_area = saved_render_area;
+        self.render_area_with_margins = saved_render_area_with_margins;
+        self.current_tile = saved_current_tile;
+        self.nested_fills = saved_nested_fills;
+        self.preview_mode = saved_preview_mode;
+
+        // Restore render-surface transforms for the workspace context.
+        let workspace_scale = self.get_scale();
+        if !self.render_area.is_empty() {
+            self.surfaces
+                .update_render_context(self.render_area, workspace_scale);
+        }
 
         Ok((data.as_bytes().to_vec(), width, height))
     }
