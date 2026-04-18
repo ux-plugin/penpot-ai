@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import type { Blur, PenpotNode, Shadow } from 'penpot-exporter/types'
+import type { Blur, Glass, PenpotNode, Shadow } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -18,7 +18,7 @@ import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
 
-/** Merge shape shadow[] + blur + noise into a unified EffectItem list. */
+/** Merge shape shadow[] + blur + glass + noise into a unified EffectItem list. */
 function mergeEffects(node: RectLikeNode): EffectItem[] {
   const items: EffectItem[] = []
   for (const s of (node as Record<string, unknown>).shadow as Shadow[] ?? []) {
@@ -26,7 +26,12 @@ function mergeEffects(node: RectLikeNode): EffectItem[] {
   }
   const blur = (node as Record<string, unknown>).blur as Blur | undefined
   if (blur) {
-    items.push({ kind: 'layer-blur', blur })
+    const kind = blur.type === 'background-blur' ? 'background-blur' : 'layer-blur'
+    items.push({ kind, blur })
+  }
+  const glass = (node as Record<string, unknown>).glass as Glass | undefined
+  if (glass) {
+    items.push({ kind: 'glass', glass })
   }
   const noise = (node as Record<string, unknown>).noise as Noise | undefined
   if (noise) {
@@ -35,21 +40,29 @@ function mergeEffects(node: RectLikeNode): EffectItem[] {
   return items
 }
 
-/** Split EffectItem list back into shadow[], blur, and noise for committing. */
-function splitEffects(effects: EffectItem[]): { shadow: Shadow[]; blur: Blur | undefined; noise: Noise | undefined } {
+/** Split EffectItem list back into shadow[], blur, glass, and noise for committing. */
+function splitEffects(effects: EffectItem[]): {
+  shadow: Shadow[]
+  blur: Blur | undefined
+  glass: Glass | undefined
+  noise: Noise | undefined
+} {
   const shadows: Shadow[] = []
   let blur: Blur | undefined
+  let glass: Glass | undefined
   let noise: Noise | undefined
   for (const e of effects) {
-    if (e.kind === 'layer-blur') {
+    if (e.kind === 'layer-blur' || e.kind === 'background-blur') {
       blur = e.blur
+    } else if (e.kind === 'glass') {
+      glass = e.glass
     } else if (e.kind === 'noise') {
       noise = e.noise
     } else {
       shadows.push(e.shadow)
     }
   }
-  return { shadow: shadows, blur, noise }
+  return { shadow: shadows, blur, glass, noise }
 }
 
 export interface EffectsSectionProps {
@@ -76,13 +89,17 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
       const before = getCommittedNodeOnActivePage(nodeId)
       const pid = getActiveOrSinglePageId()
       if (!before || !pid) return
-      const { shadow, blur, noise } = splitEffects(next)
+      const { shadow, blur, glass, noise } = splitEffects(next)
       const partial: Record<string, unknown> = { shadow }
       // Include blur when it has a value or when clearing a previously set blur.
       // Use null (not undefined) to clear, since commitNodePartialUpdate skips undefined.
       const hadBlur = (before as Record<string, unknown>).blur != null
       if (blur !== undefined || hadBlur) {
         partial.blur = blur ?? null
+      }
+      const hadGlass = (before as Record<string, unknown>).glass != null
+      if (glass !== undefined || hadGlass) {
+        partial.glass = glass ?? null
       }
       const hadNoise = (before as Record<string, unknown>).noise != null
       if (noise !== undefined || hadNoise) {
@@ -113,8 +130,8 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
 
   const removeEffect = useCallback(
     (index: number) => {
-      // Close color editor if removing the shadow being edited
-      if (activeTarget?.kind === 'shadow' && activeTarget.index === index) closeEditor()
+      // Close effect editor if removing the effect being edited
+      if (activeTarget && activeTarget.index === index && activeTarget.kind !== 'fill' && activeTarget.kind !== 'stroke') closeEditor()
       const next = effects.filter((_, i) => i !== index)
       setEffects(next)
       void commitEffects(next)

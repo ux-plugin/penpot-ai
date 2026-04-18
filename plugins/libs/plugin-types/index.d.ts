@@ -187,9 +187,8 @@ export interface Blur {
   id?: string;
   /**
    * The optional type of the blur effect.
-   * Currently, only 'layer-blur' is supported.
    */
-  type?: 'layer-blur';
+  type?: 'layer-blur' | 'background-blur';
   /**
    * The optional intensity value of the blur effect.
    */
@@ -234,6 +233,44 @@ export interface Noise {
   secondaryColor?: Color;
   /**
    * Specifies whether the noise effect is hidden. Defaults to false.
+   */
+  hidden?: boolean;
+}
+
+/**
+ * Represents glass (liquid glass) effect properties in Penpot.
+ */
+export interface Glass {
+  /**
+   * The optional unique identifier for the glass effect.
+   */
+  id?: string;
+  /**
+   * Corner radius for the SDF rounded-rect lens shape (px).
+   */
+  radius?: number;
+  /**
+   * Index of refraction (1.0–3.0, default 1.5).
+   */
+  refraction?: number;
+  /**
+   * Lens thickness / depth (0–100).
+   */
+  depth?: number;
+  /**
+   * Chromatic aberration strength (0–1, default 0.03).
+   */
+  dispersion?: number;
+  /**
+   * White-tint + Fresnel reflection intensity (0–1).
+   */
+  lightIntensity?: number;
+  /**
+   * Highlight direction in degrees (converted to radians internally).
+   */
+  lightAngle?: number;
+  /**
+   * Specifies whether the glass effect is hidden.
    */
   hidden?: boolean;
 }
@@ -805,6 +842,11 @@ export interface CommonLayout {
  * Represents the context of Penpot, providing access to various Penpot functionalities and data.
  */
 export interface Context {
+  /**
+   * Returns the current penpot version.
+   */
+  readonly version: string;
+
   /**
    * The root shape in the current Penpot context. Requires `content:read` permission.
    *
@@ -1747,6 +1789,13 @@ export interface Flags {
    * Defaults to false
    */
   naturalChildOrdering: boolean;
+
+  /**
+   * If `true` the validation errors will throw an exception instead of displaying an
+   * error in the debugger console.
+   * Defaults to false
+   */
+  throwValidationErrors: boolean;
 }
 
 /**
@@ -3724,6 +3773,11 @@ export interface ShapeBase extends PluginData {
   noise?: Noise;
 
   /**
+   * The glass (liquid glass) effect applied to the shape.
+   */
+  glass?: Glass;
+
+  /**
    * The export settings of the shape.
    */
   exports: Export[];
@@ -5274,7 +5328,11 @@ export interface TokenTheme {
 /**
  * The properties that a BorderRadius token can be applied to.
  */
-type TokenBorderRadiusProps = 'r1' | 'r2' | 'r3' | 'r4';
+type TokenBorderRadiusProps =
+  | 'borderRadiusTopLeft'
+  | 'borderRadiusTopRight'
+  | 'borderRadiusBottomRight'
+  | 'borderRadiusBottomLeft';
 
 /**
  * The properties that a Shadow token can be applied to.
@@ -5350,16 +5408,16 @@ type TokenSpacingProps =
   | 'columnGap'
 
   // Spacing / Padding
-  | 'p1'
-  | 'p2'
-  | 'p3'
-  | 'p4'
+  | 'paddingLeft'
+  | 'paddingTop'
+  | 'paddingRight'
+  | 'paddingBottom'
 
   // Spacing / Margin
-  | 'm1'
-  | 'm2'
-  | 'm3'
-  | 'm4';
+  | 'marginLeft'
+  | 'marginTop'
+  | 'marginRight'
+  | 'marginBottom';
 
 /**
  * The properties that a BorderWidth token can be applied to.

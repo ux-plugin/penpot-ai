@@ -1,4 +1,4 @@
-import type { Blur, Fill, PenpotNode, Shadow, Stroke } from 'penpot-exporter/types'
+import type { Blur, Fill, Glass, PenpotNode, Shadow, Stroke } from 'penpot-exporter/types'
 
 export const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -35,6 +35,30 @@ export const DEFAULT_BLUR: Blur = {
   hidden: false,
 }
 
+export const DEFAULT_BACKGROUND_BLUR: Blur = {
+  type: 'background-blur',
+  value: 4,
+  hidden: false,
+}
+
+export const DEFAULT_GLASS: Glass = {
+  surfaceType: 1,           // squircle
+  bezelWidth: 40,           // pixels
+  glassThickness: 1.2,      // multiplier
+  refractiveIndex: 1.5,     // physical index
+  specularAngle: -60,       // degrees
+  specularOpacity: 0.5,     // 0–1
+  specularSaturation: 4,    // 0=white, 9=vivid prismatic
+  chromaticAberration: 3,   // pixels
+  splay: 1.0,               // dome
+  tiltAngle: 0,             // degrees
+  edgeBoost: 0,             // 0–5
+  zoom: 100,                // percentage (100% = no zoom)
+  blur: 0,                  // sigma
+  frost: 0,                 // 0–1
+  hidden: false,
+}
+
 /** Noise effect type definition (local, not yet in penpot-exporter). */
 export interface Noise {
   id?: string
@@ -55,15 +79,23 @@ export const DEFAULT_NOISE: Noise = {
   hidden: false,
 }
 
-/** Max stacked effects (shadows + blur + noise) per shape. */
+/** Max stacked effects (shadows + blur + glass + noise) per shape. */
 export const MAX_EFFECTS = 8
 
-export type EffectKind = 'drop-shadow' | 'inner-shadow' | 'layer-blur' | 'noise'
+export type EffectKind =
+  | 'drop-shadow'
+  | 'inner-shadow'
+  | 'layer-blur'
+  | 'background-blur'
+  | 'glass'
+  | 'noise'
 
 export type EffectItem =
   | { kind: 'drop-shadow'; shadow: Shadow }
   | { kind: 'inner-shadow'; shadow: Shadow }
   | { kind: 'layer-blur'; blur: Blur }
+  | { kind: 'background-blur'; blur: Blur }
+  | { kind: 'glass'; glass: Glass }
   | { kind: 'noise'; noise: Noise }
 
 export function normalizeHex(input: string): string {
