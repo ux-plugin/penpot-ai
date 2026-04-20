@@ -90,8 +90,15 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
     ? fillSwatchBackground(shadowColorToFill(effect.shadow))
     : undefined
 
-  // Noise color swatch background
-  const noiseSwatchBg = isNoise ? effect.noise.color?.color ?? '#000000' : undefined
+  // Noise swatch: first slot's color if solid, rainbow gradient if prism.
+  const noiseSwatchBg = (() => {
+    if (!isNoise) return undefined
+    const slot0 = effect.noise.slots?.[0]
+    if (slot0?.kind === 'prism') {
+      return 'linear-gradient(135deg, #ff6b6b, #feca57, #48dbfb, #a29bfe, #ff9ff3)'
+    }
+    return slot0?.color ?? '#000000'
+  })()
 
   const handleKindChange = useCallback(
     (newKind: EffectKind) => {

@@ -836,6 +836,7 @@ impl RenderState {
             && !shape.needs_layer()
             && shape.blur.is_none()
             && !shape.glass.as_ref().is_some_and(|g| !g.hidden)
+            && !shape.noise.as_ref().is_some_and(|n| !n.hidden)
             && !has_inherited_blur
             && shape.shadows.is_empty()
             && shape.transform.is_identity()

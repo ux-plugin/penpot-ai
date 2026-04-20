@@ -59,23 +59,52 @@ export const DEFAULT_GLASS: Glass = {
   hidden: false,
 }
 
-/** Noise effect type definition (local, not yet in penpot-exporter). */
+/**
+ * Noise effect — one unified list of "slots" that can be either a solid color
+ * or a Prism (iridescent rainbow sampled from the noise itself).
+ *
+ * Density semantics:
+ *  - With exactly 1 slot: transparent has weight 1 and the slot has weight
+ *    `density`. So density=100% → 50/50 slot/transparent; density=50% → ~33%
+ *    slot, ~67% transparent; density=0% → fully transparent.
+ *  - With 2+ slots: `density` is classic coverage — the colored region is
+ *    `density` of the shape, split equally among the slots; the rest is
+ *    transparent.
+ */
+export type NoiseSlot =
+  | { kind: 'solid'; color: string; opacity: number }
+  | { kind: 'prism'; opacity: number }
+
 export interface Noise {
   id?: string
-  noiseType?: 'monotone' | 'duotone' | 'multitone'
+  /** 1..MAX_NOISE_SLOTS slots. */
+  slots?: NoiseSlot[]
   noiseSize?: number
   density?: number
-  color?: { color?: string; opacity?: number }
-  secondaryColor?: { color?: string; opacity?: number }
+  /**
+   * Edge softness in [0, 1]. 0 = hard crisp edges (default, original
+   * behavior); 1 = maximum feather (pastel-looking soft falloff). The
+   * shader does a symmetric smoothstep around the density threshold.
+   */
+  softness?: number
+  /**
+   * When true, the noise only renders where the shape's fill has coverage
+   * (matches Figma: no fill → no noise). Default false = noise covers the
+   * shape's bounds regardless of fill.
+   */
+  applyToFill?: boolean
   hidden?: boolean
 }
 
+/** Maximum number of noise slots the shader supports. */
+export const MAX_NOISE_SLOTS = 4
+
 export const DEFAULT_NOISE: Noise = {
-  noiseType: 'monotone',
+  slots: [{ kind: 'solid', color: '#000000', opacity: 1 }],
   noiseSize: 50,
   density: 0.5,
-  color: { color: '#000000', opacity: 0.5 },
-  secondaryColor: { color: '#ffffff', opacity: 0.5 },
+  softness: 0,
+  applyToFill: false,
   hidden: false,
 }
 
