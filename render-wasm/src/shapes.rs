@@ -1423,15 +1423,10 @@ impl Shape {
 
     pub fn get_skia_path(&self) -> Option<skia::Path> {
         if let Some(path) = self.shape_type.path() {
-            let mut skia_path = path.to_skia_path();
+            let mut skia_path = path.to_skia_path(self.svg_attrs.as_ref());
             if !math::identitish(&self.transform) {
                 if let Some(path_transform) = self.to_path_transform() {
                     skia_path = skia_path.make_transform(&path_transform);
-                }
-            }
-            if let Some(svg_attrs) = &self.svg_attrs {
-                if svg_attrs.fill_rule == FillRule::Evenodd {
-                    skia_path.set_fill_type(skia::PathFillType::EvenOdd);
                 }
             }
             Some(skia_path)
@@ -1477,11 +1472,13 @@ impl Shape {
 
         // Outsets (strokes, shadows, blur, children) are translation-invariant,
         // so the cached extrect can be shifted instead of invalidated.
+        // Local extrect cache is `(rect, generation)` — only the rect shifts.
         if math::is_move_only_matrix(transform) {
             let tx = transform.translate_x();
             let ty = transform.translate_y();
-            if let Some(rect) = self.extrect_cache.borrow_mut().as_mut() {
-                *rect = math::Rect::from_xywh(
+            if let Some(entry) = self.extrect_cache.borrow_mut().as_mut() {
+                let rect = &entry.0;
+                entry.0 = math::Rect::from_xywh(
                     rect.left + tx,
                     rect.top + ty,
                     rect.width(),
