@@ -2,3 +2,4 @@ packages:
   - "figma_plugin_fe"
   - "skia-rs-wasm"
   - "skia-rs-wasm/packages/*"
+  - "sdk/wrappers/*/*"
