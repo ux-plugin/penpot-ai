@@ -10,3 +10,6 @@
 [submodule "skia-rs-wasm/packages/penpot-exporter"]
 	path = skia-rs-wasm/packages/penpot-exporter
 	url = https://github.com/ux-plugin/penpot-exporter-figma-plugin.git
+[submodule "sdk/zoetrope"]
+	path = sdk/zoetrope
+	url = https://github.com/ux-plugin/rrweb.git
