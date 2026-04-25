@@ -13,3 +13,6 @@
 [submodule "sdk/zoetrope"]
 	path = sdk/zoetrope
 	url = https://github.com/ux-plugin/rrweb.git
+[submodule "figma_plugin_api"]
+	path = figma_plugin_api
+	url = https://github.com/ux-plugin/figma_plugin_api.git
