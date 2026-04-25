@@ -49,12 +49,31 @@ export function setModifiers(module: WasmModule, modifiers: Array<[string, Matri
 }
 
 /**
- * Propagate modifiers
+ * Propagate modifiers.
+ *
+ * `kind` selects how the Rust side treats the entries:
+ *  - 'parent' (default) → `propagate=false` → the transform is for a parent
+ *    shape whose children's modifiers were already computed elsewhere; Rust
+ *    does not re-walk descendants. Mirrors CLJS `:parent` branch in
+ *    `parse-geometry-modifiers` (modifiers.cljs:574–580).
+ *  - 'child' → `propagate=true` → propagate the transform through
+ *    constraint-based children. **Required** for move/resize/rotate of a
+ *    selection that may contain container shapes whose descendants must
+ *    follow via constraints. Mirrors CLJS `:child` branch.
+ *
+ * Default is `'parent'` because `'child'` triggers a constraint walk over
+ * every descendant and changes the visible behavior (children move with
+ * their container). Gesture handlers (move / resize / rotate) opt in
+ * explicitly at their callsites; non-gesture callers stay at `'parent'`.
+ *
+ * The Rust boundary maps `kind=Child(1) → propagate=true` and
+ * `kind=Parent(0) → propagate=false` at `render-wasm/src/wasm/transforms.rs:72`.
  */
 export function propagateModifiers(
   module: WasmModule,
   entries: Array<[string, Matrix]>,
-  pixelPrecision: number
+  pixelPrecision: number,
+  kind: 'parent' | 'child' = 'parent',
 ): Array<{ id: string; transform: Matrix }> {
   checkContext()
   if (entries.length === 0) {
@@ -65,11 +84,12 @@ export function propagateModifiers(
   const heapU32 = module.HEAPU32
   const heapF32 = module.HEAPF32
 
+  const kindByte = kind === 'child' ? 1 : 0
   let currentOffset = offset
   for (const [id, transform] of entries) {
     currentOffset = writeUUIDToHeap(currentOffset, heapU32, id)
     currentOffset = writeMatrixToHeap(currentOffset, heapF32, transform)
-    heapU32[currentOffset] = 0
+    heapU32[currentOffset] = kindByte
     currentOffset += 1
   }
 

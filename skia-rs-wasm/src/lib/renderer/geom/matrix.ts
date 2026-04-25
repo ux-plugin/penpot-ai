@@ -8,6 +8,11 @@ export function translateMatrix(dx: number, dy: number): Matrix {
   return { a: 1, b: 0, c: 0, d: 1, e: dx, f: dy }
 }
 
+/** Identity matrix. Rust `propagate_modifiers` converts identitish entries into reflow signals. */
+export function identityMatrix(): Matrix {
+  return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
+}
+
 /** Rotation (degrees CCW) around world point (cx, cy); matches WASM modifier convention. */
 export function rotationMatrixAroundPoint(cx: number, cy: number, angleDeg: number): Matrix {
   const theta = (angleDeg * Math.PI) / 180

@@ -139,9 +139,25 @@ export async function applyChangesLocally(params: ApplyChangesLocallyParams): Pr
 
   if (renderer && !ignoreRendererSync) {
     const modifiedIds = new Set<string>()
+    // mov-objects has no `.id` — it carries `parentId` (new parent) plus a
+    // `shapes` list, and implicitly affects each shape's old parent. None of
+    // those ids would otherwise reach syncRendererAfterUpdate, leaving WASM's
+    // parent.children list out of sync with the new tree (the moved shape's
+    // own parent_id field is updated through the sibling mod-obj, but neither
+    // parent's children list is). Pull every affected id into the diff set.
     for (const c of redoChanges) {
       const id = (c as { id?: string }).id
       if (id) modifiedIds.add(id)
+      if (c.type === 'mov-objects') {
+        const mov = c as { parentId: string; shapes: readonly string[] }
+        modifiedIds.add(mov.parentId)
+        for (const sid of mov.shapes) {
+          modifiedIds.add(sid)
+          const oldShape = oldPage.objects[sid]
+          const oldParent = (oldShape as { parentId?: string } | undefined)?.parentId
+          if (oldParent) modifiedIds.add(oldParent)
+        }
+      }
     }
     await syncRendererAfterUpdate(renderer, oldPage, updatedPage, modifiedIds)
   }

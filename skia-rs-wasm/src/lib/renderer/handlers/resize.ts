@@ -13,6 +13,7 @@ import { useWorkspaceStore } from '../store/workspace-store'
 import { getCurrentPage } from '../store/doc-proxy'
 import { getModifierKeys } from '../store/shortcuts-store'
 import { applyModifiersAndCommit } from './utils'
+import { collectTextGrowTypes } from './reparent-detection'
 import type { Point } from '../types'
 import type { Matrix } from 'penpot-exporter/types'
 import type { ResizeHandlePosition } from '../types'
@@ -169,6 +170,13 @@ export function startResizeSelected(
           rafScheduledRef.current = false
           if (commitDoneRef.current) return
           modifiersAppliedRef.current = true
+          // Clean before propagate. setMoveModifiersAndRender runs
+          // propagateModifiers first, and propagate reads the pool through
+          // shapes.get which applies pool.modifiers. Without cleanModifiers,
+          // the previous frame's modifier leaks in and gets composed with
+          // this frame's matrix, producing accelerating/erratic transforms
+          // for children (especially constraint-propagated ones).
+          renderer.cleanModifiers()
           const entries: Array<[string, Matrix]> = Array.from(selectedIds).map((id) => [
             id,
             latestMatrixRef.current,
@@ -192,7 +200,11 @@ export function startResizeSelected(
         id,
         latestMatrixRef.current,
       ])
-      applyModifiersAndCommit(entries)
+      const page = getCurrentPage()
+      const textGrowTypes = page ? collectTextGrowTypes(selectedIds, page) : new Map<string, string | undefined>()
+      applyModifiersAndCommit(entries, {
+        textGrowTypes: textGrowTypes.size > 0 ? textGrowTypes : undefined,
+      })
         .then(() => {
           commitDoneRef.current = true
           renderer.cleanModifiers()

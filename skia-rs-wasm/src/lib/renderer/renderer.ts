@@ -255,7 +255,10 @@ export class Renderer {
   setMoveModifiersAndRender(entries: Array<[string, Matrix]>): void {
     if (!getContextInitialized() || !this.module) return
     if (entries.length === 0) return
-    const propagated = propagateModifiers(this.module, entries, 0)
+    // 'child' kind: propagate transforms to descendants via constraints.
+    // Gesture-driven move/resize/rotate of a parent shape needs its
+    // children to follow.
+    const propagated = propagateModifiers(this.module, entries, 0, 'child')
     if (propagated.length === 0) return
     const toSet = propagated.map((p) => [p.id, p.transform] as [string, Matrix])
     setModifiers(this.module, toSet)
@@ -269,7 +272,7 @@ export class Renderer {
   setMoveModifiersNoRender(entries: Array<[string, Matrix]>): void {
     if (!getContextInitialized() || !this.module) return
     if (entries.length === 0) return
-    const propagated = propagateModifiers(this.module, entries, 0)
+    const propagated = propagateModifiers(this.module, entries, 0, 'child')
     if (propagated.length === 0) return
     const toSet = propagated.map((p) => [p.id, p.transform] as [string, Matrix])
     setModifiers(this.module, toSet)

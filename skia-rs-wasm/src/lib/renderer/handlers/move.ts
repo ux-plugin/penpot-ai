@@ -7,6 +7,12 @@
  * - Overlay (selection rect SVG) is updated SYNCHRONOUSLY from each pointer event
  * - WASM canvas render is scheduled ASYNC via requestRender (RAF-coalesced)
  * - This ensures the overlay is always responsive even when _render blocks (~55ms)
+ *
+ * Reparent during drag (mirrors CLJS set-wasm-modifiers at modifiers.cljs:634):
+ * - Per-frame, when the projected drop target changes, emit setStructureModifiers
+ *   so propagate_modifiers reflows flex/grid containers live.
+ * - On pointer-up, fold mov-objects into the same commitChanges bundle as the
+ *   move's mod-obj changes — single undo frame per gesture.
  */
 
 import { Observable, EMPTY, merge } from 'rxjs'
@@ -17,7 +23,7 @@ import { dragStopper } from '../streams/drag-stopper'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { getModifierKeys } from '../store/shortcuts-store'
 import { getSelectedIdsSet } from '../store/document-selection'
-import { docProxy, getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
+import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { applyModifiersAndCommit } from './utils'
 import { DRAG_RENDER_INTERVAL_MS } from './drag-render-interval'
 import {
@@ -25,15 +31,15 @@ import {
   finiteSelectionRect,
   translateSelectionRectWorld,
 } from './selection-rect-helpers'
-import { translateMatrix } from '../geom/matrix'
-import { commitChanges } from '../store/commit'
+import { identityMatrix, translateMatrix } from '../geom/matrix'
+import { setStructureModifiers } from '../api/modifiers'
 import {
-  buildReparentChanges,
-  findContainerAtPoint,
-} from '../../components/LayersPanel/reparent'
-import { rectToCenter } from '../../worker/geometry/rect'
-import { ZERO_UUID } from '@skia-rs-wasm/common/conversions'
-import type { IndexedShape } from '../../worker/types'
+  buildCommitStructureEntries,
+  buildLayoutDetachEntries,
+  collectReflowParents,
+  collectTextGrowTypes,
+  detectReparentTargets,
+} from './reparent-detection'
 import type { Point } from '../types'
 import type { Matrix } from 'penpot-exporter/types'
 
@@ -70,6 +76,13 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
     : null
 
   const lastEventDeltaRef = { current: { x: 0, y: 0 } }
+  const moduleRef = renderer.getModule()
+  // Pre-compute "remove from real parent" structure entries for any selected
+  // shape whose parent has a layout. These are stable across the gesture so we
+  // build them once and re-emit each frame after cleanModifiers wipes them.
+  // Without these, propagate's parent flex reflow re-pins the dragged shape
+  // to its layout slot every frame and the cursor-following preview is dead.
+  const layoutDetachEntries = buildLayoutDetachEntries(selectedIds, page)
 
   const DRAG_THRESHOLD_SCREEN_PX = 5
   const moveStream = signalToObservable(pointerPos).pipe(
@@ -104,16 +117,20 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         wasmSelRect.value = preview
       }
 
-      // 2. Clean + propagate + set WASM modifiers (every event, ~0.1ms).
-      //    Matches the frontend's set-wasm-modifiers pattern.
+      // Clean → set-structure (detach from layout) → propagate+set, matching
+      // CLJS's set-wasm-modifiers order at modifiers.cljs:627–638. cleanModifiers
+      // wipes pool.structure too, so we re-emit the detach entries every frame.
       renderer.cleanModifiers()
-      const entries: Array<[string, Matrix]> = Array.from(selectedIds, (id) => [
+      if (layoutDetachEntries.length > 0) {
+        setStructureModifiers(moduleRef, layoutDetachEntries)
+      }
+      const moveEntries: Array<[string, Matrix]> = Array.from(selectedIds, (id) => [
         id,
         translateMatrix(worldDelta.x, worldDelta.y),
       ])
-      renderer.setMoveModifiersNoRender(entries)
+      renderer.setMoveModifiersNoRender(moveEntries)
 
-      // 3. Throttle canvas render (~60 Hz); overlay still updates every pointer event.
+      // 4. Throttle canvas render (~60 Hz); overlay still updates every pointer event.
       const now = performance.now()
       if (now - lastRenderRequestTs >= DRAG_RENDER_INTERVAL_MS) {
         lastRenderRequestTs = now
@@ -130,17 +147,31 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
     tap(() => {
       if (!modifiersAppliedRef.current) {
         movePreviewWorldDelta.value = { x: 0, y: 0 }
+        renderer.cleanModifiers()
         return
       }
       const delta = lastEventDeltaRef.current
-      const entries: Array<[string, Matrix]> = Array.from(selectedIds).map((id) => [
-        id,
-        translateMatrix(delta.x, delta.y),
-      ])
-      applyModifiersAndCommit(entries)
-        .then(async () => {
-          await reparentSelectedIfMovedIntoFrame(selectedIds, pageId)
-        })
+
+      // Compute the final reparent intent against the same delta we'll commit
+      // geometry for. This bundles `mov-objects` into the same commit call.
+      const finalTargets = detectReparentTargets(selectedIds, page, delta)
+      const structureModifiers =
+        finalTargets.size > 0 ? buildCommitStructureEntries(finalTargets, page) : undefined
+      const textGrowTypes = collectTextGrowTypes(selectedIds, page)
+
+      // Same identity-reflow trick as the per-frame path so the new target
+      // parent (and the source parent) reflow during the final propagate.
+      const reflowParents = collectReflowParents(selectedIds, page, finalTargets)
+      const moveEntries: Array<[string, Matrix]> = [
+        ...Array.from(selectedIds).map((id) => [id, translateMatrix(delta.x, delta.y)] as [string, Matrix]),
+        ...Array.from(reflowParents, (id) => [id, identityMatrix()] as [string, Matrix]),
+      ]
+
+      applyModifiersAndCommit(moveEntries, {
+        reparentTargets: finalTargets.size > 0 ? finalTargets : undefined,
+        structureModifiers,
+        textGrowTypes: textGrowTypes.size > 0 ? textGrowTypes : undefined,
+      })
         .then(() => {
           renderer.cleanModifiers()
           renderer.flushRenderSync()
@@ -158,52 +189,4 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
   )
 
   return merge(moveStream, commitOnRelease) as Observable<void>
-}
-
-/**
- * After the move commit lands, find the innermost frame each moved shape's
- * center is now inside. If different from the shape's current parent, emit a
- * `mov-objects` change grouped by new parent. Mirrors Penpot's canvas-drop
- * reparent — dragging a shape inside a frame adopts it into that frame.
- */
-async function reparentSelectedIfMovedIntoFrame(
-  selectedIds: Set<string>,
-  pageId: string,
-): Promise<void> {
-  if (selectedIds.size === 0) return
-  const page = docProxy.pageMap.get(pageId)
-  if (!page) return
-  const objects = page.objects as Record<string, IndexedShape>
-
-  const excludeIds = Array.from(selectedIds)
-  const byNewParent = new Map<string, string[]>()
-  for (const id of selectedIds) {
-    const shape = objects[id]
-    if (!shape?.selrect) continue
-    const center = rectToCenter(shape.selrect)
-    if (!center) continue
-    // When the shape's center ends up outside every container (e.g. past the
-    // root frame's right/bottom edge), fall back to the root so the shape
-    // escapes its old parent instead of being silently re-anchored.
-    const hit = findContainerAtPoint(objects, center, excludeIds)
-    const newParent = hit ?? (excludeIds.includes(ZERO_UUID) ? null : ZERO_UUID)
-    if (!newParent) continue
-    if (newParent === shape.parentId) continue
-    const list = byNewParent.get(newParent) ?? []
-    list.push(id)
-    byNewParent.set(newParent, list)
-  }
-
-  for (const [parentId, shapeIds] of byNewParent) {
-    const parent = objects[parentId]
-    const nextIndex = parent?.shapes?.length ?? 0
-    const { redoChanges, undoChanges } = buildReparentChanges({
-      pageId,
-      parentId,
-      index: nextIndex,
-      shapeIds,
-      objects,
-    })
-    await commitChanges({ redoChanges, undoChanges, pageId })
-  }
 }
