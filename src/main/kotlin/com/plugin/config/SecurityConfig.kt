@@ -5,18 +5,25 @@ import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet
 import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.SecurityContext
+import com.plugin.config.properties.Auth0Properties
 import com.plugin.config.properties.JwtProperties
+import org.springframework.beans.factory.ObjectProvider
+import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.io.ResourceLoader
 import org.springframework.http.HttpMethod
+import org.springframework.security.authentication.ReactiveAuthenticationManager
+import org.springframework.security.authentication.ReactiveAuthenticationManagerResolver
 import org.springframework.security.config.annotation.method.configuration.EnableReactiveMethodSecurity
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity
 import org.springframework.security.config.web.server.ServerHttpSecurity
-import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder
+import org.springframework.security.oauth2.server.resource.authentication.JwtReactiveAuthenticationManager
 import org.springframework.security.oauth2.server.resource.web.server.authentication.ServerBearerTokenAuthenticationConverter
 import org.springframework.security.web.server.SecurityWebFilterChain
+import reactor.core.publisher.Mono
 import java.security.KeyFactory
 import java.security.interfaces.RSAPrivateKey
 import java.security.interfaces.RSAPublicKey
@@ -27,9 +34,16 @@ import java.util.*
 @Configuration
 @EnableWebFluxSecurity
 @EnableReactiveMethodSecurity
-class SecurityConfig(private val jwtProperties: JwtProperties, private val resourceLoader: ResourceLoader) {
+class SecurityConfig(
+    private val jwtProperties: JwtProperties,
+    private val auth0Properties: Auth0Properties,
+    private val resourceLoader: ResourceLoader,
+) {
     @Bean
-    fun securityWebFilterChain(http: ServerHttpSecurity): SecurityWebFilterChain = http
+    fun securityWebFilterChain(
+        http: ServerHttpSecurity,
+        issuerToManagerResolver: ReactiveAuthenticationManagerResolver<String>,
+    ): SecurityWebFilterChain = http
         .csrf { it.disable() }
         .cors {}
         .authorizeExchange { exchanges ->
@@ -44,8 +58,11 @@ class SecurityConfig(private val jwtProperties: JwtProperties, private val resou
                 .permitAll()
                 .anyExchange()
                 .authenticated()
-        }.oauth2ResourceServer { oauth2 -> oauth2.bearerTokenConverter(bearerTokenConverter()).jwt {} }
-        .build()
+        }.oauth2ResourceServer { oauth2 ->
+            oauth2
+                .bearerTokenConverter(bearerTokenConverter())
+                .jwt { it.authenticationManager(MultiIssuerReactiveAuthenticationManager(issuerToManagerResolver)) }
+        }.build()
 
     @Bean
     fun bearerTokenConverter(): ServerBearerTokenAuthenticationConverter {
@@ -54,10 +71,31 @@ class SecurityConfig(private val jwtProperties: JwtProperties, private val resou
         return converter
     }
 
+    @Bean("selfHostedJwtDecoder")
+    fun selfHostedJwtDecoderBean(publicKey: RSAPublicKey): ReactiveJwtDecoder = selfHostedJwtDecoder(publicKey)
+
+    @Bean("auth0JwtDecoder")
+    @ConditionalOnProperty(prefix = "auth0", name = ["issuer"])
+    fun auth0JwtDecoderBean(): ReactiveJwtDecoder = auth0JwtDecoder(auth0Properties)
+
+    /**
+     * Source of truth: a [ReactiveAuthenticationManagerResolver] keyed by JWT `iss` claim.
+     * Reused for both HTTP and RSocket via [MultiIssuerReactiveAuthenticationManager].
+     * The Auth0 entry is registered only when `auth0.issuer` is configured.
+     */
     @Bean
-    fun jwtDecoder(): ReactiveJwtDecoder {
-        val publicKey = loadPublicKey()
-        return NimbusReactiveJwtDecoder.withPublicKey(publicKey).build()
+    fun issuerToManagerResolver(
+        @Qualifier("selfHostedJwtDecoder") selfHostedDecoder: ReactiveJwtDecoder,
+        @Qualifier("auth0JwtDecoder") auth0Decoder: ObjectProvider<ReactiveJwtDecoder>,
+    ): ReactiveAuthenticationManagerResolver<String> {
+        val managers = buildMap<String, ReactiveAuthenticationManager> {
+            put(SELF_HOSTED_ISSUER, JwtReactiveAuthenticationManager(selfHostedDecoder))
+            val auth0 = auth0Decoder.getIfAvailable()
+            if (auth0 != null && auth0Properties.issuer != null) {
+                put(auth0Properties.issuer, JwtReactiveAuthenticationManager(auth0))
+            }
+        }
+        return ReactiveAuthenticationManagerResolver { issuer -> Mono.justOrEmpty(managers[issuer]) }
     }
 
     @Bean fun publicKey(): RSAPublicKey = loadPublicKey()

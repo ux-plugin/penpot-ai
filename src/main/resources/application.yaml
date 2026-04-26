@@ -46,14 +46,6 @@ spring:
       write-dates-as-timestamps: false
     default-property-inclusion: non_null
 
-  # Security configuration
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: ux-plugin
-          jwk-set-uri: classpath:META-INF/resources/publicKey-dev.pem
-
 server:
   port: ${API_PORT:8003}
   address: ${API_HOST:0.0.0.0}
@@ -139,6 +131,13 @@ jwt:
   public-key-location: classpath:META-INF/resources/publicKey-dev.pem
   token:
     lifespan: 600
+
+# Auth0 configuration (multi-issuer JWT validation alongside self-hosted).
+# Leave AUTH0_ISSUER_URI unset to disable Auth0 validation entirely.
+auth0:
+  issuer: ${AUTH0_ISSUER_URI:#{null}}
+  audience: ${AUTH0_AUDIENCE:#{null}}
+  jwk-set-uri: ${AUTH0_JWK_SET_URI:#{null}}
 
 # WebSocket configuration
 websocket:

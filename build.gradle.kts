@@ -136,6 +136,7 @@ dependencies {
     testImplementation("io.projectreactor:reactor-test")
     testImplementation("org.springframework.security:spring-security-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
     // Testcontainers
     testImplementation("org.testcontainers:testcontainers:1.19.0")
