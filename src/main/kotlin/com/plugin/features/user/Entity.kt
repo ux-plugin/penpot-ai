@@ -13,6 +13,7 @@ import java.util.*
 data class UserEntity(
     var id: String = UUID.randomUUID().toString(),
     var username: String? = null,
+    var email: String? = null,
     var name: String = "",
     var role: UserRole = UserRole.USER,
     var refreshToken: String = "",
@@ -22,6 +23,7 @@ data class UserEntity(
     var encryptionKey: String? = null,
     var encryptionKeyExpiresAt: Instant? = null,
     var port: Int? = null,
+    var auth0Sub: String? = null,
 )
 
 data class SocialLoginEntity(
@@ -41,6 +43,7 @@ data class SocialLoginEntity(
 object UsersTable : Table("users") {
     val id = varchar("id", 255)
     val username = varchar("username", 255).nullable()
+    val email = varchar("email", 255).nullable().uniqueIndex()
     val name = varchar("name", 255)
     val role = customEnumeration("role", "user_roles", { value -> UserRole.valueOf(value as String) }, { it })
     val refreshToken = varchar("refresh_token", 255)
@@ -50,6 +53,7 @@ object UsersTable : Table("users") {
     val encryptionKey = varchar("encryption_key", 255).nullable()
     val encryptionKeyExpiresAt = timestamp("encryption_key_expires_at").nullable()
     val port = integer("port").nullable()
+    val auth0Sub = varchar("auth0_sub", 255).nullable()
 
     override val primaryKey = PrimaryKey(id)
 }

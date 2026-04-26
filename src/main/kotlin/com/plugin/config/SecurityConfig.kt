@@ -7,6 +7,8 @@ import com.nimbusds.jose.jwk.source.JWKSource
 import com.nimbusds.jose.proc.SecurityContext
 import com.plugin.config.properties.Auth0Properties
 import com.plugin.config.properties.JwtProperties
+import com.plugin.features.auth.auth0.Auth0UserProvisioner
+import com.plugin.features.auth.auth0.Auth0UserSyncAuthenticationManager
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -87,12 +89,16 @@ class SecurityConfig(
     fun issuerToManagerResolver(
         @Qualifier("selfHostedJwtDecoder") selfHostedDecoder: ReactiveJwtDecoder,
         @Qualifier("auth0JwtDecoder") auth0Decoder: ObjectProvider<ReactiveJwtDecoder>,
+        auth0UserProvisioner: ObjectProvider<Auth0UserProvisioner>,
     ): ReactiveAuthenticationManagerResolver<String> {
         val managers = buildMap<String, ReactiveAuthenticationManager> {
             put(SELF_HOSTED_ISSUER, JwtReactiveAuthenticationManager(selfHostedDecoder))
             val auth0 = auth0Decoder.getIfAvailable()
             if (auth0 != null && auth0Properties.issuer != null) {
-                put(auth0Properties.issuer, JwtReactiveAuthenticationManager(auth0))
+                // Both auth0Decoder and Auth0UserProvisioner are gated on `auth0.issuer`, so if
+                // we're in this branch the provisioner bean is required.
+                val provisioner = auth0UserProvisioner.getObject()
+                put(auth0Properties.issuer, Auth0UserSyncAuthenticationManager(auth0, provisioner))
             }
         }
         return ReactiveAuthenticationManagerResolver { issuer -> Mono.justOrEmpty(managers[issuer]) }

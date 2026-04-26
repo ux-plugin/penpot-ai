@@ -23,6 +23,7 @@ CREATE TABLE users
 (
     id                         VARCHAR PRIMARY KEY,
     username                   VARCHAR,
+    email                      VARCHAR    UNIQUE,
     name                       VARCHAR    NOT NULL,
     role                       user_roles NOT NULL,
     created_at                 TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -31,7 +32,8 @@ CREATE TABLE users
     encryption_key_expires_at  TIMESTAMP,
     refresh_token              VARCHAR,
     refresh_token_expires_at   TIMESTAMP,
-    port                       INTEGER
+    port                       INTEGER,
+    auth0_sub                  VARCHAR    UNIQUE
 );
 Exception
         WHEN duplicate_object THEN

@@ -47,6 +47,7 @@ class AuthUserRepository(private val database: R2dbcDatabase) {
             UsersTable.insert {
                 it[id] = entity.id
                 it[username] = entity.username
+                it[email] = entity.email
                 it[name] = entity.name
                 it[role] = entity.role
                 it[refreshToken] = entity.refreshToken
@@ -56,11 +57,13 @@ class AuthUserRepository(private val database: R2dbcDatabase) {
                 it[encryptionKey] = entity.encryptionKey
                 it[encryptionKeyExpiresAt] = entity.encryptionKeyExpiresAt
                 it[port] = entity.port
+                it[auth0Sub] = entity.auth0Sub
             }
         } else {
             // Update existing user
             UsersTable.update({ UsersTable.id eq entity.id }) {
                 it[username] = entity.username
+                it[email] = entity.email
                 it[name] = entity.name
                 it[role] = entity.role
                 it[refreshToken] = entity.refreshToken
@@ -69,6 +72,7 @@ class AuthUserRepository(private val database: R2dbcDatabase) {
                 it[encryptionKey] = entity.encryptionKey
                 it[encryptionKeyExpiresAt] = entity.encryptionKeyExpiresAt
                 it[port] = entity.port
+                it[auth0Sub] = entity.auth0Sub
             }
         }
         entity
@@ -78,6 +82,7 @@ class AuthUserRepository(private val database: R2dbcDatabase) {
     private fun ResultRow.toAuthUserEntity() = AuthUserEntity(
         id = this[UsersTable.id],
         username = this[UsersTable.username],
+        email = this[UsersTable.email],
         name = this[UsersTable.name],
         role = this[UsersTable.role],
         refreshToken = this[UsersTable.refreshToken],
@@ -87,5 +92,6 @@ class AuthUserRepository(private val database: R2dbcDatabase) {
         encryptionKey = this[UsersTable.encryptionKey],
         encryptionKeyExpiresAt = this[UsersTable.encryptionKeyExpiresAt],
         port = this[UsersTable.port],
+        auth0Sub = this[UsersTable.auth0Sub],
     )
 }
