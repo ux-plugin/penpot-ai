@@ -1,96 +1,44 @@
 /**
- * Penpot-shaped commit pipeline: apply changes locally (document + renderer), then worker indexes.
- * History frames are pushed when undo inverse is supplied (unless fromHistory / saveUndo false).
+ * Penpot-shaped commit pipeline: apply Change[] to docProxy and emit a
+ * `changes-applied` event. Three subscribers (renderer-sync, worker-sync,
+ * history-sync) consume the event independently — see `change-emitter.ts`.
+ *
+ * `commitChanges` itself does no renderer/worker/history work.
  */
 
-import type { IndexedPage, IndexedNode } from '../../worker/types'
+import type { IndexedPage } from '../../worker/types'
 import type { Change } from 'penpot-exporter/types'
 import { processChanges } from '../../worker/process-changes'
 import { useWorkspaceStore } from './workspace-store'
 import type { CommitChangesParams } from '../../changes/commit-types'
-import { useHistoryStore } from '../../history/history-store'
-import type { WorkerClient } from '../../worker/types'
 import { assertValidAddObjChange } from '../../common/shape-id'
 import { docProxy, getActiveOrSinglePageId } from './doc-proxy'
+import {
+  emitChangesApplied,
+  onChangesApplied,
+  type ChangesAppliedPagePayload,
+} from '../../changes/change-emitter'
+import { rendererSyncHandler, syncRendererAfterUpdate } from './renderer-sync'
+import { selectionSyncHandler } from './selection-sync'
+import { workerSyncHandler } from '../../worker/worker-sync'
+import { historySyncHandler } from '../../history/history-sync'
 
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
+// Subscriber registration — explicit, ordered, single source of truth.
+// renderer-sync must run first so WASM has the new state before
+// selection-sync queries it; selection-sync runs before worker / history
+// for symmetry with overlay timing; worker is fire-and-forget so its order
+// vs. history doesn't matter; history runs last. Centralizing here also
+// insulates ordering from arbitrary import paths.
+onChangesApplied(rendererSyncHandler)
+onChangesApplied(selectionSyncHandler)
+onChangesApplied(workerSyncHandler)
+onChangesApplied(historySyncHandler)
 
 function toPlainPage(page: IndexedPage): IndexedPage {
   try {
     return structuredClone(page)
   } catch {
     return JSON.parse(JSON.stringify(page)) as IndexedPage
-  }
-}
-
-function getRootFrameId(page: IndexedPage): string | undefined {
-  const root = Object.values(page.objects).find((o) => o.parentId == null)
-  return root?.id
-}
-
-function getRootFrameChildIds(page: IndexedPage): string[] {
-  const root = Object.values(page.objects).find((o) => o.parentId == null)
-  return root?.shapes ?? []
-}
-
-interface RendererLike {
-  isInitialized(): boolean
-  addShape(node: IndexedNode): Promise<void>
-  updateShape(node: IndexedNode): Promise<void>
-  updateParentChildren(parentId: string, childIds: string[]): void
-}
-
-async function syncRendererAfterUpdate(
-  renderer: RendererLike,
-  oldPage: IndexedPage | undefined,
-  updatedPage: IndexedPage,
-  modifiedIds?: Set<string>,
-): Promise<void> {
-  if (!renderer.isInitialized()) return
-  const oldObjects = oldPage?.objects ?? {}
-  const newObjects = updatedPage.objects
-  const oldIds = new Set(Object.keys(oldObjects))
-  const newIds = new Set(Object.keys(newObjects))
-  const added = [...newIds].filter((id) => !oldIds.has(id))
-  const deleted = [...oldIds].filter((id) => !newIds.has(id))
-  const rootId = getRootFrameId(updatedPage) ?? ROOT_UUID
-  const childIds = getRootFrameChildIds(updatedPage)
-
-  if (added.length > 0) {
-    for (const id of added) {
-      const node = newObjects[id]
-      if (node) await renderer.addShape(node)
-    }
-    renderer.updateParentChildren(rootId, childIds)
-    const subParentsToUpdate = new Set<string>()
-    for (const id of added) {
-      const node = newObjects[id]
-      if (node?.parentId && node.parentId !== rootId) {
-        subParentsToUpdate.add(node.parentId)
-      }
-    }
-    for (const parentId of subParentsToUpdate) {
-      const parentNode = newObjects[parentId]
-      const parentShapes = (parentNode as { shapes?: string[] })?.shapes
-      if (parentShapes) {
-        renderer.updateParentChildren(parentId, parentShapes)
-      }
-    }
-  } else if (deleted.length > 0) {
-    renderer.updateParentChildren(rootId, childIds)
-  } else {
-    // When we know which shapes were touched by the changes, only diff those
-    // instead of JSON-stringifying every object on the page.
-    const idsToCheck = modifiedIds && modifiedIds.size > 0 ? modifiedIds : newIds
-    const changed = [...idsToCheck].filter((id) => {
-      const oldNode = oldObjects[id]
-      const newNode = newObjects[id]
-      return oldNode && newNode && JSON.stringify(oldNode) !== JSON.stringify(newNode)
-    })
-    for (const id of changed) {
-      const node = newObjects[id]
-      if (node) await renderer.updateShape(node)
-    }
   }
 }
 
@@ -117,72 +65,38 @@ export function groupChangesByPageId(
 export interface ApplyChangesLocallyParams {
   pageId: string
   redoChanges: Change[]
-  ignoreRendererSync?: boolean
 }
 
 /**
- * Apply redo changes to the document model and optionally sync the renderer. Does not touch the worker.
+ * Apply redo changes to docProxy for one page. Pure mutation — no renderer
+ * sync, no worker sync, no history. Returns the resulting page (also written
+ * into `docProxy.pageMap`) plus the snapshot of the page before the apply,
+ * which the renderer subscriber needs for its diff.
  */
-export async function applyChangesLocally(params: ApplyChangesLocallyParams): Promise<IndexedPage | undefined> {
-  const { pageId, redoChanges, ignoreRendererSync } = params
-  const state = useWorkspaceStore.getState()
-  const { renderer } = state
+export interface ApplyChangesLocallyResult {
+  oldPage: IndexedPage | undefined
+  updatedPage: IndexedPage
+}
+
+export function applyChangesLocally(
+  params: ApplyChangesLocallyParams,
+): ApplyChangesLocallyResult | undefined {
+  const { pageId, redoChanges } = params
   if (redoChanges.length === 0) return undefined
 
   const page = docProxy.pageMap.get(pageId)
   if (!page) return undefined
 
   const oldPage = toPlainPage(page)
-  /** Clone so `processChanges` does not mutate live page shapes; stale renderer/worker diffs used ref/JSON on shared objects. */
+  /** Clone so `processChanges` does not mutate live page shapes; renderer/worker diffs read by reference and JSON. */
   const updatedPage = processChanges(toPlainPage(page), redoChanges)
   docProxy.pageMap.set(pageId, updatedPage)
-
-  if (renderer && !ignoreRendererSync) {
-    const modifiedIds = new Set<string>()
-    // mov-objects has no `.id` — it carries `parentId` (new parent) plus a
-    // `shapes` list, and implicitly affects each shape's old parent. None of
-    // those ids would otherwise reach syncRendererAfterUpdate, leaving WASM's
-    // parent.children list out of sync with the new tree (the moved shape's
-    // own parent_id field is updated through the sibling mod-obj, but neither
-    // parent's children list is). Pull every affected id into the diff set.
-    for (const c of redoChanges) {
-      const id = (c as { id?: string }).id
-      if (id) modifiedIds.add(id)
-      if (c.type === 'mov-objects') {
-        const mov = c as { parentId: string; shapes: readonly string[] }
-        modifiedIds.add(mov.parentId)
-        for (const sid of mov.shapes) {
-          modifiedIds.add(sid)
-          const oldShape = oldPage.objects[sid]
-          const oldParent = (oldShape as { parentId?: string } | undefined)?.parentId
-          if (oldParent) modifiedIds.add(oldParent)
-        }
-      }
-    }
-    await syncRendererAfterUpdate(renderer, oldPage, updatedPage, modifiedIds)
-  }
-  return updatedPage
+  return { oldPage, updatedPage }
 }
 
 /**
- * Update worker spatial index for one page (incremental changes when non-empty).
- */
-export async function updateWorkerIndexes(
-  workerClient: WorkerClient | null,
-  pageId: string,
-  changes: Change[],
-  updatedPage: IndexedPage
-): Promise<void> {
-  if (!workerClient) return
-  if (changes.length > 0) {
-    await workerClient.updatePageWithChanges(pageId, changes)
-  } else {
-    await workerClient.updatePage(pageId, updatedPage)
-  }
-}
-
-/**
- * Orchestrate local apply, worker indexes, and optional history push.
+ * Apply Change[] to docProxy and dispatch a `changes-applied` event.
+ * Subscribers handle renderer sync, worker indexes, and history.
  */
 export async function commitChanges(params: CommitChangesParams): Promise<void> {
   const {
@@ -202,37 +116,32 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
     }
   }
 
-  const state = useWorkspaceStore.getState()
-  const { workerClient } = state
-
   const fallbackPageId = explicitPageId ?? getActiveOrSinglePageId()
   const byPage = groupChangesByPageId(redoChanges, fallbackPageId)
   if (byPage.size === 0) return
 
+  const pages: ChangesAppliedPagePayload[] = []
   for (const [pageId, pageChanges] of byPage) {
-    await applyChangesLocally({
+    const result = applyChangesLocally({ pageId, redoChanges: pageChanges })
+    if (!result) continue
+    pages.push({
       pageId,
-      redoChanges: pageChanges,
-      ignoreRendererSync,
+      changes: pageChanges,
+      oldPage: result.oldPage,
+      updatedPage: result.updatedPage,
     })
   }
 
-  // Fire worker index update in background — don't block visual commit.
-  // cleanModifiers() fires as soon as commitChanges returns; the worker
-  // spatial-index update is only needed for hit-testing and can lag behind.
-  for (const [pageId, pageChanges] of byPage) {
-    const updatedPage = docProxy.pageMap.get(pageId)
-    if (!updatedPage) continue
-    updateWorkerIndexes(workerClient, pageId, pageChanges, updatedPage).catch(console.error)
-  }
+  if (pages.length === 0) return
 
-  const effectiveSaveUndo = saveUndo ?? undoChanges.length > 0
-  if (!fromHistory && effectiveSaveUndo && undoChanges.length > 0) {
-    useHistoryStore.getState().pushCommitFrame({
-      redoChanges,
-      undoChanges,
-    })
-  }
+  await emitChangesApplied({
+    redoChanges,
+    undoChanges,
+    pages,
+    fromHistory: fromHistory ?? false,
+    saveUndo: saveUndo ?? undoChanges.length > 0,
+    ignoreRendererSync: ignoreRendererSync ?? false,
+  })
 }
 
 export interface PageCommitPayload {
@@ -245,6 +154,10 @@ export interface PageCommitWithChangesPayload {
   changes: Change[]
 }
 
+/**
+ * Page-metadata path: replace a whole page (no Change[] involved).
+ * Bypasses the change-emitter and updates renderer/worker directly.
+ */
 export async function commitPageUpdate(payload: PageCommitPayload): Promise<void> {
   const { pageId, updatedPage } = payload
   const state = useWorkspaceStore.getState()

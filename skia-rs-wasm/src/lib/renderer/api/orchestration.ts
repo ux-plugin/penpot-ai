@@ -61,125 +61,181 @@ function ensureTextContent(content: TextContent | null | undefined): TextContent
 }
 
 /**
- * Sets all properties of a shape object
+ * Sets all properties of a shape object.
+ *
+ * `changedKeys`, when provided, restricts the per-property pushes to only
+ * those whose backing field is in the set. The renderer-sync subscriber
+ * passes the assign keys from each `mod-obj` so unrelated blocks (notably
+ * the layout block) aren't re-installed on a transform-only edit. When
+ * `changedKeys` is `undefined`, every setter fires (used for `add-obj`,
+ * full re-pushes, and undo replay).
+ *
+ * The layout block (`clearLayout` + `setFlexLayout`/`setGridLayout` +
+ * `setLayoutData`) fires only when at least one `layout`-prefixed key is in
+ * `changedKeys`. Re-installing flex/grid config retriggers WASM's
+ * render-time layout pass on the just-rotated container — the cause of the
+ * rotated-flex-container snap-back.
+ *
  * Returns pending image loading operations
  */
 export function setObject(
   module: WasmModule,
   shape: PenpotNode,
+  changedKeys?: ReadonlySet<string>,
   resolveImageUrl?: (imageId: string, thumbnail: boolean) => string
 ): SetObjectResult {
   checkContext()
-  
+
   const id = shape.id
   const type = shape.type
-  const parentId = shape.parentId
-  const masked = shape.maskedGroup
-  const selrect = shape.selrect
-  const constraintH = shape.constraintsH
-  const constraintV = shape.constraintsV
-  const clipContent = type === 'frame' ? !shape.showContent : false
-  const rotation = shape.rotation
-  const transform = shape.transform
-  const fills = shape.fills || []
-  const strokes = type === 'group' ? [] : (shape.strokes || [])
-  const children = 'shapes' in shape ? (shape.shapes ?? []) : []
-  const blendMode = shape.blendMode
-  const opacity = shape.opacity
-  const hidden = shape.hidden
-  const content = type === 'text' ? ensureTextContent((shape as { content?: TextContent }).content) : (shape as { content?: unknown }).content
-  const boolType: BoolType | undefined = type === 'bool' ? (shape as { boolType: BoolType }).boolType : undefined
-  const growType = shape.growType
-  // A shape may carry both a layer blur and a background blur. The
-  // upstream Penpot schema only exposes `shape.blur` (single slot, any
-  // kind); we additionally read an optional `backgroundBlur` off the node
-  // so both can be sent in one pass.
-  const blurs: import('penpot-exporter/types').Blur[] = []
-  if (shape.blur) blurs.push(shape.blur)
-  const backgroundBlur = (shape as { backgroundBlur?: import('penpot-exporter/types').Blur })
-    .backgroundBlur
-  if (backgroundBlur) blurs.push(backgroundBlur)
-  const texture = (shape as Record<string, unknown>).texture as import('../properties/panel-utils').Texture | undefined
-  const glass = shape.glass
-  const svgAttrs = shape.svgAttrs
-  const shadows = shape.shadow || []
-  const corners: [number?, number?, number?, number?] = [
-    shape.r1,
-    shape.r2,
-    shape.r3,
-    shape.r4,
-  ]
 
-  // Set basic shape properties
+  const wantsKey = (...keys: string[]): boolean => {
+    if (!changedKeys) return true
+    for (const k of keys) if (changedKeys.has(k)) return true
+    return false
+  }
+  const wantsAnyLayoutKey = (): boolean => {
+    if (!changedKeys) return true
+    for (const k of changedKeys) if (k.startsWith('layout')) return true
+    return false
+  }
+
+  // Always set the active shape id; setters below operate on it.
   moduleUseShape(module, id)
-  setParentId(module, parentId)
-  const wasmType: ShapeType = (type === 'instance' || type === 'component' ? 'frame' : type) as ShapeType
-  setShapeType(module, wasmType)
-  setShapeClipContent(module, clipContent)
-  setShapeConstraints(module, constraintH, constraintV)
-  
-  // Unconditional calls (matching ClojureScript)
-  setShapeRotation(module, rotation)
-  setShapeTransform(module, transform)
-  setShapeBlendMode(module, blendMode)
-  setShapeOpacity(module, opacity)
-  setShapeHidden(module, hidden ?? false)
-  setShapeChildren(module, children)
-  setShapeCorners(module, corners)
-  setShapeBlurs(module, blurs)
-  setShapeTexture(module, texture)
-  setShapeGlass(module, glass)
+
+  if (wantsKey('parentId')) {
+    setParentId(module, shape.parentId)
+  }
+  if (wantsKey('type')) {
+    const wasmType: ShapeType = (type === 'instance' || type === 'component' ? 'frame' : type) as ShapeType
+    setShapeType(module, wasmType)
+  }
+  if (wantsKey('showContent')) {
+    setShapeClipContent(module, type === 'frame' ? !shape.showContent : false)
+  }
+  if (wantsKey('constraintsH', 'constraintsV')) {
+    setShapeConstraints(module, shape.constraintsH, shape.constraintsV)
+  }
+
+  if (wantsKey('rotation')) {
+    setShapeRotation(module, shape.rotation)
+  }
+  // `setShapeTransform` only reads `shape.transform`; the inverse is implied.
+  // The canonical mod-obj geometry assign (applyTransformToNode) sends both
+  // keys together, so checking just `transform` is enough.
+  if (wantsKey('transform')) {
+    setShapeTransform(module, shape.transform)
+  }
+  if (wantsKey('blendMode')) {
+    setShapeBlendMode(module, shape.blendMode)
+  }
+  if (wantsKey('opacity')) {
+    setShapeOpacity(module, shape.opacity)
+  }
+  if (wantsKey('hidden')) {
+    setShapeHidden(module, shape.hidden ?? false)
+  }
+  if (wantsKey('shapes')) {
+    const children = 'shapes' in shape ? (shape.shapes ?? []) : []
+    setShapeChildren(module, children)
+  }
+  if (wantsKey('r1', 'r2', 'r3', 'r4')) {
+    const corners: [number?, number?, number?, number?] = [shape.r1, shape.r2, shape.r3, shape.r4]
+    setShapeCorners(module, corners)
+  }
+  if (wantsKey('blur', 'backgroundBlur')) {
+    // A shape may carry both a layer blur and a background blur. The upstream
+    // Penpot schema only exposes `shape.blur` (single slot, any kind); we
+    // additionally read an optional `backgroundBlur` off the node so both can
+    // be sent in one pass.
+    const blurs: import('penpot-exporter/types').Blur[] = []
+    if (shape.blur) blurs.push(shape.blur)
+    const backgroundBlur = (shape as { backgroundBlur?: import('penpot-exporter/types').Blur })
+      .backgroundBlur
+    if (backgroundBlur) blurs.push(backgroundBlur)
+    setShapeBlurs(module, blurs)
+  }
+  if (wantsKey('texture')) {
+    const texture = (shape as Record<string, unknown>).texture as import('../properties/panel-utils').Texture | undefined
+    setShapeTexture(module, texture)
+  }
+  if (wantsKey('glass')) {
+    setShapeGlass(module, shape.glass)
+  }
 
   // Type-specific properties
-  if (type === 'group') {
-    setMasked(module, masked ?? false)
+  if (type === 'group' && wantsKey('maskedGroup')) {
+    setMasked(module, shape.maskedGroup ?? false)
   }
-  if (type === 'bool' && boolType !== undefined) {
-    setShapeBoolType(module, boolType)
+  if (type === 'bool' && wantsKey('boolType')) {
+    const boolType = (shape as { boolType?: BoolType }).boolType
+    if (boolType !== undefined) setShapeBoolType(module, boolType)
   }
-  if (content && (type === 'path' || type === 'bool')) {
-    setShapePathContent(module, content as PathContent)
+  if ((type === 'path' || type === 'bool') && wantsKey('content')) {
+    const content = (shape as { content?: unknown }).content
+    if (content) setShapePathContent(module, content as PathContent)
   }
-  if (svgAttrs) {
-    setShapeSvgAttrs(module, svgAttrs)
-  }
-
-  setShapeShadows(module, shadows)
-  setShapeNoise(module, (shape as Record<string, unknown>).noise as Noise | null | undefined)
-  if (type === 'text') {
-    setShapeGrowType(module, growType)
+  if (wantsKey('svgAttrs')) {
+    if (shape.svgAttrs) setShapeSvgAttrs(module, shape.svgAttrs)
   }
 
-  // Layout properties - always called (matching ClojureScript)
-  clearLayout(module)
-  if ('layoutFlexDir' in shape && shape.layoutFlexDir) {
-    setFlexLayout(module, shape)
+  if (wantsKey('shadow')) {
+    setShapeShadows(module, shape.shadow || [])
   }
-  if ('layoutGridDir' in shape && shape.layoutGridDir) {
-    setGridLayout(module, shape)
+  if (wantsKey('noise')) {
+    setShapeNoise(module, (shape as Record<string, unknown>).noise as Noise | null | undefined)
   }
-  setLayoutData(module, shape)
-  
-  // Selrect set after layout (matching ClojureScript order)
-  setShapeSelrect(module, selrect || { x1: 0, y1: 0, x2: 0, y2: 0, width: 0, height: 0, x: 0, y: 0 })
+  if (type === 'text' && wantsKey('growType')) {
+    setShapeGrowType(module, shape.growType)
+  }
+
+  // Layout block: only fires when the change touched a layout-* key. Skipping
+  // this on transform-only commits is the snap-back fix — re-installing flex
+  // config retriggers WASM's render-time layout pass on the just-rotated
+  // container.
+  if (wantsAnyLayoutKey()) {
+    clearLayout(module)
+    if ('layoutFlexDir' in shape && shape.layoutFlexDir) {
+      setFlexLayout(module, shape)
+    }
+    if ('layoutGridDir' in shape && shape.layoutGridDir) {
+      setGridLayout(module, shape)
+    }
+    setLayoutData(module, shape)
+  }
+
+  // Canonical geometry partials (applyTransformToNode / rectLayoutPartial) emit
+  // selrect + points + x/y/width/height as a unit — checking the canonical pair
+  // is sufficient. A mod-obj that sends, e.g., raw `x` without `selrect` would
+  // already be inconsistent at the document level; we don't paper over that.
+  if (wantsKey('selrect', 'points')) {
+    setShapeSelrect(module, shape.selrect || { x1: 0, y1: 0, x2: 0, y2: 0, width: 0, height: 0, x: 0, y: 0 })
+  }
 
   // Collect pending operations
   const pendingThumbnails: PendingImageCallback[] = []
   const pendingFull: PendingImageCallback[] = []
 
-  // Text content and images - always call for text type
-  if (type === 'text') {
-    const textContent = content as TextContent
+  // Text content and images — gated on `content` since that's the assign key
+  // text edits carry; full text shape adds (no changedKeys) also fall through.
+  if (type === 'text' && wantsKey('content')) {
+    const textContent = ensureTextContent((shape as { content?: TextContent }).content)
     pendingThumbnails.push(...setShapeTextContent(module, id, textContent, resolveImageUrl))
     pendingThumbnails.push(...setShapeTextImages(module, id, textContent, true, resolveImageUrl))
     pendingFull.push(...setShapeTextImages(module, id, textContent, false, resolveImageUrl))
   }
 
   // Fills and strokes
-  pendingThumbnails.push(...setShapeFills(module, id, fills, true, resolveImageUrl))
-  pendingThumbnails.push(...setShapeStrokes(module, id, strokes, true))
-  pendingFull.push(...setShapeFills(module, id, fills, false, resolveImageUrl))
-  pendingFull.push(...setShapeStrokes(module, id, strokes, false))
+  if (wantsKey('fills')) {
+    const fills = shape.fills || []
+    pendingThumbnails.push(...setShapeFills(module, id, fills, true, resolveImageUrl))
+    pendingFull.push(...setShapeFills(module, id, fills, false, resolveImageUrl))
+  }
+  if (wantsKey('strokes')) {
+    const strokes = type === 'group' ? [] : (shape.strokes || [])
+    pendingThumbnails.push(...setShapeStrokes(module, id, strokes, true))
+    pendingFull.push(...setShapeStrokes(module, id, strokes, false))
+  }
 
   return {
     thumbnails: pendingThumbnails,
@@ -244,9 +300,10 @@ export async function processPending(
 export async function processObject(
   module: WasmModule,
   shape: PenpotNode,
+  changedKeys?: ReadonlySet<string>,
   resolveImageUrl?: (imageId: string, thumbnail: boolean) => string
 ): Promise<void> {
-  const { thumbnails, full } = setObject(module, shape, resolveImageUrl)
+  const { thumbnails, full } = setObject(module, shape, changedKeys, resolveImageUrl)
   await processPending(module, [shape], thumbnails, full)
 }
 
@@ -260,14 +317,15 @@ export async function setObjects(
   resolveImageUrl?: (imageId: string, thumbnail: boolean) => string
 ): Promise<void> {
   checkContext()
-  
+
   const shapes = Object.values(objects)
   const thumbnails: PendingImageCallback[] = []
   const full: PendingImageCallback[] = []
 
-  // Set all objects and collect pending operations
+  // Set all objects and collect pending operations.
+  // No `changedKeys` here — initial load is a full push of every property.
   for (const shape of shapes) {
-    const result = setObject(module, shape, resolveImageUrl)
+    const result = setObject(module, shape, undefined, resolveImageUrl)
     thumbnails.push(...result.thumbnails)
     full.push(...result.full)
   }
@@ -287,4 +345,3 @@ export async function setObjects(
     }
   )
 }
-

@@ -23,8 +23,17 @@ import { getContextInitialized } from './api/context'
 import { processObject } from './api/orchestration'
 import { requestRender, renderSync } from './api/rendering'
 import { moduleUseShape, setShapeChildren } from './api/shape'
-import { setModifiers, cleanModifiers as cleanModifiersApi, propagateModifiers } from './api/modifiers'
+import {
+  cleanModifiers as cleanModifiersApi,
+  setWasmModifiers as setWasmModifiersApi,
+  type SetWasmModifiersOptions,
+} from './api/modifiers'
 import { setShapeFillModifier, cleanFillModifiers as cleanFillModifiersApi } from './api/fill-modifiers'
+import {
+  setTemporaryModifiers,
+  setTemporaryWasmModifiers,
+  type GeometryModifier,
+} from './store/modifier-overlay'
 
 function defaultOptions(options?: RendererOptions): Required<RendererOptions> {
   return {
@@ -205,12 +214,18 @@ export class Renderer {
 
   /**
    * Updates a single shape in place (attribute change). No teardown.
+   *
+   * `changedKeys` (optional): when provided, restricts the per-property push
+   * to only the primitives whose backing field is in the set. The
+   * renderer-sync subscriber passes the assign keys from each `mod-obj` so
+   * unrelated blocks (notably the layout block) aren't re-installed on a
+   * transform-only edit.
    */
-  async updateShape(shape: PenpotNode): Promise<void> {
+  async updateShape(shape: PenpotNode, changedKeys?: ReadonlySet<string>): Promise<void> {
     if (!getContextInitialized() || !this.module) {
       throw new Error('Renderer context not initialized. Call initPage() first.')
     }
-    await processObject(this.module, shape)
+    await processObject(this.module, shape, changedKeys)
     requestRender(this.module, 'updateShape')
   }
 
@@ -238,44 +253,45 @@ export class Renderer {
     requestRender(this.module, 'updateParentChildren')
   }
 
-  /**
-   * Set move (translate) modifiers for preview during drag. Each entry is [shapeId, translateMatrix].
-   * Use cleanModifiers() when drag ends.
-   */
-  setMoveModifiers(entries: Array<[string, Matrix]>): void {
-    if (!getContextInitialized() || !this.module) return
-    setModifiers(this.module, entries)
-  }
 
   /**
-   * Preview move/rotate/resize like Penpot frontend `set-wasm-modifiers`: propagate, `_set_modifiers`, then
-   * {@link requestRender} (async RAF). Overlay tracks geometry via {@link getSelectionRect} and
-   * `querySelectionRect` in `signals/selection.ts` in the same frame — no `renderSync` per pointer sample.
+   * Unified gesture-time modifier set: clean + setStructureModifiers + propagate('child') +
+   * setModifiers + mirror inputs/result into the JS-side `modifierOverlay` store.
+   *
+   * Mirrors CLJS `set-wasm-modifiers`. Replaces the move/rotate/resize handlers'
+   * `cleanModifiers → setStructureModifiers → setMoveModifiersNoRender` boilerplate
+   * with one call. Does NOT request a render — caller decides timing (throttled
+   * RAF for gestures, immediate for one-shot updates).
+   *
+   * Returns the propagated transforms so the caller can use them for overlay rect
+   * computation without an additional `querySelectionRect` round-trip.
    */
-  setMoveModifiersAndRender(entries: Array<[string, Matrix]>): void {
-    if (!getContextInitialized() || !this.module) return
-    if (entries.length === 0) return
-    // 'child' kind: propagate transforms to descendants via constraints.
-    // Gesture-driven move/resize/rotate of a parent shape needs its
-    // children to follow.
-    const propagated = propagateModifiers(this.module, entries, 0, 'child')
-    if (propagated.length === 0) return
-    const toSet = propagated.map((p) => [p.id, p.transform] as [string, Matrix])
-    setModifiers(this.module, toSet)
-    requestRender(this.module, 'setMoveModifiersAndRender')
-  }
-
-  /**
-   * Propagate + set modifiers WITHOUT scheduling a render.
-   * Use when the caller manages render timing separately (e.g. throttled drag renders).
-   */
-  setMoveModifiersNoRender(entries: Array<[string, Matrix]>): void {
-    if (!getContextInitialized() || !this.module) return
-    if (entries.length === 0) return
-    const propagated = propagateModifiers(this.module, entries, 0, 'child')
-    if (propagated.length === 0) return
-    const toSet = propagated.map((p) => [p.id, p.transform] as [string, Matrix])
-    setModifiers(this.module, toSet)
+  setWasmModifiers(
+    entries: ReadonlyArray<readonly [string, Matrix]>,
+    options?: SetWasmModifiersOptions,
+  ): { propagated: Array<{ id: string; transform: Matrix }> } {
+    if (!getContextInitialized() || !this.module) return { propagated: [] }
+    if (entries.length === 0) {
+      // Empty input still clears any previous overlay.
+      cleanModifiersApi(this.module)
+      setTemporaryModifiers([])
+      setTemporaryWasmModifiers([])
+      return { propagated: [] }
+    }
+    const result = setWasmModifiersApi(this.module, entries, options)
+    // Mirror to JS-side overlay store. Inputs become `workspaceModifiers`
+    // entries (intent); the propagated map is `workspaceWasmModifiers`
+    // (consequence). Both are cleared by `clearModifierOverlay()` at commit
+    // completion (handlers/utils.ts:applyModifiersAndCommit).
+    const intentEntries: Array<[string, GeometryModifier]> = entries.map(([id, matrix]) => [
+      id,
+      options?.structureModifiers && options.structureModifiers.length > 0
+        ? { matrix, structure: options.structureModifiers as GeometryModifier['structure'] }
+        : { matrix },
+    ])
+    setTemporaryModifiers(intentEntries)
+    setTemporaryWasmModifiers(result.propagated.map((p) => [p.id, p.transform] as const))
+    return result
   }
 
   /**

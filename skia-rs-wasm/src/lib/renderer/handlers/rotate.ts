@@ -5,8 +5,9 @@
  * commit node.rotation on pointer up.
  *
  * Overlay + property panel stay in sync with the pointer (same pattern as move.ts): synchronous
- * `wasmSelRect` from a baseline rect each event; WASM uses `setMoveModifiersNoRender` +
- * throttled `requestRenderFrame` so `_render` does not block overlay updates.
+ * `wasmSelRect` from `querySelectionRect` after each `renderer.setWasmModifiers` so the post-
+ * propagate (incl. flex/grid reflow) bounds are reflected; throttled `requestRenderFrame`
+ * so `_render` does not block overlay updates.
  */
 
 import { Observable, EMPTY, merge } from 'rxjs'
@@ -21,11 +22,13 @@ import { screenToWorld } from '../viewport'
 import { applyModifiersAndCommit } from './utils'
 import { DRAG_RENDER_INTERVAL_MS } from './drag-render-interval'
 import {
+  applyMatrixToSelectionRect,
   cloneSelectionRect,
   finiteSelectionRect,
   rotateSelectionRectAroundPivot,
 } from './selection-rect-helpers'
 import { rotationMatrixAroundPoint } from '../geom/matrix'
+import { getWorkspaceWasmTransform } from '../store/modifier-overlay'
 import type { Point } from '../types'
 import type { Matrix } from 'penpot-exporter/types'
 import type { IndexedNode } from '../../worker/types'
@@ -103,15 +106,32 @@ export function startRotateSelected(initialPosition: Point): Observable<void> {
 
       rotatePreviewDeltaDeg.value = deltaDeg
 
-      if (baselineRect) {
-        const preview = rotateSelectionRectAroundPivot(baselineRect, cx, cy, deltaDeg)
-        wasmSelRect.value = preview
-      }
-
-      renderer.cleanModifiers()
       const matrix = rotationMatrixAroundPoint(cx, cy, deltaDeg)
       const entries: Array<[string, Matrix]> = ids.map((id) => [id, matrix])
-      renderer.setMoveModifiersNoRender(entries)
+      renderer.setWasmModifiers(entries)
+
+      // Derive the preview rect JS-side from the propagated matrix in
+      // `modifierOverlay.workspaceWasmModifiers`. setWasmModifiers populated
+      // it with the rotation composed with flex/grid reflow on the parent —
+      // applying it to the baseline rect gives the post-flex preview without
+      // a `querySelectionRect` round-trip. For multi-selection we still need
+      // the WASM bounds query (each shape's bounds are unioned there);
+      // single-selection (the common case) reads the map directly.
+      let nextRect = null
+      if (baselineRect && ids.length === 1) {
+        const propagated = getWorkspaceWasmTransform(ids[0])
+        if (propagated) {
+          nextRect = applyMatrixToSelectionRect(baselineRect, propagated)
+        }
+      }
+      if (!nextRect) {
+        const queried = querySelectionRect(renderer, ids)
+        if (finiteSelectionRect(queried)) nextRect = queried
+        else if (baselineRect) {
+          nextRect = rotateSelectionRectAroundPivot(baselineRect, cx, cy, deltaDeg)
+        }
+      }
+      if (nextRect) wasmSelRect.value = nextRect
 
       const now = performance.now()
       if (now - lastRenderRequestTs >= DRAG_RENDER_INTERVAL_MS) {

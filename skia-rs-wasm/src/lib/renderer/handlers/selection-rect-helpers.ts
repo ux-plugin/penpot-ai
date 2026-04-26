@@ -3,6 +3,7 @@
  */
 
 import type { SelectionRectResult } from '../types'
+import type { Matrix } from 'penpot-exporter/types'
 
 export function finiteSelectionRect(r: SelectionRectResult | null): r is SelectionRectResult {
   return (
@@ -37,6 +38,38 @@ export function translateSelectionRectWorld(
     height: sel.height,
     center: { x: sel.center.x + dx, y: sel.center.y + dy },
     transform: { ...sel.transform },
+  }
+}
+
+/**
+ * Apply a propagated matrix (read from `modifierOverlay.workspaceWasmModifiers`)
+ * to a baseline selection rect. Used during gestures to derive the post-flex /
+ * post-constraint preview rect without a `querySelectionRect` round-trip.
+ *
+ * `width` and `height` are propagated as-is — fine for rotation and translation
+ * (which preserve edge length) but **not** for resize, where the matrix scales
+ * the shape. Resize handlers should keep using `querySelectionRect`.
+ */
+export function applyMatrixToSelectionRect(
+  sel: SelectionRectResult,
+  m: Matrix,
+): SelectionRectResult {
+  const { center, transform } = sel
+  const newCenterX = m.a * center.x + m.c * center.y + m.e
+  const newCenterY = m.b * center.x + m.d * center.y + m.f
+  // Compose 2×2 parts: result = M * T (columns).
+  return {
+    width: sel.width,
+    height: sel.height,
+    center: { x: newCenterX, y: newCenterY },
+    transform: {
+      a: m.a * transform.a + m.c * transform.b,
+      b: m.b * transform.a + m.d * transform.b,
+      c: m.a * transform.c + m.c * transform.d,
+      d: m.b * transform.c + m.d * transform.d,
+      e: 0,
+      f: 0,
+    },
   }
 }
 

@@ -9,8 +9,9 @@
  * - This ensures the overlay is always responsive even when _render blocks (~55ms)
  *
  * Reparent during drag (mirrors CLJS set-wasm-modifiers at modifiers.cljs:634):
- * - Per-frame, when the projected drop target changes, emit setStructureModifiers
- *   so propagate_modifiers reflows flex/grid containers live.
+ * - Per-frame, when the projected drop target changes, the structure modifiers
+ *   (layout-detach entries) are passed to `renderer.setWasmModifiers` via its
+ *   options bag, so propagate_modifiers reflows flex/grid containers live.
  * - On pointer-up, fold mov-objects into the same commitChanges bundle as the
  *   move's mod-obj changes — single undo frame per gesture.
  */
@@ -32,7 +33,6 @@ import {
   translateSelectionRectWorld,
 } from './selection-rect-helpers'
 import { identityMatrix, translateMatrix } from '../geom/matrix'
-import { setStructureModifiers } from '../api/modifiers'
 import {
   buildCommitStructureEntries,
   buildLayoutDetachEntries,
@@ -76,7 +76,6 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
     : null
 
   const lastEventDeltaRef = { current: { x: 0, y: 0 } }
-  const moduleRef = renderer.getModule()
   // Pre-compute "remove from real parent" structure entries for any selected
   // shape whose parent has a layout. These are stable across the gesture so we
   // build them once and re-emit each frame after cleanModifiers wipes them.
@@ -117,18 +116,17 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         wasmSelRect.value = preview
       }
 
-      // Clean → set-structure (detach from layout) → propagate+set, matching
-      // CLJS's set-wasm-modifiers order at modifiers.cljs:627–638. cleanModifiers
-      // wipes pool.structure too, so we re-emit the detach entries every frame.
-      renderer.cleanModifiers()
-      if (layoutDetachEntries.length > 0) {
-        setStructureModifiers(moduleRef, layoutDetachEntries)
-      }
+      // Unified gesture push: clean → set-structure → propagate('child') → set
+      // → mirror to modifierOverlay store. Mirrors CLJS `set-wasm-modifiers`
+      // (modifiers.cljs:612-642). cleanModifiers wipes pool.structure too, so
+      // detach entries are re-emitted every frame via the options bag.
       const moveEntries: Array<[string, Matrix]> = Array.from(selectedIds, (id) => [
         id,
         translateMatrix(worldDelta.x, worldDelta.y),
       ])
-      renderer.setMoveModifiersNoRender(moveEntries)
+      renderer.setWasmModifiers(moveEntries, {
+        structureModifiers: layoutDetachEntries.length > 0 ? layoutDetachEntries : undefined,
+      })
 
       // 4. Throttle canvas render (~60 Hz); overlay still updates every pointer event.
       const now = performance.now()

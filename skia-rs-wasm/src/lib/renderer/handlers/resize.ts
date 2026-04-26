@@ -170,18 +170,17 @@ export function startResizeSelected(
           rafScheduledRef.current = false
           if (commitDoneRef.current) return
           modifiersAppliedRef.current = true
-          // Clean before propagate. setMoveModifiersAndRender runs
-          // propagateModifiers first, and propagate reads the pool through
-          // shapes.get which applies pool.modifiers. Without cleanModifiers,
-          // the previous frame's modifier leaks in and gets composed with
-          // this frame's matrix, producing accelerating/erratic transforms
-          // for children (especially constraint-propagated ones).
-          renderer.cleanModifiers()
+          // Unified gesture push: clean → propagate('child') → set → mirror to
+          // modifierOverlay store. cleanModifiers (inside setWasmModifiers)
+          // wipes the previous frame's leak — without it, the prior modifier
+          // composes with this frame's matrix and produces accelerating /
+          // erratic transforms for constraint-propagated children.
           const entries: Array<[string, Matrix]> = Array.from(selectedIds).map((id) => [
             id,
             latestMatrixRef.current,
           ])
-          renderer.setMoveModifiersAndRender(entries)
+          renderer.setWasmModifiers(entries)
+          renderer.requestRenderFrame()
           wasmSelRect.value = querySelectionRect(renderer, selectedIds)
         })
       }

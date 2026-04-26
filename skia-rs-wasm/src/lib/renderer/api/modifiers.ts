@@ -137,6 +137,54 @@ export function cleanModifiers(module: WasmModule): void {
   module._clean_modifiers()
 }
 
+export interface SetWasmModifiersOptions {
+  /** Pre-propagate structure modifiers (reparent / flex track changes). */
+  structureModifiers?: ReadonlyArray<{
+    type: string
+    parent: string
+    id: string
+    index?: number
+    value: number
+  }>
+  /** Pixel-precision flag forwarded to `propagateModifiers`. */
+  pixelPrecision?: number
+}
+
+/**
+ * Gesture-time atomic block: clean → setStructureModifiers → propagate('child')
+ * → setModifiers(propagated). Returns the propagated transforms so the caller
+ * can mirror them into the JS-side modifier-overlay store.
+ *
+ * Mirrors CLJS `set-wasm-modifiers` (modifiers.cljs:612-642). Always uses
+ * `'child'` propagation kind — the `'parent'` path stays available on
+ * `propagateModifiers` directly but isn't exposed here, the same way CLJS's
+ * gesture handlers don't pick a kind.
+ */
+export function setWasmModifiers(
+  module: WasmModule,
+  entries: ReadonlyArray<readonly [string, Matrix]>,
+  options?: SetWasmModifiersOptions,
+): { propagated: Array<{ id: string; transform: Matrix }> } {
+  checkContext()
+  cleanModifiers(module)
+  if (options?.structureModifiers && options.structureModifiers.length > 0) {
+    setStructureModifiers(module, options.structureModifiers as Array<{
+      type: string
+      parent: string
+      id: string
+      index?: number
+      value: number
+    }>)
+  }
+  const entriesMutable: Array<[string, Matrix]> = entries.map(([id, m]) => [id, m])
+  const propagated = propagateModifiers(module, entriesMutable, options?.pixelPrecision ?? 0, 'child')
+  if (propagated.length > 0) {
+    const toSet: Array<[string, Matrix]> = propagated.map((p) => [p.id, p.transform])
+    setModifiers(module, toSet, true)
+  }
+  return { propagated }
+}
+
 /**
  * Set structure modifiers
  */

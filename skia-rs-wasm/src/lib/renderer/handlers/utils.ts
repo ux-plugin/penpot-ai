@@ -20,6 +20,7 @@ import {
   type StructureModifierEntry,
 } from './reparent-detection'
 import type { IndexedShape } from '../../worker/types'
+import { clearModifierOverlay } from '../store/modifier-overlay'
 
 export interface ApplyModifiersAndCommitOptions {
   pixelPrecision?: number
@@ -123,7 +124,9 @@ export async function applyModifiersAndCommit(
     })
   }
 
-  // 8. Clear any propagated overlay still in the pool; the committed setters
-  //    (processObject in syncRendererAfterUpdate) are now the source of truth.
+  // 8. Clear any propagated overlay still in the WASM pool and the JS-side
+  //    modifierOverlay store; the committed setters (processObject in
+  //    renderer-sync) are now the source of truth.
   cleanModifiers(module)
+  clearModifierOverlay()
 }
