@@ -4,5 +4,5 @@ export interface PersistableAuthState {
   accessToken: string | null;
   refreshToken: string | null;
   refreshTokenExpiresAt: number | null;
-  authProvider: 'FIGMA' | 'GITHUB' | null;
+  authProvider: 'FIGMA' | 'GITHUB' | 'AUTH0' | null;
 }

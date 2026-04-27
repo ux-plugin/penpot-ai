@@ -55,7 +55,6 @@ export async function apiFetch(
       isRefreshing = true;
 
       const refreshToken = authStore.refreshToken;
-      const userId = authStore.userId;
       if (!refreshToken) {
         authStore.logout();
         isRefreshing = false;
@@ -64,12 +63,12 @@ export async function apiFetch(
       }
 
       try {
-        const refreshResponse = await fetch(`${baseUrl}/auth/plugin-ui/access-token/refresh`, {
+        const refreshResponse = await fetch(`${baseUrl}/auth/auth0/refresh`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ refreshToken: refreshToken, userId: userId }),
+          body: JSON.stringify({ refreshToken }),
         });
 
         if (!refreshResponse.ok) {
@@ -78,7 +77,10 @@ export async function apiFetch(
 
         const data = await refreshResponse.json();
         authStore.setAccessToken(data.accessToken);
-        authStore.setRefreshToken(data.refreshToken, null);
+        authStore.setRefreshToken(
+          data.refreshToken,
+          data.refreshTokenExpiresAt ? new Date(data.refreshTokenExpiresAt).getTime() : null,
+        );
 
         isRefreshing = false;
         processQueue(null);

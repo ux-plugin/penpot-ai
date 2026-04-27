@@ -10,7 +10,7 @@ interface AuthState {
   refreshToken: string | null;
   refreshTokenExpiresAt: number | null;
   isAuthenticated: boolean;
-  authProvider: 'FIGMA' | 'GITHUB' | null;
+  authProvider: 'FIGMA' | 'GITHUB' | 'AUTH0' | null;
 
   // Loading states
   isLoading: boolean;
@@ -20,7 +20,7 @@ interface AuthState {
   setAccessToken: (token: string | null) => Promise<void>;
   setRefreshToken: (token: string | null, tokenExpiresAt: number | null) => Promise<void>;
   setAuthenticated: (isAuthenticated: boolean) => Promise<void>;
-  setAuthProvider: (provider: 'FIGMA' | 'GITHUB' | null) => Promise<void>;
+  setAuthProvider: (provider: 'FIGMA' | 'GITHUB' | 'AUTH0' | null) => Promise<void>;
 
   // Logout action
   logout: () => Promise<void>;

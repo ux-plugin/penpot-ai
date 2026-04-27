@@ -75,7 +75,6 @@ async function refreshAccessToken(): Promise<string> {
     try {
       const authStore = useAuthenticationStore.getState();
       const refreshToken = authStore.refreshToken;
-      const userId = authStore.userId;
 
       if (!refreshToken) {
         throw new Error('No refresh token available');
@@ -83,12 +82,12 @@ async function refreshAccessToken(): Promise<string> {
 
       const baseUrl = resolveBackendUrl();
       if (!baseUrl) throw new Error('Backend not configured');
-      const response = await fetch(`${baseUrl}/auth/plugin-ui/access-token/refresh`, {
+      const response = await fetch(`${baseUrl}/auth/auth0/refresh`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ refreshToken, userId }),
+        body: JSON.stringify({ refreshToken }),
       });
 
       if (!response.ok) {
@@ -97,7 +96,10 @@ async function refreshAccessToken(): Promise<string> {
 
       const data = await response.json();
       await authStore.setAccessToken(data.accessToken);
-      await authStore.setRefreshToken(data.refreshToken, null);
+      await authStore.setRefreshToken(
+        data.refreshToken,
+        data.refreshTokenExpiresAt ? new Date(data.refreshTokenExpiresAt).getTime() : null,
+      );
 
       console.log('[RSocket] Token refreshed successfully');
       return data.accessToken;
