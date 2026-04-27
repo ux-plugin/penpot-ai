@@ -138,6 +138,24 @@ auth0:
   issuer: ${AUTH0_ISSUER_URI:#{null}}
   audience: ${AUTH0_AUDIENCE:#{null}}
   jwk-set-uri: ${AUTH0_JWK_SET_URI:#{null}}
+  # Auth0 as OAuth IdP for the plugin login flow. Backend is a Regular Web Application
+  # (confidential client) registered in Auth0 with the audience above. Leave AUTH0_CLIENT_ID
+  # unset to disable the /auth/auth0/* endpoints entirely.
+  oauth:
+    client-id: ${AUTH0_CLIENT_ID:#{null}}
+    client-secret: ${AUTH0_CLIENT_SECRET:#{null}}
+    login-redirect-uri: ${AUTH0_LOGIN_REDIRECT_URI:#{null}}
+    refresh-token-lifetime-sec: ${AUTH0_REFRESH_TOKEN_LIFETIME_SEC:2592000}
+    login:
+      random-key:
+        max-retries: 3
+      timeout-sec: 60
+    read-token:
+      redis-key-prefix: "auth0-read-token:"
+    write-token:
+      redis-key-prefix: "auth0-write-token:"
+    tokens:
+      redis-key-prefix: "auth0-tokens:"
 
 # WebSocket configuration
 websocket:
