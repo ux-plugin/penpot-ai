@@ -1,4 +1,4 @@
-import { LayoutDashboard, LayoutGrid } from 'lucide-react'
+import { LayoutDashboard, LayoutGrid, Minus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { LayoutMode } from './layout-mode'
 
@@ -38,6 +38,19 @@ export function LayoutModeToggle({ mode, onChange, disabled }: LayoutModeToggleP
           </Button>
         )
       })}
+      {mode != null && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Remove layout"
+          title="Remove layout"
+          disabled={disabled}
+          onClick={() => onChange(null)}
+        >
+          <Minus className="size-3.5" aria-hidden />
+        </Button>
+      )}
     </div>
   )
 }

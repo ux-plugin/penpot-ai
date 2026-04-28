@@ -59,7 +59,9 @@ export function NodeLayoutSection({ nodeId, initialNode, readOnly }: NodeLayoutS
         {!collapsed && mode === 'flex' && (
           <LayoutFlexBody nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
         )}
-        {!collapsed && mode === 'grid' && <LayoutGridBody />}
+        {!collapsed && mode === 'grid' && (
+          <LayoutGridBody nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+        )}
       </div>
     </>
   )

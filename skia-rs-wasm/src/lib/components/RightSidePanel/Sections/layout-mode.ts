@@ -6,8 +6,11 @@ export type LayoutMode = 'flex' | 'grid'
 type LayoutFieldsView = {
   layoutFlexDir?: unknown
   layoutGridDir?: unknown
+  layoutGridColumns?: unknown
+  layoutGridRows?: unknown
   layoutWrapType?: unknown
   layoutJustifyContent?: unknown
+  layoutJustifyItems?: unknown
   layoutAlignItems?: unknown
   layoutGap?: unknown
   layoutPadding?: unknown
@@ -48,5 +51,17 @@ export function modeSwitchPartial(
   // grid
   patch.layoutFlexDir = null
   patch.layoutGridDir = (b.layoutGridDir as string | undefined) ?? 'row'
+  if (b.layoutGridColumns == null)
+    patch.layoutGridColumns = [
+      { type: 'flex', value: 1 },
+      { type: 'flex', value: 1 },
+      { type: 'flex', value: 1 },
+    ]
+  if (b.layoutGridRows == null)
+    patch.layoutGridRows = [{ type: 'auto' }, { type: 'auto' }]
+  if (b.layoutAlignItems == null) patch.layoutAlignItems = 'stretch'
+  if (b.layoutJustifyItems == null) patch.layoutJustifyItems = 'start'
+  if (b.layoutGap == null) patch.layoutGap = { rowGap: 12, columnGap: 12 }
+  if (b.layoutPadding == null) patch.layoutPadding = { p1: 16, p2: 16, p3: 16, p4: 16 }
   return patch as Partial<PenpotNode>
 }
