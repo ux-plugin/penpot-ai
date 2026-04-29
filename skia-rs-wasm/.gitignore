@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+public/wasm/render-wasm.js
+public/wasm/render-wasm.wasm
