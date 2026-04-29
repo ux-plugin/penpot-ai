@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="WEB_MODULE" version="4">
+  <component name="NewModuleRootManager" inherit-compiler-output="true">
+    <exclude-output />
+    <content url="file://$MODULE_DIR$/../figma_plugin_companion_app">
+      <sourceFolder url="file://$MODULE_DIR$/../figma_plugin_companion_app/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/../figma_plugin_companion_app/src-tauri/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/../figma_plugin_companion_app/src-tauri/target" />
+      <excludeFolder url="file://$MODULE_DIR$/../figma_plugin_companion_app/node_modules" />
+      <excludeFolder url="file://$MODULE_DIR$/../figma_plugin_companion_app/dist" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

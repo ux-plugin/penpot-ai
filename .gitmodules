@@ -16,3 +16,6 @@
 [submodule "figma_plugin_api"]
 	path = figma_plugin_api
 	url = https://github.com/ux-plugin/figma_plugin_api.git
+[submodule "figma_plugin_companion_app"]
+	path = figma_plugin_companion_app
+	url = https://github.com/ux-plugin/figma_plugin_companion_app
