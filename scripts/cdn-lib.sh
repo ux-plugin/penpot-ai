@@ -57,7 +57,7 @@ build_worker() {
 
 build_plugin() {
   echo "[cdn] Building plugin UI..."
-  local base_url="${VITE_PLUGIN_UI_URL:-http://127.0.0.1:8080}"
+  local base_url="${VITE_PLUGIN_UI_URL:-http://127.0.0.1:8082}"
   export VITE_PLUGIN_UI_URL="$base_url"
   export VITE_CDN_URL="${VITE_CDN_URL:-$base_url}"
   (cd "$REPO_ROOT" && pnpm --filter figma_plugin_fe run build)
@@ -66,7 +66,7 @@ build_plugin() {
 
 build_plugin_debug() {
   echo "[cdn] Building plugin UI (debug)..."
-  local base_url="${VITE_PLUGIN_UI_URL:-http://127.0.0.1:8080}"
+  local base_url="${VITE_PLUGIN_UI_URL:-http://127.0.0.1:8082}"
   export VITE_PLUGIN_UI_URL="$base_url"
   export VITE_CDN_URL="${VITE_CDN_URL:-$base_url}"
   (cd "$REPO_ROOT" && pnpm --filter figma_plugin_fe run build:debug)
