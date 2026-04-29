@@ -2,6 +2,20 @@ use crate::backend_client::{LoginAuthData, UpdateUserRequest, UserConfig};
 use crate::dependencies::AppDependencies;
 use tauri::AppHandle;
 
+// Login with Auth0
+#[tauri::command]
+pub async fn login_with_auth0(
+    app: AppHandle,
+    deps: tauri::State<'_, AppDependencies>,
+) -> Result<LoginAuthData, String> {
+    tracing::info!("Starting Auth0 login flow");
+
+    let result = deps.backend_client().login_with_auth0(app).await?;
+
+    tracing::info!("Auth0 login completed successfully");
+    Ok(result)
+}
+
 // Login with Figma
 #[tauri::command]
 pub async fn login_with_figma(

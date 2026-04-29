@@ -1,7 +1,5 @@
 import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { FigmaIcon } from "@/assets/FigmaIcon.tsx";
-import { GitHubIcon } from "@/assets/GithubIcon.tsx";
 import { Loader2 } from "lucide-react";
 import { useAuthenticationStore } from "@/stores/useAuthenticationStore";
 import { showErrorToast } from "@/utils/showErrorToast";
@@ -16,16 +14,12 @@ interface LoginAuthData {
 export const Login = () => {
     const { setAccessToken, setRefreshToken, setIsAuthenticated, setRefreshTokenExpiresAt } = useAuthenticationStore();
 
-    const [figmaLoading, setFigmaLoading] = useState(false);
-    const [githubLoading, setGithubLoading] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
 
-    // Individual loading states for each provider
-    const isAnyLoading = githubLoading || figmaLoading;
-
-    const handleFigmaLogin = useCallback(async () => {
-        setFigmaLoading(true);
+    const handleLogin = useCallback(async () => {
+        setIsLoading(true);
         try {
-            const result = await invoke<LoginAuthData>('login_with_figma');
+            const result = await invoke<LoginAuthData>('login_with_auth0');
 
             if (!result.access_token || !result.refresh_token) {
                 showErrorToast("Malformed response from the server.");
@@ -38,82 +32,32 @@ export const Login = () => {
             setRefreshTokenExpiresAt(result.refresh_token_expires_at);
 
         } catch (err: unknown) {
-            // Fallback for unexpected exceptions
             showErrorToast(err, "An unexpected error occurred.");
         } finally {
-            setFigmaLoading(false);
+            setIsLoading(false);
         }
-    }, [setAccessToken, setRefreshToken, setIsAuthenticated, setRefreshTokenExpiresAt]);
-
-    const handleGitHubLogin = useCallback(async () => {
-        setGithubLoading(true);
-        try {
-            const result = await invoke<LoginAuthData>('login_with_github');
-
-            if (!result.access_token || !result.refresh_token) {
-                showErrorToast("Malformed response from the server.");
-                return;
-            }
-
-            setAccessToken(result.access_token);
-            setRefreshToken(result.refresh_token);
-            setRefreshTokenExpiresAt(result.refresh_token_expires_at);
-            setIsAuthenticated(true);
-
-        } catch (err: unknown) {
-            // Fallback for unexpected exceptions
-            showErrorToast(err, "An unexpected error occurred.");
-        } finally {
-            setGithubLoading(false);
-        }
-    }, [setAccessToken, setRefreshToken, setIsAuthenticated, setRefreshTokenExpiresAt]);
+    }, [setAccessToken, setRefreshToken, setIsAuthenticated]);
 
     return (
         <div className="flex min-h-screen flex-col items-center justify-center gap-4">
             <div className="w-64">
-                <div className="flex flex-col gap-3">
-                    <Button
-                        onClick={handleFigmaLogin}
-                        variant="outline"
-                        size="lg"
-                        className="w-full"
-                        disabled={isAnyLoading}
-                    >
-                        {figmaLoading ? (
-                            <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                Please wait
-                            </>
-                        ) : (
-                            <>
-                                <FigmaIcon />
-                                Login with Figma
-                            </>
-                        )}
-                    </Button>
-
-                    <Button
-                        onClick={handleGitHubLogin}
-                        variant="outline"
-                        size="lg"
-                        className="w-full"
-                        disabled={isAnyLoading}
-                    >
-                        {githubLoading ? (
-                            <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                Please wait
-                            </>
-                        ) : (
-                            <>
-                                <GitHubIcon />
-                                Login with GitHub
-                            </>
-                        )}
-                    </Button>
-                </div>
+                <Button
+                    onClick={handleLogin}
+                    variant="outline"
+                    size="lg"
+                    className="w-full"
+                    disabled={isLoading}
+                >
+                    {isLoading ? (
+                        <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Please wait
+                        </>
+                    ) : (
+                        "Sign in"
+                    )}
+                </Button>
             </div>
         </div>
     );
 }
-

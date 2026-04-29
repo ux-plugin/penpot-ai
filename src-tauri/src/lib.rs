@@ -7,7 +7,7 @@ mod local_server;
 mod menu;
 pub mod window_utils;
 
-use crate::commands::{logout, stop_server, login_with_figma, login_with_github, fetch_user_config, update_user_config};
+use crate::commands::{logout, stop_server, login_with_auth0, login_with_figma, login_with_github, fetch_user_config, update_user_config};
 use crate::dependencies::AppDependencies;
 use commands::{delete_credentials, get_credentials, is_authenticated, set_credentials, start_server};
 use menu::setup_menu_and_tray;
@@ -51,6 +51,7 @@ pub fn run() {
             logout,
             start_server,
             stop_server,
+            login_with_auth0,
             login_with_figma,
             login_with_github,
             fetch_user_config,

@@ -62,6 +62,16 @@ pub struct LoginAuthData {
     pub refresh_token_expires_at: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Auth0AccessTokenResponse {
+    #[serde(rename = "accessToken")]
+    pub access_token: String,
+    #[serde(rename = "refreshToken")]
+    pub refresh_token: String,
+    #[serde(rename = "refreshTokenExpiresAt")]
+    pub refresh_token_expires_at: String,
+}
+
 // User config structures
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserConfig {
