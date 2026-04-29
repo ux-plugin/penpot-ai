@@ -2,7 +2,7 @@
 spring:
   application:
     name: figma-plugin-api
-  
+
   # Server configuration
   webflux:
     base-path: /
@@ -17,7 +17,7 @@ spring:
     url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:password}
-  
+
   # Liquibase configuration (uses JDBC)
   liquibase:
     enabled: true
@@ -25,13 +25,13 @@ spring:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
     user: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:password}
-  
+
   # Redis configuration
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      timeout: 10000ms
+      timeout: 70000ms
       lettuce:
         pool:
           max-active: ${REDIS_MAX_POOL_SIZE:50}
@@ -47,7 +47,7 @@ spring:
     default-property-inclusion: non_null
 
 server:
-  port: ${API_PORT:8003}
+  port: ${API_PORT:8080}
   address: ${API_HOST:0.0.0.0}
 
 # CORS configuration
@@ -135,16 +135,16 @@ jwt:
 # Auth0 configuration (multi-issuer JWT validation alongside self-hosted).
 # Leave AUTH0_ISSUER_URI unset to disable Auth0 validation entirely.
 auth0:
-  issuer: ${AUTH0_ISSUER_URI:#{null}}
-  audience: ${AUTH0_AUDIENCE:#{null}}
-  jwk-set-uri: ${AUTH0_JWK_SET_URI:#{null}}
+  issuer: ${AUTH0_ISSUER_URI:}
+  audience: ${AUTH0_AUDIENCE:}
+  jwk-set-uri: ${AUTH0_JWK_SET_URI:}
   # Auth0 as OAuth IdP for the plugin login flow. Backend is a Regular Web Application
   # (confidential client) registered in Auth0 with the audience above. Leave AUTH0_CLIENT_ID
   # unset to disable the /auth/auth0/* endpoints entirely.
   oauth:
-    client-id: ${AUTH0_CLIENT_ID:#{null}}
-    client-secret: ${AUTH0_CLIENT_SECRET:#{null}}
-    login-redirect-uri: ${AUTH0_LOGIN_REDIRECT_URI:#{null}}
+    client-id: ${AUTH0_CLIENT_ID:}
+    client-secret: ${AUTH0_CLIENT_SECRET:}
+    login-redirect-uri: ${AUTH0_LOGIN_REDIRECT_URI:}
     refresh-token-lifetime-sec: ${AUTH0_REFRESH_TOKEN_LIFETIME_SEC:2592000}
     login:
       random-key:

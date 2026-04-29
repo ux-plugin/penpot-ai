@@ -4,9 +4,7 @@ spring:
   # Import environment variables from .env file (dev only)
   config:
     import: optional:file:.env.dev[.properties]
-  autoconfigure:
-    exclude: org.jetbrains.exposed.v1.spring.boot.autoconfigure.ExposedAutoConfiguration
-  
+
   # Spring Boot DevTools configuration
   devtools:
     restart:

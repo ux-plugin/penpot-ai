@@ -82,7 +82,6 @@ dependencies {
     implementation("org.jetbrains.exposed:exposed-core")
     implementation("org.jetbrains.exposed:exposed-r2dbc")
     implementation("org.jetbrains.exposed:exposed-dao")
-    implementation("org.jetbrains.exposed:exposed-spring-boot-starter")
     implementation("org.jetbrains.exposed:exposed-java-time")
 
     // Kotlin support

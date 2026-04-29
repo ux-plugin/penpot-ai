@@ -24,11 +24,25 @@ class Auth0AuthResource(private val auth0AuthService: Auth0AuthService) {
     }
 
     @GetMapping("/callback")
-    suspend fun callback(@RequestParam code: String, @RequestParam state: String): ResponseEntity<*> = try {
-        auth0AuthService.authenticateUser(state, code)
-        ResponseEntity.ok().build<Unit>()
-    } catch (e: Exception) {
-        ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Failed to authenticate")
+    suspend fun callback(
+        @RequestParam(required = false) code: String?,
+        @RequestParam(required = false) state: String?,
+        @RequestParam(required = false) error: String?,
+        @RequestParam(required = false, name = "error_description") errorDescription: String?,
+    ): ResponseEntity<*> {
+        if (error != null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body("Auth0 error: $error - $errorDescription")
+        }
+        if (code == null || state == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Missing code or state")
+        }
+        return try {
+            auth0AuthService.authenticateUser(state, code)
+            ResponseEntity.ok().build<Unit>()
+        } catch (e: Exception) {
+            ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Failed to authenticate: ${e.message}")
+        }
     }
 
     @GetMapping("/access-token")
