@@ -3,5 +3,6 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/figma_plugin_fe" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/figma_plugin_companion_app" vcs="Git" />
   </component>
 </project>
