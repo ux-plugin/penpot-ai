@@ -30,8 +30,6 @@ CREATE TABLE users
     allow_saving_completions   BOOLEAN    NOT NULL DEFAULT FALSE,
     encryption_key             VARCHAR,
     encryption_key_expires_at  TIMESTAMP,
-    refresh_token              VARCHAR,
-    refresh_token_expires_at   TIMESTAMP,
     port                       INTEGER,
     auth0_sub                  VARCHAR    UNIQUE
 );
