@@ -1,7 +1,7 @@
 use crate::auth::AuthState;
 use std::sync::Arc;
 use tauri_plugin_http::reqwest;
-use super::types::{FigmaPluginRefreshAccessTokenRequest, RefreshAccessTokenResponse};
+use super::types::{Auth0RefreshRequest, Auth0PluginTokensResponse};
 
 pub struct BackendClient {
     pub(super) client: reqwest::Client,
@@ -10,18 +10,16 @@ pub struct BackendClient {
 }
 
 impl BackendClient {
-    // Refresh access token using refresh token and user ID
+    // Refresh access token via Auth0. Returns (access_token, refresh_token, refresh_token_expires_at).
     pub(super) async fn refresh_access_token(
         &self,
         refresh_token: &str,
-        user_id: &str,
-    ) -> Result<(String, String), String> {
-        let request = FigmaPluginRefreshAccessTokenRequest {
+    ) -> Result<(String, String, String), String> {
+        let request = Auth0RefreshRequest {
             refresh_token: refresh_token.to_string(),
-            user_id: user_id.to_string(),
         };
 
-        let url = format!("{}/auth/plugin-ui/access-token/refresh", self.base_url);
+        let url = format!("{}/auth/auth0/refresh", self.base_url);
 
         let response = self
             .client
@@ -32,12 +30,16 @@ impl BackendClient {
             .map_err(|e| format!("Failed to send refresh token request: {}", e))?;
 
         if response.status().is_success() {
-            let refresh_response: RefreshAccessTokenResponse = response
+            let refresh_response: Auth0PluginTokensResponse = response
                 .json()
                 .await
                 .map_err(|e| format!("Failed to parse refresh token response: {}", e))?;
 
-            Ok((refresh_response.access_token, refresh_response.refresh_token))
+            Ok((
+                refresh_response.access_token,
+                refresh_response.refresh_token,
+                refresh_response.refresh_token_expires_at,
+            ))
         } else {
             Err(format!(
                 "Failed to refresh access token: HTTP {}",
@@ -62,33 +64,24 @@ impl BackendClient {
             .as_ref()
             .ok_or("No access token available")?;
 
-        // Make the initial request
         match request_fn(access_token.clone()).await {
             Ok(result) => Ok(result),
             Err(error) => {
-                // Check if it's a 401 error
                 if error.contains("HTTP 401") {
-                    // Attempt to refresh token
-                    if let (Some(ref refresh_token), Some(ref user_id)) = (
-                        &current_credentials.refresh_token,
-                        &current_credentials.user_id,
-                    ) {
-                        match self.refresh_access_token(refresh_token, user_id).await {
-                            Ok((new_access_token, new_refresh_token)) => {
-                                // Update the auth state with the new tokens
+                    if let Some(ref refresh_token) = current_credentials.refresh_token {
+                        match self.refresh_access_token(refresh_token).await {
+                            Ok((new_access_token, new_refresh_token, new_expires_at)) => {
                                 self.auth_state
                                     .update(|creds| {
                                         creds.access_token = Some(new_access_token.clone());
                                         creds.refresh_token = Some(new_refresh_token);
+                                        creds.refresh_token_expires_at = Some(new_expires_at);
                                     })
                                     .await?;
 
-                                // Retry the request with a new token
                                 request_fn(new_access_token).await
                             }
-                            Err(_) => {
-                                Err("AUTH_FAILED".to_string())
-                            }
+                            Err(_) => Err("AUTH_FAILED".to_string()),
                         }
                     } else {
                         Err("AUTH_FAILED".to_string())

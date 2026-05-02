@@ -1,18 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 // Request/Response structures for the backend API
-#[derive(Serialize, Deserialize)]
-pub struct FigmaPluginRefreshAccessTokenRequest {
-    #[serde(rename = "refreshToken")]
-    pub refresh_token: String,
-    #[serde(rename = "userId")]
-    pub user_id: String,
-}
 
 #[derive(Serialize, Deserialize)]
-pub struct RefreshAccessTokenResponse {
-    #[serde(rename = "accessToken")]
-    pub access_token: String,
+pub struct Auth0RefreshRequest {
     #[serde(rename = "refreshToken")]
     pub refresh_token: String,
 }
@@ -35,24 +26,10 @@ pub struct AuthErrorResponse {}
 // Login flow structures
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LoginInitResponse {
-    #[serde(rename = "readTokenJwt")]
-    pub read_token_jwt: String,
+    #[serde(rename = "readToken")]
+    pub read_token: String,
     #[serde(rename = "loginUrl")]
     pub login_url: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct AccessTokenResponse {
-    #[serde(rename = "accessToken")]
-    pub access_token: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RefreshTokenResponse {
-    #[serde(rename = "refreshToken")]
-    pub refresh_token: String,
-    #[serde(rename = "refreshTokenExpiresAt")]
-    pub refresh_token_expires_at: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -62,8 +39,9 @@ pub struct LoginAuthData {
     pub refresh_token_expires_at: String,
 }
 
+// Tokens response from /auth/auth0/access-token and /auth/auth0/refresh
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Auth0AccessTokenResponse {
+pub struct Auth0PluginTokensResponse {
     #[serde(rename = "accessToken")]
     pub access_token: String,
     #[serde(rename = "refreshToken")]
