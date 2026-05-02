@@ -1,77 +1,23 @@
 package com.plugin.features.auth.core
 
-import com.plugin.config.JwtService
-import com.plugin.config.properties.AuthProperties
-import com.plugin.features.user.UserRole
 import org.jetbrains.exposed.v1.r2dbc.R2dbcDatabase
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Repository
 import java.time.Instant
-import java.util.*
 
 @Repository
 class AuthRepository(
     private val authUserRepository: AuthUserRepository,
     private val socialLoginRepository: SocialLoginsRepository,
-    private val jwtService: JwtService,
-    private val authProperties: AuthProperties,
     private val database: R2dbcDatabase,
 ) {
     private val logger = LoggerFactory.getLogger(AuthRepository::class.java)
 
-    suspend fun getRefreshToken(userId: String): FigmaPluginGetRefreshTokenResponse {
-        val entity = authUserRepository.findById(userId) ?: throw NotFoundException("User not found with ID: $userId")
-
-        if (entity.refreshToken.isNotEmpty() && entity.refreshTokenExpiresAt.isAfter(Instant.now())) {
-            return FigmaPluginGetRefreshTokenResponse(entity.refreshToken, entity.refreshTokenExpiresAt)
-        } else {
-            throw SecurityException("Invalid or expired refresh token")
-        }
-    }
-
-    suspend fun createTokensForUser(id: String, role: UserRole): LoginCredentials {
-        val accessToken = createAccessToken(id, role)
-        val refreshTokenInfo = createRefreshToken(id)
-        return LoginCredentials(
-            accessToken = accessToken,
-            refreshToken = refreshTokenInfo.refreshToken,
-            refreshTokenExpiresAt = refreshTokenInfo.expiresAt,
-        )
-    }
-
-    private fun createAccessToken(id: String, role: UserRole): String =
-        jwtService.createToken(id, role.name, authProperties.accessTokenTtlS)
-
-    suspend fun createRefreshToken(userId: String): RefreshTokenInfo = suspendTransaction(database) {
-        val refreshToken = UUID.randomUUID().toString()
-        val refreshTokenExpiresAt = Instant.now().plusSeconds(authProperties.refreshTokenTtlS)
-
-        val entity =
-            authUserRepository.findById(userId) ?: throw NotFoundException("User not found with ID: $userId")
-
-        entity.refreshToken = refreshToken
-        entity.refreshTokenExpiresAt = refreshTokenExpiresAt
-        authUserRepository.save(entity)
-
-        RefreshTokenInfo(refreshToken, refreshTokenExpiresAt)
-    }
-
-    suspend fun refreshAccessToken(refreshTokenRequest: RefreshTokenRequest): String {
-        val entity =
-            authUserRepository.findByIdAndRefreshToken(refreshTokenRequest.userId, refreshTokenRequest.refreshToken)
-
-        if (entity == null || entity.refreshTokenExpiresAt.isBefore(Instant.now())) {
-            throw SecurityException("Invalid or expired refresh token for user with ID: ${refreshTokenRequest.userId}")
-        }
-
-        return createAccessToken(id = entity.id, role = entity.role)
-    }
-
     suspend fun addUser(): AuthUserEntity {
         logger.debug("Creating new user")
         return try {
-            val newUser = AuthUserEntity(role = UserRole.USER)
+            val newUser = AuthUserEntity()
             val savedUser = authUserRepository.save(newUser)
             logger.debug("Successfully created user with ID: ${savedUser.id}")
             savedUser
@@ -190,8 +136,6 @@ class AuthRepository(
 
             if (socialLoginEntity != null) {
                 logger.debug("Case 1: Social login exists for providerUserId: {}", providerUserId)
-                // Case 1: Social login exists. Return the associated user and update the
-                // refresh token.
                 updateSocialLogin(
                     provider = provider,
                     providerUserId = providerUserId,
@@ -207,11 +151,8 @@ class AuthRepository(
                 logger.debug("Successfully associated existing user: {} with social provider", user.id)
                 user
             } else {
-                // Case 2: Social login does not exist.
                 if (userId != null) {
                     logger.debug("Case 2a: Creating social login for existing userId: {}", userId)
-                    // Case 2a: An existing userId is provided. Associate the new social login
-                    // with this user.
                     val user =
                         authUserRepository.findById(userId) ?: throw NotFoundException("User $userId not found")
 
@@ -226,8 +167,6 @@ class AuthRepository(
                     user
                 } else {
                     logger.debug("Case 2b: Creating new user and social login")
-                    // Case 2b: No userId is provided. Create a new user and associate the
-                    // social login with it.
                     val newUser = addUser()
                     logger.debug("Created new user with ID: {}, now creating social login", newUser.id)
                     insertSocialLogin(

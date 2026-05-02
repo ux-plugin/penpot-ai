@@ -3,8 +3,6 @@ package com.plugin.features.auth.auth0
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
-import org.springframework.security.core.annotation.AuthenticationPrincipal
-import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -46,8 +44,7 @@ class Auth0AuthResource(private val auth0AuthService: Auth0AuthService) {
     }
 
     @GetMapping("/access-token")
-    suspend fun getTokens(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
-        val readToken = jwt.subject
+    suspend fun getTokens(@RequestParam readToken: String): ResponseEntity<*> {
         val tokens = auth0AuthService.readTokens(readToken)
         return if (tokens == null) {
             ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build<Unit>()

@@ -125,14 +125,7 @@ agent:
       max-output-tokens: ${FIGMA_DESIGN_GEMINI_MAX_OUTPUT_TOKENS:}
 
 
-# JWT configuration
-jwt:
-  private-key-location: classpath:META-INF/resources/privateKey-dev.pem
-  public-key-location: classpath:META-INF/resources/publicKey-dev.pem
-  token:
-    lifespan: 600
-
-# Auth0 configuration (multi-issuer JWT validation alongside self-hosted).
+# Auth0 configuration. Auth0 is the sole identity issuer for the plugin.
 # Leave AUTH0_ISSUER_URI unset to disable Auth0 validation entirely.
 auth0:
   issuer: ${AUTH0_ISSUER_URI:}
@@ -168,28 +161,24 @@ websocket:
       user-id-key: ws.auth.userId
       token-expiration-key: ws.auth.tokenExpiration
 
-# Auth configuration
+# Auth configuration. Identity is issued by Auth0 (see auth0.* above);
+# the figma/github sections only configure the connect flow that links
+# upstream provider accounts via AddSocialAccountMenu.
 auth:
-  access-token-ttl-s: 900  # 15 minutes
-  refresh-token-ttl-s: 2592000  # 30 days
   figma:
     client-id: ${AUTH_FIGMA_CLIENT_ID}
     client-secret: ${AUTH_FIGMA_CLIENT_SECRET}
     auth-url: https://www.figma.com/oauth
     token-url: https://api.figma.com/v1/oauth/token
-    login-redirect-uri: http://localhost:8080/auth/figma/callback
     connect-redirect-uri: http://localhost:8080/auth/figma/connect/callback
     user-id:
       result-key-prefix: "figma-user-id:"
     connect:
       redis-key-prefix: "figma-connect:"
-    login:
+    flow:
       random-key:
         max-retries: 3
       timeout-sec: 60
-    rest-client:
-      access-token:
-        redis-key-prefix: "figma-login:"
     read-token:
       redis-key-prefix: "figma-read-token:"
     write-token:
@@ -199,19 +188,15 @@ auth:
     client-secret: ${AUTH_GITHUB_CLIENT_SECRET}
     auth-url: https://github.com/login/oauth/authorize
     token-url: https://github.com/login/oauth/access_token
-    login-redirect-uri: http://localhost:8080/auth/github/callback
     connect-redirect-uri: http://localhost:8080/auth/github/connect/callback
     connect:
       result-key-prefix: "github-connect:"
     user-id:
       result-key-prefix: "github-user-id:"
-    login:
+    flow:
       random-key:
         max-retries: 3
       timeout-sec: 60
-    rest-client:
-      access-token:
-        redis-key-prefix: "github-login:"
     read-token:
       redis-key-prefix: "github-read-token:"
     write-token:

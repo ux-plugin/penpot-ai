@@ -16,8 +16,6 @@ data class UserEntity(
     var email: String? = null,
     var name: String = "",
     var role: UserRole = UserRole.USER,
-    var refreshToken: String = "",
-    var refreshTokenExpiresAt: Instant = Instant.now(),
     var createdAt: Instant = Instant.now(),
     var allowSavingCompletions: Boolean = false,
     var encryptionKey: String? = null,
@@ -46,8 +44,6 @@ object UsersTable : Table("users") {
     val email = varchar("email", 255).nullable().uniqueIndex()
     val name = varchar("name", 255)
     val role = customEnumeration("role", "user_roles", { value -> UserRole.valueOf(value as String) }, { it })
-    val refreshToken = varchar("refresh_token", 255)
-    val refreshTokenExpiresAt = timestamp("refresh_token_expires_at")
     val createdAt = timestamp("created_at")
     val allowSavingCompletions = bool("allow_saving_completions")
     val encryptionKey = varchar("encryption_key", 255).nullable()

@@ -135,8 +135,6 @@ class UserRepository(private val database: R2dbcDatabase, private val userProper
                 it[email] = entity.email
                 it[name] = entity.name
                 it[role] = entity.role
-                it[refreshToken] = entity.refreshToken
-                it[refreshTokenExpiresAt] = entity.refreshTokenExpiresAt
                 it[createdAt] = entity.createdAt
                 it[allowSavingCompletions] = entity.allowSavingCompletions
                 it[encryptionKey] = entity.encryptionKey
@@ -150,8 +148,6 @@ class UserRepository(private val database: R2dbcDatabase, private val userProper
                 it[email] = entity.email
                 it[name] = entity.name
                 it[role] = entity.role
-                it[refreshToken] = entity.refreshToken
-                it[refreshTokenExpiresAt] = entity.refreshTokenExpiresAt
                 it[allowSavingCompletions] = entity.allowSavingCompletions
                 it[encryptionKey] = entity.encryptionKey
                 it[encryptionKeyExpiresAt] = entity.encryptionKeyExpiresAt
@@ -169,8 +165,6 @@ class UserRepository(private val database: R2dbcDatabase, private val userProper
         email = this[UsersTable.email],
         name = this[UsersTable.name],
         role = this[UsersTable.role],
-        refreshToken = this[UsersTable.refreshToken],
-        refreshTokenExpiresAt = this[UsersTable.refreshTokenExpiresAt],
         createdAt = this[UsersTable.createdAt],
         allowSavingCompletions = this[UsersTable.allowSavingCompletions],
         encryptionKey = this[UsersTable.encryptionKey],

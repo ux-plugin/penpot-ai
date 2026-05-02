@@ -1,78 +1,25 @@
-RefreshTokenResponse:
-  successful_refresh:
-    summary: Successful token refresh for regular user
-    description: Example of successful access token refresh
-    value:
-      accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMzQ1Njc4OSIsImlhdCI6MTcyMzA0NDA2MCwiZXhwIjoxNzIzMDQ3NjYwfQ.refreshed_user_token"
-  
-  admin_refresh:
-    summary: Successful token refresh for admin user
-    description: Example of successful access token refresh for admin
-    value:
-      accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbl80NTY3ODkxMjMiLCJpYXQiOjE3MjMwNDQwNjAsImV4cCI6MTcyMzA0NzY2MH0.refreshed_admin_token"
-
-RefreshTokenGeneration:
-  success:
-    summary: Refresh token generation success
-    description: Successful refresh token generation response
-    value:
-      message: "Refresh token generated and set as HTTP-only cookie"
-      success: true
-
 OAuthInitResponse:
-  figma_login:
-    summary: Figma OAuth initialization
-    description: Example response for Figma OAuth login initiation
+  auth0_login:
+    summary: Auth0 OAuth initialization
+    description: Example response for Auth0 OAuth login initiation
     value:
-      readTokenJwt: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmaWdtYV9yZWFkX3Rva2VuIiwiaWF0IjoxNzIzMDQ0MDYwfQ.figma_read_token"
-      loginUrl: "https://www.figma.com/oauth?client_id=abc123&redirect_uri=http://localhost:8080/auth/figma/callback&scope=file_read&state=csrf_state_xyz789&response_type=code"
-  
-  github_login:
-    summary: GitHub OAuth initialization
-    description: Example response for GitHub OAuth login initiation
-    value:
-      readTokenJwt: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJnaXRodWJfcmVhZF90b2tlbiIsImlhdCI6MTcyMzA0NDA2MH0.github_read_token"
-      loginUrl: "https://github.com/login/oauth/authorize?client_id=def456&redirect_uri=http://localhost:8080/auth/github/callback&scope=user:email&state=csrf_state_abc123&response_type=code"
+      readToken: "auth0-read-token:5e2f4a73c7"
+      loginUrl: "https://your-tenant.auth0.com/authorize?response_type=code&client_id=abc123&redirect_uri=http://localhost:8080/auth/auth0/callback&scope=openid+profile+email+offline_access&audience=figma-plugin&state=csrf_state_xyz789"
 
 AccessTokenResponse:
   figma_token:
     summary: Figma access token
-    description: Example Figma access token response
+    description: Example Figma access token response (returned by /auth/figma/connect/* flows)
     value:
       accessToken: "figd_U2FsdGVkX1-figma-access-token-example-hash"
-  
+
   github_token:
     summary: GitHub access token
-    description: Example GitHub access token response
+    description: Example GitHub access token response (returned by /auth/github/connect/* flows)
     value:
       accessToken: "ghp_github-personal-access-token-example-hash"
 
-CallbackResponses:
-  figma_success:
-    summary: Successful Figma OAuth callback
-    description: Example successful Figma authentication callback
-    value:
-      message: "Figma authentication successful"
-      success: true
-      redirectUrl: "http://localhost:3000/dashboard"
-  
-  github_success:
-    summary: Successful GitHub OAuth callback
-    description: Example successful GitHub authentication callback
-    value:
-      message: "GitHub authentication successful"
-      success: true
-      redirectUrl: "http://localhost:3000/dashboard"
-
 ErrorResponses:
-  invalid_refresh_token:
-    summary: Invalid refresh token error
-    description: Error when refresh token is invalid or expired
-    value:
-      error: "invalid_refresh_token"
-      message: "The provided refresh token is invalid or has expired"
-      timestamp: "2024-08-06T16:01:00Z"
-  
   unauthorized:
     summary: Unauthorized access error
     description: Error when user is not authenticated
@@ -80,43 +27,11 @@ ErrorResponses:
       error: "unauthorized"
       message: "Authentication required. Please provide a valid JWT token"
       timestamp: "2024-08-06T16:01:00Z"
-  
+
   server_error:
     summary: Internal server error
     description: Generic server error response
     value:
       error: "internal_server_error"
       message: "An unexpected error occurred. Please try again later"
-      timestamp: "2024-08-06T16:01:00Z"
-  
-  login_generation_error:
-    summary: Login URL generation error
-    description: Error when OAuth login URL cannot be generated
-    value:
-      error: "login_generation_failed"
-      message: "Failed to generate OAuth login URL. Please check configuration"
-      timestamp: "2024-08-06T16:01:00Z"
-  
-  invalid_callback_code:
-    summary: Invalid OAuth callback code
-    description: Error when OAuth callback code is invalid
-    value:
-      error: "invalid_authorization_code"
-      message: "The authorization code provided is invalid or has expired"
-      timestamp: "2024-08-06T16:01:00Z"
-  
-  invalid_callback_state:
-    summary: Invalid OAuth callback state
-    description: Error when OAuth callback state parameter is invalid
-    value:
-      error: "invalid_state_parameter"
-      message: "The state parameter is invalid. Possible CSRF attack detected"
-      timestamp: "2024-08-06T16:01:00Z"
-  
-  token_timeout:
-    summary: Token retrieval timeout
-    description: Error when access token is not available within timeout period
-    value:
-      error: "token_timeout"
-      message: "Access token not available. Please complete the authentication flow"
       timestamp: "2024-08-06T16:01:00Z"

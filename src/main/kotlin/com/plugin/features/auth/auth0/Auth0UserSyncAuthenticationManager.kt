@@ -16,10 +16,8 @@ import reactor.core.publisher.Mono
  * path covers HTTP requests and RSocket setup-frame authentication — both go through the
  * issuer-keyed manager resolver wired in `SecurityConfig`/`RSocketSecurityConfig`.
  */
-class Auth0UserSyncAuthenticationManager(
-    auth0Decoder: ReactiveJwtDecoder,
-    private val provisioner: Auth0UserProvisioner,
-) : ReactiveAuthenticationManager {
+class Auth0UserSyncAuthenticationManager(auth0Decoder: ReactiveJwtDecoder, private val provisioner: Auth0UserProvisioner) :
+    ReactiveAuthenticationManager {
     private val delegate = JwtReactiveAuthenticationManager(auth0Decoder)
 
     override fun authenticate(authentication: Authentication): Mono<Authentication> =

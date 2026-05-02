@@ -38,11 +38,7 @@ components:
       $ref: './auth/auth-schemas.yaml#/OAuthInitResponse'
     ReadTokenResponse:
       $ref: './auth/auth-schemas.yaml#/AccessTokenResponse'
-    RefreshTokenResponse:
-      $ref: './auth/auth-schemas.yaml#/RefreshTokenResponse'
-    GetJwtResponse:
-      $ref: './auth/auth-schemas.yaml#/GetJwtResponse'
-    
+
     # User schemas
     GetUserResponse:
       $ref: './user/user-schemas.yaml#/GetUserResponse'
@@ -89,12 +85,6 @@ components:
     WindingRule:
       $ref: './completions/completions-schemas.yaml#/WindingRule'
     
-    # Dev schemas
-    AddUserRequest:
-      $ref: './dev/dev-schemas.yaml#/AddUserRequest'
-    AddUserResponse:
-      $ref: './dev/dev-schemas.yaml#/AddUserResponse'
-
 paths:
   # Completions paths
   /completions:
@@ -115,9 +105,3 @@ paths:
     $ref: './user/user-paths.yaml#/paths/~1user~1port'
   /user/port/listen:
     $ref: './user/user-paths.yaml#/paths/~1user~1port~1listen'
-  
-  # Dev paths
-  /dev/user/add:
-    $ref: './dev/dev-paths.yaml#/paths/~1dev~1user~1add'
-  /dev/user/jwt:
-    $ref: './dev/dev-paths.yaml#/paths/~1dev~1user~1jwt'

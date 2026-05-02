@@ -1,6 +1,5 @@
 package com.plugin.features.auth.figma
 
-import com.plugin.features.auth.core.AccessTokenResponse
 import com.plugin.features.auth.core.AccountAlreadyLinkedException
 import com.plugin.features.auth.core.ConnectSocialProviderResponse
 import com.plugin.features.auth.core.ConnectSocialProviderResult
@@ -16,33 +15,6 @@ import org.springframework.web.bind.annotation.RestController
 @RestController
 @RequestMapping("/auth/figma")
 class FigmaAuthResource(private val figmaAuthService: FigmaAuthService) {
-    @GetMapping("/login")
-    suspend fun login(): ResponseEntity<*> = try {
-        val response = figmaAuthService.login()
-        ResponseEntity.ok(response)
-    } catch (e: Exception) {
-        ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to login")
-    }
-
-    @GetMapping("/callback")
-    suspend fun callback(@RequestParam code: String, @RequestParam state: String): ResponseEntity<*> = try {
-        figmaAuthService.authenticateUser(state, code)
-        ResponseEntity.ok().build<Unit>()
-    } catch (e: Exception) {
-        ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Failed to authenticate")
-    }
-
-    @GetMapping("/access-token")
-    suspend fun getAppAccessToken(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
-        val readToken = jwt.subject
-        val token = figmaAuthService.readAccessToken(readToken)
-        return if (token == null || token.second.isEmpty()) {
-            ResponseEntity.status(HttpStatus.REQUEST_TIMEOUT).build<Unit>()
-        } else {
-            ResponseEntity.ok(AccessTokenResponse(token.second))
-        }
-    }
-
     @GetMapping("/connect/init")
     suspend fun connectInit(@AuthenticationPrincipal jwt: Jwt): ResponseEntity<*> {
         val userId = jwt.subject

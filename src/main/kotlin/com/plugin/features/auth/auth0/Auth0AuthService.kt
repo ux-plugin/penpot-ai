@@ -1,7 +1,6 @@
 package com.plugin.features.auth.auth0
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.plugin.config.JwtService
 import com.plugin.config.properties.Auth0Properties
 import com.plugin.features.auth.core.NotFoundException
 import com.plugin.features.auth.core.OAuthInitResponse
@@ -17,7 +16,6 @@ import java.time.Instant
 class Auth0AuthService(
     private val auth0AuthClient: Auth0AuthClient,
     private val redisRepository: RedisRepository,
-    private val jwtService: JwtService,
     private val auth0Properties: Auth0Properties,
     private val objectMapper: ObjectMapper,
 ) {
@@ -37,9 +35,8 @@ class Auth0AuthService(
                 readToken,
                 2 * oauth.login.timeoutSec,
             )
-        val readTokenJwt = jwtService.createToken(readToken, "GUEST", oauth.login.timeoutSec)
         val authorizeUrl = generateAuthorizeUrl(state = writeToken, redirectUri = requireNotNull(oauth.loginRedirectUri))
-        return OAuthInitResponse(readTokenJwt, authorizeUrl)
+        return OAuthInitResponse(readToken, authorizeUrl)
     }
 
     private fun generateAuthorizeUrl(state: String, redirectUri: String): String {
@@ -94,8 +91,6 @@ class Auth0AuthService(
     suspend fun refreshTokens(refreshToken: String): Auth0PluginTokensResponse {
         val oauth = auth0Properties.oauth
         val tokenResponse = auth0AuthClient.refreshToken(refreshToken)
-        // With refresh-token rotation enabled the response includes a new refresh_token; without
-        // rotation Auth0 omits it and the caller keeps using the original.
         val rotated = tokenResponse.refreshToken ?: refreshToken
         return Auth0PluginTokensResponse(
             accessToken = tokenResponse.accessToken,

@@ -4,10 +4,6 @@ import org.springframework.stereotype.Service
 
 @Service
 class AuthService(private val authRepository: AuthRepository) {
-    suspend fun refreshToken(refreshTokenRequest: RefreshTokenRequest): String = authRepository.refreshAccessToken(refreshTokenRequest)
-
-    suspend fun getRefreshToken(userId: String): FigmaPluginGetRefreshTokenResponse = authRepository.getRefreshToken(userId)
-
     suspend fun deleteSocialLogin(userId: String, socialLoginId: String) {
         authRepository.deleteSocialLogin(userId, socialLoginId)
     }
