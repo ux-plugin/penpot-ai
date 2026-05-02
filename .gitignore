@@ -83,3 +83,4 @@
 /**/.yarn/*
 /.pnpm-store
 .cursor/
+.claude/worktrees
