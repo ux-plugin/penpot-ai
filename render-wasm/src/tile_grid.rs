@@ -317,6 +317,15 @@ pub struct TileGrid {
     /// the current rebuild. Cleared at the start of each `rebuild` so
     /// emission is exactly-once-per-frame.
     emitted_caches: HashSet<CacheKind>,
+
+    // ── Per-tile root-children prefilter (rebuilt per `rebuild`) ─────
+    /// Tile → root-level shapes whose visibility check_rect (extrect for
+    /// containers, selrect for leaves) intersects the tile, in paint order
+    /// (bottom-first). Used by `build_schedule` to skip the
+    /// O(productive_tiles × root_children) scan that would otherwise
+    /// dominate at scenes with many top-level shapes (10k root children
+    /// × 144 productive tiles = 1.44M intersection tests/frame).
+    root_tiles: HashMap<Tile, Vec<Uuid>>,
 }
 
 /// Children of `shape` in paint order (bottom-first), honouring flex/grid
@@ -403,6 +412,7 @@ impl TileGrid {
             schedule: Vec::new(),
             cursor: 0,
             emitted_caches: HashSet::new(),
+            root_tiles: HashMap::new(),
         }
     }
 
@@ -503,6 +513,7 @@ impl TileGrid {
         self.schedule.clear();
         self.cursor = 0;
         self.emitted_caches.clear();
+        self.root_tiles.clear();
 
         let tile_size = tiles::get_tile_size(scale);
         let interest_rect = &tile_viewbox.interest_rect;
@@ -523,6 +534,12 @@ impl TileGrid {
             }
         } else {
         }
+
+        // Step 1b: Build the per-tile root-children prefilter. Only top-level
+        // shapes go here, with the visibility check_rect that
+        // `build_schedule`'s `visible_roots` cache used to recompute per
+        // productive tile.
+        self.build_root_tiles(tree, tile_size, interest_rect, scale);
 
         // Step 2: Generate spiral
         let spiral = Self::generate_spiral(interest_rect);
@@ -616,6 +633,11 @@ impl TileGrid {
         // Rebuild schedule with updated index
         self.bands.clear();
         self.compute_bands(tree, tile_size, interest_rect, scale);
+        // Root-tiles prefilter must mirror what `rebuild` builds; clear and
+        // re-fill, otherwise `build_root_tiles` appends to stale entries
+        // every frame and the per-tile id list grows unbounded.
+        self.root_tiles.clear();
+        self.build_root_tiles(tree, tile_size, interest_rect, scale);
         let spiral = Self::generate_spiral(interest_rect);
         let deps = self.build_dependency_graph(tree, tile_size, interest_rect, scale);
         let (sorted_bands, empty_tiles) =
@@ -639,6 +661,73 @@ impl TileGrid {
             .is_some_and(|b| !b.hidden);
 
         has_glass || has_bg_blur
+    }
+
+    /// Build `self.root_tiles`: for every top-level shape, push its id into
+    /// every tile its visibility check_rect intersects, in paint order
+    /// (bottom-first). Mirrors the per-root visibility test that used to
+    /// live inside `build_schedule`'s `visible_roots` cache loop, but pays
+    /// the O(N_roots × tiles_per_root) cost once instead of paying
+    /// O(N_roots × N_productive_tiles) per `visible_roots` build.
+    ///
+    /// Caller must clear `self.root_tiles` before calling.
+    fn build_root_tiles(
+        &mut self,
+        tree: ShapesPoolRef,
+        tile_size: f32,
+        interest_rect: &TileRect,
+        scale: f32,
+    ) {
+        let root_id = Uuid::nil();
+        let Some(root) = tree.get(&root_id) else {
+            return;
+        };
+
+        // children_ids returns topmost-first; reverse for bottom-first paint
+        // order (matches `build_schedule`'s emission order).
+        let mut root_children = root.children_ids(false);
+        root_children.reverse();
+
+        for &child_id in &root_children {
+            let Some(shape) = tree.get(&child_id) else {
+                continue;
+            };
+            if shape.hidden {
+                continue;
+            }
+
+            // Same dual logic as the old `visible_roots` loop: containers
+            // use extrect (descendants extend the visible footprint); leaves
+            // use selrect (effects already accounted for upstream).
+            let is_container = matches!(
+                shape.shape_type,
+                Type::Frame(_) | Type::Group(_)
+            );
+            let check_rect = if is_container {
+                shape.extrect(tree, scale)
+            } else {
+                shape.selrect()
+            };
+
+            let shape_tiles = tiles::get_tiles_for_rect(check_rect, tile_size);
+
+            // Intersect with interest area.
+            let ix1 = shape_tiles.x1().max(interest_rect.x1());
+            let iy1 = shape_tiles.y1().max(interest_rect.y1());
+            let ix2 = shape_tiles.x2().min(interest_rect.x2());
+            let iy2 = shape_tiles.y2().min(interest_rect.y2());
+
+            if ix1 <= ix2 && iy1 <= iy2 {
+                for tx in ix1..=ix2 {
+                    for ty in iy1..=iy2 {
+                        self.root_tiles
+                            .entry(Tile::from(tx, ty))
+                            .or_default()
+                            .push(child_id);
+                    }
+                }
+            }
+        }
     }
 
     /// Recursively walk the shape tree and add shapes to the spatial index.
@@ -1243,25 +1332,23 @@ impl TileGrid {
     ) {
         self.schedule.clear();
 
-        // Get root children in paint order (bottom-first).
-        // children_ids() returns reversed (topmost first), so reverse back.
-        let mut root_children = if let Some(root) = tree.get(&Uuid::nil()) {
-            root.children_ids(false)
-        } else {
+        // Bail early if the tree has no root.
+        if tree.get(&Uuid::nil()).is_none() {
             return;
-        };
-        root_children.reverse();
+        }
 
-        // Per-tile cache of root shapes whose extrect/selrect intersects the
-        // tile. A tile with K bands pays the root-visibility scan once here
-        // instead of K times in the band loop; emit_shape_steps_checked
-        // then skips the redundant top-level intersection check for these
-        // pre-filtered roots.
+        // Per-tile cache of (tile_rect, visible-root-ids) for the productive
+        // tiles in this schedule. Visible root-ids come from
+        // `self.root_tiles` (built once per rebuild in `build_root_tiles`),
+        // so this loop is O(productive_tiles) instead of
+        // O(productive_tiles × root_children) — the previous formulation
+        // dominated for scenes with thousands of root-level shapes.
         //
-        // Only productive tiles reach this loop now (empty tiles are routed
-        // through the tail emission below), so the productivity filter that
-        // used to live here is gone — every key in `sorted_bands` carries
-        // shapes by construction.
+        // We clone the per-tile Uuid slice into the local cache so that the
+        // emit loop below can hold a shared borrow on `visible_roots` while
+        // calling `&mut self.emit_shape_steps_checked` — borrowing
+        // `self.root_tiles` directly would conflict with the `&mut self`
+        // call. Each clone is small (only root shapes touching that tile).
         let mut visible_roots: HashMap<Tile, (skia::Rect, Vec<Uuid>)> =
             HashMap::with_capacity(sorted_bands.len().min(256));
         for key in sorted_bands {
@@ -1269,27 +1356,11 @@ impl TileGrid {
                 continue;
             }
             let tile_rect = tiles::get_tile_rect(key.tile, scale);
-            let mut visible = Vec::with_capacity(root_children.len().min(32));
-            for &root_id in &root_children {
-                let Some(shape) = tree.get(&root_id) else {
-                    continue;
-                };
-                if shape.hidden {
-                    continue;
-                }
-                let is_container = matches!(
-                    shape.shape_type,
-                    Type::Frame(_) | Type::Group(_)
-                );
-                let check_rect = if is_container {
-                    shape.extrect(tree, scale)
-                } else {
-                    shape.selrect()
-                };
-                if check_rect.intersects(tile_rect) {
-                    visible.push(root_id);
-                }
-            }
+            let visible: Vec<Uuid> = self
+                .root_tiles
+                .get(&key.tile)
+                .cloned()
+                .unwrap_or_default();
             visible_roots.insert(key.tile, (tile_rect, visible));
         }
 
