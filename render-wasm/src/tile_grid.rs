@@ -576,7 +576,24 @@ impl TileGrid {
         let interest_rect = &tile_viewbox.interest_rect;
         let mut affected_tiles = HashSet::new();
 
+        // If every touched shape's paint_order can be recovered from its
+        // existing grid entry, the depth-first paint counter is unchanged
+        // and we can skip the full-tree `renumber_paint_order` pass. New
+        // shapes (no prior entry) force a full renumber as before.
+        let mut needs_full_renumber = false;
+
         for &id in touched {
+            // Recover paint_order from one of the shape's existing entries
+            // before we drop them. All entries for the same shape carry the
+            // same paint_order (assigned once in `index_shape_recursive`),
+            // so any one works.
+            let prev_paint_order: Option<u32> = self
+                .index
+                .get(&id)
+                .and_then(|tiles| tiles.iter().next().copied())
+                .and_then(|tile| self.grid.get(&tile).map(|v| (tile, v)))
+                .and_then(|(_, entries)| entries.iter().find(|e| e.id == id).map(|e| e.paint_order));
+
             // Remove from old tiles
             if let Some(old_tiles) = self.index.remove(&id) {
                 for tile in &old_tiles {
@@ -595,6 +612,17 @@ impl TileGrid {
                     let extrect = shape.extrect(tree, scale);
                     let shape_tiles = tiles::get_tiles_for_rect(extrect, tile_size);
 
+                    // Use the prior paint_order if known. If the shape is
+                    // new (no prior entries), fall back to placeholder 0
+                    // and force a full renumber after the loop.
+                    let paint_order = match prev_paint_order {
+                        Some(po) => po,
+                        None => {
+                            needs_full_renumber = true;
+                            0
+                        }
+                    };
+
                     // Intersect with interest area
                     let ix1 = shape_tiles.x1().max(interest_rect.x1());
                     let iy1 = shape_tiles.y1().max(interest_rect.y1());
@@ -610,10 +638,7 @@ impl TileGrid {
                                     ShapeEntry {
                                         id,
                                         z_index,
-                                        // paint_order corrected below by
-                                        // renumber_paint_order before the dep
-                                        // graph runs — placeholder is fine.
-                                        paint_order: 0,
+                                        paint_order,
                                         has_gather,
                                     },
                                 );
@@ -625,10 +650,15 @@ impl TileGrid {
             }
         }
 
-        // Renumber paint_order across every entry so the dep-graph filter has
-        // globally-consistent values (incremental updates above left most
-        // entries with stale indices).
-        self.renumber_paint_order(tree);
+        // Renumber only if some touched id had no prior entry (a brand-new
+        // shape). For the typical drag/move case (touched shapes already
+        // existed last frame) this pass is fully skipped — the existing
+        // depth-first counter is still valid because tree topology is
+        // unchanged, and `add_shape_at` already inserts at the
+        // paint-order-sorted position so per-tile sort invariant holds.
+        if needs_full_renumber {
+            self.renumber_paint_order(tree);
+        }
 
         // Rebuild schedule with updated index
         self.bands.clear();
