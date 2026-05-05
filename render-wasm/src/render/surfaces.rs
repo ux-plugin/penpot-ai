@@ -706,6 +706,20 @@ impl Surfaces {
         self.glass_backdrop_cache.clear();
     }
 
+    /// Read a previously snapshotted gather backdrop directly. Returns
+    /// `None` if no snapshot has been stored for this shape this frame.
+    /// Used by the `Paint` dispatch when a `BuildCache(Gather)` step is
+    /// expected to have populated the cache earlier in the schedule.
+    pub fn get_glass_backdrop(&self, shape_id: Uuid) -> Option<skia::Image> {
+        self.glass_backdrop_cache.get(&shape_id).cloned()
+    }
+
+    /// Remove a single shape's gather backdrop from the cache. Called by
+    /// the `FreeCache(Gather)` arm at the tail of a schedule.
+    pub fn remove_glass_backdrop(&mut self, shape_id: Uuid) {
+        self.glass_backdrop_cache.remove(&shape_id);
+    }
+
     /// Whether the scatter output cache already holds a displaced image for
     /// this shape. Callers use this to skip re-running the expensive
     /// render+filter step on every tile after the first.
@@ -737,6 +751,12 @@ impl Surfaces {
     /// `run_schedule` so displaced images don't leak across frames.
     pub fn clear_scatter_output_cache(&mut self) {
         self.scatter_output_cache.clear();
+    }
+
+    /// Remove a single shape's scatter output from the cache. Called by
+    /// the `FreeCache(Scatter)` arm at the tail of a schedule.
+    pub fn remove_scatter_output(&mut self, shape_id: Uuid) {
+        self.scatter_output_cache.remove(&shape_id);
     }
 
 

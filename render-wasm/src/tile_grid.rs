@@ -84,6 +84,23 @@ pub enum FinalizeKind {
     LastBg,
 }
 
+/// Identifier for a per-frame cache the scheduler owns end-to-end.
+///
+/// The scheduler decides at emit time which shapes need caching, when to
+/// build (`BuildCache`), and when to release (`FreeCache`). The renderer
+/// runs no cache-presence checks of its own — it just executes the steps
+/// the scheduler emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CacheKind {
+    /// Pre-rendered displaced image for a scatter (texture) shape.
+    /// Built once per frame; consumed per-tile by `Paint(scatter_id)`.
+    Scatter(Uuid),
+    /// Backdrop snapshot for a gather/glass effect.
+    /// Built once per frame at the head of the gather's band, after
+    /// upstream bands' content has been flushed into Target.
+    Gather(Uuid),
+}
+
 /// A single step in the pre-computed render schedule.
 #[derive(Debug, Clone)]
 pub enum RenderStep {
@@ -106,10 +123,143 @@ pub enum RenderStep {
     },
     /// Enter a container (Frame/Group): save_layer, clip, transform.
     Enter(Uuid),
-    /// Render a shape: fills, strokes, shadows, glass, etc.
-    Render(Uuid),
+    /// Build a per-frame cache. Emitted once per `CacheKind` per frame at
+    /// the right position relative to the consumers. Replaces the inline
+    /// `has_X` runtime checks that the renderer used to do.
+    BuildCache(CacheKind),
+    /// Paint a shape via a sequence of actions applied in list order.
+    ///
+    /// V2a (current): `actions` is `[Render { effects: [LegacyAll] }]` for
+    /// every shape — the dispatcher's `LegacyAll` arm runs the same
+    /// orchestration the V1 `Paint(Uuid)` arm did. Structure inverted, no
+    /// behavior change.
+    /// V2b (planned): replace `LegacyAll` with per-effect `EffectKey`
+    /// variants emitted at schedule build time.
+    /// V2c (planned): introduce `BeginLayer` / `EndLayer` actions for
+    /// save_layer wrapping (opacity / blend / blur / mask).
+    Paint {
+        shape: Uuid,
+        actions: Vec<PaintAction>,
+    },
     /// Exit a container: restore layer.
     Exit(Uuid),
+    /// Release a per-frame cache. Emitted at the tail of the schedule for
+    /// each cache the scheduler built — replaces the legacy end-of-frame
+    /// global clears (`clear_scatter_output_cache`, `clear_glass_backdrop_cache`).
+    FreeCache(CacheKind),
+}
+
+impl Default for RenderStep {
+    /// Cheap, no-allocating sentinel used by `next()` to swap a step out
+    /// of the schedule via `mem::take`. Never observed by callers — the
+    /// cursor always advances past consumed slots before the next read.
+    fn default() -> Self {
+        RenderStep::Enter(Uuid::nil())
+    }
+}
+
+/// One action within a `Paint` step. The dispatcher walks the action list
+/// in order; effects within a `Render` action are applied in list order
+/// against the same `(input, output)` pair. `BeginLayer` / `EndLayer` (V2c)
+/// wrap a sub-sequence of actions in a Skia `save_layer`.
+#[derive(Debug, Clone)]
+pub enum PaintAction {
+    /// V2c: push a save_layer with the given paint. Currently emitted only
+    /// as a placeholder by V2a/V2b — the dispatcher arm is unimplemented
+    /// until V2c.
+    BeginLayer(LayerPaint),
+    /// Paint the listed effects in order onto `output`, optionally reading
+    /// from `input` (for inner-shadow silhouette clipping or gather
+    /// backdrops).
+    Render {
+        input: SurfaceInput,
+        output: SurfaceId,
+        effects: Vec<EffectKey>,
+    },
+    /// V2c: pop the layer pushed by the matching `BeginLayer`.
+    EndLayer,
+}
+
+/// Source surface or cache an effect should sample when rendering. Most
+/// effects don't need an input (`None`); inner shadows use a per-aspect
+/// surface as a silhouette mask; glass uses a frame-cached backdrop.
+#[derive(Debug, Clone, Copy)]
+pub enum SurfaceInput {
+    None,
+    Surface(SurfaceId),
+    Cache(CacheKind),
+}
+
+/// One unit of paint work emitted by the scheduler.
+///
+/// V2b granularity matches the existing renderer's natural boundaries:
+/// each variant maps cleanly to one or two existing per-effect renderer
+/// functions. Per-individual fills/strokes/shadows (`Fill(u16)`,
+/// `Stroke(u16)`, `Shadow(u16)`) is V3 — it requires splitting
+/// `render_shape` into per-aspect functions; the existing API is batched.
+/// Top-level effect categorised by sampling/spreading semantics.
+///
+/// - `Gather` effects sample pixels from *outside* the shape (the
+///   backdrop) and paint *inside* the shape's bounds. They depend on a
+///   prior `BuildCache(Gather(id))` step that snapshots the backdrop.
+/// - `Scatter` effects read the shape's own silhouette/border and spill
+///   pixels *outside or inside* those bounds (drop shadows extend out,
+///   inner shadows bleed in). Fast mode skips them wholesale.
+/// - `Local` effects paint at-shape: fills, strokes, body composite —
+///   no cross-bounds sampling or spilling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectKey {
+    Gather(GatherFx),
+    Scatter(ScatterFx),
+    Local(LocalFx),
+}
+
+/// Effects that sample the backdrop and paint into the shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatherFx {
+    /// `render_background_blur` — modifies `output` in place by blurring
+    /// what's already there. Should be first in the effect list so
+    /// subsequent effects paint on top of the blurred backdrop.
+    BackgroundBlur,
+    /// Glass / refraction. Root-level gather shapes consume the
+    /// `Cache(Gather(id))` backdrop built by an earlier `BuildCache`
+    /// step; nested glass samples Current.
+    Glass,
+}
+
+/// Effects that read the shape's silhouette and spill outside/inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScatterFx {
+    /// All visible drop shadows on the shape, batched into one call to
+    /// `render_element_drop_shadows_and_composite`. Must come before
+    /// `Local::ShapeBody` so shadows land below fills/strokes.
+    DropShadows,
+    /// Pre-rendered displaced scatter image, blitted from `Cache(Scatter(id))`
+    /// with drop shadows + inner shadows applied to the warped silhouette.
+    /// Used in place of `DropShadows` + `ShapeBody` for scatter shapes.
+    Blit,
+}
+
+/// Effects local to the shape — paint at-shape, no cross-bounds sampling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalFx {
+    /// Fills + strokes + inner shadows + composite, via `render_shape` +
+    /// `apply_drawing_to_render_canvas`. Atomic for V2b; future work
+    /// splits this into per-aspect effects once the renderer is refactored.
+    /// Handles text shapes too — `render_shape` dispatches by `Shape::Type`.
+    /// (Inner shadows technically scatter inward but are bundled here
+    /// because `render_shape` is atomic in V2b.)
+    ShapeBody,
+}
+
+/// Prebuilt save_layer paint for V2c `BeginLayer` actions. Computed once
+/// at schedule build time so the dispatcher never re-derives.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerPaint {
+    pub opacity: f32,
+    pub blend_mode: skia::BlendMode,
+    pub layer_blur_sigma: Option<f32>,
+    pub masked: bool,
 }
 
 /// Entry in the priority queue for Kahn's algorithm.
@@ -161,6 +311,12 @@ pub struct TileGrid {
     schedule: Vec<RenderStep>,
     /// Current position for yield/resume across animation frames.
     cursor: usize,
+
+    // ── Scheduler-owned cache tracking (per rebuild) ─────────────────
+    /// Caches the scheduler has already emitted a `BuildCache` step for in
+    /// the current rebuild. Cleared at the start of each `rebuild` so
+    /// emission is exactly-once-per-frame.
+    emitted_caches: HashSet<CacheKind>,
 }
 
 /// Children of `shape` in paint order (bottom-first), honouring flex/grid
@@ -179,6 +335,65 @@ fn paint_order_children(shape: &Shape, tree: ShapesPoolRef) -> Vec<Uuid> {
     ids
 }
 
+/// V2b: build a `Paint` step whose action list reflects the actual visible
+/// effects on this shape. Order matters — the dispatcher walks the list
+/// in order and each effect paints on top of (or composites against) what
+/// previous effects produced.
+///
+/// Order rationale:
+/// - `BackgroundBlur` first — it samples `output`'s existing content; later
+///   effects paint over the blurred backdrop.
+/// - `Glass` next — also samples backdrop (cached or `output`).
+/// - `DropShadows` / `ScatterBlit` next — drops must underlay fills/strokes;
+///   for scatter, `ScatterBlit` is the whole-body equivalent and replaces
+///   `DropShadows + ShapeBody` (the scatter blit applies its own shadows).
+/// - `ShapeBody` last — fills + strokes + inner shadows on top.
+fn paint_step_for_shape(shape: &Shape) -> RenderStep {
+    let is_scatter = shape
+        .texture
+        .as_ref()
+        .is_some_and(|t| !t.hidden && t.radius > 0.0);
+    let has_glass = shape.glass.as_ref().is_some_and(|g| !g.hidden);
+    let has_bg_blur = shape.background_blur.is_some_and(|b| !b.hidden);
+
+    let mut effects: Vec<EffectKey> = Vec::with_capacity(4);
+
+    if has_bg_blur {
+        effects.push(EffectKey::Gather(GatherFx::BackgroundBlur));
+    }
+    // Scatter shapes bake the whole body (fills + glass + shadows) into the
+    // pre-rendered `Cache(Scatter(id))` image, so a separate Glass gather
+    // step would double-apply refraction. Only emit Glass for non-scatter.
+    if has_glass && !is_scatter {
+        effects.push(EffectKey::Gather(GatherFx::Glass));
+    }
+
+    if is_scatter {
+        effects.push(EffectKey::Scatter(ScatterFx::Blit));
+    } else {
+        // Drop shadows are skipped for text shapes — text emits its
+        // shadows via the paragraph image filter inside `render_shape`,
+        // so the scheduler doesn't need a separate `DropShadows` step.
+        let is_text = matches!(shape.shape_type, Type::Text(_));
+        if !is_text && shape.drop_shadows_visible().next().is_some() {
+            effects.push(EffectKey::Scatter(ScatterFx::DropShadows));
+        }
+        // Always emit `ShapeBody` for non-scatter shapes — `render_shape`
+        // handles fills, strokes, inner shadows, and (for text) the text
+        // paragraph all inside.
+        effects.push(EffectKey::Local(LocalFx::ShapeBody));
+    }
+
+    RenderStep::Paint {
+        shape: shape.id,
+        actions: vec![PaintAction::Render {
+            input: SurfaceInput::None,
+            output: SurfaceId::Current,
+            effects,
+        }],
+    }
+}
+
 impl TileGrid {
     pub fn new() -> Self {
         TileGrid {
@@ -187,6 +402,7 @@ impl TileGrid {
             bands: HashMap::new(),
             schedule: Vec::new(),
             cursor: 0,
+            emitted_caches: HashSet::new(),
         }
     }
 
@@ -227,6 +443,7 @@ impl TileGrid {
         self.bands.clear();
         self.schedule.clear();
         self.cursor = 0;
+        self.emitted_caches.clear();
     }
 
     // ── Schedule control ────────────────────────────────────────────
@@ -237,7 +454,13 @@ impl TileGrid {
 
     pub fn next(&mut self) -> Option<RenderStep> {
         if self.cursor < self.schedule.len() {
-            let step = self.schedule[self.cursor].clone();
+            // `mem::take` swaps the slot for `RenderStep::default()` (a cheap
+            // unit-like variant) and returns the original. O(1), no allocator
+            // hits — important since `Paint`'s `Vec<PaintAction>` would otherwise
+            // clone twice per step in the hot dispatch loop. The cursor advances
+            // past the consumed slot immediately, so no caller observes the
+            // sentinel; the slot's `Default` is dropped on the next `rebuild()`.
+            let step = std::mem::take(&mut self.schedule[self.cursor]);
             self.cursor += 1;
             Some(step)
         } else {
@@ -279,6 +502,7 @@ impl TileGrid {
         self.bands.clear();
         self.schedule.clear();
         self.cursor = 0;
+        self.emitted_caches.clear();
 
         let tile_size = tiles::get_tile_size(scale);
         let interest_rect = &tile_viewbox.interest_rect;
@@ -1137,6 +1361,23 @@ impl TileGrid {
                 kind,
             });
         }
+
+        // Tail: release every per-frame cache the scheduler emitted a
+        // `BuildCache` for this rebuild. Replaces the legacy global
+        // end-of-frame clears in `run_schedule`. Scheduler-owned end-to-end:
+        // build → consume → free.
+        if !self.emitted_caches.is_empty() {
+            // Sorted for determinism (HashSet iteration order isn't stable);
+            // also makes test golden-output diffs stable.
+            let mut caches: Vec<CacheKind> = self.emitted_caches.iter().copied().collect();
+            caches.sort_by_key(|k| match k {
+                CacheKind::Scatter(id) => (0u8, id.as_u128()),
+                CacheKind::Gather(id) => (1u8, id.as_u128()),
+            });
+            for kind in caches {
+                self.schedule.push(RenderStep::FreeCache(kind));
+            }
+        }
     }
 
     /// Emit Enter/Render/Exit steps for a shape and its descendants, filtered
@@ -1183,9 +1424,9 @@ impl TileGrid {
             }
         }
 
-        // Scatter container: emit a single Render step and do NOT recurse,
+        // Scatter container: emit a single Paint step and do NOT recurse,
         // so descendants aren't also blitted independently on top of the
-        // warped output. The `RenderStep::Render` handler dispatches to the
+        // warped output. The `RenderStep::Paint` handler dispatches to the
         // subtree scatter renderer when the shape is recursive.
         //
         // Masked groups are excluded — their Enter/Exit save_layer plumbing
@@ -1202,7 +1443,8 @@ impl TileGrid {
             let has_band_content = band_shapes.contains(&shape_id)
                 || subtree_has_band_shape(shape, tree, band_shapes);
             if has_band_content {
-                self.schedule.push(RenderStep::Render(shape_id));
+                self.emit_cache_build_for_shape(shape_id, shape);
+                self.schedule.push(paint_step_for_shape(shape));
                 return true;
             }
             return false;
@@ -1246,10 +1488,47 @@ impl TileGrid {
                 false
             }
         } else if band_shapes.contains(&shape_id) {
-            self.schedule.push(RenderStep::Render(shape_id));
+            self.emit_cache_build_for_shape(shape_id, shape);
+            self.schedule.push(paint_step_for_shape(shape));
             true
         } else {
             false
+        }
+    }
+
+    /// If `shape` qualifies for one or more scheduler-owned caches, emit a
+    /// `BuildCache` step the first time we see this shape this frame.
+    /// Idempotent via `emitted_caches`.
+    ///
+    /// Order matters for combined scatter+glass shapes: the gather backdrop
+    /// must be snapshotted before the scatter cache is built, because
+    /// `BuildCache(Scatter)` reads the cached backdrop image and feeds it
+    /// into the displacement pass.
+    fn emit_cache_build_for_shape(&mut self, shape_id: Uuid, shape: &Shape) {
+        let has_scatter = shape
+            .texture
+            .as_ref()
+            .is_some_and(|t| !t.hidden && t.radius > 0.0);
+        let has_glass = shape
+            .glass
+            .as_ref()
+            .is_some_and(|g| !g.hidden);
+        let is_root_level = shape.parent_id.is_some_and(|p| p == Uuid::nil());
+
+        // Gather first — its snapshot is an input to the scatter pass for
+        // combined scatter+glass shapes.
+        if has_glass && is_root_level {
+            let kind = CacheKind::Gather(shape_id);
+            if self.emitted_caches.insert(kind) {
+                self.schedule.push(RenderStep::BuildCache(kind));
+            }
+        }
+
+        if has_scatter {
+            let kind = CacheKind::Scatter(shape_id);
+            if self.emitted_caches.insert(kind) {
+                self.schedule.push(RenderStep::BuildCache(kind));
+            }
         }
     }
 }
@@ -1283,6 +1562,190 @@ fn subtree_has_band_shape(
 
 #[cfg(feature = "tile-scheduler")]
 impl RenderState {
+    /// V2b per-effect dispatcher. Walks the action's effect list in order,
+    /// routing each `EffectKey` to its existing per-effect renderer. The
+    /// scheduler decides _what_ to render and _in what order_; this method
+    /// is a flat dispatcher with no implicit ordering knowledge of its own.
+    ///
+    /// `input` is unused in V2b and reserved for V2c (inner-shadow `SrcATop`
+    /// silhouette clipping via `Surface(Fills)` input, gather backdrop via
+    /// `Cache(Gather(id))`).
+    pub(crate) fn scheduler_render_effects(
+        &mut self,
+        element: &Shape,
+        tree: ShapesPoolRef,
+        input: SurfaceInput,
+        output: SurfaceId,
+        effects: &[EffectKey],
+    ) -> Result<()> {
+        let _ = input; // V2c will consume this
+        let id = element.id;
+        let scale = self.get_scale();
+
+        for effect in effects {
+            match effect {
+                EffectKey::Gather(GatherFx::BackgroundBlur) => {
+                    self.render_background_blur(element, output);
+                }
+                EffectKey::Gather(GatherFx::Glass) => {
+                    let Some(glass) = element.glass.as_ref().filter(|g| !g.hidden) else {
+                        continue;
+                    };
+                    let is_root_level =
+                        element.parent_id.is_some_and(|p| p == Uuid::nil());
+                    if is_root_level {
+                        // Root-level gather: consume the backdrop snapshot
+                        // built by `BuildCache(Gather(id))`. Defensive
+                        // fallback re-snapshots if the cache step was
+                        // somehow skipped.
+                        let backdrop_image = match self.surfaces.get_glass_backdrop(id) {
+                            Some(img) => img,
+                            None => {
+                                let tile_rect = self.get_current_tile_bounds()?;
+                                let bg_color = self.background_color;
+                                self.surfaces
+                                    .composite_current_to_target(tile_rect, bg_color);
+                                self.flush_and_submit();
+                                self.surfaces
+                                    .get_or_snapshot_glass_backdrop(id, SurfaceId::Target)
+                            }
+                        };
+                        crate::render::glass::render_glass_with_backdrop_image(
+                            self,
+                            element,
+                            glass,
+                            output,
+                            SurfaceId::Target,
+                            Some(backdrop_image),
+                        );
+                    } else {
+                        crate::render::glass::render_glass(self, element, glass, output);
+                    }
+                }
+                EffectKey::Scatter(ScatterFx::DropShadows) => {
+                    if self.options.is_fast_mode() {
+                        continue;
+                    }
+                    let translation = self
+                        .surfaces
+                        .get_render_context_translation(self.render_area, scale);
+                    let node_render_state = crate::render::NodeRenderState::leaf(id);
+                    let mut extrect_cache: Option<skia::Rect> = None;
+                    self.render_element_drop_shadows_and_composite(
+                        element,
+                        tree,
+                        &mut extrect_cache,
+                        None,
+                        scale,
+                        translation,
+                        &node_render_state,
+                        output,
+                    )?;
+                }
+                EffectKey::Local(LocalFx::ShapeBody) => {
+                    // Fills + strokes + inner shadows (and for text shapes,
+                    // the whole interleaved paragraph) staged onto per-aspect
+                    // surfaces, then composited onto `output`.
+                    self.render_shape(
+                        element,
+                        None,
+                        SurfaceId::Fills,
+                        SurfaceId::Strokes,
+                        SurfaceId::InnerShadows,
+                        SurfaceId::TextDropShadows,
+                        true,
+                        None,
+                        None,
+                        None,
+                        output,
+                    )?;
+                    self.apply_drawing_to_render_canvas(Some(element), output);
+                }
+                EffectKey::Scatter(ScatterFx::Blit) => {
+                    // Pre-rendered displaced image, blitted from the
+                    // `Cache(Scatter(id))` slot built by `BuildCache(Scatter)`.
+                    let Some((img, clipped_extrect)) = self
+                        .surfaces
+                        .get_scatter_output(id)
+                        .map(|(i, r)| (i.clone(), *r))
+                    else {
+                        continue;
+                    };
+                    let translation = self
+                        .surfaces
+                        .get_render_context_translation(self.render_area, scale);
+                    let tile_world = self.render_area;
+                    let skip_shadows = self.options.is_fast_mode();
+                    let has_inner_shadows = !skip_shadows
+                        && element.inner_shadows_visible().next().is_some();
+
+                    let canvas = self.surfaces.canvas_and_mark_dirty(output);
+                    canvas.save();
+                    canvas.scale((scale, scale));
+                    canvas.translate(translation);
+                    canvas.clip_rect(tile_world, skia::ClipOp::Intersect, true);
+
+                    let src = skia::Rect::from_xywh(
+                        0.0,
+                        0.0,
+                        img.width() as f32,
+                        img.height() as f32,
+                    );
+                    let src_constraint =
+                        Some((&src, skia::canvas::SrcRectConstraint::Strict));
+
+                    if !skip_shadows {
+                        for shadow in element.drop_shadows_visible() {
+                            let Some(filter) = shadow.get_drop_shadow_filter() else {
+                                continue;
+                            };
+                            let mut paint = skia::Paint::default();
+                            paint.set_image_filter(filter);
+                            canvas.draw_image_rect(
+                                &img,
+                                src_constraint,
+                                clipped_extrect,
+                                &paint,
+                            );
+                        }
+                    }
+
+                    if has_inner_shadows {
+                        canvas.save_layer(&skia::canvas::SaveLayerRec::default());
+                    }
+
+                    canvas.draw_image_rect(
+                        &img,
+                        src_constraint,
+                        clipped_extrect,
+                        &skia::Paint::default(),
+                    );
+
+                    if has_inner_shadows {
+                        for shadow in element.inner_shadows_visible() {
+                            let Some(filter) = shadow.get_inner_shadow_filter() else {
+                                continue;
+                            };
+                            let mut paint = skia::Paint::default();
+                            paint.set_image_filter(filter);
+                            paint.set_blend_mode(skia::BlendMode::SrcATop);
+                            canvas.draw_image_rect(
+                                &img,
+                                src_constraint,
+                                clipped_extrect,
+                                &paint,
+                            );
+                        }
+                        canvas.restore();
+                    }
+
+                    canvas.restore();
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn start_render_loop(
         &mut self,
         base_object: Option<&Uuid>,
@@ -1632,78 +2095,28 @@ impl RenderState {
                     }
                 }
 
-                RenderStep::Render(id) => {
-                    let Some(element) = tree.get(&id) else {
-                        continue;
-                    };
-
-                    if element.hidden {
-                        continue;
-                    }
-
-                    // Leaf shapes don't have Enter/Exit steps, so we must
-                    // enter/exit focus_mode here to match the current renderer's
-                    // behavior (which calls enter() on every shape visit).
-                    self.focus_mode.enter(&id);
-
-                    if !self.focus_mode.is_active() {
-                        continue;
-                    }
-
-                    let scale = self.get_scale();
-
-                    // Visibility check against current tile. Use extrect
-                    // (not selrect) so scatter shapes whose output reaches
-                    // past selrect into this neighbour tile still fire
-                    // their Render step here and blit their slice.
-                    let extrect = element.extrect(tree, scale);
-                    if !extrect.intersects(self.render_area_with_margins) {
-                        continue;
-                    }
-
-                    // Is this a scatter shape (visible texture with non-zero
-                    // radius)? A scatter shape's displacement sample kernel
-                    // crosses tile boundaries, so per-tile save_layer
-                    // filtering produces rectangular seams. Instead we render
-                    // the shape once into an offscreen scratch sized to its
-                    // extrect, apply displacement there, cache the image, and
-                    // each tile blits the slice that falls inside its rect.
-                    let is_scatter = element
-                        .texture
-                        .as_ref()
-                        .is_some_and(|t| !t.hidden && t.radius > 0.0);
-
-                    if is_scatter {
-                        // Build the per-frame cache on first tile visit.
-                        if !self.surfaces.has_scatter_output(id) {
-                            // If the shape also has glass, snapshot Target
-                            // first so the scratch-pass refraction samples
-                            // real world content (not the empty scratch,
-                            // which would emit black). This mirrors the
-                            // root-level gather handling in the non-scatter
-                            // branch below.
+                RenderStep::BuildCache(kind) => {
+                    performance::begin_measure!("scheduler_build_cache");
+                    match kind {
+                        CacheKind::Scatter(id) => {
+                            let Some(element) = tree.get(&id) else {
+                                performance::end_measure!("scheduler_build_cache");
+                                continue;
+                            };
+                            // For combined scatter+glass: scheduler emitted
+                            // BuildCache(Gather) earlier in the schedule, so
+                            // the backdrop snapshot is already in the cache.
+                            // Read it directly — no inline composite/flush.
                             let glass_backdrop = if element
                                 .glass
                                 .as_ref()
                                 .is_some_and(|g| !g.hidden)
                             {
-                                let tile_rect = self.get_current_tile_bounds()?;
-                                let bg_color = self.background_color;
-                                self.surfaces
-                                    .composite_current_to_target(tile_rect, bg_color);
-                                self.flush_and_submit();
-                                Some(
-                                    self.surfaces
-                                        .get_or_snapshot_glass_backdrop(id, SurfaceId::Target),
-                                )
+                                self.surfaces.get_glass_backdrop(id)
                             } else {
                                 None
                             };
-
                             let scatter_output = if element.is_recursive() {
-                                // Container: render the whole subtree into
-                                // one displacement scratch so the frame +
-                                // descendants warp as one composite.
                                 crate::render::texture::render_and_filter_subtree_to_image(
                                     self,
                                     element,
@@ -1723,178 +2136,84 @@ impl RenderState {
                                     .insert_scatter_output(id, img, clipped_extrect);
                             }
                         }
-
-                        if let Some((img, clipped_extrect)) = self
-                            .surfaces
-                            .get_scatter_output(id)
-                            .map(|(i, r)| (i.clone(), *r))
-                        {
-                            // `dst = clipped_extrect` (not the full
-                            // `extrect`) because the scratch only covers
-                            // the viewport-clipped region.
-                            let translation = self
+                        CacheKind::Gather(id) => {
+                            // Snapshot Target so subsequent Paint steps for
+                            // this gather (or scatter+glass combo) sample
+                            // a frozen backdrop. Mirrors the inline pre-glass
+                            // dance the legacy Render arm did.
+                            let tile_rect = self.get_current_tile_bounds()?;
+                            let bg_color = self.background_color;
+                            self.surfaces
+                                .composite_current_to_target(tile_rect, bg_color);
+                            self.flush_and_submit();
+                            let _ = self
                                 .surfaces
-                                .get_render_context_translation(self.render_area, scale);
-                            let tile_world = self.render_area;
-                            let skip_shadows = self.options.is_fast_mode();
-                            let has_inner_shadows = !skip_shadows
-                                && element.inner_shadows_visible().next().is_some();
-
-                            let canvas =
-                                self.surfaces.canvas_and_mark_dirty(SurfaceId::Current);
-                            canvas.save();
-                            canvas.scale((scale, scale));
-                            canvas.translate(translation);
-                            canvas.clip_rect(tile_world, skia::ClipOp::Intersect, true);
-
-                            let src = skia::Rect::from_xywh(
-                                0.0,
-                                0.0,
-                                img.width() as f32,
-                                img.height() as f32,
-                            );
-                            let src_constraint =
-                                Some((&src, skia::canvas::SrcRectConstraint::Strict));
-
-                            // Drop shadows — behind the silhouette. The
-                            // filter consumes the displaced image's alpha
-                            // so the shadow follows the texture's warp.
-                            if !skip_shadows {
-                                for shadow in element.drop_shadows_visible() {
-                                    let Some(filter) = shadow.get_drop_shadow_filter() else {
-                                        continue;
-                                    };
-                                    let mut paint = skia::Paint::default();
-                                    paint.set_image_filter(filter);
-                                    canvas.draw_image_rect(
-                                        &img,
-                                        src_constraint,
-                                        clipped_extrect,
-                                        &paint,
-                                    );
-                                }
-                            }
-
-                            // Silhouette — wrapped in a save_layer when
-                            // there are inner shadows so `SrcATop` clips
-                            // them to the silhouette's alpha instead of
-                            // leaking onto the tile's prior content.
-                            if has_inner_shadows {
-                                canvas.save_layer(&skia::canvas::SaveLayerRec::default());
-                            }
-
-                            canvas.draw_image_rect(
-                                &img,
-                                src_constraint,
-                                clipped_extrect,
-                                &skia::Paint::default(),
-                            );
-
-                            if has_inner_shadows {
-                                for shadow in element.inner_shadows_visible() {
-                                    let Some(filter) = shadow.get_inner_shadow_filter()
-                                    else {
-                                        continue;
-                                    };
-                                    let mut paint = skia::Paint::default();
-                                    paint.set_image_filter(filter);
-                                    paint.set_blend_mode(skia::BlendMode::SrcATop);
-                                    canvas.draw_image_rect(
-                                        &img,
-                                        src_constraint,
-                                        clipped_extrect,
-                                        &paint,
-                                    );
-                                }
-                                canvas.restore();
-                            }
-
-                            canvas.restore();
+                                .get_or_snapshot_glass_backdrop(id, SurfaceId::Target);
                         }
-                    } else {
-                        // Non-scatter path: existing per-tile pipeline.
+                    }
+                    performance::end_measure!("scheduler_build_cache");
+                }
 
-                        // Background blur
-                        self.render_background_blur(element, SurfaceId::Current);
+                RenderStep::FreeCache(kind) => {
+                    match kind {
+                        CacheKind::Scatter(id) => self.surfaces.remove_scatter_output(id),
+                        CacheKind::Gather(id) => self.surfaces.remove_glass_backdrop(id),
+                    }
+                }
 
-                        // Glass effect — root-level gather shapes sample Target
-                        // (world-space continuous surface) to avoid per-tile
-                        // seams at the refraction/blur sample radius. Nested
-                        // glass still samples Current until the container-layer
-                        // fix lands.
-                        if let Some(glass) = element.glass.as_ref().filter(|g| !g.hidden) {
-                            let is_root_level = element
-                                .parent_id
-                                .is_some_and(|p| p == Uuid::nil());
-                            if is_root_level {
-                                let tile_rect = self.get_current_tile_bounds()?;
-                                let bg_color = self.background_color;
-                                self.surfaces.composite_current_to_target(tile_rect, bg_color);
-                                self.flush_and_submit();
-                                let backdrop_image = self
-                                    .surfaces
-                                    .get_or_snapshot_glass_backdrop(id, SurfaceId::Target);
-                                crate::render::glass::render_glass_with_backdrop_image(
-                                    self,
-                                    element,
-                                    glass,
-                                    SurfaceId::Current,
-                                    SurfaceId::Target,
-                                    Some(backdrop_image),
-                                );
-                            } else {
-                                crate::render::glass::render_glass(
-                                    self,
-                                    element,
-                                    glass,
-                                    SurfaceId::Current,
-                                );
-                            }
-                        }
+                RenderStep::Paint { shape: id, actions } => {
+                    performance::begin_measure!("paint_step");
+                    let Some(element) = tree.get(&id) else {
+                        performance::end_measure!("paint_step");
+                        continue;
+                    };
 
-                        // Drop shadows must land BEFORE fills/strokes on
-                        // Current; the composite step below overwrites.
-                        // Text shapes emit drop shadows via the paragraph
-                        // image filter inside `render_shape`.
-                        let skip_shadows = self.options.is_fast_mode();
-                        if !skip_shadows && !matches!(element.shape_type, Type::Text(_)) {
-                            let translation = self
-                                .surfaces
-                                .get_render_context_translation(self.render_area, scale);
-                            let node_render_state =
-                                crate::render::NodeRenderState::leaf(id);
-                            let mut extrect_cache: Option<skia::Rect> = None;
-                            self.render_element_drop_shadows_and_composite(
-                                element,
-                                tree,
-                                &mut extrect_cache,
-                                None,
-                                scale,
-                                translation,
-                                &node_render_state,
-                                SurfaceId::Current,
-                            )?;
-                        }
-
-                        self.render_shape(
-                            element,
-                            None,
-                            SurfaceId::Fills,
-                            SurfaceId::Strokes,
-                            SurfaceId::InnerShadows,
-                            SurfaceId::TextDropShadows,
-                            true,
-                            None,
-                            None,
-                            None,
-                            SurfaceId::Current,
-                        )?;
-
-                        self.apply_drawing_to_render_canvas(Some(element), SurfaceId::Current);
+                    if element.hidden {
+                        performance::end_measure!("paint_step");
+                        continue;
                     }
 
+                    // Leaf shapes don't have Enter/Exit steps, so we must
+                    // enter/exit focus_mode here to match the current renderer's
+                    // behavior (which calls enter() on every shape visit).
+                    self.focus_mode.enter(&id);
+
+                    if !self.focus_mode.is_active() {
+                        performance::end_measure!("paint_step");
+                        continue;
+                    }
+
+                    let scale = self.get_scale();
+
+                    // Visibility check against current tile. Use extrect
+                    // (not selrect) so scatter shapes whose output reaches
+                    // past selrect into this neighbour tile still fire
+                    // their Paint step here and blit their slice.
+                    let extrect = element.extrect(tree, scale);
+                    if !extrect.intersects(self.render_area_with_margins) {
+                        performance::end_measure!("paint_step");
+                        continue;
+                    }
+
+                    // V2a: walk the action list. The action list is the
+                    // scheduler-visible per-effect plan; in V2a it's always
+                    // a single `Render { effects: [LegacyAll] }` that routes
+                    // to the legacy orchestration.
+                    for action in &actions {
+                        match action {
+                            PaintAction::Render { input, output, effects } => {
+                                self.scheduler_render_effects(
+                                    element, tree, *input, *output, effects,
+                                )?;
+                            }
+                            PaintAction::BeginLayer(_) | PaintAction::EndLayer => {
+                                // V2c — not emitted yet.
+                            }
+                        }
+                    }
 
                     self.focus_mode.exit(&id);
+                    performance::end_measure!("paint_step");
                 }
 
                 RenderStep::Exit(id) => {
@@ -1923,12 +2242,11 @@ impl RenderState {
         // final). No trailing finalize needed.
 
         // Clear any stale inter-band snapshots so they don't leak into
-        // the next frame's run_schedule invocation.
+        // the next frame's run_schedule invocation. Per-gather-shape
+        // backdrops and per-scatter-shape displaced outputs are released
+        // by `RenderStep::FreeCache` steps emitted at the tail of the
+        // schedule, so no global clear is needed for them here.
         self.surfaces.clear_interband_cache();
-        // Same for per-gather-shape backdrop snapshots.
-        self.surfaces.clear_glass_backdrop_cache();
-        // Same for per-scatter-shape displaced-output snapshots.
-        self.surfaces.clear_scatter_output_cache();
 
         self.render_in_progress = false;
         self.surfaces.gc();
@@ -2854,6 +3172,547 @@ mod bench {
     #[test]
     fn bench_rebuild_e2e_many_gathers() {
         end_to_end_rebuild(1_000, 20, "1k shapes, 20 gathers");
+    }
+
+    // ── Tile-scheduler refactor benches: parameterized by (shapes, gathers, scatters) ──
+    //
+    // Times two phases:
+    //   1. Schedule build  — `tile_grid.rebuild` (pure CPU; what the per-effect
+    //      refactor changes most).
+    //   2. Schedule walk   — `grid.next()` over the entire schedule (no GPU work;
+    //      isolates pure scheduler iteration overhead).
+    //
+    // The "run the rendering" phase that actually paints into Skia surfaces is
+    // GPU-bound and lives in the browser; this CPU bench is the part we can
+    // reliably measure deterministically before/after the refactor.
+    fn end_to_end_rebuild_full(
+        n_shapes: usize,
+        n_gathers: usize,
+        n_scatters: usize,
+        label: &str,
+    ) {
+        use crate::shapes::{GlassEffect, TextureEffect};
+        use crate::state::ShapesPool;
+        use crate::view::Viewbox;
+
+        let scale = 1.0;
+        let mut pool = ShapesPool::new();
+        pool.add_shape(Uuid::nil());
+
+        // Plain shapes laid out across a 100-wide grid.
+        for i in 0..n_shapes {
+            let id = Uuid::from_u64_pair(1, i as u64);
+            let x = (i % 100) as f32 * 60.0;
+            let y = (i / 100) as f32 * 60.0;
+            let shape = pool.add_shape(id);
+            shape.id = id;
+            shape.parent_id = Some(Uuid::nil());
+            shape.selrect = skia::Rect::from_xywh(x, y, 100.0, 80.0);
+            let root = pool.get_mut(&Uuid::nil()).unwrap();
+            root.children.push(id);
+        }
+
+        // Gather (glass) shapes — root-level so they trigger the gather barrier.
+        for i in 0..n_gathers {
+            let id = Uuid::from_u64_pair(2, i as u64);
+            let x = (i * 300) as f32;
+            let y = (i * 300) as f32;
+            let shape = pool.add_shape(id);
+            shape.id = id;
+            shape.parent_id = Some(Uuid::nil());
+            shape.selrect = skia::Rect::from_xywh(x, y, 1000.0, 1000.0);
+            shape.glass = Some(GlassEffect {
+                surface_type: 0,
+                bezel_width: 10.0,
+                glass_thickness: 1.0,
+                refractive_index: 1.0,
+                specular_angle: 0.0,
+                specular_opacity: 0.0,
+                specular_saturation: 0.0,
+                chromatic_aberration: 0.0,
+                splay: 0.0,
+                tilt_angle: 0.0,
+                edge_boost: 0.0,
+                zoom: 1.0,
+                blur: 50.0,
+                frost: 0.0,
+                hidden: false,
+            });
+            let root = pool.get_mut(&Uuid::nil()).unwrap();
+            root.children.push(id);
+        }
+
+        // Scatter (texture) shapes — not gather-classified but they exercise the
+        // scatter cache codepath (BuildCache + per-tile blit after the refactor).
+        for i in 0..n_scatters {
+            let id = Uuid::from_u64_pair(3, i as u64);
+            let x = (i * 200) as f32;
+            let y = ((i * 200) + 100) as f32;
+            let shape = pool.add_shape(id);
+            shape.id = id;
+            shape.parent_id = Some(Uuid::nil());
+            shape.selrect = skia::Rect::from_xywh(x, y, 400.0, 400.0);
+            shape.texture = Some(TextureEffect::new(10.0, 5.0, true, false));
+            let root = pool.get_mut(&Uuid::nil()).unwrap();
+            root.children.push(id);
+        }
+
+        let viewbox = Viewbox::new(6400.0, 6400.0);
+        let tv = TileViewbox::new_with_interest(viewbox, 1, scale);
+
+        let mut grid = TileGrid::new();
+        // Warmup pass to prime any caches.
+        grid.rebuild(&pool, &tv, scale);
+
+        // Phase 1: schedule build.
+        let rebuild_iters = 20;
+        let start = Instant::now();
+        for _ in 0..rebuild_iters {
+            grid.rebuild(&pool, &tv, scale);
+        }
+        let rebuild_elapsed = start.elapsed();
+
+        // Phase 2: schedule walk (no GPU; pure cursor advance).
+        let walk_iters = 100;
+        let start = Instant::now();
+        for _ in 0..walk_iters {
+            grid.reset();
+            while grid.next().is_some() {}
+        }
+        let walk_elapsed = start.elapsed();
+
+        let total_bands = grid.bands.values().map(|v| v.len()).sum::<usize>();
+        println!(
+            "[bench] e2e {label}: rebuild={:.3}ms/iter, walk={:.3}µs/walk, \
+             schedule_len={}, bands={total_bands}",
+            rebuild_elapsed.as_secs_f64() * 1000.0 / rebuild_iters as f64,
+            walk_elapsed.as_secs_f64() * 1_000_000.0 / walk_iters as f64,
+            grid.schedule.len(),
+        );
+    }
+
+    #[test]
+    fn bench_rebuild_full_1k_baseline() {
+        end_to_end_rebuild_full(1_000, 0, 0, "1k shapes, 0 gathers, 0 scatters");
+    }
+
+    #[test]
+    fn bench_rebuild_full_1k_5_scatters() {
+        end_to_end_rebuild_full(1_000, 0, 5, "1k shapes, 0 gathers, 5 scatters");
+    }
+
+    #[test]
+    fn bench_rebuild_full_1k_5_gathers_5_scatters() {
+        end_to_end_rebuild_full(1_000, 5, 5, "1k shapes, 5 gathers, 5 scatters");
+    }
+
+    #[test]
+    fn bench_rebuild_full_10k_baseline() {
+        end_to_end_rebuild_full(10_000, 0, 0, "10k shapes, 0 gathers, 0 scatters");
+    }
+
+    #[test]
+    fn bench_rebuild_full_10k_with_effects() {
+        end_to_end_rebuild_full(10_000, 20, 20, "10k shapes, 20 gathers, 20 scatters");
+    }
+
+    // ── Interaction benches: drag / pan-sweep / zoom-sweep with effects ─────
+    //
+    // These build a scene like `end_to_end_rebuild_full`, then call
+    // `grid.rebuild(...)` once per frame after either mutating one shape's
+    // `selrect` (drag) or the `Viewbox` (pan / zoom). Reported metric is
+    // CPU time per frame — the cost the browser pays each animation frame
+    // during interaction.
+
+    fn build_drag_scene(
+        n_shapes: usize,
+        n_gathers: usize,
+        n_scatters: usize,
+    ) -> (crate::state::ShapesPool, Vec<Uuid>, Vec<Uuid>, Vec<Uuid>) {
+        use crate::shapes::{GlassEffect, TextureEffect};
+        use crate::state::ShapesPool;
+
+        let mut pool = ShapesPool::new();
+        pool.add_shape(Uuid::nil());
+
+        let mut plain = Vec::with_capacity(n_shapes);
+        let mut gathers = Vec::with_capacity(n_gathers);
+        let mut scatters = Vec::with_capacity(n_scatters);
+
+        for i in 0..n_shapes {
+            let id = Uuid::from_u64_pair(1, i as u64);
+            let x = (i % 100) as f32 * 60.0;
+            let y = (i / 100) as f32 * 60.0;
+            let shape = pool.add_shape(id);
+            shape.id = id;
+            shape.parent_id = Some(Uuid::nil());
+            shape.selrect = skia::Rect::from_xywh(x, y, 100.0, 80.0);
+            pool.get_mut(&Uuid::nil()).unwrap().children.push(id);
+            plain.push(id);
+        }
+
+        for i in 0..n_gathers {
+            let id = Uuid::from_u64_pair(2, i as u64);
+            let x = (i * 300) as f32;
+            let y = (i * 300) as f32;
+            let shape = pool.add_shape(id);
+            shape.id = id;
+            shape.parent_id = Some(Uuid::nil());
+            shape.selrect = skia::Rect::from_xywh(x, y, 1000.0, 1000.0);
+            shape.glass = Some(GlassEffect {
+                surface_type: 0,
+                bezel_width: 10.0,
+                glass_thickness: 1.0,
+                refractive_index: 1.0,
+                specular_angle: 0.0,
+                specular_opacity: 0.0,
+                specular_saturation: 0.0,
+                chromatic_aberration: 0.0,
+                splay: 0.0,
+                tilt_angle: 0.0,
+                edge_boost: 0.0,
+                zoom: 1.0,
+                blur: 50.0,
+                frost: 0.0,
+                hidden: false,
+            });
+            pool.get_mut(&Uuid::nil()).unwrap().children.push(id);
+            gathers.push(id);
+        }
+
+        for i in 0..n_scatters {
+            let id = Uuid::from_u64_pair(3, i as u64);
+            let x = (i * 200) as f32;
+            let y = ((i * 200) + 100) as f32;
+            let shape = pool.add_shape(id);
+            shape.id = id;
+            shape.parent_id = Some(Uuid::nil());
+            shape.selrect = skia::Rect::from_xywh(x, y, 400.0, 400.0);
+            shape.texture = Some(TextureEffect::new(10.0, 5.0, true, false));
+            pool.get_mut(&Uuid::nil()).unwrap().children.push(id);
+            scatters.push(id);
+        }
+
+        (pool, plain, gathers, scatters)
+    }
+
+    // ── Test 1: drag a plain shape with gather/scatter shapes present ───────
+
+    fn drag_plain_shape_with_effects(
+        n_shapes: usize,
+        n_gathers: usize,
+        n_scatters: usize,
+        label: &str,
+    ) {
+        use crate::view::Viewbox;
+
+        let scale = 1.0;
+        let (mut pool, plain, _gathers, _scatters) =
+            build_drag_scene(n_shapes, n_gathers, n_scatters);
+        let drag_id = plain[plain.len() / 2];
+
+        let viewbox = Viewbox::new(6400.0, 6400.0);
+        let tv = TileViewbox::new_with_interest(viewbox, 1, scale);
+
+        let mut grid = TileGrid::new();
+        grid.rebuild(&pool, &tv, scale);
+
+        let frames = 100;
+        let start = Instant::now();
+        for f in 0..frames {
+            let x = (f as f32) * 2.0;
+            let s = pool.get_mut(&drag_id).unwrap();
+            s.selrect = skia::Rect::from_xywh(x, 0.0, 100.0, 80.0);
+            grid.rebuild(&pool, &tv, scale);
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "[bench] drag plain shape ({label}, {frames} frames): {:.3}ms/frame",
+            elapsed.as_secs_f64() * 1000.0 / frames as f64
+        );
+    }
+
+    #[test]
+    fn bench_drag_plain_in_scene_baseline() {
+        drag_plain_shape_with_effects(1_000, 0, 0, "1k plain, 0 gathers, 0 scatters");
+    }
+
+    #[test]
+    fn bench_drag_plain_in_scene_5_gathers_5_scatters() {
+        drag_plain_shape_with_effects(1_000, 5, 5, "1k plain, 5 gathers, 5 scatters");
+    }
+
+    #[test]
+    fn bench_drag_plain_in_scene_20_gathers_20_scatters() {
+        drag_plain_shape_with_effects(1_000, 20, 20, "1k plain, 20 gathers, 20 scatters");
+    }
+
+    // ── Test 2: drag a gather/scatter shape itself (cache invalidation) ─────
+
+    fn drag_effect_shape_helper(
+        n_shapes: usize,
+        n_gathers: usize,
+        n_scatters: usize,
+        target: DragTarget,
+        label: &str,
+    ) {
+        use crate::view::Viewbox;
+
+        let scale = 1.0;
+        let (mut pool, _plain, gathers, scatters) =
+            build_drag_scene(n_shapes, n_gathers, n_scatters);
+
+        let (drag_id, w, h) = match target {
+            DragTarget::Gather => (
+                *gathers.first().expect("need ≥ 1 gather"),
+                1000.0_f32,
+                1000.0_f32,
+            ),
+            DragTarget::Scatter => (
+                *scatters.first().expect("need ≥ 1 scatter"),
+                400.0_f32,
+                400.0_f32,
+            ),
+        };
+
+        let viewbox = Viewbox::new(6400.0, 6400.0);
+        let tv = TileViewbox::new_with_interest(viewbox, 1, scale);
+
+        let mut grid = TileGrid::new();
+        grid.rebuild(&pool, &tv, scale);
+
+        let frames = 100;
+        let start = Instant::now();
+        for f in 0..frames {
+            let x = (f as f32) * 4.0;
+            let s = pool.get_mut(&drag_id).unwrap();
+            s.selrect = skia::Rect::from_xywh(x, 0.0, w, h);
+            grid.rebuild(&pool, &tv, scale);
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "[bench] drag {target:?} shape ({label}, {frames} frames): {:.3}ms/frame",
+            elapsed.as_secs_f64() * 1000.0 / frames as f64
+        );
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    enum DragTarget {
+        Gather,
+        Scatter,
+    }
+
+    #[test]
+    fn bench_drag_gather_alone() {
+        drag_effect_shape_helper(
+            1_000,
+            1,
+            0,
+            DragTarget::Gather,
+            "1k plain, 1 gather, 0 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_drag_gather_with_peers() {
+        drag_effect_shape_helper(
+            1_000,
+            5,
+            5,
+            DragTarget::Gather,
+            "1k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_drag_scatter_with_peers() {
+        drag_effect_shape_helper(
+            1_000,
+            5,
+            5,
+            DragTarget::Scatter,
+            "1k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    // ── Test 3: pan-sweep / zoom-sweep across the scene ────────────────────
+
+    #[derive(Debug, Copy, Clone)]
+    enum SweepMode {
+        Pan,
+        Zoom,
+    }
+
+    fn pan_zoom_sweep(
+        n_shapes: usize,
+        n_gathers: usize,
+        n_scatters: usize,
+        mode: SweepMode,
+        label: &str,
+    ) {
+        use crate::view::Viewbox;
+
+        let scale = 1.0;
+        let (pool, _plain, _gathers, _scatters) = build_drag_scene(n_shapes, n_gathers, n_scatters);
+
+        let mut viewbox = Viewbox::new(1920.0, 1080.0);
+        viewbox.set_all(1.0, 0.0, 0.0);
+
+        let tv_warm = TileViewbox::new_with_interest(viewbox, 1, scale);
+        let mut grid = TileGrid::new();
+        grid.rebuild(&pool, &tv_warm, scale);
+
+        let frames = 100;
+        let start = Instant::now();
+        for f in 0..frames {
+            match mode {
+                SweepMode::Pan => {
+                    // Sweep right across the 100×N grid (60px stride per frame).
+                    let pan_x = -(f as f32) * 60.0;
+                    viewbox.set_all(1.0, pan_x, 0.0);
+                }
+                SweepMode::Zoom => {
+                    // Geometric zoom from 0.25× to 4× across `frames` steps.
+                    let t = f as f32 / (frames - 1).max(1) as f32;
+                    let zoom = 0.25 * (16.0_f32).powf(t);
+                    viewbox.set_all(zoom, 0.0, 0.0);
+                }
+            }
+            let tv = TileViewbox::new_with_interest(viewbox, 1, scale);
+            grid.rebuild(&pool, &tv, scale);
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "[bench] {mode:?}-sweep ({label}, {frames} frames): {:.3}ms/frame",
+            elapsed.as_secs_f64() * 1000.0 / frames as f64
+        );
+    }
+
+    #[test]
+    fn bench_pan_sweep_baseline() {
+        pan_zoom_sweep(
+            1_000,
+            0,
+            0,
+            SweepMode::Pan,
+            "1k plain, 0 gathers, 0 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_pan_sweep_with_effects() {
+        pan_zoom_sweep(
+            1_000,
+            5,
+            5,
+            SweepMode::Pan,
+            "1k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_zoom_sweep_baseline() {
+        pan_zoom_sweep(
+            1_000,
+            0,
+            0,
+            SweepMode::Zoom,
+            "1k plain, 0 gathers, 0 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_zoom_sweep_with_effects() {
+        pan_zoom_sweep(
+            1_000,
+            5,
+            5,
+            SweepMode::Zoom,
+            "1k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    // ── 10k-shape variants of the interaction benches ──────────────────────
+
+    #[test]
+    fn bench_drag_plain_in_scene_10k_baseline() {
+        drag_plain_shape_with_effects(10_000, 0, 0, "10k plain, 0 gathers, 0 scatters");
+    }
+
+    #[test]
+    fn bench_drag_plain_in_scene_10k_5_gathers_5_scatters() {
+        drag_plain_shape_with_effects(10_000, 5, 5, "10k plain, 5 gathers, 5 scatters");
+    }
+
+    #[test]
+    fn bench_drag_plain_in_scene_10k_20_gathers_20_scatters() {
+        drag_plain_shape_with_effects(10_000, 20, 20, "10k plain, 20 gathers, 20 scatters");
+    }
+
+    #[test]
+    fn bench_drag_gather_with_peers_10k() {
+        drag_effect_shape_helper(
+            10_000,
+            5,
+            5,
+            DragTarget::Gather,
+            "10k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_drag_scatter_with_peers_10k() {
+        drag_effect_shape_helper(
+            10_000,
+            5,
+            5,
+            DragTarget::Scatter,
+            "10k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_pan_sweep_10k_baseline() {
+        pan_zoom_sweep(
+            10_000,
+            0,
+            0,
+            SweepMode::Pan,
+            "10k plain, 0 gathers, 0 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_pan_sweep_10k_with_effects() {
+        pan_zoom_sweep(
+            10_000,
+            5,
+            5,
+            SweepMode::Pan,
+            "10k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_zoom_sweep_10k_baseline() {
+        pan_zoom_sweep(
+            10_000,
+            0,
+            0,
+            SweepMode::Zoom,
+            "10k plain, 0 gathers, 0 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_zoom_sweep_10k_with_effects() {
+        pan_zoom_sweep(
+            10_000,
+            5,
+            5,
+            SweepMode::Zoom,
+            "10k plain, 5 gathers, 5 scatters",
+        );
     }
 }
 

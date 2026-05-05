@@ -41,6 +41,14 @@ pub fn render_with_filter_surface<F>(
 where
     F: FnOnce(&mut RenderState, SurfaceId) -> Result<()>,
 {
+    // Caller is rendering INTO the Filter surface itself (e.g. the scatter
+    // displacement scratch in `render/texture.rs`). Bouncing through Filter
+    // again would clear the active save_layer's offscreen and snapshot the
+    // surface base (separate memory), producing empty output. Punt — caller
+    // falls through to the direct `paint.set_image_filter` path.
+    if target_surface == SurfaceId::Filter {
+        return Ok(false);
+    }
     if let Some((mut surface, scale)) =
         render_into_filter_surface(render_state, bounds, 1.0, draw_fn)?
     {
