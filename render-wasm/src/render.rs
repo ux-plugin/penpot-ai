@@ -18,7 +18,11 @@ pub(crate) mod ui;
 
 use skia_safe::{self as skia, Matrix, RRect, Rect};
 use std::borrow::Cow;
-use std::collections::HashSet;
+
+// FxHashSet aliased as HashSet — same API, faster hashing for small keys
+// (Tile, Uuid). Kept consistent with `tile_grid::HashSet` so values cross
+// the module boundary without conversion.
+use crate::tile_grid::HashSet;
 
 use gpu_state::GpuState;
 
@@ -2816,7 +2820,10 @@ impl RenderState {
             .get_tiles_of(shape.id)
             .map_or(Vec::new(), |t| t.iter().copied().collect());
 
-        let mut result = HashSet::<tiles::Tile>::with_capacity(old_tiles.len());
+        let mut result = HashSet::<tiles::Tile>::with_capacity_and_hasher(
+            old_tiles.len(),
+            Default::default(),
+        );
 
         // First, remove the shape from all tiles where it was previously located
         for tile in old_tiles {

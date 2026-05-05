@@ -8,7 +8,15 @@
 
 #![cfg(feature = "tile-scheduler")]
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::BinaryHeap;
+
+// Hash map/set used throughout this module are FxHash-backed: small-key
+// hashing (Tile = (i32, i32), BandKey, Uuid) dominates the scheduler hot
+// path, and SipHash (the std default) is ~3-4× slower than FxHash on
+// these tiny keys. Aliasing the names so the rest of the module reads
+// like ordinary `HashMap` / `HashSet` code.
+pub use rustc_hash::FxHashMap as HashMap;
+pub use rustc_hash::FxHashSet as HashSet;
 
 use skia_safe as skia;
 
@@ -406,13 +414,13 @@ fn paint_step_for_shape(shape: &Shape) -> RenderStep {
 impl TileGrid {
     pub fn new() -> Self {
         TileGrid {
-            grid: HashMap::new(),
-            index: HashMap::new(),
-            bands: HashMap::new(),
+            grid: HashMap::default(),
+            index: HashMap::default(),
+            bands: HashMap::default(),
             schedule: Vec::new(),
             cursor: 0,
-            emitted_caches: HashSet::new(),
-            root_tiles: HashMap::new(),
+            emitted_caches: HashSet::default(),
+            root_tiles: HashMap::default(),
         }
     }
 
@@ -574,7 +582,7 @@ impl TileGrid {
     ) -> HashSet<Tile> {
         let tile_size = tiles::get_tile_size(scale);
         let interest_rect = &tile_viewbox.interest_rect;
-        let mut affected_tiles = HashSet::new();
+        let mut affected_tiles = HashSet::default();
 
         // If every touched shape's paint_order can be recovered from its
         // existing grid entry, the depth-first paint counter is unchanged
@@ -894,7 +902,7 @@ impl TileGrid {
     ) {
         // Pre-pass: for each gather, push its paint_order into every
         // sample-region tile's barrier list.
-        let mut barriers: HashMap<Tile, Vec<u32>> = HashMap::new();
+        let mut barriers: HashMap<Tile, Vec<u32>> = HashMap::default();
 
         // Collect (gather_tile, shape_id, paint_order) first to avoid
         // borrowing self.grid twice (compute_gather_sample_rect takes &self).
@@ -1026,7 +1034,7 @@ impl TileGrid {
         interest_rect: &TileRect,
         scale: f32,
     ) -> HashMap<BandKey, HashSet<BandKey>> {
-        let mut deps: HashMap<BandKey, HashSet<BandKey>> = HashMap::new();
+        let mut deps: HashMap<BandKey, HashSet<BandKey>> = HashMap::default();
 
         // Precompute the "strictly-below-G backstop" source: every
         // non-gather band, sorted by max_paint_order. For a gather with
@@ -1131,7 +1139,7 @@ impl TileGrid {
         scale: f32,
     ) -> HashSet<Tile> {
         let tile_size = tiles::get_tile_size(scale);
-        let mut result: HashSet<Tile> = HashSet::new();
+        let mut result: HashSet<Tile> = HashSet::default();
         if dirty_tiles.is_empty() {
             return result;
         }
@@ -1275,8 +1283,8 @@ impl TileGrid {
 
         // In-degree + reverse adjacency restricted to keys that actually
         // exist (deps from/to tiles outside the spiral are ignored).
-        let mut in_degree: HashMap<BandKey, usize> = HashMap::new();
-        let mut reverse_deps: HashMap<BandKey, Vec<BandKey>> = HashMap::new();
+        let mut in_degree: HashMap<BandKey, usize> = HashMap::default();
+        let mut reverse_deps: HashMap<BandKey, Vec<BandKey>> = HashMap::default();
 
         for (key, dep_set) in deps {
             if !key_set.contains(key) {
@@ -1380,7 +1388,7 @@ impl TileGrid {
         // `self.root_tiles` directly would conflict with the `&mut self`
         // call. Each clone is small (only root shapes touching that tile).
         let mut visible_roots: HashMap<Tile, (skia::Rect, Vec<Uuid>)> =
-            HashMap::with_capacity(sorted_bands.len().min(256));
+            HashMap::with_capacity_and_hasher(sorted_bands.len().min(256), Default::default());
         for key in sorted_bands {
             if visible_roots.contains_key(&key.tile) {
                 continue;
@@ -2445,7 +2453,7 @@ impl RenderState {
             .get_tiles_of(&shape.id)
             .map_or(Vec::new(), |t| t.iter().copied().collect());
 
-        let mut result = HashSet::with_capacity(old_tiles.len());
+        let mut result = HashSet::with_capacity_and_hasher(old_tiles.len(), Default::default());
 
         for tile in old_tiles {
             self.tile_grid.remove_shape_at(tile, shape.id);
@@ -2482,7 +2490,7 @@ impl RenderState {
         let old_tiles: HashSet<Tile> = self
             .tile_grid
             .get_tiles_of(&shape.id)
-            .map_or(HashSet::new(), |tiles| tiles.iter().copied().collect());
+            .map_or(HashSet::default(), |tiles| tiles.iter().copied().collect());
 
         let new_tiles: HashSet<Tile> = (rsx..=rex)
             .flat_map(|x| (rsy..=rey).map(move |y| Tile::from(x, y)))
@@ -2611,7 +2619,7 @@ impl RenderState {
         shape_ids: &[Uuid],
         tree: ShapesPoolMutRef<'_>,
     ) -> Result<()> {
-        let mut all_tiles = HashSet::new();
+        let mut all_tiles = HashSet::default();
         for shape_id in shape_ids {
             if let Some(shape) = tree.get(shape_id) {
                 all_tiles.extend(self.update_shape_tiles(shape, tree));
@@ -2639,7 +2647,7 @@ impl RenderState {
         let ancestors = all_with_ancestors(&ids, tree, false);
 
         // Re-index affected shapes and invalidate their tiles
-        let mut all_tiles = HashSet::new();
+        let mut all_tiles = HashSet::default();
         for shape_id in &ancestors {
             if let Some(shape) = tree.get(shape_id) {
                 all_tiles.extend(self.update_shape_tiles(shape, tree));
@@ -3184,7 +3192,7 @@ mod bench {
         let iterations = 100;
         let start = Instant::now();
         for _ in 0..iterations {
-            let mut deps: HashMap<BandKey, HashSet<BandKey>> = HashMap::new();
+            let mut deps: HashMap<BandKey, HashSet<BandKey>> = HashMap::default();
             for (tile, entries) in &grid.grid {
                 for entry in entries {
                     if entry.has_gather {
@@ -3879,7 +3887,7 @@ mod bench {
         // Initial full build — incremental update assumes a primed grid.
         grid.rebuild(&pool, &tv, scale);
 
-        let mut touched: HashSet<Uuid> = HashSet::with_capacity(1);
+        let mut touched: HashSet<Uuid> = HashSet::with_capacity_and_hasher(1, Default::default());
 
         let frames = 100;
         let start = Instant::now();
@@ -3931,7 +3939,7 @@ mod bench {
         let mut grid = TileGrid::new();
         grid.rebuild(&pool, &tv, scale);
 
-        let mut touched: HashSet<Uuid> = HashSet::with_capacity(1);
+        let mut touched: HashSet<Uuid> = HashSet::with_capacity_and_hasher(1, Default::default());
 
         let frames = 100;
         let start = Instant::now();
@@ -4064,7 +4072,7 @@ mod bench {
         let mut grid = TileGrid::new();
         grid.rebuild(&pool, &tv, scale);
 
-        let mut touched: HashSet<Uuid> = HashSet::with_capacity(1);
+        let mut touched: HashSet<Uuid> = HashSet::with_capacity_and_hasher(1, Default::default());
 
         let frames = 100;
         let start = Instant::now();
@@ -4368,14 +4376,14 @@ mod scheduling_tests {
         let tv = make_tile_viewbox(scale);
         grid.rebuild(&pool, &tv, scale);
 
-        let mut expected: HashSet<BandKey> = HashSet::new();
+        let mut expected: HashSet<BandKey> = HashSet::default();
         for (tile, bands) in &grid.bands {
             for idx in 0..bands.len() {
                 expected.insert(BandKey::new(*tile, idx as u32));
             }
         }
 
-        let mut got: HashSet<BandKey> = HashSet::new();
+        let mut got: HashSet<BandKey> = HashSet::default();
         for step in &grid.schedule {
             if let RenderStep::SetTileBand { tile, band_index, .. } = step {
                 let key = BandKey::new(*tile, *band_index);

@@ -427,6 +427,7 @@ dependencies = [
  "glam",
  "indexmap",
  "macros",
+ "rustc-hash",
  "skia-safe",
  "thiserror",
  "uuid",
