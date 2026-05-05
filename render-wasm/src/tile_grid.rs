@@ -1364,32 +1364,40 @@ impl TileGrid {
             visible_roots.insert(key.tile, (tile_rect, visible));
         }
 
+        // Move `self.bands` out for the duration of the band loop so we can
+        // hand `&[Uuid]` slices into `&mut self.emit_shape_steps_checked`
+        // without the previous per-band `band.shapes.clone()` and per-band
+        // `HashSet<Uuid>` allocation. At 14k bands that was ~14k clones +
+        // ~14k hashset allocations per rebuild. Slice + linear `.contains`
+        // is faster than HashSet for typical band sizes (<32 shapes).
+        // `self.bands` is restored at the end of the loop.
+        let bands_taken = std::mem::take(&mut self.bands);
+
         for key in sorted_bands {
             // Productive bands only — every key here has a matching Band.
             // The `_ => (None, true, true)` branch that used to handle
             // synthetic empty-tile BandKeys is unreachable now (empty tiles
             // are emitted in the tail below); keep a defensive fallback so a
             // future regression doesn't silently drop a tile clear.
-            let (band_shapes_owned, is_first, is_last) = match self.bands.get(&key.tile) {
-                Some(bands) if !bands.is_empty() => {
-                    let total = bands.len();
-                    let idx = key.band_index as usize;
-                    let band = bands.get(idx);
-                    let is_last = idx + 1 == total;
-                    // Clone the small band.shapes slice so we drop the
-                    // borrow on self.bands before calling &mut self below.
-                    let shapes = band.map(|b| b.shapes.clone());
-                    (shapes, idx == 0, is_last)
-                }
-                _ => {
-                    debug_assert!(
-                        false,
-                        "build_schedule: sorted_bands key {:?} missing a productive band",
-                        key
-                    );
-                    (None, true, true)
-                }
-            };
+            let (band_shape_slice, is_first, is_last): (&[Uuid], bool, bool) =
+                match bands_taken.get(&key.tile) {
+                    Some(bands) if !bands.is_empty() => {
+                        let total = bands.len();
+                        let idx = key.band_index as usize;
+                        let band = bands.get(idx);
+                        let is_last = idx + 1 == total;
+                        let shapes: &[Uuid] = band.map(|b| b.shapes.as_slice()).unwrap_or(&[]);
+                        (shapes, idx == 0, is_last)
+                    }
+                    _ => {
+                        debug_assert!(
+                            false,
+                            "build_schedule: sorted_bands key {:?} missing a productive band",
+                            key
+                        );
+                        (&[], true, true)
+                    }
+                };
 
             self.schedule.push(RenderStep::SetTileBand {
                 tile: key.tile,
@@ -1398,18 +1406,9 @@ impl TileGrid {
                 is_last,
             });
 
-            let band_has_shapes = band_shapes_owned
-                .as_ref()
-                .is_some_and(|v| !v.is_empty());
+            let band_has_shapes = !band_shape_slice.is_empty();
 
             if band_has_shapes {
-                let band_shape_vec = band_shapes_owned.as_ref().unwrap();
-                let band_shapes: HashSet<Uuid> =
-                    band_shape_vec.iter().copied().collect();
-                // Borrow the cached (tile_rect, visible) once per band.
-                // `visible_roots` is a local map disjoint from `self`, so
-                // holding a shared borrow on it while calling
-                // `&mut self.emit_shape_steps_checked` is OK under NLL.
                 if let Some((tile_rect, visible)) = visible_roots.get(&key.tile) {
                     let tile_rect = *tile_rect;
                     for root_id in visible.iter() {
@@ -1419,7 +1418,7 @@ impl TileGrid {
                             tree,
                             &tile_rect,
                             scale,
-                            &band_shapes,
+                            band_shape_slice,
                             /*skip_self_check=*/ true,
                         );
                     }
@@ -1440,6 +1439,10 @@ impl TileGrid {
                 kind,
             });
         }
+
+        // Restore `self.bands` so downstream code (e.g. `run_schedule`'s
+        // `SetTileBand` cached-tile fast path) can read the band layout.
+        self.bands = bands_taken;
 
         // Empty-tile clearing tail. Tiles inside the interest rect that
         // carry no productive bands still need their Target pixels cleared,
@@ -1497,7 +1500,7 @@ impl TileGrid {
         tree: ShapesPoolRef,
         tile_rect: &skia::Rect,
         scale: f32,
-        band_shapes: &HashSet<Uuid>,
+        band_shapes: &[Uuid],
         skip_self_check: bool,
     ) -> bool {
         let Some(shape) = tree.get(&shape_id) else {
@@ -1640,7 +1643,7 @@ impl TileGrid {
 fn subtree_has_band_shape(
     shape: &Shape,
     tree: ShapesPoolRef,
-    band_shapes: &HashSet<Uuid>,
+    band_shapes: &[Uuid],
 ) -> bool {
     for child_id in shape.children_ids(false) {
         if band_shapes.contains(&child_id) {
