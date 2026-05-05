@@ -1424,8 +1424,10 @@ impl Shape {
     pub fn get_skia_path(&self) -> Option<skia::Path> {
         if let Some(path) = self.shape_type.path() {
             let mut skia_path = path.to_skia_path();
-            if let Some(path_transform) = self.to_path_transform() {
-                skia_path = skia_path.make_transform(&path_transform);
+            if !math::identitish(&self.transform) {
+                if let Some(path_transform) = self.to_path_transform() {
+                    skia_path = skia_path.make_transform(&path_transform);
+                }
             }
             if let Some(svg_attrs) = &self.svg_attrs {
                 if svg_attrs.fill_rule == FillRule::Evenodd {
@@ -1439,6 +1441,19 @@ impl Shape {
     }
 
     fn transform_selrect(&mut self, transform: &Matrix) {
+        if math::is_move_only_matrix(transform) {
+            let tx = transform.translate_x();
+            let ty = transform.translate_y();
+            // `self.transform` (rotation/scale around center) is unchanged by translation.
+            self.selrect = math::Rect::from_xywh(
+                self.selrect.left + tx,
+                self.selrect.top + ty,
+                self.selrect.width(),
+                self.selrect.height(),
+            );
+            return;
+        }
+
         let mut center = self.selrect.center();
         center = transform.map_point(center);
 
@@ -1460,9 +1475,23 @@ impl Shape {
     pub fn apply_transform(&mut self, transform: &Matrix) {
         self.transform_selrect(transform);
 
-        // TODO: See if we can change this invalidation to a transformation
-        self.invalidate_extrect();
-        self.invalidate_bounds();
+        // Outsets (strokes, shadows, blur, children) are translation-invariant,
+        // so the cached extrect can be shifted instead of invalidated.
+        if math::is_move_only_matrix(transform) {
+            let tx = transform.translate_x();
+            let ty = transform.translate_y();
+            if let Some(rect) = self.extrect_cache.borrow_mut().as_mut() {
+                *rect = math::Rect::from_xywh(
+                    rect.left + tx,
+                    rect.top + ty,
+                    rect.width(),
+                    rect.height(),
+                );
+            }
+        } else {
+            self.invalidate_extrect();
+            self.invalidate_bounds();
+        }
 
         if let shape_type @ (Type::Path(_) | Type::Bool(_)) = &mut self.shape_type {
             if let Some(path) = shape_type.path_mut() {
