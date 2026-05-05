@@ -535,14 +535,14 @@ impl TileGrid {
         let deps = self.build_dependency_graph(tree, tile_size, interest_rect, scale);
 
         // Step 5: Topological sort with priority
-        let sorted_bands = self.topological_sort(
+        let (sorted_bands, empty_tiles) = self.topological_sort(
             &spiral,
             &deps,
             tile_viewbox,
         );
 
         // Step 6: Flatten into render schedule
-        self.build_schedule(&sorted_bands, tree, scale);
+        self.build_schedule(&sorted_bands, &empty_tiles, tree, scale);
 
         performance::end_measure!("tile_grid_rebuild");
     }
@@ -618,8 +618,9 @@ impl TileGrid {
         self.compute_bands(tree, tile_size, interest_rect, scale);
         let spiral = Self::generate_spiral(interest_rect);
         let deps = self.build_dependency_graph(tree, tile_size, interest_rect, scale);
-        let sorted_bands = self.topological_sort(&spiral, &deps, tile_viewbox);
-        self.build_schedule(&sorted_bands, tree, scale);
+        let (sorted_bands, empty_tiles) =
+            self.topological_sort(&spiral, &deps, tile_viewbox);
+        self.build_schedule(&sorted_bands, &empty_tiles, tree, scale);
 
         affected_tiles
     }
@@ -1119,7 +1120,7 @@ impl TileGrid {
         spiral: &[Tile],
         deps: &HashMap<BandKey, HashSet<BandKey>>,
         tile_viewbox: &TileViewbox,
-    ) -> Vec<BandKey> {
+    ) -> (Vec<BandKey>, Vec<Tile>) {
         // Build spiral index for priority tiebreak.
         let spiral_index: HashMap<Tile, usize> = spiral
             .iter()
@@ -1127,13 +1128,17 @@ impl TileGrid {
             .map(|(i, t)| (*t, i))
             .collect();
 
-        // Enumerate every spiral tile as ≥ 1 node. Tiles with bands emit
-        // one BandKey per band. Tiles with no bands (viewport tiles whose
-        // shapes moved away and the tile is now empty) emit a synthetic
-        // BandKey(tile, 0) so `run_schedule` still fires `SetTileBand` on
-        // them — without this the tile's pixels on Target persist from a
-        // previous frame and we see stale content.
+        // Tiles with bands emit one BandKey per band → topo-sorted via Kahn.
+        // Tiles with no bands (viewport tiles whose shapes moved away and the
+        // tile is now empty) get collected separately and emitted at the end
+        // of the schedule as bare clearing pairs (`SetTileBand` +
+        // `FinalizeBand{LastBg}`), without going through topo. They have no
+        // deps and nothing depends on them, so order vs. productive bands is
+        // visually irrelevant — keeping them out of topo cuts node count by
+        // ~10× for typical viewports (e.g. 1920×1080 → ~50 productive vs.
+        // ~600 total interest tiles).
         let mut all_keys: Vec<BandKey> = Vec::new();
+        let mut empty_tiles: Vec<Tile> = Vec::new();
         for tile in spiral {
             match self.bands.get(tile) {
                 Some(bands) if !bands.is_empty() => {
@@ -1142,7 +1147,7 @@ impl TileGrid {
                     }
                 }
                 _ => {
-                    all_keys.push(BandKey::new(*tile, 0));
+                    empty_tiles.push(*tile);
                 }
             }
         }
@@ -1220,15 +1225,19 @@ impl TileGrid {
             all_keys.len()
         );
 
-        sorted
+        (sorted, empty_tiles)
     }
 
     /// Flatten the sorted band list into a Vec<RenderStep>. For each band,
     /// emits `SetTileBand` + depth-first shape traversal filtered to shapes
-    /// in this band's shape set.
+    /// in this band's shape set. Empty interest tiles (no productive bands)
+    /// are emitted as a tail of bare `SetTileBand` + `FinalizeBand{LastBg}`
+    /// pairs so their pixels get cleared on Target without spending topo
+    /// nodes on them.
     fn build_schedule(
         &mut self,
         sorted_bands: &[BandKey],
+        empty_tiles: &[Tile],
         tree: ShapesPoolRef,
         scale: f32,
     ) {
@@ -1249,23 +1258,14 @@ impl TileGrid {
         // then skips the redundant top-level intersection check for these
         // pre-filtered roots.
         //
-        // Only build the cache for *productive* tiles — tiles that own at
-        // least one band carrying shapes. The spiral includes every tile in
-        // the interest rect as a synthetic empty BandKey to clear stale
-        // pixels, but those bands never invoke the emit path, so caching
-        // their visible-roots would be pure waste. For a 6400×6400 viewbox
-        // this can mean 2.5k synthetic tiles vs. ~24 productive tiles.
+        // Only productive tiles reach this loop now (empty tiles are routed
+        // through the tail emission below), so the productivity filter that
+        // used to live here is gone — every key in `sorted_bands` carries
+        // shapes by construction.
         let mut visible_roots: HashMap<Tile, (skia::Rect, Vec<Uuid>)> =
             HashMap::with_capacity(sorted_bands.len().min(256));
         for key in sorted_bands {
             if visible_roots.contains_key(&key.tile) {
-                continue;
-            }
-            let productive = self
-                .bands
-                .get(&key.tile)
-                .is_some_and(|bs| bs.iter().any(|b| !b.shapes.is_empty()));
-            if !productive {
                 continue;
             }
             let tile_rect = tiles::get_tile_rect(key.tile, scale);
@@ -1294,10 +1294,11 @@ impl TileGrid {
         }
 
         for key in sorted_bands {
-            // A synthetic empty-tile BandKey has no matching Band. Emit a
-            // single SetTileBand + FinalizeBand { LastBg } pair so
-            // run_schedule clears Target at this tile rect (preventing stale
-            // pixels from a previous frame when shapes move away).
+            // Productive bands only — every key here has a matching Band.
+            // The `_ => (None, true, true)` branch that used to handle
+            // synthetic empty-tile BandKeys is unreachable now (empty tiles
+            // are emitted in the tail below); keep a defensive fallback so a
+            // future regression doesn't silently drop a tile clear.
             let (band_shapes_owned, is_first, is_last) = match self.bands.get(&key.tile) {
                 Some(bands) if !bands.is_empty() => {
                     let total = bands.len();
@@ -1309,7 +1310,14 @@ impl TileGrid {
                     let shapes = band.map(|b| b.shapes.clone());
                     (shapes, idx == 0, is_last)
                 }
-                _ => (None, true, true),
+                _ => {
+                    debug_assert!(
+                        false,
+                        "build_schedule: sorted_bands key {:?} missing a productive band",
+                        key
+                    );
+                    (None, true, true)
+                }
             };
 
             self.schedule.push(RenderStep::SetTileBand {
@@ -1359,6 +1367,28 @@ impl TileGrid {
             self.schedule.push(RenderStep::FinalizeBand {
                 tile: key.tile,
                 kind,
+            });
+        }
+
+        // Empty-tile clearing tail. Tiles inside the interest rect that
+        // carry no productive bands still need their Target pixels cleared,
+        // otherwise stale content from a previous frame remains visible
+        // when shapes move away. Emit a bare `SetTileBand` +
+        // `FinalizeBand{LastBg}` pair per empty tile, in spiral order. They
+        // have no shape content, no deps, and nothing depends on them — so
+        // batching after productive bands is correct (tile rects are
+        // disjoint; productive painting on tile T can't be undone by a
+        // later clear of tile T' ≠ T).
+        for tile in empty_tiles {
+            self.schedule.push(RenderStep::SetTileBand {
+                tile: *tile,
+                band_index: 0,
+                is_first: true,
+                is_last: true,
+            });
+            self.schedule.push(RenderStep::FinalizeBand {
+                tile: *tile,
+                kind: FinalizeKind::LastBg,
             });
         }
 
@@ -3713,6 +3743,276 @@ mod bench {
             SweepMode::Zoom,
             "10k plain, 5 gathers, 5 scatters",
         );
+    }
+
+    // ── Incremental drag benches: `update_touched` instead of full `rebuild`
+    //
+    // Same scenes as the `drag_plain_*` / `drag_*_with_peers*` benches above,
+    // but the per-frame schedule update goes through `update_touched(&{id})`
+    // — the path production already uses via `rebuild_touched_tiles` ([
+    // tile_grid.rs:2445]). This isolates the incremental indexing win.
+    // Bands/deps/topo/schedule are still rebuilt fully inside `update_touched`,
+    // so the win is bounded to skipping the full shape-tree walk in `rebuild`'s
+    // Step 1.
+
+    fn drag_plain_shape_incremental(
+        n_shapes: usize,
+        n_gathers: usize,
+        n_scatters: usize,
+        label: &str,
+    ) {
+        use crate::view::Viewbox;
+
+        let scale = 1.0;
+        let (mut pool, plain, _gathers, _scatters) =
+            build_drag_scene(n_shapes, n_gathers, n_scatters);
+        let drag_id = plain[plain.len() / 2];
+
+        let viewbox = Viewbox::new(6400.0, 6400.0);
+        let tv = TileViewbox::new_with_interest(viewbox, 1, scale);
+
+        let mut grid = TileGrid::new();
+        // Initial full build — incremental update assumes a primed grid.
+        grid.rebuild(&pool, &tv, scale);
+
+        let mut touched: HashSet<Uuid> = HashSet::with_capacity(1);
+
+        let frames = 100;
+        let start = Instant::now();
+        for f in 0..frames {
+            let x = (f as f32) * 2.0;
+            let s = pool.get_mut(&drag_id).unwrap();
+            s.selrect = skia::Rect::from_xywh(x, 0.0, 100.0, 80.0);
+
+            touched.clear();
+            touched.insert(drag_id);
+            let _ = grid.update_touched(&touched, &pool, &tv, scale);
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "[bench] drag plain incremental ({label}, {frames} frames): {:.3}ms/frame",
+            elapsed.as_secs_f64() * 1000.0 / frames as f64
+        );
+    }
+
+    fn drag_effect_shape_incremental(
+        n_shapes: usize,
+        n_gathers: usize,
+        n_scatters: usize,
+        target: DragTarget,
+        label: &str,
+    ) {
+        use crate::view::Viewbox;
+
+        let scale = 1.0;
+        let (mut pool, _plain, gathers, scatters) =
+            build_drag_scene(n_shapes, n_gathers, n_scatters);
+
+        let (drag_id, w, h) = match target {
+            DragTarget::Gather => (
+                *gathers.first().expect("need ≥ 1 gather"),
+                1000.0_f32,
+                1000.0_f32,
+            ),
+            DragTarget::Scatter => (
+                *scatters.first().expect("need ≥ 1 scatter"),
+                400.0_f32,
+                400.0_f32,
+            ),
+        };
+
+        let viewbox = Viewbox::new(6400.0, 6400.0);
+        let tv = TileViewbox::new_with_interest(viewbox, 1, scale);
+
+        let mut grid = TileGrid::new();
+        grid.rebuild(&pool, &tv, scale);
+
+        let mut touched: HashSet<Uuid> = HashSet::with_capacity(1);
+
+        let frames = 100;
+        let start = Instant::now();
+        for f in 0..frames {
+            let x = (f as f32) * 4.0;
+            let s = pool.get_mut(&drag_id).unwrap();
+            s.selrect = skia::Rect::from_xywh(x, 0.0, w, h);
+
+            touched.clear();
+            touched.insert(drag_id);
+            let _ = grid.update_touched(&touched, &pool, &tv, scale);
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "[bench] drag {target:?} incremental ({label}, {frames} frames): {:.3}ms/frame",
+            elapsed.as_secs_f64() * 1000.0 / frames as f64
+        );
+    }
+
+    // 1k incremental drag variants
+    #[test]
+    fn bench_drag_plain_incremental_baseline() {
+        drag_plain_shape_incremental(1_000, 0, 0, "1k plain, 0 gathers, 0 scatters");
+    }
+
+    #[test]
+    fn bench_drag_plain_incremental_5_gathers_5_scatters() {
+        drag_plain_shape_incremental(1_000, 5, 5, "1k plain, 5 gathers, 5 scatters");
+    }
+
+    #[test]
+    fn bench_drag_plain_incremental_20_gathers_20_scatters() {
+        drag_plain_shape_incremental(1_000, 20, 20, "1k plain, 20 gathers, 20 scatters");
+    }
+
+    #[test]
+    fn bench_drag_gather_incremental_with_peers() {
+        drag_effect_shape_incremental(
+            1_000,
+            5,
+            5,
+            DragTarget::Gather,
+            "1k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_drag_scatter_incremental_with_peers() {
+        drag_effect_shape_incremental(
+            1_000,
+            5,
+            5,
+            DragTarget::Scatter,
+            "1k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    // 10k incremental drag variants
+    #[test]
+    fn bench_drag_plain_incremental_10k_baseline() {
+        drag_plain_shape_incremental(10_000, 0, 0, "10k plain, 0 gathers, 0 scatters");
+    }
+
+    #[test]
+    fn bench_drag_plain_incremental_10k_5_gathers_5_scatters() {
+        drag_plain_shape_incremental(10_000, 5, 5, "10k plain, 5 gathers, 5 scatters");
+    }
+
+    #[test]
+    fn bench_drag_plain_incremental_10k_20_gathers_20_scatters() {
+        drag_plain_shape_incremental(10_000, 20, 20, "10k plain, 20 gathers, 20 scatters");
+    }
+
+    #[test]
+    fn bench_drag_gather_incremental_with_peers_10k() {
+        drag_effect_shape_incremental(
+            10_000,
+            5,
+            5,
+            DragTarget::Gather,
+            "10k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    #[test]
+    fn bench_drag_scatter_incremental_with_peers_10k() {
+        drag_effect_shape_incremental(
+            10_000,
+            5,
+            5,
+            DragTarget::Scatter,
+            "10k plain, 5 gathers, 5 scatters",
+        );
+    }
+
+    // ── Drag with REALISTIC 1920×1080 viewport ─────────────────────────────
+    //
+    // The drag_plain_* benches above use a 6400×6400 viewbox so the interest
+    // rect covers every shape in the test scene. That makes Step 3-6 of
+    // `rebuild` (compute_bands, build_dep_graph, topo_sort, build_schedule)
+    // walk ~14k entries. In that regime, skipping Step 1's full shape walk
+    // (the only thing `update_touched` does differently from `rebuild`) is a
+    // small fraction of the total cost.
+    //
+    // Production drag uses a real browser viewport (~1920×1080). Then
+    // Step 1 still walks all N shapes (extrect + intersect), but only the
+    // ~visible-set lands in `self.grid`, so Step 3-6 are cheap. Step 1
+    // becomes the dominant cost — and that's exactly what `update_touched`
+    // skips. These benches measure that scenario.
+
+    fn drag_plain_realistic_viewport(
+        n_shapes: usize,
+        n_gathers: usize,
+        n_scatters: usize,
+        use_incremental: bool,
+        label: &str,
+    ) {
+        use crate::view::Viewbox;
+
+        let scale = 1.0;
+        let (mut pool, plain, _gathers, _scatters) =
+            build_drag_scene(n_shapes, n_gathers, n_scatters);
+        let drag_id = plain[plain.len() / 2];
+
+        // Realistic browser viewport — small interest rect, only ~visible-set
+        // shapes end up in the grid.
+        let viewbox = Viewbox::new(1920.0, 1080.0);
+        let tv = TileViewbox::new_with_interest(viewbox, 1, scale);
+
+        let mut grid = TileGrid::new();
+        grid.rebuild(&pool, &tv, scale);
+
+        let mut touched: HashSet<Uuid> = HashSet::with_capacity(1);
+
+        let frames = 100;
+        let start = Instant::now();
+        for f in 0..frames {
+            let x = (f as f32) * 2.0;
+            let s = pool.get_mut(&drag_id).unwrap();
+            s.selrect = skia::Rect::from_xywh(x, 0.0, 100.0, 80.0);
+
+            if use_incremental {
+                touched.clear();
+                touched.insert(drag_id);
+                let _ = grid.update_touched(&touched, &pool, &tv, scale);
+            } else {
+                grid.rebuild(&pool, &tv, scale);
+            }
+        }
+        let elapsed = start.elapsed();
+        let mode = if use_incremental { "incremental" } else { "rebuild" };
+        println!(
+            "[bench] drag plain realistic-viewport {mode} ({label}, {frames} frames): {:.3}ms/frame",
+            elapsed.as_secs_f64() * 1000.0 / frames as f64
+        );
+    }
+
+    #[test]
+    fn bench_drag_plain_realistic_rebuild_10k_baseline() {
+        drag_plain_realistic_viewport(10_000, 0, 0, false, "10k plain, 0G, 0S");
+    }
+
+    #[test]
+    fn bench_drag_plain_realistic_incremental_10k_baseline() {
+        drag_plain_realistic_viewport(10_000, 0, 0, true, "10k plain, 0G, 0S");
+    }
+
+    #[test]
+    fn bench_drag_plain_realistic_rebuild_10k_with_effects() {
+        drag_plain_realistic_viewport(10_000, 5, 5, false, "10k plain, 5G, 5S");
+    }
+
+    #[test]
+    fn bench_drag_plain_realistic_incremental_10k_with_effects() {
+        drag_plain_realistic_viewport(10_000, 5, 5, true, "10k plain, 5G, 5S");
+    }
+
+    #[test]
+    fn bench_drag_plain_realistic_rebuild_1k_baseline() {
+        drag_plain_realistic_viewport(1_000, 0, 0, false, "1k plain, 0G, 0S");
+    }
+
+    #[test]
+    fn bench_drag_plain_realistic_incremental_1k_baseline() {
+        drag_plain_realistic_viewport(1_000, 0, 0, true, "1k plain, 0G, 0S");
     }
 }
 
