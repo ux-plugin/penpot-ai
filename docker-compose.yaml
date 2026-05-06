@@ -43,6 +43,12 @@ services:
       - AUTH_GITHUB_CLIENT_ID=${AUTH_GITHUB_CLIENT_ID}
       - AUTH_GITHUB_CLIENT_SECRET=${AUTH_GITHUB_CLIENT_SECRET}
       
+      # Object store (MinIO)
+      - OBJECTSTORE_ENDPOINT=${OBJECTSTORE_ENDPOINT:-http://minio:9000}
+      - OBJECTSTORE_BUCKET=${OBJECTSTORE_BUCKET:-zoetrope-raw}
+      - OBJECTSTORE_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - OBJECTSTORE_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
@@ -50,6 +56,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      minio:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - app-network
@@ -87,8 +95,44 @@ services:
     networks:
       - app-network
 
+  # MinIO object store (S3-compatible)
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+  # MinIO bootstrap: create bucket on startup
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2024-10-08T09-37-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} &&
+      mc mb --ignore-existing local/${OBJECTSTORE_BUCKET:-zoetrope-raw} &&
+      echo 'minio bucket ready'
+      "
+    networks:
+      - app-network
+
 volumes:
   postgres_data:
+  minio_data:
 
 networks:
   app-network:

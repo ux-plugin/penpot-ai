@@ -45,6 +45,16 @@ logging:
     reactor.netty: INFO
     reactor.netty.http.client: INFO
 
+# Object store (MinIO via S3 protocol) — development defaults
+objectstore:
+  endpoint: http://localhost:9000
+  region: us-east-1
+  access-key: ${MINIO_ROOT_USER:minioadmin}
+  secret-key: ${MINIO_ROOT_PASSWORD:minioadmin}
+  bucket: zoetrope-raw
+  path-style: true
+  create-bucket-on-startup: true
+
 # OpenAI configuration (development with defaults)
 openai:
   api:

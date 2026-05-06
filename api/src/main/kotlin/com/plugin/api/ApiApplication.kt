@@ -4,7 +4,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan
 import org.springframework.boot.runApplication
 
-@SpringBootApplication @ConfigurationPropertiesScan
+@SpringBootApplication(scanBasePackages = ["com.plugin.core", "com.plugin.api"])
+@ConfigurationPropertiesScan(basePackages = ["com.plugin.core", "com.plugin.api"])
 class ApiApplication
 
 fun main(args: Array<String>) {
