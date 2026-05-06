@@ -1,34 +1,52 @@
 package com.plugin.api.config
 
+import com.plugin.api.config.properties.ApiKeyProperties
 import com.plugin.api.config.properties.Auth0Properties
 import com.plugin.api.features.auth.auth0.Auth0UserProvisioner
 import com.plugin.api.features.auth.auth0.Auth0UserSyncAuthenticationManager
-import org.springframework.beans.factory.ObjectProvider
+import com.plugin.api.security.ApiKeyAuthenticationConverter
+import com.plugin.api.security.ApiKeyReactiveAuthenticationManager
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.HttpMethod
+import org.springframework.http.HttpStatus
 import org.springframework.security.authentication.ReactiveAuthenticationManager
 import org.springframework.security.config.annotation.method.configuration.EnableReactiveMethodSecurity
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity
+import org.springframework.security.config.web.server.SecurityWebFiltersOrder
 import org.springframework.security.config.web.server.ServerHttpSecurity
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder
 import org.springframework.security.oauth2.server.resource.web.server.authentication.ServerBearerTokenAuthenticationConverter
 import org.springframework.security.web.server.SecurityWebFilterChain
+import org.springframework.security.web.server.authentication.AuthenticationWebFilter
+import org.springframework.security.web.server.authentication.HttpStatusServerEntryPoint
+import org.springframework.security.web.server.authentication.ServerAuthenticationEntryPointFailureHandler
 
 @Configuration
 @EnableWebFluxSecurity
 @EnableReactiveMethodSecurity
 class SecurityConfig(private val auth0Properties: Auth0Properties) {
+
     @Bean
     fun securityWebFilterChain(
         http: ServerHttpSecurity,
-        authManager: ObjectProvider<ReactiveAuthenticationManager>,
+        @Qualifier("auth0AuthenticationManager") jwtManager: ReactiveAuthenticationManager?,
+        apiKeyManager: ApiKeyReactiveAuthenticationManager,
+        apiKeyProperties: ApiKeyProperties,
     ): SecurityWebFilterChain {
+        val apiKeyFilter = AuthenticationWebFilter(apiKeyManager).apply {
+            setServerAuthenticationConverter(ApiKeyAuthenticationConverter(apiKeyProperties))
+            setAuthenticationFailureHandler(
+                ServerAuthenticationEntryPointFailureHandler(HttpStatusServerEntryPoint(HttpStatus.UNAUTHORIZED)),
+            )
+        }
+
         val chain = http
             .csrf { it.disable() }
             .cors {}
+            .addFilterAt(apiKeyFilter, SecurityWebFiltersOrder.AUTHENTICATION)
             .authorizeExchange { exchanges ->
                 exchanges
                     .pathMatchers(HttpMethod.OPTIONS, "/**")
@@ -42,12 +60,11 @@ class SecurityConfig(private val auth0Properties: Auth0Properties) {
                     .anyExchange()
                     .authenticated()
             }
-        val manager = authManager.getIfAvailable()
-        if (manager != null) {
+        if (jwtManager != null) {
             chain.oauth2ResourceServer { oauth2 ->
                 oauth2
                     .bearerTokenConverter(bearerTokenConverter())
-                    .jwt { it.authenticationManager(manager) }
+                    .jwt { it.authenticationManager(jwtManager) }
             }
         }
         return chain.build()
@@ -68,7 +85,7 @@ class SecurityConfig(private val auth0Properties: Auth0Properties) {
      * Single Auth0-backed authentication manager. The plugin issues identities only via Auth0;
      * the legacy self-hosted JWT issuer was retired with figma_plugin_api#41.
      */
-    @Bean
+    @Bean("auth0AuthenticationManager")
     @ConditionalOnProperty(prefix = "auth0", name = ["issuer"])
     fun auth0AuthenticationManager(
         @Qualifier("auth0JwtDecoder") auth0Decoder: ReactiveJwtDecoder,
