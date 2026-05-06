@@ -16,7 +16,8 @@
 use crate::math;
 use crate::shapes::{
     Blur, BlurType, Color, Fill, Frame, GlassEffect, Gradient, Rect as ShapeRect, Shadow,
-    ShadowStyle, Shape, SolidColor, Stroke, StrokeCap, StrokeKind, StrokeStyle, Type,
+    ShadowStyle, Shape, SolidColor, Stroke, StrokeCap, StrokeKind, StrokeStyle, TextureEffect,
+    Type,
 };
 use crate::state::State;
 use crate::uuid::Uuid;
@@ -56,6 +57,13 @@ pub struct SceneSpec {
     /// with 6, a sprinkle of bg_blur / glass / inner). Used by the
     /// "fast_mixed" preset to exercise every code path in one cell.
     pub heterogeneous: bool,
+    /// Layer-on flag for `heterogeneous`: also varies shape type
+    /// (Rect / Circle), drops a `TextureEffect` (scatter) on some
+    /// shapes, drops a `GlassEffect` (gather) on others, and creates
+    /// shapes with both scatter+gather to exercise the combined
+    /// `BuildCache` path. Plus pins explicit fx combinations on the
+    /// first 5 root-level children. Used by the "fx_combos" preset.
+    pub fx_combos: bool,
 }
 
 impl SceneSpec {
@@ -73,6 +81,7 @@ impl SceneSpec {
             fill: FillSpec::Solid,
             kinds: ShapeKindSpec::RectLeaves,
             heterogeneous: false,
+            fx_combos: false,
         }
     }
 
@@ -96,6 +105,7 @@ impl SceneSpec {
             fill: FillSpec::Solid,
             kinds: ShapeKindSpec::RectLeaves,
             heterogeneous: false,
+            fx_combos: false,
         }
     }
 }
@@ -129,6 +139,18 @@ pub fn preset(id: u32) -> Option<SceneSpec> {
             s.glass = true;
             s.inner_shadows = 0; // applied per-shape in heterogeneous mode
             s.heterogeneous = true;
+            s
+        }
+        9 => {
+            // Heaviest mix: heterogeneous shadows + Rect/Circle types
+            // + per-shape texture (scatter) and glass (gather)
+            // sprinkles + shapes with both fx in combination + 5
+            // explicit fx combos pinned at root level. Catches
+            // BuildCache(Scatter) + BuildCache(Gather) interactions
+            // and the scatter+glass combined cache code path.
+            let mut s = SceneSpec::nested("fx_combos_500", 500, 2, 4, 0);
+            s.heterogeneous = true;
+            s.fx_combos = true;
             s
         }
         _ => return None,
@@ -247,11 +269,93 @@ fn build_nested(state: &mut State, spec: &SceneSpec) {
     if spec.glass {
         attach_root_glass(state, spec);
     }
+    if spec.fx_combos {
+        pin_root_fx_combos(state);
+    }
+}
+
+/// Pin explicit fx combinations on the first 5 root-level children.
+/// Each gets exactly one pre-defined fx setup so the per-frame
+/// schedule always emits a known mix of `BuildCache(Scatter)`,
+/// `BuildCache(Gather)`, and the combined Scatter+Gather path.
+///
+/// Slots:
+///   0: glass-only (gather)
+///   1: texture-only (scatter)
+///   2: glass + texture (combined cache)
+///   3: bg_blur + heavy drop shadow
+///   4: glass + texture + drop shadow stack
+fn pin_root_fx_combos(state: &mut State) {
+    let nil = Uuid::nil();
+    let root_children: Vec<Uuid> = state
+        .shapes
+        .get(&nil)
+        .map(|r| r.children.iter().copied().take(5).collect())
+        .unwrap_or_default();
+    for (slot, id) in root_children.iter().enumerate() {
+        let Some(shape) = state.shapes.get_mut(id) else {
+            continue;
+        };
+        // Reset any heterogeneous fx the regular builder left so the
+        // slot gets a clean, known combination.
+        shape.background_blur = None;
+        shape.glass = None;
+        shape.texture = None;
+        shape.shadows.clear();
+        match slot {
+            0 => {
+                shape.glass = Some(make_glass());
+            }
+            1 => {
+                shape.texture = Some(TextureEffect::new(10.0, 6.0, true, false));
+            }
+            2 => {
+                shape.glass = Some(make_glass());
+                shape.texture = Some(TextureEffect::new(10.0, 6.0, true, false));
+            }
+            3 => {
+                shape.background_blur =
+                    Some(Blur::new(BlurType::BackgroundBlur, false, 14.0));
+                for i in 0..6u8 {
+                    shape.shadows.push(Shadow::new(
+                        Color::from_argb(180 - i * 20, 0, 0, 0),
+                        14.0 + i as f32 * 4.0,
+                        0.0,
+                        (2.0 + i as f32 * 2.0, 4.0 + i as f32 * 2.0),
+                        ShadowStyle::Drop,
+                        false,
+                    ));
+                }
+            }
+            4 => {
+                shape.glass = Some(make_glass());
+                shape.texture = Some(TextureEffect::new(10.0, 6.0, true, false));
+                for i in 0..3u8 {
+                    shape.shadows.push(Shadow::new(
+                        Color::from_argb(160, 0, 0, 0),
+                        12.0 + i as f32 * 4.0,
+                        0.0,
+                        (2.0, 4.0 + i as f32 * 4.0),
+                        ShadowStyle::Drop,
+                        false,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn configure_leaf(shape: &mut Shape, spec: &SceneSpec, idx: usize, parent: Uuid) {
     shape.parent_id = Some(parent);
-    shape.shape_type = Type::Rect(ShapeRect::default());
+    shape.shape_type = if spec.fx_combos && idx % 3 == 0 {
+        // 33% of leaves rendered as Circle to exercise the non-Rect
+        // path (different selrect→tile mapping, different fill paint
+        // shape, different stroke geometry).
+        Type::Circle
+    } else {
+        Type::Rect(ShapeRect::default())
+    };
     let col = (idx % LEAVES_PER_ROW) as f32;
     let row = (idx / LEAVES_PER_ROW) as f32;
     shape.selrect = math::Rect::from_xywh(
@@ -266,6 +370,9 @@ fn configure_leaf(shape: &mut Shape, spec: &SceneSpec, idx: usize, parent: Uuid)
         apply_heterogeneous_stroke(shape, idx, /*is_container=*/ false);
     } else {
         apply_shadows(shape, spec);
+    }
+    if spec.fx_combos {
+        apply_fx_combo(shape, idx);
     }
 }
 
@@ -420,6 +527,52 @@ fn apply_heterogeneous_stroke(shape: &mut Shape, idx: usize, is_container: bool)
 enum StrokeProfile {
     SolidCenter,
     GradientThick,
+}
+
+/// Per-shape scatter (texture) + gather (glass) sprinkle. Bucket
+/// distribution targets ~15% scatter-only, ~10% glass-only, ~5% both
+/// (the combined-cache path), 70% no extra fx. Combined with the
+/// shadow distribution, keeps a wide variety in flight without
+/// blowing up GPU cost.
+fn apply_fx_combo(shape: &mut Shape, idx: usize) {
+    let bucket = (idx + 11) % 20;
+    match bucket {
+        0..=2 => {
+            // 15% texture (scatter)
+            shape.texture = Some(TextureEffect::new(8.0, 4.0, true, false));
+        }
+        3..=4 => {
+            // 10% glass (gather)
+            shape.glass = Some(make_glass());
+        }
+        5 => {
+            // 5% scatter + gather combination — exercises
+            // BuildCache(Gather) feeding into BuildCache(Scatter).
+            shape.texture = Some(TextureEffect::new(8.0, 4.0, true, false));
+            shape.glass = Some(make_glass());
+        }
+        _ => {}
+    }
+}
+
+fn make_glass() -> GlassEffect {
+    GlassEffect {
+        surface_type: 0,
+        bezel_width: 8.0,
+        glass_thickness: 1.0,
+        refractive_index: 1.4,
+        specular_angle: 0.0,
+        specular_opacity: 0.4,
+        specular_saturation: 0.0,
+        chromatic_aberration: 0.0,
+        splay: 0.0,
+        tilt_angle: 0.0,
+        edge_boost: 0.0,
+        zoom: 1.0,
+        blur: 12.0,
+        frost: 0.0,
+        hidden: false,
+    }
 }
 
 /// Mixed-distribution shadow application keyed off shape index.

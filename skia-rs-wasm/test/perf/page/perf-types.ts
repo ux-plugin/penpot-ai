@@ -26,7 +26,24 @@ export interface PerfSnapshot {
   stats: PerfStat[]
 }
 
-export type ScenarioName = 'pan' | 'zoom' | 'drag' | 'idle'
+/**
+ * Scenarios mirror the in-page rAF loop branches in `perf-page.tsx`.
+ *
+ *   idle  — `_render(t)` only, no input. Tile cache should hit
+ *           steadily (baseline for "nothing changed" frames).
+ *   pan   — viewbox shifts 8px/frame. Exercises tile cache
+ *           invalidation + uncached Enter renders.
+ *   zoom  — geometric 0.5×→2× over the run. Forces full retile +
+ *           rescaled effect filters every frame.
+ *   drag  — pan with a smaller delta (placeholder for when "move"
+ *           wasn't yet wired). Kept around so a single scenario
+ *           name doesn't drop out of historical baselines.
+ *   move  — mutates the first leaf shape's translation each frame
+ *           via `_set_modifiers` + `_render(t)`. Exercises the
+ *           per-shape touched-tile rebuild + scatter cache miss
+ *           on the moved shape.
+ */
+export type ScenarioName = 'pan' | 'zoom' | 'drag' | 'idle' | 'move'
 
 export interface ScenarioRunResult {
   scenario: ScenarioName

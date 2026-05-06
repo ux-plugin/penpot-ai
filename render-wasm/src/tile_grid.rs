@@ -1904,6 +1904,13 @@ impl RenderState {
         timestamp: i32,
         sync_render: bool,
     ) -> Result<()> {
+        // Top-level frame guard. Wraps everything inside this entry
+        // point — schedule build, surface clears, run_schedule, GPU
+        // flush — so a single tag is the answer to "how long did this
+        // frame's CPU-side wasm work take?". Sub-guards
+        // (`tile_grid_rebuild`, `run_schedule_TOTAL`, ...) still break
+        // it down.
+        crate::perf_guard!("frame_TOTAL");
         let _start = performance::begin_timed_log!("start_render_loop");
         let scale = self.get_scale();
 
@@ -1987,6 +1994,10 @@ impl RenderState {
         tree: ShapesPoolRef,
         timestamp: i32,
     ) -> Result<()> {
+        // Continuation-frame top-level guard. Same role as
+        // `frame_TOTAL` in `start_render_loop` but for chunked async
+        // continuations. Sums to the full per-frame CPU cost.
+        crate::perf_guard!("frame_TOTAL");
         performance::begin_measure!("process_animation_frame");
         if self.render_in_progress {
             if tree.len() != 0 {

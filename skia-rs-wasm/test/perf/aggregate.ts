@@ -1,4 +1,4 @@
-import type { PerfSnapshot, ScenarioRunResult } from '../../src/lib/perf/perf-types'
+import type { PerfSnapshot, ScenarioRunResult } from './page/perf-types'
 
 /**
  * Aggregated stats across multiple repeats of one (scene, scenario)

@@ -15,17 +15,19 @@
  *                         to confirm the dev server is up
  */
 import { useEffect, useRef, useState } from 'react'
-import type { WasmModule } from '../renderer/wasm-types'
-import { ensureWasmModule } from '../renderer/wasm-module'
+import type { WasmModule } from '@/lib/renderer/wasm-types'
+import { ensureWasmModule } from '@/lib/renderer/wasm-module'
 import {
   initCanvasContext,
   setCanvasBackground,
-} from '../renderer/api/canvas'
+} from '@/lib/renderer/api/canvas'
 import {
   buildPerfScene,
   clearSnapshot,
   dumpSnapshot,
   perfPresetCount,
+  setShapeTranslation,
+  FIRST_LEAF_UUID_QUARTET,
 } from './perf-api'
 import type {
   PerfApi,
@@ -112,14 +114,27 @@ function runFrame(module: WasmModule, name: ScenarioName, i: number, frames: num
       break
     }
     case 'drag': {
-      // Drag scenario currently exercises the same code path as pan
-      // with a smaller delta, until we wire up _set_modifiers from
-      // here. Lets us measure incremental rebuild cost on shape
-      // mutation in a follow-up phase without breaking the harness.
+      // Low-amplitude pan kept as a separate scenario so historical
+      // baselines don't lose a name. For real shape-mutation cost,
+      // see the `move` scenario.
       const x = i * 2
       module._set_view_start()
       module._set_view(1.0, -x, 0)
       module._set_view_end()
+      module._render(t)
+      break
+    }
+    case 'move': {
+      // Translate the first leaf shape (UUID derived from the
+      // test_fixtures generator) by an increasing offset every frame.
+      // `_set_modifiers` rebuilds the touched-tile set for that shape
+      // alone; `_render(t)` then walks the tile-scheduler with the
+      // moved shape's old + new tiles invalidated. Catches per-shape
+      // touched-tile + scatter-cache regressions, not viewport-wide
+      // ones.
+      const dx = i * 4
+      const dy = (i % 4) * 2
+      setShapeTranslation(module, FIRST_LEAF_UUID_QUARTET, dx, dy)
       module._render(t)
       break
     }

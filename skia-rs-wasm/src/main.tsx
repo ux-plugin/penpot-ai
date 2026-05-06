@@ -4,9 +4,10 @@ import './index.css'
 import App from './App'
 
 // `/perf` is an opt-in dev-only route that mounts the perf bench
-// harness instead of the editor. The chunk is dynamically imported so
-// production builds don't pay the bytes when navigated to /.
-const PerfPage = lazy(() => import('./lib/perf/perf-page'))
+// harness. The page lives under `test/perf/page/` so the production
+// library bundle (entry: `src/index.ts`) never imports it. The dev
+// SPA pulls it in only when the route is hit, via dynamic import.
+const PerfPage = lazy(() => import('../test/perf/page/perf-page'))
 const isPerfRoute =
   typeof window !== 'undefined' &&
   window.location.pathname.replace(/\/+$/, '') === '/perf'

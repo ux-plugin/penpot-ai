@@ -18,4 +18,5 @@ export const SCENES: readonly SceneEntry[] = [
   { id: 6, name: 'mixed_kitchen_sink' },
   { id: 7, name: 'nested_d5_b5_3shadows_10k' },
   { id: 8, name: 'fast_mixed_500' },
+  { id: 9, name: 'fx_combos_500' },
 ] as const

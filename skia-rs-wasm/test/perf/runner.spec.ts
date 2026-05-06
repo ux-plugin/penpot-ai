@@ -4,7 +4,7 @@ import path from 'node:path'
 import { SCENES } from './scenes'
 import { SCENARIOS } from './scenarios'
 import { aggregate, type AggregatedCell } from './aggregate'
-import type { ScenarioRunResult, ScenarioName } from '../../src/lib/perf/perf-types'
+import type { ScenarioRunResult, ScenarioName } from './page/perf-types'
 
 /**
  * Drives the perf harness over the (scene × scenario) matrix.

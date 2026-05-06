@@ -1,8 +1,8 @@
-import type { ScenarioName } from '../../src/lib/perf/perf-types'
+import type { ScenarioName } from './page/perf-types'
 
 /**
  * Scenarios driven by the in-page rAF loop. See
- * `src/lib/perf/perf-page.tsx::runFrame` for the per-frame work each
- * one performs.
+ * `test/perf/page/perf-page.tsx::runFrame` for the per-frame work
+ * each one performs.
  */
-export const SCENARIOS: readonly ScenarioName[] = ['idle', 'pan', 'zoom', 'drag'] as const
+export const SCENARIOS: readonly ScenarioName[] = ['idle', 'pan', 'zoom', 'drag', 'move'] as const
