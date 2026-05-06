@@ -2,8 +2,8 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/penpot-ai.iml" filepath="$PROJECT_DIR$/.idea/penpot-ai.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/figma_plugin_companion_app.iml" filepath="$PROJECT_DIR$/.idea/figma_plugin_companion_app.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/penpot-ai.iml" filepath="$PROJECT_DIR$/.idea/penpot-ai.iml" />
     </modules>
   </component>
 </project>

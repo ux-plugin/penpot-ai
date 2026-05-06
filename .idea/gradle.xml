@@ -8,6 +8,10 @@
         <option name="modules">
           <set>
             <option value="$PROJECT_DIR$/figma_plugin_api" />
+            <option value="$PROJECT_DIR$/figma_plugin_api/anonymizer" />
+            <option value="$PROJECT_DIR$/figma_plugin_api/api" />
+            <option value="$PROJECT_DIR$/figma_plugin_api/core" />
+            <option value="$PROJECT_DIR$/figma_plugin_api/processor" />
           </set>
         </option>
       </GradleProjectSettings>
