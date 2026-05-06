@@ -36,12 +36,11 @@ class ApiKeyReactiveAuthenticationManager(
             .doOnNext { auth -> scheduleTouch((auth as ApiKeyAuthentication).apiKeyId) }
     }
 
-    private fun resolveFromDb(hash: String, cacheKey: String): Mono<ResolvedApiKey> = mono<ResolvedApiKey?> {
-        val entity = repository.findActiveByHash(hash) ?: return@mono null
+    private fun resolveFromDb(hash: String, cacheKey: String): Mono<ResolvedApiKey> = mono {
+        val entity = repository.findActiveByHash(hash) ?: throw InvalidApiKeyException("Invalid API key")
         ResolvedApiKey(entity.id, entity.orgId, entity.createdByUserId, entity.lastUsedAt)
     }.flatMap { resolved ->
-        if (resolved == null) Mono.error<ResolvedApiKey>(InvalidApiKeyException("Invalid API key"))
-        else redis.opsForValue()
+        redis.opsForValue()
             .set(cacheKey, encodeCache(resolved), Duration.ofSeconds(props.redisCacheTtlSec))
             .thenReturn(resolved)
     }
