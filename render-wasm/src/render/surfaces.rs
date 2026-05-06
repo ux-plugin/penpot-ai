@@ -608,6 +608,7 @@ impl Surfaces {
             );
 
             self.tiles.add(tile_viewbox, tile, tile_image);
+            crate::perf_count!(tile_write);
         }
     }
 

@@ -11,6 +11,7 @@ if ! docker run --rm \
   -e NODE_ENV=production \
   -e CI=true \
   -e TILE_SCHEDULER="${TILE_SCHEDULER:-}" \
+  -e PERF_TRACE="${PERF_TRACE:-}" \
   -v "$REPO_ROOT:/home/penpot/penpot:z" \
   -w /home/penpot/penpot/render-wasm \
   penpotapp/devenv:latest \

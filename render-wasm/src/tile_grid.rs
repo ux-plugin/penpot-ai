@@ -1725,6 +1725,15 @@ impl RenderState {
         let scale = self.get_scale();
 
         for effect in effects {
+            // Per-effect timing. Guard drops on continue/?/end.
+            let _dbg_tag: &'static str = match effect {
+                EffectKey::Gather(GatherFx::BackgroundBlur) => "fx_BackgroundBlur",
+                EffectKey::Gather(GatherFx::Glass) => "fx_Glass",
+                EffectKey::Scatter(ScatterFx::DropShadows) => "fx_DropShadows",
+                EffectKey::Local(LocalFx::ShapeBody) => "fx_ShapeBody",
+                EffectKey::Scatter(ScatterFx::Blit) => "fx_ScatterBlit",
+            };
+            crate::perf_guard!(_dbg_tag);
             match effect {
                 EffectKey::Gather(GatherFx::BackgroundBlur) => {
                     self.render_background_blur(element, output);
@@ -1937,8 +1946,11 @@ impl RenderState {
         }
 
         performance::begin_measure!("tile_grid_rebuild");
-        self.tile_grid.rebuild(tree, &self.tile_viewbox, scale);
-        self.tile_grid.reset();
+        {
+            crate::perf_guard!("tile_grid_rebuild");
+            self.tile_grid.rebuild(tree, &self.tile_viewbox, scale);
+            self.tile_grid.reset();
+        }
         performance::end_measure!("tile_grid_rebuild");
 
         self.nested_fills.clear();
@@ -1965,6 +1977,7 @@ impl RenderState {
 
         performance::end_measure!("start_render_loop");
         performance::end_timed_log!("start_render_loop", _start);
+        crate::perf_record_frame!();
         Ok(())
     }
 
@@ -1989,6 +2002,7 @@ impl RenderState {
             }
         }
         performance::end_measure!("process_animation_frame");
+        crate::perf_record_frame!();
         Ok(())
     }
 
@@ -2028,6 +2042,7 @@ impl RenderState {
         timestamp: i32,
         can_yield: bool,
     ) -> Result<()> {
+        crate::perf_guard!("run_schedule_TOTAL");
         let mut iteration = 0;
 
         while let Some(step) = self.tile_grid.next() {
@@ -2038,6 +2053,7 @@ impl RenderState {
                     is_first,
                     is_last,
                 } => {
+                    crate::perf_guard!("step_SetTileBand");
                     self.update_render_context(tile);
 
                     if is_first {
@@ -2057,6 +2073,8 @@ impl RenderState {
                             && !band_has_gather_head
                             && self.surfaces.has_cached_tile_surface(tile)
                         {
+                            crate::perf_count!(tile_hit);
+                            crate::perf_guard!("step_SetTileBand_cached_blit");
                             let rect = self.get_current_tile_bounds()?;
                             self.surfaces.draw_cached_tile_surface(
                                 tile,
@@ -2070,6 +2088,12 @@ impl RenderState {
                             self.tile_grid.skip_to_next_tile();
                             continue;
                         }
+                        // First-band visit that didn't take the cached_blit
+                        // fast path. Counts as a miss regardless of why
+                        // (no entry in cache, multi-band tile, gather head)
+                        // — `tile_misses + tile_hits` is the count of
+                        // first-band tile visits per frame.
+                        crate::perf_count!(tile_miss);
 
                         self.surfaces
                             .canvas(SurfaceId::Current)
@@ -2093,6 +2117,7 @@ impl RenderState {
                 }
 
                 RenderStep::FinalizeBand { tile, kind } => {
+                    crate::perf_guard!("step_FinalizeBand");
                     // The SetTileBand that opened this band already set
                     // current_tile; if it was cleared (cached_blit path),
                     // skip_to_next_tile would have hopped past us. So in
@@ -2130,6 +2155,7 @@ impl RenderState {
                 }
 
                 RenderStep::Enter(id) => {
+                    crate::perf_guard!("step_Enter");
                     let Some(element) = tree.get(&id) else {
                         continue;
                     };
@@ -2149,12 +2175,16 @@ impl RenderState {
 
                         // Background blur BEFORE save_layer so it modifies
                         // the backdrop independently of the shape's opacity.
-                        self.render_background_blur(element, SurfaceId::Current);
+                        {
+                            crate::perf_guard!("enter_bg_blur");
+                            self.render_background_blur(element, SurfaceId::Current);
+                        }
 
                         // Glass effect BEFORE save_layer so it snapshots the
                         // real accumulated backdrop on Target. Mirrors the
                         // leaf Render handler's root-vs-nested branching.
                         if let Some(glass) = element.glass.as_ref().filter(|g| !g.hidden) {
+                            crate::perf_guard!("enter_glass");
                             let is_root_level =
                                 element.parent_id.is_some_and(|p| p == Uuid::nil());
                             if is_root_level {
@@ -2184,7 +2214,10 @@ impl RenderState {
                             }
                         }
 
-                        self.render_shape_enter(element, false, SurfaceId::Current);
+                        {
+                            crate::perf_guard!("enter_render_shape_enter");
+                            self.render_shape_enter(element, false, SurfaceId::Current);
+                        }
 
                         // Drop shadows for the container itself. Text shapes
                         // emit drop shadows via the paragraph image filter
@@ -2193,6 +2226,7 @@ impl RenderState {
                         // shadows before the layer (not handled here for
                         // simplicity — add if needed).
                         if !skip_shadows && !is_text {
+                            crate::perf_guard!("enter_drop_shadows");
                             let translation = self
                                 .surfaces
                                 .get_render_context_translation(self.render_area, scale);
@@ -2217,20 +2251,26 @@ impl RenderState {
                         // on clipped frames are skipped here — they land in
                         // `render_shape_exit` on top of children. See the
                         // `skip_strokes` branch in `render_shape`.
-                        self.render_shape(
-                            element,
-                            None,
-                            SurfaceId::Fills,
-                            SurfaceId::Strokes,
-                            SurfaceId::InnerShadows,
-                            SurfaceId::TextDropShadows,
-                            true,
-                            None,
-                            None,
-                            None,
-                            SurfaceId::Current,
-                        )?;
-                        self.apply_drawing_to_render_canvas(Some(element), SurfaceId::Current);
+                        {
+                            crate::perf_guard!("enter_render_shape");
+                            self.render_shape(
+                                element,
+                                None,
+                                SurfaceId::Fills,
+                                SurfaceId::Strokes,
+                                SurfaceId::InnerShadows,
+                                SurfaceId::TextDropShadows,
+                                true,
+                                None,
+                                None,
+                                None,
+                                SurfaceId::Current,
+                            )?;
+                        }
+                        {
+                            crate::perf_guard!("enter_apply_drawing");
+                            self.apply_drawing_to_render_canvas(Some(element), SurfaceId::Current);
+                        }
                         self.surfaces
                             .canvas(SurfaceId::DropShadows)
                             .clear(skia::Color::TRANSPARENT);
@@ -2238,6 +2278,10 @@ impl RenderState {
                 }
 
                 RenderStep::BuildCache(kind) => {
+                    crate::perf_guard!(match kind {
+                        CacheKind::Scatter(_) => "step_BuildCache_Scatter",
+                        CacheKind::Gather(_) => "step_BuildCache_Gather",
+                    });
                     performance::begin_measure!("scheduler_build_cache");
                     match kind {
                         CacheKind::Scatter(id) => {
@@ -2259,6 +2303,7 @@ impl RenderState {
                                 None
                             };
                             let scatter_output = if element.is_recursive() {
+                                crate::perf_guard!("texture_filter_subtree");
                                 crate::render::texture::render_and_filter_subtree_to_image(
                                     self,
                                     element,
@@ -2266,6 +2311,7 @@ impl RenderState {
                                     glass_backdrop,
                                 )
                             } else {
+                                crate::perf_guard!("texture_filter_leaf");
                                 crate::render::texture::render_and_filter_to_image(
                                     self,
                                     element,
@@ -2297,6 +2343,7 @@ impl RenderState {
                 }
 
                 RenderStep::FreeCache(kind) => {
+                    crate::perf_guard!("step_FreeCache");
                     match kind {
                         CacheKind::Scatter(id) => self.surfaces.remove_scatter_output(id),
                         CacheKind::Gather(id) => self.surfaces.remove_glass_backdrop(id),
@@ -2304,6 +2351,7 @@ impl RenderState {
                 }
 
                 RenderStep::Paint { shape: id, actions } => {
+                    crate::perf_guard!("step_Paint");
                     performance::begin_measure!("paint_step");
                     let Some(element) = tree.get(&id) else {
                         performance::end_measure!("paint_step");
@@ -2359,6 +2407,7 @@ impl RenderState {
                 }
 
                 RenderStep::Exit(id) => {
+                    crate::perf_guard!("step_Exit");
                     let Some(element) = tree.get(&id) else {
                         continue;
                     };

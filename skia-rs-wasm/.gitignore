@@ -25,3 +25,7 @@ dist-ssr
 
 public/wasm/render-wasm.js
 public/wasm/render-wasm.wasm
+
+# Perf bench artifacts
+test-results/
+test/perf/.results/

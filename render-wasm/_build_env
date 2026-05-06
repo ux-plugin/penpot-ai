@@ -54,6 +54,13 @@ if [ "$TILE_SCHEDULER" = "1" ]; then
     export CARGO_PARAMS="--features tile-scheduler $CARGO_PARAMS"
 fi
 
+# Enable permanent perf instrumentation (per-tag accumulator, snapshot
+# export). Set PERF_TRACE=1 to layer on top of any base build. Used by
+# the skia-rs-wasm perf bench harness.
+if [ "$PERF_TRACE" = "1" ]; then
+    export CARGO_PARAMS="--features perf-trace $CARGO_PARAMS"
+fi
+
 if [ "$BUILD_MODE" = "release" ]; then
     export CARGO_PARAMS="--release $CARGO_PARAMS"
     export EMCC_CFLAGS="-Os $EMCC_CFLAGS"
