@@ -1,9 +1,8 @@
 package com.plugin.api.security
 
-import org.springframework.security.core.Authentication
+import kotlinx.coroutines.reactive.awaitFirstOrNull
 import org.springframework.security.core.context.ReactiveSecurityContextHolder
 import org.springframework.stereotype.Service
-import reactor.core.publisher.Mono
 
 /**
  * Coarse-grained gate for ingest-time decisions. Resolves to the API-key authentication
@@ -13,12 +12,9 @@ import reactor.core.publisher.Mono
 @Service
 class AuthorizationService {
 
-    fun canIngest(orgId: String): Mono<Boolean> =
-        currentApiKeyAuthentication().map { auth -> auth.orgId == orgId }.defaultIfEmpty(false)
+    suspend fun canIngest(orgId: String): Boolean = currentApiKeyAuthentication()?.orgId == orgId
 
-    fun currentApiKeyAuthentication(): Mono<ApiKeyAuthentication> =
-        ReactiveSecurityContextHolder.getContext()
-            .map<Authentication?> { it.authentication }
-            .filter { it is ApiKeyAuthentication }
-            .cast(ApiKeyAuthentication::class.java)
+    suspend fun currentApiKeyAuthentication(): ApiKeyAuthentication? =
+        ReactiveSecurityContextHolder.getContext().awaitFirstOrNull()
+            ?.authentication as? ApiKeyAuthentication
 }

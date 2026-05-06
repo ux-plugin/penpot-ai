@@ -1,12 +1,14 @@
 package com.plugin.api.security
 
+import kotlinx.coroutines.reactor.mono
+import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.security.authentication.TestingAuthenticationToken
+import org.springframework.security.core.Authentication
 import org.springframework.security.core.context.ReactiveSecurityContextHolder
 import org.springframework.security.core.context.SecurityContextImpl
 import reactor.core.publisher.Mono
-import reactor.test.StepVerifier
 
 class AuthorizationServiceTest {
     private val service = AuthorizationService()
@@ -14,40 +16,41 @@ class AuthorizationServiceTest {
     @Test
     fun `canIngest is true when the api-key auth has matching orgId`() {
         val auth = ApiKeyAuthentication("k1", orgId = "org-A", userId = "u1", keyPrefix = "pk_test_abcd")
-        val mono = service.canIngest("org-A").contextWrite(authContext(auth))
-        StepVerifier.create(mono).expectNext(true).verifyComplete()
+        val result = mono { service.canIngest("org-A") }.contextWrite(authContext(auth)).block()!!
+        assertThat(result).isTrue
     }
 
     @Test
     fun `canIngest is false when the api-key auth orgId differs from the requested org`() {
         val auth = ApiKeyAuthentication("k1", orgId = "org-A", userId = "u1", keyPrefix = "pk_test_abcd")
-        val mono = service.canIngest("org-OTHER").contextWrite(authContext(auth))
-        StepVerifier.create(mono).expectNext(false).verifyComplete()
+        val result = mono { service.canIngest("org-OTHER") }.contextWrite(authContext(auth)).block()!!
+        assertThat(result).isFalse
     }
 
     @Test
     fun `canIngest is false when the security context carries a non-api-key authentication`() {
         val jwtLike = TestingAuthenticationToken("user", "creds", emptyList()).also { it.isAuthenticated = true }
-        val mono = service.canIngest("org-A").contextWrite(authContext(jwtLike))
-        StepVerifier.create(mono).expectNext(false).verifyComplete()
+        val result = mono { service.canIngest("org-A") }.contextWrite(authContext(jwtLike)).block()!!
+        assertThat(result).isFalse
     }
 
     @Test
-    fun `canIngest is false when no security context is present`() {
-        StepVerifier.create(service.canIngest("org-A")).expectNext(false).verifyComplete()
+    fun `canIngest is false when no security context is present`() = runBlocking {
+        assertThat(service.canIngest("org-A")).isFalse
     }
 
     @Test
-    fun `currentApiKeyAuthentication returns the populated api-key auth and nothing for jwt`() {
+    fun `currentApiKeyAuthentication returns the populated api-key auth and null for jwt`() {
         val auth = ApiKeyAuthentication("k1", orgId = "org-A", userId = "u1", keyPrefix = "pk_test_abcd")
-        val present = service.currentApiKeyAuthentication().contextWrite(authContext(auth))
-        StepVerifier.create(present).expectNext(auth).verifyComplete()
+        val present = mono { service.currentApiKeyAuthentication() }.contextWrite(authContext(auth)).block()
+        assertThat(present).isEqualTo(auth)
 
-        val absent = service.currentApiKeyAuthentication()
+        val absent = mono { service.currentApiKeyAuthentication() }
             .contextWrite(authContext(TestingAuthenticationToken("u", "p", emptyList())))
-        StepVerifier.create(absent).verifyComplete()
+            .block()
+        assertThat(absent).isNull()
     }
 
-    private fun authContext(auth: org.springframework.security.core.Authentication) =
+    private fun authContext(auth: Authentication) =
         ReactiveSecurityContextHolder.withSecurityContext(Mono.just(SecurityContextImpl(auth)))
 }

@@ -4,6 +4,7 @@ import com.plugin.api.config.properties.ApiKeyProperties
 import com.plugin.api.features.apikey.ApiKeyGenerator
 import com.plugin.api.features.apikey.ApiKeyRepository
 import com.plugin.core.util.logger
+import kotlinx.coroutines.reactive.awaitFirstOrNull
 import kotlinx.coroutines.reactor.mono
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.security.authentication.ReactiveAuthenticationManager
@@ -23,36 +24,42 @@ class ApiKeyReactiveAuthenticationManager(
 
     private val log = logger()
 
-    override fun authenticate(authentication: Authentication): Mono<Authentication> {
+    override fun authenticate(authentication: Authentication): Mono<Authentication> = mono {
         val unverified = authentication as? UnverifiedApiKeyAuthentication
-            ?: return Mono.error(InvalidApiKeyException("Unsupported authentication type"))
+            ?: throw InvalidApiKeyException("Unsupported authentication type")
         val plaintext = unverified.plaintext
         val hash = generator.hash(plaintext)
         val cacheKey = props.redisCachePrefix + hash
-        return redis.opsForValue().get(cacheKey)
-            .flatMap { cached -> Mono.justOrEmpty<ResolvedApiKey>(parseCache(cached)) }
-            .switchIfEmpty(Mono.defer { resolveFromDb(hash, cacheKey) })
-            .map { ctx -> buildAuthentication(ctx, plaintext.take(props.prefix.length + 4)) as Authentication }
-            .doOnNext { auth -> scheduleTouch((auth as ApiKeyAuthentication).apiKeyId) }
+
+        val resolved = redis.opsForValue().get(cacheKey).awaitFirstOrNull()
+            ?.let { parseCache(it) }
+            ?: resolveFromDb(hash, cacheKey)
+
+        val auth = ApiKeyAuthentication(
+            apiKeyId = resolved.id,
+            orgId = resolved.orgId,
+            userId = resolved.userId,
+            keyPrefix = plaintext.take(props.prefix.length + 4),
+        )
+        scheduleTouch(auth.apiKeyId)
+        auth
     }
 
-    private fun resolveFromDb(hash: String, cacheKey: String): Mono<ResolvedApiKey> = mono {
-        val entity = repository.findActiveByHash(hash) ?: throw InvalidApiKeyException("Invalid API key")
-        ResolvedApiKey(entity.id, entity.orgId, entity.createdByUserId, entity.lastUsedAt)
-    }.flatMap { resolved ->
+    private suspend fun resolveFromDb(hash: String, cacheKey: String): ResolvedApiKey {
+        val entity = repository.findActiveByHash(hash)
+            ?: throw InvalidApiKeyException("Invalid API key")
+        val resolved = ResolvedApiKey(entity.id, entity.orgId, entity.createdByUserId, entity.lastUsedAt)
         redis.opsForValue()
             .set(cacheKey, encodeCache(resolved), Duration.ofSeconds(props.redisCacheTtlSec))
-            .thenReturn(resolved)
+            .awaitFirstOrNull()
+        return resolved
     }
 
-    private fun buildAuthentication(ctx: ResolvedApiKey, displayPrefix: String) =
-        ApiKeyAuthentication(
-            apiKeyId = ctx.id,
-            orgId = ctx.orgId,
-            userId = ctx.userId,
-            keyPrefix = displayPrefix,
-        )
-
+    /**
+     * Fire-and-forget: don't block the auth response on the side-effecting write. Debounced via
+     * a Redis SETNX with TTL = lastUsedDebounceSec — only the first auth in each window
+     * actually issues the DB UPDATE, the rest skip cleanly.
+     */
     private fun scheduleTouch(apiKeyId: String) {
         val touchKey = "apikey:touch:" + apiKeyId
         redis.opsForValue()
