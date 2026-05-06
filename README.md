@@ -5,7 +5,7 @@ A reactive REST API built with Spring Boot 4, Kotlin, and coroutines for managin
 ## Technology Stack
 
 - **Framework**: Spring Boot 4.3.1
-- **Language**: Kotlin 2.2.10
+- **Language**: Kotlin 2.1.20
 - **Java**: 21
 - **Database**: PostgreSQL with R2DBC (Reactive)
 - **Cache**: Redis (Reactive)
@@ -64,28 +64,63 @@ Set the following environment variables:
 - `OPENAI_ORG_ID`
 - `FIREWORKS_API_KEY`
 
+## Project layout
+
+This repo is a multi-module Gradle build. Each subproject is an independently buildable, deployable artifact.
+
+```
+figma_plugin_api/
+├── core/         # Shared library (no Spring Boot main). DB, Redis, ObjectStore, util.
+├── api/          # Public HTTP + RSocket API (auth, completions, user, ingestion controllers).
+├── anonymizer/   # Worker subproject — anonymizes ingested chunks (stub today).
+└── processor/    # Worker subproject — processes anonymized chunks (stub today).
+```
+
+Subprojects depend only on `core` (no cross-dependencies between `api`, `anonymizer`, `processor`). Workers do not pull `webflux` / `spring-security`, keeping their images smaller.
+
 ## Building
 
 ```bash
-# Build the application
-./gradlew clean build
+# Build everything
+./gradlew build
 
-# Build without tests
-./gradlew clean build -x test
+# Build a single subproject
+./gradlew :api:build
+./gradlew :anonymizer:build
+./gradlew :processor:build
 
-# Create executable JAR
-./gradlew bootJar
+# Build the bootJar for one subproject (skip tests)
+./gradlew :api:bootJar -x test
 ```
+
+Each subproject produces its own bootJar in `<subproject>/build/libs/<subproject>-0.0.1.jar`.
 
 ## Running
 
 ```bash
-# Run with Gradle
-./gradlew bootRun
+# API (HTTP + RSocket)
+./gradlew :api:bootRun
 
-# Run JAR directly
-java -jar build/libs/figma_plugin_api-0.0.1.jar
+# Workers (no HTTP listener; consume Redis streams + S3 once Ticket 1 lands)
+./gradlew :anonymizer:bootRun
+./gradlew :processor:bootRun
+
+# Run a built JAR directly
+java -jar api/build/libs/api-0.0.1.jar
 ```
+
+## Docker
+
+Single Dockerfile parameterised by `MODULE` build-arg:
+
+```bash
+./gradlew :api:bootJar :anonymizer:bootJar :processor:bootJar
+docker build --build-arg MODULE=api          -t figma-plugin-api:dev .
+docker build --build-arg MODULE=anonymizer   -t figma-plugin-anonymizer:dev .
+docker build --build-arg MODULE=processor    -t figma-plugin-processor:dev .
+```
+
+The compose `app` service builds with `MODULE=api`. Worker services can be added the same way when the worker logic ships.
 
 ## API Documentation
 
@@ -126,32 +161,33 @@ The project uses Spotless for code formatting with ktfmt:
 ```
 
 ### Database Migrations
-Database migrations are managed with Liquibase. Migrations run automatically on startup.
+Database migrations are managed with Liquibase. Migrations run automatically on `api` startup. Workers set `spring.liquibase.enabled=false` and share the schema.
 
-Migration files: `src/main/resources/db/changelog/`
+Migration files: `core/src/main/resources/db/changelog/`
 
-### Project Structure
+### Source layout
 
 ```
-src/main/kotlin/com/plugin/
-├── config/                    # Configuration classes
-│   ├── SecurityConfig.kt     # Security and JWT configuration
-│   ├── JwtService.kt         # JWT token generation
-│   ├── OpenApiConfig.kt      # OpenAPI/Swagger configuration
-│   ├── WebConfig.kt          # CORS and web configuration
-│   └── RedisConfig.kt        # Redis configuration
-├── features/
-│   ├── auth/core/            # Authentication and authorization
-│   │   ├── Entity.kt         # Auth entities
-│   │   ├── AuthRepository.kt # Auth data access
-│   │   ├── AuthService.kt    # Auth business logic
-│   │   ├── AuthResource.kt   # Auth REST endpoints
-│   │   └── RedisRepository.kt # Redis operations
-│   └── user/                 # User management
-│       ├── Entity.kt         # User entities
-│       ├── UserRepository.kt # User data access
-│       └── UserService.kt    # User business logic and REST endpoints
-└── FigmaPluginApplication.kt # Main application class
+core/src/main/kotlin/com/plugin/core/
+├── util/                      # Shared utilities (logging extensions, ...)
+└── ...                        # Object store, queue, ingestion domain land here
+
+api/src/main/kotlin/com/plugin/api/
+├── ApiApplication.kt          # @SpringBootApplication
+├── config/                    # SecurityConfig, JwtDecoders, OpenApiConfig, R2dbcConfig, RedisConfig, ...
+│   ├── ai/                    # AI model providers
+│   └── properties/            # @ConfigurationProperties classes
+├── dev/                       # Dev-only beans (HTTP exchanges endpoint, dev security, ...)
+└── features/
+    ├── auth/                  # auth0 / figma / github OAuth + core auth service
+    ├── completions/           # AI completions over RSocket
+    └── user/                  # User management
+
+anonymizer/src/main/kotlin/com/plugin/anonymizer/
+└── AnonymizerApplication.kt   # Stub Spring Boot app (worker logic lands in Ticket 3)
+
+processor/src/main/kotlin/com/plugin/processor/
+└── ProcessorApplication.kt    # Stub Spring Boot app (worker logic lands in Ticket 4)
 ```
 
 ## Migration from Quarkus

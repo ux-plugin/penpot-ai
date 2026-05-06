@@ -1,30 +1,39 @@
-# Multi-stage build for Spring Boot application
+# Multi-stage build for one of the Spring Boot subprojects (api, anonymizer, processor).
+# Pick the subproject with --build-arg MODULE=<api|anonymizer|processor>.
 
-# Stage 1: Build the application
-FROM gradle:8.5-jdk21 AS builder
+# Stage 1: build all jars
+FROM gradle:8.10-jdk21 AS builder
+
+ARG MODULE=api
 
 WORKDIR /app
 
-# Copy gradle files
-COPY build.gradle.kts settings.gradle gradle.properties ./
+# Copy gradle wrapper + build files
+COPY build.gradle.kts settings.gradle.kts gradle.properties ./
 COPY gradle ./gradle
+COPY gradlew gradlew.bat ./
 
-# Copy source code
-COPY src ./src
+# Copy each subproject's build script + sources. Done as separate COPYs so the
+# build cache invalidates per subproject when only one changes.
+COPY core ./core
+COPY api ./api
+COPY anonymizer ./anonymizer
+COPY processor ./processor
 
-# Build the application (skip tests for faster builds)
-RUN gradle build -x test --no-daemon
+# Build the requested subproject's bootJar (skip tests for faster image builds)
+RUN ./gradlew :${MODULE}:bootJar -x test --no-daemon
 
-# Stage 2: Create the runtime image
+# Stage 2: runtime image
 FROM eclipse-temurin:21-jre-alpine
 
+ARG MODULE=api
+
 WORKDIR /app
 
-# Copy the built JAR from builder stage
-COPY --from=builder /app/build/libs/*.jar app.jar
+# Copy the chosen subproject's bootJar
+COPY --from=builder /app/${MODULE}/build/libs/${MODULE}-0.0.1.jar app.jar
 
-# Expose the application port
+# Expose port (only meaningful for api; workers ignore)
 EXPOSE 8080
 
-# Run the application
 ENTRYPOINT ["java", "-jar", "app.jar"]
