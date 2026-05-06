@@ -19,10 +19,7 @@ pub(crate) mod ui;
 use skia_safe::{self as skia, Matrix, RRect, Rect};
 use std::borrow::Cow;
 
-// FxHashSet aliased as HashSet — same API, faster hashing for small keys
-// (Tile, Uuid). Kept consistent with `tile_grid::HashSet` so values cross
-// the module boundary without conversion.
-use crate::tile_grid::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 use gpu_state::GpuState;
 
@@ -2867,7 +2864,7 @@ impl RenderState {
         let old_tiles: HashSet<tiles::Tile> = self
             .tiles
             .get_tiles_of(shape.id)
-            .map_or(HashSet::new(), |tiles| tiles.iter().copied().collect());
+            .map_or(HashSet::default(), |tiles| tiles.iter().copied().collect());
 
         let new_tiles: HashSet<tiles::Tile> = (rsx..=rex)
             .flat_map(|x| (rsy..=rey).map(move |y| tiles::Tile::from(x, y)))
@@ -2967,7 +2964,7 @@ impl RenderState {
 
         self.tiles.invalidate();
 
-        let mut all_tiles = HashSet::<tiles::Tile>::new();
+        let mut all_tiles = HashSet::<tiles::Tile>::default();
         let mut nodes = {
             if let Some(base_id) = base_id {
                 vec![*base_id]
@@ -3005,7 +3002,7 @@ impl RenderState {
     pub fn rebuild_touched_tiles(&mut self, tree: ShapesPoolRef) {
         performance::begin_measure!("rebuild_touched_tiles");
 
-        let mut all_tiles = HashSet::<tiles::Tile>::new();
+        let mut all_tiles = HashSet::<tiles::Tile>::default();
 
         let ids = std::mem::take(&mut self.touched_ids);
 
@@ -3040,7 +3037,7 @@ impl RenderState {
         tree: ShapesPoolMutRef<'_>,
     ) -> Result<()> {
         performance::begin_measure!("invalidate_and_update_tiles");
-        let mut all_tiles = HashSet::<tiles::Tile>::new();
+        let mut all_tiles = HashSet::<tiles::Tile>::default();
         for shape_id in shape_ids {
             if let Some(shape) = tree.get(shape_id) {
                 all_tiles.extend(self.update_shape_tiles(shape, tree));
