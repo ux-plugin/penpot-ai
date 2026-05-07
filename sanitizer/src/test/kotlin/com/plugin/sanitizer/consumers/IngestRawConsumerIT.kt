@@ -62,7 +62,7 @@ class IngestRawConsumerIT {
     }
 
     @Test
-    fun `CHUNK event records state and ACKs the message`() = runBlocking {
+    fun `CHUNK event records state and ACKs the message`(): Unit = runBlocking {
         val sessionId = "sess-${UUID.randomUUID().toString().take(8)}"
         val publisher = IngestStreamPublisher(redis, propsFor(streamName))
         publisher.publish(IngestEvent(
@@ -88,7 +88,7 @@ class IngestRawConsumerIT {
     }
 
     @Test
-    fun `CLOSE_HINT event triggers session close and publishes downstream event`() = runBlocking {
+    fun `CLOSE_HINT event triggers session close and publishes downstream event`(): Unit = runBlocking {
         val sessionId = "sess-${UUID.randomUUID().toString().take(8)}"
         val workerProps = WorkerProperties(enabled = true)
         val repo = SessionStateRepository(redis, workerProps)
@@ -118,7 +118,7 @@ class IngestRawConsumerIT {
     }
 
     @Test
-    fun `malformed message is routed to DLQ and ACKed`() = runBlocking {
+    fun `malformed message is routed to DLQ and ACKed`(): Unit = runBlocking {
         val record = org.springframework.data.redis.connection.stream.StreamRecords.newRecord()
             .ofMap(mapOf("garbage" to "x"))
             .withStreamKey(streamName)
