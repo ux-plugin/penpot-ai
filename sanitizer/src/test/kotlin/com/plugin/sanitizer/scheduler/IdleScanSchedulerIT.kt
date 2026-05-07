@@ -55,7 +55,7 @@ class IdleScanSchedulerIT {
     }
 
     @Test
-    fun `idle session past threshold is closed and publishes downstream event`() = runBlocking {
+    fun `idle session past threshold is closed and publishes downstream event`(): Unit = runBlocking {
         val sessionId = "abandoned-${UUID.randomUUID().toString().take(8)}"
         seedSession("org-A", sessionId, seqs = (0L..3L).toList(), withFullSnapshot = true)
         // 11 minutes after seed — past the 10 min idle threshold.
@@ -73,7 +73,7 @@ class IdleScanSchedulerIT {
     }
 
     @Test
-    fun `non-idle session is left alone`() = runBlocking {
+    fun `non-idle session is left alone`(): Unit = runBlocking {
         val sessionId = "active-${UUID.randomUUID().toString().take(8)}"
         seedSession("org-A", sessionId, seqs = (0L..3L).toList(), withFullSnapshot = true)
         // 5 minutes after seed — well within the 10 min idle window.
