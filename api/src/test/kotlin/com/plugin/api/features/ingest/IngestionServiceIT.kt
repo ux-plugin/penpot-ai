@@ -47,7 +47,7 @@ class IngestionServiceIT {
             contentType = "application/x-ndjson",
         )
 
-        assertThat(response.key).isEqualTo("org/org-A/sess/sess-1/0000000007.ndjson.gz")
+        assertThat(response.key).isEqualTo("raw/org-A/sess-1/0000000007.ndjson.gz")
         assertThat(response.sizeBytes).isEqualTo(payload.size.toLong())
 
         // Object actually present in MinIO with the same bytes.
@@ -130,7 +130,7 @@ class IngestionServiceIT {
             contentLength = payload.size.toLong(),
             body = Mono.just(ByteBuffer.wrap(payload)),
         )
-        assertThat(response.key).isEqualTo("org/org-A/sess/sess-1/0000000042.ndjson.gz")
+        assertThat(response.key).isEqualTo("raw/org-A/sess-1/0000000042.ndjson.gz")
     }
 
     private fun propsWith(maxPending: Long): IngestProperties = IngestProperties(

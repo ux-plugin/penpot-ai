@@ -62,11 +62,18 @@ class IngestionService(
         return CloseSessionResponse(sessionId = sessionId)
     }
 
+    /**
+     * Key layout: `[<configurablePrefix>/]raw/<orgId>/<sessionId>/<chunkSeq.zeroPad(10)>.ndjson.gz`.
+     *
+     * The `raw/` segment is reserved by the data-protection layout (see Notion design contracts):
+     * sanitizer + lifecycle policy both target this prefix for short-retention eviction. Anonymizer
+     * later writes under `anon/`, sanitizer moves quarantine sessions under `quarantine/`.
+     */
     private fun chunkKey(orgId: String, sessionId: String, chunkSeq: Long): String =
         buildString {
             if (props.s3KeyPrefix.isNotEmpty()) append(props.s3KeyPrefix.trimEnd('/')).append('/')
-            append("org/").append(orgId)
-            append("/sess/").append(sessionId)
+            append("raw/").append(orgId)
+            append('/').append(sessionId)
             append('/').append(chunkSeq.toString().padStart(10, '0'))
             append(".ndjson.gz")
         }
