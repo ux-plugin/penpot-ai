@@ -65,7 +65,7 @@ class RawProcessedConsumerIT {
     }
 
     @Test
-    fun `RAW_PROCESSED event evicts raw S3 keys and clears state`() = runBlocking {
+    fun `RAW_PROCESSED event evicts raw S3 keys and clears state`(): Unit = runBlocking {
         val sessionId = "sess-${UUID.randomUUID().toString().take(8)}"
         seedSanitizedAndCloseSession("org-A", sessionId)
         // Sanity: raw keys present, state alive (sanitized but awaiting eviction).
@@ -84,7 +84,7 @@ class RawProcessedConsumerIT {
     }
 
     @Test
-    fun `unexpected event type lands in DLQ`() = runBlocking {
+    fun `unexpected event type lands in DLQ`(): Unit = runBlocking {
         val publisher = IngestStreamPublisher(redis, IngestProperties(enabled = true,
             stream = IngestProperties.StreamProperties(name = "ingest.raw.processed")))
         publisher.publish(IngestEvent(type = IngestEvent.Type.CHUNK, orgId = "org-A", sessionId = "x", chunkSeq = 0))
