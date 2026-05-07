@@ -9,6 +9,7 @@ import software.amazon.awssdk.services.s3.S3AsyncClient
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
 import software.amazon.awssdk.services.s3.presigner.S3Presigner
@@ -75,6 +76,16 @@ class S3ObjectStore(
 
     override suspend fun delete(key: String) {
         s3.deleteObject(DeleteObjectRequest.builder().bucket(props.requireBucket()).key(key).build()).await()
+    }
+
+    override suspend fun copy(sourceKey: String, destKey: String) {
+        val req = CopyObjectRequest.builder()
+            .sourceBucket(props.requireBucket())
+            .sourceKey(sourceKey)
+            .destinationBucket(props.requireBucket())
+            .destinationKey(destKey)
+            .build()
+        s3.copyObject(req).await()
     }
 
     override suspend fun presignGet(key: String, ttl: Duration): String {

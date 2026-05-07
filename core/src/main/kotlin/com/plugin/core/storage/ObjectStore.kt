@@ -18,6 +18,12 @@ interface ObjectStore {
 
     suspend fun delete(key: String)
 
+    /**
+     * Server-side copy (no download/upload). Used by the sanitizer when relocating
+     * a session's chunks from `raw/` to `quarantine/`.
+     */
+    suspend fun copy(sourceKey: String, destKey: String)
+
     suspend fun presignGet(key: String, ttl: Duration): String
 
     data class PutResult(val key: String, val etag: String?)
