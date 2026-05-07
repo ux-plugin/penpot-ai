@@ -4,6 +4,8 @@ import com.plugin.core.config.properties.WorkerProperties
 import com.plugin.core.util.logger
 import io.lettuce.core.RedisBusyException
 import kotlinx.coroutines.reactive.awaitFirstOrNull
+import kotlinx.coroutines.slf4j.MDCContext
+import kotlinx.coroutines.withContext
 import org.springframework.data.redis.RedisSystemException
 import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory
 import org.springframework.data.redis.connection.stream.Consumer
@@ -72,7 +74,14 @@ class StreamConsumerSupport(
         record: MapRecord<String, String, String>,
         handler: suspend (MapRecord<String, String, String>) -> MessageOutcome,
     ): Mono<Void> = Mono.defer {
-        kotlinx.coroutines.reactor.mono { handler(record) }
+        // Pull session-identifying fields off the IngestEvent payload (best-effort —
+        // malformed messages just get the stream name in MDC) and propagate via
+        // MDCContext so the handler's logs carry orgId/sessionId/chunkSeq across
+        // coroutine thread hops.
+        val mdcMap = buildMdc(streamName, record)
+        kotlinx.coroutines.reactor.mono {
+            withContext(MDCContext(mdcMap)) { handler(record) }
+        }
             .flatMap { outcome ->
                 when (outcome) {
                     MessageOutcome.ACK -> ack(streamName, groupName, record.id).then()
@@ -105,6 +114,18 @@ class StreamConsumerSupport(
             ))
             .withStreamKey(dlqStream)
         return redis.opsForStream<String, String>().add(dlqRecord)
+    }
+
+    private fun buildMdc(streamName: String, record: MapRecord<String, String, String>): Map<String, String> {
+        val fields = record.value
+        return buildMap {
+            put("stream", streamName)
+            put("messageId", record.id.value)
+            fields["orgId"]?.let { put("orgId", it) }
+            fields["sessionId"]?.let { put("sessionId", it) }
+            fields["chunkSeq"]?.let { put("chunkSeq", it) }
+            fields["type"]?.let { put("eventType", it) }
+        }
     }
 
     private suspend fun ensureGroup(streamName: String, groupName: String) {

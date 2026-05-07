@@ -58,6 +58,9 @@ management:
           include: redis,readinessState
 
 logging:
+  pattern:
+    # MDC fields propagate per-message context (see StreamConsumerSupport.dispatch).
+    level: "%5p [%X{orgId:-},%X{sessionId:-},%X{chunkSeq:-}]"
   level:
     root: INFO
     com.plugin: DEBUG
