@@ -19,4 +19,8 @@ class IngestConfig {
     @Bean
     fun ingestStreamPublisher(redis: ReactiveStringRedisTemplate, props: IngestProperties): IngestStreamPublisher =
         IngestStreamPublisher(redis, props)
+
+    @Bean
+    fun backpressureGuard(redis: ReactiveStringRedisTemplate, props: IngestProperties): BackpressureGuard =
+        BackpressureGuard(redis, props)
 }
