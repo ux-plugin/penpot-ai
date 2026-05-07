@@ -45,7 +45,7 @@ services:
       
       # Object store (MinIO)
       - OBJECTSTORE_ENDPOINT=${OBJECTSTORE_ENDPOINT:-http://minio:9000}
-      - OBJECTSTORE_BUCKET=${OBJECTSTORE_BUCKET:-zoetrope-raw}
+      - OBJECTSTORE_BUCKET=${OBJECTSTORE_BUCKET:-zoetrope-data}
       - OBJECTSTORE_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - OBJECTSTORE_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
 
@@ -81,12 +81,24 @@ services:
     networks:
       - app-network
 
-  # Redis service
+  # Redis service — persistence enabled so streams + sanitizer state survive a Redis restart.
+  # Without AOF the entire pipeline state is lost on container crash, including in-flight
+  # chunks (see Notion design contract: data protection / Redis crash). maxmemory-policy is
+  # noeviction so a full Redis returns errors to producers (ingest 503s) instead of silently
+  # evicting stream entries.
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    command: redis-server --save "" --appendonly no
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -115,17 +127,28 @@ services:
     networks:
       - app-network
 
-  # MinIO bootstrap: create bucket on startup
+  # MinIO bootstrap: create the data bucket and apply prefix-scoped lifecycle rules.
+  # raw/ is short-lived (1d MinIO ILM minimum; sanitizer normally evicts in seconds via
+  # the two-phase delete with anonymizer). quarantine/ is held for 7d for ops review.
+  # anon/ keeps anonymized chunks for 90d. See Notion design contract: data protection.
   minio-init:
     image: quay.io/minio/mc:RELEASE.2024-10-08T09-37-26Z
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      OBJECTSTORE_BUCKET: ${OBJECTSTORE_BUCKET:-zoetrope-data}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} &&
-      mc mb --ignore-existing local/${OBJECTSTORE_BUCKET:-zoetrope-raw} &&
-      echo 'minio bucket ready'
+      set -e &&
+      mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD &&
+      mc mb --ignore-existing local/$$OBJECTSTORE_BUCKET &&
+      mc ilm rule add --prefix raw/        --expire-days 1  local/$$OBJECTSTORE_BUCKET || true &&
+      mc ilm rule add --prefix quarantine/ --expire-days 7  local/$$OBJECTSTORE_BUCKET || true &&
+      mc ilm rule add --prefix anon/       --expire-days 90 local/$$OBJECTSTORE_BUCKET || true &&
+      echo 'minio bucket + lifecycle rules ready'
       "
     networks:
       - app-network
@@ -133,6 +156,7 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  redis_data:
 
 networks:
   app-network:
