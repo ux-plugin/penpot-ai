@@ -57,6 +57,10 @@ class SecurityConfig(private val auth0Properties: Auth0Properties) {
                     .permitAll()
                     .pathMatchers("/dev/**")
                     .permitAll()
+                    // Ingest endpoints are SDK-only — must be authenticated via API key,
+                    // never via a user JWT. ROLE_API_KEY is granted by ApiKeyAuthentication.
+                    .pathMatchers("/ingest/**")
+                    .hasAuthority("ROLE_API_KEY")
                     .anyExchange()
                     .authenticated()
             }
