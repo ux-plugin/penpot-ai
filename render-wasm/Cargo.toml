@@ -30,6 +30,7 @@ bezier-rs = "0.4.0"
 gl = "0.14.0"
 glam = "0.24.2"
 indexmap = "2.7.1"
+lru = "0.12"
 macros = { path = "macros" }
 rustc-hash = "2.1"
 skia-safe = { version = "0.93.1", default-features = false, features = [

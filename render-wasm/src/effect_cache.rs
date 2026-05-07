@@ -30,8 +30,8 @@
 use crate::shapes::{Blur, GlassEffect, Shape, TextureEffect};
 use crate::tile_grid::EffectKey;
 use crate::uuid::Uuid;
+use lru::LruCache;
 use skia_safe::{self as skia};
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 /// Composite key. All fields participate in equality so a shape with
@@ -74,8 +74,9 @@ pub struct EffectCacheEntry {
     /// for byte-cap eviction.
     pub bytes: u32,
     /// Last frame this entry was returned from `get` (or inserted).
-    /// Drives LRU eviction. Phase 5 also bumps on viewport-scope
-    /// pass.
+    /// Bumped on `LruCache::get` automatically; we still track it
+    /// explicitly so the per-shape sub-cap can scan siblings without
+    /// a second pass through the LRU's internal list.
     pub last_used_frame: u32,
 }
 
@@ -86,7 +87,11 @@ pub struct EffectCacheEntry {
 const DEFAULT_CAP_BYTES: u64 = 96 * 1024 * 1024;
 
 pub struct EffectCache {
-    map: HashMap<EffectCacheKey, EffectCacheEntry>,
+    /// `lru` crate gives O(1) `get` (recency-bumping), O(1) `put`
+    /// and O(1) `pop_lru` for byte-cap eviction. We pass
+    /// `usize::MAX` as the count cap and enforce eviction by bytes
+    /// instead — `LruCache` doesn't support byte caps natively.
+    map: LruCache<EffectCacheKey, EffectCacheEntry>,
     bytes_used: u64,
     bytes_cap: u64,
     /// Wraps every `tick_frame`. Used as the recency timestamp; u32
@@ -104,7 +109,13 @@ pub struct EffectCache {
 impl EffectCache {
     pub fn new() -> Self {
         Self {
-            map: HashMap::new(),
+            // Bytes-only cap — we enforce eviction manually via
+            // `evict_to_cap` and `enforce_sub_cap`. `LruCache::unbounded`
+            // doesn't pre-allocate; passing a finite count cap with
+            // `usize::MAX` aborted under emscripten because
+            // `LruCache::new` does some up-front allocation work tied
+            // to capacity.
+            map: LruCache::unbounded(),
             bytes_used: 0,
             bytes_cap: DEFAULT_CAP_BYTES,
             current_frame: 0,
@@ -116,14 +127,12 @@ impl EffectCache {
 
     /// Bump the recency clock. Called at the top of every render
     /// entry point (`start_render_loop`, `process_animation_frame`).
-    /// Phase 5 extends this to also run the viewport-scoped LRU
-    /// promotion pass and emit gauge metrics.
     pub fn tick_frame(&mut self) {
         self.current_frame = self.current_frame.wrapping_add(1);
     }
 
-    /// Returns the cached value if present, bumping recency. Phase 1
-    /// has no callers — exists for build validation.
+    /// Returns the cached value if present. `LruCache::get` bumps
+    /// the entry to the front of the recency list in O(1).
     pub fn get(&mut self, key: &EffectCacheKey) -> Option<&EffectCacheValue> {
         let frame = self.current_frame;
         let entry = self.map.get_mut(key)?;
@@ -133,15 +142,26 @@ impl EffectCache {
         Some(&entry.value)
     }
 
-    /// Insert (or replace) an entry. Triggers byte-cap enforcement
-    /// when the running total exceeds the cap.
+    /// Insert (or replace) an entry. `LruCache::put` returns the
+    /// displaced value if the same key was already present so we
+    /// can adjust the byte total. Cap enforcement runs after the
+    /// insert via `pop_lru` — O(k) where k = entries to drop.
+    ///
+    /// Skips the insert silently if `bytes > MAX_BYTES_PER_ENTRY` so
+    /// a single oversized snapshot doesn't evict the rest of the
+    /// cache. Counted as a miss for snapshot-stat consistency.
     pub fn insert(&mut self, key: EffectCacheKey, value: EffectCacheValue, bytes: u32) {
+        if bytes > MAX_BYTES_PER_ENTRY {
+            self.stat_misses = self.stat_misses.wrapping_add(1);
+            crate::perf_count!(effect_cache_miss);
+            return;
+        }
         let new_entry = EffectCacheEntry {
             value,
             bytes,
             last_used_frame: self.current_frame,
         };
-        if let Some(old) = self.map.insert(key, new_entry) {
+        if let Some(old) = self.map.put(key, new_entry) {
             self.bytes_used = self.bytes_used.saturating_sub(old.bytes as u64);
         }
         self.bytes_used = self.bytes_used.saturating_add(bytes as u64);
@@ -152,31 +172,17 @@ impl EffectCache {
         }
     }
 
-    /// Drop oldest entries until under the byte cap. Phase 1
-    /// implementation: collect-keys + sort-by-`last_used_frame` is
-    /// O(n log n) per call. Acceptable while n ≤ ~2k entries — at the
-    /// expected steady state of ~400 entries (96 MB / 250 KB avg)
-    /// this is sub-millisecond and only fires on cap overflow. Phase
-    /// 5 swaps in `lru::LruCache` for O(1) `pop_lru`. See plan.
+    /// Drop least-recently-used entries until under the byte cap.
+    /// O(k) where k is number of entries evicted — `LruCache::pop_lru`
+    /// is O(1) per call.
     pub fn evict_to_cap(&mut self) {
-        if self.bytes_used <= self.bytes_cap {
-            return;
-        }
-        let mut order: Vec<(u32, EffectCacheKey)> = self
-            .map
-            .iter()
-            .map(|(k, e)| (e.last_used_frame, *k))
-            .collect();
-        order.sort_by_key(|(frame, _)| *frame);
-        for (_, key) in order {
-            if self.bytes_used <= self.bytes_cap {
+        while self.bytes_used > self.bytes_cap {
+            let Some((_, removed)) = self.map.pop_lru() else {
                 break;
-            }
-            if let Some(removed) = self.map.remove(&key) {
-                self.bytes_used = self.bytes_used.saturating_sub(removed.bytes as u64);
-                self.stat_evictions = self.stat_evictions.wrapping_add(1);
-                crate::perf_count!(effect_cache_evict);
-            }
+            };
+            self.bytes_used = self.bytes_used.saturating_sub(removed.bytes as u64);
+            self.stat_evictions = self.stat_evictions.wrapping_add(1);
+            crate::perf_count!(effect_cache_evict);
         }
     }
 
@@ -335,12 +341,26 @@ pub fn compute_scale_bucket(scale: f32, dpr: f32) -> i8 {
 /// limit the oldest sibling is evicted.
 pub const MAX_BUCKETS_PER_SHAPE_EFFECT: usize = 3;
 
+/// Per-entry size limit. Insert is a no-op when the would-be entry
+/// is bigger than this. Sized to allow a full 1920×1080 RGBA8
+/// Target-surface snapshot (≈8 MB) — that's the heaviest single
+/// entry the gather backdrop cache produces today. Bbox-bounded
+/// snapshots (followup) shrink most entries below 1 MB and let
+/// dense scenes keep more shapes cached at once.
+///
+/// The point of this cap is to refuse pathologically huge entries
+/// (e.g. an export-resolution snapshot accidentally entering the
+/// cache) that would single-handedly evict everything else. It is
+/// not a tool for pruning normal entries — that's `bytes_cap`'s
+/// job.
+pub const MAX_BYTES_PER_ENTRY: u32 = 16 * 1024 * 1024;
+
 impl EffectCache {
     /// Drop the oldest bucket for `(shape_id, effect)` when the
     /// per-shape sub-cap is exceeded after a fresh insert. Called
-    /// by `BuildCache(Scatter)` after `effect_cache.insert(...)`.
-    /// Linear scan — n is bounded by total cache size and the
-    /// sub-cap fires only on overshoot, so amortized cost stays low.
+    /// by `BuildCache(Scatter|Gather)` after `effect_cache.insert(...)`.
+    /// Linear scan over the LRU iter — n bounded by total cache
+    /// size; sub-cap fires only on overshoot.
     pub fn enforce_sub_cap(&mut self, shape_id: Uuid, effect: EffectKey) {
         let mut siblings: Vec<(u32, EffectCacheKey)> = self
             .map
@@ -354,11 +374,36 @@ impl EffectCache {
         siblings.sort_by_key(|(f, _)| *f);
         let drop_count = siblings.len() - MAX_BUCKETS_PER_SHAPE_EFFECT;
         for (_, key) in siblings.into_iter().take(drop_count) {
-            if let Some(removed) = self.map.remove(&key) {
+            if let Some(removed) = self.map.pop(&key) {
                 self.bytes_used = self.bytes_used.saturating_sub(removed.bytes as u64);
                 self.stat_evictions = self.stat_evictions.wrapping_add(1);
                 crate::perf_count!(effect_cache_evict);
             }
+        }
+    }
+
+    /// Promote a set of shape ids to the front of the LRU order so
+    /// they survive the next `evict_to_cap`. Called by the schedule
+    /// builder for shapes intersecting the viewport+margin —
+    /// off-viewport shapes age out naturally even if their cache
+    /// entries weren't touched this frame. Phase 5 viewport
+    /// scoping. O(in-viewport-entries).
+    pub fn promote_viewport_shapes(&mut self, ids: &[Uuid]) {
+        if ids.is_empty() {
+            return;
+        }
+        // Collect matching keys first — `LruCache::get` mutably
+        // borrows `self.map`, so we can't iterate-and-promote in one
+        // pass.
+        let to_promote: Vec<EffectCacheKey> = self
+            .map
+            .iter()
+            .filter(|(k, _)| ids.contains(&k.shape_id))
+            .map(|(k, _)| *k)
+            .collect();
+        for k in to_promote {
+            // `get` bumps recency without overwriting the value.
+            let _ = self.map.get(&k);
         }
     }
 }
@@ -422,5 +467,25 @@ mod tests {
         }
         assert!(c.bytes_used() <= 8);
         assert!(c.stat_evictions >= 2);
+    }
+
+    #[test]
+    fn lru_evicts_oldest_first() {
+        let mut c = EffectCache::new();
+        c.set_bytes_cap(12);
+        c.tick_frame();
+        c.insert(k(1, 0), dummy_value(), 4); // oldest
+        c.tick_frame();
+        c.insert(k(2, 0), dummy_value(), 4);
+        c.tick_frame();
+        c.insert(k(3, 0), dummy_value(), 4); // bytes=12, at cap
+        c.tick_frame();
+        // touch k(1, 0) so it's no longer least-recent
+        let _ = c.get(&k(1, 0));
+        c.insert(k(4, 0), dummy_value(), 4); // bytes=16, evict
+        // Whoever is LRU now (k(2,0)) should have been dropped.
+        assert!(c.bytes_used() <= 12);
+        assert!(c.get(&k(2, 0)).is_none());
+        assert!(c.get(&k(1, 0)).is_some()); // recently used, kept
     }
 }
