@@ -45,6 +45,17 @@ logging:
     reactor.netty: INFO
     reactor.netty.http.client: INFO
 
+# Ingest pipeline (development)
+ingest:
+  enabled: true
+  max-chunk-size-bytes: 5242880
+  s3-key-prefix: ""
+  stream:
+    name: "ingest.raw"
+    max-pending: 10000
+    backpressure-retry-after-sec: 5
+    backpressure-cache-ttl-ms: 1000
+
 # API key generation (development overrides prefix to pk_test_)
 apikey:
   prefix: pk_test_
