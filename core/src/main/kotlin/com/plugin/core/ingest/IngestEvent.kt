@@ -16,6 +16,7 @@ import java.time.Instant
  * | `ingest.raw` (ingest → sanitizer) | [Type.CLOSE_HINT] | nothing extra |
  * | `ingest.sanitized` (sanitizer → anonymizer) | [Type.SESSION_SANITIZED] | chunkCount, firstSeq, lastSeq, classification |
  * | `ingest.quarantine` (sanitizer → ops) | [Type.SESSION_QUARANTINED] | classification (gap reason), chunkCount |
+ * | `ingest.anon` (anonymizer → processor) | [Type.SESSION_ANONYMIZED] | chunkCount, firstSeq, lastSeq |
  * | `ingest.raw.processed` (anonymizer → sanitizer) | [Type.RAW_PROCESSED] | nothing extra (sessionId is the key) |
  *
  * Adding a new stream? Add a [Type] value and document its field expectations here.
@@ -45,6 +46,9 @@ data class IngestEvent(
 
         /** Sanitizer determined a session has gaps or is missing required event types. */
         SESSION_QUARANTINED,
+
+        /** Anonymizer finished writing the anon copy; ready for processor. */
+        SESSION_ANONYMIZED,
 
         /** Anonymizer finished writing the anon copy; sanitizer can now evict raw. */
         RAW_PROCESSED,
