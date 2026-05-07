@@ -2334,11 +2334,15 @@ impl RenderState {
                                     .as_ref()
                                     .is_some_and(|t| !t.hidden);
 
+                            let scale_bucket = crate::effect_cache::compute_scale_bucket(
+                                self.get_scale(),
+                                self.options.dpr(),
+                            );
                             let cached_hit = if cache_eligible {
                                 let key = crate::effect_cache::EffectCacheKey {
                                     shape_id: id,
                                     effect: EffectKey::Scatter(ScatterFx::Blit),
-                                    scale_bucket: 0,
+                                    scale_bucket,
                                     geometry_hash: crate::effect_cache::hash_shape_geometry(
                                         element,
                                     ),
@@ -2385,7 +2389,7 @@ impl RenderState {
                                         let key = crate::effect_cache::EffectCacheKey {
                                             shape_id: id,
                                             effect: EffectKey::Scatter(ScatterFx::Blit),
-                                            scale_bucket: 0,
+                                            scale_bucket,
                                             geometry_hash:
                                                 crate::effect_cache::hash_shape_geometry(element),
                                             params_hash: element
@@ -2405,6 +2409,14 @@ impl RenderState {
                                             },
                                             bytes,
                                         );
+                                        // Cap retained buckets per
+                                        // (shape, effect) to bound
+                                        // memory under rapid-zoom.
+                                        self.effect_cache
+                                            .enforce_sub_cap(
+                                                id,
+                                                EffectKey::Scatter(ScatterFx::Blit),
+                                            );
                                     }
                                     self.surfaces
                                         .insert_scatter_output(id, img, clipped_extrect);

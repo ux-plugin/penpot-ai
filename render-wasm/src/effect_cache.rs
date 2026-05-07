@@ -278,6 +278,54 @@ pub fn estimate_image_bytes(image: &skia::Image) -> u32 {
         .min(u32::MAX as u64) as u32
 }
 
+/// Effective scale → integer bucket. `bucket = round(log2(scale*dpr))`
+/// clamped to `[-3, 5]` (≈0.125× → 32×). One bucket per power of two
+/// keeps each cached image close to its native pixel resolution while
+/// allowing reuse across small zoom drifts. Phase 3 has no
+/// hysteresis — at exact 2× boundaries the bucket flips on every
+/// frame and cache thrashes briefly. Acceptable since hold-zoom is
+/// the common case; phase 5 adds proper hysteresis if zoom-thrash
+/// becomes a real workload.
+pub fn compute_scale_bucket(scale: f32, dpr: f32) -> i8 {
+    let s = (scale * dpr).max(1e-6);
+    let raw = s.log2().round();
+    raw.clamp(-3.0, 5.0) as i8
+}
+
+/// Maximum cached buckets retained per `(shape_id, effect)`. Caps
+/// memory growth from rapid-zoom workloads (which would otherwise
+/// fill the cache with all 9 buckets per shape). On insert past this
+/// limit the oldest sibling is evicted.
+pub const MAX_BUCKETS_PER_SHAPE_EFFECT: usize = 3;
+
+impl EffectCache {
+    /// Drop the oldest bucket for `(shape_id, effect)` when the
+    /// per-shape sub-cap is exceeded after a fresh insert. Called
+    /// by `BuildCache(Scatter)` after `effect_cache.insert(...)`.
+    /// Linear scan — n is bounded by total cache size and the
+    /// sub-cap fires only on overshoot, so amortized cost stays low.
+    pub fn enforce_sub_cap(&mut self, shape_id: Uuid, effect: EffectKey) {
+        let mut siblings: Vec<(u32, EffectCacheKey)> = self
+            .map
+            .iter()
+            .filter(|(k, _)| k.shape_id == shape_id && k.effect == effect)
+            .map(|(k, e)| (e.last_used_frame, *k))
+            .collect();
+        if siblings.len() <= MAX_BUCKETS_PER_SHAPE_EFFECT {
+            return;
+        }
+        siblings.sort_by_key(|(f, _)| *f);
+        let drop_count = siblings.len() - MAX_BUCKETS_PER_SHAPE_EFFECT;
+        for (_, key) in siblings.into_iter().take(drop_count) {
+            if let Some(removed) = self.map.remove(&key) {
+                self.bytes_used = self.bytes_used.saturating_sub(removed.bytes as u64);
+                self.stat_evictions = self.stat_evictions.wrapping_add(1);
+                crate::perf_count!(effect_cache_evict);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
