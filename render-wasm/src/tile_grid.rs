@@ -2470,6 +2470,19 @@ impl RenderState {
                                     // of these is set. Punt to legacy.
                                     (EffectKey::Gather(GatherFx::Glass), 0)
                                 };
+                                // Phase 6: precise per-shape backdrop
+                                // hash. Walks tiles intersecting the
+                                // gather shape's tile span and folds
+                                // each member's geometry+fill hash.
+                                // Stable across pan + across moves of
+                                // shapes outside the gather's tile
+                                // span.
+                                let backdrop_hash =
+                                    crate::effect_cache::hash_backdrop_for(
+                                        element,
+                                        &self.tile_grid,
+                                        tree,
+                                    );
                                 crate::effect_cache::EffectCacheKey {
                                     shape_id: id,
                                     effect,
@@ -2477,7 +2490,7 @@ impl RenderState {
                                     geometry_hash:
                                         crate::effect_cache::hash_shape_geometry(element),
                                     params_hash,
-                                    backdrop_hash: self.scene_revision,
+                                    backdrop_hash,
                                 }
                             });
 

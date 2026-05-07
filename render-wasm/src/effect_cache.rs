@@ -27,8 +27,9 @@
 
 #![cfg(feature = "tile-scheduler")]
 
-use crate::shapes::{Blur, GlassEffect, Shape, TextureEffect};
-use crate::tile_grid::EffectKey;
+use crate::shapes::{Blur, Fill, GlassEffect, Shape, TextureEffect};
+use crate::state::ShapesPoolRef;
+use crate::tile_grid::{EffectKey, TileGrid};
 use crate::uuid::Uuid;
 use lru::LruCache;
 use skia_safe::{self as skia};
@@ -310,6 +311,98 @@ pub fn hash_blur_params(b: &Blur) -> u64 {
     // BlurType discriminant — Layer vs Background changes semantics.
     std::mem::discriminant(&b.blur_type).hash(&mut h);
     h.finish()
+}
+
+/// Hash a single fill. Captures fill-type discriminant for sure;
+/// solid colors hash exactly via their u32 ARGB; gradient/image
+/// fills hash by discriminant only because their structs hide
+/// internals behind private fields. Limitation: gradient handle /
+/// stop edits don't flip the hash. Acceptable v1 — gradient
+/// param edits are rare and the lru evicts naturally; phase 6b
+/// can add public accessors and tighten this.
+fn hash_one_fill(f: &Fill, h: &mut std::collections::hash_map::DefaultHasher) {
+    std::mem::discriminant(f).hash(h);
+    match f {
+        Fill::Solid(c) => {
+            // skia::Color exposes r/g/b/a as u8 — combine into a u32
+            // for hashing.
+            let argb = ((c.0.a() as u32) << 24)
+                | ((c.0.r() as u32) << 16)
+                | ((c.0.g() as u32) << 8)
+                | (c.0.b() as u32);
+            argb.hash(h);
+        }
+        Fill::LinearGradient(_)
+        | Fill::RadialGradient(_)
+        | Fill::AngularGradient(_)
+        | Fill::DiamondGradient(_)
+        | Fill::Image(_) => {
+            // Internals private — discriminant-only contributes.
+        }
+    }
+}
+
+/// Hash all fills on a shape. Returns 0 for empty fills (cheap
+/// short-circuit on the common no-fill container case).
+pub fn hash_shape_fills(shape: &Shape) -> u64 {
+    if shape.fills.is_empty() {
+        return 0;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for f in shape.fills.iter() {
+        hash_one_fill(f, &mut h);
+    }
+    h.finish()
+}
+
+/// Compute the backdrop hash for a gather shape — fed into
+/// `EffectCacheKey::backdrop_hash` so the cached gather snapshot
+/// flips iff the pixels behind this shape would actually have
+/// changed. Walks tiles intersecting the gather's tile span and
+/// XOR-folds each member shape's geometry+fill subhash. XOR is
+/// commutative so iteration order doesn't matter — equivalent
+/// scenes (same shape set, different walk order) produce equal
+/// hashes.
+///
+/// Pan does not change the gather shape's tile span (world coords
+/// fixed) and does not change any member shape's geometry+fills →
+/// `backdrop_hash` is stable on pan, gather cache hits every frame.
+/// Move-shape-NOT-under-gather: shape is in some other tile, not in
+/// this gather's tile span → no contribution → stable. Move-shape
+/// UNDER-gather: that shape's `geometry_hash` flips → backdrop_hash
+/// flips → cache miss (correct).
+pub fn hash_backdrop_for(
+    glass_shape: &Shape,
+    tile_grid: &TileGrid,
+    tree: ShapesPoolRef,
+) -> u64 {
+    // Tile span for the gather shape itself. `get_tiles_of` returns
+    // the tile set the spatial index already maintains for this id.
+    let Some(tiles) = tile_grid.get_tiles_of(&glass_shape.id) else {
+        return 0;
+    };
+    let mut combined: u64 = 0;
+    for tile in tiles {
+        let Some(entries) = tile_grid.get_shapes_at(*tile) else {
+            continue;
+        };
+        for entry in entries {
+            // Skip the gather shape itself — its own pixels go on
+            // top of the backdrop, not into it.
+            if entry.id == glass_shape.id {
+                continue;
+            }
+            let Some(s) = tree.get(&entry.id) else {
+                continue;
+            };
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            entry.id.hash(&mut h);
+            hash_shape_geometry(s).hash(&mut h);
+            hash_shape_fills(s).hash(&mut h);
+            combined ^= h.finish();
+        }
+    }
+    combined
 }
 
 /// Estimate the GPU memory footprint of a snapshot. RGBA8 backing —
