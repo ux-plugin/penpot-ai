@@ -40,6 +40,7 @@ dependencies {
     // Spring Boot data layer (shared by api + workers)
     api("org.springframework.boot:spring-boot-starter-data-r2dbc")
     api("org.springframework.boot:spring-boot-starter-data-redis-reactive")
+    api("org.springframework.boot:spring-boot-starter-actuator")
 
     // Exposed (BOM not propagated to consumers, so pin versions explicitly here)
     api(platform("org.jetbrains.exposed:exposed-bom:1.0.0-rc-3"))
