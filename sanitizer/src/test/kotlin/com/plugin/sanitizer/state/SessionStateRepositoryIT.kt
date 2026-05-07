@@ -32,7 +32,7 @@ class SessionStateRepositoryIT {
     }
 
     @Test
-    fun `recordChunk creates state and seq set with sliding TTL`() = runBlocking {
+    fun `recordChunk creates state and seq set with sliding TTL`(): Unit = runBlocking {
         repo.recordChunk("org-A", "sess-1", chunkSeq = 0, sizeBytes = 100)
         repo.recordChunk("org-A", "sess-1", chunkSeq = 1, sizeBytes = 200)
 
@@ -50,7 +50,7 @@ class SessionStateRepositoryIT {
     }
 
     @Test
-    fun `firstSeenAt is preserved across multiple recordChunks while lastSeenAt advances`() = runBlocking {
+    fun `firstSeenAt is preserved across multiple recordChunks while lastSeenAt advances`(): Unit = runBlocking {
         now.set(Instant.parse("2026-05-07T12:00:00Z"))
         repo.recordChunk("org-A", "sess-1", 0, 100)
         now.set(Instant.parse("2026-05-07T12:01:30Z"))
@@ -62,7 +62,7 @@ class SessionStateRepositoryIT {
     }
 
     @Test
-    fun `markClosing returns true on first call and false on the second`() = runBlocking {
+    fun `markClosing returns true on first call and false on the second`(): Unit = runBlocking {
         repo.recordChunk("org-A", "sess-1", 0, 100)
         assertThat(repo.markClosing("sess-1")).isTrue
         assertThat(repo.markClosing("sess-1")).isFalse
@@ -70,7 +70,7 @@ class SessionStateRepositoryIT {
     }
 
     @Test
-    fun `findIdleSessions returns sessions past threshold and ignores closing sessions`() = runBlocking {
+    fun `findIdleSessions returns sessions past threshold and ignores closing sessions`(): Unit = runBlocking {
         now.set(Instant.parse("2026-05-07T12:00:00Z"))
         repo.recordChunk("org-A", "old-sess", 0, 100)
         repo.recordChunk("org-A", "old-closing", 0, 100)
@@ -83,7 +83,7 @@ class SessionStateRepositoryIT {
     }
 
     @Test
-    fun `delete clears both state hash and seqs sorted set`() = runBlocking {
+    fun `delete clears both state hash and seqs sorted set`(): Unit = runBlocking {
         repo.recordChunk("org-A", "sess-1", 0, 100)
         repo.delete("sess-1")
         assertThat(repo.getState("sess-1")).isNull()
@@ -91,7 +91,7 @@ class SessionStateRepositoryIT {
     }
 
     @Test
-    fun `gaps and contiguous detection work for out-of-order delivery`() = runBlocking {
+    fun `gaps and contiguous detection work for out-of-order delivery`(): Unit = runBlocking {
         listOf(2L, 0L, 1L, 4L, 3L).forEach { repo.recordChunk("org-A", "sess-1", it, 100) }
         val state = repo.getState("sess-1")!!
         assertThat(state.chunkSeqs).containsExactly(0L, 1L, 2L, 3L, 4L)
