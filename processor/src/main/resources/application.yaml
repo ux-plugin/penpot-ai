@@ -1,18 +1,14 @@
 spring:
   application:
-    name: figma-plugin-processor
-
+    name: processor
   main:
     web-application-type: none
-
+  config:
+    import:
+      - optional:file:../.env.dev[.properties]
+      - optional:file:.env.dev[.properties]
   liquibase:
     enabled: false
-
-  r2dbc:
-    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
-    username: ${DB_USERNAME:postgres}
-    password: ${DB_PASSWORD:password}
-
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -25,22 +21,54 @@ spring:
           min-idle: 5
           max-wait: ${REDIS_MAX_WAITING:100}ms
         shutdown-timeout: 5000ms
-
   jackson:
     serialization:
       write-dates-as-timestamps: false
     default-property-inclusion: non_null
 
-logging:
-  level:
-    root: ${LOG_LEVEL:INFO}
-    com.plugin: ${APP_LOG_LEVEL:DEBUG}
+# Worker tunables — same shape as sanitizer + anonymizer.
+worker:
+  enabled: true
+  heartbeat:
+    threshold-sec: 60
+  stream:
+    consumer-group: processor-grp
+    consumer-name: ${HOSTNAME:processor-1}
+    poll-timeout-ms: 5000
+    batch-size: 10
+    reclaim:
+      interval-sec: 30
+      min-idle-time-sec: 300
+      batch-size: 100
+    dlq-suffix: ".dlq"
+    max-delivery-attempts: 5
+
+# Processor config (input stream + processor mode).
+processor:
+  enabled: true
+  input-stream: ingest.anon
+  mode: NOOP
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health, info, metrics
   endpoint:
     health:
-      show-details: when-authorized
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        liveness:
+          include: workerHeartbeat,livenessState
+        readiness:
+          include: redis,readinessState
+
+logging:
+  pattern:
+    # MDC fields propagate per-message context (see StreamConsumerSupport.dispatch).
+    level: "%5p [%X{orgId:-},%X{sessionId:-},%X{chunkSeq:-}]"
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.plugin: ${APP_LOG_LEVEL:DEBUG}
