@@ -2320,26 +2320,95 @@ impl RenderState {
                             } else {
                                 None
                             };
-                            let scatter_output = if element.is_recursive() {
-                                crate::perf_guard!("texture_filter_subtree");
-                                crate::render::texture::render_and_filter_subtree_to_image(
-                                    self,
-                                    element,
-                                    tree,
-                                    glass_backdrop,
-                                )
+
+                            // Phase 2: cross-frame `effect_cache` for
+                            // leaf scatters without glass dependency.
+                            // Recursive (subtree) scatters and
+                            // glass-fed scatters fall through to the
+                            // legacy per-frame path until phase 4
+                            // adds backdrop_hash.
+                            let cache_eligible = !element.is_recursive()
+                                && glass_backdrop.is_none()
+                                && element
+                                    .texture
+                                    .as_ref()
+                                    .is_some_and(|t| !t.hidden);
+
+                            let cached_hit = if cache_eligible {
+                                let key = crate::effect_cache::EffectCacheKey {
+                                    shape_id: id,
+                                    effect: EffectKey::Scatter(ScatterFx::Blit),
+                                    scale_bucket: 0,
+                                    geometry_hash: crate::effect_cache::hash_shape_geometry(
+                                        element,
+                                    ),
+                                    params_hash: element
+                                        .texture
+                                        .as_ref()
+                                        .map(crate::effect_cache::hash_texture_params)
+                                        .unwrap_or(0),
+                                    backdrop_hash: 0,
+                                };
+                                self.effect_cache
+                                    .get(&key)
+                                    .map(|v| (v.image.clone(), v.world_bbox, key))
                             } else {
-                                crate::perf_guard!("texture_filter_leaf");
-                                crate::render::texture::render_and_filter_to_image(
-                                    self,
-                                    element,
-                                    tree,
-                                    glass_backdrop,
-                                )
+                                None
                             };
-                            if let Some((img, clipped_extrect)) = scatter_output {
-                                self.surfaces
-                                    .insert_scatter_output(id, img, clipped_extrect);
+
+                            if let Some((img, rect, _key)) = cached_hit {
+                                // Hit: feed the cross-frame entry into
+                                // the per-frame surfaces cache so the
+                                // downstream `Scatter::Blit` arm reads
+                                // it as if we had just rendered it.
+                                self.surfaces.insert_scatter_output(id, img, rect);
+                            } else {
+                                let scatter_output = if element.is_recursive() {
+                                    crate::perf_guard!("texture_filter_subtree");
+                                    crate::render::texture::render_and_filter_subtree_to_image(
+                                        self,
+                                        element,
+                                        tree,
+                                        glass_backdrop,
+                                    )
+                                } else {
+                                    crate::perf_guard!("texture_filter_leaf");
+                                    crate::render::texture::render_and_filter_to_image(
+                                        self,
+                                        element,
+                                        tree,
+                                        glass_backdrop,
+                                    )
+                                };
+                                if let Some((img, clipped_extrect)) = scatter_output {
+                                    if cache_eligible {
+                                        let key = crate::effect_cache::EffectCacheKey {
+                                            shape_id: id,
+                                            effect: EffectKey::Scatter(ScatterFx::Blit),
+                                            scale_bucket: 0,
+                                            geometry_hash:
+                                                crate::effect_cache::hash_shape_geometry(element),
+                                            params_hash: element
+                                                .texture
+                                                .as_ref()
+                                                .map(crate::effect_cache::hash_texture_params)
+                                                .unwrap_or(0),
+                                            backdrop_hash: 0,
+                                        };
+                                        let bytes =
+                                            crate::effect_cache::estimate_image_bytes(&img);
+                                        self.effect_cache.insert(
+                                            key,
+                                            crate::effect_cache::EffectCacheValue {
+                                                image: img.clone(),
+                                                world_bbox: clipped_extrect,
+                                            },
+                                            bytes,
+                                        );
+                                    }
+                                    self.surfaces
+                                        .insert_scatter_output(id, img, clipped_extrect);
+                                }
                             }
                         }
                         CacheKind::Gather(id) => {

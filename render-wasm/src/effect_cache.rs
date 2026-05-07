@@ -27,10 +27,12 @@
 
 #![cfg(feature = "tile-scheduler")]
 
+use crate::shapes::{Shape, TextureEffect};
 use crate::tile_grid::EffectKey;
 use crate::uuid::Uuid;
 use skia_safe::{self as skia};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 /// Composite key. All fields participate in equality so a shape with
 /// the same geometry + same effect params at the same scale-bucket
@@ -214,6 +216,66 @@ impl Default for EffectCache {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Hash the geometry inputs that decide whether a cached effect
+/// output is still valid for this shape. Anything that changes the
+/// shape's silhouette/extent must feed in here, so any cached output
+/// is invalidated when geometry mutates. Position-in-world is
+/// included on purpose — moving a shape changes which world tiles
+/// its shadow covers, so the world-keyed image must be rebuilt.
+///
+/// f32 fields are hashed via their `to_bits()` representation —
+/// `f32` is not `Hash` itself.
+pub fn hash_shape_geometry(shape: &Shape) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let r = shape.selrect;
+    r.x().to_bits().hash(&mut h);
+    r.y().to_bits().hash(&mut h);
+    r.width().to_bits().hash(&mut h);
+    r.height().to_bits().hash(&mut h);
+    // shape_type discriminant matters: rect vs circle change silhouette
+    // even at the same bbox. We hash the variant index via Debug —
+    // cheap and deterministic across runs.
+    std::mem::discriminant(&shape.shape_type).hash(&mut h);
+    // Rotation / transform feeds into extrect; hash via the 9-float
+    // skia::Matrix raw view. f32 not Hash — bit-cast each element.
+    let m: [f32; 8] = [
+        shape.transform.scale_x(),
+        shape.transform.skew_x(),
+        shape.transform.translate_x(),
+        shape.transform.skew_y(),
+        shape.transform.scale_y(),
+        shape.transform.translate_y(),
+        shape.transform.persp_x(),
+        shape.transform.persp_y(),
+    ];
+    for f in m.iter() {
+        f.to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Hash the parameter set for a `TextureEffect`. Used as
+/// `params_hash` on `Scatter(Blit)` cache keys. Param edits flip
+/// this without invalidating geometry-only entries, so future
+/// per-shape multi-param caches survive geometry tweaks.
+pub fn hash_texture_params(tex: &TextureEffect) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tex.noise_size.to_bits().hash(&mut h);
+    tex.radius.to_bits().hash(&mut h);
+    tex.clip_to_shape.hash(&mut h);
+    tex.hidden.hash(&mut h);
+    h.finish()
+}
+
+/// Estimate the GPU memory footprint of a snapshot. RGBA8 backing —
+/// 4 bytes/pixel. Saturating to avoid surprises on huge images.
+pub fn estimate_image_bytes(image: &skia::Image) -> u32 {
+    (image.width() as u64)
+        .saturating_mul(image.height() as u64)
+        .saturating_mul(4)
+        .min(u32::MAX as u64) as u32
 }
 
 #[cfg(test)]
