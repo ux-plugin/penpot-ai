@@ -1,4 +1,4 @@
-package com.plugin.sanitizer.consumers
+package com.plugin.core.worker.stream
 
 import com.plugin.core.config.properties.WorkerProperties
 import com.plugin.core.util.logger
@@ -11,6 +11,7 @@ import org.springframework.data.redis.connection.stream.MapRecord
 import org.springframework.data.redis.connection.stream.ReadOffset
 import org.springframework.data.redis.connection.stream.RecordId
 import org.springframework.data.redis.connection.stream.StreamOffset
+import org.springframework.data.redis.connection.stream.StreamRecords
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.data.redis.stream.StreamReceiver
 import org.springframework.data.redis.stream.StreamReceiver.StreamReceiverOptions
@@ -19,8 +20,8 @@ import reactor.core.publisher.Mono
 import java.time.Duration
 
 /**
- * Reactive stream subscription with manual ACK + DLQ semantics. Used by both consumers
- * (raw chunks and raw-processed signals) — they only differ in stream name and message
+ * Reactive stream subscription with manual ACK + DLQ semantics. Shared by every worker
+ * (sanitizer, anonymizer, processor) — they only differ in stream name and message
  * handler.
  */
 class StreamConsumerSupport(
@@ -96,7 +97,7 @@ class StreamConsumerSupport(
 
     private fun publishToDlq(streamName: String, record: MapRecord<String, String, String>): Mono<RecordId> {
         val dlqStream = streamName + workerProps.stream.dlqSuffix
-        val dlqRecord = org.springframework.data.redis.connection.stream.StreamRecords
+        val dlqRecord = StreamRecords
             .newRecord()
             .ofMap(record.value + mapOf(
                 "_originalStream" to streamName,
@@ -132,4 +133,3 @@ enum class MessageOutcome {
     /** Permanent failure or retry budget exhausted — XADD to DLQ stream + XACK original. */
     DEAD,
 }
-

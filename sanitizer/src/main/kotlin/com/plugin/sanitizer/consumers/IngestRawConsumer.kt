@@ -4,6 +4,8 @@ import com.plugin.core.config.properties.WorkerProperties
 import com.plugin.core.ingest.IngestEvent
 import com.plugin.core.util.logger
 import com.plugin.core.worker.WorkerHeartbeat
+import com.plugin.core.worker.stream.MessageOutcome
+import com.plugin.core.worker.stream.StreamConsumerSupport
 import com.plugin.sanitizer.lifecycle.SessionLifecycleService
 import com.plugin.sanitizer.state.SessionStateRepository
 import jakarta.annotation.PreDestroy
