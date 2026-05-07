@@ -59,7 +59,7 @@ class SessionLifecycleServiceIT {
     }
 
     @Test
-    fun `DROP path deletes raw S3 keys, no downstream event`() = runBlocking {
+    fun `DROP path deletes raw S3 keys, no downstream event`(): Unit = runBlocking {
         val sessionId = "sess-tiny-${UUID.randomUUID().toString().take(8)}"
         seedSession("org-A", sessionId, seqs = listOf(0L, 1L), withFullSnapshot = true)
 
@@ -73,7 +73,7 @@ class SessionLifecycleServiceIT {
     }
 
     @Test
-    fun `SANITIZED path publishes event and retains raw + state for later eviction`() = runBlocking {
+    fun `SANITIZED path publishes event and retains raw + state for later eviction`(): Unit = runBlocking {
         val sessionId = "sess-good-${UUID.randomUUID().toString().take(8)}"
         seedSession("org-A", sessionId, seqs = (0L..4L).toList(), withFullSnapshot = true)
 
@@ -94,7 +94,7 @@ class SessionLifecycleServiceIT {
     }
 
     @Test
-    fun `QUARANTINE path on gaps moves raw keys to quarantine and publishes event`() = runBlocking {
+    fun `QUARANTINE path on gaps moves raw keys to quarantine and publishes event`(): Unit = runBlocking {
         val sessionId = "sess-gap-${UUID.randomUUID().toString().take(8)}"
         seedSession("org-A", sessionId, seqs = listOf(0L, 1L, 3L, 4L), withFullSnapshot = true) // missing 2
 
@@ -114,7 +114,7 @@ class SessionLifecycleServiceIT {
     }
 
     @Test
-    fun `QUARANTINE path on missing FullSnapshot moves raw keys + publishes event`() = runBlocking {
+    fun `QUARANTINE path on missing FullSnapshot moves raw keys + publishes event`(): Unit = runBlocking {
         val sessionId = "sess-no-fs-${UUID.randomUUID().toString().take(8)}"
         seedSession("org-A", sessionId, seqs = (0L..3L).toList(), withFullSnapshot = false)
 
@@ -129,7 +129,7 @@ class SessionLifecycleServiceIT {
     }
 
     @Test
-    fun `closeSession is idempotent on retry`() = runBlocking {
+    fun `closeSession is idempotent on retry`(): Unit = runBlocking {
         val sessionId = "sess-good-${UUID.randomUUID().toString().take(8)}"
         seedSession("org-A", sessionId, seqs = (0L..2L).toList(), withFullSnapshot = true)
 
@@ -141,7 +141,7 @@ class SessionLifecycleServiceIT {
     }
 
     @Test
-    fun `handleRawProcessed evicts raw S3 keys and clears state`() = runBlocking {
+    fun `handleRawProcessed evicts raw S3 keys and clears state`(): Unit = runBlocking {
         val sessionId = "sess-evict-${UUID.randomUUID().toString().take(8)}"
         seedSession("org-A", sessionId, seqs = (0L..2L).toList(), withFullSnapshot = true)
         service.closeSession(sessionId)
@@ -154,7 +154,7 @@ class SessionLifecycleServiceIT {
     }
 
     @Test
-    fun `handleRawProcessed is idempotent when state already cleared`() = runBlocking {
+    fun `handleRawProcessed is idempotent when state already cleared`(): Unit = runBlocking {
         // No state, no S3 keys. Should not throw.
         service.handleRawProcessed("org-A", "never-existed")
     }
