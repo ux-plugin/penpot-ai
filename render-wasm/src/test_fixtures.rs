@@ -36,6 +36,25 @@ pub enum ShapeKindSpec {
     RectLeaves,
 }
 
+/// Single-effect isolation mode for per-effect attribution scenes.
+/// When set, `configure_leaf` clears any default fills/strokes/shadows
+/// for the leaf and applies only the requested effect path. Lets the
+/// bench attribute time per individual effect (drop shadow vs inner
+/// shadow vs layer blur vs background blur vs glass vs texture/scatter
+/// vs gradient fill vs stroke-only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolatedFx {
+    None,
+    DropShadow,
+    InnerShadow,
+    LayerBlur,
+    BackgroundBlur,
+    Glass,
+    Texture,
+    GradientFill,
+    StrokeOnly,
+}
+
 /// Parameterised scene description. Same shape on both sides of the
 /// wasm boundary; encode at most one preset id and look the spec up
 /// here.
@@ -64,6 +83,11 @@ pub struct SceneSpec {
     /// `BuildCache` path. Plus pins explicit fx combinations on the
     /// first 5 root-level children. Used by the "fx_combos" preset.
     pub fx_combos: bool,
+    /// Per-effect isolation. When non-`None`, every leaf gets a single
+    /// solid fill plus the requested effect — nothing else. Designed
+    /// for attribution: each iso scene's frame timings reflect that
+    /// one effect's cost only. Containers get no effects.
+    pub iso_fx: IsolatedFx,
 }
 
 impl SceneSpec {
@@ -82,6 +106,7 @@ impl SceneSpec {
             kinds: ShapeKindSpec::RectLeaves,
             heterogeneous: false,
             fx_combos: false,
+            iso_fx: IsolatedFx::None,
         }
     }
 
@@ -106,6 +131,29 @@ impl SceneSpec {
             kinds: ShapeKindSpec::RectLeaves,
             heterogeneous: false,
             fx_combos: false,
+            iso_fx: IsolatedFx::None,
+        }
+    }
+
+    /// Per-effect isolation scene: 200 flat leaves, solid fill, one
+    /// effect per shape. Used to attribute time per individual effect
+    /// without container hierarchy noise.
+    const fn iso(name: &'static str, n: usize, fx: IsolatedFx) -> Self {
+        Self {
+            name,
+            n_shapes: n,
+            container_depth: 0,
+            branching_factor: 1,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 16.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: fx,
         }
     }
 }
@@ -153,6 +201,21 @@ pub fn preset(id: u32) -> Option<SceneSpec> {
             s.fx_combos = true;
             s
         }
+        // Per-effect isolation scenes (200 flat leaves, one effect per
+        // shape). Frame timings on these scenes attribute cost to a
+        // single effect path, so the diff CLI can answer "drop shadow
+        // is N ms/frame" without container or fill noise.
+        10 => SceneSpec::iso("iso_drop_shadow_200", 200, IsolatedFx::DropShadow),
+        11 => SceneSpec::iso("iso_inner_shadow_200", 200, IsolatedFx::InnerShadow),
+        12 => SceneSpec::iso("iso_layer_blur_200", 200, IsolatedFx::LayerBlur),
+        // bg_blur + glass are per-leaf gather effects — heaviest paths
+        // in the renderer. 100 shapes keeps each frame timing in the
+        // tens of ms range and the run inside the playwright timeout.
+        13 => SceneSpec::iso("iso_bg_blur_100", 100, IsolatedFx::BackgroundBlur),
+        14 => SceneSpec::iso("iso_glass_100", 100, IsolatedFx::Glass),
+        15 => SceneSpec::iso("iso_texture_200", 200, IsolatedFx::Texture),
+        16 => SceneSpec::iso("iso_gradient_500", 500, IsolatedFx::GradientFill),
+        17 => SceneSpec::iso("iso_stroke_500", 500, IsolatedFx::StrokeOnly),
         _ => return None,
     })
 }
@@ -364,6 +427,10 @@ fn configure_leaf(shape: &mut Shape, spec: &SceneSpec, idx: usize, parent: Uuid)
         LEAF_W,
         LEAF_H,
     );
+    if spec.iso_fx != IsolatedFx::None {
+        apply_isolated_fx(shape, spec.iso_fx, idx);
+        return;
+    }
     apply_fill(shape, spec, idx);
     if spec.heterogeneous {
         apply_heterogeneous_shadows(shape, idx, /*is_container=*/ false);
@@ -373,6 +440,99 @@ fn configure_leaf(shape: &mut Shape, spec: &SceneSpec, idx: usize, parent: Uuid)
     }
     if spec.fx_combos {
         apply_fx_combo(shape, idx);
+    }
+}
+
+/// Apply a single effect path to a leaf with a solid base fill. All
+/// other defaults (no stroke, no shadows, no blur, no glass, no
+/// texture) are left at their `Shape::default` zeros — `configure_leaf`
+/// returns immediately after this so no later step adds noise.
+fn apply_isolated_fx(shape: &mut Shape, fx: IsolatedFx, idx: usize) {
+    let primary = deterministic_color(idx, 255);
+    let secondary = deterministic_color(idx.wrapping_mul(31).wrapping_add(7), 255);
+    // Every iso variant except StrokeOnly + GradientFill uses a base
+    // solid fill so the renderer has shape-body pixels to apply the
+    // effect to.
+    let push_solid = |shape: &mut Shape| {
+        shape.fills.push(Fill::Solid(SolidColor(primary)));
+    };
+    match fx {
+        IsolatedFx::None => {}
+        IsolatedFx::DropShadow => {
+            push_solid(shape);
+            shape.shadows.push(Shadow::new(
+                Color::from_argb(180, 0, 0, 0),
+                16.0,
+                0.0,
+                (4.0, 6.0),
+                ShadowStyle::Drop,
+                false,
+            ));
+        }
+        IsolatedFx::InnerShadow => {
+            push_solid(shape);
+            shape.shadows.push(Shadow::new(
+                Color::from_argb(180, 0, 0, 0),
+                12.0,
+                0.0,
+                (0.0, 4.0),
+                ShadowStyle::Inner,
+                false,
+            ));
+        }
+        IsolatedFx::LayerBlur => {
+            push_solid(shape);
+            shape.blur = Some(Blur::new(BlurType::LayerBlur, false, 8.0));
+        }
+        IsolatedFx::BackgroundBlur => {
+            push_solid(shape);
+            shape.background_blur = Some(Blur::new(BlurType::BackgroundBlur, false, 12.0));
+        }
+        IsolatedFx::Glass => {
+            push_solid(shape);
+            shape.glass = Some(GlassEffect {
+                surface_type: 0,
+                bezel_width: 12.0,
+                glass_thickness: 1.0,
+                refractive_index: 1.4,
+                specular_angle: 0.0,
+                specular_opacity: 0.5,
+                specular_saturation: 0.0,
+                chromatic_aberration: 0.0,
+                splay: 0.0,
+                tilt_angle: 0.0,
+                edge_boost: 0.0,
+                zoom: 1.0,
+                blur: 16.0,
+                frost: 0.0,
+                hidden: false,
+            });
+        }
+        IsolatedFx::Texture => {
+            push_solid(shape);
+            shape.texture = Some(TextureEffect::new(10.0, 6.0, true, false));
+        }
+        IsolatedFx::GradientFill => {
+            shape.fills.push(Fill::LinearGradient(Gradient::new(
+                (0.0, 0.0),
+                (1.0, 1.0),
+                255,
+                (0.0, 0.0),
+                &[(primary, 0.0), (secondary, 1.0)],
+            )));
+        }
+        IsolatedFx::StrokeOnly => {
+            // No fill — stroke is the only paint contributor on this
+            // shape so frame timings attribute to stroke geometry.
+            shape.strokes.push(Stroke {
+                fill: Fill::Solid(SolidColor(primary)),
+                width: 4.0,
+                style: StrokeStyle::Solid,
+                cap_end: None,
+                cap_start: None,
+                kind: StrokeKind::Center,
+            });
+        }
     }
 }
 

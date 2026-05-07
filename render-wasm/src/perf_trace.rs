@@ -31,6 +31,12 @@ struct Counters {
     tile_hits: u64,
     tile_misses: u64,
     tile_writes: u64,
+    /// Effect-output cache (cross-frame, per `EffectKey`). Phase 1
+    /// scaffold reports zeros; phase 2+ wires reads/writes in
+    /// `scheduler_render_effects`.
+    effect_cache_hits: u64,
+    effect_cache_misses: u64,
+    effect_cache_evictions: u64,
 }
 
 thread_local! {
@@ -98,6 +104,18 @@ pub fn tile_write() {
     COUNTERS.with(|c| c.borrow_mut().tile_writes += 1);
 }
 
+pub fn effect_cache_hit() {
+    COUNTERS.with(|c| c.borrow_mut().effect_cache_hits += 1);
+}
+
+pub fn effect_cache_miss() {
+    COUNTERS.with(|c| c.borrow_mut().effect_cache_misses += 1);
+}
+
+pub fn effect_cache_evict() {
+    COUNTERS.with(|c| c.borrow_mut().effect_cache_evictions += 1);
+}
+
 /// Bump frame counter and accumulate wall-clock time between
 /// successive calls. Call once at the end of every top-level render
 /// entry point (`start_render_loop`, continuation `process_animation_frame`).
@@ -161,6 +179,13 @@ fn snapshot_json() -> String {
         out,
         "\"tile_hits\":{},\"tile_misses\":{},\"tile_writes\":{}",
         counters.tile_hits, counters.tile_misses, counters.tile_writes
+    );
+    let _ = write!(
+        out,
+        ",\"effect_cache_hits\":{},\"effect_cache_misses\":{},\"effect_cache_evictions\":{}",
+        counters.effect_cache_hits,
+        counters.effect_cache_misses,
+        counters.effect_cache_evictions
     );
     out.push('}');
     out.push_str(",\"stats\":[");

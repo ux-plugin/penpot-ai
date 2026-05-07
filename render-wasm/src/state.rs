@@ -228,8 +228,9 @@ impl State {
         }
     }
 
-    pub fn rebuild_tiles_shallow(&mut self) {
-        self.render_state.rebuild_tiles_shallow(&self.shapes);
+    pub fn rebuild_tiles_shallow(&mut self, view_only: bool) {
+        self.render_state
+            .rebuild_tiles_shallow(&self.shapes, view_only);
     }
 
     pub fn rebuild_tiles(&mut self) {

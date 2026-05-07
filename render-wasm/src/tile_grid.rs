@@ -215,7 +215,7 @@ pub enum SurfaceInput {
 ///   inner shadows bleed in). Fast mode skips them wholesale.
 /// - `Local` effects paint at-shape: fills, strokes, body composite —
 ///   no cross-bounds sampling or spilling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EffectKey {
     Gather(GatherFx),
     Scatter(ScatterFx),
@@ -223,7 +223,7 @@ pub enum EffectKey {
 }
 
 /// Effects that sample the backdrop and paint into the shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GatherFx {
     /// `render_background_blur` — modifies `output` in place by blurring
     /// what's already there. Should be first in the effect list so
@@ -236,7 +236,7 @@ pub enum GatherFx {
 }
 
 /// Effects that read the shape's silhouette and spill outside/inside.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScatterFx {
     /// All visible drop shadows on the shape, batched into one call to
     /// `render_element_drop_shadows_and_composite`. Must come before
@@ -249,7 +249,7 @@ pub enum ScatterFx {
 }
 
 /// Effects local to the shape — paint at-shape, no cross-bounds sampling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LocalFx {
     /// Fills + strokes + inner shadows + composite, via `render_shape` +
     /// `apply_drawing_to_render_canvas`. Atomic for V2b; future work
@@ -1912,6 +1912,10 @@ impl RenderState {
         // it down.
         crate::perf_guard!("frame_TOTAL");
         let _start = performance::begin_timed_log!("start_render_loop");
+        // Advance recency clock for the cross-frame effect cache.
+        // No-op in phase 1 (cache empty). Phase 5 also runs the
+        // viewport-scoped LRU promotion pass here.
+        self.effect_cache.tick_frame();
         let scale = self.get_scale();
 
         self.tile_viewbox.update(self.viewbox, scale);
@@ -1998,6 +2002,9 @@ impl RenderState {
         // `frame_TOTAL` in `start_render_loop` but for chunked async
         // continuations. Sums to the full per-frame CPU cost.
         crate::perf_guard!("frame_TOTAL");
+        // Continuation frames also advance the cache clock so async
+        // chunked renders don't skip recency updates.
+        self.effect_cache.tick_frame();
         performance::begin_measure!("process_animation_frame");
         if self.render_in_progress {
             if tree.len() != 0 {
@@ -2615,14 +2622,25 @@ impl RenderState {
         self.tile_grid.rebuild(tree, &self.tile_viewbox, scale);
     }
 
-    pub fn rebuild_tiles_shallow(&mut self, tree: ShapesPoolRef) {
+    /// `view_only`: caller is reacting to a pure viewport change (pan/zoom)
+    /// with no underlying scene mutation. In that case the tile texture
+    /// cache (world-space keyed) stays valid for non-zoom changes and we
+    /// skip `invalidate_tile_cache`. Pan was previously wiping the whole
+    /// cache here, forcing 0% hit rate even on small drags.
+    pub fn rebuild_tiles_shallow(&mut self, tree: ShapesPoolRef, view_only: bool) {
         performance::begin_measure!("rebuild_tiles_shallow");
 
         self.rebuild_tile_index(tree);
 
         if self.zoom_changed() {
+            // Tiles are scaled per zoom level — different bucket means
+            // existing textures aren't reusable.
             self.surfaces.remove_cached_tiles(self.background_color);
-        } else {
+        } else if !view_only {
+            // Non-view scene-level change (e.g. background color) needs
+            // a tile invalidate even though world coords are the same.
+            // Pan/zoom callers pass `view_only: true` to keep the
+            // texture cache.
             self.surfaces.invalidate_tile_cache();
         }
 

@@ -342,6 +342,12 @@ pub(crate) struct RenderState {
     pub pending_tiles: PendingTiles,
     #[cfg(feature = "tile-scheduler")]
     pub tile_grid: crate::tile_grid::TileGrid,
+    /// Cross-frame cache for rendered effect outputs (drop shadow,
+    /// glass, layer blur, ...). Phase 1 scaffold — no callers yet,
+    /// `tick_frame` advances recency every frame. See
+    /// `effect_cache.rs`.
+    #[cfg(feature = "tile-scheduler")]
+    pub effect_cache: crate::effect_cache::EffectCache,
     // nested_fills maintains a stack of group  fills that apply to nested shapes
     // without their own fill definitions. This is necessary because in SVG, a group's `fill`
     // can affect its child elements if they don't specify one themselves. If the planned
@@ -429,6 +435,8 @@ impl RenderState {
             pending_tiles: PendingTiles::new_empty(),
             #[cfg(feature = "tile-scheduler")]
             tile_grid: crate::tile_grid::TileGrid::new(),
+            #[cfg(feature = "tile-scheduler")]
+            effect_cache: crate::effect_cache::EffectCache::new(),
             nested_fills: vec![],
             nested_blurs: vec![],
             nested_shadows: vec![],
@@ -2941,17 +2949,18 @@ impl RenderState {
     }
 
     #[cfg(not(feature = "tile-scheduler"))]
-    pub fn rebuild_tiles_shallow(&mut self, tree: ShapesPoolRef) {
+    pub fn rebuild_tiles_shallow(&mut self, tree: ShapesPoolRef, view_only: bool) {
         performance::begin_measure!("rebuild_tiles_shallow");
 
         self.rebuild_tile_index(tree);
 
-        // Zoom changes world tile size: a partial cache update would mix scales in the
-        // mosaic and glitch. Same zoom as last finished render (typical pan): drop only
-        // tile textures and keep the cache canvas for render_from_cache.
+        // Zoom changes world tile size: partial cache update would mix
+        // scales in the mosaic and glitch. Pan-only with `view_only`
+        // keeps the texture cache (was previously cleared every frame,
+        // forcing 0% hit). Non-view scene mutation still invalidates.
         if self.zoom_changed() {
             self.surfaces.remove_cached_tiles(self.background_color);
-        } else {
+        } else if !view_only {
             self.surfaces.invalidate_tile_cache();
         }
 

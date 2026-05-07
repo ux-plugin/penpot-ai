@@ -10,6 +10,8 @@ mod state;
 mod tiles;
 #[cfg(feature = "tile-scheduler")]
 mod tile_grid;
+#[cfg(feature = "tile-scheduler")]
+mod effect_cache;
 #[cfg(feature = "perf-trace")]
 mod perf_trace;
 #[cfg(feature = "perf-trace")]
@@ -138,6 +140,24 @@ macro_rules! perf_count {
         #[cfg(feature = "perf-trace")]
         {
             $crate::perf_trace::tile_write();
+        }
+    };
+    (effect_cache_hit) => {
+        #[cfg(feature = "perf-trace")]
+        {
+            $crate::perf_trace::effect_cache_hit();
+        }
+    };
+    (effect_cache_miss) => {
+        #[cfg(feature = "perf-trace")]
+        {
+            $crate::perf_trace::effect_cache_miss();
+        }
+    };
+    (effect_cache_evict) => {
+        #[cfg(feature = "perf-trace")]
+        {
+            $crate::perf_trace::effect_cache_evict();
         }
     };
 }
@@ -280,7 +300,8 @@ pub extern "C" fn set_canvas_background(raw_color: u32) -> Result<()> {
     with_state_mut!(state, {
         let color = skia::Color::new(raw_color);
         state.set_background_color(color);
-        state.rebuild_tiles_shallow();
+        // Background color affects tile pixels — full invalidate.
+        state.rebuild_tiles_shallow(false);
     });
 
     Ok(())
@@ -444,10 +465,11 @@ pub extern "C" fn set_view_end() -> Result<()> {
         if state.render_state.options.is_profile_rebuild_tiles() {
             state.rebuild_tiles();
         } else {
-            // Rebuild tile index + invalidate tile texture cache.
-            // Cache canvas is preserved so render_from_cache can still
-            // show a scaled preview during zoom.
-            state.rebuild_tiles_shallow();
+            // Pure viewport change (pan/zoom). On pan the world-keyed
+            // tile texture cache stays valid — pass `view_only: true`
+            // so we don't wipe it. Zoom branches inside still drop
+            // tiles via `remove_cached_tiles` because bucket changed.
+            state.rebuild_tiles_shallow(true);
         }
 
         performance::end_measure!("set_view_end");
