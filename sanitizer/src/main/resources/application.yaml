@@ -1,0 +1,63 @@
+spring:
+  application:
+    name: sanitizer
+  config:
+    import:
+      - optional:file:../.env.dev[.properties]
+      - optional:file:.env.dev[.properties]
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+# Worker tunables (heartbeat, stream consumer group, reclaim, sessions)
+worker:
+  enabled: true
+  heartbeat:
+    threshold-sec: 60
+  stream:
+    consumer-group: sanitizer-grp
+    consumer-name: ${HOSTNAME:sanitizer-1}
+    poll-timeout-ms: 5000
+    batch-size: 10
+    reclaim:
+      interval-sec: 30
+      min-idle-time-sec: 300
+      batch-size: 100
+    dlq-suffix: ".dlq"
+    max-delivery-attempts: 5
+  session:
+    idle-timeout-sec: 600
+    state-ttl-sec: 1200
+    min-chunks-to-keep: 3
+
+# Object store (MinIO via S3 protocol) — sanitizer reads raw chunks for FullSnapshot
+# detection and moves keys between prefixes.
+objectstore:
+  endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
+  region: ${OBJECTSTORE_REGION:us-east-1}
+  access-key: ${OBJECTSTORE_ACCESS_KEY:minioadmin}
+  secret-key: ${OBJECTSTORE_SECRET_KEY:minioadmin}
+  bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
+  path-style: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        liveness:
+          include: workerHeartbeat,livenessState
+        readiness:
+          include: redis,readinessState
+
+logging:
+  level:
+    root: INFO
+    com.plugin: DEBUG

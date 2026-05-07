@@ -8,4 +8,4 @@ pluginManagement {
 
 rootProject.name = "figma-plugin"
 
-include("core", "api", "anonymizer", "processor")
+include("core", "api", "sanitizer", "anonymizer", "processor")
