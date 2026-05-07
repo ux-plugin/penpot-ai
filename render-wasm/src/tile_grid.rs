@@ -2424,18 +2424,97 @@ impl RenderState {
                             }
                         }
                         CacheKind::Gather(id) => {
-                            // Snapshot Target so subsequent Paint steps for
-                            // this gather (or scatter+glass combo) sample
-                            // a frozen backdrop. Mirrors the inline pre-glass
-                            // dance the legacy Render arm did.
-                            let tile_rect = self.get_current_tile_bounds()?;
-                            let bg_color = self.background_color;
-                            self.surfaces
-                                .composite_current_to_target(tile_rect, bg_color);
-                            self.flush_and_submit();
-                            let _ = self
-                                .surfaces
-                                .get_or_snapshot_glass_backdrop(id, SurfaceId::Target);
+                            // Phase 4: cross-frame backdrop cache.
+                            // Skips composite + flush + image_snapshot
+                            // (the GPU-stall heavy bit) when this
+                            // shape's backdrop hasn't changed since
+                            // the last successful build.
+                            //
+                            // Key fragment `backdrop_hash` is the
+                            // `scene_revision` counter — bumped on
+                            // every `set_modifiers` / `clean_modifiers`
+                            // and identical across pure pan/zoom
+                            // frames, so pan workflows hit cache
+                            // every frame.
+                            let element_opt = tree.get(&id);
+                            let scale_bucket = crate::effect_cache::compute_scale_bucket(
+                                self.get_scale(),
+                                self.options.dpr(),
+                            );
+                            let cache_key = element_opt.map(|element| {
+                                // Pick the relevant Gather variant for
+                                // params_hash so glass and bg_blur
+                                // snapshot keys don't collide on the
+                                // rare shape that has both. Glass wins
+                                // when both present (matches scheduler
+                                // emit order).
+                                let (effect, params_hash) = if let Some(g) =
+                                    element.glass.as_ref().filter(|g| !g.hidden)
+                                {
+                                    (
+                                        EffectKey::Gather(GatherFx::Glass),
+                                        crate::effect_cache::hash_glass_params(g),
+                                    )
+                                } else if let Some(b) = element
+                                    .background_blur
+                                    .as_ref()
+                                    .filter(|b| !b.hidden)
+                                {
+                                    (
+                                        EffectKey::Gather(GatherFx::BackgroundBlur),
+                                        crate::effect_cache::hash_blur_params(b),
+                                    )
+                                } else {
+                                    // Shouldn't happen — schedule only
+                                    // emits BuildCache(Gather) when one
+                                    // of these is set. Punt to legacy.
+                                    (EffectKey::Gather(GatherFx::Glass), 0)
+                                };
+                                crate::effect_cache::EffectCacheKey {
+                                    shape_id: id,
+                                    effect,
+                                    scale_bucket,
+                                    geometry_hash:
+                                        crate::effect_cache::hash_shape_geometry(element),
+                                    params_hash,
+                                    backdrop_hash: self.scene_revision,
+                                }
+                            });
+
+                            let cached_image = cache_key
+                                .as_ref()
+                                .and_then(|k| self.effect_cache.get(k).map(|v| v.image.clone()));
+
+                            if let Some(image) = cached_image {
+                                // Hit: feed cached snapshot into the
+                                // per-frame backdrop cache so the
+                                // downstream Paint step picks it up
+                                // via `get_glass_backdrop`. No GPU
+                                // readback this frame.
+                                self.surfaces.insert_glass_backdrop(id, image);
+                            } else {
+                                let tile_rect = self.get_current_tile_bounds()?;
+                                let bg_color = self.background_color;
+                                self.surfaces
+                                    .composite_current_to_target(tile_rect, bg_color);
+                                self.flush_and_submit();
+                                let image = self
+                                    .surfaces
+                                    .get_or_snapshot_glass_backdrop(id, SurfaceId::Target);
+                                if let Some(key) = cache_key {
+                                    let bytes =
+                                        crate::effect_cache::estimate_image_bytes(&image);
+                                    self.effect_cache.insert(
+                                        key,
+                                        crate::effect_cache::EffectCacheValue {
+                                            image,
+                                            world_bbox: tile_rect,
+                                        },
+                                        bytes,
+                                    );
+                                    self.effect_cache.enforce_sub_cap(id, key.effect);
+                                }
+                            }
                         }
                     }
                     performance::end_measure!("scheduler_build_cache");

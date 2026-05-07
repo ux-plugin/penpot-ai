@@ -27,7 +27,7 @@
 
 #![cfg(feature = "tile-scheduler")]
 
-use crate::shapes::{Shape, TextureEffect};
+use crate::shapes::{Blur, GlassEffect, Shape, TextureEffect};
 use crate::tile_grid::EffectKey;
 use crate::uuid::Uuid;
 use skia_safe::{self as skia};
@@ -266,6 +266,43 @@ pub fn hash_texture_params(tex: &TextureEffect) -> u64 {
     tex.radius.to_bits().hash(&mut h);
     tex.clip_to_shape.hash(&mut h);
     tex.hidden.hash(&mut h);
+    h.finish()
+}
+
+/// Hash a `GlassEffect`'s 16 parameters. Used as `params_hash` on
+/// `Gather(Glass)` cache keys.
+pub fn hash_glass_params(g: &GlassEffect) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    g.surface_type.hash(&mut h);
+    for f in [
+        g.bezel_width,
+        g.glass_thickness,
+        g.refractive_index,
+        g.specular_angle,
+        g.specular_opacity,
+        g.specular_saturation,
+        g.chromatic_aberration,
+        g.splay,
+        g.tilt_angle,
+        g.edge_boost,
+        g.zoom,
+        g.blur,
+        g.frost,
+    ] {
+        f.to_bits().hash(&mut h);
+    }
+    g.hidden.hash(&mut h);
+    h.finish()
+}
+
+/// Hash a `Blur` (background or layer). Used as `params_hash` on
+/// `Gather(BackgroundBlur)` cache keys.
+pub fn hash_blur_params(b: &Blur) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    b.value.to_bits().hash(&mut h);
+    b.hidden.hash(&mut h);
+    // BlurType discriminant — Layer vs Background changes semantics.
+    std::mem::discriminant(&b.blur_type).hash(&mut h);
     h.finish()
 }
 

@@ -721,6 +721,15 @@ impl Surfaces {
         self.glass_backdrop_cache.remove(&shape_id);
     }
 
+    /// Seed the per-frame backdrop cache from a cross-frame
+    /// `EffectCache` hit. Skips the GPU stall that
+    /// `get_or_snapshot_glass_backdrop` would incur — no
+    /// `image_snapshot` of `SurfaceId::Target` runs on this frame.
+    /// Used by the `BuildCache(Gather)` arm in `tile_grid.rs`.
+    pub fn insert_glass_backdrop(&mut self, shape_id: Uuid, image: skia::Image) {
+        self.glass_backdrop_cache.insert(shape_id, image);
+    }
+
     /// Whether the scatter output cache already holds a displaced image for
     /// this shape. Callers use this to skip re-running the expensive
     /// render+filter step on every tile after the first.
