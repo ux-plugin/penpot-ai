@@ -71,12 +71,103 @@ This repo is a multi-module Gradle build. Each subproject is an independently bu
 ```
 figma_plugin_api/
 ├── core/         # Shared library (no Spring Boot main). DB, Redis, ObjectStore, util.
-├── api/          # Public HTTP + RSocket API (auth, completions, user, ingestion controllers).
-├── anonymizer/   # Worker subproject — anonymizes ingested chunks (stub today).
-└── processor/    # Worker subproject — processes anonymized chunks (stub today).
+├── api/          # Public HTTP API. Auth, ingestion endpoint (POST /v1/ingest/...).
+├── sanitizer/    # Worker — classifies sessions, moves raw → quarantine on bad data.
+├── anonymizer/   # Worker — scrubs PII from sanitized sessions, writes anon/.
+└── processor/    # Worker — pipeline tail, dispatches anon sessions to ChunkProcessor.
 ```
 
-Subprojects depend only on `core` (no cross-dependencies between `api`, `anonymizer`, `processor`). Workers do not pull `webflux` / `spring-security`, keeping their images smaller.
+Subprojects depend only on `core` (no cross-dependencies between `api`, `sanitizer`, `anonymizer`, `processor`). Workers do not pull `webflux` / `spring-security`, keeping their images smaller.
+
+## Ingestion pipeline
+
+Four stages connected by Redis Streams; each S3 prefix is governed by a different MinIO ILM rule.
+
+```
+client SDK
+    │  POST /v1/ingest/chunk          (api app)
+    ▼
+[ S3: raw/<orgId>/<sessionId>/<seq>.ndjson.gz ]
+    │  XADD ingest.raw   {CHUNK,CLOSE_HINT}
+    ▼
+sanitizer-grp ─ sanitizer
+    │  classify → DROP | SANITIZED | QUARANTINE
+    │            │              │              └── S3 raw/→quarantine/
+    │            │              └── XADD ingest.sanitized  {SESSION_SANITIZED}
+    │            └── delete raw/
+    ▼
+anonymizer-grp ─ anonymizer
+    │  read raw/, scrub PII (email, phone, CC, query strings, Input events)
+    │  write anon/<orgId>/<sessionId>/<seq>.ndjson.gz
+    │  XADD ingest.anon              {SESSION_ANONYMIZED}
+    │  XADD ingest.raw.processed     {RAW_PROCESSED}
+    ▼                                       │
+processor-grp ─ processor                   │
+    ChunkProcessor.process()                ▼
+                                  sanitizer-grp-evict ─ sanitizer
+                                    delete raw/ + clear session state
+```
+
+**Streams**
+
+| Stream | Producer | Consumer (group) | Carries |
+|---|---|---|---|
+| `ingest.raw` | api | sanitizer (`sanitizer-grp`) | `CHUNK`, `CLOSE_HINT` |
+| `ingest.sanitized` | sanitizer | anonymizer (`anonymizer-grp`) | `SESSION_SANITIZED` |
+| `ingest.quarantine` | sanitizer | ops review | `SESSION_QUARANTINED` |
+| `ingest.anon` | anonymizer | processor (`processor-grp`) | `SESSION_ANONYMIZED` |
+| `ingest.raw.processed` | anonymizer | sanitizer (`sanitizer-grp-evict`) | `RAW_PROCESSED` (eviction) |
+| `<stream>.dlq` | every consumer | ops review | poison messages |
+
+**S3 prefixes + retention** (configured in `docker-compose.yaml` via `mc ilm`):
+
+| Prefix | TTL | Notes |
+|---|---|---|
+| `raw/` | 1d (MinIO ILM minimum) | Sanitizer normally evicts within seconds via two-phase delete with anonymizer; ILM is the safety net. |
+| `quarantine/` | 7d | Held for ops review before purge. |
+| `anon/` | 90d | Anonymized data — replay/training source. |
+
+**Worker reliability**
+
+Every worker shares the same machinery in `core/worker/stream`:
+
+- Consumer group + `XREADGROUP` for at-least-once delivery
+- Manual `XACK` only after the handler returns successfully
+- Failures stay in the PEL; XAUTOCLAIM redelivers after `min-idle-time-sec`
+- Permanent failures (malformed payload, wrong type) move to `<stream>.dlq` and ACK
+- `WorkerHeartbeat` — `@Volatile lastBeatMs` updated on every poll/ACK. `WorkerHeartbeatHealthIndicator` reports DOWN if stale beyond `worker.heartbeat.threshold-sec`. Surfaced via the `liveness` health group so k8s restarts a stuck worker.
+- MDC propagation: `orgId`, `sessionId`, `chunkSeq`, `eventType`, `messageId`, `stream` are pulled off each message and put on the coroutine's MDC context for the lifetime of the handler. All worker logs are correlatable per session.
+
+## Local-dev quickstart
+
+Run infra (Postgres, Redis with AOF, MinIO + lifecycle bootstrap):
+
+```bash
+docker compose up -d postgres redis minio minio-init
+```
+
+Workers are not in `docker-compose.yaml`; run them via Gradle so reload + debugging work:
+
+```bash
+# Tab 1 — api (HTTP ingest endpoint)
+./gradlew :api:bootRun --args='--spring.profiles.active=dev'
+
+# Tab 2 — sanitizer
+./gradlew :sanitizer:bootRun
+
+# Tab 3 — anonymizer
+./gradlew :anonymizer:bootRun
+
+# Tab 4 — processor (v0 NOOP)
+./gradlew :processor:bootRun
+```
+
+Tests:
+
+```bash
+./gradlew test                 # all modules
+./gradlew :anonymizer:test     # one module — Testcontainers spins up Postgres/Redis/MinIO
+```
 
 ## Building
 
