@@ -36,8 +36,11 @@ worker:
 objectstore:
   endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
   region: ${OBJECTSTORE_REGION:us-east-1}
-  access-key: ${OBJECTSTORE_ACCESS_KEY:minioadmin}
-  secret-key: ${OBJECTSTORE_SECRET_KEY:minioadmin}
+  # Per-stage credentials — sanitizer's policy allows GET+PUT+DELETE on raw/ and
+  # quarantine/ only. See deploy/minio-policies/sanitizer.json. Falls back to
+  # minioadmin in dev so tests boot without the minio-init seed.
+  access-key: ${SANITIZER_S3_ACCESS_KEY:minioadmin}
+  secret-key: ${SANITIZER_S3_SECRET_KEY:minioadmin}
   bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
   path-style: true
 
