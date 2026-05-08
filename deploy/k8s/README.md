@@ -14,11 +14,13 @@ processor    ─ ingest.anon → (v0 noop)
 | File | Purpose |
 |---|---|
 | `configmap.yaml` | Shared env (Redis URL, MinIO endpoint, log level). Update once, all pods pick it up on next rollout. |
-| `secret.example.yaml` | Template for credentials (Minio access keys, OpenAI). **Do not commit a real Secret.** |
+| `secret.example.yaml` | Templates for cross-cutting secrets + four per-stage S3 credential Secrets. **Do not commit realized files.** |
 | `api.yaml` | api Deployment + ClusterIP Service (port 8080). Liveness + readiness probes hit `/actuator/health/{liveness,readiness}`. |
 | `sanitizer.yaml` | sanitizer Deployment. No Service — internal worker. |
 | `anonymizer.yaml` | anonymizer Deployment. No Service. |
 | `processor.yaml` | processor Deployment. No Service. |
+
+**Secret layout:** the shared `ingest-pipeline-shared-secrets` carries DB/OAuth/AI credentials that every pod needs. Each stage additionally pulls in its own `<stage>-s3-creds` Secret holding the S3 access key bound to that stage's policy in `../minio-policies/`. A compromised pod leaks only the stage's prefix-scoped credential, not a shared root.
 
 Workers do not expose a Service — they are pure stream consumers. The actuator port is exposed only for the kubelet probes.
 

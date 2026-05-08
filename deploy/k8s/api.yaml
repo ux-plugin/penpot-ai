@@ -30,7 +30,9 @@ spec:
             - configMapRef:
                 name: ingest-pipeline-env
             - secretRef:
-                name: ingest-pipeline-secrets
+                name: ingest-pipeline-shared-secrets
+            - secretRef:
+                name: api-s3-creds
           resources:
             requests: { cpu: "200m", memory: "512Mi" }
             limits:   { cpu: "1",    memory: "1Gi" }
