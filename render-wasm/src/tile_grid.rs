@@ -1651,15 +1651,19 @@ impl TileGrid {
             .texture
             .as_ref()
             .is_some_and(|t| !t.hidden && t.radius > 0.0);
-        let has_glass = shape
-            .glass
-            .as_ref()
-            .is_some_and(|g| !g.hidden);
-        let is_root_level = shape.parent_id.is_some_and(|p| p == Uuid::nil());
+        // Phase 7b: lifted to all gather variants. `has_gather` covers
+        // glass + bg-blur, root-level + nested. Snapshots are
+        // bbox-bounded (`selrect ± 3σ`) via
+        // `Surface::image_snapshot_with_bounds`, so memory pressure
+        // stays flat even for iso_glass-style scenes (100 root
+        // gathers × ~370 KB ≈ 37 MB, comfortably inside the 96 MB
+        // bytes cap). Scheduler band-barrier already separates
+        // gather peers correctly — see `compute_bands`.
+        let has_gather = Self::shape_has_gather(shape);
 
         // Gather first — its snapshot is an input to the scatter pass for
         // combined scatter+glass shapes.
-        if has_glass && is_root_level {
+        if has_gather {
             let kind = CacheKind::Gather(shape_id);
             if self.emitted_caches.insert(kind) {
                 self.schedule.push(RenderStep::BuildCache(kind));
@@ -1735,43 +1739,69 @@ impl RenderState {
             };
             crate::perf_guard!(_dbg_tag);
             match effect {
-                EffectKey::Gather(GatherFx::BackgroundBlur) => {
-                    self.render_background_blur(element, output);
-                }
-                EffectKey::Gather(GatherFx::Glass) => {
-                    let Some(glass) = element.glass.as_ref().filter(|g| !g.hidden) else {
+                EffectKey::Gather(_) => {
+                    // Phase 7b: unified gather paint. The matching
+                    // `BuildCache(Gather)` step earlier in the
+                    // schedule populated the per-frame backdrop
+                    // cache (image + origin in source devpx). Pull
+                    // both, route through `GatherKind`, render.
+                    let Some(gather) =
+                        crate::render::gather::GatherKind::from_shape(element)
+                    else {
                         continue;
                     };
+                    // Sanity: gather variant the schedule emitted
+                    // for must match the one we'd pick now. Mismatch
+                    // is rare (shape mutated mid-frame); fall back
+                    // to legacy direct paint without cache.
+                    if gather.effect_key() != *effect {
+                        match effect {
+                            EffectKey::Gather(GatherFx::BackgroundBlur) => {
+                                self.render_background_blur(element, output);
+                            }
+                            EffectKey::Gather(GatherFx::Glass) => {
+                                if let Some(glass) =
+                                    element.glass.as_ref().filter(|g| !g.hidden)
+                                {
+                                    crate::render::glass::render_glass(
+                                        self, element, glass, output,
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     let is_root_level =
                         element.parent_id.is_some_and(|p| p == Uuid::nil());
-                    if is_root_level {
-                        // Root-level gather: consume the backdrop snapshot
-                        // built by `BuildCache(Gather(id))`. Defensive
-                        // fallback re-snapshots if the cache step was
-                        // somehow skipped.
-                        let backdrop_image = match self.surfaces.get_glass_backdrop(id) {
-                            Some(img) => img,
-                            None => {
+                    let backdrop_id = gather.snapshot_source(is_root_level);
+
+                    let (backdrop, origin) = match self
+                        .surfaces
+                        .get_glass_backdrop_with_origin(id)
+                    {
+                        Some(v) => v,
+                        None => {
+                            // Defensive fallback — `BuildCache` step
+                            // skipped (shouldn't happen post-phase 7b
+                            // given `has_gather` lift, but keep safety).
+                            if backdrop_id == SurfaceId::Target {
                                 let tile_rect = self.get_current_tile_bounds()?;
                                 let bg_color = self.background_color;
                                 self.surfaces
                                     .composite_current_to_target(tile_rect, bg_color);
                                 self.flush_and_submit();
-                                self.surfaces
-                                    .get_or_snapshot_glass_backdrop(id, SurfaceId::Target)
                             }
-                        };
-                        crate::render::glass::render_glass_with_backdrop_image(
-                            self,
-                            element,
-                            glass,
-                            output,
-                            SurfaceId::Target,
-                            Some(backdrop_image),
-                        );
-                    } else {
-                        crate::render::glass::render_glass(self, element, glass, output);
-                    }
+                            (
+                                self.surfaces
+                                    .get_or_snapshot_glass_backdrop(id, backdrop_id),
+                                None,
+                            )
+                        }
+                    };
+
+                    gather.render(self, element, backdrop, backdrop_id, output, origin);
                 }
                 EffectKey::Scatter(ScatterFx::DropShadows) => {
                     if self.options.is_fast_mode() {
@@ -2221,6 +2251,7 @@ impl RenderState {
                                     SurfaceId::Current,
                                     SurfaceId::Target,
                                     Some(backdrop_image),
+                                    None,
                                 );
                             } else {
                                 crate::render::glass::render_glass(
@@ -2406,6 +2437,7 @@ impl RenderState {
                                             crate::effect_cache::EffectCacheValue {
                                                 image: img.clone(),
                                                 world_bbox: clipped_extrect,
+                                                bounds_origin_devpx: None,
                                             },
                                             bytes,
                                         );
@@ -2424,109 +2456,133 @@ impl RenderState {
                             }
                         }
                         CacheKind::Gather(id) => {
-                            // Phase 4: cross-frame backdrop cache.
-                            // Skips composite + flush + image_snapshot
-                            // (the GPU-stall heavy bit) when this
-                            // shape's backdrop hasn't changed since
-                            // the last successful build.
-                            //
-                            // Key fragment `backdrop_hash` is the
-                            // `scene_revision` counter — bumped on
-                            // every `set_modifiers` / `clean_modifiers`
-                            // and identical across pure pan/zoom
-                            // frames, so pan workflows hit cache
-                            // every frame.
-                            let element_opt = tree.get(&id);
+                            // Phase 7b: bbox-bounded gather backdrop
+                            // snapshot via `image_snapshot_with_bounds`.
+                            // Routed through `GatherKind` so glass +
+                            // bg-blur (root + nested) share the same
+                            // path. Cache entry stores `selrect ± 3σ`
+                            // pixels instead of the whole target,
+                            // letting iso_glass-style scenes (100+
+                            // root gathers) fit comfortably in the
+                            // 96 MB cap.
+                            let Some(element) = tree.get(&id) else {
+                                continue;
+                            };
+                            let Some(gather) =
+                                crate::render::gather::GatherKind::from_shape(element)
+                            else {
+                                continue;
+                            };
+                            let is_root_level =
+                                element.parent_id.is_some_and(|p| p == Uuid::nil());
+                            let snapshot_source = gather.snapshot_source(is_root_level);
                             let scale_bucket = crate::effect_cache::compute_scale_bucket(
                                 self.get_scale(),
                                 self.options.dpr(),
                             );
-                            let cache_key = element_opt.map(|element| {
-                                // Pick the relevant Gather variant for
-                                // params_hash so glass and bg_blur
-                                // snapshot keys don't collide on the
-                                // rare shape that has both. Glass wins
-                                // when both present (matches scheduler
-                                // emit order).
-                                let (effect, params_hash) = if let Some(g) =
-                                    element.glass.as_ref().filter(|g| !g.hidden)
-                                {
-                                    (
-                                        EffectKey::Gather(GatherFx::Glass),
-                                        crate::effect_cache::hash_glass_params(g),
-                                    )
-                                } else if let Some(b) = element
-                                    .background_blur
-                                    .as_ref()
-                                    .filter(|b| !b.hidden)
-                                {
-                                    (
-                                        EffectKey::Gather(GatherFx::BackgroundBlur),
-                                        crate::effect_cache::hash_blur_params(b),
-                                    )
-                                } else {
-                                    // Shouldn't happen — schedule only
-                                    // emits BuildCache(Gather) when one
-                                    // of these is set. Punt to legacy.
-                                    (EffectKey::Gather(GatherFx::Glass), 0)
-                                };
-                                // Phase 6: precise per-shape backdrop
-                                // hash. Walks tiles intersecting the
-                                // gather shape's tile span and folds
-                                // each member's geometry+fill hash.
-                                // Stable across pan + across moves of
-                                // shapes outside the gather's tile
-                                // span.
-                                let backdrop_hash =
-                                    crate::effect_cache::hash_backdrop_for(
-                                        element,
-                                        &self.tile_grid,
-                                        tree,
-                                    );
-                                crate::effect_cache::EffectCacheKey {
-                                    shape_id: id,
-                                    effect,
-                                    scale_bucket,
-                                    geometry_hash:
-                                        crate::effect_cache::hash_shape_geometry(element),
-                                    params_hash,
-                                    backdrop_hash,
+                            let backdrop_hash = crate::effect_cache::hash_backdrop_for(
+                                element,
+                                &self.tile_grid,
+                                tree,
+                            );
+                            let cache_key = crate::effect_cache::EffectCacheKey {
+                                shape_id: id,
+                                effect: gather.effect_key(),
+                                scale_bucket,
+                                geometry_hash:
+                                    crate::effect_cache::hash_shape_geometry(element),
+                                params_hash: gather.params_hash(),
+                                backdrop_hash,
+                            };
+
+                            let cached = self
+                                .effect_cache
+                                .get(&cache_key)
+                                .map(|v| (v.image.clone(), v.bounds_origin_devpx));
+
+                            if let Some((image, origin)) = cached {
+                                // Hit — push image + origin into the
+                                // per-frame cache; Paint pulls both via
+                                // `get_glass_backdrop_with_origin` and
+                                // shifts its localMatrix accordingly.
+                                match origin {
+                                    Some(o) => self
+                                        .surfaces
+                                        .insert_glass_backdrop_with_origin(id, image, o),
+                                    None => self.surfaces.insert_glass_backdrop(id, image),
                                 }
-                            });
-
-                            let cached_image = cache_key
-                                .as_ref()
-                                .and_then(|k| self.effect_cache.get(k).map(|v| v.image.clone()));
-
-                            if let Some(image) = cached_image {
-                                // Hit: feed cached snapshot into the
-                                // per-frame backdrop cache so the
-                                // downstream Paint step picks it up
-                                // via `get_glass_backdrop`. No GPU
-                                // readback this frame.
-                                self.surfaces.insert_glass_backdrop(id, image);
                             } else {
-                                let tile_rect = self.get_current_tile_bounds()?;
-                                let bg_color = self.background_color;
-                                self.surfaces
-                                    .composite_current_to_target(tile_rect, bg_color);
-                                self.flush_and_submit();
-                                let image = self
-                                    .surfaces
-                                    .get_or_snapshot_glass_backdrop(id, SurfaceId::Target);
-                                if let Some(key) = cache_key {
-                                    let bytes =
-                                        crate::effect_cache::estimate_image_bytes(&image);
-                                    self.effect_cache.insert(
-                                        key,
-                                        crate::effect_cache::EffectCacheValue {
-                                            image,
-                                            world_bbox: tile_rect,
-                                        },
-                                        bytes,
-                                    );
-                                    self.effect_cache.enforce_sub_cap(id, key.effect);
+                                // Miss — bbox-bounded snapshot. Root
+                                // gather sources from Target (after
+                                // composite); nested from Current.
+                                if snapshot_source == SurfaceId::Target {
+                                    let tile_rect = self.get_current_tile_bounds()?;
+                                    let bg_color = self.background_color;
+                                    self.surfaces
+                                        .composite_current_to_target(tile_rect, bg_color);
                                 }
+                                self.flush_and_submit();
+
+                                let extent = crate::render::gather::extent_in_source_devpx(
+                                    self,
+                                    element,
+                                    &gather,
+                                    snapshot_source,
+                                );
+                                let bounded = self
+                                    .surfaces
+                                    .snapshot_subrect(snapshot_source, extent);
+
+                                let (image, origin) = match bounded {
+                                    Some(img) => (
+                                        img,
+                                        Some(skia::IPoint::new(extent.left, extent.top)),
+                                    ),
+                                    None => {
+                                        // Empty extent (shape entirely
+                                        // off-viewport): fall back to
+                                        // full-surface snapshot. The
+                                        // 4 MB MAX_BYTES_PER_ENTRY
+                                        // will reject this from cross-
+                                        // frame retention but the
+                                        // current frame's Paint still
+                                        // has something to sample.
+                                        (
+                                            self.surfaces.get_or_snapshot_glass_backdrop(
+                                                id,
+                                                snapshot_source,
+                                            ),
+                                            None,
+                                        )
+                                    }
+                                };
+
+                                match origin {
+                                    Some(o) => self
+                                        .surfaces
+                                        .insert_glass_backdrop_with_origin(
+                                            id,
+                                            image.clone(),
+                                            o,
+                                        ),
+                                    None => self
+                                        .surfaces
+                                        .insert_glass_backdrop(id, image.clone()),
+                                }
+
+                                let bytes =
+                                    crate::effect_cache::estimate_image_bytes(&image);
+                                let world_bbox = self.get_current_tile_bounds()?;
+                                self.effect_cache.insert(
+                                    cache_key,
+                                    crate::effect_cache::EffectCacheValue {
+                                        image,
+                                        world_bbox,
+                                        bounds_origin_devpx: origin,
+                                    },
+                                    bytes,
+                                );
+                                self.effect_cache.enforce_sub_cap(id, cache_key.effect);
                             }
                         }
                     }

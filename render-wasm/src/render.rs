@@ -2,6 +2,8 @@ pub(crate) mod debug;
 mod fills;
 pub mod filters;
 mod fonts;
+#[cfg(feature = "tile-scheduler")]
+pub(crate) mod gather;
 pub(crate) mod glass;
 mod gpu_state;
 pub mod grid_layout;
@@ -522,6 +524,37 @@ impl RenderState {
         {
             return;
         }
+        if shape.background_blur.filter(|b| !b.hidden).is_none() {
+            return;
+        }
+        let backdrop = self.surfaces.snapshot(target_surface);
+        self.render_background_blur_from_image(shape, backdrop, None, target_surface);
+    }
+
+    /// Phase 7 — bg-blur path that consumes a pre-fetched backdrop
+    /// image instead of snapshotting the target surface itself. The
+    /// scheduler routes through this so a single per-shape backdrop
+    /// snapshot covers all tiles for the gather.
+    ///
+    /// `backdrop_origin_devpx` (when `Some`) is the top-left of
+    /// `backdrop` in `target_surface`'s device-pixel coord system. The
+    /// blurred image draws at that origin so the clipped pixels land
+    /// where they came from. `None` keeps legacy "image starts at
+    /// (0, 0)" semantics.
+    pub(crate) fn render_background_blur_from_image(
+        &mut self,
+        shape: &Shape,
+        backdrop: skia::Image,
+        backdrop_origin_devpx: Option<skia::IPoint>,
+        target_surface: SurfaceId,
+    ) {
+        if self.options.is_fast_mode() {
+            return;
+        }
+        if matches!(shape.shape_type, Type::Text(_)) || matches!(shape.shape_type, Type::SVGRaw(_))
+        {
+            return;
+        }
         let blur = match shape.background_blur.filter(|b| !b.hidden) {
             Some(blur) => blur,
             None => return,
@@ -546,7 +579,6 @@ impl RenderState {
                 None => return,
             };
 
-        let target_surface_snapshot = self.surfaces.snapshot(target_surface);
         let translation = self
             .surfaces
             .get_render_context_translation(self.render_area, scale);
@@ -597,12 +629,21 @@ impl RenderState {
         // Clips survive reset_matrix (stored in device coords).
         canvas.reset_matrix();
 
+        // Image origin: legacy = (0,0) (snapshot covered the whole
+        // target surface); bbox-bounded = the snapshot's top-left in
+        // target devpx, so the blurred pixels land where they came
+        // from.
+        let (img_x, img_y) = match backdrop_origin_devpx {
+            Some(p) => (p.x, p.y),
+            None => (0, 0),
+        };
+
         // Use Src blend to replace content within the clip with the
         // blurred version (not SrcOver which would double-render).
         let mut paint = skia::Paint::default();
         paint.set_image_filter(blur_filter);
         paint.set_blend_mode(skia::BlendMode::Src);
-        canvas.draw_image(&target_surface_snapshot, (0, 0), Some(&paint));
+        canvas.draw_image(&backdrop, (img_x, img_y), Some(&paint));
 
         canvas.restore();
     }

@@ -298,6 +298,7 @@ pub fn render_glass_with_backdrop(
         surface_id,
         backdrop_id,
         None,
+        None,
     );
 }
 
@@ -308,6 +309,12 @@ pub fn render_glass_with_backdrop(
 /// one per-gather-shape snapshot across all of that shape's tiles so every
 /// peer sees the same frozen Target state (and a gather's own finalized
 /// output never leaks into a peer's backdrop sample).
+/// `bounds_origin_devpx` carries the top-left of `backdrop_image` in the
+/// backdrop surface's device-pixel coord system. `None` (or `Some((0,0))`)
+/// preserves the legacy "full surface snapshot" behavior. When the snapshot
+/// covers a sub-rect of the backdrop surface (phase 7 bbox-bounded path),
+/// the localMatrix is shifted by `-origin` so the shader resolves to the
+/// correct pixel in the truncated image.
 pub fn render_glass_with_backdrop_image(
     render_state: &mut RenderState,
     shape: &Shape,
@@ -315,6 +322,7 @@ pub fn render_glass_with_backdrop_image(
     surface_id: SurfaceId,
     backdrop_id: SurfaceId,
     backdrop_image: Option<skia::Image>,
+    bounds_origin_devpx: Option<skia::IPoint>,
 ) {
     if glass.hidden {
         return;
@@ -394,19 +402,42 @@ pub fn render_glass_with_backdrop_image(
     // p − (tx, ty))`.
     //
     // Therefore to get `sample(p + offset)` we must pass `translate(−offset)`.
-    let backdrop_local_matrix = if backdrop_id == surface_id {
-        None
+    //
+    // `bounds_origin_devpx` (when `Some`) is the top-left of the backdrop
+    // image in the backdrop surface's device-pixel coord system. For a
+    // bbox-bounded snapshot, the cached image covers only a sub-rect of
+    // the backdrop, so we shift the offset by `-origin` to remap the
+    // sample into the truncated image's local space.
+    let surface_offset_x;
+    let surface_offset_y;
+    if backdrop_id == surface_id {
+        surface_offset_x = 0.0;
+        surface_offset_y = 0.0;
     } else {
         // Convert the world-space `render_area` top-left into backdrop pixels.
         // Only `SurfaceId::Target` is currently supported as an alternate
         // backdrop; its origin is the viewport top-left in device pixels.
         let margins = render_state.surfaces.margins();
         let viewbox = render_state.viewbox;
-        let offset_x = -(margins.width as f32)
+        surface_offset_x = -(margins.width as f32)
             + (render_state.render_area.left - viewbox.area.left) * scale;
-        let offset_y = -(margins.height as f32)
+        surface_offset_y = -(margins.height as f32)
             + (render_state.render_area.top - viewbox.area.top) * scale;
+    }
 
+    let (origin_x, origin_y) = match bounds_origin_devpx {
+        Some(p) => (p.x as f32, p.y as f32),
+        None => (0.0, 0.0),
+    };
+
+    let offset_x = surface_offset_x - origin_x;
+    let offset_y = surface_offset_y - origin_y;
+
+    // No localMatrix only when same surface AND no snapshot offset — keeps
+    // legacy non-scheduler path identical (no extra translate identity).
+    let backdrop_local_matrix = if offset_x == 0.0 && offset_y == 0.0 {
+        None
+    } else {
         // Negated: Skia's localMatrix is applied INVERSELY at sampling time
         // (see the block comment above).
         Some(skia::Matrix::translate((-offset_x, -offset_y)))

@@ -623,6 +623,7 @@ where
             SurfaceId::Filter,
             SurfaceId::Target,
             glass_backdrop,
+            None,
         );
     }
 

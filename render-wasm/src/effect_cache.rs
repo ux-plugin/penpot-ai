@@ -67,6 +67,11 @@ pub struct EffectCacheValue {
     /// World-space bbox the image covers. Caller blits into the
     /// scaled equivalent on a hit.
     pub world_bbox: skia::Rect,
+    /// Phase 7 — top-left of `image` in the *source surface's*
+    /// device-pixel coord system. `Some(origin)` for bbox-bounded
+    /// gather snapshots; `None` for legacy full-surface snapshots
+    /// (consumer treats absence as "no shift", same as before).
+    pub bounds_origin_devpx: Option<skia::IPoint>,
 }
 
 pub struct EffectCacheEntry {
@@ -435,18 +440,16 @@ pub fn compute_scale_bucket(scale: f32, dpr: f32) -> i8 {
 pub const MAX_BUCKETS_PER_SHAPE_EFFECT: usize = 3;
 
 /// Per-entry size limit. Insert is a no-op when the would-be entry
-/// is bigger than this. Sized to allow a full 1920×1080 RGBA8
-/// Target-surface snapshot (≈8 MB) — that's the heaviest single
-/// entry the gather backdrop cache produces today. Bbox-bounded
-/// snapshots (followup) shrink most entries below 1 MB and let
-/// dense scenes keep more shapes cached at once.
+/// is bigger than this. Phase 7b dropped to 4 MB once gather
+/// backdrop snapshots became bbox-bounded via
+/// `Surface::image_snapshot_with_bounds` (selrect ± 3σ). Typical
+/// snapshots are well under 1 MB; a 4 MB cap blocks pathological
+/// outliers from single-handedly evicting everything else.
 ///
-/// The point of this cap is to refuse pathologically huge entries
-/// (e.g. an export-resolution snapshot accidentally entering the
-/// cache) that would single-handedly evict everything else. It is
-/// not a tool for pruning normal entries — that's `bytes_cap`'s
-/// job.
-pub const MAX_BYTES_PER_ENTRY: u32 = 16 * 1024 * 1024;
+/// The defensive fallback in `BuildCache(Gather)` (extent fully
+/// off-viewport) intentionally hits this cap and skips the cache
+/// — those snapshots are large and not worth retaining cross-frame.
+pub const MAX_BYTES_PER_ENTRY: u32 = 4 * 1024 * 1024;
 
 impl EffectCache {
     /// Drop the oldest bucket for `(shape_id, effect)` when the
@@ -528,6 +531,7 @@ mod tests {
         EffectCacheValue {
             image,
             world_bbox: skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+            bounds_origin_devpx: None,
         }
     }
 

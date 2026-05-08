@@ -74,6 +74,13 @@ pub struct Surfaces {
     /// tile (B)'s backdrop because both write to and read from live Target.
     /// Cleared at the end of each `run_schedule`.
     glass_backdrop_cache: HashMap<Uuid, skia::Image>,
+    /// Phase 7 — top-left of `glass_backdrop_cache[id]` in the
+    /// backdrop surface's device-pixel coord system. Populated for
+    /// bbox-bounded snapshots; absent for legacy full-surface
+    /// snapshots (consumers treat absence as origin = (0, 0) AND
+    /// "no localMatrix shift needed beyond the surface offset"
+    /// — same as before phase 7).
+    glass_backdrop_origin_cache: HashMap<Uuid, skia::IPoint>,
     /// Per-shape cache of fully-rendered, post-displacement images for
     /// texture (scatter) shapes. Built once per frame on the first tile
     /// that touches the shape, then blitted per-tile. The paired `Rect` is
@@ -147,6 +154,7 @@ impl Surfaces {
             tiles,
             interband_cache: HashMap::new(),
             glass_backdrop_cache: HashMap::new(),
+            glass_backdrop_origin_cache: HashMap::new(),
             scatter_output_cache: HashMap::new(),
             sampling_options,
             margins,
@@ -176,6 +184,40 @@ impl Surfaces {
     pub fn snapshot(&mut self, id: SurfaceId) -> skia::Image {
         let surface = self.get_mut(id);
         surface.image_snapshot()
+    }
+
+    /// Surface dimensions (width, height) in device pixels.
+    pub fn surface_dim(&mut self, id: SurfaceId) -> (i32, i32) {
+        let s = self.get_mut(id);
+        (s.width(), s.height())
+    }
+
+    /// Snapshot a sub-rectangle of `id`. Internally takes a full
+    /// `image_snapshot` (cheap — backed by GPU texture share) and
+    /// returns an `make_subset` view. Skia keeps the same backing
+    /// texture for the subset image, so this is bandwidth-free
+    /// compared to a fresh `image_snapshot` of the whole surface.
+    ///
+    /// Returns `None` if the rect is empty or fully outside surface
+    /// bounds (caller should fall back to legacy full snapshot in
+    /// that case).
+    pub fn snapshot_subrect(
+        &mut self,
+        id: SurfaceId,
+        rect: skia::IRect,
+    ) -> Option<skia::Image> {
+        if rect.is_empty() {
+            return None;
+        }
+        // `Surface::image_snapshot_with_bounds` is the GPU-friendly
+        // path: it never does an internal pixel copy, sanitizes the
+        // bounds against surface dimensions internally, and returns
+        // `None` only when the rect doesn't intersect the surface at
+        // all. Beats `image_snapshot().make_subset(None, ...)` —
+        // which returns `None` for GPU-backed images on the WebGL
+        // build because Skia deprecated the no-recorder
+        // `Image::makeSubset` path.
+        self.get_mut(id).image_snapshot_with_bounds(&rect)
     }
 
     pub fn filter_size(&self) -> (i32, i32) {
@@ -705,6 +747,7 @@ impl Surfaces {
     /// `run_schedule` so snapshots don't leak across frames.
     pub fn clear_glass_backdrop_cache(&mut self) {
         self.glass_backdrop_cache.clear();
+        self.glass_backdrop_origin_cache.clear();
     }
 
     /// Read a previously snapshotted gather backdrop directly. Returns
@@ -719,6 +762,38 @@ impl Surfaces {
     /// the `FreeCache(Gather)` arm at the tail of a schedule.
     pub fn remove_glass_backdrop(&mut self, shape_id: Uuid) {
         self.glass_backdrop_cache.remove(&shape_id);
+        self.glass_backdrop_origin_cache.remove(&shape_id);
+    }
+
+    /// Phase 7 — read both the cached backdrop image and its origin
+    /// in source-surface device pixels. `origin` is `Some` only when
+    /// the cache was populated via `insert_glass_backdrop_with_origin`
+    /// (bbox-bounded snapshot). Legacy full-surface snapshots return
+    /// `None` for the origin so the consumer keeps the old localMatrix
+    /// math.
+    pub fn get_glass_backdrop_with_origin(
+        &self,
+        shape_id: Uuid,
+    ) -> Option<(skia::Image, Option<skia::IPoint>)> {
+        let image = self.glass_backdrop_cache.get(&shape_id).cloned()?;
+        let origin = self.glass_backdrop_origin_cache.get(&shape_id).copied();
+        Some((image, origin))
+    }
+
+    /// Phase 7 — companion to `insert_glass_backdrop` that also
+    /// records the snapshot's top-left in source surface device
+    /// pixels. Consumers pull both via
+    /// `get_glass_backdrop_with_origin` to compute the localMatrix
+    /// shift for bbox-bounded backdrops.
+    pub fn insert_glass_backdrop_with_origin(
+        &mut self,
+        shape_id: Uuid,
+        image: skia::Image,
+        origin_devpx: skia::IPoint,
+    ) {
+        self.glass_backdrop_cache.insert(shape_id, image);
+        self.glass_backdrop_origin_cache
+            .insert(shape_id, origin_devpx);
     }
 
     /// Seed the per-frame backdrop cache from a cross-frame
