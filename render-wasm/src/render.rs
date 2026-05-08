@@ -5,6 +5,8 @@ mod fonts;
 #[cfg(feature = "tile-scheduler")]
 pub(crate) mod gather;
 pub(crate) mod glass;
+#[cfg(feature = "tile-scheduler")]
+pub(crate) mod local;
 mod gpu_state;
 pub mod grid_layout;
 mod images;

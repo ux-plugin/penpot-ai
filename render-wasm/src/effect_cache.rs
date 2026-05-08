@@ -360,6 +360,58 @@ pub fn hash_shape_fills(shape: &Shape) -> u64 {
     h.finish()
 }
 
+/// Hash all strokes on a shape. Returns 0 for empty strokes (cheap
+/// short-circuit). Used by V2c.1 leaf-layer-blur cache key — stroke
+/// changes must invalidate the cached blurred body.
+pub fn hash_shape_strokes(shape: &Shape) -> u64 {
+    if shape.strokes.is_empty() {
+        return 0;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for s in shape.strokes.iter() {
+        s.width.to_bits().hash(&mut h);
+        // StrokeStyle/StrokeCap/StrokeKind derive Hash via repr; we
+        // only need fields that change rendered pixels. Discriminant
+        // captures the structural choice; numeric fields go in via
+        // bits.
+        std::mem::discriminant(&s.style).hash(&mut h);
+        s.cap_start.map(|c| std::mem::discriminant(&c)).hash(&mut h);
+        s.cap_end.map(|c| std::mem::discriminant(&c)).hash(&mut h);
+        std::mem::discriminant(&s.kind).hash(&mut h);
+        hash_one_fill(&s.fill, &mut h);
+    }
+    h.finish()
+}
+
+/// Hash inner shadows on a shape. Drop shadows are scatter — they
+/// extend outside the shape and have their own cache. Inner shadows
+/// paint inside the silhouette, contributing to the layer-blur
+/// body, so V2c.1 includes them in the cache key.
+pub fn hash_shape_inner_shadows(shape: &Shape) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut any = false;
+    for s in shape.inner_shadows_visible() {
+        any = true;
+        // Color: combine RGBA into u32; skia::Color exposes them as
+        // u8 channel methods directly on `Color`.
+        let c = s.color;
+        let argb = ((c.a() as u32) << 24)
+            | ((c.r() as u32) << 16)
+            | ((c.g() as u32) << 8)
+            | (c.b() as u32);
+        argb.hash(&mut h);
+        s.blur.to_bits().hash(&mut h);
+        s.spread.to_bits().hash(&mut h);
+        s.offset.0.to_bits().hash(&mut h);
+        s.offset.1.to_bits().hash(&mut h);
+    }
+    if any {
+        h.finish()
+    } else {
+        0
+    }
+}
+
 /// Compute the backdrop hash for a gather shape — fed into
 /// `EffectCacheKey::backdrop_hash` so the cached gather snapshot
 /// flips iff the pixels behind this shape would actually have

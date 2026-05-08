@@ -107,6 +107,13 @@ pub enum CacheKind {
     /// Built once per frame at the head of the gather's band, after
     /// upstream bands' content has been flushed into Target.
     Gather(Uuid),
+    /// V2c.1 — pre-rendered, layer-blurred shape body for a leaf
+    /// shape with `shape.blur = LayerBlur(_)`. Built once per frame;
+    /// consumed per-tile by the `LocalFx::LayerBlur` Paint arm.
+    /// Cached cross-frame in `effect_cache` keyed by geometry +
+    /// fills + strokes + inner-shadow hashes plus blur sigma; pan
+    /// and zoom-hold reuse the same image.
+    LocalBlur(Uuid),
 }
 
 /// A single step in the pre-computed render schedule.
@@ -258,6 +265,13 @@ pub enum LocalFx {
     /// (Inner shadows technically scatter inward but are bundled here
     /// because `render_shape` is atomic in V2b.)
     ShapeBody,
+    /// V2c.1 — leaf shape with `shape.blur = LayerBlur(_)`. The
+    /// `BuildCache(LocalBlur(id))` step renders the full shape body
+    /// (fills + strokes + inner shadows) into a bounded offscreen
+    /// surface, applies the blur image filter, and snapshots. The
+    /// Paint arm just blits the cached image. Replaces `ShapeBody`
+    /// for shapes that qualify (leaf, no inherited blur, non-text).
+    LayerBlur,
 }
 
 /// Prebuilt save_layer paint for V2c `BeginLayer` actions. Computed once
@@ -395,10 +409,21 @@ fn paint_step_for_shape(shape: &Shape) -> RenderStep {
         if !is_text && shape.drop_shadows_visible().next().is_some() {
             effects.push(EffectKey::Scatter(ScatterFx::DropShadows));
         }
-        // Always emit `ShapeBody` for non-scatter shapes — `render_shape`
-        // handles fills, strokes, inner shadows, and (for text) the text
-        // paragraph all inside.
-        effects.push(EffectKey::Local(LocalFx::ShapeBody));
+        // V2c.1: leaf shapes with `shape.blur = LayerBlur(_)` route
+        // through `LocalFx::LayerBlur` instead of `ShapeBody`. The
+        // matching `BuildCache(LocalBlur(id))` step renders the
+        // unblurred body once into a bbox-bounded scratch, applies
+        // the blur, and snapshots; the Paint arm just blits.
+        // Shapes outside V2c.1 scope (text, scatter, gather, inner
+        // shadows, container with children) keep using `ShapeBody`.
+        if crate::render::local::shape_qualifies_for_layer_blur_cache(shape) {
+            effects.push(EffectKey::Local(LocalFx::LayerBlur));
+        } else {
+            // Always emit `ShapeBody` for non-scatter shapes —
+            // `render_shape` handles fills, strokes, inner shadows,
+            // and (for text) the text paragraph all inside.
+            effects.push(EffectKey::Local(LocalFx::ShapeBody));
+        }
     }
 
     RenderStep::Paint {
@@ -1515,6 +1540,7 @@ impl TileGrid {
             caches.sort_by_key(|k| match k {
                 CacheKind::Scatter(id) => (0u8, id.as_u128()),
                 CacheKind::Gather(id) => (1u8, id.as_u128()),
+                CacheKind::LocalBlur(id) => (2u8, id.as_u128()),
             });
             for kind in caches {
                 self.schedule.push(RenderStep::FreeCache(kind));
@@ -1660,6 +1686,8 @@ impl TileGrid {
         // bytes cap). Scheduler band-barrier already separates
         // gather peers correctly — see `compute_bands`.
         let has_gather = Self::shape_has_gather(shape);
+        let has_local_blur =
+            crate::render::local::shape_qualifies_for_layer_blur_cache(shape);
 
         // Gather first — its snapshot is an input to the scatter pass for
         // combined scatter+glass shapes.
@@ -1672,6 +1700,19 @@ impl TileGrid {
 
         if has_scatter {
             let kind = CacheKind::Scatter(shape_id);
+            if self.emitted_caches.insert(kind) {
+                self.schedule.push(RenderStep::BuildCache(kind));
+            }
+        }
+
+        // V2c.1 — leaf layer-blur cache. Emit AFTER gather/scatter so
+        // a (rare) shape carrying both gather+layer-blur sees the
+        // gather backdrop already populated when its layer-blur
+        // build runs. In practice `shape_qualifies_for_layer_blur_cache`
+        // excludes shapes with gather effects, so this ordering is
+        // belt-and-braces.
+        if has_local_blur {
+            let kind = CacheKind::LocalBlur(shape_id);
             if self.emitted_caches.insert(kind) {
                 self.schedule.push(RenderStep::BuildCache(kind));
             }
@@ -1735,6 +1776,7 @@ impl RenderState {
                 EffectKey::Gather(GatherFx::Glass) => "fx_Glass",
                 EffectKey::Scatter(ScatterFx::DropShadows) => "fx_DropShadows",
                 EffectKey::Local(LocalFx::ShapeBody) => "fx_ShapeBody",
+                EffectKey::Local(LocalFx::LayerBlur) => "fx_LayerBlur",
                 EffectKey::Scatter(ScatterFx::Blit) => "fx_ScatterBlit",
             };
             crate::perf_guard!(_dbg_tag);
@@ -1841,6 +1883,41 @@ impl RenderState {
                         output,
                     )?;
                     self.apply_drawing_to_render_canvas(Some(element), output);
+                }
+                EffectKey::Local(LocalFx::LayerBlur) => {
+                    // V2c.1 — pull the cached layer-blur image
+                    // (built by the matching `BuildCache(LocalBlur(id))`
+                    // step) and blit onto `output` at the right
+                    // world-space position.
+                    if let Some((image, world_bbox)) =
+                        self.surfaces.get_local_blur_output(id)
+                    {
+                        crate::render::local::LocalKind::paint_cached(
+                            self,
+                            &image,
+                            world_bbox,
+                            output,
+                        );
+                    } else {
+                        // Defensive fallback — `BuildCache` was
+                        // skipped (overflow / extent invalid). Fall
+                        // back to the legacy in-line layer-blur path
+                        // so the shape still renders correctly.
+                        self.render_shape(
+                            element,
+                            None,
+                            SurfaceId::Fills,
+                            SurfaceId::Strokes,
+                            SurfaceId::InnerShadows,
+                            SurfaceId::TextDropShadows,
+                            true,
+                            None,
+                            None,
+                            None,
+                            output,
+                        )?;
+                        self.apply_drawing_to_render_canvas(Some(element), output);
+                    }
                 }
                 EffectKey::Scatter(ScatterFx::Blit) => {
                     // Pre-rendered displaced image, blitted from the
@@ -2330,6 +2407,7 @@ impl RenderState {
                     crate::perf_guard!(match kind {
                         CacheKind::Scatter(_) => "step_BuildCache_Scatter",
                         CacheKind::Gather(_) => "step_BuildCache_Gather",
+                        CacheKind::LocalBlur(_) => "step_BuildCache_LocalBlur",
                     });
                     performance::begin_measure!("scheduler_build_cache");
                     match kind {
@@ -2585,6 +2663,78 @@ impl RenderState {
                                 self.effect_cache.enforce_sub_cap(id, cache_key.effect);
                             }
                         }
+                        CacheKind::LocalBlur(id) => {
+                            // V2c.1 — leaf layer-blur cache build.
+                            // Cache key: shape_id + scale_bucket +
+                            // geometry+fills+strokes+inner-shadows
+                            // hash + blur sigma. backdrop_hash = 0
+                            // (Local effects don't sample backdrop).
+                            let Some(element) = tree.get(&id) else {
+                                continue;
+                            };
+                            let Some(local) =
+                                crate::render::local::LocalKind::from_shape_layer_blur(
+                                    element,
+                                )
+                            else {
+                                continue;
+                            };
+                            let scale_bucket = crate::effect_cache::compute_scale_bucket(
+                                self.get_scale(),
+                                self.options.dpr(),
+                            );
+                            let body_hash = crate::effect_cache::hash_shape_geometry(element)
+                                ^ crate::effect_cache::hash_shape_fills(element)
+                                ^ crate::effect_cache::hash_shape_strokes(element)
+                                ^ crate::effect_cache::hash_shape_inner_shadows(element);
+                            let cache_key = crate::effect_cache::EffectCacheKey {
+                                shape_id: id,
+                                effect: local.effect_key(),
+                                scale_bucket,
+                                geometry_hash: body_hash,
+                                params_hash: local.params_hash(),
+                                backdrop_hash: 0,
+                            };
+
+                            let cached = self
+                                .effect_cache
+                                .get(&cache_key)
+                                .map(|v| (v.image.clone(), v.world_bbox));
+
+                            if let Some((image, world_bbox)) = cached {
+                                // Hit — feed image into per-frame
+                                // surface cache; Paint pulls + blits.
+                                self.surfaces
+                                    .insert_local_blur_output(id, image, world_bbox);
+                            } else {
+                                // Miss — render bounded body, blur,
+                                // snapshot, cache.
+                                let result = local.render_to_image(self, element);
+                                let Some((image, world_bbox)) = result else {
+                                    // Overflow / fallback — skip
+                                    // caching this frame; Paint arm's
+                                    // defensive fallback paints inline.
+                                    continue;
+                                };
+                                self.surfaces.insert_local_blur_output(
+                                    id,
+                                    image.clone(),
+                                    world_bbox,
+                                );
+                                let bytes =
+                                    crate::effect_cache::estimate_image_bytes(&image);
+                                self.effect_cache.insert(
+                                    cache_key,
+                                    crate::effect_cache::EffectCacheValue {
+                                        image,
+                                        world_bbox,
+                                        bounds_origin_devpx: None,
+                                    },
+                                    bytes,
+                                );
+                                self.effect_cache.enforce_sub_cap(id, cache_key.effect);
+                            }
+                        }
                     }
                     performance::end_measure!("scheduler_build_cache");
                 }
@@ -2594,6 +2744,7 @@ impl RenderState {
                     match kind {
                         CacheKind::Scatter(id) => self.surfaces.remove_scatter_output(id),
                         CacheKind::Gather(id) => self.surfaces.remove_glass_backdrop(id),
+                        CacheKind::LocalBlur(id) => self.surfaces.remove_local_blur_output(id),
                     }
                 }
 

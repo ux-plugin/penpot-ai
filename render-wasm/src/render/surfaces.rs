@@ -81,6 +81,14 @@ pub struct Surfaces {
     /// "no localMatrix shift needed beyond the surface offset"
     /// — same as before phase 7).
     glass_backdrop_origin_cache: HashMap<Uuid, skia::IPoint>,
+    /// V2c.1 — per-shape pre-rendered, layer-blurred body image
+    /// (for leaf shapes with `shape.blur = LayerBlur(_)`). Built by
+    /// `BuildCache(LocalBlur(id))`, consumed per-tile by the
+    /// `LocalFx::LayerBlur` Paint arm. Stored alongside its
+    /// **world-space** bounding rect so per-tile blits can compute
+    /// the right output devpx position via the current render
+    /// context translation. Cleared at end of `run_schedule`.
+    local_blur_output_cache: HashMap<Uuid, (skia::Image, skia::Rect)>,
     /// Per-shape cache of fully-rendered, post-displacement images for
     /// texture (scatter) shapes. Built once per frame on the first tile
     /// that touches the shape, then blitted per-tile. The paired `Rect` is
@@ -155,6 +163,7 @@ impl Surfaces {
             interband_cache: HashMap::new(),
             glass_backdrop_cache: HashMap::new(),
             glass_backdrop_origin_cache: HashMap::new(),
+            local_blur_output_cache: HashMap::new(),
             scatter_output_cache: HashMap::new(),
             sampling_options,
             margins,
@@ -794,6 +803,32 @@ impl Surfaces {
         self.glass_backdrop_cache.insert(shape_id, image);
         self.glass_backdrop_origin_cache
             .insert(shape_id, origin_devpx);
+    }
+
+    // ── V2c.1 layer-blur output cache ────────────────────────────────
+
+    pub fn insert_local_blur_output(
+        &mut self,
+        shape_id: Uuid,
+        image: skia::Image,
+        world_bbox: skia::Rect,
+    ) {
+        self.local_blur_output_cache
+            .insert(shape_id, (image, world_bbox));
+    }
+
+    pub fn get_local_blur_output(&self, shape_id: Uuid) -> Option<(skia::Image, skia::Rect)> {
+        self.local_blur_output_cache
+            .get(&shape_id)
+            .map(|(img, r)| (img.clone(), *r))
+    }
+
+    pub fn remove_local_blur_output(&mut self, shape_id: Uuid) {
+        self.local_blur_output_cache.remove(&shape_id);
+    }
+
+    pub fn clear_local_blur_output_cache(&mut self) {
+        self.local_blur_output_cache.clear();
     }
 
     /// Seed the per-frame backdrop cache from a cross-frame
