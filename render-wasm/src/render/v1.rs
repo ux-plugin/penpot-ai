@@ -1,34 +1,18 @@
-pub(crate) mod debug;
-mod fills;
-pub mod filters;
-mod fonts;
-#[cfg(feature = "tile-scheduler")]
-pub(crate) mod gather;
-pub(crate) mod glass;
-#[cfg(feature = "tile-scheduler")]
-pub(crate) mod local;
-mod gpu_state;
-pub mod grid_layout;
-mod images;
-mod noise;
-mod options;
-mod shadows;
-mod strokes;
-mod surfaces;
-pub mod text;
-pub mod text_editor;
-pub(crate) mod texture;
-pub(crate) mod ui;
-
 use skia_safe::{self as skia, Matrix, RRect, Rect};
 use std::borrow::Cow;
 
 use rustc_hash::FxHashSet as HashSet;
 
-use gpu_state::GpuState;
+use super::gpu_state::GpuState;
 
-use options::RenderOptions;
-pub use surfaces::{SurfaceId, Surfaces};
+use super::options::RenderOptions;
+pub use super::surfaces::{SurfaceId, Surfaces};
+
+use super::{
+    debug, fills, filters, fonts, glass, grid_layout, noise, shadows, strokes, text, texture, ui,
+};
+#[cfg(feature = "tile-scheduler")]
+use super::{gather, local};
 
 use crate::error::{Error, Result};
 use crate::performance;
@@ -42,8 +26,8 @@ use crate::uuid::Uuid;
 use crate::view::Viewbox;
 use crate::wapi;
 
-pub use fonts::*;
-pub use images::*;
+pub use super::fonts::*;
+pub use super::images::*;
 
 // This is the extra area used for tile rendering (tiles beyond viewport).
 // Higher values pre-render more tiles, reducing empty squares during pan but using more memory.
