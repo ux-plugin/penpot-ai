@@ -2153,7 +2153,6 @@ impl RenderState {
                             true,
                             None,
                             None,
-                            None,
                             output,
                         )?;
                         self.apply_drawing_to_render_canvas(Some(element), output);
@@ -2636,7 +2635,6 @@ impl RenderState {
                                 SurfaceId::InnerShadows,
                                 SurfaceId::TextDropShadows,
                                 true,
-                                None,
                                 None,
                                 None,
                                 SurfaceId::Current,
@@ -3501,7 +3499,6 @@ impl RenderState {
                     SurfaceId::InnerShadows,
                     SurfaceId::TextDropShadows,
                     true,
-                    None,
                     None,
                     None,
                     target,

@@ -1310,10 +1310,79 @@ impl RenderState {
             true,
             None,
             None,
-            None,
             target,
         )?;
         self.apply_drawing_to_render_canvas(Some(shape), target);
+        Ok(())
+    }
+
+    /// Phase F: text-glyph silhouette helper.
+    ///
+    /// Renders `shape` (must be `Type::Text`) into `target` as a
+    /// drop-shadow silhouette, applying `shadow_paint`'s image_filter
+    /// per-glyph (and per-stroke). Caller (typically
+    /// `render_element_drop_shadows_and_composite` for text descendants
+    /// of a shadowed container) is responsible for the SrcIn-colorize
+    /// pass and the outer per-shadow `save_layer` that isolates the
+    /// silhouette on `SurfaceId::DropShadows`.
+    ///
+    /// Replaces the V1 pattern of `render_shape(parent_shadows=Some(...))`
+    /// — that arg is now gone. No `nested_*` state read.
+    fn render_text_silhouette_into_target(
+        &mut self,
+        shape: &Shape,
+        shadow_paint: &skia::Paint,
+        target: SurfaceId,
+    ) -> Result<()> {
+        let Type::Text(text_content_orig) = &shape.shape_type else {
+            unreachable!("render_text_silhouette_into_target called with non-Text shape");
+        };
+
+        let text_content = text_content_orig.new_bounds(shape.selrect());
+        let blur_filter = shape.image_filter(1.);
+        let mut paragraphs = text_content.paragraph_builder_group_from_text(Some(true));
+
+        if !shape.has_visible_strokes() {
+            text::render(
+                Some(self),
+                None,
+                shape,
+                &mut paragraphs,
+                Some(target),
+                Some(shadow_paint),
+                blur_filter.as_ref(),
+                None,
+                None,
+            )?;
+        } else {
+            let stroke_kinds: Vec<StrokeKind> =
+                shape.visible_strokes().rev().map(|s| s.kind).collect();
+            let (mut stroke_paragraphs_list, _opacities): (Vec<_>, Vec<_>) = shape
+                .visible_strokes()
+                .rev()
+                .map(|stroke| {
+                    text::stroke_paragraph_builder_group_from_text(
+                        &text_content,
+                        stroke,
+                        &shape.selrect(),
+                        Some(true),
+                    )
+                })
+                .unzip();
+            let shadows_vec = vec![shadow_paint.clone()];
+            shadows::render_text_shadows(
+                self,
+                shape,
+                &mut paragraphs,
+                &mut stroke_paragraphs_list,
+                Some(target),
+                &shadows_vec,
+                &blur_filter,
+                &stroke_kinds,
+                &text_content,
+            )?;
+        }
+
         Ok(())
     }
 
@@ -1328,7 +1397,6 @@ impl RenderState {
         text_drop_shadows_surface_id: SurfaceId,
         apply_to_current_surface: bool,
         offset: Option<(f32, f32)>,
-        parent_shadows: Option<Vec<skia_safe::Paint>>,
         outset: Option<f32>,
         target_surface: SurfaceId,
     ) -> Result<()> {
@@ -1362,7 +1430,6 @@ impl RenderState {
         let can_render_directly = apply_to_current_surface
             && clip_bounds.is_none()
             && offset.is_none()
-            && parent_shadows.is_none()
             && !shape.needs_layer()
             && shape.blur.is_none()
             && !shape.glass.as_ref().is_some_and(|g| !g.hidden)
@@ -1671,35 +1738,10 @@ impl RenderState {
                         })
                         .unzip();
 
-                    if let Some(parent_shadows) = parent_shadows {
-                        if !shape.has_visible_strokes() {
-                            for shadow in parent_shadows {
-                                text::render(
-                                    Some(self),
-                                    None,
-                                    &shape,
-                                    &mut paragraphs_with_shadows,
-                                    text_drop_shadows_surface_id.into(),
-                                    Some(&shadow),
-                                    blur_filter.as_ref(),
-                                    None,
-                                    None,
-                                )?;
-                            }
-                        } else {
-                            shadows::render_text_shadows(
-                                self,
-                                &shape,
-                                &mut paragraphs_with_shadows,
-                                &mut stroke_paragraphs_with_shadows_list,
-                                text_drop_shadows_surface_id.into(),
-                                &parent_shadows,
-                                &blur_filter,
-                                &stroke_kinds,
-                                &text_content,
-                            )?;
-                        }
-                    } else {
+                    {
+                        // Phase F: parent_shadows arg removed. Text-shape
+                        // descendants of shadowed containers now route through
+                        // `render_text_silhouette_into_target`.
                         // 1. Text drop shadows
                         if !shape.has_visible_strokes() {
                             for shadow in &drop_shadows {
@@ -2164,7 +2206,6 @@ impl RenderState {
                 true,
                 None,
                 None,
-                None,
                 target_surface,
             )?;
         }
@@ -2340,7 +2381,6 @@ impl RenderState {
                     SurfaceId::DropShadows,
                     false,
                     Some(shadow.offset),
-                    None,
                     Some(shadow.spread),
                     target_surface,
                 )
@@ -2383,7 +2423,6 @@ impl RenderState {
                     SurfaceId::DropShadows,
                     false,
                     Some(shadow.offset), // Offset is geometric
-                    None,
                     Some(shadow.spread),
                     target_surface,
                 )
@@ -2425,7 +2464,6 @@ impl RenderState {
                         temp_surface,
                         false,
                         Some(shadow.offset), // Offset is geometric
-                        None,
                         Some(shadow.spread),
                         target_surface,
                     )
@@ -2539,12 +2577,13 @@ impl RenderState {
                             target_surface,
                         )?;
                     } else {
-                        let paint = skia::Paint::default();
-                        let layer_rec = skia::canvas::SaveLayerRec::default().paint(&paint);
-                        self.surfaces
-                            .canvas(SurfaceId::DropShadows)
-                            .save_layer(&layer_rec);
-
+                        // Phase F: text descendant silhouette via dedicated
+                        // helper instead of `render_shape(parent_shadows=...)`.
+                        // Outer per-shadow save_layer at line 2499 already
+                        // isolates the silhouette pass for the SrcIn colorize
+                        // at end of iteration; helper applies the shadow
+                        // image_filter at glyph level.
+                        let _ = nested_clip_bounds; // clip applied later by composite
                         let mut transformed_shadow: Cow<Shadow> = Cow::Borrowed(shadow);
                         transformed_shadow.to_mut().color = skia::Color::BLACK;
                         transformed_shadow.to_mut().blur = transformed_shadow.blur;
@@ -2556,21 +2595,12 @@ impl RenderState {
                         new_shadow_paint.set_blend_mode(skia::BlendMode::SrcOver);
 
                         self.with_nested_blurs_suppressed(|state| {
-                            state.render_shape(
+                            state.render_text_silhouette_into_target(
                                 shadow_shape,
-                                nested_clip_bounds,
+                                &new_shadow_paint,
                                 SurfaceId::DropShadows,
-                                SurfaceId::DropShadows,
-                                SurfaceId::DropShadows,
-                                SurfaceId::DropShadows,
-                                true,
-                                None,
-                                Some(vec![new_shadow_paint.clone()]),
-                                None,
-                                target_surface,
                             )
                         })?;
-                        self.surfaces.canvas(SurfaceId::DropShadows).restore();
                     }
                 }
             }
