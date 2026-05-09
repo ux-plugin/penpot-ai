@@ -29,3 +29,6 @@ public/wasm/render-wasm.wasm
 # Perf bench artifacts
 test-results/
 test/perf/.results/
+
+# Visual capture working dir (baselines/ committed, screenshots/ ignored)
+test/visual/screenshots/

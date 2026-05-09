@@ -37,9 +37,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "perf": "playwright test --project=perf-chromium",
-    "perf:quick": "PERF_OUT=test/perf/.results/perf-quick.json playwright test --project=perf-chromium -g '(flat_baseline|nested_d3_b5_no_fx|iso_drop_shadow_200|iso_layer_blur_200|iso_opacity_500|fast_mixed_500) \\| (idle|pan|zoom|drag)'",
+    "perf:quick": "PERF_OUT=test/perf/.results/perf-quick.json playwright test --project=perf-chromium -g '(flat_baseline|nested_d3_b5_no_fx|iso_drop_shadow_200|iso_layer_blur_200|iso_opacity_500|fast_mixed_500|iso_text_200|iso_svg_50|iso_masked_50|iso_groups_100) \\| (idle|pan|zoom|drag)'",
     "perf:headed": "playwright test --project=perf-chromium --headed",
-    "perf:diff": "tsx test/perf/scripts/diff-cli.ts"
+    "perf:diff": "tsx test/perf/scripts/diff-cli.ts",
+    "visual:capture": "VISUAL_OUT_DIR=screenshots playwright test --project=visual-chromium",
+    "visual:baseline": "VISUAL_OUT_DIR=baselines playwright test --project=visual-chromium"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",

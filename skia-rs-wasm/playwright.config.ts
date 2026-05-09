@@ -14,7 +14,7 @@ import { defineConfig, devices } from '@playwright/test'
  * timings vary, which the diff tool handles via ratio thresholds.
  */
 export default defineConfig({
-  testDir: './test/perf',
+  testDir: './test',
   testMatch: '**/*.spec.ts',
   timeout: 5 * 60_000,
   fullyParallel: false,
@@ -55,6 +55,17 @@ export default defineConfig({
   projects: [
     {
       name: 'perf-chromium',
+      testDir: './test/perf',
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // Visual capture project. Runs each cell once, saves a canvas
+      // screenshot to `test/visual/screenshots/<scene>__<scenario>__f<frame>.png`.
+      // No assertions — diff is performed manually by reading the
+      // images. `VISUAL_OUT_DIR` env var lets `visual:baseline` write
+      // to `baselines/` without overwriting the working set.
+      name: 'visual-chromium',
+      testDir: './test/visual',
       use: { ...devices['Desktop Chrome'] },
     },
   ],

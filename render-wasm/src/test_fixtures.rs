@@ -15,9 +15,10 @@
 
 use crate::math;
 use crate::shapes::{
-    Blur, BlurType, Color, Fill, Frame, GlassEffect, Gradient, Rect as ShapeRect, Shadow,
-    ShadowStyle, Shape, SolidColor, Stroke, StrokeCap, StrokeKind, StrokeStyle, TextureEffect,
-    Type,
+    Blur, BlurType, Color, Fill, FontFamily, FontStyle, Frame, GlassEffect, Gradient, GrowType,
+    Group, Paragraph, Rect as ShapeRect, SVGRaw, Shadow, ShadowStyle, Shape, SolidColor, Stroke,
+    StrokeCap, StrokeKind, StrokeStyle, TextAlign, TextContent, TextDirection, TextSpan,
+    TextureEffect, Type,
 };
 use crate::state::State;
 use crate::uuid::Uuid;
@@ -57,6 +58,32 @@ pub enum IsolatedFx {
     /// per leaf in the renderer; the externalized `BeginLayer`/
     /// `EndLayer` scheduler steps target this scene.
     Opacity,
+    /// V2c.3 prereq — every leaf becomes a `Text` shape with a
+    /// short string in the embedded default font. Covers the text
+    /// render path that no existing iso scene exercises.
+    Text,
+    /// V2c.3 prereq — every leaf becomes a `SVGRaw` shape with a
+    /// small inline SVG. Covers the SVG render path.
+    SvgIcon,
+    /// V2c.3 prereq, container-level — every container becomes a
+    /// `Group { masked: true }`. The first child of each group acts
+    /// as the mask (per `Shape::mask_id`). Leaves get a basic solid
+    /// fill, no leaf effect.
+    Masked,
+    /// V2c.3 target, container-level — every container becomes a
+    /// `Group` with `opacity = 0.6`. Leaves get a basic solid fill,
+    /// no leaf effect. Designed to expose the per-tile children
+    /// re-render cost that V2c.3's subtree cache will eliminate.
+    OpacityGroups,
+}
+
+impl IsolatedFx {
+    /// Container-level variants apply to the parent `Group/Frame`,
+    /// not to leaves. Leaves in container-level scenes get only a
+    /// basic fill so the effect under test is the container's.
+    pub fn applies_to_container(self) -> bool {
+        matches!(self, Self::Masked | Self::OpacityGroups)
+    }
 }
 
 /// Parameterised scene description. Same shape on both sides of the
@@ -160,6 +187,34 @@ impl SceneSpec {
             iso_fx: fx,
         }
     }
+
+    /// Container-level isolation scene: `n_groups` containers, each
+    /// holding `leaves_per_group` leaves. Used by container-level
+    /// `IsolatedFx` variants (Masked, OpacityGroups) so the metric
+    /// reflects per-container cost rather than per-leaf.
+    const fn iso_groups(
+        name: &'static str,
+        n_groups: u32,
+        leaves_per_group: usize,
+        fx: IsolatedFx,
+    ) -> Self {
+        Self {
+            name,
+            n_shapes: n_groups as usize * leaves_per_group,
+            container_depth: 1,
+            branching_factor: n_groups,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 16.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: fx,
+        }
+    }
 }
 
 /// Preset id ↔ spec table. The id is the contract between Rust and
@@ -224,6 +279,22 @@ pub fn preset(id: u32) -> Option<SceneSpec> {
         // per leaf, which V2c.2 lifts from `render_shape_enter` into a
         // top-level `BeginLayer`/`EndLayer` step.
         18 => SceneSpec::iso("iso_opacity_500", 500, IsolatedFx::Opacity),
+        // V2c.3 prereq — text path coverage. 200 text leaves, default
+        // embedded Source Sans Pro font, single short string per leaf.
+        19 => SceneSpec::iso("iso_text_200", 200, IsolatedFx::Text),
+        // V2c.3 prereq — SVG path coverage. 50 leaves (SVG render is
+        // heavier than rect/text per shape). Each leaf has a small
+        // inline SVG with a stroked path.
+        20 => SceneSpec::iso("iso_svg_50", 50, IsolatedFx::SvgIcon),
+        // V2c.3 prereq — masked group two-pass coverage. 10 groups ×
+        // 5 leaves each. First child of each group acts as mask
+        // (per `Shape::mask_id`). 50 leaves total.
+        21 => SceneSpec::iso_groups("iso_masked_50", 10, 5, IsolatedFx::Masked),
+        // V2c.3 target — container opacity. 20 groups × 5 leaves,
+        // `opacity = 0.6` on each group. The subtree cache should
+        // hit for every group on idle/pan; zoom invalidates by
+        // scale bucket.
+        22 => SceneSpec::iso_groups("iso_groups_100", 20, 5, IsolatedFx::OpacityGroups),
         _ => return None,
     })
 }
@@ -258,7 +329,15 @@ pub fn build_into_state(state: &mut State, spec: &SceneSpec) {
     pool.initialize(estimated);
     pool.add_shape(Uuid::nil());
 
-    if spec.container_depth == 0 {
+    // Container-level iso scenes need predictable visual layout
+    // (leaves inside parent's bounds so the container's clip+effect
+    // visibly applies). The generic `build_nested` positions leaves
+    // in a global grid which lands most of them outside their
+    // parent — fine for timing-only bench but invisible on the
+    // canvas. Use a dedicated layout for iso_groups / iso_masked.
+    if spec.iso_fx.applies_to_container() {
+        build_iso_groups(state, spec);
+    } else if spec.container_depth == 0 {
         build_flat(state, spec);
     } else {
         build_nested(state, spec);
@@ -266,6 +345,112 @@ pub fn build_into_state(state: &mut State, spec: &SceneSpec) {
 
     // Tile index needs the populated pool to map shape→tile correctly.
     state.rebuild_tiles();
+}
+
+/// Layout for container-level iso scenes (`Masked`, `OpacityGroups`).
+///
+/// Containers laid out in a regular grid that fits the perf-page
+/// canvas (1920×1080 logical, viewport ≈ 960×540 visible). Each
+/// container holds `leaves_per_group = n_shapes / n_groups` leaves
+/// arranged in a sub-grid within the container's selrect. Leaves get
+/// `parent_id = container.id` so the container's effect (mask /
+/// opacity) actually applies to the visible pixels.
+fn build_iso_groups(state: &mut State, spec: &SceneSpec) {
+    let n_groups = spec.branching_factor as usize;
+    let leaves_per_group = spec.n_shapes / n_groups.max(1);
+
+    // Lay containers out in a 5-col grid within the visible area.
+    const GROUP_COLS: usize = 5;
+    const GROUP_W: f32 = 170.0;
+    const GROUP_H: f32 = 170.0;
+    const GROUP_GAP: f32 = 20.0;
+
+    // Sub-grid for leaves inside each container.
+    const LEAF_COLS: usize = 3;
+    const LEAF_W_INNER: f32 = 40.0;
+    const LEAF_H_INNER: f32 = 40.0;
+    const LEAF_GAP_INNER: f32 = 10.0;
+
+    let nil = Uuid::nil();
+    let mut counter: u64 = 0;
+    let mut container_ids: Vec<Uuid> = Vec::with_capacity(n_groups);
+
+    for g in 0..n_groups {
+        counter += 1;
+        let id = Uuid::from_u64_pair(0xDEAD, counter);
+        let shape = state.shapes.add_shape(id);
+        let col = (g % GROUP_COLS) as f32;
+        let row = (g / GROUP_COLS) as f32;
+        shape.parent_id = Some(nil);
+        shape.shape_type = match spec.iso_fx {
+            IsolatedFx::Masked => Type::Group(Group { masked: true }),
+            IsolatedFx::OpacityGroups => Type::Group(Group { masked: false }),
+            _ => Type::Frame(Frame::default()),
+        };
+        if matches!(spec.iso_fx, IsolatedFx::OpacityGroups) {
+            shape.opacity = 0.6;
+        }
+        // Groups don't clip by default in Penpot; only Frames do. Both
+        // variants here are Group, so children render even if outside
+        // selrect — but we keep selrect sized to the children so the
+        // tile spatial index covers them correctly.
+        let x = col * (GROUP_W + GROUP_GAP) + 20.0;
+        let y = row * (GROUP_H + GROUP_GAP) + 20.0;
+        shape.selrect = math::Rect::from_xywh(x, y, GROUP_W, GROUP_H);
+        // Light tinted background fill so the group is visible behind
+        // its leaves at lower opacity.
+        let tint = deterministic_color(g, 80);
+        shape.fills.push(Fill::Solid(SolidColor(tint)));
+        container_ids.push(id);
+        state.shapes.get_mut(&nil).unwrap().children.push(id);
+    }
+
+    let is_masked = matches!(spec.iso_fx, IsolatedFx::Masked);
+    for (g, &parent) in container_ids.iter().enumerate() {
+        let parent_origin = state
+            .shapes
+            .get(&parent)
+            .map(|s| (s.selrect.x(), s.selrect.y()))
+            .unwrap_or((0.0, 0.0));
+        for li in 0..leaves_per_group {
+            counter += 1;
+            let id = Uuid::from_u64_pair(0xCAFE, counter);
+            let shape = state.shapes.add_shape(id);
+            shape.parent_id = Some(parent);
+            shape.shape_type = Type::Rect(ShapeRect::default());
+            // For Masked groups, the first child acts as the mask
+            // (per `Shape::mask_id`). Size it to cover the whole
+            // container area so the other 4 leaves' pixels actually
+            // pass the mask. Without this, the small mask + non-
+            // overlapping leaves render as fully-clipped (blank).
+            if is_masked && li == 0 {
+                shape.selrect = math::Rect::from_xywh(
+                    parent_origin.0 + 10.0,
+                    parent_origin.1 + 10.0,
+                    GROUP_W - 20.0,
+                    GROUP_H - 20.0,
+                );
+                shape
+                    .fills
+                    .push(Fill::Solid(SolidColor(Color::from_argb(255, 0, 0, 0))));
+                state.shapes.get_mut(&parent).unwrap().children.push(id);
+                continue;
+            }
+            let li_content = if is_masked { li - 1 } else { li };
+            let lcol = (li_content % LEAF_COLS) as f32;
+            let lrow = (li_content / LEAF_COLS) as f32;
+            let x = parent_origin.0 + 25.0 + lcol * (LEAF_W_INNER + LEAF_GAP_INNER);
+            let y = parent_origin.1 + 25.0 + lrow * (LEAF_H_INNER + LEAF_GAP_INNER);
+            shape.selrect = math::Rect::from_xywh(x, y, LEAF_W_INNER, LEAF_H_INNER);
+            shape
+                .fills
+                .push(Fill::Solid(SolidColor(deterministic_color(
+                    g.wrapping_mul(7).wrapping_add(li),
+                    255,
+                ))));
+            state.shapes.get_mut(&parent).unwrap().children.push(id);
+        }
+    }
 }
 
 fn container_count(depth: u32, branching: u32) -> u32 {
@@ -435,6 +620,13 @@ fn configure_leaf(shape: &mut Shape, spec: &SceneSpec, idx: usize, parent: Uuid)
         LEAF_W,
         LEAF_H,
     );
+    // V2c.3: container-level iso variants apply to the parent
+    // container, not the leaf. Leaf gets a basic solid fill so the
+    // measured cost is the container's effect, not noise.
+    if spec.iso_fx.applies_to_container() {
+        shape.fills.push(Fill::Solid(SolidColor(deterministic_color(idx, 255))));
+        return;
+    }
     if spec.iso_fx != IsolatedFx::None {
         apply_isolated_fx(shape, spec.iso_fx, idx);
         return;
@@ -550,6 +742,107 @@ fn apply_isolated_fx(shape: &mut Shape, fx: IsolatedFx, idx: usize) {
             // often hits in practice.
             shape.opacity = 0.6;
         }
+        IsolatedFx::Text => {
+            // Convert leaf to a text shape. Uses the renderer's
+            // embedded default font (Source Sans Pro) so no external
+            // font registration is needed in the bench harness.
+            // `font_variant_id = Uuid::nil()` matches `default_font_uuid()`
+            // in `render::fonts`.
+            //
+            // Override selrect to a more text-friendly aspect ratio
+            // and place leaves in a tighter grid so most fit in the
+            // viewport (the default LEAVES_PER_ROW=100 puts 80 of
+            // them off-screen on a 1920-wide canvas).
+            let cols = 12usize;
+            let leaf_w = 140.0_f32;
+            let leaf_h = 30.0_f32;
+            let stride_x = 150.0_f32;
+            let stride_y = 40.0_f32;
+            let col = (idx % cols) as f32;
+            let row = (idx / cols) as f32;
+            shape.selrect = math::Rect::from_xywh(
+                col * stride_x + 20.0,
+                row * stride_y + 20.0,
+                leaf_w,
+                leaf_h,
+            );
+            let bounds = shape.selrect;
+            let mut content = TextContent::new(bounds, GrowType::AutoHeight);
+            let span = TextSpan::new(
+                "Hello world".to_string(),
+                FontFamily::new(Uuid::nil(), 400, FontStyle::Normal),
+                18.0,
+                1.2,
+                0.0,
+                None,
+                None,
+                TextDirection::LTR,
+                400,
+                Uuid::nil(),
+                vec![Fill::Solid(SolidColor(primary))],
+            );
+            let para = Paragraph::new(
+                TextAlign::Left,
+                TextDirection::LTR,
+                None,
+                None,
+                1.2,
+                0.0,
+                vec![span],
+            );
+            content.add_paragraph(para);
+            // The render path keys on `text_content.layout.paragraphs`
+            // (the laid-out skia paragraphs), not the source spans.
+            // Without computing layout here, `render_shape` walks an
+            // empty paragraph list and emits zero glyphs. Frontend
+            // triggers this on shape mutation; for synthetic bench
+            // shapes we have to do it explicitly.
+            content.update_layout(shape.selrect);
+            shape.shape_type = Type::Text(content);
+        }
+        IsolatedFx::SvgIcon => {
+            // Convert leaf to a SVGRaw shape. Inline SVG with a
+            // stroked + filled star path so the test exercises the
+            // SVG render path on real geometry, not a placeholder.
+            //
+            // Override layout to an 8-col grid of larger 80x80 icons
+            // so the visual capture clearly shows multiple SVGs in
+            // the canvas viewport.
+            let cols = 8usize;
+            let leaf_size = 80.0_f32;
+            let stride = 110.0_f32;
+            let col = (idx % cols) as f32;
+            let row = (idx / cols) as f32;
+            shape.selrect = math::Rect::from_xywh(
+                col * stride + 20.0,
+                row * stride + 20.0,
+                leaf_size,
+                leaf_size,
+            );
+            // The SVGRaw render path concats `shape.transform` then
+            // calls `dom.render()`, which paints at the SVG's own
+            // viewBox coordinate system. The frontend builds the
+            // transform separately. For synthetic shapes, embed the
+            // selrect origin + scale directly into the SVG viewBox
+            // so the icon lands at the leaf's position without an
+            // explicit shape.transform.
+            let svg = format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" \
+                 viewBox=\"{} {} {} {}\" preserveAspectRatio=\"none\">\
+                 <path d=\"M50 10 L61 39 L93 39 L67 58 L77 88 L50 70 L23 88 L33 58 L7 39 L39 39 Z\" \
+                 fill=\"#{:02x}{:02x}{:02x}\" stroke=\"#222\" stroke-width=\"3\" \
+                 transform=\"translate({} {}) scale({})\"/></svg>",
+                shape.selrect.x() as i32, shape.selrect.y() as i32,
+                leaf_size as i32, leaf_size as i32,
+                primary.r(), primary.g(), primary.b(),
+                shape.selrect.x() as i32, shape.selrect.y() as i32,
+                leaf_size / 100.0,
+            );
+            shape.shape_type = Type::SVGRaw(SVGRaw::from_content(svg));
+        }
+        // Container-level variants: never reached on leaves (gated
+        // earlier in `configure_leaf` via `applies_to_container`).
+        IsolatedFx::Masked | IsolatedFx::OpacityGroups => {}
     }
 }
 
@@ -561,7 +854,20 @@ fn configure_container(
     parent: Uuid,
 ) {
     shape.parent_id = Some(parent);
-    shape.shape_type = Type::Frame(Frame::default());
+    // V2c.3 prereq: container-level iso variants override the default
+    // `Type::Frame` to `Type::Group` and stamp container-level effect
+    // properties. Leaves in these scenes carry no fx (gated earlier
+    // in `configure_leaf`).
+    shape.shape_type = match spec.iso_fx {
+        IsolatedFx::Masked => Type::Group(Group { masked: true }),
+        IsolatedFx::OpacityGroups => Type::Group(Group { masked: false }),
+        _ => Type::Frame(Frame::default()),
+    };
+    if matches!(spec.iso_fx, IsolatedFx::OpacityGroups) {
+        // 0.6 same convention as `IsolatedFx::Opacity` for direct
+        // comparability between leaf-opacity and group-opacity scenes.
+        shape.opacity = 0.6;
+    }
     // Containers grow with depth so deeper frames enclose their
     // children. Use a coarse grid keyed off the (depth, child_idx)
     // pair — exact geometry is irrelevant for the bench, only that
