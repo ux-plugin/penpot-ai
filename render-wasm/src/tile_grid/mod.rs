@@ -432,6 +432,17 @@ fn paint_order_children(shape: &Shape, tree: ShapesPoolRef) -> Vec<Uuid> {
             za.cmp(&zb) // ascending = bottom-first
         });
     }
+    // Phase E: for masked groups, `children_ids(false)` drops the
+    // mask child (Penpot convention: `children[0]` = mask). We need
+    // it indexed in the tile grid too so the scheduler can emit
+    // Paint(mask) inside the DstIn layer in `emit_masked_group_steps`.
+    if let Type::Group(group) = shape.shape_type {
+        if group.masked {
+            if let Some(mask_id) = shape.mask_id() {
+                ids.push(*mask_id);
+            }
+        }
+    }
     ids
 }
 
@@ -1688,6 +1699,23 @@ impl TileGrid {
         }
 
         if shape.is_recursive() {
+            // Phase E — masked group two-pass composition. Outer
+            // SrcOver layer wraps content + mask. Inner DstIn layer
+            // wraps the mask shape. On EndLayer the inner DstIn pops,
+            // clipping the outer layer's content to mask alpha; on
+            // the outer EndLayer the masked result composites onto
+            // target.
+            if is_masked_group {
+                return self.emit_masked_group_steps(
+                    shape_id,
+                    shape,
+                    tree,
+                    tile_rect,
+                    scale,
+                    band_shapes,
+                );
+            }
+
             // Container: speculatively push BeginLayer (if applicable) +
             // Enter, recurse, then drop the speculative steps if no
             // child emitted anything for this band.
@@ -1771,6 +1799,117 @@ impl TileGrid {
             }
             true
         } else {
+            false
+        }
+    }
+
+    /// Phase E — emit masked-group schedule:
+    ///
+    /// ```text
+    ///   BeginLayer(SrcOver)         [outer]
+    ///   Enter(has_external_layer=true)
+    ///     Paint(content children, in z-order, model[1..N])
+    ///     BeginLayer(DstIn)         [inner]
+    ///       Paint(mask child, model[0])
+    ///     EndLayer                  [inner pops, mask DstIn-clips outer content]
+    ///   Exit
+    ///   EndLayer                    [outer pops, masked result onto target]
+    /// ```
+    ///
+    /// Penpot data model: `children.first()` is the mask shape;
+    /// `children[1..]` are the content. After `children.reverse()` for
+    /// the band-iteration convention used by non-masked containers, the
+    /// mask lands LAST — same emission ordering as the existing path,
+    /// but wrapped in the inner DstIn layer.
+    ///
+    /// Returns true if anything was emitted into the band.
+    fn emit_masked_group_steps(
+        &mut self,
+        shape_id: Uuid,
+        shape: &Shape,
+        tree: ShapesPoolRef,
+        tile_rect: &skia::Rect,
+        scale: f32,
+        band_shapes: &[Uuid],
+    ) -> bool {
+        let speculative_pos = self.schedule.len();
+
+        let outer_paint = LayerPaint {
+            opacity: 1.0,
+            blend_mode: skia::BlendMode::SrcOver,
+            frame_blur_sigma_dev: None,
+        };
+        let inner_paint = LayerPaint {
+            opacity: 1.0,
+            blend_mode: skia::BlendMode::DstIn,
+            frame_blur_sigma_dev: None,
+        };
+
+        self.schedule.push(RenderStep::BeginLayer {
+            shape: shape_id,
+            paint: outer_paint,
+        });
+        self.schedule.push(RenderStep::Enter {
+            shape: shape_id,
+            has_external_layer: true,
+        });
+
+        // Mask child = `Shape::mask_id()` = `children.first()`.
+        // Content = `children_ids(false)` which for masked groups
+        // already EXCLUDES the mask child (see `Shape::children_ids`
+        // — for masked groups it does `rev().take(len-1)`, dropping
+        // the last-after-reverse = `children[0]` = the mask).
+        let Some(&mask_id) = shape.mask_id() else {
+            // empty masked group — drop everything
+            self.schedule.truncate(speculative_pos);
+            return false;
+        };
+        let content_ids = shape.children_ids(false);
+
+        // `children_ids(false)` already returns bottom-first
+        // (it does `rev()` internally). Iterate in returned order;
+        // band-tile dispatch composites in schedule order so visual
+        // stacking is whatever the model says.
+        let mut any_emitted = false;
+        for child_id in &content_ids {
+            if self.emit_shape_steps_checked(
+                *child_id,
+                tree,
+                tile_rect,
+                scale,
+                band_shapes,
+                false,
+            ) {
+                any_emitted = true;
+            }
+        }
+
+        // Inner DstIn layer for mask child. If the mask shape has no
+        // band content (out of view / hidden), drop the inner layer
+        // wrapping (a DstIn layer with no Src would clear everything).
+        let inner_layer_pos = self.schedule.len();
+        self.schedule.push(RenderStep::BeginLayer {
+            shape: shape_id,
+            paint: inner_paint,
+        });
+        let mask_emitted =
+            self.emit_shape_steps_checked(mask_id, tree, tile_rect, scale, band_shapes, false);
+        if mask_emitted {
+            self.schedule.push(RenderStep::EndLayer { shape: shape_id });
+        } else {
+            self.schedule.truncate(inner_layer_pos);
+        }
+
+        let self_in_band = band_shapes.contains(&shape_id);
+        if any_emitted || mask_emitted || self_in_band {
+            self.schedule.push(RenderStep::Exit {
+                shape: shape_id,
+                has_external_layer: true,
+            });
+            self.schedule.push(RenderStep::EndLayer { shape: shape_id });
+            true
+        } else {
+            self.schedule.truncate(speculative_pos);
             false
         }
     }
@@ -2450,7 +2589,6 @@ impl RenderState {
                             // dispatcher avoids re-running the predicate.
                             self.render_shape_enter(
                                 element,
-                                false,
                                 SurfaceId::Current,
                                 has_external_layer,
                             );
@@ -2926,7 +3064,6 @@ impl RenderState {
                         // restore.
                         self.render_shape_exit(
                             element,
-                            false,
                             None,
                             SurfaceId::Current,
                             has_external_layer,
@@ -3338,7 +3475,7 @@ impl RenderState {
 
         if self.focus_mode.is_active() {
             if shape.is_recursive() {
-                self.render_shape_enter(shape, false, target, false);
+                self.render_shape_enter(shape, target, false);
 
                 let children = shape.children_ids(false);
                 for child_id in &children {
@@ -3347,7 +3484,7 @@ impl RenderState {
 
                 // Export path is non-tile-scheduler; layer wrapping
                 // stays inline in `render_shape_exit`, never externalized.
-                self.render_shape_exit(shape, false, None, target, false)?;
+                self.render_shape_exit(shape, None, target, false)?;
             } else {
                 // Render the shape
                 self.render_background_blur(shape, target);

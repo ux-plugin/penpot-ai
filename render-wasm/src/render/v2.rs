@@ -2067,39 +2067,25 @@ impl RenderState {
     pub fn render_shape_enter(
         &mut self,
         element: &Shape,
-        mask: bool,
         target_surface: SurfaceId,
         skip_layer: bool,
     ) {
-        // Masked groups needs two rendering passes, the first one rendering
-        // the content and the second one rendering the mask so we need to do
-        // an extra save_layer to keep all the masked group separate from
-        // other already drawn elements.
-        if let Type::Group(group) = element.shape_type {
+        // Phase E: masked-group save_layer is now scheduler-emitted
+        // via paired `BeginLayer { paint=SrcOver }` (outer) and
+        // `BeginLayer { paint=DstIn }` (inner around mask child).
+        // render_shape_enter no longer pushes its own layer for
+        // masked groups — that would be a triple push for two
+        // scheduler restores. The legacy `mask: bool` arg was for V1
+        // mask-traversal and is now unused.
+        if matches!(element.shape_type, Type::Group(_)) {
             let fills = &element.fills;
             let shadows = &element.shadows;
             self.nested_fills.push(fills.to_vec());
             self.nested_shadows.push(shadows.to_vec());
-
-            if group.masked {
-                let paint = skia::Paint::default();
-                let layer_rec = skia::canvas::SaveLayerRec::default().paint(&paint);
-                self.surfaces.canvas(target_surface).save_layer(&layer_rec);
-            }
         }
 
         if let Type::Frame(_) = element.shape_type {
             self.nested_fills.push(Vec::new());
-        }
-
-        // When we're rendering the mask shape we need to set a special blend mode
-        // called 'destination-in' that keeps the drawn content within the mask.
-        // @see https://skia.org/docs/user/api/skblendmode_overview/
-        if mask {
-            let mut mask_paint = skia::Paint::default();
-            mask_paint.set_blend_mode(skia::BlendMode::DstIn);
-            let mask_rec = skia::canvas::SaveLayerRec::default().paint(&mask_paint);
-            self.surfaces.canvas(target_surface).save_layer(&mask_rec);
         }
 
         // Only create save_layer if actually needed
@@ -2139,30 +2125,15 @@ impl RenderState {
     pub fn render_shape_exit(
         &mut self,
         element: &Shape,
-        visited_mask: bool,
         clip_bounds: Option<ClipStack>,
         target_surface: SurfaceId,
         skip_layer: bool,
     ) -> Result<()> {
-        if visited_mask {
-            // Because masked groups needs two rendering passes (first drawing
-            // the content and then drawing the mask), we need to do an
-            // extra restore.
-            if let Type::Group(group) = element.shape_type {
-                if group.masked {
-                    self.surfaces.canvas(target_surface).restore();
-                }
-            }
-        } else {
-            // !visited_mask
-            if let Type::Group(group) = element.shape_type {
-                // When we're dealing with masked groups we need to
-                // do a separate extra step to draw the mask (the last
-                // element of a masked group) and blend (using
-                // the blend mode 'destination-in') the content
-                // of the group and the mask.
-            }
-        }
+        // Phase E: V1 `visited_mask` flag dropped. Masked-group
+        // restore is now scheduler-emitted via paired `EndLayer`
+        // (inner DstIn) + `EndLayer` (outer SrcOver) emitted by
+        // `emit_masked_group_steps`. render_shape_exit no longer
+        // pops anything for masked groups.
 
         match element.shape_type {
             Type::Frame(_) | Type::Group(_) => {
