@@ -1025,13 +1025,25 @@ impl RenderState {
         Ok(())
     }
 
-    /// Scaffold: backdrop-blur wrap. Phase D replaces with direct-draw.
+    /// Phase D: shape with backdrop blur — direct-draw body.
+    ///
+    /// In the V2c scheduler, the backdrop snapshot + blur paint is
+    /// emitted by `EffectKey::Gather(GatherFx::BackgroundBlur)` BEFORE
+    /// this `ShapeBody` step fires. So by the time we draw the body,
+    /// the blurred backdrop is already composited onto `target`. We
+    /// just need to draw fills/strokes on top, exactly like
+    /// `render_body_direct`. The `background_blur` field on `shape`
+    /// is informational at this point — it triggered the gather
+    /// emit upstream — and we deliberately ignore it here to avoid
+    /// double-applying the blur.
     fn render_with_backdrop_blur(
         &mut self,
         shape: &Shape,
         target: SurfaceId,
     ) -> Result<()> {
-        self.render_body_legacy(shape, target)
+        // Body draw is identical to non-bg-blur shapes; gather
+        // pre-pass owns the blur composition.
+        self.render_body_direct(shape, target)
     }
 
     /// Legacy fallback: route through old `render_shape` slow path
