@@ -37,8 +37,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "perf": "playwright test --project=perf-chromium",
-    "perf:fast": "PERF_REPEATS=1 PERF_FRAMES=30 playwright test --project=perf-chromium -g 'fast_mixed_500'",
-    "perf:quick": "PERF_REPEATS=3 PERF_FRAMES=60 PERF_OUT=test/perf/.results/perf-quick.json playwright test --project=perf-chromium -g '(flat_baseline|nested_d3_b5_no_fx|iso_drop_shadow_200|iso_layer_blur_200|iso_opacity_500|fast_mixed_500) \\| (idle|pan|zoom|drag)'",
+    "perf:quick": "PERF_OUT=test/perf/.results/perf-quick.json playwright test --project=perf-chromium -g '(flat_baseline|nested_d3_b5_no_fx|iso_drop_shadow_200|iso_layer_blur_200|iso_opacity_500|fast_mixed_500) \\| (idle|pan|zoom|drag)'",
     "perf:headed": "playwright test --project=perf-chromium --headed",
     "perf:diff": "tsx test/perf/scripts/diff-cli.ts"
   },
