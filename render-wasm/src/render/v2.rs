@@ -834,9 +834,11 @@ impl RenderState {
         match &shape.shape_type {
             Type::Text(_) => self.render_text_into_target(shape, target),
             Type::SVGRaw(_) => self.render_svg_into_target(shape, target),
-            _ if shape.background_blur.is_some_and(|b| !b.hidden) => {
-                self.render_with_backdrop_blur(shape, target)
-            }
+            // Phase I.1: backdrop-blur composition lives in
+            // `EffectKey::Gather(BackgroundBlur)` (pre-pass); body draw
+            // is identical to non-bg-blur shapes. Routed straight to
+            // `render_body_direct`; former `render_with_backdrop_blur`
+            // wrapper deleted.
             _ => self.render_body_direct(shape, target),
         }
     }
@@ -1288,28 +1290,7 @@ impl RenderState {
         Ok(())
     }
 
-    /// Phase D: shape with backdrop blur — direct-draw body.
-    ///
-    /// In the V2c scheduler, the backdrop snapshot + blur paint is
-    /// emitted by `EffectKey::Gather(GatherFx::BackgroundBlur)` BEFORE
-    /// this `ShapeBody` step fires. So by the time we draw the body,
-    /// the blurred backdrop is already composited onto `target`. We
-    /// just need to draw fills/strokes on top, exactly like
-    /// `render_body_direct`. The `background_blur` field on `shape`
-    /// is informational at this point — it triggered the gather
-    /// emit upstream — and we deliberately ignore it here to avoid
-    /// double-applying the blur.
-    fn render_with_backdrop_blur(
-        &mut self,
-        shape: &Shape,
-        target: SurfaceId,
-    ) -> Result<()> {
-        // Body draw is identical to non-bg-blur shapes; gather
-        // pre-pass owns the blur composition.
-        self.render_body_direct(shape, target)
-    }
-
-    /// Phase H.5: clipped-frame strokes helper.
+/// Phase H.5: clipped-frame strokes helper.
     ///
     /// Direct-draw replacement for `render_shape_exit`'s clipped-frame
     /// strokes pass. Caller passes a stroke-only shape (cleared fills,
