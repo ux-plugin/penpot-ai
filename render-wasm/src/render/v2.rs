@@ -375,6 +375,29 @@ pub(crate) fn get_cache_size(viewbox: Viewbox, scale: f32) -> skia::ISize {
         .into()
 }
 
+/// True when a shape's body path requires the legacy slow chain
+/// (FILLS/STROKES/INNER scratch + `apply_drawing_to_render_canvas`
+/// blit). Each clause is a bug to fix in Phases B–E; the predicate
+/// shrinks as helpers migrate.
+///
+/// Excluded already (handled by `render_body_direct`):
+/// - any opacity / blend mode (scheduler `BeginLayer` wraps)
+/// - any transform (matrix concat in helper)
+/// - frame blur (scheduler `BeginLayer` image_filter)
+fn needs_legacy_body_path(shape: &Shape) -> bool {
+    shape.glass.as_ref().is_some_and(|g| !g.hidden)
+        || shape.noise.as_ref().is_some_and(|n| !n.hidden)
+        || shape.texture.as_ref().is_some_and(|t| !t.hidden)
+        || shape
+            .blur
+            .is_some_and(|b| !b.hidden && b.blur_type == BlurType::LayerBlur)
+        || !shape.shadows.is_empty()
+        || shape
+            .svg_attrs
+            .as_ref()
+            .is_some_and(|attrs| attrs.fill_none)
+}
+
 impl RenderState {
     pub fn try_new(width: i32, height: i32) -> Result<RenderState> {
         // This needs to be done once per WebGL context.
@@ -849,49 +872,24 @@ impl RenderState {
     /// assumption fails for leaves with opacity (they don't get an
     /// enter/exit pair). Drawing directly into the scheduler's
     /// `BeginLayer`-wrapped target sidesteps the issue.
+    /// V2 scheduler-native shape draw — top-level dispatcher.
+    ///
+    /// One-arg-per-target, one-helper-per-aspect. Each helper does
+    /// direct draw into `target` (no scratch chain, no per-aspect
+    /// surface). Caller (the scheduler dispatcher) owns the
+    /// save_layer for opacity/blend via the matching `BeginLayer`
+    /// step, so no helper wraps a layer for opacity/blend.
+    ///
+    /// Phase A scaffold: helpers Text/SVGRaw/bg-blur delegate to
+    /// `render_shape_legacy` for now. Subsequent phases replace each
+    /// stub with a direct-draw body.
     pub fn render_shape_into_target(
         &mut self,
         shape: &Shape,
         target: SurfaceId,
     ) -> Result<()> {
-        // Fall back for shape types this fn doesn't handle yet.
-        let needs_legacy = matches!(
-            shape.shape_type,
-            Type::Text(_) | Type::SVGRaw(_)
-        ) || shape.background_blur.is_some_and(|b| !b.hidden)
-            || shape.glass.as_ref().is_some_and(|g| !g.hidden)
-            || shape.noise.as_ref().is_some_and(|n| !n.hidden)
-            || shape.texture.as_ref().is_some_and(|t| !t.hidden)
-            || shape.blur.is_some_and(|b| !b.hidden && b.blur_type == BlurType::LayerBlur)
-            || !shape.shadows.is_empty()
-            || shape
-                .svg_attrs
-                .as_ref()
-                .is_some_and(|attrs| attrs.fill_none);
-        if needs_legacy {
-            self.render_shape(
-                shape,
-                None,
-                SurfaceId::Fills,
-                SurfaceId::Strokes,
-                SurfaceId::InnerShadows,
-                SurfaceId::TextDropShadows,
-                true,
-                None,
-                None,
-                None,
-                target,
-            )?;
-            self.apply_drawing_to_render_canvas(Some(shape), target);
-            return Ok(());
-        }
-
-        // Containers: Group/Frame don't draw their own body in this
-        // path. Their contained leaves are handled by their own
-        // `Paint(ShapeBody)` schedule entries. (V1 did paint group
-        // fills via `render_shape`, but V2c's emission only schedules
-        // a `ShapeBody` for shapes with own visible content — bare
-        // containers fall through.)
+        // Containers without own visible content: nothing to paint.
+        // Children handled by their own `Paint(ShapeBody)` entries.
         if matches!(shape.shape_type, Type::Group(_) | Type::Frame(_))
             && shape.fills.is_empty()
             && shape.visible_strokes().next().is_none()
@@ -899,6 +897,25 @@ impl RenderState {
             return Ok(());
         }
 
+        match &shape.shape_type {
+            Type::Text(_) => self.render_text_into_target(shape, target),
+            Type::SVGRaw(_) => self.render_svg_into_target(shape, target),
+            _ if shape.background_blur.is_some_and(|b| !b.hidden) => {
+                self.render_with_backdrop_blur(shape, target)
+            }
+            _ if needs_legacy_body_path(shape) => {
+                self.render_body_legacy(shape, target)
+            }
+            _ => self.render_body_direct(shape, target),
+        }
+    }
+
+    /// Direct-draw body: fills + strokes into `target`, with the
+    /// shape's per-tile scale+translate+matrix applied in one save/
+    /// restore pair. No scratch surfaces, no `apply_drawing_to_render_canvas`
+    /// blit. Phase 4 hot path; broad enough to cover plain
+    /// Rect/Circle/Path/Bool with any opacity/blend/transform.
+    fn render_body_direct(&mut self, shape: &Shape, target: SurfaceId) -> Result<()> {
         let scale = self.get_scale();
         let translation = self
             .surfaces
@@ -906,16 +923,11 @@ impl RenderState {
         let antialias =
             shape.should_use_antialias(scale, self.options.antialias_threshold);
 
-        // Apply per-shape transform centered on the shape's center.
         let center = shape.center();
         let mut matrix = shape.transform;
         matrix.post_translate(center);
         matrix.pre_translate(-center);
 
-        // Save target's matrix so the per-tile scale+translate stays
-        // intact across shapes. Concat in: tile_scale_translate ·
-        // shape_matrix. World-coord drawing (selrect, paths) lands at
-        // the right tile-relative pixels.
         {
             let canvas = self.surfaces.canvas_and_mark_dirty(target);
             canvas.save();
@@ -924,10 +936,8 @@ impl RenderState {
             canvas.concat(&matrix);
         }
 
-        // Fills.
         fills::render(self, shape, &shape.fills, antialias, target, None)?;
 
-        // Strokes.
         let visible_strokes: Vec<&Stroke> = shape.visible_strokes().collect();
         if !visible_strokes.is_empty() {
             strokes::render(
@@ -946,6 +956,55 @@ impl RenderState {
         }
 
         self.surfaces.canvas(target).restore();
+        Ok(())
+    }
+
+    /// Scaffold: text path. Phase B replaces with direct-draw.
+    fn render_text_into_target(
+        &mut self,
+        shape: &Shape,
+        target: SurfaceId,
+    ) -> Result<()> {
+        self.render_body_legacy(shape, target)
+    }
+
+    /// Scaffold: SVGRaw path. Phase C replaces with direct-draw.
+    fn render_svg_into_target(
+        &mut self,
+        shape: &Shape,
+        target: SurfaceId,
+    ) -> Result<()> {
+        self.render_body_legacy(shape, target)
+    }
+
+    /// Scaffold: backdrop-blur wrap. Phase D replaces with direct-draw.
+    fn render_with_backdrop_blur(
+        &mut self,
+        shape: &Shape,
+        target: SurfaceId,
+    ) -> Result<()> {
+        self.render_body_legacy(shape, target)
+    }
+
+    /// Legacy fallback: route through old `render_shape` slow path
+    /// (FILLS/STROKES/INNER scratch chain + `apply_drawing_to_render_canvas`
+    /// blit). Phases B–E migrate every caller off this; Phase H
+    /// deletes both this stub and the underlying `render_shape` body.
+    fn render_body_legacy(&mut self, shape: &Shape, target: SurfaceId) -> Result<()> {
+        self.render_shape(
+            shape,
+            None,
+            SurfaceId::Fills,
+            SurfaceId::Strokes,
+            SurfaceId::InnerShadows,
+            SurfaceId::TextDropShadows,
+            true,
+            None,
+            None,
+            None,
+            target,
+        )?;
+        self.apply_drawing_to_render_canvas(Some(shape), target);
         Ok(())
     }
 
