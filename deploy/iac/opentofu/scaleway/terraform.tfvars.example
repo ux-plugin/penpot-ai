@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+
+environment = "prod"
+region      = "fr-par"
+zone        = "fr-par-1"
+
+# Find your project ID at https://console.scaleway.com/project/settings.
+# IAM applications + policies are scoped to this project.
+project_id = "REPLACE_ME"
+
+# Lifecycle TTLs in days. Defaults match the AWS module.
+raw_retention_days        = 1
+quarantine_retention_days = 7
+anon_retention_days       = 90
+
+tags = {
+  "owner"    = "ingest-platform"
+  "cost-tag" = "ingest-pipeline"
+}

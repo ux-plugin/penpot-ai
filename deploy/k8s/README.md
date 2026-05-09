@@ -28,7 +28,7 @@ Workers do not expose a Service — they are pure stream consumers. The actuator
 
 - A running Redis with AOF (`appendonly yes`) — see top-level `docker-compose.yaml` for the canonical config. Required so streams + sanitizer state survive a Redis pod restart.
 - A running Postgres with the `figma_plugin` schema (Liquibase migrations run from the api pod on first start).
-- An S3 bucket plus four per-stage IAM users provisioned by `deploy/iac/opentofu/`. That module also applies the prefix-scoped lifecycle rules (`raw/` 1d, `quarantine/` 7d, `anon/` 90d).
+- An S3-compatible bucket plus four per-stage identities provisioned by one of the OpenTofu modules under `deploy/iac/opentofu/` — `aws/` for AWS S3, `scaleway/` for Scaleway Object Storage. Either module also applies the prefix-scoped lifecycle rules (`raw/` 1d, `quarantine/` 7d, `anon/` 90d).
 
 ## Apply
 

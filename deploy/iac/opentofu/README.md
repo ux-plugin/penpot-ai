@@ -1,81 +1,82 @@
-# OpenTofu module — ingest pipeline AWS resources
+# OpenTofu modules — ingest pipeline IaC
 
-Provisions:
-- One S3 bucket (`zoetrope-data-<env>` by default) with public-access block, AES256 encryption, and prefix-scoped lifecycle rules for `raw/`, `quarantine/`, `anon/`.
-- Four IAM users — one per pipeline stage — each with an inline least-privilege policy:
+Two cloud targets, same output contract. Pick one per environment.
 
-| Stage | Allowed | Forbidden |
-|---|---|---|
-| `ingest-api` | `s3:PutObject` on `raw/*`, scoped `ListBucket raw/*` | reading anything; touching `anon/`, `quarantine/` |
-| `sanitizer` | GET+PUT+DELETE on `raw/*` and `quarantine/*` | `anon/*` entirely |
-| `anonymizer` | GET on `raw/*`, GET+PUT on `anon/*` | **DeleteObject anywhere** (eviction is sanitizer's job, gated by RAW_PROCESSED) |
-| `processor` | GET on `anon/*` | mutation of any kind |
-
-- Four access keys, one per user. Output via `tofu output stage_credentials`.
-
-## Tooling
-
-[OpenTofu](https://opentofu.org) ≥ 1.7. Apache-2.0 fork of Terraform — same HCL, same provider registry, no BSL drama.
-
-```bash
-brew install opentofu          # macOS
-# or download from https://github.com/opentofu/opentofu/releases
+```
+deploy/iac/opentofu/
+├── aws/         # AWS S3 + IAM users + per-user policies
+└── scaleway/    # Scaleway Object Storage + IAM applications + bucket policy
 ```
 
-## Apply
+Both modules:
+
+- Provision one S3-compatible bucket with private ACL, versioning disabled, AES256 server-side encryption (where the cloud's default supports it), and prefix-scoped lifecycle rules for `raw/`, `quarantine/`, `anon/`.
+- Mint four per-stage identities (`ingest-api`, `sanitizer`, `anonymizer`, `processor`) with least-privilege scoping enforced by:
+  - **AWS**: per-user inline policies — `aws_iam_user_policy`.
+  - **Scaleway**: project-wide IAM permission set + a single `scaleway_object_bucket_policy` that scopes each application down to its prefixes.
+- Surface the same `stage_credentials` output (`{stage → {access_key_id, secret_access_key}}`), so the kubectl secret-extraction snippet in `aws/README.md` works against either module unchanged.
+
+## Same invariants in both modules
+
+| Stage | Reads | Writes | Deletes |
+|---|---|---|---|
+| `ingest-api` | — | `raw/*` | — |
+| `sanitizer` | `raw/*`, `quarantine/*` | `quarantine/*` | `raw/*`, `quarantine/*` |
+| `anonymizer` | `raw/*`, `anon/*` | `anon/*` | — |
+| `processor` | `anon/*` | — | — |
+
+Critical: the anonymizer never has Delete in either module. Eviction stays the sanitizer's job, gated by the `RAW_PROCESSED` event from the anonymizer. This invariant prevents either stage from bypassing the two-phase delete protocol — losing it would defeat the privacy guarantee.
+
+## Picking a cloud
+
+| Question | AWS | Scaleway |
+|---|---|---|
+| EU data residency required (GDPR-leaning customers) | Possible (eu-west-3 etc.) | Native — Scaleway is a French/EU operator |
+| Workload identity available (short-lived creds) | Yes — IRSA on EKS | No equivalent yet — long-lived API keys only |
+| Hyperscaler ecosystem (managed Postgres, Redis, k8s) | Mature | Smaller but covers the basics (Managed DB for PostgreSQL, Managed Redis, Kapsule k8s) |
+| Pricing for object storage | Standard tier ~$0.023/GB/mo | Standard tier ~€0.014/GB/mo (often cheaper) |
+| Egress costs | Charged | First 75GB/mo free per project, then €0.01/GB |
+
+For pure cost-conscious / EU-resident deployments → **Scaleway**. For breadth of services + IRSA → **AWS**.
+
+## Apply flow (identical pattern, different working directory)
 
 ```bash
-cd deploy/iac/opentofu
+cd deploy/iac/opentofu/<aws|scaleway>
 cp terraform.tfvars.example terraform.tfvars
-$EDITOR terraform.tfvars       # set environment, tags, retention overrides
+$EDITOR terraform.tfvars
 
 tofu init
 tofu plan
 tofu apply
-```
 
-Review the plan before applying. Double-check the bucket name is unique and the IAM users do not collide with existing resources in your account.
-
-## Pull the per-stage access keys into k8s Secrets
-
-```bash
-# Single map output — `jq` extracts each stage's pair.
 tofu output -json stage_credentials > /tmp/stage-creds.json
-
-for stage in ingest-api sanitizer anonymizer processor; do
-  ak=$(jq -r ".\"$stage\".access_key_id"     /tmp/stage-creds.json)
-  sk=$(jq -r ".\"$stage\".secret_access_key" /tmp/stage-creds.json)
-
-  case $stage in
-    ingest-api) name=api-s3-creds          ;;
-    *)          name=${stage}-s3-creds     ;;
-  esac
-
-  case $stage in
-    ingest-api) ak_var=OBJECTSTORE_ACCESS_KEY  ; sk_var=OBJECTSTORE_SECRET_KEY ;;
-    sanitizer)  ak_var=SANITIZER_S3_ACCESS_KEY ; sk_var=SANITIZER_S3_SECRET_KEY ;;
-    anonymizer) ak_var=ANONYMIZER_S3_ACCESS_KEY; sk_var=ANONYMIZER_S3_SECRET_KEY ;;
-    processor)  ak_var=PROCESSOR_S3_ACCESS_KEY ; sk_var=PROCESSOR_S3_SECRET_KEY ;;
-  esac
-
-  kubectl create secret generic "$name" \
-    --from-literal=$ak_var="$ak" \
-    --from-literal=$sk_var="$sk" \
-    --dry-run=client -o yaml | kubectl apply -f -
-done
-
-rm /tmp/stage-creds.json
+# Loop in aws/README.md feeds these into kubectl create secret.
 ```
 
-For real deploys, replace this script with your secret-sync controller (External Secrets Operator + AWS Secrets Manager, Sealed Secrets, etc.) — never paste raw keys into shell history.
+## App-side differences
 
-## State
+The Spring Boot apps don't know which cloud minted their credentials — they just consume the same env-var pairs. The only knobs that change between targets:
 
-Default backend is local. Enable the commented-out `backend "s3"` block in `versions.tf` once a second operator joins, supplying an S3 bucket + DynamoDB lock table you've created out-of-band.
+| Env var | AWS | Scaleway |
+|---|---|---|
+| `OBJECTSTORE_ENDPOINT` | unset (uses `https://s3.<region>.amazonaws.com`) | `https://s3.<region>.scw.cloud` |
+| `OBJECTSTORE_REGION` | e.g. `us-east-1` | e.g. `fr-par` |
+| `OBJECTSTORE_BUCKET` | output of `tofu output bucket_name` | same |
 
-## What this module does NOT cover (yet)
+Wire those via `kubectl create configmap` or your CD pipeline.
 
-- KMS customer-managed keys (drop-in via `aws_kms_key` + `sse_algorithm = "aws:kms"` swap in `bucket.tf`)
-- Cross-account replication for backup/DR
-- IRSA / Workload Identity — Phase 2 of #47, when long-lived access keys become a problem
-- Any non-AWS provider — for GCP / Azure, fork the module and swap the resource types; the policy invariants port directly
+## State backend
+
+Both modules ship with their `backend "s3"` block commented out. For:
+
+- **AWS**: standard `s3` backend with DynamoDB lock.
+- **Scaleway**: Scaleway Object Storage is S3-compatible, so the same `s3` backend works once you set `endpoints.s3 = "https://s3.<region>.scw.cloud"` plus the `skip_credentials_validation` / `skip_region_validation` / `use_path_style` flags. See `scaleway/versions.tf`.
+
+Enable the backend once a second operator joins.
+
+## What is shared between the two modules
+
+Nothing yet — each module is fully self-contained. Sharing variables or resources between them would defeat the point: if you outgrow one cloud, you cut the other module loose without disturbing the survivor.
+
+When/if a third cloud joins (GCP, Azure), copy whichever module is closest to the target and adapt — provider, IAM primitives, bucket policy syntax. The `stage_credentials` output stays the same shape so downstream tooling never breaks.
