@@ -378,20 +378,6 @@ pub(crate) fn get_cache_size(viewbox: Viewbox, scale: f32) -> skia::ISize {
 /// - any opacity / blend mode (scheduler `BeginLayer` wraps)
 /// - any transform (matrix concat in helper)
 /// - frame blur (scheduler `BeginLayer` image_filter)
-fn needs_legacy_body_path(shape: &Shape) -> bool {
-    shape.glass.as_ref().is_some_and(|g| !g.hidden)
-        || shape.noise.as_ref().is_some_and(|n| !n.hidden)
-        || shape.texture.as_ref().is_some_and(|t| !t.hidden)
-        || shape
-            .blur
-            .is_some_and(|b| !b.hidden && b.blur_type == BlurType::LayerBlur)
-        || !shape.shadows.is_empty()
-        || shape
-            .svg_attrs
-            .as_ref()
-            .is_some_and(|attrs| attrs.fill_none)
-}
-
 impl RenderState {
     pub fn try_new(width: i32, height: i32) -> Result<RenderState> {
         // This needs to be done once per WebGL context.
@@ -851,18 +837,25 @@ impl RenderState {
             _ if shape.background_blur.is_some_and(|b| !b.hidden) => {
                 self.render_with_backdrop_blur(shape, target)
             }
-            _ if needs_legacy_body_path(shape) => {
-                self.render_body_legacy(shape, target)
-            }
             _ => self.render_body_direct(shape, target),
         }
     }
 
-    /// Direct-draw body: fills + strokes into `target`, with the
-    /// shape's per-tile scale+translate+matrix applied in one save/
-    /// restore pair. No scratch surfaces, no `apply_drawing_to_render_canvas`
-    /// blit. Phase 4 hot path; broad enough to cover plain
-    /// Rect/Circle/Path/Bool with any opacity/blend/transform.
+    /// Direct-draw body: fills + strokes + inner shadows + noise + layer
+    /// blur into `target`. Caller (scheduler dispatcher) owns the
+    /// save_layer for opacity/blend via the matching `BeginLayer` step.
+    ///
+    /// Phase H.6: folded former `render_body_legacy` (slow scratch chain
+    /// + `apply_drawing_to_render_canvas` blit) into this single helper.
+    /// Inner shadows now paint directly onto `target` via the per-fill
+    /// or per-stroke shadow paint (filter creates inner-shadow look from
+    /// shape geometry). Layer blur via inline save_layer.
+    ///
+    /// Composition order mirrors legacy `apply_drawing_to_render_canvas`:
+    /// 1. fills + noise
+    /// 2. fill inner shadows (only if `shape.has_fills()`)
+    /// 3. strokes
+    /// 4. stroke inner shadows (only if NOT `shape.has_fills()`)
     fn render_body_direct(&mut self, shape: &Shape, target: SurfaceId) -> Result<()> {
         let scale = self.get_scale();
         let translation = self
@@ -870,11 +863,23 @@ impl RenderState {
             .get_render_context_translation(self.render_area, scale);
         let antialias =
             shape.should_use_antialias(scale, self.options.antialias_threshold);
+        let fast_mode = self.options.is_fast_mode();
 
         let center = shape.center();
         let mut matrix = shape.transform;
         matrix.post_translate(center);
         matrix.pre_translate(-center);
+
+        // Layer blur sigma — applied via inline save_layer wrapping the
+        // entire body draw. Skipped in fast mode (pan/zoom).
+        let layer_sigma = if !fast_mode {
+            shape
+                .blur
+                .filter(|b| !b.hidden && b.blur_type == BlurType::LayerBlur)
+                .map(|b| b.sigma())
+        } else {
+            None
+        };
 
         {
             let canvas = self.surfaces.canvas_and_mark_dirty(target);
@@ -884,18 +889,79 @@ impl RenderState {
             canvas.concat(&matrix);
         }
 
-        fills::render(self, shape, &shape.fills, antialias, target, None)?;
+        // Inline layer-blur isolation layer.
+        if let Some(sigma) = layer_sigma {
+            if let Some(filter) = skia::image_filters::blur((sigma, sigma), None, None, None) {
+                let mut layer_paint = skia::Paint::default();
+                layer_paint.set_image_filter(filter);
+                let layer_rec = skia::canvas::SaveLayerRec::default().paint(&layer_paint);
+                self.surfaces.canvas(target).save_layer(&layer_rec);
+            }
+        }
 
-        let visible_strokes: Vec<&Stroke> = shape.visible_strokes().collect();
-        if !visible_strokes.is_empty() {
-            strokes::render(
-                self,
-                shape,
-                &visible_strokes,
-                Some(target),
-                antialias,
-                None,
-            )?;
+        // Fills with nested_fills fallback (group ancestor's fill
+        // propagates to fill-less leaves; SVG `fill="none"` suppresses
+        // fallback).
+        let fill_none = shape
+            .svg_attrs
+            .as_ref()
+            .is_some_and(|attrs| attrs.fill_none);
+        let is_container = matches!(
+            shape.shape_type,
+            Type::Group(_) | Type::Frame(_)
+        );
+        if shape.fills.is_empty() && !is_container && !fill_none {
+            if let Some(fills_to_render) = self.nested_fills.last() {
+                let fills_to_render = fills_to_render.clone();
+                fills::render(self, shape, &fills_to_render, antialias, target, None)?;
+            }
+        } else {
+            fills::render(self, shape, &shape.fills, antialias, target, None)?;
+        }
+
+        // Noise overlay (mixed with fills before strokes).
+        noise::render_shape_noise(self, shape, target);
+
+        // Fill inner shadows (only when shape has fills; SrcAtop-style
+        // image filter clips to fill geometry).
+        if !fast_mode && shape.has_fills() {
+            shadows::render_fill_inner_shadows(self, shape, antialias, target);
+        }
+
+        // Strokes (skipped on clipped frames — drawn in `render_shape_exit`
+        // on top of children via `render_clipped_strokes_into_target`).
+        let skip_strokes =
+            matches!(shape.shape_type, Type::Frame(_)) && shape.clip_content;
+        if !skip_strokes {
+            let visible_strokes: Vec<&Stroke> = shape.visible_strokes().collect();
+            if !visible_strokes.is_empty() {
+                strokes::render(
+                    self,
+                    shape,
+                    &visible_strokes,
+                    Some(target),
+                    antialias,
+                    None,
+                )?;
+                // Stroke inner shadows (only when no fills — render_stroke_inner_shadows
+                // internally guards on `!shape.has_fills()`).
+                if !fast_mode && !shape.has_fills() {
+                    for stroke in &visible_strokes {
+                        shadows::render_stroke_inner_shadows(
+                            self,
+                            shape,
+                            stroke,
+                            antialias,
+                            target,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        // Restore layer-blur isolation layer (composites blurred body onto target).
+        if layer_sigma.is_some() {
+            self.surfaces.canvas(target).restore();
         }
 
         if self.options.is_debug_visible() {
@@ -1241,27 +1307,6 @@ impl RenderState {
         // Body draw is identical to non-bg-blur shapes; gather
         // pre-pass owns the blur composition.
         self.render_body_direct(shape, target)
-    }
-
-    /// Legacy fallback: route through old `render_shape` slow path
-    /// (FILLS/STROKES/INNER scratch chain + `apply_drawing_to_render_canvas`
-    /// blit). Phases B–E migrate every caller off this; Phase H
-    /// deletes both this stub and the underlying `render_shape` body.
-    fn render_body_legacy(&mut self, shape: &Shape, target: SurfaceId) -> Result<()> {
-        self.render_shape(
-            shape,
-            None,
-            SurfaceId::Fills,
-            SurfaceId::Strokes,
-            SurfaceId::InnerShadows,
-            SurfaceId::TextDropShadows,
-            true,
-            None,
-            None,
-            target,
-        )?;
-        self.apply_drawing_to_render_canvas(Some(shape), target);
-        Ok(())
     }
 
     /// Phase H.5: clipped-frame strokes helper.
