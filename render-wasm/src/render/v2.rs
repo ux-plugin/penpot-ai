@@ -1264,6 +1264,75 @@ impl RenderState {
         Ok(())
     }
 
+    /// Phase H.5: clipped-frame strokes helper.
+    ///
+    /// Direct-draw replacement for `render_shape_exit`'s clipped-frame
+    /// strokes pass. Caller passes a stroke-only shape (cleared fills,
+    /// cleared shadows, clip_content=false) + the frame's clip stack +
+    /// target. No scratch chain. Inner shadows on shape.shadows already
+    /// cleared by caller; inner shadows on individual strokes are stored
+    /// in shape.shadows (also cleared) so per-stroke inner-shadow pass
+    /// is a no-op and is dropped.
+    fn render_clipped_strokes_into_target(
+        &mut self,
+        shape: &Shape,
+        clip_bounds: Option<ClipStack>,
+        target: SurfaceId,
+    ) -> Result<()> {
+        let visible_strokes: Vec<&Stroke> = shape.visible_strokes().collect();
+        if visible_strokes.is_empty() {
+            return Ok(());
+        }
+        let antialias =
+            shape.should_use_antialias(self.get_scale(), self.options.antialias_threshold);
+
+        self.surfaces.canvas(target).save();
+
+        if let Some(clips) = clip_bounds.as_ref() {
+            let scale = self.get_scale();
+            for (mut bounds, corners, transform) in clips.iter() {
+                self.surfaces.canvas(target).concat(&transform);
+                let clip_outset = 0.5 / scale;
+                bounds.outset((clip_outset, clip_outset));
+                if let Some(corners) = corners {
+                    let rrect = RRect::new_rect_radii(bounds, corners);
+                    self.surfaces.canvas(target).clip_rrect(
+                        rrect,
+                        skia::ClipOp::Intersect,
+                        false,
+                    );
+                } else {
+                    self.surfaces.canvas(target).clip_rect(
+                        bounds,
+                        skia::ClipOp::Intersect,
+                        false,
+                    );
+                }
+                self.surfaces
+                    .canvas(target)
+                    .concat(&transform.invert().unwrap_or(Matrix::default()));
+            }
+        }
+
+        let center = shape.center();
+        let mut matrix = shape.transform;
+        matrix.post_translate(center);
+        matrix.pre_translate(-center);
+        self.surfaces.canvas_and_mark_dirty(target).concat(&matrix);
+
+        strokes::render(
+            self,
+            shape,
+            &visible_strokes,
+            Some(target),
+            antialias,
+            None,
+        )?;
+
+        self.surfaces.canvas(target).restore();
+        Ok(())
+    }
+
     /// Phase H.4: drop-shadow silhouette helper.
     ///
     /// Direct-draw replacement for the legacy `render_shape` path used by
@@ -2220,16 +2289,10 @@ impl RenderState {
             if Self::frame_clip_layer_blur(element).is_some() {
                 element_strokes.to_mut().set_blur(None);
             }
-            self.render_shape(
+            // Phase H.5: direct-draw strokes onto target_surface.
+            self.render_clipped_strokes_into_target(
                 &element_strokes,
                 clip_bounds,
-                SurfaceId::Fills,
-                SurfaceId::Strokes,
-                SurfaceId::InnerShadows,
-                SurfaceId::TextDropShadows,
-                true,
-                None,
-                None,
                 target_surface,
             )?;
         }
