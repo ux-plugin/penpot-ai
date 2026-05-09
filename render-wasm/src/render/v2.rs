@@ -968,13 +968,61 @@ impl RenderState {
         self.render_body_legacy(shape, target)
     }
 
-    /// Scaffold: SVGRaw path. Phase C replaces with direct-draw.
+    /// Phase C: direct-draw SVGRaw. Renders the parsed SVG DOM (or
+    /// parses on-the-fly if not cached) into `target` with the full
+    /// per-tile matrix + shape transform + svg_transform composition.
+    ///
+    /// Caveat: this helper does not write back the parsed DOM cache
+    /// (`shape.svg = Some(dom)`) because it takes `&Shape`. The
+    /// legacy path did `shape.to_mut().set_svg(dom)` to amortize the
+    /// parse cost across re-renders. Re-introducing that cache
+    /// requires either an external map (id → Dom) or making this
+    /// helper take `Cow<Shape>` / `&mut Shape`. Phase C+1 follow-up.
     fn render_svg_into_target(
         &mut self,
         shape: &Shape,
         target: SurfaceId,
     ) -> Result<()> {
-        self.render_body_legacy(shape, target)
+        let Type::SVGRaw(sr) = &shape.shape_type else {
+            unreachable!("render_svg_into_target called with non-SVGRaw shape");
+        };
+
+        let scale = self.get_scale();
+        let translation = self
+            .surfaces
+            .get_render_context_translation(self.render_area, scale);
+
+        let center = shape.center();
+        let mut matrix = shape.transform;
+        matrix.post_translate(center);
+        matrix.pre_translate(-center);
+        if let Some(svg_transform) = shape.svg_transform() {
+            matrix.pre_concat(&svg_transform);
+        }
+
+        let font_manager_opt = if shape.svg.is_none() {
+            Some(skia::FontMgr::from(self.fonts().font_provider().clone()))
+        } else {
+            None
+        };
+
+        let canvas = self.surfaces.canvas_and_mark_dirty(target);
+        canvas.save();
+        canvas.scale((scale, scale));
+        canvas.translate(translation);
+        canvas.concat(&matrix);
+
+        if let Some(svg) = shape.svg.as_ref() {
+            svg.render(canvas);
+        } else if let Some(font_manager) = font_manager_opt {
+            match skia::svg::Dom::from_str(&sr.content, font_manager) {
+                Ok(dom) => dom.render(canvas),
+                Err(e) => eprintln!("Error parsing SVG. Error: {}", e),
+            }
+        }
+
+        canvas.restore();
+        Ok(())
     }
 
     /// Scaffold: backdrop-blur wrap. Phase D replaces with direct-draw.
