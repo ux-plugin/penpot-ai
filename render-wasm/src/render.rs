@@ -1781,7 +1781,13 @@ impl RenderState {
     }
 
     #[inline]
-    pub fn render_shape_enter(&mut self, element: &Shape, mask: bool, target_surface: SurfaceId) {
+    pub fn render_shape_enter(
+        &mut self,
+        element: &Shape,
+        mask: bool,
+        target_surface: SurfaceId,
+        skip_layer: bool,
+    ) {
         // Masked groups needs two rendering passes, the first one rendering
         // the content and the second one rendering the mask so we need to do
         // an extra save_layer to keep all the masked group separate from
@@ -1816,9 +1822,12 @@ impl RenderState {
         // Only create save_layer if actually needed
         // For simple shapes with default opacity and blend mode, skip expensive save_layer
         // Groups with masks need a layer to properly handle the mask rendering
+        // V2c.2: when `skip_layer` is true, the scheduler emitted a
+        // top-level `BeginLayer` step that already pushed the
+        // save_layer for opacity/blend; we must not push it twice.
         let needs_layer = element.needs_layer();
 
-        if needs_layer {
+        if needs_layer && !skip_layer {
             let mut paint = skia::Paint::default();
             paint.set_blend_mode(element.blend_mode().into());
             paint.set_alpha_f(element.opacity());
@@ -1850,6 +1859,7 @@ impl RenderState {
         visited_mask: bool,
         clip_bounds: Option<ClipStack>,
         target_surface: SurfaceId,
+        skip_layer: bool,
     ) -> Result<()> {
         if visited_mask {
             // Because masked groups needs two rendering passes (first drawing
@@ -1928,9 +1938,10 @@ impl RenderState {
 
         // Only restore if we created a layer (optimization for simple shapes)
         // Groups with masks need restore to properly handle the mask rendering
+        // V2c.2: paired with the `skip_layer` gate in `render_shape_enter`.
         let needs_layer = element.needs_layer();
 
-        if needs_layer {
+        if needs_layer && !skip_layer {
             self.surfaces.canvas(target_surface).restore();
         }
 
@@ -2452,7 +2463,7 @@ impl RenderState {
 
             if visited_children {
                 if !node_render_state.flattened {
-                    self.render_shape_exit(element, visited_mask, clip_bounds, target_surface)?;
+                    self.render_shape_exit(element, visited_mask, clip_bounds, target_surface, false)?;
                 }
                 continue;
             }
@@ -2550,7 +2561,7 @@ impl RenderState {
                     }
                 }
 
-                self.render_shape_enter(element, mask, target_surface);
+                self.render_shape_enter(element, mask, target_surface, false);
             }
 
             if !node_render_state.is_root() && self.focus_mode.is_active() {

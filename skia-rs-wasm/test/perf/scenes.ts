@@ -30,4 +30,5 @@ export const SCENES: readonly SceneEntry[] = [
   { id: 15, name: 'iso_texture_200' },
   { id: 16, name: 'iso_gradient_500' },
   { id: 17, name: 'iso_stroke_500' },
+  { id: 18, name: 'iso_opacity_500' },
 ] as const

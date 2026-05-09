@@ -136,8 +136,21 @@ pub enum RenderStep {
         tile: Tile,
         kind: FinalizeKind,
     },
-    /// Enter a container (Frame/Group): save_layer, clip, transform.
-    Enter(Uuid),
+    /// Enter a container (Frame/Group): clip, transform, run prep
+    /// (bg_blur / glass / drop shadows / container body draws).
+    /// `has_external_layer` mirrors the scheduler's choice: when true,
+    /// a paired `BeginLayer` step preceded this `Enter` and pushed the
+    /// save_layer for opacity/blend/frame-blur, so `render_shape_enter`
+    /// must skip its inline save_layer. Pre-baked at emit time so the
+    /// dispatcher never re-runs the predicate.
+    Enter {
+        shape: Uuid,
+        has_external_layer: bool,
+    },
+    /// V2c.2 — push a `save_layer` with prebuilt paint (opacity / blend
+    /// / frame-clip blur). Brackets a leaf's Paint or a container's
+    /// Enter→children→Exit sequence. Paired exactly with `EndLayer`.
+    BeginLayer { shape: Uuid, paint: LayerPaint },
     /// Build a per-frame cache. Emitted once per `CacheKind` per frame at
     /// the right position relative to the consumers. Replaces the inline
     /// `has_X` runtime checks that the renderer used to do.
@@ -150,14 +163,19 @@ pub enum RenderStep {
     /// behavior change.
     /// V2b (planned): replace `LegacyAll` with per-effect `EffectKey`
     /// variants emitted at schedule build time.
-    /// V2c (planned): introduce `BeginLayer` / `EndLayer` actions for
-    /// save_layer wrapping (opacity / blend / blur / mask).
     Paint {
         shape: Uuid,
         actions: Vec<PaintAction>,
     },
-    /// Exit a container: restore layer.
-    Exit(Uuid),
+    /// V2c.2 — pop the save_layer pushed by the matching `BeginLayer`.
+    EndLayer { shape: Uuid },
+    /// Exit a container: post-prep + restore layer (legacy path) or
+    /// post-prep only (V2c.2 external-layer path; the matching
+    /// `EndLayer` pops the save_layer). Mirror of `Enter`.
+    Exit {
+        shape: Uuid,
+        has_external_layer: bool,
+    },
     /// Release a per-frame cache. Emitted at the tail of the schedule for
     /// each cache the scheduler built — replaces the legacy end-of-frame
     /// global clears (`clear_scatter_output_cache`, `clear_glass_backdrop_cache`).
@@ -169,20 +187,22 @@ impl Default for RenderStep {
     /// of the schedule via `mem::take`. Never observed by callers — the
     /// cursor always advances past consumed slots before the next read.
     fn default() -> Self {
-        RenderStep::Enter(Uuid::nil())
+        RenderStep::Enter {
+            shape: Uuid::nil(),
+            has_external_layer: false,
+        }
     }
 }
 
 /// One action within a `Paint` step. The dispatcher walks the action list
 /// in order; effects within a `Render` action are applied in list order
-/// against the same `(input, output)` pair. `BeginLayer` / `EndLayer` (V2c)
-/// wrap a sub-sequence of actions in a Skia `save_layer`.
+/// against the same `(input, output)` pair. Save-layer wrapping for
+/// opacity/blend/frame-blur lives on top-level `RenderStep::BeginLayer`
+/// / `EndLayer` (V2c.2), not here — those bracket the Paint step rather
+/// than living inside it, which lets one BeginLayer span a container's
+/// many child Paint steps.
 #[derive(Debug, Clone)]
 pub enum PaintAction {
-    /// V2c: push a save_layer with the given paint. Currently emitted only
-    /// as a placeholder by V2a/V2b — the dispatcher arm is unimplemented
-    /// until V2c.
-    BeginLayer(LayerPaint),
     /// Paint the listed effects in order onto `output`, optionally reading
     /// from `input` (for inner-shadow silhouette clipping or gather
     /// backdrops).
@@ -191,8 +211,6 @@ pub enum PaintAction {
         output: SurfaceId,
         effects: Vec<EffectKey>,
     },
-    /// V2c: pop the layer pushed by the matching `BeginLayer`.
-    EndLayer,
 }
 
 /// Source surface or cache an effect should sample when rendering. Most
@@ -274,14 +292,65 @@ pub enum LocalFx {
     LayerBlur,
 }
 
-/// Prebuilt save_layer paint for V2c `BeginLayer` actions. Computed once
-/// at schedule build time so the dispatcher never re-derives.
+/// Prebuilt save_layer paint for V2c.2 `BeginLayer` steps. Computed once
+/// at schedule build time so the dispatcher never re-derives. Schedule
+/// rebuilds on scale change so `frame_blur_sigma_dev` in device pixels
+/// stays correct for a given rebuild.
 #[derive(Debug, Clone, Copy)]
 pub struct LayerPaint {
     pub opacity: f32,
     pub blend_mode: skia::BlendMode,
-    pub layer_blur_sigma: Option<f32>,
-    pub masked: bool,
+    /// Frame-clip layer-blur sigma in device pixels. `None` for the
+    /// common case (no frame-clip layer-blur). V2c.2 keeps masked
+    /// groups + frame-clip layer-blur containers on the legacy inline
+    /// `render_shape_enter` path; this field is reserved for the
+    /// follow-up that lifts those too.
+    pub frame_blur_sigma_dev: Option<f32>,
+}
+
+/// V2c.2 — predicate for shapes whose save_layer wrapping is hoisted
+/// out of `render_shape_enter`/`exit` into top-level `BeginLayer`/
+/// `EndLayer` steps. Several categories stay on the legacy inline
+/// path (each for a different reason):
+/// - masked groups: two-pass content+mask plumbing, complex restore
+/// - frame-clip layer-blur: the blur image filter stacks with opacity
+///   inside `render_shape_enter`'s save_layer; lifting it would need
+///   to thread the blur sigma through `LayerPaint` AND make sure no
+///   children cache the wrong stacked layer.
+/// - bg_blur / glass shapes: those gather effects mutate the backdrop
+///   on Current BEFORE the save_layer for opacity in legacy code.
+///   Lifting save_layer to fire before the shape's Paint would put
+///   bg_blur and glass inside an empty layer. Defer.
+fn shape_qualifies_for_external_layer(shape: &Shape) -> bool {
+    if !shape.needs_layer() {
+        return false;
+    }
+    if matches!(&shape.shape_type, Type::Group(g) if g.masked) {
+        return false;
+    }
+    if shape.has_frame_clip_layer_blur() {
+        return false;
+    }
+    if shape.background_blur.is_some_and(|b| !b.hidden) {
+        return false;
+    }
+    if shape.glass.as_ref().is_some_and(|g| !g.hidden) {
+        return false;
+    }
+    true
+}
+
+/// V2c.2 — derive the prebuilt `LayerPaint` for a shape that qualifies
+/// for external layer wrapping. Returns `None` for shapes outside scope.
+fn layer_paint_for_shape(shape: &Shape) -> Option<LayerPaint> {
+    if !shape_qualifies_for_external_layer(shape) {
+        return None;
+    }
+    Some(LayerPaint {
+        opacity: shape.opacity(),
+        blend_mode: shape.blend_mode().into(),
+        frame_blur_sigma_dev: None,
+    })
 }
 
 /// Entry in the priority queue for Kahn's algorithm.
@@ -1619,10 +1688,31 @@ impl TileGrid {
         }
 
         if shape.is_recursive() {
-            // Container: speculatively push Enter, recurse, then drop the
-            // Enter if no child emitted anything for this band.
-            let enter_pos = self.schedule.len();
-            self.schedule.push(RenderStep::Enter(shape_id));
+            // Container: speculatively push BeginLayer (if applicable) +
+            // Enter, recurse, then drop the speculative steps if no
+            // child emitted anything for this band.
+            //
+            // V2c.2 ordering rationale: BeginLayer fires BEFORE Enter so
+            // the container's drop_shadows / body draw / children all
+            // composite inside the layer. Predicate excludes shapes
+            // with bg_blur / glass; for those, Enter still mutates
+            // Current pre-layer in legacy form, so the externalized
+            // layer would arrive too late. Same reasoning as the
+            // legacy `render_background_blur` / `render_glass` calls
+            // running before `render_shape_enter`.
+            let speculative_pos = self.schedule.len();
+            let layer_paint = layer_paint_for_shape(shape);
+            let has_external_layer = layer_paint.is_some();
+            if let Some(p) = layer_paint {
+                self.schedule.push(RenderStep::BeginLayer {
+                    shape: shape_id,
+                    paint: p,
+                });
+            }
+            self.schedule.push(RenderStep::Enter {
+                shape: shape_id,
+                has_external_layer,
+            });
 
             let mut children = shape.children_ids(false);
             children.reverse();
@@ -1648,16 +1738,37 @@ impl TileGrid {
             let self_in_band = band_shapes.contains(&shape_id);
 
             if any_child_emitted || self_in_band {
-                self.schedule.push(RenderStep::Exit(shape_id));
+                self.schedule.push(RenderStep::Exit {
+                    shape: shape_id,
+                    has_external_layer,
+                });
+                if has_external_layer {
+                    self.schedule.push(RenderStep::EndLayer { shape: shape_id });
+                }
                 true
             } else {
-                // Drop speculative Enter — this container has no band content
-                self.schedule.truncate(enter_pos);
+                // Drop speculative BeginLayer + Enter — no band content
+                self.schedule.truncate(speculative_pos);
                 false
             }
         } else if band_shapes.contains(&shape_id) {
+            // Leaf path. BuildCache emits *before* BeginLayer because
+            // caches build on Filter / scratch surfaces unrelated to
+            // Current's save_layer state, and we want Current's stack
+            // depth at Paint time to match the BeginLayer that
+            // immediately precedes it.
             self.emit_cache_build_for_shape(shape_id, shape);
+            let layer_paint = layer_paint_for_shape(shape);
+            if let Some(p) = layer_paint {
+                self.schedule.push(RenderStep::BeginLayer {
+                    shape: shape_id,
+                    paint: p,
+                });
+            }
             self.schedule.push(paint_step_for_shape(shape));
+            if layer_paint.is_some() {
+                self.schedule.push(RenderStep::EndLayer { shape: shape_id });
+            }
             true
         } else {
             false
@@ -2279,7 +2390,7 @@ impl RenderState {
                     }
                 }
 
-                RenderStep::Enter(id) => {
+                RenderStep::Enter { shape: id, has_external_layer } => {
                     crate::perf_guard!("step_Enter");
                     let Some(element) = tree.get(&id) else {
                         continue;
@@ -2342,7 +2453,17 @@ impl RenderState {
 
                         {
                             crate::perf_guard!("enter_render_shape_enter");
-                            self.render_shape_enter(element, false, SurfaceId::Current);
+                            // V2c.2: scheduler emits a paired `BeginLayer`
+                            // step ahead of this `Enter` for qualifying
+                            // shapes and pre-bakes the choice into the
+                            // `Enter` step (`has_external_layer`), so the
+                            // dispatcher avoids re-running the predicate.
+                            self.render_shape_enter(
+                                element,
+                                false,
+                                SurfaceId::Current,
+                                has_external_layer,
+                            );
                         }
 
                         // Drop shadows for the container itself. Text shapes
@@ -2794,9 +2915,6 @@ impl RenderState {
                                     element, tree, *input, *output, effects,
                                 )?;
                             }
-                            PaintAction::BeginLayer(_) | PaintAction::EndLayer => {
-                                // V2c — not emitted yet.
-                            }
                         }
                     }
 
@@ -2804,17 +2922,56 @@ impl RenderState {
                     performance::end_measure!("paint_step");
                 }
 
-                RenderStep::Exit(id) => {
+                RenderStep::Exit { shape: id, has_external_layer } => {
                     crate::perf_guard!("step_Exit");
                     let Some(element) = tree.get(&id) else {
                         continue;
                     };
 
                     if self.focus_mode.is_active() {
-                        self.render_shape_exit(element, false, None, SurfaceId::Current)?;
+                        // V2c.2: matched with the `has_external_layer`
+                        // choice on the paired `Enter` step — when set,
+                        // the trailing `EndLayer` step pops the layer
+                        // and we skip `render_shape_exit`'s inline
+                        // restore.
+                        self.render_shape_exit(
+                            element,
+                            false,
+                            None,
+                            SurfaceId::Current,
+                            has_external_layer,
+                        )?;
                     }
 
                     self.focus_mode.exit(&id);
+                }
+
+                RenderStep::BeginLayer { paint, .. } => {
+                    crate::perf_guard!("step_BeginLayer");
+                    // Always push/pop unconditionally — focus_mode flips
+                    // mid-traversal (toggles on Enter/Exit of the focused
+                    // subtree) and gating here on `is_active` would risk
+                    // an unmatched save_layer if the state flips between
+                    // BeginLayer and the paired EndLayer. The work done
+                    // inside the layer (children's Paint steps) is
+                    // separately gated by their own focus checks.
+                    let mut p = skia::Paint::default();
+                    p.set_alpha_f(paint.opacity);
+                    p.set_blend_mode(paint.blend_mode);
+                    if let Some(sigma) = paint.frame_blur_sigma_dev {
+                        if let Some(filter) =
+                            skia::image_filters::blur((sigma, sigma), None, None, None)
+                        {
+                            p.set_image_filter(filter);
+                        }
+                    }
+                    let rec = skia::canvas::SaveLayerRec::default().paint(&p);
+                    self.surfaces.canvas(SurfaceId::Current).save_layer(&rec);
+                }
+
+                RenderStep::EndLayer { .. } => {
+                    crate::perf_guard!("step_EndLayer");
+                    self.surfaces.canvas(SurfaceId::Current).restore();
                 }
             }
 
@@ -2856,8 +3013,8 @@ impl RenderState {
         let mut depth = 1;
         while depth > 0 {
             match self.tile_grid.next() {
-                Some(RenderStep::Enter(_)) => depth += 1,
-                Some(RenderStep::Exit(_)) => depth -= 1,
+                Some(RenderStep::Enter { .. }) => depth += 1,
+                Some(RenderStep::Exit { .. }) => depth -= 1,
                 None => break,
                 _ => {}
             }
@@ -3191,14 +3348,16 @@ impl RenderState {
 
         if self.focus_mode.is_active() {
             if shape.is_recursive() {
-                self.render_shape_enter(shape, false, target);
+                self.render_shape_enter(shape, false, target, false);
 
                 let children = shape.children_ids(false);
                 for child_id in &children {
                     self.render_export_subtree(*child_id, tree, target, scale)?;
                 }
 
-                self.render_shape_exit(shape, false, None, target)?;
+                // Export path is non-tile-scheduler; layer wrapping
+                // stays inline in `render_shape_exit`, never externalized.
+                self.render_shape_exit(shape, false, None, target, false)?;
             } else {
                 // Render the shape
                 self.render_background_blur(shape, target);

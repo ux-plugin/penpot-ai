@@ -53,6 +53,10 @@ pub enum IsolatedFx {
     Texture,
     GradientFill,
     StrokeOnly,
+    /// V2c.2 — every leaf gets `opacity = 0.6`. Forces a `save_layer`
+    /// per leaf in the renderer; the externalized `BeginLayer`/
+    /// `EndLayer` scheduler steps target this scene.
+    Opacity,
 }
 
 /// Parameterised scene description. Same shape on both sides of the
@@ -216,6 +220,10 @@ pub fn preset(id: u32) -> Option<SceneSpec> {
         15 => SceneSpec::iso("iso_texture_200", 200, IsolatedFx::Texture),
         16 => SceneSpec::iso("iso_gradient_500", 500, IsolatedFx::GradientFill),
         17 => SceneSpec::iso("iso_stroke_500", 500, IsolatedFx::StrokeOnly),
+        // V2c.2 — every leaf has `opacity = 0.6`. Forces `save_layer`
+        // per leaf, which V2c.2 lifts from `render_shape_enter` into a
+        // top-level `BeginLayer`/`EndLayer` step.
+        18 => SceneSpec::iso("iso_opacity_500", 500, IsolatedFx::Opacity),
         _ => return None,
     })
 }
@@ -532,6 +540,15 @@ fn apply_isolated_fx(shape: &mut Shape, fx: IsolatedFx, idx: usize) {
                 cap_start: None,
                 kind: StrokeKind::Center,
             });
+        }
+        IsolatedFx::Opacity => {
+            push_solid(shape);
+            // 0.6 forces `needs_layer()` true. 1.0 short-circuits the
+            // save_layer; 0.0 makes the shape invisible. 0.6 is in the
+            // band where a real designer file ends up after dragging
+            // the opacity slider — and the value the renderer most
+            // often hits in practice.
+            shape.opacity = 0.6;
         }
     }
 }
