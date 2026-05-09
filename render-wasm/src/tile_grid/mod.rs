@@ -2140,22 +2140,11 @@ impl RenderState {
                         );
                     } else {
                         // Defensive fallback — `BuildCache` was
-                        // skipped (overflow / extent invalid). Fall
-                        // back to the legacy in-line layer-blur path
-                        // so the shape still renders correctly.
-                        self.render_shape(
-                            element,
-                            None,
-                            SurfaceId::Fills,
-                            SurfaceId::Strokes,
-                            SurfaceId::InnerShadows,
-                            SurfaceId::TextDropShadows,
-                            true,
-                            None,
-                            None,
-                            output,
-                        )?;
-                        self.apply_drawing_to_render_canvas(Some(element), output);
+                        // skipped (overflow / extent invalid). Phase H.1:
+                        // route through scheduler-native dispatcher;
+                        // shape paints without layer-blur on this rare
+                        // overflow path (better than legacy chain).
+                        self.render_shape_into_target(element, output)?;
                     }
                 }
                 EffectKey::Scatter(ScatterFx::Blit) => {
@@ -2621,26 +2610,14 @@ impl RenderState {
                         // its children. Mirrors the non-tile path's ordering
                         // (enter → render_shape → children → exit). Strokes
                         // on clipped frames are skipped here — they land in
-                        // `render_shape_exit` on top of children. See the
-                        // `skip_strokes` branch in `render_shape`.
+                        // `render_shape_exit` on top of children.
+                        // Phase H.2: route through scheduler-native
+                        // dispatcher. Frame fills + simple paths take
+                        // direct-draw; effect-heavy frames still hit
+                        // legacy until H.6 folds.
                         {
                             crate::perf_guard!("enter_render_shape");
-                            self.render_shape(
-                                element,
-                                None,
-                                SurfaceId::Fills,
-                                SurfaceId::Strokes,
-                                SurfaceId::InnerShadows,
-                                SurfaceId::TextDropShadows,
-                                true,
-                                None,
-                                None,
-                                SurfaceId::Current,
-                            )?;
-                        }
-                        {
-                            crate::perf_guard!("enter_apply_drawing");
-                            self.apply_drawing_to_render_canvas(Some(element), SurfaceId::Current);
+                            self.render_shape_into_target(element, SurfaceId::Current)?;
                         }
                         self.surfaces
                             .canvas(SurfaceId::DropShadows)
@@ -3489,24 +3466,13 @@ impl RenderState {
                     crate::render::glass::render_glass(self, shape, glass, target);
                 }
 
-                self.render_shape(
-                    shape,
-                    None,
-                    SurfaceId::Fills,
-                    SurfaceId::Strokes,
-                    SurfaceId::InnerShadows,
-                    SurfaceId::TextDropShadows,
-                    true,
-                    None,
-                    None,
-                    target,
-                )?;
+                // Phase H.3: route export draw through scheduler-native
+                // dispatcher; downstream paths handle their own blits.
+                self.render_shape_into_target(shape, target)?;
 
                 self.surfaces
                     .canvas(SurfaceId::DropShadows)
                     .clear(skia::Color::TRANSPARENT);
-
-                self.apply_drawing_to_render_canvas(Some(shape), target);
             }
         }
 
