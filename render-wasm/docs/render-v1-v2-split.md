@@ -192,6 +192,49 @@ by iso_opacity_500.
 
 Order: Phase 1-4 first → V2c.3.
 
+## render_shape decomposition status (post Phase 4)
+
+**Done:**
+
+- Phase A: dispatcher scaffold + per-aspect helpers (commit 029dafd3a6)
+- Phase C: `render_svg_into_target` direct-draw (commit 239d995fb8)
+- Phase D: `render_with_backdrop_blur` direct body draw (commit 04b0425c63)
+- Phase B: `render_text_into_target` extracted from `render_shape` (commit a19956d36a)
+
+**Deferred:**
+
+- Phase E (masked groups): needs new scheduler step variants
+  (`BeginMask`/`EndMaskShape`/`EndMask`) + tile_grid emit logic for
+  mask-child detection + dispatcher arms. Architectural work, separate
+  ticket. Current `iso_masked_50__idle` blank stays blank.
+
+- Phase F (parent_shadows): live via
+  `render_element_drop_shadows_and_composite` → `render_shape` recursion
+  (text-child drop shadows). Killing requires rewriting recursion to use
+  `save_layer(shadow_paint) + render_text_into_target + restore` instead
+  of threading paint through `parent_shadows: Option<Vec<Paint>>`.
+  Cross-cutting; defer.
+
+- Phase G (kill nested-state): blocked on F + H. `nested_fills` /
+  `nested_blurs` / `nested_shadows` push sites live in
+  `render_shape_enter`/`exit`; reads live in `render_shape` legacy +
+  `render_element_drop_shadows_and_composite`. Cleanup once H lands.
+
+- Phase H (delete `render_shape`): blocked on E + F migration. Two
+  remaining call sites cannot yet route through helpers:
+  - `tile_grid/mod.rs:2493` — container fills/strokes during `Enter`
+  - `render_element_drop_shadows_and_composite` recursion
+
+- Phase I (audit fast/slow residue in helpers): blocked on H — no
+  point auditing helpers while legacy chain still runs.
+
+**Recommendation for next session:**
+
+Phase E first (architectural, unblocks H). Then F (drop-shadow
+save_layer rewrite). Then H (delete `render_shape` body). Then G
+(strip nested-state struct fields + enter/exit pushes). Then I
+(audit-style polish).
+
 ## Out of scope
 
 - Penpot frontend changes — none. WASM ABI unchanged.
