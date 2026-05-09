@@ -959,13 +959,262 @@ impl RenderState {
         Ok(())
     }
 
-    /// Scaffold: text path. Phase B replaces with direct-draw.
+    /// Phase B: text path. Extracts the Type::Text branch from
+    /// render_shape into a dedicated helper. Still uses the four
+    /// scratch surfaces (FILLS/STROKES/INNER/TEXT_DROP) and
+    /// apply_drawing_to_render_canvas blit at the end — direct-draw
+    /// optimization is a follow-up. Phase G/H drop the scratches.
+    ///
+    /// Equivalent to calling render_shape with parent_shadows=None,
+    /// offset=None, clip_bounds=None. Caller scope (the V2 scheduler)
+    /// always passes None for those.
     fn render_text_into_target(
         &mut self,
         shape: &Shape,
         target: SurfaceId,
     ) -> Result<()> {
-        self.render_body_legacy(shape, target)
+        let Type::Text(text_content_orig) = &shape.shape_type else {
+            unreachable!("render_text_into_target called with non-Text shape");
+        };
+
+        let fills_surface_id = SurfaceId::Fills;
+        let strokes_surface_id = SurfaceId::Strokes;
+        let innershadows_surface_id = SurfaceId::InnerShadows;
+        let text_drop_shadows_surface_id = SurfaceId::TextDropShadows;
+        let surface_ids = fills_surface_id as u32
+            | strokes_surface_id as u32
+            | innershadows_surface_id as u32
+            | text_drop_shadows_surface_id as u32;
+
+        let fast_mode = self.options.is_fast_mode();
+
+        // Per-shape transform centered on shape's center, applied to
+        // every scratch (so subsequent paragraph paints land in
+        // world-relative coordinates already scaled+translated by the
+        // tile setup).
+        let center = shape.center();
+        let mut matrix = shape.transform;
+        matrix.post_translate(center);
+        matrix.pre_translate(-center);
+
+        self.surfaces.apply_mut(surface_ids, |s| {
+            s.canvas().save();
+            s.canvas().concat(&matrix);
+        });
+
+        let text_content = text_content_orig.new_bounds(shape.selrect());
+        let count_inner_strokes = shape.count_visible_inner_strokes();
+        let text_fill_inset = (count_inner_strokes > 0).then(|| 1.0 / self.get_scale());
+        let text_stroke_blur_outset =
+            Stroke::max_bounds_width(shape.visible_strokes(), false);
+        let mut paragraph_builders = text_content.paragraph_builder_group_from_text(None);
+        let stroke_kinds: Vec<StrokeKind> =
+            shape.visible_strokes().rev().map(|s| s.kind).collect();
+        let (mut stroke_paragraphs_list, stroke_opacities): (Vec<_>, Vec<_>) = shape
+            .visible_strokes()
+            .rev()
+            .map(|stroke| {
+                text::stroke_paragraph_builder_group_from_text(
+                    &text_content,
+                    stroke,
+                    &shape.selrect(),
+                    None,
+                )
+            })
+            .unzip();
+
+        if fast_mode {
+            text::render(
+                Some(self),
+                None,
+                shape,
+                &mut paragraph_builders,
+                Some(fills_surface_id),
+                None,
+                None,
+                text_fill_inset,
+                None,
+            )?;
+
+            for (i, (stroke_paragraphs, layer_opacity)) in stroke_paragraphs_list
+                .iter_mut()
+                .zip(stroke_opacities.iter())
+                .enumerate()
+            {
+                if stroke_kinds[i] == StrokeKind::Inner {
+                    let mut mask_builders = text_content.paragraph_builder_group_opaque();
+                    let mut fill_builders =
+                        text_content.paragraph_builder_group_from_text(None);
+                    text::render_inner_stroke(
+                        Some(self),
+                        None,
+                        shape,
+                        &mut mask_builders,
+                        stroke_paragraphs,
+                        &mut fill_builders,
+                        Some(strokes_surface_id),
+                        None,
+                        text_stroke_blur_outset,
+                        *layer_opacity,
+                    )?;
+                } else {
+                    text::render_with_bounds_outset(
+                        Some(self),
+                        None,
+                        shape,
+                        stroke_paragraphs,
+                        Some(strokes_surface_id),
+                        None,
+                        None,
+                        text_stroke_blur_outset,
+                        None,
+                        *layer_opacity,
+                    )?;
+                }
+            }
+        } else {
+            let drop_shadows = shape.drop_shadow_paints();
+            // Note: no parent_shadows in scheduler context (V1 only).
+
+            let inner_shadows = shape.inner_shadow_paints();
+            let blur_filter = shape.image_filter(1.);
+            let mut paragraphs_with_shadows =
+                text_content.paragraph_builder_group_from_text(Some(true));
+            let (mut stroke_paragraphs_with_shadows_list, _shadow_opacities): (Vec<_>, Vec<_>) =
+                shape
+                    .visible_strokes()
+                    .rev()
+                    .map(|stroke| {
+                        text::stroke_paragraph_builder_group_from_text(
+                            &text_content,
+                            stroke,
+                            &shape.selrect(),
+                            Some(true),
+                        )
+                    })
+                    .unzip();
+
+            // 1. Text drop shadows
+            if !shape.has_visible_strokes() {
+                for shadow in &drop_shadows {
+                    text::render(
+                        Some(self),
+                        None,
+                        shape,
+                        &mut paragraphs_with_shadows,
+                        text_drop_shadows_surface_id.into(),
+                        Some(shadow),
+                        blur_filter.as_ref(),
+                        None,
+                        None,
+                    )?;
+                }
+            }
+
+            // 2. Text fills
+            text::render(
+                Some(self),
+                None,
+                shape,
+                &mut paragraph_builders,
+                Some(fills_surface_id),
+                None,
+                blur_filter.as_ref(),
+                text_fill_inset,
+                None,
+            )?;
+
+            // 3. Stroke drop shadows
+            shadows::render_text_shadows(
+                self,
+                shape,
+                &mut paragraphs_with_shadows,
+                &mut stroke_paragraphs_with_shadows_list,
+                text_drop_shadows_surface_id.into(),
+                &drop_shadows,
+                &blur_filter,
+                &stroke_kinds,
+                &text_content,
+            )?;
+
+            // 4. Stroke fills
+            for (i, (stroke_paragraphs, layer_opacity)) in stroke_paragraphs_list
+                .iter_mut()
+                .zip(stroke_opacities.iter())
+                .enumerate()
+            {
+                if stroke_kinds[i] == StrokeKind::Inner {
+                    let mut mask_builders = text_content.paragraph_builder_group_opaque();
+                    let mut fill_builders =
+                        text_content.paragraph_builder_group_from_text(None);
+                    text::render_inner_stroke(
+                        Some(self),
+                        None,
+                        shape,
+                        &mut mask_builders,
+                        stroke_paragraphs,
+                        &mut fill_builders,
+                        Some(strokes_surface_id),
+                        blur_filter.as_ref(),
+                        text_stroke_blur_outset,
+                        *layer_opacity,
+                    )?;
+                } else {
+                    text::render_with_bounds_outset(
+                        Some(self),
+                        None,
+                        shape,
+                        stroke_paragraphs,
+                        Some(strokes_surface_id),
+                        None,
+                        blur_filter.as_ref(),
+                        text_stroke_blur_outset,
+                        None,
+                        *layer_opacity,
+                    )?;
+                }
+            }
+
+            // 5. Stroke inner shadows
+            shadows::render_text_shadows(
+                self,
+                shape,
+                &mut paragraphs_with_shadows,
+                &mut stroke_paragraphs_with_shadows_list,
+                Some(innershadows_surface_id),
+                &inner_shadows,
+                &blur_filter,
+                &stroke_kinds,
+                &text_content,
+            )?;
+
+            // 6. Fill inner shadows
+            if !shape.has_visible_strokes() {
+                for shadow in &inner_shadows {
+                    text::render(
+                        Some(self),
+                        None,
+                        shape,
+                        &mut paragraphs_with_shadows,
+                        Some(innershadows_surface_id),
+                        Some(shadow),
+                        blur_filter.as_ref(),
+                        None,
+                        None,
+                    )?;
+                }
+            }
+        }
+
+        // Restore the matrix concat across all scratches before
+        // blitting (otherwise apply_drawing_to_render_canvas would
+        // pick up a stale shape transform on the next call).
+        self.surfaces.apply_mut(surface_ids, |s| {
+            s.canvas().restore();
+        });
+
+        self.apply_drawing_to_render_canvas(Some(shape), target);
+        Ok(())
     }
 
     /// Phase C: direct-draw SVGRaw. Renders the parsed SVG DOM (or
