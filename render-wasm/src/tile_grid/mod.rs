@@ -2311,8 +2311,6 @@ impl RenderState {
         performance::end_measure!("tile_grid_rebuild");
 
         self.nested_fills.clear();
-        self.nested_blurs.clear();
-        self.nested_shadows.clear();
         self.current_tile = None;
         self.render_in_progress = true;
 

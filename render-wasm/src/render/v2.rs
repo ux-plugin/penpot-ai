@@ -342,15 +342,9 @@ pub(crate) struct RenderState {
     // migration to remove group-level fills is completed, this code should be removed.
     // Frames contained in groups must reset this nested_fills stack pushing a new empty vector.
     pub nested_fills: Vec<Vec<Fill>>,
-    pub nested_blurs: Vec<Option<Blur>>, // FIXME: why is this an option?
-    pub nested_shadows: Vec<Vec<Shadow>>,
     pub show_grid: Option<Uuid>,
     pub focus_mode: FocusMode,
     pub touched_ids: HashSet<Uuid>,
-    /// Temporary flag used for off-screen passes (drop-shadow masks, filter surfaces, etc.)
-    /// where we must render shapes without inheriting ancestor layer blurs. Toggle it through
-    /// `with_nested_blurs_suppressed` to ensure it's always restored.
-    pub ignore_nested_blurs: bool,
     /// Preview render mode - when true, uses simplified rendering for progressive loading
     pub preview_mode: bool,
     pub export_context: Option<(Rect, f32)>,
@@ -442,12 +436,9 @@ impl RenderState {
             effect_cache: crate::effect_cache::EffectCache::new(),
             scene_revision: 0,
             nested_fills: vec![],
-            nested_blurs: vec![],
-            nested_shadows: vec![],
             show_grid: None,
             focus_mode: FocusMode::new(),
             touched_ids: HashSet::default(),
-            ignore_nested_blurs: false,
             preview_mode: false,
             export_context: None,
         })
@@ -462,15 +453,11 @@ impl RenderState {
     ///
     /// This keeps blur math consistent everywhere we need to merge blur sources.
     fn combined_layer_blur(&self, shape_blur: Option<Blur>) -> Option<Blur> {
-        let mut total = 0.;
-
-        for nested_blur in self.nested_blurs.iter().flatten() {
-            total += Self::blur_variance(Some(*nested_blur));
-        }
-
-        total += Self::blur_variance(shape_blur);
-
-        Self::blur_from_variance(total)
+        // Phase G: nested_blurs stack stripped (zero push sites).
+        // Variance roundtrip preserved as identity for visible LayerBlur,
+        // returns None for hidden / non-LayerBlur, matching prior behavior
+        // when stack was empty (the only state in v2).
+        Self::blur_from_variance(Self::blur_variance(shape_blur))
     }
 
     /// Returns the variance (radius²) for a visible layer blur, or zero if the
@@ -636,20 +623,6 @@ impl RenderState {
         canvas.draw_image(&backdrop, (img_x, img_y), Some(&paint));
 
         canvas.restore();
-    }
-
-    /// Runs `f` with `ignore_nested_blurs` temporarily forced to `true`.
-    /// Certain off-screen passes (e.g. shadow masks) must render shapes without
-    /// inheriting ancestor blur. This helper guarantees the flag is restored.
-    fn with_nested_blurs_suppressed<F, R>(&mut self, f: F) -> Result<R>
-    where
-        F: FnOnce(&mut RenderState) -> Result<R>,
-    {
-        let previous = self.ignore_nested_blurs;
-        self.ignore_nested_blurs = true;
-        let result = f(self)?;
-        self.ignore_nested_blurs = previous;
-        Ok(result)
     }
 
     pub fn fonts(&self) -> &FontStore {
@@ -824,31 +797,6 @@ impl RenderState {
 
     pub fn set_focus_mode(&mut self, shapes: Vec<Uuid>) {
         self.focus_mode.set_shapes(shapes);
-    }
-
-    fn get_inherited_drop_shadows(&self) -> Option<Vec<skia_safe::Paint>> {
-        let drop_shadows: Vec<&Shadow> = self
-            .nested_shadows
-            .iter()
-            .flat_map(|shadows| shadows.iter())
-            .filter(|shadow| !shadow.hidden() && shadow.style() == crate::shapes::ShadowStyle::Drop)
-            .collect();
-
-        if drop_shadows.is_empty() {
-            return None;
-        }
-
-        Some(
-            drop_shadows
-                .into_iter()
-                .map(|shadow| {
-                    let mut paint = skia_safe::Paint::default();
-                    let filter = shadow.get_drop_shadow_filter();
-                    paint.set_image_filter(filter);
-                    paint
-                })
-                .collect(),
-        )
     }
 
     /// V2 scheduler-native shape draw.
@@ -1423,10 +1371,9 @@ impl RenderState {
             .nested_fills
             .last()
             .is_some_and(|fills| !fills.is_empty());
-        let has_inherited_blur = !self.ignore_nested_blurs
-            && self.nested_blurs.iter().flatten().any(|blur| {
-                !blur.hidden && blur.blur_type == BlurType::LayerBlur && blur.value > 0.0
-            });
+        // Phase G: `has_inherited_blur` removed — nested_blurs stack stripped
+        // (zero push sites). Predicate clause `!has_inherited_blur` always
+        // true with empty stack and is dropped.
         let can_render_directly = apply_to_current_surface
             && clip_bounds.is_none()
             && offset.is_none()
@@ -1435,7 +1382,6 @@ impl RenderState {
             && !shape.glass.as_ref().is_some_and(|g| !g.hidden)
             && !shape.noise.as_ref().is_some_and(|n| !n.hidden)
             && !shape.texture.as_ref().is_some_and(|t| !t.hidden)
-            && !has_inherited_blur
             && shape.shadows.is_empty()
             && shape.transform.is_identity()
             && matches!(
@@ -1558,11 +1504,8 @@ impl RenderState {
         let frame_has_blur = Self::frame_clip_layer_blur(&shape).is_some();
         let shape_has_blur = shape.blur.is_some();
 
-        if self.ignore_nested_blurs {
-            if frame_has_blur && shape_has_blur {
-                shape.to_mut().set_blur(None);
-            }
-        } else if !frame_has_blur {
+        // Phase G: ignore_nested_blurs branch removed (field stripped).
+        if !frame_has_blur {
             if let Some(blur) = self.combined_layer_blur(shape.blur) {
                 shape.to_mut().set_blur(Some(blur));
             }
@@ -1712,11 +1655,10 @@ impl RenderState {
                         }
                     }
                 } else {
-                    let mut drop_shadows = shape.drop_shadow_paints();
-
-                    if let Some(inherited_shadows) = self.get_inherited_drop_shadows() {
-                        drop_shadows.extend(inherited_shadows);
-                    }
+                    // Phase G: get_inherited_drop_shadows removed (nested_shadows
+                    // stripped). Legacy text branch unreachable post-Phase F
+                    // (text routes via render_text_into_target).
+                    let drop_shadows = shape.drop_shadow_paints();
 
                     let inner_shadows = shape.inner_shadow_paints();
                     let blur_filter = shape.image_filter(1.);
@@ -2121,9 +2063,7 @@ impl RenderState {
         // mask-traversal and is now unused.
         if matches!(element.shape_type, Type::Group(_)) {
             let fills = &element.fills;
-            let shadows = &element.shadows;
             self.nested_fills.push(fills.to_vec());
-            self.nested_shadows.push(shadows.to_vec());
         }
 
         if let Type::Frame(_) = element.shape_type {
@@ -2180,8 +2120,6 @@ impl RenderState {
         match element.shape_type {
             Type::Frame(_) | Type::Group(_) => {
                 self.nested_fills.pop();
-                self.nested_blurs.pop();
-                self.nested_shadows.pop();
             }
             _ => {}
         }
@@ -2371,20 +2309,18 @@ impl RenderState {
             //drop_canvas.scale((scale, scale));
             //drop_canvas.translate(translation);
 
-            self.with_nested_blurs_suppressed(|state| {
-                state.render_shape(
-                    &plain_shape,
-                    clip_bounds,
-                    SurfaceId::DropShadows,
-                    SurfaceId::DropShadows,
-                    SurfaceId::DropShadows,
-                    SurfaceId::DropShadows,
-                    false,
-                    Some(shadow.offset),
-                    Some(shadow.spread),
-                    target_surface,
-                )
-            })?;
+            self.render_shape(
+                &plain_shape,
+                clip_bounds,
+                SurfaceId::DropShadows,
+                SurfaceId::DropShadows,
+                SurfaceId::DropShadows,
+                SurfaceId::DropShadows,
+                false,
+                Some(shadow.offset),
+                Some(shadow.spread),
+                target_surface,
+            )?;
 
             self.surfaces.canvas(SurfaceId::DropShadows).restore();
             return Ok(());
@@ -2413,20 +2349,18 @@ impl RenderState {
             //drop_canvas.scale((scale, scale));
             //drop_canvas.translate(translation);
 
-            self.with_nested_blurs_suppressed(|state| {
-                state.render_shape(
-                    &plain_shape,
-                    clip_bounds,
-                    SurfaceId::DropShadows,
-                    SurfaceId::DropShadows,
-                    SurfaceId::DropShadows,
-                    SurfaceId::DropShadows,
-                    false,
-                    Some(shadow.offset), // Offset is geometric
-                    Some(shadow.spread),
-                    target_surface,
-                )
-            })?;
+            self.render_shape(
+                &plain_shape,
+                clip_bounds,
+                SurfaceId::DropShadows,
+                SurfaceId::DropShadows,
+                SurfaceId::DropShadows,
+                SurfaceId::DropShadows,
+                false,
+                Some(shadow.offset), // Offset is geometric
+                Some(shadow.spread),
+                target_surface,
+            )?;
 
             self.surfaces.canvas(SurfaceId::DropShadows).restore();
             return Ok(());
@@ -2453,21 +2387,19 @@ impl RenderState {
                 let canvas = state.surfaces.canvas(temp_surface);
                 canvas.save_layer(&layer_rec);
 
-                state.with_nested_blurs_suppressed(|state| {
-                    // Apply offset and spread geometrically
-                    state.render_shape(
-                        &plain_shape,
-                        clip_bounds,
-                        temp_surface,
-                        temp_surface,
-                        temp_surface,
-                        temp_surface,
-                        false,
-                        Some(shadow.offset), // Offset is geometric
-                        Some(shadow.spread),
-                        target_surface,
-                    )
-                })?;
+                // Apply offset and spread geometrically
+                state.render_shape(
+                    &plain_shape,
+                    clip_bounds,
+                    temp_surface,
+                    temp_surface,
+                    temp_surface,
+                    temp_surface,
+                    false,
+                    Some(shadow.offset), // Offset is geometric
+                    Some(shadow.spread),
+                    target_surface,
+                )?;
 
                 state.surfaces.canvas(temp_surface).restore();
                 Ok(())
@@ -2594,13 +2526,11 @@ impl RenderState {
                             .set_image_filter(transformed_shadow.get_drop_shadow_filter());
                         new_shadow_paint.set_blend_mode(skia::BlendMode::SrcOver);
 
-                        self.with_nested_blurs_suppressed(|state| {
-                            state.render_text_silhouette_into_target(
-                                shadow_shape,
-                                &new_shadow_paint,
-                                SurfaceId::DropShadows,
-                            )
-                        })?;
+                        self.render_text_silhouette_into_target(
+                            shadow_shape,
+                            &new_shadow_paint,
+                            SurfaceId::DropShadows,
+                        )?;
                     }
                 }
             }
