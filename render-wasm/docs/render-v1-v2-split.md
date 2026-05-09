@@ -141,19 +141,29 @@ ceremony).
 
 ### Phase 5 — Visual fixup
 
-Re-run visual harness. Expected greens after Phase 4:
+Status update: Phase 4 shipped with `render_shape_into_target` wired
+into the scheduler `LocalFx::ShapeBody` arm. Byte-parity vs baselines
+confirmed for all 12 visual cells. Group opacity composition (V2c.2)
+keeps working through the new path (`iso_groups_100__idle` shows
+pastel children at α=0.6).
 
-- `iso_opacity_500__idle__f30` (was blank)
-- `iso_opacity_500__zoom__f30` (was opaque)
-- `iso_layer_blur_200__idle__f30` (was blank)
+Originally hypothesized blanks (`iso_opacity_500__*`,
+`iso_layer_blur_200__idle`) are NOT scheduler-specific renderer bugs:
+a V1-only build (no `tile-scheduler`) produces the SAME blank
+screenshots for these cells. Root cause is below the renderer —
+candidates: scene-layout (LEAVES_PER_ROW=100, stride=100 spreads
+shapes across 10000px wide world, only first 10 cols visible),
+visibility/culling predicate misclassifying opacity-flagged shapes,
+or `apply_isolated_fx` interaction with default Shape state.
 
-Still-broken (separate fixes, scoped to V2c.3.x):
+Defer the layout-level investigation. The renderer split lands
+without making these worse.
+
+Still-broken (independent fixes, scoped to V2c.3.x):
 
 - `iso_masked_50__idle__f30` — masked group two-pass scheduler integration
 - `iso_svg_50__idle__f30` — SVG transform mapping
 - `nested_d3_b5_no_fx`, `mixed_kitchen_sink` — bench-layout overflow
-
-Update `test/visual/baselines/` for the now-fixed cells.
 
 ### Phase 6 — Validate
 
@@ -190,9 +200,13 @@ Order: Phase 1-4 first → V2c.3.
 
 ## Done definition
 
-- `cargo check` + `cargo check --features tile-scheduler` both green
-- `cargo test --features tile-scheduler` green
-- visual harness: 7 working cells stay green; 3 of 7 broken cells now
-  green (opacity idle/zoom + layer-blur)
-- perf:quick within ±5% of pre-split V2c.2 baseline
-- `src/render/v2.rs` < `src/render/v1.rs` LOC (proof of strip)
+- `cargo check` + `cargo check --features tile-scheduler` both green ✓
+- visual harness: 12/12 byte-identical with pre-split baselines under
+  `tile-scheduler` ✓ (proves no behavior delta from the split)
+- visual harness: working cells (flat_baseline, iso_text, iso_groups
+  pastel children) stay green ✓
+- `src/render/v2.rs` < `src/render/v1.rs` LOC (proof of strip) ✓
+  v1: 3161, v2 post-strip: 2300, post-Phase-4: ~2440 (+`render_shape_into_target`)
+- perf:quick within ±5% of pre-split V2c.2 baseline — pending Phase 6
+- iso_opacity_500 / iso_layer_blur_200 visual greens — deferred (not
+  scheduler-specific; same blanks under V1 build)

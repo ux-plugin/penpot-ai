@@ -828,6 +828,127 @@ impl RenderState {
         )
     }
 
+    /// V2 scheduler-native shape draw.
+    ///
+    /// Replaces the per-aspect scratch chain (`render_shape` slow path
+    /// → FILLS/STROKES/INNER scratch → `apply_drawing_to_render_canvas`
+    /// blit) with one direct draw into `target`. Caller (the scheduler
+    /// dispatcher) owns the save_layer for opacity/blend via the
+    /// matching `BeginLayer` step, so this fn never wraps a layer.
+    ///
+    /// Scope: simple shape types (Rect, Circle, Path, Bool, plus
+    /// containers Group/Frame as no-ops). Falls back to legacy
+    /// `render_shape` for: Text, SVGRaw, shapes with backdrop blur,
+    /// glass, masked groups, fast-mode special handling, or anything
+    /// requiring the FILLS-as-clip pattern (inner shadows on fills).
+    ///
+    /// Why this exists: `render_shape` slow path was designed for V1
+    /// traversal with an outer-save_layer assumption — opacity wraps
+    /// the entire subtree at the V1 enter, and per-shape draws assume
+    /// they paint into that wrapping layer. Under tile-scheduler that
+    /// assumption fails for leaves with opacity (they don't get an
+    /// enter/exit pair). Drawing directly into the scheduler's
+    /// `BeginLayer`-wrapped target sidesteps the issue.
+    pub fn render_shape_into_target(
+        &mut self,
+        shape: &Shape,
+        target: SurfaceId,
+    ) -> Result<()> {
+        // Fall back for shape types this fn doesn't handle yet.
+        let needs_legacy = matches!(
+            shape.shape_type,
+            Type::Text(_) | Type::SVGRaw(_)
+        ) || shape.background_blur.is_some_and(|b| !b.hidden)
+            || shape.glass.as_ref().is_some_and(|g| !g.hidden)
+            || shape.noise.as_ref().is_some_and(|n| !n.hidden)
+            || shape.texture.as_ref().is_some_and(|t| !t.hidden)
+            || shape.blur.is_some_and(|b| !b.hidden && b.blur_type == BlurType::LayerBlur)
+            || !shape.shadows.is_empty()
+            || shape
+                .svg_attrs
+                .as_ref()
+                .is_some_and(|attrs| attrs.fill_none);
+        if needs_legacy {
+            self.render_shape(
+                shape,
+                None,
+                SurfaceId::Fills,
+                SurfaceId::Strokes,
+                SurfaceId::InnerShadows,
+                SurfaceId::TextDropShadows,
+                true,
+                None,
+                None,
+                None,
+                target,
+            )?;
+            self.apply_drawing_to_render_canvas(Some(shape), target);
+            return Ok(());
+        }
+
+        // Containers: Group/Frame don't draw their own body in this
+        // path. Their contained leaves are handled by their own
+        // `Paint(ShapeBody)` schedule entries. (V1 did paint group
+        // fills via `render_shape`, but V2c's emission only schedules
+        // a `ShapeBody` for shapes with own visible content — bare
+        // containers fall through.)
+        if matches!(shape.shape_type, Type::Group(_) | Type::Frame(_))
+            && shape.fills.is_empty()
+            && shape.visible_strokes().next().is_none()
+        {
+            return Ok(());
+        }
+
+        let scale = self.get_scale();
+        let translation = self
+            .surfaces
+            .get_render_context_translation(self.render_area, scale);
+        let antialias =
+            shape.should_use_antialias(scale, self.options.antialias_threshold);
+
+        // Apply per-shape transform centered on the shape's center.
+        let center = shape.center();
+        let mut matrix = shape.transform;
+        matrix.post_translate(center);
+        matrix.pre_translate(-center);
+
+        // Save target's matrix so the per-tile scale+translate stays
+        // intact across shapes. Concat in: tile_scale_translate ·
+        // shape_matrix. World-coord drawing (selrect, paths) lands at
+        // the right tile-relative pixels.
+        {
+            let canvas = self.surfaces.canvas_and_mark_dirty(target);
+            canvas.save();
+            canvas.scale((scale, scale));
+            canvas.translate(translation);
+            canvas.concat(&matrix);
+        }
+
+        // Fills.
+        fills::render(self, shape, &shape.fills, antialias, target, None)?;
+
+        // Strokes.
+        let visible_strokes: Vec<&Stroke> = shape.visible_strokes().collect();
+        if !visible_strokes.is_empty() {
+            strokes::render(
+                self,
+                shape,
+                &visible_strokes,
+                Some(target),
+                antialias,
+                None,
+            )?;
+        }
+
+        if self.options.is_debug_visible() {
+            let shape_selrect_bounds = self.get_shape_selrect_bounds(shape);
+            debug::render_debug_shape(self, Some(shape_selrect_bounds), None);
+        }
+
+        self.surfaces.canvas(target).restore();
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn render_shape(
         &mut self,

@@ -1977,23 +1977,13 @@ impl RenderState {
                     )?;
                 }
                 EffectKey::Local(LocalFx::ShapeBody) => {
-                    // Fills + strokes + inner shadows (and for text shapes,
-                    // the whole interleaved paragraph) staged onto per-aspect
-                    // surfaces, then composited onto `output`.
-                    self.render_shape(
-                        element,
-                        None,
-                        SurfaceId::Fills,
-                        SurfaceId::Strokes,
-                        SurfaceId::InnerShadows,
-                        SurfaceId::TextDropShadows,
-                        true,
-                        None,
-                        None,
-                        None,
-                        output,
-                    )?;
-                    self.apply_drawing_to_render_canvas(Some(element), output);
+                    // V2c-phase4: scheduler-native draw. Direct paint
+                    // into `output`; the matching `BeginLayer` already
+                    // wraps the layer for opacity/blend so we never
+                    // wrap one here. Falls back to `render_shape`
+                    // legacy chain for shape types `render_shape_into_target`
+                    // does not yet handle (text, svg, masked, etc.).
+                    self.render_shape_into_target(element, output)?;
                 }
                 EffectKey::Local(LocalFx::LayerBlur) => {
                     // V2c.1 — pull the cached layer-blur image
