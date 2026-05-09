@@ -1264,6 +1264,92 @@ impl RenderState {
         Ok(())
     }
 
+    /// Phase H.4: drop-shadow silhouette helper.
+    ///
+    /// Direct-draw replacement for the legacy `render_shape` path used by
+    /// `render_drop_black_shadow`. Caller passes a `plain_shape` (cleared
+    /// shadows/blur, fills/strokes overridden to BLACK), the geometric
+    /// `offset` (shadow offset in world coords) and `outset` (shadow
+    /// spread). No scratch chain; paints fills + strokes onto `target`
+    /// directly under the per-shape transform.
+    ///
+    /// Mirrors the legacy `render_shape` slow path's non-text/non-SVG
+    /// branch with `apply_to_current_surface=false`: no backdrop blur,
+    /// no layer-blur layer, no inner shadows.
+    fn render_shape_silhouette_into_target(
+        &mut self,
+        plain_shape: &Shape,
+        clip_bounds: Option<ClipStack>,
+        offset: (f32, f32),
+        outset: f32,
+        target: SurfaceId,
+    ) -> Result<()> {
+        let antialias =
+            plain_shape.should_use_antialias(self.get_scale(), self.options.antialias_threshold);
+
+        // Save canvas state — may add clip, transform.
+        self.surfaces.canvas(target).save();
+
+        // Apply clip stack (mirrors legacy `render_shape` clipping block).
+        if let Some(clips) = clip_bounds.as_ref() {
+            let scale = self.get_scale();
+            for (mut bounds, corners, transform) in clips.iter() {
+                self.surfaces.canvas(target).concat(&transform);
+                let clip_outset = 0.5 / scale;
+                bounds.outset((clip_outset, clip_outset));
+                if let Some(corners) = corners {
+                    let rrect = RRect::new_rect_radii(bounds, corners);
+                    self.surfaces.canvas(target).clip_rrect(
+                        rrect,
+                        skia::ClipOp::Intersect,
+                        false,
+                    );
+                } else {
+                    self.surfaces.canvas(target).clip_rect(
+                        bounds,
+                        skia::ClipOp::Intersect,
+                        false,
+                    );
+                }
+                self.surfaces
+                    .canvas(target)
+                    .concat(&transform.invert().unwrap_or(Matrix::default()));
+            }
+        }
+
+        // Per-shape transform: centered shape.transform + offset translate.
+        let center = plain_shape.center();
+        let mut matrix = plain_shape.transform;
+        matrix.post_translate(center);
+        matrix.pre_translate(-center);
+        matrix.pre_translate(offset);
+        self.surfaces.canvas_and_mark_dirty(target).concat(&matrix);
+
+        fills::render(
+            self,
+            plain_shape,
+            &plain_shape.fills,
+            antialias,
+            target,
+            Some(outset),
+        )?;
+
+        let visible_strokes: Vec<&Stroke> = plain_shape.visible_strokes().collect();
+        if !visible_strokes.is_empty() {
+            strokes::render(
+                self,
+                plain_shape,
+                &visible_strokes,
+                Some(target),
+                antialias,
+                Some(outset),
+            )?;
+        }
+
+        self.surfaces.canvas(target).restore();
+        Ok(())
+    }
+
     /// Phase F: text-glyph silhouette helper.
     ///
     /// Renders `shape` (must be `Type::Text`) into `target` as a
@@ -2309,17 +2395,12 @@ impl RenderState {
             //drop_canvas.scale((scale, scale));
             //drop_canvas.translate(translation);
 
-            self.render_shape(
+            self.render_shape_silhouette_into_target(
                 &plain_shape,
                 clip_bounds,
+                shadow.offset,
+                shadow.spread,
                 SurfaceId::DropShadows,
-                SurfaceId::DropShadows,
-                SurfaceId::DropShadows,
-                SurfaceId::DropShadows,
-                false,
-                Some(shadow.offset),
-                Some(shadow.spread),
-                target_surface,
             )?;
 
             self.surfaces.canvas(SurfaceId::DropShadows).restore();
@@ -2349,17 +2430,12 @@ impl RenderState {
             //drop_canvas.scale((scale, scale));
             //drop_canvas.translate(translation);
 
-            self.render_shape(
+            self.render_shape_silhouette_into_target(
                 &plain_shape,
                 clip_bounds,
+                shadow.offset, // Offset is geometric
+                shadow.spread,
                 SurfaceId::DropShadows,
-                SurfaceId::DropShadows,
-                SurfaceId::DropShadows,
-                SurfaceId::DropShadows,
-                false,
-                Some(shadow.offset), // Offset is geometric
-                Some(shadow.spread),
-                target_surface,
             )?;
 
             self.surfaces.canvas(SurfaceId::DropShadows).restore();
@@ -2388,17 +2464,12 @@ impl RenderState {
                 canvas.save_layer(&layer_rec);
 
                 // Apply offset and spread geometrically
-                state.render_shape(
+                state.render_shape_silhouette_into_target(
                     &plain_shape,
                     clip_bounds,
+                    shadow.offset, // Offset is geometric
+                    shadow.spread,
                     temp_surface,
-                    temp_surface,
-                    temp_surface,
-                    temp_surface,
-                    false,
-                    Some(shadow.offset), // Offset is geometric
-                    Some(shadow.spread),
-                    target_surface,
                 )?;
 
                 state.surfaces.canvas(temp_surface).restore();
