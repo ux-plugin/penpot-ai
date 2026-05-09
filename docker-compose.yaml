@@ -43,12 +43,14 @@ services:
       - AUTH_GITHUB_CLIENT_ID=${AUTH_GITHUB_CLIENT_ID}
       - AUTH_GITHUB_CLIENT_SECRET=${AUTH_GITHUB_CLIENT_SECRET}
       
-      # Object store (MinIO) — api uses the per-stage `ingest-api` credentials
-      # seeded by minio-init. Compromise of these keys gives only `s3:PutObject raw/*`.
+      # Object store (MinIO). Env-var name matches the production layout
+      # (per-stage credentials provisioned by deploy/iac/opentofu/); in dev we
+      # default to the MinIO root since per-stage isolation is unnecessary
+      # locally.
       - OBJECTSTORE_ENDPOINT=${OBJECTSTORE_ENDPOINT:-http://minio:9000}
       - OBJECTSTORE_BUCKET=${OBJECTSTORE_BUCKET:-zoetrope-data}
-      - OBJECTSTORE_ACCESS_KEY=${INGEST_API_S3_ACCESS_KEY:-ingest-api-key}
-      - OBJECTSTORE_SECRET_KEY=${INGEST_API_S3_SECRET_KEY:-ingest-api-secret}
+      - OBJECTSTORE_ACCESS_KEY=${INGEST_API_S3_ACCESS_KEY:-minioadmin}
+      - OBJECTSTORE_SECRET_KEY=${INGEST_API_S3_SECRET_KEY:-minioadmin}
 
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -128,17 +130,15 @@ services:
     networks:
       - app-network
 
-  # MinIO bootstrap. Three jobs:
-  #   1. Create the data bucket and apply prefix-scoped lifecycle rules. raw/ is
-  #      short-lived (1d MinIO ILM minimum; sanitizer normally evicts in seconds via
-  #      the two-phase delete with anonymizer). quarantine/ holds 7d for ops review.
-  #      anon/ keeps anonymized chunks for 90d.
-  #   2. Install the per-stage policies under deploy/minio-policies/ (one JSON file
-  #      per worker — least-privilege scoped to the prefixes that worker actually
-  #      touches; see deploy/minio-policies/README.md).
-  #   3. Create one MinIO service account per stage and bind it to its policy.
-  #      Credentials are env-driven so they match the values the workers read from
-  #      their application.yaml.
+  # MinIO bootstrap: create the data bucket and apply prefix-scoped lifecycle rules.
+  # raw/ is short-lived (1d MinIO ILM minimum; sanitizer normally evicts in seconds
+  # via the two-phase delete with anonymizer). quarantine/ is held for 7d for ops
+  # review. anon/ keeps anonymized chunks for 90d.
+  #
+  # Dev uses the MinIO root credentials for every stage — per-stage IAM isolation
+  # is enforced in production via the OpenTofu module under deploy/iac/opentofu/.
+  # The application code reads the same env-var names in both environments
+  # (SANITIZER_S3_ACCESS_KEY etc.); only the values differ.
   minio-init:
     image: quay.io/minio/mc:RELEASE.2024-10-08T09-37-26Z
     depends_on:
@@ -148,16 +148,6 @@ services:
       OBJECTSTORE_BUCKET: ${OBJECTSTORE_BUCKET:-zoetrope-data}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      INGEST_API_S3_ACCESS_KEY: ${INGEST_API_S3_ACCESS_KEY:-ingest-api-key}
-      INGEST_API_S3_SECRET_KEY: ${INGEST_API_S3_SECRET_KEY:-ingest-api-secret}
-      SANITIZER_S3_ACCESS_KEY: ${SANITIZER_S3_ACCESS_KEY:-sanitizer-key}
-      SANITIZER_S3_SECRET_KEY: ${SANITIZER_S3_SECRET_KEY:-sanitizer-secret}
-      ANONYMIZER_S3_ACCESS_KEY: ${ANONYMIZER_S3_ACCESS_KEY:-anonymizer-key}
-      ANONYMIZER_S3_SECRET_KEY: ${ANONYMIZER_S3_SECRET_KEY:-anonymizer-secret}
-      PROCESSOR_S3_ACCESS_KEY: ${PROCESSOR_S3_ACCESS_KEY:-processor-key}
-      PROCESSOR_S3_SECRET_KEY: ${PROCESSOR_S3_SECRET_KEY:-processor-secret}
-    volumes:
-      - ./deploy/minio-policies:/policies:ro
     entrypoint: >
       /bin/sh -c "
       set -e &&
@@ -166,20 +156,7 @@ services:
       mc ilm rule add --prefix raw/        --expire-days 1  local/$$OBJECTSTORE_BUCKET || true &&
       mc ilm rule add --prefix quarantine/ --expire-days 7  local/$$OBJECTSTORE_BUCKET || true &&
       mc ilm rule add --prefix anon/       --expire-days 90 local/$$OBJECTSTORE_BUCKET || true &&
-      mkdir -p /tmp/policies &&
-      for stage in ingest-api sanitizer anonymizer processor; do
-        sed \"s/zoetrope-data/$$OBJECTSTORE_BUCKET/g\" /policies/$$stage.json > /tmp/policies/$$stage.json;
-        mc admin policy create local $$stage /tmp/policies/$$stage.json || mc admin policy update local $$stage /tmp/policies/$$stage.json;
-      done &&
-      seed_user() {
-        mc admin user add local \"$$1\" \"$$2\" || mc admin user enable local \"$$1\";
-        mc admin policy attach local \"$$3\" --user \"$$1\" || true;
-      } &&
-      seed_user \"$$INGEST_API_S3_ACCESS_KEY\"  \"$$INGEST_API_S3_SECRET_KEY\"  ingest-api &&
-      seed_user \"$$SANITIZER_S3_ACCESS_KEY\"   \"$$SANITIZER_S3_SECRET_KEY\"   sanitizer &&
-      seed_user \"$$ANONYMIZER_S3_ACCESS_KEY\"  \"$$ANONYMIZER_S3_SECRET_KEY\"  anonymizer &&
-      seed_user \"$$PROCESSOR_S3_ACCESS_KEY\"   \"$$PROCESSOR_S3_SECRET_KEY\"   processor &&
-      echo 'minio bucket + lifecycle + per-stage policies + service accounts ready'
+      echo 'minio bucket + lifecycle rules ready'
       "
     networks:
       - app-network

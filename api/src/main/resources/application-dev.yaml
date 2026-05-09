@@ -65,9 +65,9 @@ apikey:
   last-used-debounce-sec: 60
 
 # Object store (MinIO via S3 protocol) — development defaults.
-# Per-stage credentials: api stage has only `s3:PutObject raw/*`. Compromise of
-# these keys gives an attacker the ability to poison ingest but not exfiltrate
-# any stored data. See deploy/minio-policies/ingest-api.json.
+# Per-stage credentials in production — api's IAM policy in
+# deploy/iac/opentofu/ allows only `s3:PutObject raw/*`. Falls back to
+# minioadmin in dev.
 objectstore:
   endpoint: http://localhost:9000
   region: us-east-1

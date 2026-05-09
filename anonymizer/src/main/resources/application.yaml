@@ -59,8 +59,9 @@ anonymizer:
 objectstore:
   endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
   region: ${OBJECTSTORE_REGION:us-east-1}
-  # Per-stage credentials — anonymizer's policy allows GET on raw/ + GET/PUT on
-  # anon/. No DeleteObject anywhere. See deploy/minio-policies/anonymizer.json.
+  # Per-stage credentials in production — anonymizer's IAM policy in
+  # deploy/iac/opentofu/ allows GET on raw/ + GET/PUT on anon/. No DeleteObject
+  # anywhere (eviction is sanitizer's job, gated by RAW_PROCESSED).
   access-key: ${ANONYMIZER_S3_ACCESS_KEY:minioadmin}
   secret-key: ${ANONYMIZER_S3_SECRET_KEY:minioadmin}
   bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}

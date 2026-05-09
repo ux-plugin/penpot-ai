@@ -36,9 +36,9 @@ worker:
 objectstore:
   endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
   region: ${OBJECTSTORE_REGION:us-east-1}
-  # Per-stage credentials — sanitizer's policy allows GET+PUT+DELETE on raw/ and
-  # quarantine/ only. See deploy/minio-policies/sanitizer.json. Falls back to
-  # minioadmin in dev so tests boot without the minio-init seed.
+  # Per-stage credentials in production — sanitizer's IAM policy in
+  # deploy/iac/opentofu/ allows GET+PUT+DELETE on raw/ and quarantine/ only.
+  # Falls back to minioadmin in dev (no per-stage isolation needed locally).
   access-key: ${SANITIZER_S3_ACCESS_KEY:minioadmin}
   secret-key: ${SANITIZER_S3_SECRET_KEY:minioadmin}
   bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}

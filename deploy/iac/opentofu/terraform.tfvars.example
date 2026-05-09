@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+#
+# Bucket names are globally unique on AWS — the default appends `environment`
+# to a stable prefix. Override `bucket_name` if you need a custom name.
+
+environment = "prod"
+region      = "us-east-1"
+
+# Lifecycle TTLs in days. Defaults match docker-compose dev seed except `raw`
+# (1d in dev because of MinIO ILM minimums; bump higher in prod if your
+# anonymizer SLA permits longer tails).
+raw_retention_days        = 1
+quarantine_retention_days = 7
+anon_retention_days       = 90
+
+tags = {
+  "owner"    = "ingest-platform"
+  "cost-tag" = "ingest-pipeline"
+}

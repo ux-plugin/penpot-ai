@@ -20,7 +20,7 @@ processor    ─ ingest.anon → (v0 noop)
 | `anonymizer.yaml` | anonymizer Deployment. No Service. |
 | `processor.yaml` | processor Deployment. No Service. |
 
-**Secret layout:** the shared `ingest-pipeline-shared-secrets` carries DB/OAuth/AI credentials that every pod needs. Each stage additionally pulls in its own `<stage>-s3-creds` Secret holding the S3 access key bound to that stage's policy in `../minio-policies/`. A compromised pod leaks only the stage's prefix-scoped credential, not a shared root.
+**Secret layout:** the shared `ingest-pipeline-shared-secrets` carries DB/OAuth/AI credentials that every pod needs. Each stage additionally pulls in its own `<stage>-s3-creds` Secret holding the S3 access key bound to that stage's IAM policy. The keys are produced by the OpenTofu module under `../iac/opentofu/` — see that module's README for the `tofu output → kubectl create secret` flow. A compromised pod leaks only the stage's prefix-scoped credential, not a shared root.
 
 Workers do not expose a Service — they are pure stream consumers. The actuator port is exposed only for the kubelet probes.
 
@@ -28,7 +28,7 @@ Workers do not expose a Service — they are pure stream consumers. The actuator
 
 - A running Redis with AOF (`appendonly yes`) — see top-level `docker-compose.yaml` for the canonical config. Required so streams + sanitizer state survive a Redis pod restart.
 - A running Postgres with the `figma_plugin` schema (Liquibase migrations run from the api pod on first start).
-- A MinIO/S3-compatible bucket with the lifecycle rules from `docker-compose.yaml`'s `minio-init` already applied (`raw/` 1d, `quarantine/` 7d, `anon/` 90d).
+- An S3 bucket plus four per-stage IAM users provisioned by `deploy/iac/opentofu/`. That module also applies the prefix-scoped lifecycle rules (`raw/` 1d, `quarantine/` 7d, `anon/` 90d).
 
 ## Apply
 
