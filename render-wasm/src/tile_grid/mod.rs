@@ -2274,13 +2274,11 @@ impl RenderState {
             .canvas(SurfaceId::Target)
             .clear(self.background_color);
 
-        let surface_ids = SurfaceId::Strokes as u32
-            | SurfaceId::Fills as u32
-            | SurfaceId::InnerShadows as u32
-            | SurfaceId::TextDropShadows as u32;
-        self.surfaces.apply_mut(surface_ids, |s| {
-            s.canvas().scale((scale, scale));
-        });
+        // Phase I.5: scale-fixup of unused scratch surfaces (FILLS,
+        // STROKES, InnerShadows, TextDropShadows) dropped — V2 helpers
+        // paint directly onto Current/output, no longer touch scratches.
+        // Surface allocations themselves still alive (separate cleanup
+        // ticket).
 
         let viewbox_cache_size = crate::render::get_cache_size(self.viewbox, scale);
         let cached_viewbox_cache_size = crate::render::get_cache_size(self.cached_viewbox, scale);
