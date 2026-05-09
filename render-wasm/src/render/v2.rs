@@ -717,66 +717,6 @@ impl RenderState {
         Ok(())
     }
 
-    pub fn apply_drawing_to_render_canvas(&mut self, shape: Option<&Shape>, target: SurfaceId) {
-        performance::begin_measure!("apply_drawing_to_render_canvas");
-
-        let paint = skia::Paint::default();
-
-        // Only draw surfaces that have content (dirty flag optimization)
-        if self.surfaces.is_dirty(SurfaceId::TextDropShadows) {
-            self.surfaces
-                .draw_into(SurfaceId::TextDropShadows, target, Some(&paint));
-        }
-
-        if self.surfaces.is_dirty(SurfaceId::Fills) {
-            self.surfaces
-                .draw_into(SurfaceId::Fills, target, Some(&paint));
-        }
-
-        let mut render_overlay_below_strokes = false;
-        if let Some(shape) = shape {
-            render_overlay_below_strokes = shape.has_fills();
-        }
-
-        if render_overlay_below_strokes && self.surfaces.is_dirty(SurfaceId::InnerShadows) {
-            self.surfaces
-                .draw_into(SurfaceId::InnerShadows, target, Some(&paint));
-        }
-
-        if self.surfaces.is_dirty(SurfaceId::Strokes) {
-            self.surfaces
-                .draw_into(SurfaceId::Strokes, target, Some(&paint));
-        }
-
-        if !render_overlay_below_strokes && self.surfaces.is_dirty(SurfaceId::InnerShadows) {
-            self.surfaces
-                .draw_into(SurfaceId::InnerShadows, target, Some(&paint));
-        }
-
-        // Build mask of dirty surfaces that need clearing
-        let mut dirty_surfaces_to_clear = 0u32;
-        if self.surfaces.is_dirty(SurfaceId::Strokes) {
-            dirty_surfaces_to_clear |= SurfaceId::Strokes as u32;
-        }
-        if self.surfaces.is_dirty(SurfaceId::Fills) {
-            dirty_surfaces_to_clear |= SurfaceId::Fills as u32;
-        }
-        if self.surfaces.is_dirty(SurfaceId::InnerShadows) {
-            dirty_surfaces_to_clear |= SurfaceId::InnerShadows as u32;
-        }
-        if self.surfaces.is_dirty(SurfaceId::TextDropShadows) {
-            dirty_surfaces_to_clear |= SurfaceId::TextDropShadows as u32;
-        }
-
-        if dirty_surfaces_to_clear != 0 {
-            self.surfaces.apply_mut(dirty_surfaces_to_clear, |s| {
-                s.canvas().clear(skia::Color::TRANSPARENT);
-            });
-            // Clear dirty flags for surfaces we just cleared
-            self.surfaces.clear_dirty(dirty_surfaces_to_clear);
-        }
-    }
-
     pub fn clear_focus_mode(&mut self) {
         self.focus_mode.clear();
     }

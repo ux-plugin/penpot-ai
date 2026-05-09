@@ -2303,7 +2303,9 @@ impl RenderState {
         self.current_tile = None;
         self.render_in_progress = true;
 
-        self.apply_drawing_to_render_canvas(None, SurfaceId::Current);
+        // Phase I.3: defensive scratch-flush dropped — Phase I.2
+        // removed the last scratch-chain caller (text helper); no
+        // residual scratch state to flush.
 
         if sync_render {
             self.run_schedule(tree, timestamp, false)?;
