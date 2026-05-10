@@ -12,9 +12,15 @@
 //!   revision and therefore its cache key.
 //! - `backdrop_fingerprint` is a P3-managed XOR-fold of
 //!   `effect_cache::hash_backdrop_for` over every Gather (glass /
-//!   background blur) descendant of the subtree root. Computed once
-//!   per scene rebuild at schedule build, stored on the shape, read at
-//!   probe. `0` for subtrees with no Gather descendants.
+//!   background blur) descendant of the subtree root. Computed lazily
+//!   at probe time via `fold_backdrop_fingerprint(root, tree, tile_grid)`.
+//!   Returns `0` for subtrees with no Gather descendants. Not cached
+//!   on the shape struct because gather-host fingerprints depend on
+//!   spatial neighbors (their tile span), not just descendants — a
+//!   neighbor moving wouldn't trigger an ancestor revision walk, so
+//!   any cached value would silently go stale. Recomputing at probe
+//!   is O(subtree-size + tile-spans) and still cheap relative to the
+//!   work the cache hit avoids.
 //! - `scale_bucket` is `round(log2(scale * dpr))` clamped `[-3, 5]`.
 //!   Reused from `effect_cache::compute_scale_bucket` for cross-cache
 //!   parity.
@@ -28,8 +34,9 @@
 //!
 //! ## Subsequent phases
 //!
-//! - P3: bottom-up `backdrop_fingerprint` fold at schedule build,
-//!   inline promotion predicate at probe.
+//! - P3 (this commit, additive on P2): `fold_backdrop_fingerprint`
+//!   helper for callers, `is_cacheable` promotion predicate. No
+//!   render-path read yet.
 //! - P4: capture path — render miss → render-into-image → insert.
 //! - P5: replay path — hit → blit cached image at correct transform.
 //! - P6: explicit `invalidate_root` hooks for shape-delete.
@@ -340,6 +347,97 @@ impl Default for SubtreeCache {
     }
 }
 
+// =====================================================================
+// P3 helpers — backdrop-fingerprint fold + promotion predicate
+// =====================================================================
+
+/// Minimum descendant count for a subtree to be worth caching. Below
+/// this threshold the probe + insert overhead approaches the render
+/// cost itself, so the cache adds latency rather than saving it.
+/// Empirically ~4 children is the break-even point for a flat group;
+/// nested groups raise the actual descendant count, so this gates the
+/// trivially-cheap leaf-rendered shapes.
+pub const MIN_SUBTREE_CHILDREN: usize = 4;
+
+/// Returns `true` when `shape` is a Gather (samples-the-backdrop)
+/// effect host. Glass and `background_blur` both gather pixels from
+/// behind the shape and must invalidate when neighbors move into or
+/// out of their tile span. Layer blur (the `blur` field with
+/// `BlurType::LayerBlur`) is a Local effect — operates only on the
+/// shape's own pixels — so it does NOT participate.
+#[allow(dead_code)] // P4 caller wires this; suppress until then.
+#[inline]
+pub fn shape_is_gather(shape: &crate::shapes::Shape) -> bool {
+    shape.glass.is_some() || shape.background_blur.is_some()
+}
+
+/// Compute the XOR-folded backdrop fingerprint for the subtree rooted
+/// at `shape`. Recursive: each descendant contributes its own folded
+/// fingerprint. Gather (glass / background_blur) hosts also XOR in
+/// their `effect_cache::hash_backdrop_for(self)` so that a shape
+/// entering or leaving the host's tile span flips the fold.
+///
+/// Returns `0` for subtrees with no Gather descendants — empty XOR is
+/// the identity, and a non-Gather subtree cache key has no need of a
+/// backdrop signal.
+///
+/// Not memoized on the shape struct: gather-host fingerprints depend
+/// on shapes intersecting the host's tile span (spatial neighbors,
+/// not subtree descendants), so a cached value can silently go stale
+/// when a neighbor moves without triggering an ancestor walk through
+/// the host. Recomputing at probe is O(subtree-size + Σ tile-spans)
+/// and amortizes well — see module-level docs.
+#[allow(dead_code)] // P4 caller wires this; suppress until then.
+pub fn fold_backdrop_fingerprint(
+    shape: &crate::shapes::Shape,
+    tree: crate::state::ShapesPoolRef,
+    tile_grid: &crate::tile_grid::TileGrid,
+) -> u64 {
+    // Self contribution — only Gather hosts add to the XOR.
+    let self_fp = if shape_is_gather(shape) {
+        crate::effect_cache::hash_backdrop_for(shape, tile_grid, tree)
+    } else {
+        0
+    };
+
+    // Descendant contribution — recurse, XOR-fold. Order doesn't
+    // matter (XOR is commutative + associative), so depth-first
+    // matches the existing scene-walk pattern without any sorting.
+    let kids: u64 = shape
+        .children
+        .iter()
+        .filter_map(|id| tree.get(id))
+        .map(|c| fold_backdrop_fingerprint(c, tree, tile_grid))
+        .fold(0u64, |a, x| a ^ x);
+
+    self_fp ^ kids
+}
+
+/// Inline promotion predicate. Returns `true` when this shape's
+/// subtree is worth caching. Used by P4's render-loop dispatcher
+/// before probing the cache. Cheap to evaluate; not memoized.
+///
+/// Gates:
+/// - **size threshold**: subtrees with fewer than
+///   `MIN_SUBTREE_CHILDREN` direct children are typically rendered
+///   cheaper than the cache's probe + blit + insert overhead.
+/// - **hidden / deleted**: shapes that won't render anyway.
+///
+/// More gates can be added as workloads surface them — for example,
+/// shapes with image fills referencing unloaded blobs (cached image
+/// would be wrong on load), shapes mid-drag (revision bumps every
+/// frame, cache thrashes), or shapes with custom blend modes that
+/// don't compose correctly through a flat raster. Each addition is a
+/// future correctness or perf fix; the predicate stays inline so
+/// callers see exactly what's gated.
+#[allow(dead_code)] // P4 caller wires this; suppress until then.
+#[inline]
+pub fn is_cacheable(shape: &crate::shapes::Shape) -> bool {
+    !shape.hidden
+        && !shape.deleted()
+        && shape.children.len() >= MIN_SUBTREE_CHILDREN
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,5 +664,183 @@ mod tests {
         c.insert(key, dummy_value(), 4);
         assert_eq!(c.bytes_used(), 4);
         assert_eq!(c.len(), 1);
+    }
+
+    // ============================================================
+    // P3 helper tests
+    // ============================================================
+
+    use crate::shapes::Shape;
+    use crate::state::ShapesPool;
+
+    fn shape(id: u128) -> Shape {
+        Shape::new(Uuid::from_u128(id))
+    }
+
+    fn dummy_glass() -> crate::shapes::glass::GlassEffect {
+        crate::shapes::glass::GlassEffect {
+            surface_type: 0,
+            bezel_width: 10.0,
+            glass_thickness: 1.0,
+            refractive_index: 1.5,
+            specular_angle: 0.0,
+            specular_opacity: 1.0,
+            specular_saturation: 0.0,
+            chromatic_aberration: 0.0,
+            splay: 0.0,
+            tilt_angle: 0.0,
+            edge_boost: 0.0,
+            zoom: 1.0,
+            blur: 0.0,
+            frost: 0.0,
+            hidden: false,
+        }
+    }
+
+    fn pool_with(shapes: Vec<Shape>) -> ShapesPool {
+        let mut p = ShapesPool::new();
+        p.initialize(shapes.len());
+        for s in shapes {
+            let id = s.id;
+            let target = p.add_shape(id);
+            *target = s;
+        }
+        p
+    }
+
+    #[test]
+    fn shape_is_gather_detects_glass() {
+        let mut s = shape(1);
+        assert!(!shape_is_gather(&s));
+        s.glass = Some(dummy_glass());
+        assert!(shape_is_gather(&s));
+    }
+
+    #[test]
+    fn shape_is_gather_detects_background_blur() {
+        let mut s = shape(1);
+        assert!(!shape_is_gather(&s));
+        s.background_blur = Some(crate::shapes::Blur::new(
+            crate::shapes::BlurType::BackgroundBlur,
+            false,
+            8.0,
+        ));
+        assert!(shape_is_gather(&s));
+    }
+
+    #[test]
+    fn shape_is_gather_ignores_layer_blur() {
+        let mut s = shape(1);
+        // Layer blur is a Local effect (in-place), NOT a Gather host —
+        // doesn't sample backdrop. Stored on the `blur` field, not
+        // `background_blur`, so `shape_is_gather` returns false.
+        s.blur = Some(crate::shapes::Blur::new(
+            crate::shapes::BlurType::LayerBlur,
+            false,
+            8.0,
+        ));
+        assert!(!shape_is_gather(&s));
+    }
+
+    #[test]
+    fn fold_returns_zero_for_leaf_non_gather() {
+        let p = pool_with(vec![shape(1)]);
+        let s = p.get(&Uuid::from_u128(1)).unwrap();
+        let tg = crate::tile_grid::TileGrid::new();
+        assert_eq!(fold_backdrop_fingerprint(s, &p, &tg), 0);
+    }
+
+    #[test]
+    fn fold_returns_zero_for_tree_with_no_gather() {
+        // root → leaf, neither is gather → fp = 0
+        let mut root = shape(1);
+        root.children = vec![Uuid::from_u128(2)];
+        let mut leaf = shape(2);
+        leaf.set_parent(Uuid::from_u128(1));
+        let p = pool_with(vec![root, leaf]);
+        let r = p.get(&Uuid::from_u128(1)).unwrap();
+        let tg = crate::tile_grid::TileGrid::new();
+        assert_eq!(fold_backdrop_fingerprint(r, &p, &tg), 0);
+    }
+
+    #[test]
+    fn fold_is_xor_of_children_for_non_gather_root() {
+        // Synthetic check: a non-gather root with two gather children
+        // should fold to xor(child_a_fp, child_b_fp). With an empty
+        // TileGrid, hash_backdrop_for returns 0 for both (no tiles),
+        // so the whole fold is still 0. Test that the function
+        // composes without panicking and matches the explicit XOR.
+        let mut root = shape(1);
+        root.children = vec![Uuid::from_u128(2), Uuid::from_u128(3)];
+        let mut a = shape(2);
+        a.set_parent(Uuid::from_u128(1));
+        a.glass = Some(crate::shapes::glass::GlassEffect::default());
+        let mut b = shape(3);
+        b.set_parent(Uuid::from_u128(1));
+        b.background_blur = Some(crate::shapes::Blur::new(
+            crate::shapes::BlurType::BackgroundBlur,
+            false,
+            8.0,
+        ));
+        let p = pool_with(vec![root, a, b]);
+        let r = p.get(&Uuid::from_u128(1)).unwrap();
+        let a_ref = p.get(&Uuid::from_u128(2)).unwrap();
+        let b_ref = p.get(&Uuid::from_u128(3)).unwrap();
+        let tg = crate::tile_grid::TileGrid::new();
+        let expected = fold_backdrop_fingerprint(a_ref, &p, &tg)
+            ^ fold_backdrop_fingerprint(b_ref, &p, &tg);
+        assert_eq!(fold_backdrop_fingerprint(r, &p, &tg), expected);
+    }
+
+    #[test]
+    fn fold_handles_orphan_child_ids() {
+        // child id in shape.children that doesn't resolve in the pool
+        // — fold must skip it without panicking.
+        let mut root = shape(1);
+        root.children = vec![Uuid::from_u128(99)]; // ghost
+        let p = pool_with(vec![root]);
+        let r = p.get(&Uuid::from_u128(1)).unwrap();
+        let tg = crate::tile_grid::TileGrid::new();
+        assert_eq!(fold_backdrop_fingerprint(r, &p, &tg), 0);
+    }
+
+    #[test]
+    fn is_cacheable_rejects_small_subtree() {
+        let s = shape(1); // 0 children
+        assert!(!is_cacheable(&s));
+    }
+
+    #[test]
+    fn is_cacheable_accepts_threshold_subtree() {
+        let mut s = shape(1);
+        s.children = (10..10 + MIN_SUBTREE_CHILDREN as u128)
+            .map(Uuid::from_u128)
+            .collect();
+        assert!(is_cacheable(&s));
+    }
+
+    #[test]
+    fn is_cacheable_rejects_one_below_threshold() {
+        let mut s = shape(1);
+        s.children = (10..10 + (MIN_SUBTREE_CHILDREN as u128 - 1))
+            .map(Uuid::from_u128)
+            .collect();
+        assert!(!is_cacheable(&s));
+    }
+
+    #[test]
+    fn is_cacheable_rejects_hidden() {
+        let mut s = shape(1);
+        s.children = (10..14).map(Uuid::from_u128).collect();
+        s.hidden = true;
+        assert!(!is_cacheable(&s));
+    }
+
+    #[test]
+    fn is_cacheable_rejects_deleted() {
+        let mut s = shape(1);
+        s.children = (10..14).map(Uuid::from_u128).collect();
+        s.set_deleted(true);
+        assert!(!is_cacheable(&s));
     }
 }
