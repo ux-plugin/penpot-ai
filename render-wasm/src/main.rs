@@ -12,6 +12,8 @@ mod tiles;
 mod tile_grid;
 #[cfg(feature = "tile-scheduler")]
 mod effect_cache;
+#[cfg(feature = "tile-scheduler")]
+mod subtree_cache;
 #[cfg(feature = "perf-trace")]
 mod perf_trace;
 #[cfg(feature = "perf-trace")]
@@ -158,6 +160,30 @@ macro_rules! perf_count {
         #[cfg(feature = "perf-trace")]
         {
             $crate::perf_trace::effect_cache_evict();
+        }
+    };
+    (subtree_cache_hit) => {
+        #[cfg(feature = "perf-trace")]
+        {
+            $crate::perf_trace::subtree_cache_hit();
+        }
+    };
+    (subtree_cache_miss) => {
+        #[cfg(feature = "perf-trace")]
+        {
+            $crate::perf_trace::subtree_cache_miss();
+        }
+    };
+    (subtree_cache_evict) => {
+        #[cfg(feature = "perf-trace")]
+        {
+            $crate::perf_trace::subtree_cache_evict();
+        }
+    };
+    (subtree_cache_skip_oversize) => {
+        #[cfg(feature = "perf-trace")]
+        {
+            $crate::perf_trace::subtree_cache_skip_oversize();
         }
     };
 }

@@ -37,6 +37,12 @@ struct Counters {
     effect_cache_hits: u64,
     effect_cache_misses: u64,
     effect_cache_evictions: u64,
+    /// Subtree raster cache (V2c.3). P2 scaffold reports zeros; P4+
+    /// wires probe + capture/replay through `render_shape_into_target`.
+    subtree_cache_hits: u64,
+    subtree_cache_misses: u64,
+    subtree_cache_evictions: u64,
+    subtree_cache_skip_oversize: u64,
 }
 
 thread_local! {
@@ -116,6 +122,22 @@ pub fn effect_cache_evict() {
     COUNTERS.with(|c| c.borrow_mut().effect_cache_evictions += 1);
 }
 
+pub fn subtree_cache_hit() {
+    COUNTERS.with(|c| c.borrow_mut().subtree_cache_hits += 1);
+}
+
+pub fn subtree_cache_miss() {
+    COUNTERS.with(|c| c.borrow_mut().subtree_cache_misses += 1);
+}
+
+pub fn subtree_cache_evict() {
+    COUNTERS.with(|c| c.borrow_mut().subtree_cache_evictions += 1);
+}
+
+pub fn subtree_cache_skip_oversize() {
+    COUNTERS.with(|c| c.borrow_mut().subtree_cache_skip_oversize += 1);
+}
+
 /// Bump frame counter and accumulate wall-clock time between
 /// successive calls. Call once at the end of every top-level render
 /// entry point (`start_render_loop`, continuation `process_animation_frame`).
@@ -186,6 +208,14 @@ fn snapshot_json() -> String {
         counters.effect_cache_hits,
         counters.effect_cache_misses,
         counters.effect_cache_evictions
+    );
+    let _ = write!(
+        out,
+        ",\"subtree_cache_hits\":{},\"subtree_cache_misses\":{},\"subtree_cache_evictions\":{},\"subtree_cache_skip_oversize\":{}",
+        counters.subtree_cache_hits,
+        counters.subtree_cache_misses,
+        counters.subtree_cache_evictions,
+        counters.subtree_cache_skip_oversize
     );
     out.push('}');
     out.push_str(",\"stats\":[");

@@ -327,6 +327,11 @@ pub(crate) struct RenderState {
     /// `tick_frame` advances recency every frame. See
     /// `effect_cache.rs`.
     pub effect_cache: crate::effect_cache::EffectCache,
+    /// Cross-frame cache for rasterized subtree images. V2c.3 P2
+    /// scaffold — no callers yet, `tick_frame` advances recency
+    /// every frame. See `subtree_cache.rs` for the invalidation
+    /// contract; promotion + capture/replay land in P3+ / P4+.
+    pub subtree_cache: crate::subtree_cache::SubtreeCache,
     /// Coarse revision counter feeding `backdrop_hash` for `Gather`
     /// effect-cache keys (phase 4). Bumped on any shape mutation
     /// path that could change the pixels behind a glass / bg-blur
@@ -420,6 +425,7 @@ impl RenderState {
             ),
             tile_grid: crate::tile_grid::TileGrid::new(),
             effect_cache: crate::effect_cache::EffectCache::new(),
+            subtree_cache: crate::subtree_cache::SubtreeCache::new(),
             scene_revision: 0,
             nested_fills: vec![],
             show_grid: None,

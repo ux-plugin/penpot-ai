@@ -2251,6 +2251,9 @@ impl RenderState {
         // No-op in phase 1 (cache empty). Phase 5 also runs the
         // viewport-scoped LRU promotion pass here.
         self.effect_cache.tick_frame();
+        // V2c.3 P2: same recency-clock advance for the subtree cache.
+        // No-op in P2 (cache empty until P4 capture path).
+        self.subtree_cache.tick_frame();
         let scale = self.get_scale();
 
         self.tile_viewbox.update(self.viewbox, scale);
@@ -2338,6 +2341,9 @@ impl RenderState {
         // Continuation frames also advance the cache clock so async
         // chunked renders don't skip recency updates.
         self.effect_cache.tick_frame();
+        // V2c.3 P2: same continuation-frame advance for the subtree
+        // cache.
+        self.subtree_cache.tick_frame();
         performance::begin_measure!("process_animation_frame");
         if self.render_in_progress {
             if tree.len() != 0 {
