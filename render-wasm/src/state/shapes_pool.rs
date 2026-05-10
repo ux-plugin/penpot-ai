@@ -147,11 +147,37 @@ impl ShapesPoolImpl {
     /// parent chain. Used by `State::touch_shape` so that subtree-cache
     /// keys for ancestors invalidate when any descendant mutates.
     ///
+    /// Stops at:
+    /// - `Uuid::nil()` (root parent sentinel — mirrors `all_with_ancestors`)
+    /// - missing shape (orphan parent_id)
+    /// - any uuid we've already visited (cycle defense — matches the
+    ///   `seen` HashSet pattern in `all_with_ancestors`)
+    /// - depth cap of 256 (paranoid backstop, depth typically <10)
+    ///
     /// Walk depth is typically <10 (shape → frame → page → root); cost is
-    /// O(depth). Stops at the first missing shape (e.g. orphan / nil parent).
+    /// O(depth).
     pub fn bump_ancestor_revisions(&mut self, id: Uuid) {
         let mut cur = Some(id);
+        // Inline depth cap. Even pathological documents nest shallower than
+        // this; the cap exists so a malformed parent chain (cycle / corrupted
+        // import) can't lock the UI thread the way a `while let Some(_)` can.
+        let mut iters: u32 = 0;
+        // Track visited ids to detect cycles. Heap allocation is acceptable
+        // here — `touch_shape` is called on FFI mutations, not in the
+        // per-frame render hot path, and parent chains are short so the
+        // HashSet stays tiny.
+        let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         while let Some(uuid) = cur {
+            if uuid == Uuid::nil() {
+                break;
+            }
+            if !seen.insert(uuid) {
+                break;
+            }
+            iters += 1;
+            if iters > 256 {
+                break;
+            }
             match self.get_mut(&uuid) {
                 Some(shape) => {
                     shape.revision = shape.revision.wrapping_add(1);
@@ -654,6 +680,54 @@ mod revision_tests {
         pool.add_shape(b).set_parent(a);
 
         pool.bump_ancestor_revisions(b);
+        assert_eq!(pool.get(&a).unwrap().revision, 1);
+        assert_eq!(pool.get(&b).unwrap().revision, 1);
+    }
+
+    #[test]
+    fn bump_stops_at_nil_parent_sentinel() {
+        // Root shapes in Penpot's data model carry parent_id =
+        // Some(Uuid::nil()) — a sentinel meaning "no parent". The walk
+        // must treat nil as a terminator the same way `all_with_ancestors`
+        // does, otherwise it can hand off to a placeholder nil-id shape
+        // (if one was registered) and loop.
+        let mut pool = ShapesPoolImpl::new();
+        pool.initialize(1);
+        let a = make_uuid(0);
+        pool.add_shape(a).set_parent(Uuid::nil());
+
+        // Must terminate. If it doesn't, this test will hang the runner —
+        // that's the regression we're guarding against.
+        pool.bump_ancestor_revisions(a);
+        assert_eq!(pool.get(&a).unwrap().revision, 1);
+    }
+
+    #[test]
+    fn bump_breaks_on_self_loop() {
+        // Pathological: shape's parent_id points to itself. Without cycle
+        // defense this is an infinite loop. Walk must detect the
+        // already-visited id and break.
+        let mut pool = ShapesPoolImpl::new();
+        pool.initialize(1);
+        let a = make_uuid(0);
+        pool.add_shape(a).set_parent(a);
+
+        pool.bump_ancestor_revisions(a);
+        assert_eq!(pool.get(&a).unwrap().revision, 1);
+    }
+
+    #[test]
+    fn bump_breaks_on_two_node_cycle() {
+        // a → parent b, b → parent a. Walk visits a, b, then tries a
+        // again — cycle defense must break.
+        let mut pool = ShapesPoolImpl::new();
+        pool.initialize(2);
+        let a = make_uuid(0);
+        let b = make_uuid(1);
+        pool.add_shape(a).set_parent(b);
+        pool.add_shape(b).set_parent(a);
+
+        pool.bump_ancestor_revisions(a);
         assert_eq!(pool.get(&a).unwrap().revision, 1);
         assert_eq!(pool.get(&b).unwrap().revision, 1);
     }
