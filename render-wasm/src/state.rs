@@ -300,11 +300,21 @@ impl State {
 
     pub fn touch_current(&mut self) {
         if let Some(current_id) = self.current_id {
-            self.render_state.mark_touched(current_id);
+            self.touch_shape(current_id);
         }
     }
 
+    /// Mark a shape as dirty for the next render and bump revision counters
+    /// up the ancestor chain.
+    ///
+    /// Bumping ancestors is required because their rasterized subtree
+    /// includes this shape's pixels — when this shape mutates, every
+    /// ancestor's cached subtree image is also stale, so the cache key
+    /// `(uuid, revision)` must change for them too.
+    ///
+    /// Walk depth is typically <10 (parent → page → root); cost is O(depth).
     pub fn touch_shape(&mut self, id: Uuid) {
+        self.shapes.bump_ancestor_revisions(id);
         self.render_state.mark_touched(id);
     }
 }

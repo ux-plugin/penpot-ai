@@ -360,7 +360,7 @@ pub extern "C" fn text_editor_composition_end() -> Result<()> {
             .text_editor_state
             .push_event(crate::state::TextEditorEvent::NeedsLayout);
 
-        state.render_state.mark_touched(shape_id);
+        state.touch_shape(shape_id);
 
         state.text_editor_state.composition.end();
     });
@@ -417,7 +417,7 @@ pub extern "C" fn text_editor_composition_update() -> Result<()> {
             .text_editor_state
             .push_event(crate::state::TextEditorEvent::NeedsLayout);
 
-        state.render_state.mark_touched(shape_id);
+        state.touch_shape(shape_id);
     });
 
     crate::mem::free_bytes()?;
@@ -478,7 +478,7 @@ pub extern "C" fn text_editor_insert_text() -> Result<()> {
             .text_editor_state
             .push_event(crate::state::TextEditorEvent::NeedsLayout);
 
-        state.render_state.mark_touched(shape_id);
+        state.touch_shape(shape_id);
     });
 
     crate::mem::free_bytes()?;
@@ -534,7 +534,7 @@ pub extern "C" fn text_editor_delete_backward(word_boundary: bool) {
             .text_editor_state
             .push_event(crate::state::TextEditorEvent::NeedsLayout);
 
-        state.render_state.mark_touched(shape_id);
+        state.touch_shape(shape_id);
     });
 }
 
@@ -587,7 +587,7 @@ pub extern "C" fn text_editor_delete_forward(word_boundary: bool) {
             .text_editor_state
             .push_event(crate::state::TextEditorEvent::NeedsLayout);
 
-        state.render_state.mark_touched(shape_id);
+        state.touch_shape(shape_id);
     });
 }
 
@@ -637,7 +637,7 @@ pub extern "C" fn text_editor_insert_paragraph() {
             .text_editor_state
             .push_event(crate::state::TextEditorEvent::NeedsLayout);
 
-        state.render_state.mark_touched(shape_id);
+        state.touch_shape(shape_id);
     });
 }
 

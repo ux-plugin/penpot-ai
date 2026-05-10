@@ -143,6 +143,25 @@ impl ShapesPoolImpl {
         Some(&mut self.shapes[idx])
     }
 
+    /// Bump the `revision` counter on `id` and on every ancestor in the
+    /// parent chain. Used by `State::touch_shape` so that subtree-cache
+    /// keys for ancestors invalidate when any descendant mutates.
+    ///
+    /// Walk depth is typically <10 (shape → frame → page → root); cost is
+    /// O(depth). Stops at the first missing shape (e.g. orphan / nil parent).
+    pub fn bump_ancestor_revisions(&mut self, id: Uuid) {
+        let mut cur = Some(id);
+        while let Some(uuid) = cur {
+            match self.get_mut(&uuid) {
+                Some(shape) => {
+                    shape.revision = shape.revision.wrapping_add(1);
+                    cur = shape.parent_id;
+                }
+                None => break,
+            }
+        }
+    }
+
     /// Get a shape by UUID. Returns the modified shape if modifiers/structure
     /// are applied, otherwise returns the base shape.
     pub fn get(&self, id: &Uuid) -> Option<&Shape> {
@@ -514,5 +533,128 @@ mod bench {
     #[test]
     fn bench_set_modifiers_multi_100_at_depth_5() {
         bench_set_modifiers_multi_select(5, 100, 1_000);
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    fn make_uuid(n: u64) -> Uuid {
+        Uuid::from_u64_pair(0, n + 1)
+    }
+
+    /// Build chain root → mid_1 → … → leaf. Returns (pool, ids in order).
+    fn build_chain(depth: usize) -> (ShapesPoolImpl, Vec<Uuid>) {
+        let mut pool = ShapesPoolImpl::new();
+        pool.initialize(depth + 1);
+        let mut ids = Vec::with_capacity(depth + 1);
+        let mut prev: Option<Uuid> = None;
+        for i in 0..=depth {
+            let id = make_uuid(i as u64);
+            {
+                let shape = pool.add_shape(id);
+                if let Some(p) = prev {
+                    shape.set_parent(p);
+                }
+            }
+            if let Some(p) = prev {
+                if let Some(parent) = pool.get_mut(&p) {
+                    parent.add_child(id);
+                }
+            }
+            ids.push(id);
+            prev = Some(id);
+        }
+        (pool, ids)
+    }
+
+    #[test]
+    fn revision_starts_at_zero() {
+        let (pool, ids) = build_chain(0);
+        assert_eq!(pool.get(&ids[0]).unwrap().revision, 0);
+    }
+
+    #[test]
+    fn bump_self_increments_revision() {
+        let (mut pool, ids) = build_chain(0);
+        pool.bump_ancestor_revisions(ids[0]);
+        assert_eq!(pool.get(&ids[0]).unwrap().revision, 1);
+        pool.bump_ancestor_revisions(ids[0]);
+        assert_eq!(pool.get(&ids[0]).unwrap().revision, 2);
+    }
+
+    #[test]
+    fn bump_walks_ancestors() {
+        // root → mid → leaf. Bumping leaf bumps mid + root.
+        let (mut pool, ids) = build_chain(2);
+        pool.bump_ancestor_revisions(ids[2]);
+        assert_eq!(pool.get(&ids[0]).unwrap().revision, 1, "root bumped");
+        assert_eq!(pool.get(&ids[1]).unwrap().revision, 1, "mid bumped");
+        assert_eq!(pool.get(&ids[2]).unwrap().revision, 1, "leaf bumped");
+    }
+
+    #[test]
+    fn bump_does_not_walk_descendants() {
+        // root → mid → leaf. Bumping mid bumps mid + root only, NOT leaf.
+        let (mut pool, ids) = build_chain(2);
+        pool.bump_ancestor_revisions(ids[1]);
+        assert_eq!(pool.get(&ids[0]).unwrap().revision, 1, "root bumped");
+        assert_eq!(pool.get(&ids[1]).unwrap().revision, 1, "mid bumped");
+        assert_eq!(pool.get(&ids[2]).unwrap().revision, 0, "leaf untouched");
+    }
+
+    #[test]
+    fn bump_does_not_affect_siblings() {
+        // root → {a, b}. Bumping a leaves b untouched.
+        let mut pool = ShapesPoolImpl::new();
+        pool.initialize(3);
+        let root = make_uuid(0);
+        let a = make_uuid(1);
+        let b = make_uuid(2);
+        pool.add_shape(root);
+        pool.add_shape(a).set_parent(root);
+        pool.add_shape(b).set_parent(root);
+        pool.get_mut(&root).unwrap().add_child(a);
+        pool.get_mut(&root).unwrap().add_child(b);
+
+        pool.bump_ancestor_revisions(a);
+        assert_eq!(pool.get(&root).unwrap().revision, 1);
+        assert_eq!(pool.get(&a).unwrap().revision, 1);
+        assert_eq!(pool.get(&b).unwrap().revision, 0, "sibling untouched");
+    }
+
+    #[test]
+    fn bump_missing_id_is_noop() {
+        let (mut pool, _ids) = build_chain(1);
+        let ghost = make_uuid(999);
+        // Should not panic.
+        pool.bump_ancestor_revisions(ghost);
+    }
+
+    #[test]
+    fn bump_wraps_at_u32_max() {
+        let (mut pool, ids) = build_chain(0);
+        pool.get_mut(&ids[0]).unwrap().revision = u32::MAX;
+        pool.bump_ancestor_revisions(ids[0]);
+        // wrapping_add → 0; ok, just must not panic.
+        assert_eq!(pool.get(&ids[0]).unwrap().revision, 0);
+    }
+
+    #[test]
+    fn bump_stops_at_orphan_chain() {
+        // a → b but b's parent points to a non-existent uuid; walk should
+        // stop after b without panicking.
+        let mut pool = ShapesPoolImpl::new();
+        pool.initialize(2);
+        let a = make_uuid(0);
+        let b = make_uuid(1);
+        let ghost = make_uuid(999);
+        pool.add_shape(a).set_parent(ghost);
+        pool.add_shape(b).set_parent(a);
+
+        pool.bump_ancestor_revisions(b);
+        assert_eq!(pool.get(&a).unwrap().revision, 1);
+        assert_eq!(pool.get(&b).unwrap().revision, 1);
     }
 }
