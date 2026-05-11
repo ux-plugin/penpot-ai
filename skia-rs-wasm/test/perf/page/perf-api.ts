@@ -55,6 +55,24 @@ export function clearSnapshot(module: WasmModule): void {
   module._clear_perf_snapshot()
 }
 
+/**
+ * Push a labeled gesture marker into the perf-trace timeline. JS writes
+ * a UTF-8 label into BUFFERU8 (consumed ownership-style by the export —
+ * no `_free_bytes` after), then calls `_mark_perf_event`. The marker is
+ * captured at the current frame + wall_ms accumulator, surfaced via
+ * `dumpSnapshot().markers`.
+ *
+ * Used to segment a snapshot by user-action boundaries — `pan_start`,
+ * `pan_end`, `move_start`, `zoom_start`, etc. — so each gesture's cost
+ * can be reconstructed offline from the otherwise-aggregate stats.
+ */
+export function markPerfEvent(module: WasmModule, label: string): void {
+  const bytes = new TextEncoder().encode(label)
+  const ptr = module._alloc_bytes(bytes.length)
+  module.HEAPU8.set(bytes, ptr)
+  module._mark_perf_event()
+}
+
 export function buildPerfScene(module: WasmModule, sceneId: number): void {
   module._build_perf_scene(sceneId)
 }

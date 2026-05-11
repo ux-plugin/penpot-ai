@@ -207,11 +207,6 @@ pub struct Shape {
     pub extrect_cache: RefCell<Option<(math::Rect, u32)>>,
     pub svg_transform: Option<Matrix>,
     pub ignore_constraints: bool,
-    /// Monotonic revision counter. Bumped via `State::touch_shape` on every
-    /// FFI mutation that crosses the wasm boundary. Walk goes up the parent
-    /// chain so any ancestor whose rasterized output depends on this shape
-    /// also bumps. Used as part of the subtree-cache key (P2+).
-    pub revision: u32,
     deleted: bool,
 }
 
@@ -317,7 +312,6 @@ impl Shape {
             extrect_cache: RefCell::new(None),
             svg_transform: None,
             ignore_constraints: false,
-            revision: 0,
             deleted: false,
         }
     }

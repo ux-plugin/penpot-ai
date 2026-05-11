@@ -42,18 +42,54 @@ impl<'a> LocalKind<'a> {
     /// Returns `None` for shapes outside V2c.1 scope (text/SVG, scatter,
     /// inner shadows, no blur, hidden blur, zero sigma).
     pub fn from_shape_layer_blur(shape: &'a Shape) -> Option<Self> {
+        // Debug instrumentation — POST a single line per call describing
+        // the predicate outcome so the agent can spot which gate fails
+        // for a given shape. Gated on `perf-trace` to stay zero-cost in
+        // production builds.
+        #[cfg(feature = "perf-trace")]
+        let mut _reject: Option<&'static str> = None;
         // Text/SVG: blur is handled inside the paragraph filter or SVG
         // dom render, not via save_layer. Out of scope.
         if matches!(shape.shape_type, Type::Text(_)) || matches!(shape.shape_type, Type::SVGRaw(_))
         {
+            #[cfg(feature = "perf-trace")]
+            {
+                _reject = Some("type_text_or_svg");
+            }
+            #[cfg(feature = "perf-trace")]
+            return _post_layer_blur_decision(shape, _reject);
+            #[cfg(not(feature = "perf-trace"))]
             return None;
         }
-        let blur = shape
+        let blur_opt = shape
             .blur
-            .filter(|b| !b.hidden && b.blur_type == BlurType::LayerBlur && b.value > 0.0)?;
+            .filter(|b| !b.hidden && b.blur_type == BlurType::LayerBlur && b.value > 0.0);
+        let Some(blur) = blur_opt else {
+            #[cfg(feature = "perf-trace")]
+            {
+                _reject = Some(match shape.blur {
+                    None => "no_blur",
+                    Some(b) if b.hidden => "blur_hidden",
+                    Some(b) if b.blur_type != BlurType::LayerBlur => "blur_wrong_type",
+                    Some(b) if b.value <= 0.0 => "blur_zero_value",
+                    _ => "blur_unknown",
+                });
+            }
+            #[cfg(feature = "perf-trace")]
+            return _post_layer_blur_decision(shape, _reject);
+            #[cfg(not(feature = "perf-trace"))]
+            return None;
+        };
         // Inner shadows + scatter + glass + bg-blur all want their own
         // cache plumbing. V2c.1 keeps the leaf body simple.
         if shape.inner_shadows_visible().next().is_some() {
+            #[cfg(feature = "perf-trace")]
+            {
+                _reject = Some("has_inner_shadows");
+            }
+            #[cfg(feature = "perf-trace")]
+            return _post_layer_blur_decision(shape, _reject);
+            #[cfg(not(feature = "perf-trace"))]
             return None;
         }
         if shape
@@ -61,14 +97,37 @@ impl<'a> LocalKind<'a> {
             .as_ref()
             .is_some_and(|t| !t.hidden && t.radius > 0.0)
         {
+            #[cfg(feature = "perf-trace")]
+            {
+                _reject = Some("has_texture_scatter");
+            }
+            #[cfg(feature = "perf-trace")]
+            return _post_layer_blur_decision(shape, _reject);
+            #[cfg(not(feature = "perf-trace"))]
             return None;
         }
         if shape.glass.as_ref().is_some_and(|g| !g.hidden) {
+            #[cfg(feature = "perf-trace")]
+            {
+                _reject = Some("has_glass");
+            }
+            #[cfg(feature = "perf-trace")]
+            return _post_layer_blur_decision(shape, _reject);
+            #[cfg(not(feature = "perf-trace"))]
             return None;
         }
         if shape.background_blur.is_some_and(|b| !b.hidden) {
+            #[cfg(feature = "perf-trace")]
+            {
+                _reject = Some("has_bg_blur");
+            }
+            #[cfg(feature = "perf-trace")]
+            return _post_layer_blur_decision(shape, _reject);
+            #[cfg(not(feature = "perf-trace"))]
             return None;
         }
+        #[cfg(feature = "perf-trace")]
+        crate::perf_trace::log_layer_blur_qualified(shape.id, blur.value, blur.sigma());
         Some(Self::LayerBlur {
             sigma: blur.sigma(),
             _shape: shape,
@@ -270,6 +329,19 @@ impl<'a> LocalKind<'a> {
 /// `LocalFx::LayerBlur` and `LocalFx::ShapeBody`.
 pub fn shape_qualifies_for_layer_blur_cache(shape: &Shape) -> bool {
     LocalKind::from_shape_layer_blur(shape).is_some()
+}
+
+/// perf-trace helper. POSTs the per-shape rejection reason + key
+/// inspection fields so the agent can spot why a shape was excluded
+/// from the layer-blur cache. Always returns `None` — wraps the
+/// early-return pattern.
+#[cfg(feature = "perf-trace")]
+fn _post_layer_blur_decision<'a>(
+    shape: &Shape,
+    reject: Option<&'static str>,
+) -> Option<LocalKind<'a>> {
+    crate::perf_trace::log_layer_blur_decision(shape, reject);
+    None
 }
 
 /// Compute `radius_to_sigma`-style sigma helper for tests. Kept here

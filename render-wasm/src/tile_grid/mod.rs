@@ -632,47 +632,64 @@ impl TileGrid {
         let interest_rect = &tile_viewbox.interest_rect;
 
         // Step 1: Walk shape tree, assign shapes to tiles (and assign paint_order).
-        let root_id = Uuid::nil();
-        let mut paint_counter: u32 = 0;
-        if let Some(root) = tree.get(&root_id) {
-            for child_id in paint_order_children(root, tree) {
-                self.index_shape_recursive(
-                    child_id,
-                    tree,
-                    tile_size,
-                    interest_rect,
-                    scale,
-                    &mut paint_counter,
-                );
+        {
+            crate::perf_guard!("rebuild_step1_index_shapes");
+            let root_id = Uuid::nil();
+            let mut paint_counter: u32 = 0;
+            if let Some(root) = tree.get(&root_id) {
+                for child_id in paint_order_children(root, tree) {
+                    self.index_shape_recursive(
+                        child_id,
+                        tree,
+                        tile_size,
+                        interest_rect,
+                        scale,
+                        &mut paint_counter,
+                    );
+                }
+            } else {
             }
-        } else {
         }
 
         // Step 1b: Build the per-tile root-children prefilter. Only top-level
         // shapes go here, with the visibility check_rect that
         // `build_schedule`'s `visible_roots` cache used to recompute per
         // productive tile.
-        self.build_root_tiles(tree, tile_size, interest_rect, scale);
+        {
+            crate::perf_guard!("rebuild_step1b_root_tiles");
+            self.build_root_tiles(tree, tile_size, interest_rect, scale);
+        }
 
         // Step 2: Generate spiral
-        let spiral = Self::generate_spiral(interest_rect);
+        let spiral = {
+            crate::perf_guard!("rebuild_step2_spiral");
+            Self::generate_spiral(interest_rect)
+        };
 
         // Step 3: Compute bands per tile (barriers = paint_orders of gathers
         // whose sample regions reach this tile, plus the tile's own gathers).
-        self.compute_bands(tree, tile_size, interest_rect, scale);
+        {
+            crate::perf_guard!("rebuild_step3_compute_bands");
+            self.compute_bands(tree, tile_size, interest_rect, scale);
+        }
 
         // Step 4: Build dependency graph over BandKeys
-        let deps = self.build_dependency_graph(tree, tile_size, interest_rect, scale);
+        let deps = {
+            crate::perf_guard!("rebuild_step4_dep_graph");
+            self.build_dependency_graph(tree, tile_size, interest_rect, scale)
+        };
 
         // Step 5: Topological sort with priority
-        let (sorted_bands, empty_tiles) = self.topological_sort(
-            &spiral,
-            &deps,
-            tile_viewbox,
-        );
+        let (sorted_bands, empty_tiles) = {
+            crate::perf_guard!("rebuild_step5_toposort");
+            self.topological_sort(&spiral, &deps, tile_viewbox)
+        };
 
         // Step 6: Flatten into render schedule
-        self.build_schedule(&sorted_bands, &empty_tiles, tree, scale);
+        {
+            crate::perf_guard!("rebuild_step6_build_schedule");
+            self.build_schedule(&sorted_bands, &empty_tiles, tree, scale);
+        }
 
         performance::end_measure!("tile_grid_rebuild");
     }
@@ -1655,6 +1672,13 @@ impl TileGrid {
             return false;
         }
 
+        // perf-trace: log every shape the scheduler walks (deduped on
+        // shape_id + key predicates). Catches shapes that never enter
+        // `emit_cache_build_for_shape` because the leaf-vs-container
+        // branch went the wrong way.
+        #[cfg(feature = "perf-trace")]
+        crate::perf_trace::log_shape_walk(shape_id, shape);
+
         // Visibility check — is the shape in or near this tile?
         // Use `extrect` (not `selrect`) so scatter-effect shapes, whose
         // output kernel extends past the shape's natural outline, still
@@ -1938,6 +1962,19 @@ impl TileGrid {
         let has_gather = Self::shape_has_gather(shape);
         let has_local_blur =
             crate::render::local::shape_qualifies_for_layer_blur_cache(shape);
+
+        // perf-trace: log per-shape emit decision once per change so
+        // the agent can see which BuildCache steps the scheduler is
+        // about to emit. Dedupe internally by `(shape_id, predicate
+        // tuple)`.
+        #[cfg(feature = "perf-trace")]
+        crate::perf_trace::log_emit_cache_decision(
+            shape_id,
+            shape,
+            has_scatter,
+            has_gather,
+            has_local_blur,
+        );
 
         // Gather first — its snapshot is an input to the scatter pass for
         // combined scatter+glass shapes.
@@ -2251,9 +2288,6 @@ impl RenderState {
         // No-op in phase 1 (cache empty). Phase 5 also runs the
         // viewport-scoped LRU promotion pass here.
         self.effect_cache.tick_frame();
-        // V2c.3 P2: same recency-clock advance for the subtree cache.
-        // No-op in P2 (cache empty until P4 capture path).
-        self.subtree_cache.tick_frame();
         let scale = self.get_scale();
 
         self.tile_viewbox.update(self.viewbox, scale);
@@ -2341,9 +2375,6 @@ impl RenderState {
         // Continuation frames also advance the cache clock so async
         // chunked renders don't skip recency updates.
         self.effect_cache.tick_frame();
-        // V2c.3 P2: same continuation-frame advance for the subtree
-        // cache.
-        self.subtree_cache.tick_frame();
         performance::begin_measure!("process_animation_frame");
         if self.render_in_progress {
             if tree.len() != 0 {
@@ -2928,6 +2959,13 @@ impl RenderState {
                                 .effect_cache
                                 .get(&cache_key)
                                 .map(|v| (v.image.clone(), v.world_bbox));
+
+                            #[cfg(feature = "perf-trace")]
+                            crate::perf_trace::log_build_local_blur(
+                                id,
+                                cached.is_some(),
+                                scale_bucket,
+                            );
 
                             if let Some((image, world_bbox)) = cached {
                                 // Hit — feed image into per-frame

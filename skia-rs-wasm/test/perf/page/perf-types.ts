@@ -17,6 +17,19 @@ export interface PerfCacheCounters {
   tile_hits: number
   tile_misses: number
   tile_writes: number
+  effect_cache_hits?: number
+  effect_cache_misses?: number
+  effect_cache_evictions?: number
+  subtree_cache_hits?: number
+  subtree_cache_misses?: number
+  subtree_cache_evictions?: number
+  subtree_cache_skip_oversize?: number
+}
+
+export interface PerfMarker {
+  label: string
+  frame: number
+  wall_ms: number
 }
 
 export interface PerfSnapshot {
@@ -24,6 +37,7 @@ export interface PerfSnapshot {
   wall_ms: number
   cache: PerfCacheCounters
   stats: PerfStat[]
+  markers?: PerfMarker[]
 }
 
 /**

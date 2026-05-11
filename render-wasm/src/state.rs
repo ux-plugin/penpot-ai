@@ -285,6 +285,7 @@ impl State {
     }
 
     pub fn set_modifiers(&mut self, modifiers: HashMap<Uuid, skia::Matrix>) {
+        crate::perf_guard!("set_modifiers");
         // Bump scene revision so any cached glass / bg-blur output
         // keyed on the previous backdrop_hash misses on the next
         // render. Coarse — invalidates every gather entry even when
@@ -295,26 +296,28 @@ impl State {
             self.render_state.scene_revision =
                 self.render_state.scene_revision.wrapping_add(1);
         }
+
+        // perf-trace: log every modified shape with its key attributes
+        // so the agent can identify exactly which shape the user is
+        // dragging — bypasses the scheduler-walk view (which can miss
+        // shapes that never enter the visible-root path).
+        #[cfg(feature = "perf-trace")]
+        for (uuid, _) in modifiers.iter() {
+            if let Some(shape) = self.shapes.get(uuid) {
+                crate::perf_trace::log_modified_shape(*uuid, shape);
+            }
+        }
+
         self.shapes.set_modifiers(modifiers);
     }
 
     pub fn touch_current(&mut self) {
         if let Some(current_id) = self.current_id {
-            self.touch_shape(current_id);
+            self.render_state.mark_touched(current_id);
         }
     }
 
-    /// Mark a shape as dirty for the next render and bump revision counters
-    /// up the ancestor chain.
-    ///
-    /// Bumping ancestors is required because their rasterized subtree
-    /// includes this shape's pixels — when this shape mutates, every
-    /// ancestor's cached subtree image is also stale, so the cache key
-    /// `(uuid, revision)` must change for them too.
-    ///
-    /// Walk depth is typically <10 (parent → page → root); cost is O(depth).
     pub fn touch_shape(&mut self, id: Uuid) {
-        self.shapes.bump_ancestor_revisions(id);
         self.render_state.mark_touched(id);
     }
 }

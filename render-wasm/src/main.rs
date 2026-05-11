@@ -12,8 +12,6 @@ mod tiles;
 mod tile_grid;
 #[cfg(feature = "tile-scheduler")]
 mod effect_cache;
-#[cfg(feature = "tile-scheduler")]
-mod subtree_cache;
 #[cfg(feature = "perf-trace")]
 mod perf_trace;
 #[cfg(feature = "perf-trace")]
@@ -162,30 +160,6 @@ macro_rules! perf_count {
             $crate::perf_trace::effect_cache_evict();
         }
     };
-    (subtree_cache_hit) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::subtree_cache_hit();
-        }
-    };
-    (subtree_cache_miss) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::subtree_cache_miss();
-        }
-    };
-    (subtree_cache_evict) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::subtree_cache_evict();
-        }
-    };
-    (subtree_cache_skip_oversize) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::subtree_cache_skip_oversize();
-        }
-    };
 }
 
 /// Mark the end of a top-level render entry point so the per-frame
@@ -244,6 +218,30 @@ pub extern "C" fn dump_perf_snapshot() -> Result<*mut u8> {
 pub extern "C" fn clear_perf_snapshot() -> Result<()> {
     #[cfg(feature = "perf-trace")]
     perf_trace::clear();
+    Ok(())
+}
+
+/// Push a gesture marker into the perf snapshot's timeline. JS writes
+/// a UTF-8 label into `BUFFERU8` (e.g. "pan_start"), then calls this.
+/// Captured at current `(frame, wall_ms)`. Used to segment a snapshot
+/// by user-action boundaries so each gesture's cost is recoverable
+/// from the otherwise-aggregate stats. No-op without `perf-trace`.
+#[no_mangle]
+#[wasm_error]
+pub extern "C" fn mark_perf_event() -> Result<()> {
+    #[cfg(feature = "perf-trace")]
+    {
+        let bytes = mem::bytes_or_empty();
+        let label = String::from_utf8(bytes)
+            .map_err(|e| Error::RecoverableError(e.to_string()))?
+            .trim_end_matches('\0')
+            .to_string();
+        perf_trace::mark_event(&label);
+    }
+    #[cfg(not(feature = "perf-trace"))]
+    {
+        let _ = mem::bytes_or_empty();
+    }
     Ok(())
 }
 
@@ -457,6 +455,8 @@ pub extern "C" fn set_view(zoom: f32, x: f32, y: f32) -> Result<()> {
         render_state.set_view(zoom, x, y);
         performance::end_measure!("set_view");
     });
+    #[cfg(feature = "perf-trace")]
+    perf_trace::mark_event(&format!("set_view z={:.3} x={:.1} y={:.1}", zoom, x, y));
     Ok(())
 }
 
@@ -475,6 +475,8 @@ pub extern "C" fn set_view_start() -> Result<()> {
         state.render_state.options.set_fast_mode(true);
         performance::end_measure!("set_view_start");
     });
+    #[cfg(feature = "perf-trace")]
+    perf_trace::mark_event("view_interaction_start");
     Ok(())
 }
 
@@ -507,6 +509,8 @@ pub extern "C" fn set_view_end() -> Result<()> {
 
         performance::end_measure!("set_view_end");
     });
+    #[cfg(feature = "perf-trace")]
+    perf_trace::mark_event("view_interaction_end");
     Ok(())
 }
 
@@ -1004,10 +1008,15 @@ pub extern "C" fn set_modifiers() -> Result<()> {
         ids.push(entry.id);
     }
 
+    #[cfg(feature = "perf-trace")]
+    let n_mods = modifiers.len();
+
     with_state_mut!(state, {
         state.set_modifiers(modifiers);
         state.rebuild_modifier_tiles(ids)?;
     });
+    #[cfg(feature = "perf-trace")]
+    perf_trace::mark_event(&format!("set_modifiers n={}", n_mods));
     Ok(())
 }
 

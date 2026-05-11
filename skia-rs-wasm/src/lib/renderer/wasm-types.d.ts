@@ -350,6 +350,9 @@ export interface WasmModule {
   _clear_perf_snapshot(): void
   _build_perf_scene(scene_id: number): void
   _perf_preset_count(): number
+  // Push a gesture marker (e.g. "pan_start"). JS first writes the UTF-8
+  // label into BUFFERU8 via _alloc_bytes+HEAPU8.set, then calls this.
+  _mark_perf_event(): void
 }
 
 export type WasmModuleFactory = (options?: {
