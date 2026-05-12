@@ -19,3 +19,6 @@
 [submodule "figma_plugin_companion_app"]
 	path = figma_plugin_companion_app
 	url = https://github.com/ux-plugin/figma_plugin_companion_app
+[submodule "demo-app"]
+	path = demo-app
+	url = https://github.com/ux-plugin/demo-app.git
