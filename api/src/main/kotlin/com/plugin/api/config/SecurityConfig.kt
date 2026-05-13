@@ -7,6 +7,7 @@ import com.plugin.api.features.auth.auth0.Auth0UserSyncAuthenticationManager
 import com.plugin.api.security.ApiKeyAuthenticationConverter
 import com.plugin.api.security.ApiKeyReactiveAuthenticationManager
 import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -85,7 +86,10 @@ class SecurityConfig(private val auth0Properties: Auth0Properties) {
     }
 
     @Bean("auth0JwtDecoder")
-    @ConditionalOnProperty(prefix = "auth0", name = ["issuer"])
+    // ConditionalOnProperty triggers on any non-"false" value including empty string,
+    // so use SpEL to require a non-empty issuer URI. Avoids JwkSet construction errors
+    // when the env var is unset (e.g. docker-compose without .env.dev).
+    @ConditionalOnExpression("'\${auth0.issuer:}' != ''")
     fun auth0JwtDecoderBean(): ReactiveJwtDecoder = auth0JwtDecoder(auth0Properties)
 
     /**
@@ -93,7 +97,10 @@ class SecurityConfig(private val auth0Properties: Auth0Properties) {
      * the legacy self-hosted JWT issuer was retired with figma_plugin_api#41.
      */
     @Bean("auth0AuthenticationManager")
-    @ConditionalOnProperty(prefix = "auth0", name = ["issuer"])
+    // ConditionalOnProperty triggers on any non-"false" value including empty string,
+    // so use SpEL to require a non-empty issuer URI. Avoids JwkSet construction errors
+    // when the env var is unset (e.g. docker-compose without .env.dev).
+    @ConditionalOnExpression("'\${auth0.issuer:}' != ''")
     fun auth0AuthenticationManager(
         @Qualifier("auth0JwtDecoder") auth0Decoder: ReactiveJwtDecoder,
         auth0UserProvisioner: Auth0UserProvisioner,

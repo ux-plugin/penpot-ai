@@ -6,6 +6,7 @@ import com.plugin.api.features.apikey.ApiKeyRepository
 import com.plugin.core.util.logger
 import kotlinx.coroutines.reactive.awaitFirstOrNull
 import kotlinx.coroutines.reactor.mono
+import org.springframework.context.annotation.Primary
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.security.authentication.ReactiveAuthenticationManager
 import org.springframework.security.core.Authentication
@@ -14,7 +15,11 @@ import reactor.core.publisher.Mono
 import java.time.Duration
 import java.time.Instant
 
+// @Primary makes this the default ReactiveAuthenticationManager so Spring Security's
+// RSocket auto-config can autowire a single bean. The Auth0 manager is still injected
+// elsewhere via @Qualifier("auth0AuthenticationManager").
 @Component
+@Primary
 class ApiKeyReactiveAuthenticationManager(
     private val repository: ApiKeyRepository,
     private val generator: ApiKeyGenerator,
