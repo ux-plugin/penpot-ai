@@ -1,25 +1,31 @@
 package com.plugin.api.features.ingest
 
 import com.plugin.core.config.properties.IngestProperties
-import com.plugin.core.ingest.BackpressureGuard
-import com.plugin.core.ingest.IngestEvent
-import com.plugin.core.ingest.IngestStreamPublisher
+import com.plugin.core.pipeline.RawRecord
 import com.plugin.core.storage.ObjectStore
 import org.reactivestreams.Publisher
+import org.springframework.cloud.stream.function.StreamBridge
+import org.springframework.kafka.support.KafkaHeaders
+import org.springframework.messaging.support.MessageBuilder
 import org.springframework.stereotype.Service
 import java.nio.ByteBuffer
 import java.time.Instant
 
 /**
  * Ingest pipeline entry point. Stateless: every chunk is treated as new.
- * Sanitizer (Ticket #46) owns dedup, gap detection and lifecycle — this service is a
- * dumb passthrough that streams the chunk to S3 and announces it on the Redis stream.
+ *
+ * Uploads the chunk to S3 then publishes a [RawRecord] to Kafka via the SCS output
+ * binding `chunkProducer-out-0` → `chunks.raw`. The `sessionId` is set as the Kafka
+ * message key so downstream Kafka Streams stages see per-session ordering.
+ *
+ * The XLEN-based backpressure that used to wrap each call is gone — Kafka producer
+ * has its own buffer + send timeout. Sustained overload now surfaces as a producer
+ * buffer-full exception on send rather than a pre-flight 503.
  */
 @Service
 class IngestionService(
     private val objectStore: ObjectStore,
-    private val streamPublisher: IngestStreamPublisher,
-    private val backpressureGuard: BackpressureGuard,
+    private val streamBridge: StreamBridge,
     private val props: IngestProperties,
 ) {
 
@@ -31,19 +37,19 @@ class IngestionService(
         body: Publisher<ByteBuffer>,
         contentType: String? = "application/x-ndjson",
     ): IngestAcceptResponse {
-        backpressureGuard.assertCapacity()
-
         val key = chunkKey(orgId, sessionId, chunkSeq)
         val putResult = objectStore.put(key, body, contentLength, contentType)
-        streamPublisher.publish(
-            IngestEvent(
-                type = IngestEvent.Type.CHUNK,
+
+        sendKeyed(
+            sessionId,
+            RawRecord(
+                type = RawRecord.Type.CHUNK,
                 orgId = orgId,
                 sessionId = sessionId,
-                chunkSeq = chunkSeq,
+                seq = chunkSeq,
                 s3Key = key,
                 sizeBytes = contentLength,
-                receivedAt = Instant.now(),
+                capturedAt = Instant.now(),
             ),
         )
 
@@ -51,23 +57,27 @@ class IngestionService(
     }
 
     suspend fun acceptCloseHint(orgId: String, sessionId: String): CloseSessionResponse {
-        streamPublisher.publish(
-            IngestEvent(
-                type = IngestEvent.Type.CLOSE_HINT,
+        sendKeyed(
+            sessionId,
+            RawRecord(
+                type = RawRecord.Type.CLOSE_HINT,
                 orgId = orgId,
                 sessionId = sessionId,
-                receivedAt = Instant.now(),
+                capturedAt = Instant.now(),
             ),
         )
         return CloseSessionResponse(sessionId = sessionId)
     }
 
+    private fun sendKeyed(sessionId: String, record: RawRecord) {
+        val msg = MessageBuilder.withPayload(record)
+            .setHeader(KafkaHeaders.KEY, sessionId)
+            .build()
+        streamBridge.send(CHUNK_PRODUCER_BINDING, msg)
+    }
+
     /**
      * Key layout: `[<configurablePrefix>/]raw/<orgId>/<sessionId>/<chunkSeq.zeroPad(10)>.ndjson.gz`.
-     *
-     * The `raw/` segment is reserved by the data-protection layout (see Notion design contracts):
-     * sanitizer + lifecycle policy both target this prefix for short-retention eviction. Anonymizer
-     * later writes under `anon/`, sanitizer moves quarantine sessions under `quarantine/`.
      */
     private fun chunkKey(orgId: String, sessionId: String, chunkSeq: Long): String =
         buildString {
@@ -77,4 +87,9 @@ class IngestionService(
             append('/').append(chunkSeq.toString().padStart(10, '0'))
             append(".ndjson.gz")
         }
+
+    companion object {
+        /** Matches the binding name in `application.yaml`: `chunkProducer-out-0`. */
+        const val CHUNK_PRODUCER_BINDING = "chunkProducer-out-0"
+    }
 }

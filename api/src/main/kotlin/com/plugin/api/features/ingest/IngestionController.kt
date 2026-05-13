@@ -2,7 +2,7 @@ package com.plugin.api.features.ingest
 
 import com.plugin.api.security.AuthorizationService
 import com.plugin.core.config.properties.IngestProperties
-import com.plugin.core.ingest.IngestBackpressureException
+import com.plugin.core.util.logger
 import kotlinx.coroutines.reactive.awaitSingle
 import org.reactivestreams.Publisher
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -35,6 +35,7 @@ class IngestionController(
     private val authorizationService: AuthorizationService,
     private val ingestProperties: IngestProperties,
 ) {
+    private val log = logger()
 
     @PostMapping("/sessions/{sessionId}/chunks/{chunkSeq}")
     suspend fun acceptChunk(
@@ -66,32 +67,35 @@ class IngestionController(
         // Bounded by maxChunkSizeBytes (5 MB default), so joining into one buffer is safe.
         // True chunked-PUT streaming can be added later via S3 multipart.
         val joined = DataBufferUtils.join(body).awaitSingle()
+        // Copy out before release. `joined.toByteBuffer(dest)` doesn't exist on
+        // Spring 6.x DataBuffer — it was a no-op + flip dropped the data.
         val byteBuffer = try {
-            ByteBuffer.allocate(joined.readableByteCount()).also { joined.toByteBuffer(it); it.flip() }
+            val len = joined.readableByteCount()
+            val out = ByteBuffer.allocate(len)
+            joined.toByteBuffer(0, out, 0, len)
+            out.position(0)
+            out.limit(len)
+            out
         } finally {
             DataBufferUtils.release(joined)
         }
 
-        return try {
-            val result = service.acceptChunk(
-                orgId = auth.orgId,
-                sessionId = sessionId,
-                chunkSeq = chunkSeq,
-                contentLength = contentLength,
-                body = Mono.just(byteBuffer) as Publisher<ByteBuffer>,
-                contentType = contentType,
-            )
-            ResponseEntity.accepted().body(result)
-        } catch (e: IngestBackpressureException) {
-            ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                .header(HttpHeaders.RETRY_AFTER, e.retryAfterSec.toString())
-                .body(error("backpressure", "streamLength" to e.streamLength, "maxPending" to e.maxPending))
-        }
+        log.info("ingest: accept-chunk org={} session={} seq={} bytes={}", auth.orgId, sessionId, chunkSeq, contentLength)
+        val result = service.acceptChunk(
+            orgId = auth.orgId,
+            sessionId = sessionId,
+            chunkSeq = chunkSeq,
+            contentLength = contentLength,
+            body = Mono.just(byteBuffer) as Publisher<ByteBuffer>,
+            contentType = contentType,
+        )
+        return ResponseEntity.accepted().body(result)
     }
 
     @PostMapping("/sessions/{sessionId}/close")
     suspend fun closeSession(@PathVariable sessionId: String): ResponseEntity<*> {
         val auth = authorizationService.currentApiKeyAuthentication() ?: return unauthorized()
+        log.info("ingest: close-hint org={} session={}", auth.orgId, sessionId)
         val result = service.acceptCloseHint(orgId = auth.orgId, sessionId = sessionId)
         return ResponseEntity.accepted().body(result)
     }

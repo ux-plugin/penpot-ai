@@ -46,6 +46,30 @@ spring:
       write-dates-as-timestamps: false
     default-property-inclusion: non_null
 
+  # Spring Cloud Stream — Kafka producer binding for chunks.raw. The API uses the
+  # plain Kafka binder (not Kafka Streams) since it's just a producer; only the
+  # downstream workers run Kafka Streams topologies.
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+      bindings:
+        chunkProducer-out-0:
+          destination: chunks.raw
+          producer:
+            useNativeEncoding: true
+          # Native Kafka producer configuration — JsonSerializer with type headers
+          # so downstream Kafka Streams workers (JsonSerde + trusted packages) can
+          # deserialize without per-message type config.
+      kafka.bindings:
+        chunkProducer-out-0:
+          producer:
+            configuration:
+              key.serializer: org.apache.kafka.common.serialization.StringSerializer
+              value.serializer: org.springframework.kafka.support.serializer.JsonSerializer
+              spring.json.add.type.headers: true
+
 server:
   port: ${API_PORT:8080}
   address: ${API_HOST:0.0.0.0}
@@ -70,6 +94,35 @@ springdoc:
     title: Figma Plugin API
     version: 0.0.1
     description: API for Figma Plugin
+
+# Ingest pipeline. Required for IngestionController + IngestionService beans to wire.
+# Transport is Spring Cloud Stream → Kafka; see `spring.cloud.stream.bindings`
+# below for the `chunkProducer-out-0` → `chunks.raw` binding.
+ingest:
+  enabled: true
+  max-chunk-size-bytes: ${INGEST_MAX_CHUNK_SIZE_BYTES:5242880}
+  s3-key-prefix: ""
+
+# API key validator (used by ApiKeyAuthenticationConverter to recognize bearer tokens).
+apikey:
+  prefix: ${APIKEY_PREFIX:pk_live_}
+  secret-length: 32
+  redis-cache-prefix: "apikey:"
+  redis-cache-ttl-sec: 60
+  last-used-debounce-sec: 60
+
+# Object store. In docker-compose: OBJECTSTORE_ENDPOINT=http://minio:9000 routes
+# through the docker DNS network. Dev profile overrides to localhost:9000.
+objectstore:
+  endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
+  region: ${OBJECTSTORE_REGION:us-east-1}
+  access-key: ${INGEST_API_S3_ACCESS_KEY:minioadmin}
+  secret-key: ${INGEST_API_S3_SECRET_KEY:minioadmin}
+  bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
+  path-style: true
+  create-bucket-on-startup: ${OBJECTSTORE_CREATE_BUCKET:true}
+
+# Spring Cloud Stream bindings — see top-level `spring.cloud.stream.*` block.
 
 # Logging configuration
 logging:
