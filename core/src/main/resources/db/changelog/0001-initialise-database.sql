@@ -120,3 +120,42 @@ EXCEPTION
             RAISE NOTICE 'Index idx_social_logins_user_id already exists, skipping creation';
 END
 $$;
+
+--changeset dhiaeddine:session-replay-metadata
+-- Holds derived session-replay metadata after the processor stage runs. Populated
+-- by MetadataChunkProcessor (processor module) on SESSION_ANONYMIZED. Drives the
+-- /api/replay/sessions list endpoint and the demo-app sessions UI.
+DO
+$$
+BEGIN
+    RAISE NOTICE 'Creating table session_metadata';
+    CREATE TABLE session_metadata
+    (
+        session_id        VARCHAR PRIMARY KEY,
+        org_id            VARCHAR   NOT NULL,
+        first_seq         BIGINT    NOT NULL,
+        last_seq          BIGINT    NOT NULL,
+        chunk_count       BIGINT    NOT NULL DEFAULT 0,
+        event_count       BIGINT    NOT NULL DEFAULT 0,
+        duration_ms       BIGINT    NOT NULL DEFAULT 0,
+        page_transitions  INTEGER   NOT NULL DEFAULT 0,
+        first_event_at    TIMESTAMP,
+        last_event_at     TIMESTAMP,
+        processed_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+EXCEPTION
+    WHEN duplicate_object THEN
+        RAISE NOTICE 'Table session_metadata already exists, skipping';
+END
+$$;
+
+DO
+$$
+BEGIN
+    RAISE NOTICE 'Creating index idx_session_metadata_org_processed';
+    CREATE INDEX idx_session_metadata_org_processed ON session_metadata (org_id, processed_at DESC);
+EXCEPTION
+    WHEN duplicate_object THEN
+        RAISE NOTICE 'Index idx_session_metadata_org_processed already exists, skipping';
+END
+$$;
