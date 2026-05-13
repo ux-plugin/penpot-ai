@@ -2,6 +2,7 @@ package com.plugin.api.config
 
 import com.plugin.api.features.auth.core.SocialProvider
 import com.plugin.api.features.user.UserRole
+import com.plugin.core.replay.SessionMetadataRepository
 import io.r2dbc.postgresql.codec.EnumCodec
 import io.r2dbc.spi.ConnectionFactory
 import io.r2dbc.spi.IsolationLevel
@@ -43,4 +44,7 @@ class R2dbcConfig {
             explicitDialect = PostgreSQLDialect()
         },
     )
+
+    @Bean
+    fun sessionMetadataRepository(db: R2dbcDatabase): SessionMetadataRepository = SessionMetadataRepository(db)
 }

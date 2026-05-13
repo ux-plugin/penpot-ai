@@ -61,6 +61,9 @@ class SecurityConfig(private val auth0Properties: Auth0Properties) {
                     // never via a user JWT. ROLE_API_KEY is granted by ApiKeyAuthentication.
                     .pathMatchers("/ingest/**")
                     .hasAuthority("ROLE_API_KEY")
+                    // Replay read endpoints — same model as ingest: SDK/demo-app only.
+                    .pathMatchers("/api/replay/**")
+                    .hasAuthority("ROLE_API_KEY")
                     .anyExchange()
                     .authenticated()
             }
