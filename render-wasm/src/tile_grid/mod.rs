@@ -2254,12 +2254,14 @@ impl RenderState {
     /// `PushScope` (first or re-entry from a later tile): snapshot
     /// `Current`'s content region into `parent_stash`, clear `Current`,
     /// and push to `open_scopes` so the paired `PopScope` can restore.
-    /// `anc_F` is left `None` here — populated in P5 when
-    /// `has_ancestor_snapshot` is true.
+    /// P5 extension: when `has_ancestor_snapshot=true`, compose
+    /// `anc_F = Target ⊕ <enclosing scopes>` ONCE at the moment F enters
+    /// and store the snapshot. Every gather inside F reuses it.
     pub(crate) fn handle_push_scope(
         &mut self,
         shape: Uuid,
         tree: ShapesPoolRef,
+        has_ancestor_snapshot: bool,
     ) -> Result<()> {
         // Lazy alloc: first PushScope for this shape's band allocates.
         if !self.scope_allocations.contains_key(&shape) {
@@ -2318,10 +2320,106 @@ impl RenderState {
                 self.surfaces.snapshot(SurfaceId::Current)
             });
         self.surfaces.clear_current(self.background_color);
+
+        // P5: build `anc_F` once on first PushScope for this band.
+        // ancestor_snapshot is None on the entry built in P3; subsequent
+        // re-entries for the same shape's later tiles find ancestor_snapshot
+        // already populated and skip. The compose is "Target ⊕ enclosing
+        // scopes" — flushed via `flush_and_submit` first so Target reflects
+        // all pre-F dependency tiles' contributions.
+        if has_ancestor_snapshot {
+            let needs_anc = self
+                .scope_allocations
+                .get(&shape)
+                .map(|a| a.ancestor_snapshot.is_none())
+                .unwrap_or(false);
+            if needs_anc {
+                self.compose_ancestor_snapshot(shape)?;
+            }
+        }
+
         self.open_scopes.push(OpenScope {
             shape_id: shape,
             parent_stash,
         });
+        Ok(())
+    }
+
+    /// V3 P5 — allocate a temporary surface sized to F's `world_bbox`,
+    /// draw `Target` onto it, then every currently-open enclosing scope's
+    /// `scope_surface` on top, in order. Snapshot the result and store
+    /// in `scope_allocations[F].ancestor_snapshot`. Reused by every
+    /// `BuildCache(Gather)` inside F.
+    ///
+    /// The math: `temp_surface`'s pixel (0,0) corresponds to world
+    /// `alloc.world_origin`. To place `Target` (whose pixel (0,0) is
+    /// `viewbox.origin`), draw at `(viewbox.origin - world_origin) * scale`.
+    /// Same offset shape for each enclosing scope.
+    fn compose_ancestor_snapshot(&mut self, shape: Uuid) -> Result<()> {
+        let (world_origin, world_size_w, world_size_h) = {
+            let Some(alloc) = self.scope_allocations.get(&shape) else {
+                return Ok(());
+            };
+            (
+                alloc.world_origin,
+                alloc.world_size.width,
+                alloc.world_size.height,
+            )
+        };
+        let scale = self.get_scale();
+        let devpx_w = (world_size_w * scale).ceil() as i32;
+        let devpx_h = (world_size_h * scale).ceil() as i32;
+        if devpx_w <= 0 || devpx_h <= 0 {
+            return Ok(());
+        }
+        // Flush GPU first so Target reflects all dependency-tile writes
+        // that the topo-sort scheduled before F. Without this, the
+        // ancestor snapshot can miss content from sibling tiles still
+        // pending submission.
+        self.flush_and_submit();
+
+        // Allocate temp surface for composition. Discarded after snapshot.
+        let label = format!("anc_compose_{}", shape);
+        let mut temp = self
+            .gpu_state
+            .create_surface_with_dimensions(label, devpx_w, devpx_h)?;
+        {
+            let canvas = temp.canvas();
+            canvas.clear(self.background_color);
+
+            // Draw Target. Image origin in temp's devpx:
+            // (viewbox - world_origin) * scale.
+            let target_img = self.surfaces.snapshot(SurfaceId::Target);
+            let tx = (self.viewbox.area.left - world_origin.x) * scale;
+            let ty = (self.viewbox.area.top - world_origin.y) * scale;
+            canvas.draw_image(
+                &target_img,
+                skia::Point::new(tx, ty),
+                Some(&skia::Paint::default()),
+            );
+
+            // Draw every enclosing open scope (bottom-up: outermost
+            // first, innermost last). open_scopes is bottom-first
+            // already (we push on Push, top is innermost).
+            for open in self.open_scopes.iter() {
+                let Some(enc) = self.scope_allocations.get_mut(&open.shape_id) else {
+                    continue;
+                };
+                let enc_img = enc.scope_surface.image_snapshot();
+                let ex = (enc.world_origin.x - world_origin.x) * scale;
+                let ey = (enc.world_origin.y - world_origin.y) * scale;
+                canvas.draw_image(
+                    &enc_img,
+                    skia::Point::new(ex, ey),
+                    Some(&skia::Paint::default()),
+                );
+            }
+        }
+        let anc_image = temp.image_snapshot();
+        // `temp` drops here — GPU resource recycled.
+        if let Some(alloc) = self.scope_allocations.get_mut(&shape) {
+            alloc.ancestor_snapshot = Some(anc_image);
+        }
         Ok(())
     }
 
@@ -2388,6 +2486,132 @@ impl RenderState {
         if is_final_tile {
             self.scope_allocations.remove(&shape);
         }
+        Ok(())
+    }
+
+    /// V3 P4 — build a gather backdrop snapshot using the active scope
+    /// stack instead of `Target`. Composes `anc_F ⊕ scope_F ⊕ Current`
+    /// onto a temp surface sized to the gather's `extent_world` and
+    /// inserts the snapshot into the per-shape backdrop cache.
+    ///
+    /// - `anc_F` (pre-baked at PushScope): static stack of `Target ⊕
+    ///   <enclosing scopes>` covering everything beneath F's content.
+    /// - `scope_F`: F's content from previously-finalized tiles in this
+    ///   band (mirror-written by `handle_pop_scope`).
+    /// - `Current`: F's mid-tile, in-progress content for THIS tile,
+    ///   including preceding sibling gathers that already painted
+    ///   refraction into `Current`.
+    ///
+    /// Result is the same image format the existing `Target`-based path
+    /// produces (bbox-bounded, world-origin tagged). The `PaintGather`
+    /// dispatcher consumes it identically — no changes downstream.
+    fn build_gather_backdrop_scoped(
+        &mut self,
+        id: Uuid,
+        element: &Shape,
+        gather: &crate::render::gather::GatherKind<'_>,
+    ) -> Result<()> {
+        // Top-of-stack scope is the innermost ancestor containing this
+        // gather. Its `ancestor_snapshot` + `scope_surface` together
+        // give us everything below the gather (other than this tile's
+        // mid-content, which we pull from `Current`).
+        let Some(open) = self.open_scopes.last() else {
+            return Ok(());
+        };
+        let scope_shape_id = open.shape_id;
+
+        let scale = self.get_scale();
+        let extent_world = gather.extent_world(element);
+        // Clip against viewbox so an offscreen gather doesn't allocate
+        // a giant scratch.
+        let viewbox = self.viewbox.area;
+        let clipped = skia::Rect::from_ltrb(
+            extent_world.left.max(viewbox.left),
+            extent_world.top.max(viewbox.top),
+            extent_world.right.min(viewbox.right),
+            extent_world.bottom.min(viewbox.bottom),
+        );
+        if clipped.is_empty() {
+            return Ok(());
+        }
+        let devpx_w = (clipped.width() * scale).ceil() as i32;
+        let devpx_h = (clipped.height() * scale).ceil() as i32;
+        if devpx_w <= 0 || devpx_h <= 0 {
+            return Ok(());
+        }
+
+        // Pull the three source surfaces' state. Snapshots are GPU-light
+        // (texture share); the surface remains live for further writes.
+        let (anc_image, scope_image, scope_world_origin) = {
+            let Some(alloc) = self.scope_allocations.get_mut(&scope_shape_id) else {
+                return Ok(());
+            };
+            let anc_image = alloc.ancestor_snapshot.clone();
+            let scope_image = alloc.scope_surface.image_snapshot();
+            let scope_world_origin = alloc.world_origin;
+            (anc_image, scope_image, scope_world_origin)
+        };
+        let current_image = self.surfaces.snapshot_current_content();
+        let render_area_left = self.render_area.left;
+        let render_area_top = self.render_area.top;
+        let bg = self.background_color;
+
+        // Allocate a scratch surface sized to the gather's clipped
+        // extent. Composition target. Snapshotted and discarded after.
+        let label = format!("gather_snap_{}", id);
+        let mut snap = self
+            .gpu_state
+            .create_surface_with_dimensions(label, devpx_w, devpx_h)?;
+        {
+            let canvas = snap.canvas();
+            canvas.clear(bg);
+
+            // anc_F covers `Target ⊕ enclosing scopes`. Its world
+            // origin equals `scope_world_origin`. Snap's world origin
+            // is `clipped.{left, top}`. Offset on snap:
+            //   (scope_world_origin - clipped.origin) * scale.
+            if let Some(anc) = anc_image.as_ref() {
+                let ox = (scope_world_origin.x - clipped.left) * scale;
+                let oy = (scope_world_origin.y - clipped.top) * scale;
+                canvas.draw_image(
+                    anc,
+                    skia::Point::new(ox, oy),
+                    Some(&skia::Paint::default()),
+                );
+            }
+
+            // scope_F covers F's prior-tile content; same origin shape.
+            {
+                let ox = (scope_world_origin.x - clipped.left) * scale;
+                let oy = (scope_world_origin.y - clipped.top) * scale;
+                canvas.draw_image(
+                    &scope_image,
+                    skia::Point::new(ox, oy),
+                    Some(&skia::Paint::default()),
+                );
+            }
+
+            // Current's content region (margins inset) covers this
+            // tile's mid-flight F content. Its pixel (0,0) equals
+            // world `render_area.{left, top}`.
+            if let Some(cur) = current_image.as_ref() {
+                let ox = (render_area_left - clipped.left) * scale;
+                let oy = (render_area_top - clipped.top) * scale;
+                canvas.draw_image(
+                    cur,
+                    skia::Point::new(ox, oy),
+                    Some(&skia::Paint::default()),
+                );
+            }
+        }
+        let backdrop = snap.image_snapshot();
+        // `snap` drops, GPU resource recycled.
+
+        self.surfaces.insert_glass_backdrop_with_world_origin(
+            id,
+            backdrop,
+            skia::Point::new(clipped.left, clipped.top),
+        );
         Ok(())
     }
 
@@ -3100,6 +3324,23 @@ impl RenderState {
                             else {
                                 continue;
                             };
+
+                            // P4: gather inside an open scope composes
+                            // its backdrop from `anc_F ⊕ scope_F ⊕ Current`
+                            // (three image draws, independent of nesting
+                            // depth — `anc_F` was pre-baked at PushScope).
+                            // Skips the existing Target-snapshot path; the
+                            // resulting image is bbox-bounded to the
+                            // gather's `extent_world` and inserted into
+                            // the per-shape backdrop cache the same way.
+                            if !self.open_scopes.is_empty() {
+                                self.build_gather_backdrop_scoped(
+                                    id, element, &gather,
+                                )?;
+                                performance::end_measure!("scheduler_build_cache");
+                                continue;
+                            }
+
                             let is_root_level =
                                 element.parent_id.is_some_and(|p| p == Uuid::nil());
                             let snapshot_source = gather.snapshot_source(is_root_level);
@@ -3330,9 +3571,9 @@ impl RenderState {
                     performance::end_measure!("paint_body_step");
                 }
 
-                RenderStep::PushScope { shape, has_ancestor_snapshot: _ } => {
+                RenderStep::PushScope { shape, has_ancestor_snapshot } => {
                     crate::perf_guard!("step_PushScope");
-                    self.handle_push_scope(shape, tree)?;
+                    self.handle_push_scope(shape, tree, has_ancestor_snapshot)?;
                 }
 
                 RenderStep::PopScope { shape, is_final_tile } => {
