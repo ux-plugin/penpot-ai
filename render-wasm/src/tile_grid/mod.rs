@@ -22,7 +22,7 @@ use skia_safe as skia;
 
 use crate::error::{Error, Result};
 use crate::performance;
-use crate::render::{RenderState, SurfaceId};
+use crate::render::{OpenScope, RenderState, ScopeAllocation, SurfaceId};
 use crate::shapes::{BlurType, Shape, Type};
 use crate::state::{ShapesPoolMutRef, ShapesPoolRef};
 use crate::tiles::{self, Tile, TileRect, TileViewbox};
@@ -2248,6 +2248,149 @@ fn subtree_has_band_shape(
 
 #[cfg(feature = "tile-scheduler")]
 impl RenderState {
+    /// V3 P3 — `PushScope(F)` dispatch. On the FIRST per-tile `PushScope`
+    /// for a given `shape`, allocate `scope_F` (frame-bbox-sized in
+    /// world coords) and record it in `scope_allocations`. On every
+    /// `PushScope` (first or re-entry from a later tile): snapshot
+    /// `Current`'s content region into `parent_stash`, clear `Current`,
+    /// and push to `open_scopes` so the paired `PopScope` can restore.
+    /// `anc_F` is left `None` here — populated in P5 when
+    /// `has_ancestor_snapshot` is true.
+    pub(crate) fn handle_push_scope(
+        &mut self,
+        shape: Uuid,
+        tree: ShapesPoolRef,
+    ) -> Result<()> {
+        // Lazy alloc: first PushScope for this shape's band allocates.
+        if !self.scope_allocations.contains_key(&shape) {
+            let Some(element) = tree.get(&shape) else {
+                return Ok(());
+            };
+            let scale = self.get_scale();
+            let extrect = element.extrect(tree, scale);
+            // Clip to viewbox area in world coords — no point allocating
+            // scope coverage outside what could ever be visible.
+            let viewbox = self.viewbox.area;
+            let world_bbox = skia::Rect::from_ltrb(
+                extrect.left.max(viewbox.left),
+                extrect.top.max(viewbox.top),
+                extrect.right.min(viewbox.right),
+                extrect.bottom.min(viewbox.bottom),
+            );
+            if world_bbox.is_empty() {
+                // Scope offscreen — nothing to do this frame. Don't
+                // allocate; subsequent `PopScope` checks for the entry
+                // and no-ops when absent.
+                return Ok(());
+            }
+            let devpx_w = (world_bbox.width() * scale).ceil() as i32;
+            let devpx_h = (world_bbox.height() * scale).ceil() as i32;
+            if devpx_w <= 0 || devpx_h <= 0 {
+                return Ok(());
+            }
+            let label = format!("scope_{}", shape);
+            let scope_surface = self
+                .gpu_state
+                .create_surface_with_dimensions(label, devpx_w, devpx_h)?;
+            self.scope_allocations.insert(
+                shape,
+                ScopeAllocation {
+                    scope_surface,
+                    ancestor_snapshot: None,
+                    world_origin: skia::Point::new(world_bbox.left, world_bbox.top),
+                    world_size: skia::Size::new(world_bbox.width(), world_bbox.height()),
+                },
+            );
+        }
+
+        // Stash + clear Current for the body of this scope. The matching
+        // PopScope reads `parent_stash` and merges with this tile's F
+        // content. `parent_stash` covers Current's content region only
+        // (margins inset) — matches what `restore_current_from_scope`
+        // expects.
+        let parent_stash = self
+            .surfaces
+            .snapshot_current_content()
+            .unwrap_or_else(|| {
+                // Empty content region (extreme cases) — fall back to
+                // a full-surface snapshot, which is correct semantics
+                // (anything outside content is bg color anyway).
+                self.surfaces.snapshot(SurfaceId::Current)
+            });
+        self.surfaces.clear_current(self.background_color);
+        self.open_scopes.push(OpenScope {
+            shape_id: shape,
+            parent_stash,
+        });
+        Ok(())
+    }
+
+    /// V3 P3 — `PopScope(F)` dispatch. Pops the matching `OpenScope`,
+    /// captures F's per-tile content from `Current`, composites it onto
+    /// `scope_F` (the persistent surface), then restores `Current` to
+    /// `parent_stash ⊕ F_tile_content` so the parent's tile draw
+    /// continues with F visible. On `is_final_tile`, drops the scope
+    /// allocation (frees `scope_surface` + `anc_F`).
+    pub(crate) fn handle_pop_scope(
+        &mut self,
+        shape: Uuid,
+        is_final_tile: bool,
+    ) -> Result<()> {
+        let Some(open) = self.open_scopes.pop() else {
+            // Defensive: schedule emitted PopScope without a matching
+            // PushScope (or PushScope was skipped via offscreen bail).
+            return Ok(());
+        };
+        debug_assert_eq!(
+            open.shape_id, shape,
+            "PopScope/PushScope mismatch: expected {:?}, got {:?}",
+            open.shape_id, shape
+        );
+
+        let tile_content = self.surfaces.snapshot_current_content();
+
+        // Capture `scale` and `render_area` BEFORE the `get_mut` borrow
+        // so we don't double-borrow `self`.
+        let scale = self.get_scale();
+        let render_area_left = self.render_area.left;
+        let render_area_top = self.render_area.top;
+
+        // Composite F's tile slice onto scope_F.
+        if let (Some(tile_img), Some(alloc)) =
+            (tile_content.as_ref(), self.scope_allocations.get_mut(&shape))
+        {
+            // The content-region snapshot's pixel (0,0) corresponds to
+            // world point `render_area.{left, top}` (margins already
+            // inset by `snapshot_current_content`).
+            let offset_x = (render_area_left - alloc.world_origin.x) * scale;
+            let offset_y = (render_area_top - alloc.world_origin.y) * scale;
+            alloc.scope_surface.canvas().draw_image(
+                tile_img,
+                skia::Point::new(offset_x, offset_y),
+                Some(&skia::Paint::default()),
+            );
+        }
+
+        // Restore Current = parent_stash ⊕ F's tile content. The parent
+        // continues drawing into a Current that sees F's contribution.
+        self.surfaces.restore_current_from_scope(
+            &open.parent_stash,
+            tile_content.as_ref(),
+            self.background_color,
+        );
+
+        // Final tile in the band drops the persistent scope allocation.
+        // In P3 nothing reads `scope_surface` after this point (P4 wires
+        // gather sampling); just free the surface. The cross-tile
+        // composite onto a parent scope / Target is NOT needed yet
+        // because Current's merge above already carries F's content
+        // through normal `FinalizeBand`.
+        if is_final_tile {
+            self.scope_allocations.remove(&shape);
+        }
+        Ok(())
+    }
+
     /// V2b per-effect dispatcher. Walks the action's effect list in order,
     /// routing each `EffectKey` to its existing per-effect renderer. The
     /// scheduler decides _what_ to render and _in what order_; this method
@@ -3187,11 +3330,14 @@ impl RenderState {
                     performance::end_measure!("paint_body_step");
                 }
 
-                RenderStep::PushScope { .. } | RenderStep::PopScope { .. } => {
-                    // V3 P2 — emission is wired (scoped containers get
-                    // these bracketing their content), but P3 handles
-                    // the actual runtime work (allocate scope_F, stash
-                    // Current, compose on Pop). No-op for now.
+                RenderStep::PushScope { shape, has_ancestor_snapshot: _ } => {
+                    crate::perf_guard!("step_PushScope");
+                    self.handle_push_scope(shape, tree)?;
+                }
+
+                RenderStep::PopScope { shape, is_final_tile } => {
+                    crate::perf_guard!("step_PopScope");
+                    self.handle_pop_scope(shape, is_final_tile)?;
                 }
 
                 RenderStep::Exit { shape: id, has_external_layer } => {
@@ -3264,6 +3410,14 @@ impl RenderState {
         // by `RenderStep::FreeCache` steps emitted at the tail of the
         // schedule, so no global clear is needed for them here.
         self.surfaces.clear_interband_cache();
+
+        // V3 P3: scope allocations and open scopes should be empty at
+        // end-of-schedule (every `PushScope` paired with a `PopScope`
+        // with `is_final_tile=true` removed the entry). Clear
+        // defensively in case of asymmetric schedules (e.g. partial
+        // cancellation, future paths that bail mid-schedule).
+        self.scope_allocations.clear();
+        self.open_scopes.clear();
 
         self.render_in_progress = false;
         self.surfaces.gc();

@@ -726,6 +726,52 @@ impl Surfaces {
         self.interband_cache.clear();
     }
 
+    /// V3 scope helper — snapshot `Current` at its content region (margins
+    /// inset). Used by `PushScope` to stash `Current` before clearing,
+    /// and by `PopScope` to capture F's per-tile content before
+    /// compositing back. Returns `None` if the content region is empty
+    /// (shouldn't happen in practice).
+    pub fn snapshot_current_content(&mut self) -> Option<skia::Image> {
+        let rect = IRect::from_xywh(
+            self.margins.width,
+            self.margins.height,
+            self.current.width() - TILE_SIZE_MULTIPLIER * self.margins.width,
+            self.current.height() - TILE_SIZE_MULTIPLIER * self.margins.height,
+        );
+        self.current.image_snapshot_with_bounds(rect)
+    }
+
+    /// V3 scope helper — clear `Current` (including margins). Pairs with
+    /// `snapshot_current_content` at `PushScope`.
+    pub fn clear_current(&mut self, bg: skia::Color) {
+        self.current.canvas().clear(bg);
+    }
+
+    /// V3 scope helper — restore `Current` from two images, parent stash
+    /// underneath and F's tile content on top. Both images are content-
+    /// region snapshots (margins already inset), so they land at the
+    /// content-region origin on `Current`. Pairs with `PopScope`'s
+    /// "merge back" step that lets the parent continue drawing onto a
+    /// `Current` that already includes F's contribution.
+    pub fn restore_current_from_scope(
+        &mut self,
+        parent_stash: &skia::Image,
+        tile_content: Option<&skia::Image>,
+        bg: skia::Color,
+    ) {
+        let origin = skia::Point::new(
+            self.margins.width as f32,
+            self.margins.height as f32,
+        );
+        let canvas = self.current.canvas();
+        canvas.clear(bg);
+        canvas.draw_image(parent_stash, origin, Some(&skia::Paint::default()));
+        if let Some(img) = tile_content {
+            canvas.draw_image(img, origin, Some(&skia::Paint::default()));
+        }
+    }
+
+
     /// Get the backdrop snapshot for a gather shape, taking it from the
     /// given source surface on first access and caching it by shape id.
     /// All subsequent tiles of the same gather shape reuse this snapshot

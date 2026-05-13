@@ -348,6 +348,49 @@ pub(crate) struct RenderState {
     /// Preview render mode - when true, uses simplified rendering for progressive loading
     pub preview_mode: bool,
     pub export_context: Option<(Rect, f32)>,
+
+    // ── V3 scope runtime state ───────────────────────────────────────
+    /// Per-shape allocation that persists across all tiles the frame
+    /// touches. Populated on the FIRST `PushScope(F)` of a frame's band,
+    /// freed on the FINAL `PopScope(F)`. Subsequent per-tile `PushScope`s
+    /// for the same shape reuse the existing allocation.
+    pub(crate) scope_allocations: rustc_hash::FxHashMap<Uuid, ScopeAllocation>,
+    /// Stack of currently-open scopes during a single tile's render.
+    /// Pushed on `PushScope`, popped on `PopScope`. Holds the per-tile
+    /// state (the stash of `Current` from before the scope opened).
+    /// Top of stack = innermost active scope.
+    pub(crate) open_scopes: Vec<OpenScope>,
+}
+
+/// Persistent scope state — one entry per scoped frame in the schedule,
+/// lives from the frame's first per-tile `PushScope` to its final
+/// `PopScope` (the one with `is_final_tile = true`).
+pub(crate) struct ScopeAllocation {
+    /// Frame-bbox-sized surface in world coords. Children's per-tile
+    /// content is composited onto this on every `PopScope`, so it
+    /// accumulates the frame's full body across all tiles in its band.
+    pub(crate) scope_surface: skia::Surface,
+    /// `anc_F` — pre-composed snapshot of `Target ⊕ <enclosing scopes>`
+    /// taken once on `PushScope`. P3 leaves this `None`; P5 populates
+    /// when `PushScope.has_ancestor_snapshot` is true.
+    pub(crate) ancestor_snapshot: Option<skia::Image>,
+    /// World-space top-left of `scope_surface` (its pixel (0, 0)
+    /// corresponds to this world point). Used by Push/Pop to translate
+    /// tile draws into the surface's local coords.
+    pub(crate) world_origin: skia::Point,
+    /// World-space size of `scope_surface` (independent of `scale` —
+    /// the surface is allocated at devpx; this is for bookkeeping).
+    pub(crate) world_size: skia::Size,
+}
+
+/// Per-tile, per-open-scope state. Pushed on `PushScope`, popped on the
+/// paired `PopScope`. The stash is `Current`'s contents at the moment
+/// the scope opened; on `PopScope` we composite the scope's tile draws
+/// onto it and restore `Current` to the result, so the parent's draws
+/// continue cleanly.
+pub(crate) struct OpenScope {
+    pub(crate) shape_id: Uuid,
+    pub(crate) parent_stash: skia::Image,
 }
 
 pub(crate) fn get_cache_size(viewbox: Viewbox, scale: f32) -> skia::ISize {
@@ -427,6 +470,8 @@ impl RenderState {
             touched_ids: HashSet::default(),
             preview_mode: false,
             export_context: None,
+            scope_allocations: rustc_hash::FxHashMap::default(),
+            open_scopes: Vec::new(),
         })
     }
 
