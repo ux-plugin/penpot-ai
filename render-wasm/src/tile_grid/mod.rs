@@ -2772,24 +2772,6 @@ impl RenderState {
                         continue;
                     }
 
-                    // V3 multi-tile fix: for DESCENDANT gathers inside a
-                    // scope, the per-frame `BuildCache(Gather)` snapshot
-                    // (taken at the first tile that touches G's band) is
-                    // stale on every other tile — `scope_F` is populated
-                    // by tile-end PopScope mirrors, so the cached backdrop
-                    // only has correct content for the building tile.
-                    // Rebuild per tile here. Self-gathers (when the gather
-                    // shape IS the innermost scope's frame) keep the
-                    // per-frame cache — their backdrop is the parent
-                    // scope's context, sampled once before PushScope.
-                    let is_self_scope =
-                        self.open_scopes.iter().any(|s| s.shape_id == id);
-                    let needs_per_tile_rebuild =
-                        !self.open_scopes.is_empty() && !is_self_scope;
-                    if needs_per_tile_rebuild {
-                        self.build_gather_backdrop_scoped(id, element, &gather)?;
-                    }
-
                     let is_root_level =
                         element.parent_id.is_some_and(|p| p == Uuid::nil());
                     let backdrop_id = gather.snapshot_source(is_root_level);
