@@ -1,5 +1,5 @@
-# Multi-stage build for one of the Spring Boot subprojects (api, anonymizer, processor).
-# Pick the subproject with --build-arg MODULE=<api|anonymizer|processor>.
+# Multi-stage build for one of the Spring Boot subprojects (api, sanitizer, anonymizer, processor).
+# Pick the subproject with --build-arg MODULE=<api|sanitizer|anonymizer|processor>.
 
 # Stage 1: build all jars
 FROM gradle:8.10-jdk21 AS builder
@@ -17,6 +17,7 @@ COPY gradlew gradlew.bat ./
 # build cache invalidates per subproject when only one changes.
 COPY core ./core
 COPY api ./api
+COPY sanitizer ./sanitizer
 COPY anonymizer ./anonymizer
 COPY processor ./processor
 
