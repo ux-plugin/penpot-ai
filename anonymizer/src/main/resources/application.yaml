@@ -1,67 +1,56 @@
 spring:
   application:
     name: anonymizer
-  main:
-    web-application-type: none
   config:
     import:
       - optional:file:../.env.dev[.properties]
       - optional:file:.env.dev[.properties]
   liquibase:
     enabled: false
+  # Redis kept available for ad-hoc worker-side use; ETL pipeline runs on Kafka.
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      timeout: 70000ms
-      lettuce:
-        pool:
-          max-active: ${REDIS_MAX_POOL_SIZE:50}
-          max-idle: 10
-          min-idle: 5
-          max-wait: ${REDIS_MAX_WAITING:100}ms
-        shutdown-timeout: 5000ms
-  jackson:
-    serialization:
-      write-dates-as-timestamps: false
-    default-property-inclusion: non_null
 
-# Worker tunables — same shape as the sanitizer.
-worker:
-  enabled: true
-  heartbeat:
-    threshold-sec: 60
-  stream:
-    consumer-group: anonymizer-grp
-    consumer-name: ${HOSTNAME:anonymizer-1}
-    poll-timeout-ms: 5000
-    batch-size: 10
-    reclaim:
-      interval-sec: 30
-      min-idle-time-sec: 300
-      batch-size: 100
-    dlq-suffix: ".dlq"
-    max-delivery-attempts: 5
+  cloud:
+    function:
+      definition: anonymize
+    stream:
+      kafka:
+        streams:
+          binder:
+            brokers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+            configuration:
+              application.id: anonymizer-pipeline
+              default.key.serde: org.apache.kafka.common.serialization.Serdes$StringSerde
+              default.value.serde: org.springframework.kafka.support.serializer.JsonSerde
+              spring.json.add.type.headers: true
+              spring.json.use.type.headers: true
+              spring.json.trusted.packages: "com.plugin.core.pipeline"
+              processing.guarantee: at_least_once
+      bindings:
+        anonymize-in-0:
+          destination: chunks.sanitized
+        anonymize-out-0:
+          destination: chunks.anonymized
 
-# Anonymizer config (rules + stream names).
+# Anonymizer rules. Kept the legacy `anonymizer.*` shape so existing
+# AnonymizerProperties bind cleanly; stream-name fields are no longer used and
+# can be removed in a follow-up cleanup pass.
 anonymizer:
   enabled: true
-  input-stream: ingest.sanitized
-  anon-stream: ingest.anon
-  raw-processed-stream: ingest.raw.processed
+  input-stream: chunks.sanitized
+  anon-stream: chunks.anonymized
+  raw-processed-stream: ""
   s3-key-prefix: ""
   rules:
     drop-input-events: true
     strip-url-query-strings: true
-    # text-patterns omitted → defaults from AnonymizerProperties (email/phone/credit-card)
 
-# Object store (MinIO via S3 protocol) — anonymizer reads raw chunks, writes anon chunks.
 objectstore:
   endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
   region: ${OBJECTSTORE_REGION:us-east-1}
-  # Per-stage credentials in production — anonymizer's IAM policy in
-  # deploy/iac/opentofu/ allows GET on raw/ + GET/PUT on anon/. No DeleteObject
-  # anywhere (eviction is sanitizer's job, gated by RAW_PROCESSED).
   access-key: ${ANONYMIZER_S3_ACCESS_KEY:minioadmin}
   secret-key: ${ANONYMIZER_S3_SECRET_KEY:minioadmin}
   bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
@@ -77,16 +66,8 @@ management:
       probes:
         enabled: true
       show-details: always
-      group:
-        liveness:
-          include: workerHeartbeat,livenessState
-        readiness:
-          include: redis,readinessState
 
 logging:
-  pattern:
-    # MDC fields propagate per-message context (see StreamConsumerSupport.dispatch).
-    level: "%5p [%X{orgId:-},%X{sessionId:-},%X{chunkSeq:-}]"
   level:
     root: ${LOG_LEVEL:INFO}
     com.plugin: ${APP_LOG_LEVEL:DEBUG}
