@@ -55,8 +55,18 @@ dependencies {
     api("org.liquibase:liquibase-core")
     runtimeOnly("org.postgresql:postgresql")
 
-    // Redis
+    // Redis (still used for ad-hoc caches; no longer carries the pipeline)
     api("io.lettuce:lettuce-core")
+
+    // Pipeline: Spring Cloud Stream + Kafka Streams binder. Replaces the hand-rolled
+    // Redis Streams workers. The BOM is re-exported as `platform(...)` so subprojects
+    // (sanitizer/anonymizer/processor/api) inherit the resolved versions transitively.
+    api(platform("org.springframework.cloud:spring-cloud-dependencies:2024.0.0"))
+    api("org.springframework.cloud:spring-cloud-stream")
+    api("org.springframework.cloud:spring-cloud-stream-binder-kafka-streams")
+    api("org.springframework.cloud:spring-cloud-stream-binder-kafka")
+    api("org.springframework.kafka:spring-kafka")
+    api("org.apache.kafka:kafka-streams")
 
     // Object store (used by ingestion + workers; lands in core in Ticket 1)
     api("software.amazon.awssdk:s3:2.28.16")
