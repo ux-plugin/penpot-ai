@@ -94,3 +94,33 @@ EXCEPTION
         RAISE NOTICE 'Index idx_api_keys_org_active already exists, skipping';
 END
 $$;
+
+--changeset dhiaeddine:seed-dev-api-key
+-- Seeds a deterministic user/org/api-key for local dev so the demo-app can call
+-- the ingest endpoints without going through the auth flow. The plaintext key is:
+--   pk_live_demo0000000000000000000000000000000000
+-- Stored as SHA-256 hex (matches ApiKeyGenerator.hash). Safe to ship until a real
+-- prod DB exists; revisit before first prod deploy and gate behind a dev profile.
+
+INSERT INTO users (id, name, role)
+VALUES ('dev-user', 'Dev User', 'ADMIN')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO organizations (id, slug, name)
+VALUES ('dev-org', 'dev-org', 'Dev Org')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO organization_members (org_id, user_id, role)
+VALUES ('dev-org', 'dev-user', 'OWNER')
+ON CONFLICT (org_id, user_id) DO NOTHING;
+
+INSERT INTO api_keys (id, org_id, created_by_user_id, name, prefix, key_hash)
+VALUES (
+    'dev-key',
+    'dev-org',
+    'dev-user',
+    'demo-app dev key',
+    'pk_live_demo',
+    'b480d797bf4b30a7d209db1854798e4577f4e6e1cb32ebd4e2d8366cf8894fd9'
+)
+ON CONFLICT (id) DO NOTHING;
