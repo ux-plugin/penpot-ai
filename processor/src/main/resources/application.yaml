@@ -1,53 +1,51 @@
 spring:
   application:
     name: processor
-  main:
-    web-application-type: none
   config:
     import:
       - optional:file:../.env.dev[.properties]
       - optional:file:.env.dev[.properties]
   liquibase:
     enabled: false
+  # R2DBC for session_metadata writes. Liquibase stays off — the api service owns
+  # migrations; the processor only reads/writes existing tables.
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:password}
+  # Redis kept available for ad-hoc worker-side use; ETL pipeline runs on Kafka.
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      timeout: 70000ms
-      lettuce:
-        pool:
-          max-active: ${REDIS_MAX_POOL_SIZE:50}
-          max-idle: 10
-          min-idle: 5
-          max-wait: ${REDIS_MAX_WAITING:100}ms
-        shutdown-timeout: 5000ms
-  jackson:
-    serialization:
-      write-dates-as-timestamps: false
-    default-property-inclusion: non_null
 
-# Worker tunables — same shape as sanitizer + anonymizer.
-worker:
-  enabled: true
-  heartbeat:
-    threshold-sec: 60
-  stream:
-    consumer-group: processor-grp
-    consumer-name: ${HOSTNAME:processor-1}
-    poll-timeout-ms: 5000
-    batch-size: 10
-    reclaim:
-      interval-sec: 30
-      min-idle-time-sec: 300
-      batch-size: 100
-    dlq-suffix: ".dlq"
-    max-delivery-attempts: 5
+  cloud:
+    function:
+      definition: finalize
+    stream:
+      kafka:
+        streams:
+          binder:
+            brokers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+            configuration:
+              application.id: processor-pipeline
+              default.key.serde: org.apache.kafka.common.serialization.Serdes$StringSerde
+              default.value.serde: org.springframework.kafka.support.serializer.JsonSerde
+              spring.json.add.type.headers: true
+              spring.json.use.type.headers: true
+              spring.json.trusted.packages: "com.plugin.core.pipeline"
+              processing.guarantee: at_least_once
+      bindings:
+        finalize-in-0:
+          destination: sessions.closed
 
-# Processor config (input stream + processor mode).
-processor:
-  enabled: true
-  input-stream: ingest.anon
-  mode: NOOP
+objectstore:
+  endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
+  region: ${OBJECTSTORE_REGION:us-east-1}
+  access-key: ${PROCESSOR_S3_ACCESS_KEY:minioadmin}
+  secret-key: ${PROCESSOR_S3_SECRET_KEY:minioadmin}
+  bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
+  path-style: true
 
 management:
   endpoints:
@@ -59,16 +57,8 @@ management:
       probes:
         enabled: true
       show-details: always
-      group:
-        liveness:
-          include: workerHeartbeat,livenessState
-        readiness:
-          include: redis,readinessState
 
 logging:
-  pattern:
-    # MDC fields propagate per-message context (see StreamConsumerSupport.dispatch).
-    level: "%5p [%X{orgId:-},%X{sessionId:-},%X{chunkSeq:-}]"
   level:
     root: ${LOG_LEVEL:INFO}
     com.plugin: ${APP_LOG_LEVEL:DEBUG}

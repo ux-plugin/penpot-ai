@@ -3,20 +3,21 @@ package com.plugin.processor
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan
 import org.springframework.boot.runApplication
-import org.springframework.scheduling.annotation.EnableScheduling
 
 /**
- * Processor worker — pipeline tail. Consumes
- * [com.plugin.core.ingest.IngestEvent.Type.SESSION_ANONYMIZED] events from
- * `ingest.anon` and dispatches each to a [com.plugin.processor.processing.ChunkProcessor].
+ * Processor worker — pipeline tail.
  *
- * v0 ships with [com.plugin.processor.processing.NoopChunkProcessor]; the AI ticket
- * replaces the bean wired by [com.plugin.processor.config.ProcessorConfig] without
- * touching the consumer/ACK plumbing.
+ * Kafka Streams topology:
+ *  - Aggregates `chunks.anonymized` per session into a running metadata KTable
+ *    (state-store-backed, recoverable via changelog).
+ *  - Joins `sessions.closed` with that table to flush the final
+ *    [com.plugin.core.replay.SessionMetadata] row to Postgres via R2DBC.
+ *
+ * R2DBC autoconfig is enabled here (unlike the other workers) since the
+ * processor writes to `session_metadata`. See `config/R2dbcConfig.kt`.
  */
 @SpringBootApplication(scanBasePackages = ["com.plugin.core", "com.plugin.processor"])
 @ConfigurationPropertiesScan(basePackages = ["com.plugin.core", "com.plugin.processor"])
-@EnableScheduling
 class ProcessorApplication
 
 fun main(args: Array<String>) {
