@@ -138,11 +138,16 @@ pub enum RenderStep {
     /// `has_external_layer` mirrors the scheduler's choice: when true,
     /// a paired `BeginLayer` step preceded this `Enter` and pushed the
     /// save_layer for opacity/blend/frame-blur, so `render_shape_enter`
-    /// must skip its inline save_layer. Pre-baked at emit time so the
-    /// dispatcher never re-runs the predicate.
+    /// must skip its inline save_layer. `has_external_gather` (P6) is
+    /// true for scoped container gather shapes — the preceding
+    /// `PaintGather` already ran the gather work, so the dispatcher
+    /// must skip the inline `render_background_blur` / `render_glass`
+    /// calls. Both are pre-baked at emit time so the dispatcher never
+    /// re-runs the predicate.
     Enter {
         shape: Uuid,
         has_external_layer: bool,
+        has_external_gather: bool,
     },
     /// V2c.2 — push a `save_layer` with prebuilt paint (opacity / blend
     /// / frame-clip blur). Brackets a leaf's Paint or a container's
@@ -210,6 +215,7 @@ impl Default for RenderStep {
         RenderStep::Enter {
             shape: Uuid::nil(),
             has_external_layer: false,
+            has_external_gather: false,
         }
     }
 }
@@ -335,6 +341,30 @@ fn shape_qualifies_for_external_layer(shape: &Shape) -> bool {
 /// for external layer wrapping. Returns `None` for shapes outside scope.
 fn layer_paint_for_shape(shape: &Shape) -> Option<LayerPaint> {
     if !shape_qualifies_for_external_layer(shape) {
+        return None;
+    }
+    Some(LayerPaint {
+        opacity: shape.opacity(),
+        blend_mode: shape.blend_mode().into(),
+        frame_blur_sigma_dev: None,
+    })
+}
+
+/// V3 P6 — like `layer_paint_for_shape` but lifts the gather exclusion.
+/// For shapes inside a `PushScope`, the scheduler emits a `PaintGather`
+/// BEFORE `BeginLayer`, so the gather samples the un-isolated backdrop
+/// while the save_layer wraps only the body. The legacy exclusion (which
+/// existed because the inline gather in `render_shape_enter` runs before
+/// save_layer) no longer applies. Masked groups and frame-clip layer-blur
+/// stay excluded because their plumbing is still on the legacy path.
+fn layer_paint_for_scoped_shape(shape: &Shape) -> Option<LayerPaint> {
+    if !shape.needs_layer() {
+        return None;
+    }
+    if matches!(&shape.shape_type, Type::Group(g) if g.masked) {
+        return None;
+    }
+    if shape.has_frame_clip_layer_blur() {
         return None;
     }
     Some(LayerPaint {
@@ -1925,22 +1955,62 @@ impl TileGrid {
             // legacy `render_background_blur` / `render_glass` calls
             // running before `render_shape_enter`.
             let speculative_pos = self.schedule.len();
-            // V3 scope: wraps the entire container emission — BeginLayer,
-            // Enter, children, Exit, EndLayer all sit inside `PushScope` /
-            // `PopScope`. Per-tile emission means each tile that touches
-            // F gets its own pair; the runtime treats subsequent
-            // PushScopes for the same F as re-entry (no re-allocation).
-            // `is_final_tile` is resolved post-topo-sort in
-            // `mark_final_pop_scopes` (last PopScope(F) per F gets true).
+            // V3 scope: wraps the entire container emission — Push/PopScope
+            // brackets `BuildCache(Gather)`, `PaintGather`, `BeginLayer`,
+            // `Enter`, children, `Exit`, `EndLayer`. Per-tile emission
+            // means each tile that touches F gets its own pair; the
+            // runtime treats subsequent PushScopes for the same F as
+            // re-entry (no re-allocation). `is_final_tile` is resolved
+            // post-topo-sort by `mark_final_pop_scopes`.
             let subtree_gather = self.has_gather_in_subtree(shape_id);
             let scoped = needs_scope(shape, subtree_gather, tree);
+            let has_self_gather = Self::shape_has_gather(shape);
+            // P6: container gather is hoisted out of `Enter` only when the
+            // frame is scoped — otherwise the legacy inline path runs
+            // (no behavior change for non-scoped gather containers).
+            let scoped_gather = scoped && has_self_gather;
+            // Track caches emitted in this speculative window so we can
+            // roll back `self.emitted_caches` on truncate. Without this,
+            // subsequent bands of the same shape would skip BuildCache
+            // emission (HashSet says "already emitted") even though the
+            // truncate dropped the schedule entry.
+            let mut speculative_caches: Vec<CacheKind> = Vec::new();
+            // P6: BuildCache(Gather(F)) emitted BEFORE PushScope so the
+            // gather samples the PARENT scope's backdrop (anc + scope +
+            // Current), not F's own still-empty scope_F.
+            if scoped_gather {
+                speculative_caches
+                    .extend(self.emit_cache_build_for_shape(shape_id, shape));
+            }
             if scoped {
                 self.schedule.push(RenderStep::PushScope {
                     shape: shape_id,
                     has_ancestor_snapshot: subtree_gather,
                 });
             }
-            let layer_paint = layer_paint_for_shape(shape);
+            // P6: PaintGather for the container fires INSIDE the scope
+            // (so its refraction lands on Current, which PopScope mirrors
+            // into scope_F). Matched by `has_external_gather=true` on the
+            // Enter step so the dispatcher skips inline bg_blur/glass.
+            if scoped_gather {
+                let (gather_effects, _body) = paint_plan_for_shape(shape);
+                if !gather_effects.is_empty() {
+                    self.schedule.push(RenderStep::PaintGather {
+                        shape: shape_id,
+                        output: SurfaceId::Current,
+                        effects: gather_effects,
+                    });
+                }
+            }
+            // Layer-paint predicate: scoped frames use the lifted version
+            // (gather exclusion removed because PaintGather already ran
+            // outside the layer). Non-scoped frames use the legacy
+            // predicate.
+            let layer_paint = if scoped {
+                layer_paint_for_scoped_shape(shape)
+            } else {
+                layer_paint_for_shape(shape)
+            };
             let has_external_layer = layer_paint.is_some();
             if let Some(p) = layer_paint {
                 self.schedule.push(RenderStep::BeginLayer {
@@ -1951,6 +2021,7 @@ impl TileGrid {
             self.schedule.push(RenderStep::Enter {
                 shape: shape_id,
                 has_external_layer,
+                has_external_gather: scoped_gather,
             });
 
             let mut children = shape.children_ids(false);
@@ -1992,9 +2063,15 @@ impl TileGrid {
                 }
                 true
             } else {
-                // Drop speculative PushScope (if any) + BeginLayer + Enter
-                // — no band content. `truncate` is the single rewind point.
+                // Drop speculative steps (BuildCache, PushScope,
+                // PaintGather, BeginLayer, Enter). The schedule is
+                // truncated to `speculative_pos`, AND `emitted_caches` is
+                // rolled back so subsequent bands of F still emit
+                // BuildCache properly.
                 self.schedule.truncate(speculative_pos);
+                for kind in speculative_caches {
+                    self.emitted_caches.remove(&kind);
+                }
                 false
             }
         } else if band_shapes.contains(&shape_id) {
@@ -2088,6 +2165,7 @@ impl TileGrid {
         self.schedule.push(RenderStep::Enter {
             shape: shape_id,
             has_external_layer: true,
+            has_external_gather: false,
         });
 
         // Mask child = `Shape::mask_id()` = `children.first()`.
@@ -2158,7 +2236,15 @@ impl TileGrid {
     /// must be snapshotted before the scatter cache is built, because
     /// `BuildCache(Scatter)` reads the cached backdrop image and feeds it
     /// into the displacement pass.
-    fn emit_cache_build_for_shape(&mut self, shape_id: Uuid, shape: &Shape) {
+    /// Emits BuildCache step(s) for `shape`. Returns the list of kinds
+    /// freshly inserted into `self.emitted_caches` so a speculative
+    /// caller (e.g. container emit that may later truncate) can roll
+    /// back the set. Callers that always commit can ignore the return.
+    fn emit_cache_build_for_shape(
+        &mut self,
+        shape_id: Uuid,
+        shape: &Shape,
+    ) -> Vec<CacheKind> {
         let has_scatter = shape
             .texture
             .as_ref()
@@ -2188,12 +2274,15 @@ impl TileGrid {
             has_local_blur,
         );
 
+        let mut emitted: Vec<CacheKind> = Vec::new();
+
         // Gather first — its snapshot is an input to the scatter pass for
         // combined scatter+glass shapes.
         if has_gather {
             let kind = CacheKind::Gather(shape_id);
             if self.emitted_caches.insert(kind) {
                 self.schedule.push(RenderStep::BuildCache(kind));
+                emitted.push(kind);
             }
         }
 
@@ -2201,6 +2290,7 @@ impl TileGrid {
             let kind = CacheKind::Scatter(shape_id);
             if self.emitted_caches.insert(kind) {
                 self.schedule.push(RenderStep::BuildCache(kind));
+                emitted.push(kind);
             }
         }
 
@@ -2214,8 +2304,11 @@ impl TileGrid {
             let kind = CacheKind::LocalBlur(shape_id);
             if self.emitted_caches.insert(kind) {
                 self.schedule.push(RenderStep::BuildCache(kind));
+                emitted.push(kind);
             }
         }
+
+        emitted
     }
 }
 
@@ -3112,7 +3205,7 @@ impl RenderState {
                     }
                 }
 
-                RenderStep::Enter { shape: id, has_external_layer } => {
+                RenderStep::Enter { shape: id, has_external_layer, has_external_gather } => {
                     crate::perf_guard!("step_Enter");
                     let Some(element) = tree.get(&id) else {
                         continue;
@@ -3131,45 +3224,53 @@ impl RenderState {
                         let skip_shadows = self.options.is_fast_mode();
                         let is_text = matches!(element.shape_type, Type::Text(_));
 
-                        // Background blur BEFORE save_layer so it modifies
-                        // the backdrop independently of the shape's opacity.
-                        {
-                            crate::perf_guard!("enter_bg_blur");
-                            self.render_background_blur(element, SurfaceId::Current);
-                        }
+                        // P6: when `has_external_gather` is true, an earlier
+                        // `PaintGather` step (emitted inside the surrounding
+                        // PushScope) already ran the gather work — bg_blur
+                        // and glass refraction are already on Current. Skip
+                        // the inline calls. The non-scoped legacy path keeps
+                        // running below for shapes the scheduler didn't lift.
+                        if !has_external_gather {
+                            // Background blur BEFORE save_layer so it modifies
+                            // the backdrop independently of the shape's opacity.
+                            {
+                                crate::perf_guard!("enter_bg_blur");
+                                self.render_background_blur(element, SurfaceId::Current);
+                            }
 
-                        // Glass effect BEFORE save_layer so it snapshots the
-                        // real accumulated backdrop on Target. Mirrors the
-                        // leaf Render handler's root-vs-nested branching.
-                        if let Some(glass) = element.glass.as_ref().filter(|g| !g.hidden) {
-                            crate::perf_guard!("enter_glass");
-                            let is_root_level =
-                                element.parent_id.is_some_and(|p| p == Uuid::nil());
-                            if is_root_level {
-                                let tile_rect = self.get_current_tile_bounds()?;
-                                let bg_color = self.background_color;
-                                self.surfaces
-                                    .composite_current_to_target(tile_rect, bg_color);
-                                self.flush_and_submit();
-                                let backdrop_image = self
-                                    .surfaces
-                                    .get_or_snapshot_glass_backdrop(id, SurfaceId::Target);
-                                crate::render::glass::render_glass_with_backdrop_image(
-                                    self,
-                                    element,
-                                    glass,
-                                    SurfaceId::Current,
-                                    SurfaceId::Target,
-                                    Some(backdrop_image),
-                                    None,
-                                );
-                            } else {
-                                crate::render::glass::render_glass(
-                                    self,
-                                    element,
-                                    glass,
-                                    SurfaceId::Current,
-                                );
+                            // Glass effect BEFORE save_layer so it snapshots the
+                            // real accumulated backdrop on Target. Mirrors the
+                            // leaf Render handler's root-vs-nested branching.
+                            if let Some(glass) = element.glass.as_ref().filter(|g| !g.hidden) {
+                                crate::perf_guard!("enter_glass");
+                                let is_root_level =
+                                    element.parent_id.is_some_and(|p| p == Uuid::nil());
+                                if is_root_level {
+                                    let tile_rect = self.get_current_tile_bounds()?;
+                                    let bg_color = self.background_color;
+                                    self.surfaces
+                                        .composite_current_to_target(tile_rect, bg_color);
+                                    self.flush_and_submit();
+                                    let backdrop_image = self
+                                        .surfaces
+                                        .get_or_snapshot_glass_backdrop(id, SurfaceId::Target);
+                                    crate::render::glass::render_glass_with_backdrop_image(
+                                        self,
+                                        element,
+                                        glass,
+                                        SurfaceId::Current,
+                                        SurfaceId::Target,
+                                        Some(backdrop_image),
+                                        None,
+                                    );
+                                } else {
+                                    crate::render::glass::render_glass(
+                                        self,
+                                        element,
+                                        glass,
+                                        SurfaceId::Current,
+                                    );
+                                }
                             }
                         }
 
