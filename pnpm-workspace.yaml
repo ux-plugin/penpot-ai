@@ -3,3 +3,5 @@ packages:
   - "skia-rs-wasm"
   - "skia-rs-wasm/packages/*"
   - "sdk/wrappers/*/*"
+  - "demo-app"
+  - "zoetrope-frontend"
