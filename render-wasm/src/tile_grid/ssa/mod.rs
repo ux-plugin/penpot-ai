@@ -34,7 +34,9 @@
 #![allow(dead_code, unused_imports)]
 
 mod allocator;
+mod dispatcher;
 mod step;
+mod surface_map;
 mod surface_ref;
 mod validator;
 
@@ -42,6 +44,8 @@ mod validator;
 mod tests;
 
 pub use allocator::{AllocatorStats, SurfaceAllocator};
-pub use step::Step;
+pub use dispatcher::{DispatchSink, DispatchTrace, Dispatcher, TraceEvent};
+pub use step::{EffectKey, GatherFx, LayerPaint, Step};
+pub use surface_map::SurfaceMap;
 pub use surface_ref::{SizeClass, SurfaceRef, SurfaceRole};
-pub use validator::{IrValidator, ValidationError};
+pub use validator::{compute_liveness, IrValidator, ValidationError};
