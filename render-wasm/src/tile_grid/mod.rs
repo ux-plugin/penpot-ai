@@ -8,6 +8,11 @@
 
 #![cfg(feature = "tile-scheduler")]
 
+// SSA Surface IR — see `docs/ssa-surface-ir-plan.md`. Lives alongside the
+// legacy scheduler during the rewrite; gated by `ssa-ir` for active use but
+// always compiled so it can't bit-rot from the rest of the module.
+pub mod ssa;
+
 use std::collections::BinaryHeap;
 
 // Hash map/set used throughout this module are FxHash-backed: small-key
