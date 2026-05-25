@@ -39,4 +39,18 @@ export const VISUAL_CELLS: readonly VisualCell[] = [
   { scene: 'flat_baseline', scenario: 'idle', frame: 30 },
   { scene: 'nested_d3_b5_no_fx', scenario: 'idle', frame: 30 },
   { scene: 'mixed_kitchen_sink', scenario: 'idle', frame: 30 },
+  // 3 overlapping frames, topmost has glass — the cache-capture spec
+  // also dumps every surface snapshot under
+  // `screenshots/iso_glass_3frames_overlap__caches/` for this cell.
+  { scene: 'iso_glass_3frames_overlap', scenario: 'idle', frame: 30 },
+  // Solo glass child of a frame, no siblings — repros the "black glass"
+  // bug when the ancestor's body fill isn't reachable via Current at
+  // glass time.
+  { scene: 'iso_glass_solo_child', scenario: 'idle', frame: 30 },
+  // ── SSA Bucket A: gap-fill cells for the IR rewrite ────────────
+  { scene: 'iso_offscreen_scope', scenario: 'idle', frame: 30 },
+  { scene: 'iso_nested_scopes_2deep_gathers', scenario: 'idle', frame: 30 },
+  { scene: 'iso_z_stacked_gathers', scenario: 'idle', frame: 30 },
+  { scene: 'iso_sibling_gathers_disjoint', scenario: 'idle', frame: 30 },
+  { scene: 'iso_sibling_gathers_overlapping', scenario: 'idle', frame: 30 },
 ] as const

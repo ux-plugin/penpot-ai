@@ -1,0 +1,6983 @@
+{
+  "generated_at": "2026-05-25T17:41:07.810Z",
+  "frames_per_run": 60,
+  "repeats": 3,
+  "cells": [
+    {
+      "scene_id": 0,
+      "scene_name": "scene_0",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999.8000000715256,
+      "wall_ms_p95": 1001.6900000929833,
+      "cache": {
+        "tile_hits": 600,
+        "tile_misses": 1230,
+        "tile_writes": 10,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 92.9,
+          "p95_ms": 101.72,
+          "mean_ms": 88.43333333333334,
+          "max_ms": 6.8
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 52.2,
+          "p95_ms": 53.82,
+          "mean_ms": 49.23333333333333,
+          "max_ms": 1.6
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 19.1,
+          "p95_ms": 19.189999999999998,
+          "mean_ms": 18.099999999999998,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 18.3,
+          "p95_ms": 23.52,
+          "mean_ms": 18.500000000000004,
+          "max_ms": 5.2
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 17,
+          "p95_ms": 17.18,
+          "mean_ms": 15.9,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 15.5,
+          "p95_ms": 17.93,
+          "mean_ms": 15.133333333333335,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 11.2,
+          "p95_ms": 11.649999999999999,
+          "mean_ms": 10.633333333333333,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 8.8,
+          "p95_ms": 11.41,
+          "mean_ms": 8.799999999999999,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1230,
+          "p50_ms": 3.8,
+          "p95_ms": 4.34,
+          "mean_ms": 3.5666666666666664,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 600,
+          "p50_ms": 2.8,
+          "p95_ms": 3.34,
+          "mean_ms": 2.6333333333333333,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 330,
+          "p50_ms": 2.4,
+          "p95_ms": 4.379999999999999,
+          "mean_ms": 3.0999999999999996,
+          "max_ms": 2.4
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 330,
+          "p50_ms": 1.8,
+          "p95_ms": 2.4299999999999997,
+          "mean_ms": 1.9333333333333333,
+          "max_ms": 1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 1.3,
+          "p95_ms": 1.3,
+          "mean_ms": 1.2,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 0.9,
+          "p95_ms": 1.08,
+          "mean_ms": 0.8333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.20000000000000004,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.1,
+          "p95_ms": 0.27999999999999997,
+          "mean_ms": 0.13333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 0,
+      "scene_name": "scene_0",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999.7000000476837,
+      "wall_ms_p95": 1000.5099999189376,
+      "cache": {
+        "tile_hits": 686,
+        "tile_misses": 1369,
+        "tile_writes": 14,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 75.7,
+          "p95_ms": 89.28999999999999,
+          "mean_ms": 79,
+          "max_ms": 4.4
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 42.9,
+          "p95_ms": 47.22,
+          "mean_ms": 44.46666666666666,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 36.6,
+          "p95_ms": 41.46,
+          "mean_ms": 38.333333333333336,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 27.2,
+          "p95_ms": 29.9,
+          "mean_ms": 27.599999999999998,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 17.6,
+          "p95_ms": 18.77,
+          "mean_ms": 17.966666666666665,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 15.4,
+          "p95_ms": 21.25,
+          "mean_ms": 16.599999999999998,
+          "max_ms": 2.9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 13.9,
+          "p95_ms": 16.599999999999998,
+          "mean_ms": 14.633333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 7.9,
+          "p95_ms": 9.610000000000001,
+          "mean_ms": 8.000000000000002,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 686,
+          "p50_ms": 2.8,
+          "p95_ms": 3.4299999999999997,
+          "mean_ms": 2.6666666666666665,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1369,
+          "p50_ms": 2.5,
+          "p95_ms": 4.03,
+          "mean_ms": 2.966666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.9,
+          "p95_ms": 1.9,
+          "mean_ms": 1.8666666666666665,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 462,
+          "p50_ms": 1.7,
+          "p95_ms": 4.3999999999999995,
+          "mean_ms": 2.6666666666666665,
+          "max_ms": 1.8
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 462,
+          "p50_ms": 1.6,
+          "p95_ms": 2.95,
+          "mean_ms": 2,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.4,
+          "p95_ms": 1.67,
+          "mean_ms": 1.3666666666666665,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.4,
+          "p95_ms": 0.49,
+          "mean_ms": 0.39999999999999997,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.3,
+          "p95_ms": 0.48,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 0,
+      "scene_name": "scene_0",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1028,
+      "wall_ms_p95": 1040.2400000214577,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 795,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 127.3,
+          "p95_ms": 142.78,
+          "mean_ms": 131.9,
+          "max_ms": 4.5
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 70.1,
+          "p95_ms": 81.35,
+          "mean_ms": 73.76666666666667,
+          "max_ms": 3.4
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 62.4,
+          "p95_ms": 62.85,
+          "mean_ms": 61.93333333333334,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 20632,
+          "p50_ms": 45.5,
+          "p95_ms": 54.41,
+          "mean_ms": 48.666666666666664,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 45.1,
+          "p95_ms": 45.91,
+          "mean_ms": 44.9,
+          "max_ms": 3.2
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 35.8,
+          "p95_ms": 36.25,
+          "mean_ms": 35.86666666666667,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 20632,
+          "p50_ms": 33.1,
+          "p95_ms": 41.56,
+          "mean_ms": 35.9,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 22.5,
+          "p95_ms": 22.5,
+          "mean_ms": 22.366666666666664,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 17.7,
+          "p95_ms": 22.47,
+          "mean_ms": 19.033333333333335,
+          "max_ms": 1.7
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 9,
+          "p95_ms": 9.45,
+          "mean_ms": 8.700000000000001,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 4.5,
+          "p95_ms": 6.39,
+          "mean_ms": 4.7,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 2.3,
+          "p95_ms": 2.66,
+          "mean_ms": 2.1666666666666665,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 2,
+          "p95_ms": 2.18,
+          "mean_ms": 1.9333333333333336,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.3,
+          "p95_ms": 0.39,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.3,
+          "p95_ms": 0.48,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.3
+        }
+      ]
+    },
+    {
+      "scene_id": 0,
+      "scene_name": "scene_0",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1002.5,
+      "wall_ms_p95": 1002.770000064373,
+      "cache": {
+        "tile_hits": 600,
+        "tile_misses": 1230,
+        "tile_writes": 10,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 82.3,
+          "p95_ms": 90.49000000000001,
+          "mean_ms": 85.3,
+          "max_ms": 6.5
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 50.5,
+          "p95_ms": 51.04,
+          "mean_ms": 50.43333333333334,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 40.3,
+          "p95_ms": 40.839999999999996,
+          "mean_ms": 40.199999999999996,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 32.5,
+          "p95_ms": 32.68,
+          "mean_ms": 32.13333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 22.5,
+          "p95_ms": 23.040000000000003,
+          "mean_ms": 22.366666666666664,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 15.9,
+          "p95_ms": 21.66,
+          "mean_ms": 17.46666666666667,
+          "max_ms": 5.1
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 13.7,
+          "p95_ms": 14.51,
+          "mean_ms": 13.699999999999998,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 8.7,
+          "p95_ms": 10.95,
+          "mean_ms": 8.833333333333334,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1230,
+          "p50_ms": 2.8,
+          "p95_ms": 3.16,
+          "mean_ms": 2.9,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 600,
+          "p50_ms": 2.7,
+          "p95_ms": 3.1500000000000004,
+          "mean_ms": 2.6333333333333333,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 2,
+          "p95_ms": 2.2699999999999996,
+          "mean_ms": 1.9666666666666668,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 330,
+          "p50_ms": 1.9,
+          "p95_ms": 4.33,
+          "mean_ms": 2.733333333333333,
+          "max_ms": 2.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.6,
+          "p95_ms": 1.69,
+          "mean_ms": 1.5666666666666664,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 330,
+          "p50_ms": 1.4,
+          "p95_ms": 2.5700000000000003,
+          "mean_ms": 1.8333333333333333,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.59,
+          "mean_ms": 0.46666666666666673,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.2,
+          "p95_ms": 0.2,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 3,
+      "scene_name": "scene_3",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000.1000000238419,
+      "wall_ms_p95": 1000.1900000452995,
+      "cache": {
+        "tile_hits": 1200,
+        "tile_misses": 630,
+        "tile_writes": 20,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 95.8,
+          "p95_ms": 97.86999999999999,
+          "mean_ms": 86.73333333333333,
+          "max_ms": 3
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 44.8,
+          "p95_ms": 47.589999999999996,
+          "mean_ms": 40.63333333333333,
+          "max_ms": 1.5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 34.4,
+          "p95_ms": 37.55,
+          "mean_ms": 31.566666666666663,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 21.3,
+          "p95_ms": 22.2,
+          "mean_ms": 20.53333333333333,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 18.8,
+          "p95_ms": 18.889999999999997,
+          "mean_ms": 16.966666666666665,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 12.4,
+          "p95_ms": 14.56,
+          "mean_ms": 12.833333333333334,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 1200,
+          "p50_ms": 5.8,
+          "p95_ms": 6.79,
+          "mean_ms": 5.933333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 3.1,
+          "p95_ms": 3.55,
+          "mean_ms": 3.1,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 630,
+          "p50_ms": 2.7,
+          "p95_ms": 3.33,
+          "mean_ms": 2.8333333333333335,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 2.3,
+          "p95_ms": 2.3,
+          "mean_ms": 2.033333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 1,
+          "p95_ms": 1.27,
+          "mean_ms": 1.0666666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 0.4,
+          "p95_ms": 0.49,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Enter",
+          "count": 9,
+          "p50_ms": 0.3,
+          "p95_ms": 0.48,
+          "mean_ms": 0.3,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.2,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 9,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.13333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.1,
+          "p95_ms": 0.37,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "step_Exit",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 3,
+      "scene_name": "scene_3",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000,
+      "wall_ms_p95": 1000,
+      "cache": {
+        "tile_hits": 1372,
+        "tile_misses": 683,
+        "tile_writes": 28,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 73.3,
+          "p95_ms": 74.56,
+          "mean_ms": 73.43333333333334,
+          "max_ms": 2.3
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 59,
+          "p95_ms": 62.15,
+          "mean_ms": 58.76666666666667,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 34.1,
+          "p95_ms": 35.72,
+          "mean_ms": 34.53333333333333,
+          "max_ms": 1.5
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 18.1,
+          "p95_ms": 20.439999999999998,
+          "mean_ms": 18.5,
+          "max_ms": 1
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 14.8,
+          "p95_ms": 14.98,
+          "mean_ms": 14.766666666666666,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 11.3,
+          "p95_ms": 13.64,
+          "mean_ms": 12.133333333333335,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 6.5,
+          "p95_ms": 6.59,
+          "mean_ms": 6.166666666666667,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 1372,
+          "p50_ms": 4.5,
+          "p95_ms": 4.68,
+          "mean_ms": 4.466666666666666,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 3.9,
+          "p95_ms": 5.25,
+          "mean_ms": 4.366666666666666,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 2.7,
+          "p95_ms": 2.88,
+          "mean_ms": 2.6,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 683,
+          "p50_ms": 2.2,
+          "p95_ms": 2.29,
+          "mean_ms": 2.1999999999999997,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.9,
+          "p95_ms": 0.99,
+          "mean_ms": 0.7999999999999999,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 0.6,
+          "p95_ms": 1.41,
+          "mean_ms": 0.7999999999999999,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.86,
+          "mean_ms": 0.6,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Enter",
+          "count": 9,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_Exit",
+          "count": 9,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 9,
+          "p50_ms": 0.1,
+          "p95_ms": 0.1,
+          "mean_ms": 0.06666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 9,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 3,
+      "scene_name": "scene_3",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999.8999999761581,
+      "wall_ms_p95": 999.9899999976158,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 1220,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 103.9,
+          "p95_ms": 107.05000000000001,
+          "mean_ms": 99.86666666666667,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 77.6,
+          "p95_ms": 82.72999999999999,
+          "mean_ms": 78.16666666666666,
+          "max_ms": 3
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 31.7,
+          "p95_ms": 35.12,
+          "mean_ms": 31.833333333333332,
+          "max_ms": 2.3
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 22.8,
+          "p95_ms": 24.06,
+          "mean_ms": 22.200000000000003,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 20.3,
+          "p95_ms": 23.9,
+          "mean_ms": 21.333333333333332,
+          "max_ms": 1.8
+        },
+        {
+          "tag": "step_Enter",
+          "count": 732,
+          "p50_ms": 10.8,
+          "p95_ms": 12.33,
+          "mean_ms": 10.799999999999999,
+          "max_ms": 1.7
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 10.4,
+          "p95_ms": 11.93,
+          "mean_ms": 10.933333333333332,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 8,
+          "p95_ms": 8.09,
+          "mean_ms": 7.8,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 732,
+          "p50_ms": 4.4,
+          "p95_ms": 5.39,
+          "mean_ms": 4.633333333333334,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 4,
+          "p95_ms": 5.98,
+          "mean_ms": 4.566666666666666,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 732,
+          "p50_ms": 4,
+          "p95_ms": 4.36,
+          "mean_ms": 3.7000000000000006,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 4,
+          "p95_ms": 4.27,
+          "mean_ms": 3.8000000000000003,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_Exit",
+          "count": 732,
+          "p50_ms": 1.9,
+          "p95_ms": 2.17,
+          "mean_ms": 1.5666666666666664,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 1.9,
+          "p95_ms": 2.98,
+          "mean_ms": 2.233333333333333,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 1.1,
+          "p95_ms": 1.64,
+          "mean_ms": 1.2333333333333332,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 732,
+          "p50_ms": 0.4,
+          "p95_ms": 0.4,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 732,
+          "p50_ms": 0.4,
+          "p95_ms": 0.58,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.4,
+          "p95_ms": 0.76,
+          "mean_ms": 0.5,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.2,
+          "p95_ms": 0.47,
+          "mean_ms": 0.3,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 3,
+      "scene_name": "scene_3",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999.8999999761581,
+      "wall_ms_p95": 999.9899999976158,
+      "cache": {
+        "tile_hits": 1200,
+        "tile_misses": 630,
+        "tile_writes": 20,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 70.9,
+          "p95_ms": 71.97999999999999,
+          "mean_ms": 70.2,
+          "max_ms": 2.1
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 59.9,
+          "p95_ms": 60.08,
+          "mean_ms": 58.599999999999994,
+          "max_ms": 1
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 32.2,
+          "p95_ms": 32.650000000000006,
+          "mean_ms": 32.13333333333333,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 17.9,
+          "p95_ms": 19.7,
+          "mean_ms": 18.3,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 14.6,
+          "p95_ms": 14.780000000000001,
+          "mean_ms": 13.799999999999999,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 11.6,
+          "p95_ms": 13.489999999999998,
+          "mean_ms": 12.266666666666666,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 4.9,
+          "p95_ms": 5.3500000000000005,
+          "mean_ms": 4.9,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 1200,
+          "p50_ms": 4.5,
+          "p95_ms": 5.039999999999999,
+          "mean_ms": 4.633333333333333,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 4.2,
+          "p95_ms": 4.74,
+          "mean_ms": 4.166666666666667,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 2.9,
+          "p95_ms": 2.9,
+          "mean_ms": 2.8666666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 630,
+          "p50_ms": 1.8,
+          "p95_ms": 2.34,
+          "mean_ms": 2,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 0.9,
+          "p95_ms": 0.9,
+          "mean_ms": 0.7333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.6,
+          "p95_ms": 0.69,
+          "mean_ms": 0.6,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.3,
+          "p95_ms": 0.57,
+          "mean_ms": 0.39999999999999997,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Enter",
+          "count": 9,
+          "p50_ms": 0.3,
+          "p95_ms": 0.39,
+          "mean_ms": 0.3,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 9,
+          "p50_ms": 0.2,
+          "p95_ms": 0.2,
+          "mean_ms": 0.20000000000000004,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 9,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "step_Exit",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 9,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 8,
+      "scene_name": "scene_8",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999.8999999761581,
+      "wall_ms_p95": 999.8999999761581,
+      "cache": {
+        "tile_hits": 1320,
+        "tile_misses": 510,
+        "tile_writes": 510,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 175.1,
+          "p95_ms": 202.82,
+          "mean_ms": 182.5,
+          "max_ms": 5.1
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 126.3,
+          "p95_ms": 146.45999999999998,
+          "mean_ms": 131.36666666666667,
+          "max_ms": 3.9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 183,
+          "p50_ms": 50,
+          "p95_ms": 57.74,
+          "mean_ms": 52.06666666666666,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_Enter",
+          "count": 616,
+          "p50_ms": 42.3,
+          "p95_ms": 44.64,
+          "mean_ms": 42.03333333333333,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 616,
+          "p50_ms": 38,
+          "p95_ms": 40.34,
+          "mean_ms": 38.03333333333333,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "step_PaintGather",
+          "count": 488,
+          "p50_ms": 33.5,
+          "p95_ms": 39.08,
+          "mean_ms": 34.733333333333334,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_BuildCache_Gather",
+          "count": 122,
+          "p50_ms": 26,
+          "p95_ms": 29.509999999999998,
+          "mean_ms": 26.96666666666667,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "fx_Glass",
+          "count": 244,
+          "p50_ms": 21.6,
+          "p95_ms": 23.759999999999998,
+          "mean_ms": 21.666666666666668,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 18.2,
+          "p95_ms": 18.65,
+          "mean_ms": 18.266666666666666,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "fx_BackgroundBlur",
+          "count": 244,
+          "p50_ms": 10.7,
+          "p95_ms": 14.209999999999999,
+          "mean_ms": 11.933333333333332,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 8.4,
+          "p95_ms": 8.4,
+          "mean_ms": 8.333333333333334,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2196,
+          "p50_ms": 5.4,
+          "p95_ms": 6.300000000000001,
+          "mean_ms": 5.333333333333333,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 876,
+          "p50_ms": 5.1,
+          "p95_ms": 7.799999999999999,
+          "mean_ms": 5.933333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PushScope",
+          "count": 488,
+          "p50_ms": 4.3,
+          "p95_ms": 5.02,
+          "mean_ms": 4.433333333333334,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_Exit",
+          "count": 616,
+          "p50_ms": 4.2,
+          "p95_ms": 4.65,
+          "mean_ms": 4.133333333333334,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 3.9,
+          "p95_ms": 4.26,
+          "mean_ms": 4.033333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_PopScope",
+          "count": 488,
+          "p50_ms": 3,
+          "p95_ms": 4.98,
+          "mean_ms": 3.5666666666666664,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 616,
+          "p50_ms": 2.6,
+          "p95_ms": 2.87,
+          "mean_ms": 2.6333333333333333,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 2.5,
+          "p95_ms": 2.59,
+          "mean_ms": 2.3333333333333335,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 1320,
+          "p50_ms": 1.9,
+          "p95_ms": 2.17,
+          "mean_ms": 1.7666666666666668,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 1.4,
+          "p95_ms": 1.76,
+          "mean_ms": 1.5,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.6,
+          "p95_ms": 0.78,
+          "mean_ms": 0.6333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.2,
+          "mean_ms": 0.13333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 616,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 128,
+          "p50_ms": 0.1,
+          "p95_ms": 0.1,
+          "mean_ms": 0.06666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_FreeCache",
+          "count": 2,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 8,
+      "scene_name": "scene_8",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999.8000000715256,
+      "wall_ms_p95": 999.9800000071525,
+      "cache": {
+        "tile_hits": 1535,
+        "tile_misses": 520,
+        "tile_writes": 520,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 165,
+          "p95_ms": 190.82999999999998,
+          "mean_ms": 168.76666666666665,
+          "max_ms": 7
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 118.3,
+          "p95_ms": 138.45999999999998,
+          "mean_ms": 121.43333333333334,
+          "max_ms": 6.1
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 183,
+          "p50_ms": 45.4,
+          "p95_ms": 59.44,
+          "mean_ms": 48.76666666666667,
+          "max_ms": 4.2
+        },
+        {
+          "tag": "step_Enter",
+          "count": 616,
+          "p50_ms": 37.4,
+          "p95_ms": 44.599999999999994,
+          "mean_ms": 39.166666666666664,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 616,
+          "p50_ms": 33,
+          "p95_ms": 40.47,
+          "mean_ms": 35.46666666666667,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "step_PaintGather",
+          "count": 488,
+          "p50_ms": 31.8,
+          "p95_ms": 33.96,
+          "mean_ms": 30.666666666666668,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_BuildCache_Gather",
+          "count": 122,
+          "p50_ms": 22.7,
+          "p95_ms": 31.61,
+          "mean_ms": 24.566666666666663,
+          "max_ms": 4.2
+        },
+        {
+          "tag": "fx_Glass",
+          "count": 244,
+          "p50_ms": 21.2,
+          "p95_ms": 21.83,
+          "mean_ms": 20.23333333333333,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 17.8,
+          "p95_ms": 19.33,
+          "mean_ms": 18.099999999999998,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 16.6,
+          "p95_ms": 17.86,
+          "mean_ms": 16.733333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "fx_BackgroundBlur",
+          "count": 244,
+          "p50_ms": 9.5,
+          "p95_ms": 11.3,
+          "mean_ms": 9.700000000000001,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 9.3,
+          "p95_ms": 9.48,
+          "mean_ms": 8.866666666666667,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 886,
+          "p50_ms": 6.1,
+          "p95_ms": 6.37,
+          "mean_ms": 6.066666666666667,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2421,
+          "p50_ms": 6.1,
+          "p95_ms": 7,
+          "mean_ms": 6.3,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 4.3,
+          "p95_ms": 4.3,
+          "mean_ms": 4.133333333333333,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_PushScope",
+          "count": 488,
+          "p50_ms": 4.1,
+          "p95_ms": 4.46,
+          "mean_ms": 3.9666666666666663,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_Exit",
+          "count": 616,
+          "p50_ms": 3.6,
+          "p95_ms": 3.96,
+          "mean_ms": 3.6,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 3.2,
+          "p95_ms": 3.56,
+          "mean_ms": 3.1333333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PopScope",
+          "count": 488,
+          "p50_ms": 3.1,
+          "p95_ms": 3.55,
+          "mean_ms": 3.1666666666666665,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 616,
+          "p50_ms": 2.5,
+          "p95_ms": 2.59,
+          "mean_ms": 2.3333333333333335,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 1535,
+          "p50_ms": 1.9,
+          "p95_ms": 2.17,
+          "mean_ms": 1.6333333333333335,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 1.5,
+          "p95_ms": 1.59,
+          "mean_ms": 1.5,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 0.6,
+          "p95_ms": 0.6,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.4,
+          "p95_ms": 0.6699999999999999,
+          "mean_ms": 0.4666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 616,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 128,
+          "p50_ms": 0,
+          "p95_ms": 0.18,
+          "mean_ms": 0.06666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_FreeCache",
+          "count": 4,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 8,
+      "scene_name": "scene_8",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 2450.600000023842,
+      "wall_ms_p95": 2535.1999999165537,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 1760,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 343.2,
+          "p95_ms": 1102.8899999999999,
+          "mean_ms": 613.1333333333333,
+          "max_ms": 187.2
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 261.2,
+          "p95_ms": 1010.27,
+          "mean_ms": 529.2666666666667,
+          "max_ms": 186.6
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 183,
+          "p50_ms": 112.1,
+          "p95_ms": 855.6799999999998,
+          "mean_ms": 384.6666666666666,
+          "max_ms": 184.2
+        },
+        {
+          "tag": "step_Enter",
+          "count": 1329,
+          "p50_ms": 89,
+          "p95_ms": 96.02,
+          "mean_ms": 88.16666666666667,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 85.5,
+          "p95_ms": 92.16000000000001,
+          "mean_ms": 87.3,
+          "max_ms": 2.2
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 1329,
+          "p50_ms": 79,
+          "p95_ms": 81.78999999999999,
+          "mean_ms": 76.8,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "step_BuildCache_Gather",
+          "count": 122,
+          "p50_ms": 59.2,
+          "p95_ms": 791.9799999999999,
+          "mean_ms": 329.6333333333333,
+          "max_ms": 184.2
+        },
+        {
+          "tag": "step_PaintGather",
+          "count": 656,
+          "p50_ms": 45.6,
+          "p95_ms": 47.49,
+          "mean_ms": 43.666666666666664,
+          "max_ms": 1
+        },
+        {
+          "tag": "fx_Glass",
+          "count": 297,
+          "p50_ms": 28.2,
+          "p95_ms": 29.55,
+          "mean_ms": 26.5,
+          "max_ms": 1
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 367,
+          "p50_ms": 22.6,
+          "p95_ms": 30.700000000000003,
+          "mean_ms": 25.5,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 21.3,
+          "p95_ms": 21.57,
+          "mean_ms": 21.066666666666666,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "fx_DropShadows",
+          "count": 233,
+          "p50_ms": 20,
+          "p95_ms": 26.93,
+          "mean_ms": 22.46666666666667,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 18.5,
+          "p95_ms": 20.39,
+          "mean_ms": 18.96666666666667,
+          "max_ms": 1
+        },
+        {
+          "tag": "fx_BackgroundBlur",
+          "count": 359,
+          "p50_ms": 15.2,
+          "p95_ms": 17.810000000000002,
+          "mean_ms": 15.966666666666669,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 2265,
+          "p50_ms": 12.6,
+          "p95_ms": 13.41,
+          "mean_ms": 12.666666666666666,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_PushScope",
+          "count": 656,
+          "p50_ms": 7.1,
+          "p95_ms": 7.55,
+          "mean_ms": 7.2,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 6.5,
+          "p95_ms": 7.22,
+          "mean_ms": 6.633333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 1329,
+          "p50_ms": 6.3,
+          "p95_ms": 10.62,
+          "mean_ms": 7.866666666666667,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2265,
+          "p50_ms": 5.3,
+          "p95_ms": 6.92,
+          "mean_ms": 5.666666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_Exit",
+          "count": 1329,
+          "p50_ms": 5.3,
+          "p95_ms": 6.29,
+          "mean_ms": 5.266666666666667,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 5.3,
+          "p95_ms": 6.199999999999999,
+          "mean_ms": 5.433333333333334,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PopScope",
+          "count": 656,
+          "p50_ms": 4.4,
+          "p95_ms": 5.57,
+          "mean_ms": 4.833333333333334,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 3.9,
+          "p95_ms": 4.26,
+          "mean_ms": 3.9666666666666663,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 367,
+          "p50_ms": 2.1,
+          "p95_ms": 3.45,
+          "mean_ms": 2.566666666666667,
+          "max_ms": 1
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 1.3,
+          "p95_ms": 1.57,
+          "mean_ms": 1.2333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.6,
+          "p95_ms": 0.6,
+          "mean_ms": 0.6,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 1329,
+          "p50_ms": 0.6,
+          "p95_ms": 0.69,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 673,
+          "p50_ms": 0.4,
+          "p95_ms": 0.58,
+          "mean_ms": 0.4333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_FreeCache",
+          "count": 122,
+          "p50_ms": 0.1,
+          "p95_ms": 0.27999999999999997,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 8,
+      "scene_name": "scene_8",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999,
+      "wall_ms_p95": 999.8099999785424,
+      "cache": {
+        "tile_hits": 1320,
+        "tile_misses": 510,
+        "tile_writes": 510,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 161.2,
+          "p95_ms": 183.7,
+          "mean_ms": 166.4,
+          "max_ms": 5.3
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 116.2,
+          "p95_ms": 135.1,
+          "mean_ms": 121.33333333333333,
+          "max_ms": 4.3
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 183,
+          "p50_ms": 46.2,
+          "p95_ms": 57,
+          "mean_ms": 49.866666666666674,
+          "max_ms": 2.7
+        },
+        {
+          "tag": "step_Enter",
+          "count": 616,
+          "p50_ms": 36.2,
+          "p95_ms": 42.95,
+          "mean_ms": 37.666666666666664,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 616,
+          "p50_ms": 33.9,
+          "p95_ms": 39.120000000000005,
+          "mean_ms": 34.43333333333333,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "step_PaintGather",
+          "count": 488,
+          "p50_ms": 32,
+          "p95_ms": 33.53,
+          "mean_ms": 31.3,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_BuildCache_Gather",
+          "count": 122,
+          "p50_ms": 24.2,
+          "p95_ms": 30.229999999999997,
+          "mean_ms": 26.2,
+          "max_ms": 2.7
+        },
+        {
+          "tag": "fx_Glass",
+          "count": 244,
+          "p50_ms": 19,
+          "p95_ms": 19.990000000000002,
+          "mean_ms": 18.533333333333335,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 17.4,
+          "p95_ms": 17.669999999999998,
+          "mean_ms": 17.23333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 14.6,
+          "p95_ms": 14.959999999999999,
+          "mean_ms": 14.333333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "fx_BackgroundBlur",
+          "count": 244,
+          "p50_ms": 12.2,
+          "p95_ms": 12.47,
+          "mean_ms": 11.833333333333334,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 7,
+          "p95_ms": 7.45,
+          "mean_ms": 6.866666666666667,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2196,
+          "p50_ms": 6.4,
+          "p95_ms": 6.76,
+          "mean_ms": 6.266666666666666,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 876,
+          "p50_ms": 5.7,
+          "p95_ms": 6.15,
+          "mean_ms": 5.533333333333334,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PushScope",
+          "count": 488,
+          "p50_ms": 4.2,
+          "p95_ms": 4.56,
+          "mean_ms": 4.233333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 3.3,
+          "p95_ms": 3.3899999999999997,
+          "mean_ms": 3.033333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_Exit",
+          "count": 616,
+          "p50_ms": 3.2,
+          "p95_ms": 3.56,
+          "mean_ms": 3.1666666666666665,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_PopScope",
+          "count": 488,
+          "p50_ms": 3.1,
+          "p95_ms": 3.7299999999999995,
+          "mean_ms": 3.033333333333333,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 3,
+          "p95_ms": 3.8099999999999996,
+          "mean_ms": 3.3000000000000003,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 616,
+          "p50_ms": 1.6,
+          "p95_ms": 2.32,
+          "mean_ms": 1.5,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 1.6,
+          "p95_ms": 1.8699999999999999,
+          "mean_ms": 1.6333333333333335,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 1320,
+          "p50_ms": 1.2,
+          "p95_ms": 1.47,
+          "mean_ms": 1.2666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.59,
+          "mean_ms": 0.5,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 616,
+          "p50_ms": 0.4,
+          "p95_ms": 0.49,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.4,
+          "p95_ms": 0.49,
+          "mean_ms": 0.3,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 128,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "step_FreeCache",
+          "count": 2,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 10,
+      "scene_name": "scene_10",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1012.3999999761581,
+      "wall_ms_p95": 1025.3599999547005,
+      "cache": {
+        "tile_hits": 720,
+        "tile_misses": 1110,
+        "tile_writes": 12,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 96,
+          "p95_ms": 96.99,
+          "mean_ms": 93.83333333333333,
+          "max_ms": 19.6
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 32.5,
+          "p95_ms": 37.09,
+          "mean_ms": 32.93333333333333,
+          "max_ms": 11.5
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 30.2,
+          "p95_ms": 31.19,
+          "mean_ms": 30.5,
+          "max_ms": 7.6
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 19.9,
+          "p95_ms": 20.98,
+          "mean_ms": 20.1,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 14.6,
+          "p95_ms": 14.870000000000001,
+          "mean_ms": 14.033333333333333,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 60,
+          "p50_ms": 9,
+          "p95_ms": 10.17,
+          "mean_ms": 9,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "fx_DropShadows",
+          "count": 60,
+          "p50_ms": 8.3,
+          "p95_ms": 9.290000000000001,
+          "mean_ms": 8.133333333333335,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 6.1,
+          "p95_ms": 6.37,
+          "mean_ms": 5.933333333333333,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 5.8,
+          "p95_ms": 6.34,
+          "mean_ms": 5.966666666666666,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 720,
+          "p50_ms": 5.1,
+          "p95_ms": 5.46,
+          "mean_ms": 5.166666666666667,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1110,
+          "p50_ms": 4.8,
+          "p95_ms": 6.0600000000000005,
+          "mean_ms": 5.066666666666666,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 3.4,
+          "p95_ms": 3.58,
+          "mean_ms": 3.433333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 1.4,
+          "p95_ms": 1.58,
+          "mean_ms": 1.3333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 0.9,
+          "p95_ms": 1.17,
+          "mean_ms": 0.9666666666666668,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 60,
+          "p50_ms": 0.5,
+          "p95_ms": 0.6799999999999999,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.3,
+          "p95_ms": 0.6599999999999999,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.2,
+          "mean_ms": 0.20000000000000004,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 10,
+      "scene_name": "scene_10",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1020.2999999523163,
+      "wall_ms_p95": 1030.019999909401,
+      "cache": {
+        "tile_hits": 806,
+        "tile_misses": 1249,
+        "tile_writes": 16,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 72.7,
+          "p95_ms": 86.83,
+          "mean_ms": 73.50000000000001,
+          "max_ms": 14.6
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 28.2,
+          "p95_ms": 35.67,
+          "mean_ms": 29.066666666666666,
+          "max_ms": 9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 24,
+          "p95_ms": 27.06,
+          "mean_ms": 23.933333333333334,
+          "max_ms": 5.1
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 15.8,
+          "p95_ms": 17.150000000000002,
+          "mean_ms": 15.166666666666666,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 11.5,
+          "p95_ms": 13.93,
+          "mean_ms": 11.333333333333334,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 10.3,
+          "p95_ms": 14.8,
+          "mean_ms": 11.166666666666666,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 10.3,
+          "p95_ms": 11.200000000000001,
+          "mean_ms": 9.700000000000001,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 84,
+          "p50_ms": 9.3,
+          "p95_ms": 10.469999999999999,
+          "mean_ms": 9.466666666666667,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "fx_DropShadows",
+          "count": 84,
+          "p50_ms": 7.9,
+          "p95_ms": 9.069999999999999,
+          "mean_ms": 8.299999999999999,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 5.8,
+          "p95_ms": 5.8,
+          "mean_ms": 5.5,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1249,
+          "p50_ms": 4.8,
+          "p95_ms": 5.16,
+          "mean_ms": 4.3999999999999995,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 806,
+          "p50_ms": 3.3,
+          "p95_ms": 5.01,
+          "mean_ms": 3.733333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 2.4,
+          "p95_ms": 2.8499999999999996,
+          "mean_ms": 2.5,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 2,
+          "p95_ms": 2.7199999999999998,
+          "mean_ms": 2.1666666666666665,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 84,
+          "p50_ms": 0.6,
+          "p95_ms": 0.69,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.6799999999999999,
+          "mean_ms": 0.39999999999999997,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.77,
+          "mean_ms": 0.6,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 10,
+      "scene_name": "scene_10",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 3144.899999976158,
+      "wall_ms_p95": 3162.6300000190736,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 732,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 418.5,
+          "p95_ms": 703.08,
+          "mean_ms": 523.0666666666667,
+          "max_ms": 183.6
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 237,
+          "p95_ms": 255.80999999999997,
+          "mean_ms": 242.5666666666667,
+          "max_ms": 7.9
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 3804,
+          "p50_ms": 207.8,
+          "p95_ms": 223.10000000000002,
+          "mean_ms": 213.16666666666666,
+          "max_ms": 2.7
+        },
+        {
+          "tag": "fx_DropShadows",
+          "count": 3804,
+          "p50_ms": 186.6,
+          "p95_ms": 202.62,
+          "mean_ms": 192.23333333333335,
+          "max_ms": 2.5
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 162.9,
+          "p95_ms": 425.15999999999997,
+          "mean_ms": 257.96666666666664,
+          "max_ms": 178.7
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 43.8,
+          "p95_ms": 46.32,
+          "mean_ms": 44.333333333333336,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 15.8,
+          "p95_ms": 17.96,
+          "mean_ms": 16.033333333333335,
+          "max_ms": 1
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 15,
+          "p95_ms": 15.36,
+          "mean_ms": 14.799999999999999,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 14.8,
+          "p95_ms": 15.879999999999999,
+          "mean_ms": 14.966666666666667,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 3804,
+          "p50_ms": 13.4,
+          "p95_ms": 13.94,
+          "mean_ms": 13.366666666666667,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 9.1,
+          "p95_ms": 10,
+          "mean_ms": 8.866666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 6.9,
+          "p95_ms": 8.25,
+          "mean_ms": 6.866666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 3.2,
+          "p95_ms": 3.29,
+          "mean_ms": 3.2000000000000006,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 2.8,
+          "p95_ms": 3.25,
+          "mean_ms": 2.9666666666666663,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 1.3,
+          "p95_ms": 1.39,
+          "mean_ms": 1.2666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.6,
+          "p95_ms": 0.96,
+          "mean_ms": 0.7333333333333334,
+          "max_ms": 0.5
+        }
+      ]
+    },
+    {
+      "scene_id": 10,
+      "scene_name": "scene_10",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 995.8999999761581,
+      "wall_ms_p95": 1011.4699999332428,
+      "cache": {
+        "tile_hits": 720,
+        "tile_misses": 1110,
+        "tile_writes": 12,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 71.2,
+          "p95_ms": 76.87,
+          "mean_ms": 73,
+          "max_ms": 15.3
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 27.7,
+          "p95_ms": 32.019999999999996,
+          "mean_ms": 28.3,
+          "max_ms": 9.9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 22.5,
+          "p95_ms": 23.759999999999998,
+          "mean_ms": 22.766666666666666,
+          "max_ms": 5
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 14.9,
+          "p95_ms": 15.71,
+          "mean_ms": 14.866666666666667,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 11.7,
+          "p95_ms": 13.32,
+          "mean_ms": 11.333333333333334,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 10.3,
+          "p95_ms": 10.3,
+          "mean_ms": 10.133333333333335,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 9.8,
+          "p95_ms": 11.600000000000001,
+          "mean_ms": 10.3,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 60,
+          "p50_ms": 7.6,
+          "p95_ms": 8.95,
+          "mean_ms": 7.8999999999999995,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "fx_DropShadows",
+          "count": 60,
+          "p50_ms": 6.5,
+          "p95_ms": 8.03,
+          "mean_ms": 7.033333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 5.7,
+          "p95_ms": 5.88,
+          "mean_ms": 5.6000000000000005,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1110,
+          "p50_ms": 4.6,
+          "p95_ms": 5.05,
+          "mean_ms": 4.3999999999999995,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 720,
+          "p50_ms": 4.6,
+          "p95_ms": 5.32,
+          "mean_ms": 4.3999999999999995,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 2.4,
+          "p95_ms": 2.67,
+          "mean_ms": 2.3666666666666667,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 2.3,
+          "p95_ms": 2.3899999999999997,
+          "mean_ms": 2.3333333333333335,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.7,
+          "p95_ms": 0.79,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 60,
+          "p50_ms": 0.6,
+          "p95_ms": 0.87,
+          "mean_ms": 0.6,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.59,
+          "mean_ms": 0.39999999999999997,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 12,
+      "scene_name": "scene_12",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1058.5,
+      "wall_ms_p95": 1065.8800000429153,
+      "cache": {
+        "tile_hits": 720,
+        "tile_misses": 1110,
+        "tile_writes": 12,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 96.9,
+          "p95_ms": 101.31,
+          "mean_ms": 96.89999999999999,
+          "max_ms": 18.8
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 38.5,
+          "p95_ms": 47.41,
+          "mean_ms": 41.06666666666667,
+          "max_ms": 17.2
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 113,
+          "p50_ms": 28,
+          "p95_ms": 28.36,
+          "mean_ms": 28.066666666666666,
+          "max_ms": 1.5
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 24.3,
+          "p95_ms": 24.389999999999997,
+          "mean_ms": 23.600000000000005,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 13.5,
+          "p95_ms": 16.65,
+          "mean_ms": 13.933333333333332,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_BuildCache_LocalBlur",
+          "count": 52,
+          "p50_ms": 11,
+          "p95_ms": 14.870000000000001,
+          "mean_ms": 12.233333333333334,
+          "max_ms": 1.8
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 9.2,
+          "p95_ms": 10.1,
+          "mean_ms": 9.2,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 6,
+          "p95_ms": 6.27,
+          "mean_ms": 6,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 720,
+          "p50_ms": 5.9,
+          "p95_ms": 5.99,
+          "mean_ms": 5.266666666666667,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1110,
+          "p50_ms": 5.5,
+          "p95_ms": 6.039999999999999,
+          "mean_ms": 5.566666666666666,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 3.3,
+          "p95_ms": 3.5700000000000003,
+          "mean_ms": 3.3000000000000003,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FreeCache",
+          "count": 3172,
+          "p50_ms": 1.5,
+          "p95_ms": 1.5,
+          "mean_ms": 1.4666666666666668,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 1.1,
+          "p95_ms": 1.28,
+          "mean_ms": 0.9666666666666668,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 1,
+          "p95_ms": 1.27,
+          "mean_ms": 1.0666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 60,
+          "p50_ms": 0.7,
+          "p95_ms": 0.97,
+          "mean_ms": 0.6666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "fx_LayerBlur",
+          "count": 60,
+          "p50_ms": 0.3,
+          "p95_ms": 0.8400000000000001,
+          "mean_ms": 0.46666666666666673,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.74,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.1,
+          "p95_ms": 0.1,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 12,
+      "scene_name": "scene_12",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1083.5,
+      "wall_ms_p95": 1098.35,
+      "cache": {
+        "tile_hits": 806,
+        "tile_misses": 1249,
+        "tile_writes": 16,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 83.6,
+          "p95_ms": 86.66,
+          "mean_ms": 83.8,
+          "max_ms": 14
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 36.5,
+          "p95_ms": 38.84,
+          "mean_ms": 36.800000000000004,
+          "max_ms": 12.9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 133,
+          "p50_ms": 26.9,
+          "p95_ms": 27.169999999999998,
+          "mean_ms": 25.73333333333333,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 19,
+          "p95_ms": 19.990000000000002,
+          "mean_ms": 19.26666666666667,
+          "max_ms": 1
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 18,
+          "p95_ms": 18.72,
+          "mean_ms": 18.133333333333333,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_BuildCache_LocalBlur",
+          "count": 72,
+          "p50_ms": 12.5,
+          "p95_ms": 13.129999999999999,
+          "mean_ms": 10.866666666666667,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 11.9,
+          "p95_ms": 14.33,
+          "mean_ms": 12.533333333333333,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 10.8,
+          "p95_ms": 11.25,
+          "mean_ms": 10.733333333333334,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 5.1,
+          "p95_ms": 5.46,
+          "mean_ms": 5.133333333333334,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1249,
+          "p50_ms": 4.4,
+          "p95_ms": 4.58,
+          "mean_ms": 4.466666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 806,
+          "p50_ms": 3.8,
+          "p95_ms": 4.88,
+          "mean_ms": 4.066666666666667,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 2.5,
+          "p95_ms": 3.04,
+          "mean_ms": 2.5666666666666664,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 2.3,
+          "p95_ms": 3.1999999999999997,
+          "mean_ms": 2.6,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 84,
+          "p50_ms": 1.5,
+          "p95_ms": 1.59,
+          "mean_ms": 1.3666666666666665,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "fx_LayerBlur",
+          "count": 84,
+          "p50_ms": 1.3,
+          "p95_ms": 1.39,
+          "mean_ms": 1.1666666666666667,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_FreeCache",
+          "count": 3622,
+          "p50_ms": 1.2,
+          "p95_ms": 1.65,
+          "mean_ms": 1.3333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.8,
+          "p95_ms": 0.98,
+          "mean_ms": 0.7666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.3,
+          "p95_ms": 0.39,
+          "mean_ms": 0.3,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 12,
+      "scene_name": "scene_12",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 2963.600000023842,
+      "wall_ms_p95": 2967.379999959469,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 732,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 398.5,
+          "p95_ms": 1232.8899999999999,
+          "mean_ms": 707.4333333333334,
+          "max_ms": 201.1
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 349.9,
+          "p95_ms": 1188.1599999999999,
+          "mean_ms": 660.3333333333334,
+          "max_ms": 200.6
+        },
+        {
+          "tag": "step_BuildCache_LocalBlur",
+          "count": 3406,
+          "p50_ms": 303.4,
+          "p95_ms": 1141.21,
+          "mean_ms": 613.6333333333333,
+          "max_ms": 200.5
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 3467,
+          "p50_ms": 157.7,
+          "p95_ms": 1003.0699999999999,
+          "mean_ms": 470.5,
+          "max_ms": 200.3
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 23.7,
+          "p95_ms": 23.97,
+          "mean_ms": 22.833333333333332,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 21.1,
+          "p95_ms": 22.81,
+          "mean_ms": 21.099999999999998,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 3804,
+          "p50_ms": 19.2,
+          "p95_ms": 20.01,
+          "mean_ms": 19.166666666666668,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 16.8,
+          "p95_ms": 17.07,
+          "mean_ms": 15.733333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "fx_LayerBlur",
+          "count": 3804,
+          "p50_ms": 14.4,
+          "p95_ms": 14.49,
+          "mean_ms": 14.166666666666666,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 9.4,
+          "p95_ms": 9.58,
+          "mean_ms": 9.366666666666667,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 7.2,
+          "p95_ms": 8.91,
+          "mean_ms": 7.5,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 5.7,
+          "p95_ms": 5.7,
+          "mean_ms": 5.333333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_FreeCache",
+          "count": 3406,
+          "p50_ms": 3.4,
+          "p95_ms": 3.76,
+          "mean_ms": 3.3666666666666667,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 2.6,
+          "p95_ms": 2.96,
+          "mean_ms": 2.6999999999999997,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 2.6,
+          "p95_ms": 3.05,
+          "mean_ms": 2.533333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.9,
+          "p95_ms": 0.99,
+          "mean_ms": 0.8333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.7,
+          "p95_ms": 0.79,
+          "mean_ms": 0.6999999999999998,
+          "max_ms": 0.4
+        }
+      ]
+    },
+    {
+      "scene_id": 12,
+      "scene_name": "scene_12",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1080.2999999523163,
+      "wall_ms_p95": 1099.0200000166892,
+      "cache": {
+        "tile_hits": 720,
+        "tile_misses": 1110,
+        "tile_writes": 12,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 66.7,
+          "p95_ms": 67.69,
+          "mean_ms": 65,
+          "max_ms": 12.3
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 29.7,
+          "p95_ms": 30.33,
+          "mean_ms": 28.599999999999998,
+          "max_ms": 11.4
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 113,
+          "p50_ms": 20,
+          "p95_ms": 21.35,
+          "mean_ms": 19.433333333333334,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 15,
+          "p95_ms": 15.36,
+          "mean_ms": 14.966666666666667,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 13.2,
+          "p95_ms": 13.290000000000001,
+          "mean_ms": 12.733333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 9.2,
+          "p95_ms": 10.1,
+          "mean_ms": 9.4,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_BuildCache_LocalBlur",
+          "count": 52,
+          "p50_ms": 8.9,
+          "p95_ms": 9.71,
+          "mean_ms": 7.866666666666667,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 7.8,
+          "p95_ms": 9.600000000000001,
+          "mean_ms": 8.466666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 4.8,
+          "p95_ms": 5.16,
+          "mean_ms": 4.8999999999999995,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1110,
+          "p50_ms": 3.6,
+          "p95_ms": 4.2299999999999995,
+          "mean_ms": 3.6999999999999997,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 720,
+          "p50_ms": 3.3,
+          "p95_ms": 3.3899999999999997,
+          "mean_ms": 3.233333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 2,
+          "p95_ms": 2.8099999999999996,
+          "mean_ms": 2.033333333333333,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.6,
+          "p95_ms": 2.14,
+          "mean_ms": 1.7666666666666668,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_FreeCache",
+          "count": 3172,
+          "p50_ms": 0.8,
+          "p95_ms": 1.25,
+          "mean_ms": 0.9333333333333332,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.6,
+          "p95_ms": 0.87,
+          "mean_ms": 0.6,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.6,
+          "p95_ms": 0.78,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 60,
+          "p50_ms": 0.4,
+          "p95_ms": 1.48,
+          "mean_ms": 0.7333333333333334,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "fx_LayerBlur",
+          "count": 60,
+          "p50_ms": 0.3,
+          "p95_ms": 1.47,
+          "mean_ms": 0.6666666666666666,
+          "max_ms": 1.1
+        }
+      ]
+    },
+    {
+      "scene_id": 18,
+      "scene_name": "scene_18",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 993.8999999761581,
+      "wall_ms_p95": 995.4300000190735,
+      "cache": {
+        "tile_hits": 300,
+        "tile_misses": 1530,
+        "tile_writes": 5,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 91.7,
+          "p95_ms": 96.55999999999999,
+          "mean_ms": 93.36666666666666,
+          "max_ms": 9.4
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 34.7,
+          "p95_ms": 34.7,
+          "mean_ms": 34.00000000000001,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 26.9,
+          "p95_ms": 26.9,
+          "mean_ms": 25.53333333333333,
+          "max_ms": 6.3
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 25.5,
+          "p95_ms": 26.31,
+          "mean_ms": 25.233333333333334,
+          "max_ms": 2.4
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 12,
+          "p95_ms": 12.18,
+          "mean_ms": 11.533333333333333,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 10.8,
+          "p95_ms": 12.33,
+          "mean_ms": 11.166666666666666,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 10.4,
+          "p95_ms": 11.12,
+          "mean_ms": 10.533333333333333,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 6.3,
+          "p95_ms": 7.29,
+          "mean_ms": 6.566666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1530,
+          "p50_ms": 5.6,
+          "p95_ms": 5.779999999999999,
+          "mean_ms": 5.366666666666666,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 300,
+          "p50_ms": 3.6,
+          "p95_ms": 3.78,
+          "mean_ms": 3.5333333333333337,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 150,
+          "p50_ms": 2.1,
+          "p95_ms": 3,
+          "mean_ms": 2.1333333333333333,
+          "max_ms": 1.8
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 150,
+          "p50_ms": 1.4,
+          "p95_ms": 1.49,
+          "mean_ms": 1.1666666666666667,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 150,
+          "p50_ms": 1.1,
+          "p95_ms": 1.3699999999999999,
+          "mean_ms": 0.9333333333333332,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 0.9,
+          "p95_ms": 0.99,
+          "mean_ms": 0.8666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 0.7,
+          "p95_ms": 0.7,
+          "mean_ms": 0.6333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 150,
+          "p50_ms": 0.6,
+          "p95_ms": 0.87,
+          "mean_ms": 0.7000000000000001,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.3,
+          "p95_ms": 0.48,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.2,
+          "mean_ms": 0.13333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 18,
+      "scene_name": "scene_18",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 995.7999999523163,
+      "wall_ms_p95": 997.060000038147,
+      "cache": {
+        "tile_hits": 343,
+        "tile_misses": 1712,
+        "tile_writes": 7,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 81.7,
+          "p95_ms": 82.33,
+          "mean_ms": 81.16666666666667,
+          "max_ms": 9.1
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 30.5,
+          "p95_ms": 31.85,
+          "mean_ms": 30.933333333333334,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 26.3,
+          "p95_ms": 27.11,
+          "mean_ms": 26.36666666666667,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 23.5,
+          "p95_ms": 24.31,
+          "mean_ms": 22.866666666666664,
+          "max_ms": 6.4
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 22.5,
+          "p95_ms": 22.95,
+          "mean_ms": 22.599999999999998,
+          "max_ms": 2.3
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 18.4,
+          "p95_ms": 20.02,
+          "mean_ms": 18.599999999999998,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 11.2,
+          "p95_ms": 12.280000000000001,
+          "mean_ms": 11.433333333333332,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 9.6,
+          "p95_ms": 9.959999999999999,
+          "mean_ms": 9.266666666666667,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1712,
+          "p50_ms": 5.5,
+          "p95_ms": 5.5,
+          "mean_ms": 4.8999999999999995,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 343,
+          "p50_ms": 1.9,
+          "p95_ms": 3.52,
+          "mean_ms": 2.3333333333333335,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.9,
+          "p95_ms": 2.17,
+          "mean_ms": 1.9333333333333333,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 210,
+          "p50_ms": 1.7,
+          "p95_ms": 3.6799999999999997,
+          "mean_ms": 2.2666666666666666,
+          "max_ms": 2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.6,
+          "p95_ms": 1.8699999999999999,
+          "mean_ms": 1.7,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 210,
+          "p50_ms": 1.4,
+          "p95_ms": 1.49,
+          "mean_ms": 1.3666666666666665,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 210,
+          "p50_ms": 1.3,
+          "p95_ms": 1.8399999999999999,
+          "mean_ms": 1.3333333333333333,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 210,
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "mean_ms": 0.9666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.5,
+          "mean_ms": 0.39999999999999997,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.3,
+          "p95_ms": 0.3,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 18,
+      "scene_name": "scene_18",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1063,
+      "wall_ms_p95": 1081.0900000214576,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 440,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 145,
+          "p95_ms": 173.98,
+          "mean_ms": 154.4333333333333,
+          "max_ms": 8.2
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 77.2,
+          "p95_ms": 92.59,
+          "mean_ms": 82.13333333333334,
+          "max_ms": 4.2
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 46,
+          "p95_ms": 58.87,
+          "mean_ms": 50.63333333333333,
+          "max_ms": 5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 28.6,
+          "p95_ms": 29.32,
+          "mean_ms": 28.866666666666664,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 9854,
+          "p50_ms": 23.3,
+          "p95_ms": 28.97,
+          "mean_ms": 24.96666666666667,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 23,
+          "p95_ms": 23,
+          "mean_ms": 22.8,
+          "max_ms": 1.6
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 9854,
+          "p50_ms": 18.1,
+          "p95_ms": 22.24,
+          "mean_ms": 18.466666666666665,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 18,
+          "p95_ms": 18.36,
+          "mean_ms": 17.8,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 9854,
+          "p50_ms": 16.7,
+          "p95_ms": 22.099999999999998,
+          "mean_ms": 18.7,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 9854,
+          "p50_ms": 14.1,
+          "p95_ms": 15.45,
+          "mean_ms": 13.866666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 10.2,
+          "p95_ms": 10.559999999999999,
+          "mean_ms": 10.2,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 7.5,
+          "p95_ms": 8.76,
+          "mean_ms": 7.6000000000000005,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 3.5,
+          "p95_ms": 5.119999999999999,
+          "mean_ms": 4.1000000000000005,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 1.7,
+          "p95_ms": 1.97,
+          "mean_ms": 1.7,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 1.5,
+          "p95_ms": 1.95,
+          "mean_ms": 1.5999999999999999,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.7,
+          "p95_ms": 0.7,
+          "mean_ms": 0.5666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.5,
+          "p95_ms": 0.59,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 18,
+      "scene_name": "scene_18",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 990.8000000715256,
+      "wall_ms_p95": 992.3300000071525,
+      "cache": {
+        "tile_hits": 300,
+        "tile_misses": 1530,
+        "tile_writes": 5,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 79.8,
+          "p95_ms": 79.98,
+          "mean_ms": 79.2,
+          "max_ms": 8.9
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 31,
+          "p95_ms": 31.540000000000003,
+          "mean_ms": 30.666666666666668,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 24.4,
+          "p95_ms": 26.74,
+          "mean_ms": 24.900000000000002,
+          "max_ms": 1.6
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 22.7,
+          "p95_ms": 23.96,
+          "mean_ms": 22.166666666666668,
+          "max_ms": 6.5
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 21.4,
+          "p95_ms": 21.49,
+          "mean_ms": 20.7,
+          "max_ms": 2
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 19.5,
+          "p95_ms": 20.490000000000002,
+          "mean_ms": 19.666666666666668,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 12.4,
+          "p95_ms": 13.569999999999999,
+          "mean_ms": 12.833333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 9,
+          "p95_ms": 10.889999999999999,
+          "mean_ms": 9.566666666666668,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1530,
+          "p50_ms": 5.3,
+          "p95_ms": 5.569999999999999,
+          "mean_ms": 4.8999999999999995,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 300,
+          "p50_ms": 2.5,
+          "p95_ms": 3.2199999999999998,
+          "mean_ms": 2.733333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.6,
+          "p95_ms": 1.8699999999999999,
+          "mean_ms": 1.5333333333333332,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.5,
+          "p95_ms": 2.4,
+          "mean_ms": 1.7,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 150,
+          "p50_ms": 1.2,
+          "p95_ms": 1.47,
+          "mean_ms": 1.2333333333333334,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 150,
+          "p50_ms": 1.2,
+          "p95_ms": 3.539999999999999,
+          "mean_ms": 1.9666666666666668,
+          "max_ms": 2.1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 150,
+          "p50_ms": 0.8,
+          "p95_ms": 1.43,
+          "mean_ms": 1,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 150,
+          "p50_ms": 0.5,
+          "p95_ms": 0.77,
+          "mean_ms": 0.5666666666666668,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.5,
+          "mean_ms": 0.43333333333333335,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.3,
+          "p95_ms": 0.3,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 19,
+      "scene_name": "scene_19",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000.9000000953674,
+      "wall_ms_p95": 1004.4100000739097,
+      "cache": {
+        "tile_hits": 480,
+        "tile_misses": 1350,
+        "tile_writes": 8,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 116.4,
+          "p95_ms": 118.2,
+          "mean_ms": 116.7,
+          "max_ms": 25.6
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 42.9,
+          "p95_ms": 44.61,
+          "mean_ms": 42.9,
+          "max_ms": 21.5
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 39.1,
+          "p95_ms": 39.91,
+          "mean_ms": 38.6,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 26,
+          "p95_ms": 26.81,
+          "mean_ms": 26.133333333333336,
+          "max_ms": 3.3
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 265,
+          "p50_ms": 20.4,
+          "p95_ms": 20.4,
+          "mean_ms": 20.333333333333332,
+          "max_ms": 2.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 20.4,
+          "p95_ms": 21.03,
+          "mean_ms": 20.3,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 265,
+          "p50_ms": 19.2,
+          "p95_ms": 19.47,
+          "mean_ms": 19.066666666666666,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 14.1,
+          "p95_ms": 14.459999999999999,
+          "mean_ms": 12.766666666666666,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 8.2,
+          "p95_ms": 8.559999999999999,
+          "mean_ms": 8.200000000000001,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 480,
+          "p50_ms": 5,
+          "p95_ms": 5.9,
+          "mean_ms": 4.766666666666667,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1350,
+          "p50_ms": 5,
+          "p95_ms": 5.36,
+          "mean_ms": 4.966666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 4.5,
+          "p95_ms": 4.5,
+          "mean_ms": 4.233333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 1.2,
+          "p95_ms": 1.29,
+          "mean_ms": 1.1333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 0.9,
+          "p95_ms": 0.99,
+          "mean_ms": 0.9333333333333332,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.3,
+          "p95_ms": 0.39,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 19,
+      "scene_name": "scene_19",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1013.7999999523163,
+      "wall_ms_p95": 1016.319999909401,
+      "cache": {
+        "tile_hits": 480,
+        "tile_misses": 1575,
+        "tile_writes": 8,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 93.3,
+          "p95_ms": 100.67999999999999,
+          "mean_ms": 94.36666666666667,
+          "max_ms": 22.8
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 35.1,
+          "p95_ms": 35.190000000000005,
+          "mean_ms": 34.93333333333334,
+          "max_ms": 1
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 34.6,
+          "p95_ms": 40.99,
+          "mean_ms": 35.93333333333334,
+          "max_ms": 19.1
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 29.9,
+          "p95_ms": 30.98,
+          "mean_ms": 30.266666666666666,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 22.3,
+          "p95_ms": 23.2,
+          "mean_ms": 22.53333333333333,
+          "max_ms": 2.9
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 265,
+          "p50_ms": 16.2,
+          "p95_ms": 18.36,
+          "mean_ms": 16.599999999999998,
+          "max_ms": 2.3
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 265,
+          "p50_ms": 15.6,
+          "p95_ms": 16.86,
+          "mean_ms": 15.700000000000001,
+          "max_ms": 1.5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 12.5,
+          "p95_ms": 13.49,
+          "mean_ms": 12.800000000000002,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 10.5,
+          "p95_ms": 13.649999999999999,
+          "mean_ms": 11.433333333333332,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 7.6,
+          "p95_ms": 8.23,
+          "mean_ms": 7.766666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1575,
+          "p50_ms": 3.9,
+          "p95_ms": 5.52,
+          "mean_ms": 4.3999999999999995,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 480,
+          "p50_ms": 2.8,
+          "p95_ms": 3.79,
+          "mean_ms": 3.0666666666666664,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.8,
+          "p95_ms": 2.16,
+          "mean_ms": 1.7333333333333334,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.6,
+          "p95_ms": 2.05,
+          "mean_ms": 1.7,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.8,
+          "p95_ms": 1.16,
+          "mean_ms": 0.9333333333333332,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.4,
+          "p95_ms": 0.49,
+          "mean_ms": 0.43333333333333335,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 19,
+      "scene_name": "scene_19",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1920.1000000238419,
+      "wall_ms_p95": 2013.879999959469,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 499,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 1043.6,
+          "p95_ms": 1269.05,
+          "mean_ms": 1082.7333333333333,
+          "max_ms": 127.4
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 563.1,
+          "p95_ms": 564.45,
+          "mean_ms": 549.0333333333333,
+          "max_ms": 12.9
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 15039,
+          "p50_ms": 534.1,
+          "p95_ms": 543.5500000000001,
+          "mean_ms": 526.2666666666668,
+          "max_ms": 1.5
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 15039,
+          "p50_ms": 521.8,
+          "p95_ms": 531.6999999999999,
+          "mean_ms": 515.0666666666666,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 459.1,
+          "p95_ms": 684.46,
+          "mean_ms": 513.6,
+          "max_ms": 116.6
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 27.5,
+          "p95_ms": 28.13,
+          "mean_ms": 27.7,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 15,
+          "p95_ms": 15.54,
+          "mean_ms": 14.933333333333332,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 14.2,
+          "p95_ms": 14.290000000000001,
+          "mean_ms": 14.166666666666666,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 8.5,
+          "p95_ms": 13.899999999999999,
+          "mean_ms": 10.466666666666667,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 5.7,
+          "p95_ms": 6.06,
+          "mean_ms": 5.599999999999999,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 3.8,
+          "p95_ms": 4.34,
+          "mean_ms": 3.8666666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 1.8,
+          "p95_ms": 2.0700000000000003,
+          "mean_ms": 1.7333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 1.6,
+          "p95_ms": 1.69,
+          "mean_ms": 1.4000000000000001,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.7,
+          "p95_ms": 0.97,
+          "mean_ms": 0.7999999999999999,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.7,
+          "p95_ms": 0.88,
+          "mean_ms": 0.5666666666666667,
+          "max_ms": 0.5
+        }
+      ]
+    },
+    {
+      "scene_id": 19,
+      "scene_name": "scene_19",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 996.5,
+      "wall_ms_p95": 1007.029999935627,
+      "cache": {
+        "tile_hits": 480,
+        "tile_misses": 1350,
+        "tile_writes": 8,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 85.3,
+          "p95_ms": 98.89,
+          "mean_ms": 90.06666666666666,
+          "max_ms": 24.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 37.3,
+          "p95_ms": 37.39,
+          "mean_ms": 35.9,
+          "max_ms": 1
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 32.3,
+          "p95_ms": 33.29,
+          "mean_ms": 31.433333333333334,
+          "max_ms": 1
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 32.2,
+          "p95_ms": 40.66,
+          "mean_ms": 35.03333333333334,
+          "max_ms": 20.8
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 18,
+          "p95_ms": 19.529999999999998,
+          "mean_ms": 18.400000000000002,
+          "max_ms": 2.7
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 265,
+          "p50_ms": 16,
+          "p95_ms": 19.87,
+          "mean_ms": 17.23333333333333,
+          "max_ms": 2.3
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 265,
+          "p50_ms": 15.9,
+          "p95_ms": 17.880000000000003,
+          "mean_ms": 16.3,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 13,
+          "p95_ms": 14.35,
+          "mean_ms": 13.4,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 10.3,
+          "p95_ms": 12.100000000000001,
+          "mean_ms": 10.533333333333333,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 8.7,
+          "p95_ms": 9.059999999999999,
+          "mean_ms": 8.799999999999999,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1350,
+          "p50_ms": 3.4,
+          "p95_ms": 4.75,
+          "mean_ms": 3.8333333333333335,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 480,
+          "p50_ms": 3.4,
+          "p95_ms": 3.94,
+          "mean_ms": 3.1333333333333333,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.6,
+          "p95_ms": 2.05,
+          "mean_ms": 1.6333333333333335,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.5,
+          "p95_ms": 2.4,
+          "mean_ms": 1.7666666666666666,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.6799999999999999,
+          "mean_ms": 0.5,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.3,
+          "p95_ms": 0.3,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 20,
+      "scene_name": "scene_20",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000.6000000238419,
+      "wall_ms_p95": 1000.9600000023842,
+      "cache": {
+        "tile_hits": 240,
+        "tile_misses": 1590,
+        "tile_writes": 4,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 91.5,
+          "p95_ms": 97.8,
+          "mean_ms": 93.03333333333335,
+          "max_ms": 6
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 33.2,
+          "p95_ms": 34.46,
+          "mean_ms": 33.56666666666666,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 31.9,
+          "p95_ms": 37.57,
+          "mean_ms": 32.73333333333333,
+          "max_ms": 4.6
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 16.6,
+          "p95_ms": 17.77,
+          "mean_ms": 16.933333333333334,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 15.4,
+          "p95_ms": 19,
+          "mean_ms": 16.166666666666668,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1590,
+          "p50_ms": 7.2,
+          "p95_ms": 9.899999999999999,
+          "mean_ms": 8.133333333333333,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 6.7,
+          "p95_ms": 7.24,
+          "mean_ms": 6.866666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 240,
+          "p50_ms": 4.1,
+          "p95_ms": 4.55,
+          "mean_ms": 4.233333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 65,
+          "p50_ms": 3.6,
+          "p95_ms": 3.6,
+          "mean_ms": 3.1,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 3.4,
+          "p95_ms": 4.39,
+          "mean_ms": 3.6,
+          "max_ms": 1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 65,
+          "p50_ms": 3.3,
+          "p95_ms": 3.5700000000000003,
+          "mean_ms": 2.966666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 2.1,
+          "p95_ms": 2.55,
+          "mean_ms": 2.1333333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 1.1,
+          "p95_ms": 1.46,
+          "mean_ms": 1.1666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.5,
+          "p95_ms": 0.5,
+          "mean_ms": 0.39999999999999997,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.3,
+          "p95_ms": 0.3,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.5599999999999999,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 20,
+      "scene_name": "scene_20",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000.2000000476837,
+      "wall_ms_p95": 1000.289999961853,
+      "cache": {
+        "tile_hits": 240,
+        "tile_misses": 1815,
+        "tile_writes": 4,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 73.8,
+          "p95_ms": 79.56,
+          "mean_ms": 73.83333333333333,
+          "max_ms": 4.3
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 31.2,
+          "p95_ms": 31.29,
+          "mean_ms": 30.933333333333334,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 24.5,
+          "p95_ms": 29.45,
+          "mean_ms": 25.433333333333334,
+          "max_ms": 3.3
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 11.3,
+          "p95_ms": 14.18,
+          "mean_ms": 11.633333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 10.3,
+          "p95_ms": 11.11,
+          "mean_ms": 10.266666666666667,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 9.4,
+          "p95_ms": 11.110000000000001,
+          "mean_ms": 9.933333333333332,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1815,
+          "p50_ms": 7.4,
+          "p95_ms": 7.8500000000000005,
+          "mean_ms": 7.3,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 4.9,
+          "p95_ms": 5.4399999999999995,
+          "mean_ms": 4.866666666666667,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 240,
+          "p50_ms": 3.7,
+          "p95_ms": 4.06,
+          "mean_ms": 3.6,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 65,
+          "p50_ms": 2.5,
+          "p95_ms": 3.04,
+          "mean_ms": 2.533333333333333,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 65,
+          "p50_ms": 2.2,
+          "p95_ms": 2.92,
+          "mean_ms": 2.3666666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 2.1,
+          "p95_ms": 2.55,
+          "mean_ms": 2.266666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.5,
+          "p95_ms": 2.2199999999999998,
+          "mean_ms": 1.7333333333333332,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 0.9,
+          "p95_ms": 1.26,
+          "mean_ms": 1.0333333333333334,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.7,
+          "p95_ms": 0.79,
+          "mean_ms": 0.7333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.7,
+          "p95_ms": 0.88,
+          "mean_ms": 0.7666666666666666,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 20,
+      "scene_name": "scene_20",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999.2999999523163,
+      "wall_ms_p95": 1000.8299999952317,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 315,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 130.6,
+          "p95_ms": 132.94,
+          "mean_ms": 130.29999999999998,
+          "max_ms": 3.4
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 100.3,
+          "p95_ms": 100.48,
+          "mean_ms": 99.76666666666667,
+          "max_ms": 2.8
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 3861,
+          "p50_ms": 78.1,
+          "p95_ms": 78.37,
+          "mean_ms": 77.73333333333333,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 3861,
+          "p50_ms": 73.3,
+          "p95_ms": 74.91999999999999,
+          "mean_ms": 73.39999999999999,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 18.5,
+          "p95_ms": 20.029999999999998,
+          "mean_ms": 18.366666666666664,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 12.4,
+          "p95_ms": 13.3,
+          "mean_ms": 12.666666666666666,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 10.9,
+          "p95_ms": 11.62,
+          "mean_ms": 10.533333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 8.7,
+          "p95_ms": 8.790000000000001,
+          "mean_ms": 8.433333333333334,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 8.1,
+          "p95_ms": 8.639999999999999,
+          "mean_ms": 8.233333333333333,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 5.7,
+          "p95_ms": 6.51,
+          "mean_ms": 5.766666666666667,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 3,
+          "p95_ms": 3.8099999999999996,
+          "mean_ms": 3.266666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 2.1,
+          "p95_ms": 2.28,
+          "mean_ms": 2.066666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 1.2,
+          "p95_ms": 1.47,
+          "mean_ms": 1.1333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.7,
+          "p95_ms": 0.7,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.2,
+          "p95_ms": 0.2,
+          "mean_ms": 0.13333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 20,
+      "scene_name": "scene_20",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000.2999999523163,
+      "wall_ms_p95": 1000.9299999952316,
+      "cache": {
+        "tile_hits": 240,
+        "tile_misses": 1590,
+        "tile_writes": 4,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 69.6,
+          "p95_ms": 73.92,
+          "mean_ms": 69.33333333333333,
+          "max_ms": 4.5
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 26.1,
+          "p95_ms": 26.369999999999997,
+          "mean_ms": 25.766666666666666,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 24.2,
+          "p95_ms": 27.349999999999998,
+          "mean_ms": 24.266666666666666,
+          "max_ms": 3.6
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 11.3,
+          "p95_ms": 11.48,
+          "mean_ms": 11.200000000000001,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 10.8,
+          "p95_ms": 10.89,
+          "mean_ms": 10.766666666666667,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 10.3,
+          "p95_ms": 12.459999999999999,
+          "mean_ms": 10.766666666666666,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1590,
+          "p50_ms": 6.9,
+          "p95_ms": 7.71,
+          "mean_ms": 6.866666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 6.2,
+          "p95_ms": 6.38,
+          "mean_ms": 5.966666666666668,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 240,
+          "p50_ms": 3.4,
+          "p95_ms": 3.4899999999999998,
+          "mean_ms": 3.233333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 2.7,
+          "p95_ms": 2.79,
+          "mean_ms": 2.4666666666666663,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 65,
+          "p50_ms": 2.6,
+          "p95_ms": 2.78,
+          "mean_ms": 2.566666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 65,
+          "p50_ms": 2.4,
+          "p95_ms": 2.67,
+          "mean_ms": 2.433333333333333,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.8,
+          "p95_ms": 1.89,
+          "mean_ms": 1.7666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.5,
+          "p95_ms": 1.77,
+          "mean_ms": 1.3666666666666665,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.9,
+          "p95_ms": 0.99,
+          "mean_ms": 0.9,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.3,
+          "p95_ms": 0.48,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 21,
+      "scene_name": "scene_21",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 999.3999999761581,
+      "wall_ms_p95": 1000.3899999976159,
+      "cache": {
+        "tile_hits": 120,
+        "tile_misses": 1710,
+        "tile_writes": 2,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 93.8,
+          "p95_ms": 93.89,
+          "mean_ms": 91.86666666666667,
+          "max_ms": 4.6
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 33.3,
+          "p95_ms": 36.989999999999995,
+          "mean_ms": 34.300000000000004,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 29.4,
+          "p95_ms": 32.19,
+          "mean_ms": 30.3,
+          "max_ms": 2.9
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 17.6,
+          "p95_ms": 17.96,
+          "mean_ms": 17.233333333333334,
+          "max_ms": 1.1
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 14.2,
+          "p95_ms": 15.73,
+          "mean_ms": 13.966666666666669,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1710,
+          "p50_ms": 8.8,
+          "p95_ms": 9.16,
+          "mean_ms": 8.633333333333335,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 6,
+          "p95_ms": 7.8,
+          "mean_ms": 6.666666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 4.2,
+          "p95_ms": 5.1899999999999995,
+          "mean_ms": 4.366666666666667,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 120,
+          "p50_ms": 3.5,
+          "p95_ms": 3.7699999999999996,
+          "mean_ms": 3.6,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 1,
+          "p95_ms": 2.26,
+          "mean_ms": 1.4000000000000001,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 1,
+          "p95_ms": 1.09,
+          "mean_ms": 1,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 54,
+          "p50_ms": 0.7,
+          "p95_ms": 0.97,
+          "mean_ms": 0.7999999999999999,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 0.7,
+          "p95_ms": 0.88,
+          "mean_ms": 0.6333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 54,
+          "p50_ms": 0.6,
+          "p95_ms": 0.87,
+          "mean_ms": 0.6,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 24,
+          "p50_ms": 0.4,
+          "p95_ms": 0.4,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Enter",
+          "count": 12,
+          "p50_ms": 0.4,
+          "p95_ms": 0.76,
+          "mean_ms": 0.5,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.3,
+          "p95_ms": 0.6599999999999999,
+          "mean_ms": 0.43333333333333335,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 12,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.19999999999999998,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 24,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.38,
+          "mean_ms": 0.23333333333333336,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0.44999999999999996,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_Exit",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 21,
+      "scene_name": "scene_21",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000.1000000238419,
+      "wall_ms_p95": 1000.8199999809265,
+      "cache": {
+        "tile_hits": 120,
+        "tile_misses": 1935,
+        "tile_writes": 2,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 75.4,
+          "p95_ms": 80.62,
+          "mean_ms": 75.23333333333333,
+          "max_ms": 4
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 32.7,
+          "p95_ms": 32.879999999999995,
+          "mean_ms": 32.4,
+          "max_ms": 1.5
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 24.2,
+          "p95_ms": 28.25,
+          "mean_ms": 24.8,
+          "max_ms": 2.3
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 10.9,
+          "p95_ms": 12.610000000000001,
+          "mean_ms": 11.100000000000001,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 10.3,
+          "p95_ms": 11.469999999999999,
+          "mean_ms": 10.699999999999998,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 10.3,
+          "p95_ms": 10.93,
+          "mean_ms": 10.233333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1935,
+          "p50_ms": 7.5,
+          "p95_ms": 9.120000000000001,
+          "mean_ms": 7.733333333333334,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 6.7,
+          "p95_ms": 7.33,
+          "mean_ms": 6.733333333333334,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 120,
+          "p50_ms": 3,
+          "p95_ms": 3.09,
+          "mean_ms": 2.7999999999999994,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.8,
+          "p95_ms": 2.16,
+          "mean_ms": 1.7,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 1.1,
+          "p95_ms": 1.28,
+          "mean_ms": 1.1333333333333335,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 0.9,
+          "p95_ms": 1.6199999999999999,
+          "mean_ms": 1.0999999999999999,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 54,
+          "p50_ms": 0.7,
+          "p95_ms": 0.7,
+          "mean_ms": 0.6333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.6,
+          "p95_ms": 0.69,
+          "mean_ms": 0.6,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.6,
+          "p95_ms": 0.96,
+          "mean_ms": 0.6333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 54,
+          "p50_ms": 0.5,
+          "p95_ms": 0.59,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Enter",
+          "count": 12,
+          "p50_ms": 0.3,
+          "p95_ms": 0.6599999999999999,
+          "mean_ms": 0.39999999999999997,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 12,
+          "p50_ms": 0.2,
+          "p95_ms": 0.38,
+          "mean_ms": 0.23333333333333336,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 12,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 24,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.13333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 24,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.13333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "step_Exit",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 21,
+      "scene_name": "scene_21",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000,
+      "wall_ms_p95": 1000.720000064373,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 222,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 104.6,
+          "p95_ms": 113.06,
+          "mean_ms": 107.26666666666667,
+          "max_ms": 4.3
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 58.3,
+          "p95_ms": 62.71,
+          "mean_ms": 59.93333333333334,
+          "max_ms": 1.9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 34.2,
+          "p95_ms": 37.71,
+          "mean_ms": 34.63333333333333,
+          "max_ms": 3
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 3611,
+          "p50_ms": 14.9,
+          "p95_ms": 18.14,
+          "mean_ms": 16.066666666666666,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 13,
+          "p95_ms": 13.54,
+          "mean_ms": 13,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 3611,
+          "p50_ms": 11.5,
+          "p95_ms": 14.379999999999999,
+          "mean_ms": 12.466666666666667,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 10,
+          "p95_ms": 10.270000000000001,
+          "mean_ms": 9.933333333333334,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_Enter",
+          "count": 917,
+          "p50_ms": 9.8,
+          "p95_ms": 9.98,
+          "mean_ms": 9.566666666666668,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 8.3,
+          "p95_ms": 9.200000000000001,
+          "mean_ms": 8.4,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 1802,
+          "p50_ms": 8,
+          "p95_ms": 9.35,
+          "mean_ms": 8.366666666666667,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 6.6,
+          "p95_ms": 7.41,
+          "mean_ms": 6.733333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 1802,
+          "p50_ms": 5.4,
+          "p95_ms": 6.029999999999999,
+          "mean_ms": 5.466666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 917,
+          "p50_ms": 5.2,
+          "p95_ms": 5.47,
+          "mean_ms": 5.2,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 4.8,
+          "p95_ms": 6.42,
+          "mean_ms": 5.333333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 917,
+          "p50_ms": 1.9,
+          "p95_ms": 1.9,
+          "mean_ms": 1.8666666666666665,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 1.7,
+          "p95_ms": 2.2399999999999998,
+          "mean_ms": 1.9000000000000001,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 1.1,
+          "p95_ms": 1.1,
+          "mean_ms": 1.0333333333333334,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 1,
+          "p95_ms": 1.18,
+          "mean_ms": 1.0333333333333332,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.6,
+          "p95_ms": 0.78,
+          "mean_ms": 0.6333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.6,
+          "p95_ms": 0.69,
+          "mean_ms": 0.5,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_Exit",
+          "count": 917,
+          "p50_ms": 0.4,
+          "p95_ms": 0.4,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 917,
+          "p50_ms": 0.3,
+          "p95_ms": 0.48,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 917,
+          "p50_ms": 0.2,
+          "p95_ms": 0.47,
+          "mean_ms": 0.26666666666666666,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 21,
+      "scene_name": "scene_21",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000.1000000238419,
+      "wall_ms_p95": 1000.7300000667572,
+      "cache": {
+        "tile_hits": 120,
+        "tile_misses": 1710,
+        "tile_writes": 2,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 66.4,
+          "p95_ms": 69.19,
+          "mean_ms": 65.33333333333333,
+          "max_ms": 3.7
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 26.3,
+          "p95_ms": 26.3,
+          "mean_ms": 26.099999999999998,
+          "max_ms": 1.3
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 23.2,
+          "p95_ms": 25.09,
+          "mean_ms": 22.46666666666667,
+          "max_ms": 2
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 10.2,
+          "p95_ms": 12,
+          "mean_ms": 10.2,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 10.1,
+          "p95_ms": 11.45,
+          "mean_ms": 10.299999999999999,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 9.4,
+          "p95_ms": 10.48,
+          "mean_ms": 9.6,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1710,
+          "p50_ms": 7.2,
+          "p95_ms": 7.65,
+          "mean_ms": 6.8999999999999995,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 5.9,
+          "p95_ms": 6.17,
+          "mean_ms": 5.966666666666666,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 120,
+          "p50_ms": 2.8,
+          "p95_ms": 3.0700000000000003,
+          "mean_ms": 2.733333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 2,
+          "p95_ms": 2,
+          "mean_ms": 1.8666666666666665,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.2,
+          "p95_ms": 1.47,
+          "mean_ms": 1.3,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 0.9,
+          "p95_ms": 0.99,
+          "mean_ms": 0.8333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.7,
+          "p95_ms": 0.79,
+          "mean_ms": 0.6333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 54,
+          "p50_ms": 0.6,
+          "p95_ms": 1.05,
+          "mean_ms": 0.6666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 54,
+          "p50_ms": 0.3,
+          "p95_ms": 0.8400000000000001,
+          "mean_ms": 0.46666666666666673,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.3,
+          "p95_ms": 0.6599999999999999,
+          "mean_ms": 0.39999999999999997,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Enter",
+          "count": 12,
+          "p50_ms": 0.3,
+          "p95_ms": 0.3,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 24,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.20000000000000004,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 24,
+          "p50_ms": 0.1,
+          "p95_ms": 0.1,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 12,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0.18,
+          "mean_ms": 0.06666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "step_Exit",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 12,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 22,
+      "scene_name": "scene_22",
+      "scenario": "idle",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 995.2999999523163,
+      "wall_ms_p95": 998.1799999952316,
+      "cache": {
+        "tile_hits": 240,
+        "tile_misses": 1590,
+        "tile_writes": 4,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 88.8,
+          "p95_ms": 95.91,
+          "mean_ms": 89.56666666666666,
+          "max_ms": 7.1
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 27.8,
+          "p95_ms": 27.889999999999997,
+          "mean_ms": 26.5,
+          "max_ms": 4.8
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 27.1,
+          "p95_ms": 30.79,
+          "mean_ms": 28.233333333333334,
+          "max_ms": 1.5
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 25,
+          "p95_ms": 28.69,
+          "mean_ms": 26.100000000000005,
+          "max_ms": 1.6
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 62,
+          "p50_ms": 14.3,
+          "p95_ms": 15.65,
+          "mean_ms": 13.833333333333334,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 13,
+          "p95_ms": 13.81,
+          "mean_ms": 12.333333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1590,
+          "p50_ms": 6.6,
+          "p95_ms": 6.69,
+          "mean_ms": 6.3,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 62,
+          "p50_ms": 6.1,
+          "p95_ms": 6.7299999999999995,
+          "mean_ms": 6.2,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 240,
+          "p50_ms": 3.4,
+          "p95_ms": 4.12,
+          "mean_ms": 3.366666666666667,
+          "max_ms": 0.6
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 62,
+          "p50_ms": 1.3,
+          "p95_ms": 1.3,
+          "mean_ms": 1.0999999999999999,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 119,
+          "p50_ms": 1.3,
+          "p95_ms": 2.1999999999999997,
+          "mean_ms": 1.4333333333333333,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 62,
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "mean_ms": 0.7666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 119,
+          "p50_ms": 0.9,
+          "p95_ms": 1.8900000000000001,
+          "mean_ms": 1.0666666666666667,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "step_Enter",
+          "count": 30,
+          "p50_ms": 0.8,
+          "p95_ms": 0.8,
+          "mean_ms": 0.6666666666666666,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 62,
+          "p50_ms": 0.7,
+          "p95_ms": 0.79,
+          "mean_ms": 0.6999999999999998,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 62,
+          "p50_ms": 0.4,
+          "p95_ms": 0.58,
+          "mean_ms": 0.4000000000000001,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 30,
+          "p50_ms": 0.3,
+          "p95_ms": 0.39,
+          "mean_ms": 0.3,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 30,
+          "p50_ms": 0.3,
+          "p95_ms": 0.39,
+          "mean_ms": 0.3,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 30,
+          "p50_ms": 0.3,
+          "p95_ms": 0.48,
+          "mean_ms": 0.3,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 62,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 30,
+          "p50_ms": 0.2,
+          "p95_ms": 0.2,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 30,
+          "p50_ms": 0.1,
+          "p95_ms": 0.1,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 30,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Exit",
+          "count": 30,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 22,
+      "scene_name": "scene_22",
+      "scenario": "pan",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 998.5,
+      "wall_ms_p95": 999.9400000214576,
+      "cache": {
+        "tile_hits": 240,
+        "tile_misses": 1815,
+        "tile_writes": 4,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 76.9,
+          "p95_ms": 81.22,
+          "mean_ms": 78.33333333333334,
+          "max_ms": 5.5
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 28.3,
+          "p95_ms": 28.66,
+          "mean_ms": 28.133333333333336,
+          "max_ms": 1.2
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 24,
+          "p95_ms": 26.43,
+          "mean_ms": 24.600000000000005,
+          "max_ms": 3.8
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 23.7,
+          "p95_ms": 24.060000000000002,
+          "mean_ms": 23.333333333333332,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 19.1,
+          "p95_ms": 19.64,
+          "mean_ms": 19.033333333333335,
+          "max_ms": 0.9
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 2055,
+          "p50_ms": 10.9,
+          "p95_ms": 12.34,
+          "mean_ms": 11.233333333333334,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 10.4,
+          "p95_ms": 10.49,
+          "mean_ms": 10.133333333333333,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1815,
+          "p50_ms": 5.4,
+          "p95_ms": 7.65,
+          "mean_ms": 6.2,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 240,
+          "p50_ms": 3.2,
+          "p95_ms": 3.29,
+          "mean_ms": 3.0333333333333337,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 2,
+          "p95_ms": 2.2699999999999996,
+          "mean_ms": 1.9333333333333333,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.8,
+          "p95_ms": 1.8,
+          "mean_ms": 1.6666666666666667,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 119,
+          "p50_ms": 1.4,
+          "p95_ms": 2.21,
+          "mean_ms": 1.5999999999999999,
+          "max_ms": 1
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 1.2,
+          "p95_ms": 1.38,
+          "mean_ms": 1.2333333333333332,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 119,
+          "p50_ms": 1.2,
+          "p95_ms": 1.8299999999999998,
+          "mean_ms": 1.3666666666666665,
+          "max_ms": 1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.7,
+          "p95_ms": 1.06,
+          "mean_ms": 0.8333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Enter",
+          "count": 30,
+          "p50_ms": 0.5,
+          "p95_ms": 0.59,
+          "mean_ms": 0.5,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.4,
+          "p95_ms": 0.49,
+          "mean_ms": 0.3666666666666667,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 30,
+          "p50_ms": 0.2,
+          "p95_ms": 0.47,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 30,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.20000000000000004,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 30,
+          "p50_ms": 0.2,
+          "p95_ms": 0.29,
+          "mean_ms": 0.20000000000000004,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 30,
+          "p50_ms": 0.1,
+          "p95_ms": 0.27999999999999997,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 30,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 30,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Exit",
+          "count": 30,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "mean_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    {
+      "scene_id": 22,
+      "scene_name": "scene_22",
+      "scenario": "zoom",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 1000,
+      "wall_ms_p95": 1000.629999935627,
+      "cache": {
+        "tile_hits": 0,
+        "tile_misses": 1830,
+        "tile_writes": 357,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 112.9,
+          "p95_ms": 118.66,
+          "mean_ms": 114.23333333333335,
+          "max_ms": 7
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 67,
+          "p95_ms": 70.06,
+          "mean_ms": 66.60000000000001,
+          "max_ms": 2.1
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 30.6,
+          "p95_ms": 33.57,
+          "mean_ms": 31.133333333333336,
+          "max_ms": 5
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 182,
+          "p50_ms": 25.6,
+          "p95_ms": 26.86,
+          "mean_ms": 24.100000000000005,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 6943,
+          "p50_ms": 22.4,
+          "p95_ms": 24.830000000000002,
+          "mean_ms": 22.633333333333336,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 6943,
+          "p50_ms": 17.3,
+          "p95_ms": 17.389999999999997,
+          "mean_ms": 16.900000000000002,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 14.1,
+          "p95_ms": 14.549999999999999,
+          "mean_ms": 12.9,
+          "max_ms": 0.8
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 182,
+          "p50_ms": 14,
+          "p95_ms": 14.99,
+          "mean_ms": 13.633333333333333,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_Enter",
+          "count": 1990,
+          "p50_ms": 13.6,
+          "p95_ms": 14.32,
+          "mean_ms": 13.799999999999999,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1830,
+          "p50_ms": 6.8,
+          "p95_ms": 7.79,
+          "mean_ms": 7.133333333333333,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 1990,
+          "p50_ms": 6.3,
+          "p95_ms": 8.01,
+          "mean_ms": 6.466666666666666,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 1990,
+          "p50_ms": 6.3,
+          "p95_ms": 6.569999999999999,
+          "mean_ms": 6.033333333333332,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 4.4,
+          "p95_ms": 4.8500000000000005,
+          "mean_ms": 4.4,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 1990,
+          "p50_ms": 3.3,
+          "p95_ms": 4.199999999999999,
+          "mean_ms": 3.4,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 1990,
+          "p50_ms": 2.9,
+          "p95_ms": 3.8,
+          "mean_ms": 3.1999999999999997,
+          "max_ms": 0.5
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 182,
+          "p50_ms": 2,
+          "p95_ms": 2.18,
+          "mean_ms": 1.7666666666666668,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 182,
+          "p50_ms": 1.7,
+          "p95_ms": 1.79,
+          "mean_ms": 1.4666666666666668,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 182,
+          "p50_ms": 1.3,
+          "p95_ms": 1.66,
+          "mean_ms": 1.3666666666666665,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Exit",
+          "count": 1990,
+          "p50_ms": 1.2,
+          "p95_ms": 1.38,
+          "mean_ms": 1.1666666666666667,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 182,
+          "p50_ms": 0.6,
+          "p95_ms": 0.78,
+          "mean_ms": 0.5666666666666668,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 1990,
+          "p50_ms": 0.5,
+          "p95_ms": 0.59,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 182,
+          "p50_ms": 0.5,
+          "p95_ms": 0.77,
+          "mean_ms": 0.5333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 1990,
+          "p50_ms": 0.1,
+          "p95_ms": 0.27999999999999997,
+          "mean_ms": 0.16666666666666666,
+          "max_ms": 0.1
+        }
+      ]
+    },
+    {
+      "scene_id": 22,
+      "scene_name": "scene_22",
+      "scenario": "drag",
+      "repeats": 3,
+      "frames_per_run": 60,
+      "wall_ms_p50": 996.2999999523163,
+      "wall_ms_p95": 1000.4400000810623,
+      "cache": {
+        "tile_hits": 240,
+        "tile_misses": 1590,
+        "tile_writes": 4,
+        "effect_cache_hits": 0,
+        "effect_cache_misses": 0,
+        "effect_cache_evictions": 0
+      },
+      "stats": [
+        {
+          "tag": "frame_TOTAL",
+          "count": 61,
+          "p50_ms": 74,
+          "p95_ms": 75.44,
+          "mean_ms": 73.39999999999999,
+          "max_ms": 5.9
+        },
+        {
+          "tag": "gpu_flush_and_submit",
+          "count": 61,
+          "p50_ms": 24.8,
+          "p95_ms": 25.61,
+          "mean_ms": 25.099999999999998,
+          "max_ms": 1.4
+        },
+        {
+          "tag": "rebuild_step6_build_schedule",
+          "count": 122,
+          "p50_ms": 23.5,
+          "p95_ms": 24.31,
+          "mean_ms": 23.433333333333334,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "run_schedule_TOTAL",
+          "count": 61,
+          "p50_ms": 23.1,
+          "p95_ms": 23.73,
+          "mean_ms": 22.133333333333336,
+          "max_ms": 4
+        },
+        {
+          "tag": "tile_grid_rebuild",
+          "count": 61,
+          "p50_ms": 18.9,
+          "p95_ms": 20.16,
+          "mean_ms": 19.333333333333332,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "step_SetTileBand",
+          "count": 1830,
+          "p50_ms": 10.5,
+          "p95_ms": 11.94,
+          "mean_ms": 10.533333333333333,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step1_index_shapes",
+          "count": 122,
+          "p50_ms": 8.5,
+          "p95_ms": 10.03,
+          "mean_ms": 9,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "step_FinalizeBand",
+          "count": 1590,
+          "p50_ms": 5.3,
+          "p95_ms": 5.93,
+          "mean_ms": 5.333333333333333,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_SetTileBand_cached_blit",
+          "count": 240,
+          "p50_ms": 3,
+          "p95_ms": 3.36,
+          "mean_ms": 2.766666666666667,
+          "max_ms": 0.7
+        },
+        {
+          "tag": "rebuild_step1b_root_tiles",
+          "count": 122,
+          "p50_ms": 2.3,
+          "p95_ms": 2.84,
+          "mean_ms": 2.2333333333333334,
+          "max_ms": 0.4
+        },
+        {
+          "tag": "rebuild_step5_toposort",
+          "count": 122,
+          "p50_ms": 2.1,
+          "p95_ms": 2.19,
+          "mean_ms": 1.9333333333333336,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "rebuild_step3_compute_bands",
+          "count": 122,
+          "p50_ms": 1.5,
+          "p95_ms": 1.68,
+          "mean_ms": 1.4000000000000001,
+          "max_ms": 0.3
+        },
+        {
+          "tag": "step_Enter",
+          "count": 30,
+          "p50_ms": 0.8,
+          "p95_ms": 0.89,
+          "mean_ms": 0.6666666666666666,
+          "max_ms": 0.2
+        },
+        {
+          "tag": "step_PaintBody",
+          "count": 119,
+          "p50_ms": 0.8,
+          "p95_ms": 1.97,
+          "mean_ms": 1.2,
+          "max_ms": 1
+        },
+        {
+          "tag": "fx_ShapeBody",
+          "count": 119,
+          "p50_ms": 0.7,
+          "p95_ms": 1.7799999999999998,
+          "mean_ms": 1.0666666666666667,
+          "max_ms": 1
+        },
+        {
+          "tag": "rebuild_step2_spiral",
+          "count": 122,
+          "p50_ms": 0.7,
+          "p95_ms": 1.15,
+          "mean_ms": 0.8333333333333334,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "rebuild_step4_dep_graph",
+          "count": 122,
+          "p50_ms": 0.5,
+          "p95_ms": 0.77,
+          "mean_ms": 0.5,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_drop_shadows",
+          "count": 30,
+          "p50_ms": 0.3,
+          "p95_ms": 0.39,
+          "mean_ms": 0.3333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_BeginLayer",
+          "count": 30,
+          "p50_ms": 0.1,
+          "p95_ms": 0.45999999999999996,
+          "mean_ms": 0.2333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape",
+          "count": 30,
+          "p50_ms": 0.1,
+          "p95_ms": 0.19,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_EndLayer",
+          "count": 30,
+          "p50_ms": 0.1,
+          "p95_ms": 0.1,
+          "mean_ms": 0.10000000000000002,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_bg_blur",
+          "count": 30,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "step_Exit",
+          "count": 30,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        },
+        {
+          "tag": "enter_render_shape_enter",
+          "count": 30,
+          "p50_ms": 0,
+          "p95_ms": 0.09,
+          "mean_ms": 0.03333333333333333,
+          "max_ms": 0.1
+        }
+      ]
+    }
+  ]
+}

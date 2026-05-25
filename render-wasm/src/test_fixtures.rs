@@ -295,6 +295,136 @@ pub fn preset(id: u32) -> Option<SceneSpec> {
         // hit for every group on idle/pan; zoom invalidates by
         // scale bucket.
         22 => SceneSpec::iso_groups("iso_groups_100", 20, 5, IsolatedFx::OpacityGroups),
+        // Custom scene: a root Frame containing 3 child Frames that all
+        // overlap (share at least one tile). The topmost-z child has a
+        // glass effect. Used by `test/visual/cache-capture.spec.ts` to
+        // reproduce the gather-backdrop / scope bug visible when 3 frames
+        // overlap and one has a gather effect. Routed via name in
+        // `build_into_state`, not via `IsolatedFx` — needs custom layout
+        // that the generic builders don't express.
+        23 => SceneSpec {
+            name: "iso_glass_3frames_overlap",
+            n_shapes: 4,
+            container_depth: 1,
+            branching_factor: 3,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 0.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: IsolatedFx::None,
+        },
+        // Repro of the user's "black glass" bug: parent frame with a
+        // visible fill, single child frame with glass + no fill. No
+        // siblings to paint into Current before the glass — the only
+        // backdrop the glass should see is the ancestor's fill. Used to
+        // verify the inline glass path doesn't starve when
+        // `skip_body_paint` skips the ancestor's body in the gather band.
+        24 => SceneSpec {
+            name: "iso_glass_solo_child",
+            n_shapes: 2,
+            container_depth: 1,
+            branching_factor: 1,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 0.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: IsolatedFx::None,
+        },
+        // ── SSA Bucket A: gap-fill scenes for the IR rewrite ───────
+        // Each exercises a specific aspect of the per-tile scope +
+        // dependency-graph mechanics the SSA surface IR is changing.
+        // n_shapes / container_depth / branching_factor are nominal —
+        // the bespoke build_* functions construct the actual scene.
+        25 => SceneSpec {
+            name: "iso_offscreen_scope",
+            n_shapes: 3,
+            container_depth: 1,
+            branching_factor: 1,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 0.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: IsolatedFx::None,
+        },
+        26 => SceneSpec {
+            name: "iso_nested_scopes_2deep_gathers",
+            n_shapes: 3,
+            container_depth: 2,
+            branching_factor: 1,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 0.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: IsolatedFx::None,
+        },
+        27 => SceneSpec {
+            name: "iso_z_stacked_gathers",
+            n_shapes: 3,
+            container_depth: 1,
+            branching_factor: 2,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 0.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: IsolatedFx::None,
+        },
+        28 => SceneSpec {
+            name: "iso_sibling_gathers_disjoint",
+            n_shapes: 3,
+            container_depth: 1,
+            branching_factor: 2,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 0.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: IsolatedFx::None,
+        },
+        29 => SceneSpec {
+            name: "iso_sibling_gathers_overlapping",
+            n_shapes: 3,
+            container_depth: 1,
+            branching_factor: 2,
+            drop_shadows_per_shape: 0,
+            drop_shadow_blur: 0.0,
+            bg_blur: false,
+            glass: false,
+            inner_shadows: 0,
+            fill: FillSpec::Solid,
+            kinds: ShapeKindSpec::RectLeaves,
+            heterogeneous: false,
+            fx_combos: false,
+            iso_fx: IsolatedFx::None,
+        },
         _ => return None,
     })
 }
@@ -335,7 +465,23 @@ pub fn build_into_state(state: &mut State, spec: &SceneSpec) {
     // in a global grid which lands most of them outside their
     // parent — fine for timing-only bench but invisible on the
     // canvas. Use a dedicated layout for iso_groups / iso_masked.
-    if spec.iso_fx.applies_to_container() {
+    // Name-based dispatch for scenes with bespoke geometry that the
+    // generic flat/nested/iso_groups builders don't express.
+    if spec.name == "iso_glass_3frames_overlap" {
+        build_glass_3frames_overlap(state);
+    } else if spec.name == "iso_glass_solo_child" {
+        build_glass_solo_child(state);
+    } else if spec.name == "iso_offscreen_scope" {
+        build_offscreen_scope(state);
+    } else if spec.name == "iso_nested_scopes_2deep_gathers" {
+        build_nested_scopes_2deep_gathers(state);
+    } else if spec.name == "iso_z_stacked_gathers" {
+        build_z_stacked_gathers(state);
+    } else if spec.name == "iso_sibling_gathers_disjoint" {
+        build_sibling_gathers_disjoint(state);
+    } else if spec.name == "iso_sibling_gathers_overlapping" {
+        build_sibling_gathers_overlapping(state);
+    } else if spec.iso_fx.applies_to_container() {
         build_iso_groups(state, spec);
     } else if spec.container_depth == 0 {
         build_flat(state, spec);
@@ -345,6 +491,445 @@ pub fn build_into_state(state: &mut State, spec: &SceneSpec) {
 
     // Tile index needs the populated pool to map shape→tile correctly.
     state.rebuild_tiles();
+}
+
+/// Custom layout: a root Frame containing 3 child Frames that all
+/// overlap (the overlap region falls inside tile (0, 0) at scale=1
+/// where tiles are 512×512). The topmost-z child has a glass effect.
+/// Used to reproduce the "glass refracts wrong content / parent siblings
+/// disappear from gather backdrop" bug in the smallest possible scene.
+fn build_glass_3frames_overlap(state: &mut State) {
+    let nil = Uuid::nil();
+
+    let root_frame_id = Uuid::from_u64_pair(0xF00D, 1);
+    {
+        let s = state.shapes.add_shape(root_frame_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(0.0, 0.0, 480.0, 480.0);
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 240, 240, 240))));
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(root_frame_id);
+
+    // Three child frames, each 220×220, staggered so all three overlap
+    // in the rectangle (150,150)–(220,220) which is inside tile (0,0).
+    // z-order = paint order in `children` list: child[0] paints first
+    // (bottom), child[2] paints last (top). The top frame gets glass.
+    let children: [(u64, f32, f32, [u8; 4]); 3] = [
+        (0xAAA1, 30.0, 30.0, [255, 200, 80, 80]),    // red-ish (bottom-z)
+        (0xAAA2, 90.0, 90.0, [255, 80, 200, 80]),    // green-ish (mid-z)
+        (0xAAA3, 150.0, 150.0, [255, 80, 80, 200]),  // blue-ish (top-z, glass)
+    ];
+    let mut child_ids: Vec<Uuid> = Vec::with_capacity(3);
+    for (i, (tag, x, y, [a, r, g, b])) in children.iter().enumerate() {
+        let id = Uuid::from_u64_pair(*tag, 1);
+        let s = state.shapes.add_shape(id);
+        s.parent_id = Some(root_frame_id);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(*x, *y, 220.0, 220.0);
+        // Glass child (topmost-z, i==2) is fill-less so the gather
+        // backdrop is the only thing painting inside the glass bezel —
+        // makes refraction debugging less ambiguous since there's no
+        // base fill compositing with the gather output. The two
+        // sibling frames keep their solid fills as the underlying
+        // content the glass samples.
+        if i != 2 {
+            s.fills
+                .push(Fill::Solid(SolidColor(Color::from_argb(*a, *r, *g, *b))));
+        }
+        // Apply glass to the topmost child only.
+        if i == 2 {
+            s.glass = Some(GlassEffect {
+                surface_type: 0,
+                bezel_width: 16.0,
+                glass_thickness: 1.2,
+                refractive_index: 1.5,
+                specular_angle: 0.0,
+                specular_opacity: 0.4,
+                specular_saturation: 0.0,
+                chromatic_aberration: 0.0,
+                splay: 0.0,
+                tilt_angle: 0.0,
+                edge_boost: 0.0,
+                zoom: 1.0,
+                blur: 8.0,
+                frost: 0.1,
+                hidden: false,
+            });
+        }
+        child_ids.push(id);
+    }
+    // Append in painted order (bottom-first); the renderer's z-index
+    // comes from `children` order.
+    let root_children = &mut state.shapes.get_mut(&root_frame_id).unwrap().children;
+    root_children.extend(child_ids);
+
+    // ── DISTANT FRAME ───────────────────────────────────────────────
+    // Bright orange Frame placed in tile (2, 0) — completely outside
+    // the tile (0, 0) where the glass + parent frame live. Tile size
+    // at scale=1 is 512px, so world (1100, 100)-(1300, 300) maps to
+    // tile column 2, row 0.
+    //
+    // Purpose: if the glass's render path is what's wedging the
+    // canvas blank, this frame — in a tile the glass doesn't touch —
+    // should still render. If it ALSO renders blank, the issue is
+    // global to the perf-page render flow (not glass-specific).
+    let distant_frame_id = Uuid::from_u64_pair(0xD157A47, 1);
+    {
+        let s = state.shapes.add_shape(distant_frame_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(1100.0, 100.0, 200.0, 200.0);
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 255, 140, 0))));
+    }
+    state
+        .shapes
+        .get_mut(&nil)
+        .unwrap()
+        .children
+        .push(distant_frame_id);
+}
+
+/// Minimal repro of the "black glass child of frame" bug:
+///   root → F1 (frame with fill) → F2 (frame with glass, no fill, no children)
+///
+/// No siblings inside F1 — the only backdrop content for F2's glass
+/// is F1's own fill. If the inline glass path skips F1's body paint
+/// in F2's gather band (because of `skip_body_paint=true` on the
+/// passthrough Enter), Current is empty at glass time and the
+/// refraction shader produces black.
+fn build_glass_solo_child(state: &mut State) {
+    let nil = Uuid::nil();
+
+    // F1: parent frame, vivid red fill. `clip_content=false` matches
+    // the UI's `createFrame` default (showContent=true → clip=false).
+    // The bug only reproduces when the parent is NOT clipping —
+    // clip_content=true triggers `needs_isolation` → `needs_scope`
+    // returns true → the scoped path runs, which works. Without
+    // clip, the parent's gather-child glass falls back to the inline
+    // path → empty Current → black glass (the bug).
+    let f1_id = Uuid::from_u64_pair(0xF001, 1);
+    {
+        let s = state.shapes.add_shape(f1_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(40.0, 40.0, 400.0, 400.0);
+        s.clip_content = false;
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 220, 60, 60))));
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(f1_id);
+
+    // F2: glass child, fill-less, no children of its own. Placed
+    // wholly inside F1 so the glass's sample area is dominated by
+    // F1's fill. Also clip_content=false so the glass frame itself
+    // matches the UI default.
+    let f2_id = Uuid::from_u64_pair(0xF002, 1);
+    {
+        let s = state.shapes.add_shape(f2_id);
+        s.parent_id = Some(f1_id);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(140.0, 140.0, 200.0, 200.0);
+        s.clip_content = false;
+        // Glass params matching the skia-rs-wasm UI defaults
+        // (api/glass.ts setShapeGlass defaults) so this test scene
+        // reproduces whatever the user sees when they "apply glass"
+        // in the custom builder.
+        s.glass = Some(GlassEffect {
+            surface_type: 1,                 // squircle
+            bezel_width: 40.0,
+            glass_thickness: 1.2,
+            refractive_index: 1.5,
+            specular_angle: (-60.0_f32).to_radians(),
+            specular_opacity: 0.5,
+            specular_saturation: 4.0,
+            chromatic_aberration: 3.0,
+            splay: 1.0,
+            tilt_angle: 0.0,
+            edge_boost: 0.0,
+            zoom: 1.0,
+            blur: 0.0,
+            frost: 0.0,
+            hidden: false,
+        });
+    }
+    state.shapes.get_mut(&f1_id).unwrap().children.push(f2_id);
+}
+
+// ── SSA Bucket A: gap-fill scenes exercising the IR change directly ─
+
+/// Glass effect with parameters tuned for visible refraction over a
+/// vivid backdrop. Shared by the SSA gap-fill scenes below.
+fn glass_default() -> GlassEffect {
+    GlassEffect {
+        surface_type: 0,
+        bezel_width: 16.0,
+        glass_thickness: 1.2,
+        refractive_index: 1.5,
+        specular_angle: 0.0,
+        specular_opacity: 0.4,
+        specular_saturation: 0.0,
+        chromatic_aberration: 0.0,
+        splay: 0.0,
+        tilt_angle: 0.0,
+        edge_boost: 0.0,
+        zoom: 1.0,
+        blur: 8.0,
+        frost: 0.1,
+        hidden: false,
+    }
+}
+
+/// Scoped frame partially clipped by the viewbox.
+///
+/// F1 is a scoped frame (has a glass descendant) whose world bbox
+/// extends past the viewbox edge — exercises the world_bbox-clipping
+/// math in `handle_push_scope` and `build_gather_backdrop_scoped`.
+/// Visible portion of F1 must still render correctly; offscreen
+/// portion must not crash or paint outside its scope_surface.
+fn build_offscreen_scope(state: &mut State) {
+    let nil = Uuid::nil();
+
+    // Visible reference frame so the canvas isn't blank if F1's path
+    // breaks. Pure orange fill in tile (0, 0).
+    let ref_id = Uuid::from_u64_pair(0xCAFE, 1);
+    {
+        let s = state.shapes.add_shape(ref_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(40.0, 40.0, 220.0, 220.0);
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 255, 140, 0))));
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(ref_id);
+
+    // F1: scoped frame straddling the right edge of tile (0, 0).
+    // selrect extends well past x=512 so only its left half is
+    // visible inside the rendered area.
+    let f1_id = Uuid::from_u64_pair(0xF11, 1);
+    {
+        let s = state.shapes.add_shape(f1_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(300.0, 80.0, 1200.0, 240.0);
+        s.clip_content = false;
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 80, 120, 220))));
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(f1_id);
+
+    // Glass child placed in the visible portion of F1, refracting F1's
+    // fill. Must render correctly despite F1's scope extending off-edge.
+    let g_id = Uuid::from_u64_pair(0xF12, 1);
+    {
+        let s = state.shapes.add_shape(g_id);
+        s.parent_id = Some(f1_id);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(360.0, 130.0, 120.0, 140.0);
+        s.clip_content = false;
+        s.glass = Some(glass_default());
+    }
+    state.shapes.get_mut(&f1_id).unwrap().children.push(g_id);
+}
+
+/// Nested scopes, gather in each.
+///
+/// Root → F1 (scoped, has gather descendant) → F2 (scoped, has its
+/// own gather) → Glass leaf inside F2. Exercises the enclosing-scopes
+/// loop in `build_gather_backdrop_scoped` — the innermost gather's
+/// backdrop must include both F1's and F2's scope mirrors composed
+/// in the right order.
+fn build_nested_scopes_2deep_gathers(state: &mut State) {
+    let nil = Uuid::nil();
+
+    // F1: outer scoped frame, large blue fill.
+    let f1_id = Uuid::from_u64_pair(0xE001, 1);
+    {
+        let s = state.shapes.add_shape(f1_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(40.0, 40.0, 440.0, 440.0);
+        s.clip_content = false;
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 60, 100, 220))));
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(f1_id);
+
+    // F2: inner scoped frame, magenta fill. Sits inside F1.
+    let f2_id = Uuid::from_u64_pair(0xE002, 1);
+    {
+        let s = state.shapes.add_shape(f2_id);
+        s.parent_id = Some(f1_id);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(100.0, 100.0, 320.0, 320.0);
+        s.clip_content = false;
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 220, 60, 200))));
+    }
+    state.shapes.get_mut(&f1_id).unwrap().children.push(f2_id);
+
+    // Glass leaf inside F2 — both F1 and F2 become scoped because
+    // each has a gather descendant. The innermost glass samples
+    // F1.fill ⊕ F2.fill via the scope chain.
+    let g_id = Uuid::from_u64_pair(0xE003, 1);
+    {
+        let s = state.shapes.add_shape(g_id);
+        s.parent_id = Some(f2_id);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(170.0, 170.0, 180.0, 180.0);
+        s.clip_content = false;
+        s.glass = Some(glass_default());
+    }
+    state.shapes.get_mut(&f2_id).unwrap().children.push(g_id);
+}
+
+/// Z-stacked gathers — gather B reads from a backdrop containing
+/// gather A's output.
+///
+/// Background frame with vivid fill. Two glass shapes A and B placed
+/// so B's bbox is above A in z-order (B paints after A) AND B's
+/// sample region overlaps A's output. Forces a serial dep edge:
+/// B's snapshot waits on A's gather completing.
+fn build_z_stacked_gathers(state: &mut State) {
+    let nil = Uuid::nil();
+
+    // Background frame — provides the base content both gathers sample.
+    let bg_id = Uuid::from_u64_pair(0xB001, 1);
+    {
+        let s = state.shapes.add_shape(bg_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(20.0, 20.0, 460.0, 460.0);
+        s.clip_content = false;
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 240, 200, 60))));
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(bg_id);
+
+    // Glass A — lower z-order, painted first. Placed centrally.
+    let ga_id = Uuid::from_u64_pair(0xB002, 1);
+    {
+        let s = state.shapes.add_shape(ga_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(100.0, 100.0, 240.0, 240.0);
+        s.clip_content = false;
+        s.glass = Some(glass_default());
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(ga_id);
+
+    // Glass B — higher z-order, painted after A. Overlaps A's bbox
+    // so B samples A's gather output in its backdrop region.
+    let gb_id = Uuid::from_u64_pair(0xB003, 1);
+    {
+        let s = state.shapes.add_shape(gb_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(180.0, 180.0, 240.0, 240.0);
+        s.clip_content = false;
+        s.glass = Some(glass_default());
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(gb_id);
+}
+
+/// Sibling gathers in disjoint tile neighborhoods.
+///
+/// Background frame plus two glass shapes far apart (placed in
+/// different tile columns) so their 3×3 sample neighborhoods don't
+/// share any tiles. The schedule should be able to pipeline both
+/// gather sequences in parallel — interleave-friendly case.
+fn build_sibling_gathers_disjoint(state: &mut State) {
+    let nil = Uuid::nil();
+
+    // Background frame spans both tile columns so each glass has
+    // colored backdrop to refract.
+    let bg_id = Uuid::from_u64_pair(0xD001, 1);
+    {
+        let s = state.shapes.add_shape(bg_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(0.0, 0.0, 1400.0, 360.0);
+        s.clip_content = false;
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 60, 200, 160))));
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(bg_id);
+
+    // Glass A — left, tile column 0.
+    let ga_id = Uuid::from_u64_pair(0xD002, 1);
+    {
+        let s = state.shapes.add_shape(ga_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(80.0, 80.0, 220.0, 220.0);
+        s.clip_content = false;
+        s.glass = Some(glass_default());
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(ga_id);
+
+    // Glass B — right, tile column 2 (world x > 1024 with 512px tiles).
+    let gb_id = Uuid::from_u64_pair(0xD003, 1);
+    {
+        let s = state.shapes.add_shape(gb_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(1100.0, 80.0, 220.0, 220.0);
+        s.clip_content = false;
+        s.glass = Some(glass_default());
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(gb_id);
+}
+
+/// Sibling gathers with overlapping sample neighborhoods.
+///
+/// Two glass shapes whose bboxes don't overlap but whose 3×3 sample
+/// neighborhoods share at least one tile. Exercises snapshot-dedup
+/// (both gathers' ComposeBackdrop read the same Snap(scope, tile)
+/// step). High blur radius widens the sample region.
+fn build_sibling_gathers_overlapping(state: &mut State) {
+    let nil = Uuid::nil();
+
+    // Background frame.
+    let bg_id = Uuid::from_u64_pair(0xC001, 1);
+    {
+        let s = state.shapes.add_shape(bg_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(20.0, 20.0, 600.0, 360.0);
+        s.clip_content = false;
+        s.fills
+            .push(Fill::Solid(SolidColor(Color::from_argb(255, 200, 80, 60))));
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(bg_id);
+
+    // Two glass shapes side by side, ~30px apart. Wide blur so
+    // sample regions overlap. Glass shapes themselves don't intersect.
+    let mut high_blur = glass_default();
+    high_blur.blur = 40.0;
+
+    let ga_id = Uuid::from_u64_pair(0xC002, 1);
+    {
+        let s = state.shapes.add_shape(ga_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(60.0, 100.0, 180.0, 180.0);
+        s.clip_content = false;
+        s.glass = Some(high_blur.clone());
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(ga_id);
+
+    let gb_id = Uuid::from_u64_pair(0xC003, 1);
+    {
+        let s = state.shapes.add_shape(gb_id);
+        s.parent_id = Some(nil);
+        s.shape_type = Type::Frame(Frame::default());
+        s.selrect = math::Rect::from_xywh(270.0, 100.0, 180.0, 180.0);
+        s.clip_content = false;
+        s.glass = Some(high_blur);
+    }
+    state.shapes.get_mut(&nil).unwrap().children.push(gb_id);
 }
 
 /// Layout for container-level iso scenes (`Masked`, `OpacityGroups`).
