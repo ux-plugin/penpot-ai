@@ -124,6 +124,12 @@ impl<'a> ProductionSink<'a> {
     /// Bridge: take the pooled surface for `r`, install it as
     /// `surfaces.current`, run `f` (which has full `&mut RenderState`
     /// access for legacy calls), restore.
+    ///
+    /// Also calls `update_render_context(tile)` before `f` so the
+    /// legacy renderer sees the right `render_area`, `current_tile`,
+    /// and surface canvas translation — without this the legacy code
+    /// paints every shape at world coords into every tile, producing
+    /// ghost copies in adjacent tiles.
     fn with_pooled_as_current<F, R>(&mut self, r: SurfaceRef, f: F) -> R
     where
         F: FnOnce(&mut crate::render::v2::RenderState) -> R,
@@ -132,11 +138,20 @@ impl<'a> ProductionSink<'a> {
             !r.is_target(),
             "with_pooled_as_current called with Target"
         );
+        let tile = r.tile.expect("non-Target ref must have a tile");
+
         let mut binding = self
             .map
             .take(r)
             .expect("SSA invariant: ref must be bound before access");
         self.state.surfaces.swap_current(&mut binding.surface);
+
+        // Set up the legacy per-tile context (translation, clip, render
+        // area). Mirrors what `SetTileBand` did in the deleted legacy
+        // run_schedule. Called per step to handle the case where steps
+        // interleave across tiles (gather phases pull from many tiles).
+        self.state.update_render_context(tile);
+
         let result = f(self.state);
         self.state.surfaces.swap_current(&mut binding.surface);
         self.map.put_back(r, binding);
