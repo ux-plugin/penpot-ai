@@ -13,6 +13,16 @@
 // always compiled so it can't bit-rot from the rest of the module.
 pub mod ssa;
 
+#[cfg(feature = "ssa-ir")]
+thread_local! {
+    /// Cross-frame surface pool used by the SSA cutover path. Lives
+    /// for the lifetime of the wasm module — pool retention buys
+    /// zero per-frame allocation in steady-state animation. Wraps in
+    /// `RefCell` since the SSA path borrows it mutably per frame.
+    static SSA_ALLOCATOR: std::cell::RefCell<ssa::SurfaceAllocator> =
+        std::cell::RefCell::new(ssa::SurfaceAllocator::new());
+}
+
 use std::collections::BinaryHeap;
 
 // Hash map/set used throughout this module are FxHash-backed: small-key
@@ -3099,6 +3109,19 @@ impl RenderState {
         can_yield: bool,
     ) -> Result<()> {
         crate::perf_guard!("run_schedule_TOTAL");
+
+        // SSA cutover gate. When `ssa-ir` is enabled at build time, route
+        // every frame through the SSA path instead of the legacy
+        // scheduler. The legacy path stays around (this file unmodified
+        // below) for `git worktree add legacy-snapshot` debugging until
+        // pixel-parity is proven on every scene in the visual regression
+        // suite.
+        #[cfg(feature = "ssa-ir")]
+        {
+            let _ = (timestamp, can_yield);
+            return self.run_schedule_via_ssa(tree);
+        }
+        #[cfg_attr(feature = "ssa-ir", allow(unreachable_code))]
         let mut iteration = 0;
 
         while let Some(step) = self.tile_grid.next() {
@@ -3778,6 +3801,62 @@ impl RenderState {
         crate::render::debug::render_wasm_label(self);
 
         Ok(())
+    }
+
+    /// SSA cutover entry. Builds a complete SSA schedule for the
+    /// current frame and dispatches it via `ProductionSink`. Currently
+    /// gated behind `feature = "ssa-ir"` — when enabled, `run_schedule`
+    /// routes here on every frame. Once pixel-parity is proven on the
+    /// visual regression suite, the legacy `run_schedule` body
+    /// (everything below this gate) is deleted.
+    #[cfg(feature = "ssa-ir")]
+    fn run_schedule_via_ssa(&mut self, tree: ShapesPoolRef) -> Result<()> {
+        use crate::tile_grid::ssa;
+
+        let scale = self.get_scale();
+        let tile_size = crate::tiles::get_tile_size(scale);
+        let tile_dims = (tile_size as i32, tile_size as i32);
+
+        // Enumerate visible tiles in the interest rect.
+        let interest = self.tile_viewbox.interest_rect;
+        let mut tiles: Vec<Tile> = Vec::new();
+        for ty in interest.y1()..=interest.y2() {
+            for tx in interest.x1()..=interest.x2() {
+                tiles.push(Tile(tx, ty));
+            }
+        }
+
+        // World-origin / clip-rect closures. Tile origins in world
+        // coords; clip rect spans the tile + per-side margins.
+        let origin = move |t: Tile| {
+            skia::Point::new(t.x() as f32 * tile_size, t.y() as f32 * tile_size)
+        };
+        let clip = move |t: Tile| {
+            skia::Rect::from_xywh(
+                t.x() as f32 * tile_size,
+                t.y() as f32 * tile_size,
+                tile_size,
+                tile_size,
+            )
+        };
+
+        // Thread-local allocator survives across frames. Pool retention
+        // = zero per-frame surface allocation in steady-state animation.
+        SSA_ALLOCATOR.with(|cell| {
+            let mut allocator = cell.borrow_mut();
+            let args = ssa::RenderArgs {
+                state: self,
+                allocator: &mut *allocator,
+                shapes: tree,
+                tile_grid: &self.tile_grid,
+                tiles,
+                tile_size: tile_dims,
+                scale,
+                world_origin_for: Box::new(origin),
+                clip_rect_for: Box::new(clip),
+            };
+            ssa::render_via_ssa(args).map(|_out| ())
+        })
     }
 
     /// Skip past matching Enter/Exit pairs when a container is hidden.
