@@ -44,6 +44,8 @@ pub struct RenderArgs<'a> {
     pub viewbox: &'a Viewbox,
     pub tiles: Vec<Tile>,
     pub tile_size: (i32, i32),
+    /// Viewbox zoom — feeds gather sample-rect computation.
+    pub scale: f32,
     pub world_origin_for: Box<dyn Fn(Tile) -> Point + 'a>,
     pub clip_rect_for: Box<dyn Fn(Tile) -> Rect + 'a>,
 }
@@ -70,6 +72,7 @@ pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
         viewbox,
         tiles,
         tile_size,
+        scale,
         world_origin_for,
         clip_rect_for,
     } = args;
@@ -82,6 +85,7 @@ pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
         world_origin_for: world_origin_for.as_ref(),
         clip_rect_for: clip_rect_for.as_ref(),
         tile_size,
+        scale,
     };
     let Schedule { steps } = ScheduleBuilder::new().build(&inputs);
 

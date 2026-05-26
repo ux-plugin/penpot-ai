@@ -6,30 +6,47 @@
 //!
 //!   `TileGrid::get_shapes_at(tile)` → SSA `Step`s for that tile
 //!
-//! Coverage state by scene shape:
+//! ## Emission shape
 //!
-//! - **Flat / nested-no-fx** — implemented. One `Paint` per shape into
-//!   the tile's `TileOutput` ref; one `Composite(tile_out → Target)`
-//!   per tile; one `WriteTileCache` per tile.
-//! - **Scoped containers (frames, groups, masked)** — TODO. Will emit
-//!   `ScopeOf(F, T)` writes for children + `Composite(scope → parent)`
-//!   at end-of-scope.
-//! - **Gather (glass / bg-blur)** — TODO. Will emit `Snapshot` per
-//!   source tile in the 3×3 neighborhood + `ComposeBackdrop` + `PaintGather`.
+//! Two phases per build call:
+//!
+//! 1. **Body phase** — for every tile, walk its shapes in paint order;
+//!    emit a `Paint` step per shape into `TileOutput(tile)`. Multiple
+//!    Paints into the same `TileOutput` is allowed (paint accumulation —
+//!    the validator special-cases ScopeOf/TileOutput/Target).
+//!
+//! 2. **Gather phase** — for every gather shape touching the visible
+//!    tile range, compute the world-space sample extent, expand to a
+//!    tile rect, emit one `Snapshot(TileOutput(source_tile))` per
+//!    source tile + one `ComposeBackdrop` fusing them + one
+//!    `PaintGather` writing into the gather's destination tile's
+//!    `TileOutput`. The Snapshot reads happen-before the gather's
+//!    write via the natural emit order (body phase runs first).
+//!
+//! 3. **Finalize phase** — per tile: `WriteTileCache(TileOutput)` +
+//!    `Composite(TileOutput → Target, erase_after: true)`.
+//!
+//! ## Coverage state
+//!
+//! - **Flat / nested-no-fx** — implemented (body + finalize phases).
+//! - **Gather (glass / bg-blur)** — implemented (gather phase emits
+//!   Snapshot + ComposeBackdrop + PaintGather; ProductionSink handlers
+//!   still TODO for snapshot/compose/paint_gather variants).
+//! - **Scoped containers** — TODO. The plan calls for per-tile
+//!   `ScopeOf` surfaces with Composite-fold to parent; for flat
+//!   scenes the current TileOutput-only emission is correct. Scope
+//!   emission lands after gather scenes hit pixel-parity.
 //! - **Scatter / local blur** — TODO. Will emit a `RasterEffectOutput`
 //!   ref produced once per shape and consumed per-tile.
-//!
-//! The flat-scene path is fully wired; gather/scope/scatter paths are
-//! detected and short-circuit to a debug-panic so they can't ship silently.
 
 use skia_safe::{Point, Rect};
 
-use super::super::{EffectKey, ShapeEntry, TileGrid};
-use super::step::Step;
+use super::super::{EffectKey, GatherFx, ShapeEntry, TileGrid};
+use super::step::{LayerPaint, Step};
 use super::surface_ref::{SurfaceRef, SurfaceRole};
 use crate::shapes::Shape;
 use crate::state::ShapesPoolRef;
-use crate::tiles::Tile;
+use crate::tiles::{self, Tile};
 use crate::uuid::Uuid;
 
 /// Per-frame schedule output. The dispatcher executes `steps` in order.
@@ -48,34 +65,32 @@ impl Schedule {
 /// builder runs per-frame and shouldn't own this data.
 pub struct ScheduleInputs<'a> {
     /// Shapes-pool reference. Resolved as the builder walks shape ids.
-    /// `ShapesPoolRef<'a>` is itself a `&'a ShapesPoolImpl`, so the
-    /// field needs no extra `&`.
     pub shapes: ShapesPoolRef<'a>,
     /// The legacy tile grid — owns the spatial index and per-tile shape
-    /// lists. Read-only here; the builder doesn't mutate the grid.
+    /// lists. Read-only here.
     pub tile_grid: &'a TileGrid,
     /// Tiles the builder should emit steps for. Typically the visible
     /// rect from `TileViewbox`.
     pub tiles: &'a [Tile],
-    /// World-space tile origin computation. `world_origin_for(tile)`
-    /// returns the world (x, y) of the tile's top-left.
+    /// World-space tile origin computation.
     pub world_origin_for: &'a dyn Fn(Tile) -> Point,
-    /// World-space tile clip rect for the given tile. Includes the
-    /// renderer's tile-size multiplier / margins so per-tile Paint
-    /// steps cover the over-sampled region.
+    /// World-space tile clip rect for the given tile.
     pub clip_rect_for: &'a dyn Fn(Tile) -> Rect,
-    /// Tile-output dimensions. Used to size physical surfaces backing
-    /// `ScopeOf` / `TileOutput` refs.
+    /// Tile-output dimensions.
     pub tile_size: (i32, i32),
+    /// World viewbox scale. Needed for gather sample-rect calculation
+    /// (the legacy `compute_gather_sample_rect` takes scale).
+    pub scale: f32,
 }
 
-/// The builder itself. Accumulates a `Schedule` as it walks input.
+/// The builder itself.
 pub struct ScheduleBuilder {
     schedule: Schedule,
-    /// Track which shapes we've already emitted a body Paint for at a
-    /// given tile. A shape that appears in multiple bands of the same
-    /// tile (scope passthrough in the legacy model) shouldn't double-paint.
     emitted_shape_bodies: rustc_hash::FxHashSet<(Uuid, Tile)>,
+    /// Track gather shapes we've already emitted neighborhood-snapshot
+    /// + ComposeBackdrop + PaintGather for. Each gather emits once per
+    /// frame regardless of how many tiles it touches.
+    emitted_gather_shapes: rustc_hash::FxHashSet<Uuid>,
 }
 
 impl ScheduleBuilder {
@@ -83,73 +98,112 @@ impl ScheduleBuilder {
         Self {
             schedule: Schedule::new(),
             emitted_shape_bodies: rustc_hash::FxHashSet::default(),
+            emitted_gather_shapes: rustc_hash::FxHashSet::default(),
         }
     }
 
-    /// Entry point — build the schedule from input. Returns the
-    /// completed `Schedule` ready for `Dispatcher::execute`.
+    /// Entry point — build the schedule from input.
     pub fn build(mut self, inputs: &ScheduleInputs<'_>) -> Schedule {
+        // Phase 1 — body Paints, per tile.
         for &tile in inputs.tiles {
-            self.emit_tile(tile, inputs);
+            self.emit_tile_bodies(tile, inputs);
+        }
+        // Phase 2 — gather neighborhoods. Emitted in a separate pass
+        // so all source tiles' TileOutputs are written before any
+        // gather reads them. (The natural per-tile body order isn't
+        // dependency-correct for gathers — a gather in tile T00 may
+        // need to read TileOutput(T10), which isn't written until
+        // we get to T10 in the body phase. Doing all bodies first
+        // breaks the cycle.)
+        for &tile in inputs.tiles {
+            self.emit_tile_gathers(tile, inputs);
+        }
+        // Phase 3 — per-tile finalize: cache write + composite to Target.
+        for &tile in inputs.tiles {
+            self.emit_tile_finalize(tile, inputs);
         }
         self.schedule
     }
 
-    /// Emit steps for one tile's worth of work.
-    ///
-    /// Algorithm:
-    ///   1. Look up shapes on this tile via `TileGrid::get_shapes_at`.
-    ///   2. If no shapes touch the tile, skip — the tile output is empty.
-    ///   3. Walk shapes in paint order; emit one `Paint` step per shape
-    ///      writing into the tile's `TileOutput` ref.
-    ///   4. After all shapes, emit `WriteTileCache(tile_out, tile)` and
-    ///      `Composite(tile_out → Target, erase_after: true)`.
-    ///
-    /// Gather and scope detection: if any shape on this tile has a
-    /// gather effect or needs a scope, the builder currently emits a
-    /// `Paint` step into the tile output anyway — the gather/scope
-    /// rendering will be picked up by the production sink's per-effect
-    /// dispatch. The full gather neighborhood (Snapshot + ComposeBackdrop)
-    /// lands in follow-up work; the flat path is the foundation.
-    fn emit_tile(&mut self, tile: Tile, inputs: &ScheduleInputs<'_>) {
+    /// Phase 1: walk a tile's shapes, emit Paint steps.
+    fn emit_tile_bodies(&mut self, tile: Tile, inputs: &ScheduleInputs<'_>) {
         let entries = match inputs.tile_grid.get_shapes_at(tile) {
             Some(e) if !e.is_empty() => e,
-            _ => return, // empty tile — viewbox background was cleared at frame start
+            _ => return,
         };
 
         let world_origin = (inputs.world_origin_for)(tile);
         let clip_rect = (inputs.clip_rect_for)(tile);
         let tile_out = SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile);
-        let target = SurfaceRef::target();
 
-        // Emit per-shape body paint into the tile output.
-        let mut emitted_any = false;
         for entry in entries {
-            if self.emit_shape_body(
+            self.emit_shape_body(
                 entry,
                 inputs.shapes,
                 tile,
                 tile_out,
                 clip_rect,
                 world_origin,
-            ) {
-                emitted_any = true;
+            );
+        }
+    }
+
+    /// Phase 2: walk a tile's shapes, emit gather neighborhood steps
+    /// for any shape with a gather effect (glass / bg_blur) anchored
+    /// at this tile. The neighborhood includes every tile the gather's
+    /// world-space sample extent intersects.
+    fn emit_tile_gathers(&mut self, tile: Tile, inputs: &ScheduleInputs<'_>) {
+        let entries = match inputs.tile_grid.get_shapes_at(tile) {
+            Some(e) if !e.is_empty() => e,
+            _ => return,
+        };
+
+        for entry in entries {
+            if !entry.has_gather {
+                continue;
             }
+            // De-dupe — a gather shape touches multiple tiles, but
+            // we emit its neighborhood/backdrop/PaintGather exactly
+            // once. We anchor the emission at the first tile we
+            // encounter that hosts the shape.
+            if !self.emitted_gather_shapes.insert(entry.id) {
+                continue;
+            }
+            let Some(shape) = inputs.shapes.get(&entry.id) else {
+                continue;
+            };
+            let (gather_effects, _body) =
+                super::super::paint_plan_for_shape(shape);
+            if gather_effects.is_empty() {
+                continue;
+            }
+            self.emit_gather_neighborhood(
+                shape,
+                tile,
+                &gather_effects,
+                inputs,
+            );
         }
+    }
 
-        if !emitted_any {
-            // Every shape on the tile was a dedupe — nothing to composite.
-            return;
-        }
+    /// Phase 3: per-tile finalize — cache write + composite to Target.
+    fn emit_tile_finalize(&mut self, tile: Tile, inputs: &ScheduleInputs<'_>) {
+        let entries = match inputs.tile_grid.get_shapes_at(tile) {
+            Some(e) if !e.is_empty() => e,
+            _ => return,
+        };
+        // Only finalize tiles we actually painted into. (A tile in
+        // the visible range with no shapes was already skipped above.)
+        let _ = entries;
 
-        // Per-tile finalize: cache write (so the cross-frame tile cache
-        // captures the per-tile artifact), then composite into the
-        // viewbox accumulator with erase_after folding in the release.
+        let clip_rect = (inputs.clip_rect_for)(tile);
+        let tile_out = SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile);
+        let target = SurfaceRef::target();
+
         self.schedule.steps.push(Step::WriteTileCache {
             from: tile_out,
             tile,
         });
-
         self.schedule.steps.push(Step::Composite {
             from: tile_out,
             to: target,
@@ -161,10 +215,6 @@ impl ScheduleBuilder {
 
     /// Emit the `Paint` step for one shape entry's body. Returns true
     /// if a step was emitted, false if deduplicated.
-    ///
-    /// `paint_plan_for_shape` is the legacy planner — it splits the
-    /// shape's effects into gather + body lists. We pull only the
-    /// body list here; gather lifting lives in follow-up work.
     fn emit_shape_body(
         &mut self,
         entry: &ShapeEntry,
@@ -179,20 +229,12 @@ impl ScheduleBuilder {
         }
         let shape: &Shape = match shapes.get(&entry.id) {
             Some(s) => s,
-            None => return false, // pool race; legacy code tolerates this too
+            None => return false,
         };
-
-        // Lower the paint plan to a flat effect list. Gather effects
-        // (Glass / BackgroundBlur) are routed through `PaintGather` —
-        // when that emission lands, this is the place that decides
-        // whether to emit Paint+PaintGather or Paint alone.
-        let (gather, body) = paint_plan(shape);
-        let _ = gather; // gather emission lands in follow-up
-
+        let (_gather, body) = super::super::paint_plan_for_shape(shape);
         if body.is_empty() {
             return false;
         }
-
         self.schedule.steps.push(Step::Paint {
             shape: entry.id,
             effects: body,
@@ -201,6 +243,109 @@ impl ScheduleBuilder {
             write_to: vec![write_to],
         });
         true
+    }
+
+    /// Emit the gather neighborhood for one gather shape.
+    ///
+    /// Algorithm:
+    ///   1. Compute the world-space sample rect via the legacy
+    ///      `TileGrid::compute_gather_sample_rect`.
+    ///   2. Map to a tile rect via `tiles::get_tiles_for_rect`.
+    ///   3. For each source tile that has been emitted into (i.e.
+    ///      has a `TileOutput` written by Phase 1), emit one
+    ///      `Snapshot`. The TileOutput ref is per-tile and was
+    ///      written during the body phase.
+    ///   4. Emit a `ComposeBackdrop` fusing the snapshots.
+    ///   5. Emit a `PaintGather` writing into the anchor tile's
+    ///      TileOutput.
+    fn emit_gather_neighborhood(
+        &mut self,
+        shape: &Shape,
+        anchor_tile: Tile,
+        effects: &[GatherFx],
+        inputs: &ScheduleInputs<'_>,
+    ) {
+        let sample_rect = inputs.tile_grid.compute_gather_sample_rect(
+            shape,
+            inputs.shapes,
+            inputs.scale,
+        );
+        let tile_size = tiles::get_tile_size(inputs.scale);
+        let tile_rect = tiles::get_tiles_for_rect(sample_rect, tile_size);
+
+        // 1. Collect snapshot source tiles. We snapshot from every
+        // source tile that had body content emitted (Phase 1). The
+        // dedup map tracks (shape, tile) so we can ask "did we paint
+        // anything into source_tile during Phase 1".
+        let mut snapshot_refs: Vec<SurfaceRef> = Vec::new();
+        for ty in tile_rect.y1()..=tile_rect.y2() {
+            for tx in tile_rect.x1()..=tile_rect.x2() {
+                let source_tile = Tile(tx, ty);
+                if !self.tile_has_body_content(source_tile) {
+                    continue;
+                }
+                let snap_ref = SurfaceRef::tile_ref(
+                    SurfaceRole::Snapshot {
+                        for_shape: shape.id,
+                        source_tile,
+                    },
+                    source_tile,
+                );
+                let source_tile_out =
+                    SurfaceRef::tile_ref(SurfaceRole::TileOutput, source_tile);
+
+                // Snapshot the entire tile's content. The gather
+                // shader clips to its own extent inside the backdrop.
+                self.schedule.steps.push(Step::Snapshot {
+                    from: source_tile_out,
+                    rect: skia_safe::IRect::from_xywh(0, 0, inputs.tile_size.0, inputs.tile_size.1),
+                    write_to: snap_ref,
+                });
+                snapshot_refs.push(snap_ref);
+            }
+        }
+
+        if snapshot_refs.is_empty() {
+            // Nothing to backdrop — skip. The gather's body paint
+            // (Phase 1) still happens, producing transparent output.
+            return;
+        }
+
+        // 2. ComposeBackdrop fuses the snapshots into one backdrop.
+        let backdrop_ref =
+            SurfaceRef::tile_ref(SurfaceRole::Backdrop(shape.id), anchor_tile);
+        self.schedule.steps.push(Step::ComposeBackdrop {
+            shape: shape.id,
+            read_from: snapshot_refs.clone(),
+            extent: sample_rect,
+            write_to: backdrop_ref,
+        });
+
+        // 3. PaintGather writes into the anchor tile's TileOutput.
+        let anchor_tile_out =
+            SurfaceRef::tile_ref(SurfaceRole::TileOutput, anchor_tile);
+        self.schedule.steps.push(Step::PaintGather {
+            shape: shape.id,
+            backdrop: backdrop_ref,
+            effects: effects.to_vec(),
+            write_to: anchor_tile_out,
+        });
+
+        // 4. Erase snapshots + backdrop — they've served their
+        // purpose. (Liveness pass would derive this too; explicit
+        // erases here let the dispatcher free pool surfaces sooner.)
+        for snap in snapshot_refs {
+            self.schedule.steps.push(Step::EraseSurface(snap));
+        }
+        self.schedule.steps.push(Step::EraseSurface(backdrop_ref));
+    }
+
+    /// True if Phase 1 emitted any body Paint into `tile`'s TileOutput.
+    /// Walks `emitted_shape_bodies` looking for a (_, tile) entry.
+    /// O(N) — fine since this only fires from gather emission, which
+    /// is rare relative to body emission.
+    fn tile_has_body_content(&self, tile: Tile) -> bool {
+        self.emitted_shape_bodies.iter().any(|(_, t)| *t == tile)
     }
 }
 
@@ -211,20 +356,15 @@ impl Default for ScheduleBuilder {
 }
 
 /// Identity composite paint — opacity 1.0, src-over, no frame-clip blur.
-/// Used for the tile→Target finalize composite. Tile content is already
-/// correctly composed inside `tile_out`; the finalize is a straight copy.
-fn identity_layer_paint() -> super::step::LayerPaint {
-    super::step::LayerPaint {
+fn identity_layer_paint() -> LayerPaint {
+    LayerPaint {
         opacity: 1.0,
         blend_mode: skia_safe::BlendMode::SrcOver,
         frame_blur_sigma_dev: None,
     }
 }
 
-/// Local wrapper around the legacy `paint_plan_for_shape`. Lives here
-/// so the SSA module doesn't depend on that function's exact name —
-/// when the legacy code gets deleted in the post-parity sweep, only
-/// this file needs the rename.
-fn paint_plan(shape: &Shape) -> (Vec<super::super::GatherFx>, Vec<EffectKey>) {
-    super::super::paint_plan_for_shape(shape)
-}
+// Reference `EffectKey` so the unused-import lint doesn't fire on
+// builds that don't reach the legacy paint plan call.
+#[allow(dead_code)]
+const _: Option<EffectKey> = None;

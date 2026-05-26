@@ -159,18 +159,48 @@ fn validator_accepts_glass_scenario() {
 // ── Validator: failure modes ─────────────────────────────────────────
 
 #[test]
-fn validator_flags_duplicate_producer() {
+fn validator_allows_paint_accumulation_for_scope_refs() {
+    // Two Paints into the same ScopeOf is the renderer's natural mode
+    // (multiple shapes stacking into one scope buffer). Validator
+    // accepts it — only strict-SSA capture roles (Snapshot, Backdrop)
+    // forbid multi-producer.
     let f1 = uuid_n(1);
     let f1_t00 = scope_of(f1, T00);
     let schedule = vec![
         paint(f1, f1_t00),
-        paint(f1, f1_t00), // SSA violation — two producers of same ref
+        paint(f1, f1_t00),
         write_cache(f1_t00, T00),
+        composite(f1_t00, SurfaceRef::target(), true),
+    ];
+    assert!(IrValidator::validate(&schedule).is_ok());
+}
+
+#[test]
+fn validator_flags_duplicate_producer_on_capture_roles() {
+    // Strict SSA still applies to Snapshot/Backdrop/RasterEffectOutput
+    // — those identify a specific captured value, not a drawing surface.
+    let f1 = uuid_n(1);
+    let f1_t00 = scope_of(f1, T00);
+    let glass = uuid_n(7);
+    let snap = snapshot_of(glass, T00);
+    let schedule = vec![
+        paint(f1, f1_t00),
+        Step::Snapshot {
+            from: f1_t00,
+            rect: IRect::new(0, 0, 256, 256),
+            write_to: snap,
+        },
+        Step::Snapshot {
+            from: f1_t00,
+            rect: IRect::new(0, 0, 256, 256),
+            write_to: snap, // duplicate producer of Snapshot ref
+        },
+        composite(f1_t00, SurfaceRef::target(), true),
     ];
     let errors = IrValidator::validate(&schedule).unwrap_err();
     assert!(errors.iter().any(|e| matches!(
         e,
-        ValidationError::DuplicateProducer { surface, .. } if *surface == f1_t00
+        ValidationError::DuplicateProducer { surface, .. } if *surface == snap
     )));
 }
 

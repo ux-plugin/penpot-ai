@@ -7,22 +7,29 @@
 //!
 //! Invariants enforced:
 //!
-//! 1. **Single producer** — every `SurfaceRef` appears in exactly one
-//!    step's `writes()`. (`Target` exempt — it's the relaxed-SSA
-//!    accumulator, rewritten by every `Composite` to it.)
-//! 2. **Define-before-use** — every `reads()` operand has a preceding
-//!    `writes()` or `rewrites()` producer.
-//! 3. **No use-after-erase** — once a `SurfaceRef` is killed (explicit
+//! 1. **Define-before-use** — every `reads()` operand has a preceding
+//!    producer (a `writes()` / `rewrites()` step, or a prior accumulation
+//!    Paint for `ScopeOf` / `TileOutput` refs).
+//! 2. **No use-after-erase** — once a `SurfaceRef` is killed (explicit
 //!    `EraseSurface` or `Composite { erase_after: true }`), no later
 //!    step may read or rewrite it.
-//! 4. **Composite target is live** — `Composite { to, .. }` must have
+//! 3. **Composite target is live** — `Composite { to, .. }` must have
 //!    a producer (or be `Target`).
-//! 5. **Non-Target writes have a consumer** — a `SurfaceRef` that's
+//! 4. **Non-Target writes have a consumer** — a `SurfaceRef` that's
 //!    only ever produced but never read or composited away is dead
 //!    code; the validator flags it. Exception: `TileOutput` (consumed
 //!    by `WriteTileCache`) and `Target` (the canvas presents it).
-//! 6. **Tile present where required** — `Target` may have `tile = None`;
+//! 5. **Tile present where required** — `Target` may have `tile = None`;
 //!    every other role must carry a `Some(tile)`.
+//!
+//! The "single producer" rule has been relaxed: `ScopeOf`, `TileOutput`,
+//! and `Target` are paint-accumulation roles — multiple `Paint` /
+//! `PaintGather` steps painting into the same ref is the renderer's
+//! natural mode (each shape adds to the surface, building up the
+//! per-tile pixel content). Cross-frame state (`Snapshot`, `Backdrop`,
+//! `RasterEffectOutput`) keeps the strict single-producer discipline
+//! since those refs identify a specific captured value, not an
+//! accumulating drawing surface.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt;
@@ -197,14 +204,33 @@ impl IrValidator {
                 }
             }
 
-            // 1. Single producer.
+            // 1. Producer registration.
+            //
+            // Paint-accumulation roles (`ScopeOf`, `TileOutput`,
+            // `Target`) accept multiple writers — each Paint /
+            // PaintGather step into a scope/tile/target surface
+            // stacks visually. The first writer is recorded as the
+            // canonical producer for dependency-graph purposes; later
+            // writers don't create duplicate-producer errors.
+            //
+            // Strict single-producer applies to capture roles
+            // (`Snapshot`, `Backdrop`, `RasterEffectOutput`) — those
+            // identify a specific value, not an accumulating surface.
             for r in step.writes() {
+                let allows_accumulation = matches!(
+                    r.role,
+                    SurfaceRole::ScopeOf(_) | SurfaceRole::TileOutput | SurfaceRole::Target
+                );
                 if let Some(&first) = producers.get(&r) {
-                    errors.push(ValidationError::DuplicateProducer {
-                        first_step: first,
-                        duplicate_step: idx,
-                        surface: r,
-                    });
+                    if !allows_accumulation {
+                        errors.push(ValidationError::DuplicateProducer {
+                            first_step: first,
+                            duplicate_step: idx,
+                            surface: r,
+                        });
+                    }
+                    // First writer keeps producer slot — that's the
+                    // earliest step the dep graph anchors to.
                 } else {
                     producers.insert(r, idx);
                 }
