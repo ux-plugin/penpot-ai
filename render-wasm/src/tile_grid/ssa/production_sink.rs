@@ -42,9 +42,7 @@ use super::step::Step;
 use super::surface_map::SurfaceMap;
 use super::surface_ref::SurfaceRef;
 use crate::error::Result;
-use crate::render::surfaces::SurfaceId;
 use crate::state::ShapesPoolRef;
-use crate::tiles::Tile;
 use crate::uuid::Uuid;
 
 /// Production `DispatchSink`. Holds the live refs it needs to execute
@@ -119,43 +117,6 @@ impl<'a> ProductionSink<'a> {
     pub fn finish(mut self) {
         self.map.drain_with(self.allocator);
         self.snapshot_images.clear();
-    }
-
-    /// Bridge: take the pooled surface for `r`, install it as
-    /// `surfaces.current`, run `f` (which has full `&mut RenderState`
-    /// access for legacy calls), restore.
-    ///
-    /// Also calls `update_render_context(tile)` before `f` so the
-    /// legacy renderer sees the right `render_area`, `current_tile`,
-    /// and surface canvas translation — without this the legacy code
-    /// paints every shape at world coords into every tile, producing
-    /// ghost copies in adjacent tiles.
-    fn with_pooled_as_current<F, R>(&mut self, r: SurfaceRef, f: F) -> R
-    where
-        F: FnOnce(&mut crate::render::v2::RenderState) -> R,
-    {
-        debug_assert!(
-            !r.is_target(),
-            "with_pooled_as_current called with Target"
-        );
-        let tile = r.tile.expect("non-Target ref must have a tile");
-
-        let mut binding = self
-            .map
-            .take(r)
-            .expect("SSA invariant: ref must be bound before access");
-        self.state.surfaces.swap_current(&mut binding.surface);
-
-        // Set up the legacy per-tile context (translation, clip, render
-        // area). Mirrors what `SetTileBand` did in the deleted legacy
-        // run_schedule. Called per step to handle the case where steps
-        // interleave across tiles (gather phases pull from many tiles).
-        self.state.update_render_context(tile);
-
-        let result = f(self.state);
-        self.state.surfaces.swap_current(&mut binding.surface);
-        self.map.put_back(r, binding);
-        result
     }
 
     /// Dispatch a Paint step's effects through the legacy V2
@@ -290,39 +251,30 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             write_to,
         } = step
         {
-            if from.is_target() {
-                // Snapshot-from-Target: read directly from surfaces.target.
-                let img = self.state.surfaces.target_image_snapshot_for_rect(*rect);
-                if let Some(img) = img {
-                    self.snapshot_images.insert(*write_to, img);
-                }
-                return Ok(());
-            }
-            // Pooled source surface — install as Current for image_snapshot.
-            let rect = *rect;
-            let write_to = *write_to;
-            let img = self.with_pooled_as_current(*from, |state| {
-                state
-                    .surfaces
-                    .current_image_snapshot_for_rect(rect)
-            });
+            let img = if from.is_target() {
+                self.state.surfaces.target_image_snapshot_for_rect(*rect)
+            } else {
+                // Direct map access — no swap-into-Current adapter.
+                self.map
+                    .get_mut(*from)
+                    .and_then(|s| s.image_snapshot_with_bounds(*rect))
+            };
             if let Some(img) = img {
-                self.snapshot_images.insert(write_to, img);
+                self.snapshot_images.insert(*write_to, img);
             }
         }
         Ok(())
     }
 
     fn compose_backdrop(&mut self, step: &Step) -> Result<()> {
-        // For checkpoint-D-body work the backdrop fusion is left as a
-        // straight per-tile-snapshot copy — the gather shader samples
-        // the snapshot directly. Multi-tile neighborhoods (gather
-        // sample extent spans tiles) work by passing the snapshot
-        // collection to PaintGather; ComposeBackdrop's role is to
-        // materialize a single fused image. That fusion path is the
-        // direct port of `build_gather_backdrop_scoped` — left as a
-        // follow-up. For now the sink treats ComposeBackdrop as a
-        // tag the PaintGather handler reads.
+        // ComposeBackdrop fuses multiple per-tile snapshots into one
+        // backdrop image. The current SSA path passes the snapshots
+        // straight to PaintGather (which samples them via the gather
+        // shader); a real fusion (port of `build_gather_backdrop_scoped`)
+        // lands when scope-aware gather scenes need it.
+        //
+        // For the hack-removal cleanup: this is already a no-op (no
+        // adapter use), so nothing to rewrite here.
         let _ = step;
         Ok(())
     }
@@ -339,11 +291,7 @@ impl<'a> DispatchSink for ProductionSink<'a> {
                 Some(s) => s.clone(),
                 None => return Ok(()),
             };
-            let tree = self.shapes;
 
-            // The legacy `scheduler_render_effects` handles gather
-            // dispatch when passed a Gather effect key. Wrap each
-            // GatherFx as the corresponding EffectKey variant.
             let gather_effects: Vec<EffectKey> = effects
                 .iter()
                 .copied()
@@ -356,11 +304,53 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             if r.is_target() {
                 return Ok(());
             }
-            self.with_pooled_as_current(r, |state| {
-                state
-                    .scheduler_render_effects(&element, tree, SurfaceId::Current, &gather_effects)
-                    .ok();
-            });
+
+            // SSA-native dispatch — direct map access, PaintCtx, no
+            // swap-into-Current adapter. Gather renderers (glass,
+            // bg_blur) currently stub in `render::ssa::dispatch`, so
+            // gather scenes render with the gather effect missing
+            // until those ports land. The dispatch path is hack-free.
+            let tile = r.tile.expect("non-Target ref has a tile");
+            let world_origin = skia::Point::new(
+                tile.x() as f32 * crate::tiles::get_tile_size(self.state.viewbox.zoom),
+                tile.y() as f32 * crate::tiles::get_tile_size(self.state.viewbox.zoom),
+            );
+            let tile_size_f = crate::tiles::get_tile_size(self.state.viewbox.zoom);
+            let world_clip = skia::Rect::from_xywh(
+                world_origin.x,
+                world_origin.y,
+                tile_size_f,
+                tile_size_f,
+            );
+            let mut binding = self
+                .map
+                .take(r)
+                .expect("SSA invariant: write_to bound before paint_gather");
+            {
+                let scale = self.state.viewbox.zoom;
+                let margins = self.state.surfaces.margins;
+                let sampling = skia::SamplingOptions::default();
+                let mut ctx = crate::render::ssa::PaintCtx {
+                    surface: &mut binding.surface,
+                    tile,
+                    world_origin,
+                    world_clip,
+                    scale,
+                    fonts: &self.state.fonts,
+                    images: &self.state.images,
+                    viewbox: &self.state.viewbox,
+                    options: &self.state.options,
+                    nested_fills: &mut self.state.nested_fills,
+                    sampling,
+                    gpu: &mut self.state.gpu_state,
+                    allocator: self.allocator,
+                    margins,
+                };
+                for effect in &gather_effects {
+                    crate::render::ssa::dispatch_effect(&mut ctx, &element, *effect)?;
+                }
+            }
+            self.map.put_back(r, binding);
         }
         Ok(())
     }
@@ -368,20 +358,25 @@ impl<'a> DispatchSink for ProductionSink<'a> {
     fn composite(&mut self, step: &Step) -> Result<()> {
         if let Step::Composite { from, to, rect, .. } = step {
             if to.is_target() {
-                let r = *from;
-                let tile_rect = *rect;
-                if r.is_target() {
+                if from.is_target() {
                     return Ok(());
                 }
-                let bg = self.state.background_color;
-                self.with_pooled_as_current(r, |state| {
-                    state.surfaces.composite_current_to_target(tile_rect, bg);
-                });
+                // Direct snapshot from the source pool surface →
+                // composite into Target. No swap-into-Current adapter.
+                let img = self
+                    .map
+                    .get_mut(*from)
+                    .and_then(|s| s.image_snapshot());
+                if let Some(img) = img {
+                    self.state
+                        .surfaces
+                        .ssa_composite_image_to_target(&img, *rect);
+                }
                 Ok(())
             } else {
-                // Scope-fold composite (`ScopeOf(_)` → parent scope) —
-                // lands with scope emission. For now skip; flat scenes
-                // don't need this path.
+                // Scope-fold composite (ScopeOf → parent scope) —
+                // SSA-native impl lands with scope emission. Flat
+                // scenes don't need this path.
                 Ok(())
             }
         } else {
@@ -404,11 +399,17 @@ impl<'a> DispatchSink for ProductionSink<'a> {
                 tile_size,
                 tile_size,
             );
-            self.with_pooled_as_current(r, |state| {
-                state
-                    .surfaces
-                    .cache_current_tile_texture(&state.tile_viewbox, &tile, &tile_rect);
-            });
+
+            // Direct snapshot → cache, no swap-into-Current.
+            let img = self.map.get_mut(r).and_then(|s| s.image_snapshot());
+            if let Some(img) = img {
+                self.state.surfaces.ssa_cache_tile_image(
+                    &self.state.tile_viewbox,
+                    &tile,
+                    &tile_rect,
+                    img,
+                );
+            }
         }
         Ok(())
     }

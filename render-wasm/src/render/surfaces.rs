@@ -741,31 +741,59 @@ impl Surfaces {
         self.current.image_snapshot_with_bounds(rect)
     }
 
-    /// SSA adapter — swap `other` into `Current`'s slot. Used by the
-    /// `ssa::ProductionSink` to install a pooled surface for the
-    /// duration of a legacy render call, then swap back. Until the
-    /// per-effect renderers are refactored to take a `&mut skia::Surface`
-    /// directly, this is the bridge between the SSA `SurfaceRef`-keyed
-    /// model and the legacy `SurfaceId::Current` model. Deleted along
-    /// with `Surfaces.current` itself once the cutover sweep lands.
-    #[cfg(feature = "ssa-ir")]
-    pub fn swap_current(&mut self, other: &mut skia::Surface) {
-        std::mem::swap(&mut self.current, other);
-    }
-
-    /// SSA: snapshot a sub-rect of `Current`. Used by the
-    /// ProductionSink's `Snapshot` step handler.
-    #[cfg(feature = "ssa-ir")]
-    pub fn current_image_snapshot_for_rect(&mut self, rect: IRect) -> Option<skia::Image> {
-        self.current.image_snapshot_with_bounds(rect)
-    }
-
     /// SSA: snapshot a sub-rect of `Target`. Used by the
     /// ProductionSink's `Snapshot` step handler when the source ref
-    /// is the Target sentinel.
+    /// is the Target sentinel (Target is never bound in the SurfaceMap
+    /// — it's the externally-owned accumulator).
     #[cfg(feature = "ssa-ir")]
     pub fn target_image_snapshot_for_rect(&mut self, rect: IRect) -> Option<skia::Image> {
         self.target.image_snapshot_with_bounds(rect)
+    }
+
+    /// SSA: composite an externally-snapshotted tile image into
+    /// `Target` at `tile_rect`. Replaces the swap-Current-then-
+    /// `composite_current_to_target` adapter dance — the caller has
+    /// the source pool surface, snapshots it directly, and hands the
+    /// image here.
+    #[cfg(feature = "ssa-ir")]
+    pub fn ssa_composite_image_to_target(
+        &mut self,
+        image: &skia::Image,
+        tile_rect: skia::Rect,
+    ) {
+        // Same SrcOver-only semantics as `composite_current_to_target`:
+        // Target was cleared to bg at frame start; the image carries
+        // transparent margins; SrcOver respects prior bands' content.
+        self.target.canvas().draw_image_rect(
+            image,
+            None,
+            tile_rect,
+            &skia::Paint::default(),
+        );
+    }
+
+    /// SSA: cache an externally-snapshotted tile image into the
+    /// cross-frame tile texture cache. Mirrors
+    /// `cache_current_tile_texture` but takes the image directly.
+    #[cfg(feature = "ssa-ir")]
+    pub fn ssa_cache_tile_image(
+        &mut self,
+        tile_viewbox: &TileViewbox,
+        tile: &Tile,
+        tile_rect: &skia::Rect,
+        image: skia::Image,
+    ) {
+        // Mirror legacy: write into the intermediate `cache` surface
+        // first (it's the source for any later draw_cached_tile_surface
+        // path), then add to the TileTextureCache.
+        self.cache.canvas().draw_image_rect(
+            &image,
+            None,
+            tile_rect,
+            &skia::Paint::default(),
+        );
+        self.tiles.add(tile_viewbox, tile, image);
+        crate::perf_count!(tile_write);
     }
 
     /// V3 scope helper — clear `Current` (including margins). Pairs with
