@@ -70,8 +70,11 @@ pub struct ProductionSink<'a> {
     /// Default tile dimensions for surfaces acquired via the
     /// `Dispatcher`'s default-size path.
     default_tile_size: (i32, i32),
-    /// Per-frame snapshot images, keyed by Snapshot ref. Snapshot
-    /// step writes here; ComposeBackdrop / PaintGather read.
+    /// Per-frame snapshot images, keyed by Snapshot ref. Populated by
+    /// the `Snapshot` step handler; read by future `ComposeBackdrop`
+    /// fusion / gather-renderer ports. Currently no SSA renderer
+    /// reads it (gather/glass ports stub), so the map is populated
+    /// but unconsumed. Stays in place for the upcoming gather port.
     snapshot_images: FxHashMap<SurfaceRef, skia::Image>,
     /// Acquire/release counters surfaced via `perf_trace`.
     acquire_count: u64,

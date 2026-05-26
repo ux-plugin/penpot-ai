@@ -20,7 +20,7 @@
 //!
 //! ## Module layout
 //!
-//! - `ctx`         — `PaintCtx` + `SinglePassScratches`
+//! - `ctx`         — `PaintCtx` (explicit per-call context type)
 //! - `fills`       — `pub fn render(ctx, shape, fills, antialias, outset)`
 //! - `strokes`     — `pub fn render(ctx, shape, strokes, antialias, outset)`
 //! - `shadows`     — fill/stroke/text inner shadow paths

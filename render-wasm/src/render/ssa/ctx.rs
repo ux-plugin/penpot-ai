@@ -57,71 +57,14 @@ use crate::tile_grid::ssa::SurfaceAllocator;
 use crate::tiles::Tile;
 use crate::view::Viewbox;
 
-/// Per-pass scratch surfaces. Singleton-owned; lives for the lifetime
-/// of `RenderState`. The SSA dispatcher borrows it through `PaintCtx`.
-///
-/// Each surface is a tile-with-margins-sized RGBA scratch. The
-/// `dirty` bitmask tracks which surfaces have non-clear content
-/// pending a clear before reuse (carried over from the legacy
-/// `Surfaces.dirty_surfaces` mechanism).
-pub struct SinglePassScratches {
-    pub shape_fills: skia::Surface,
-    pub shape_strokes: skia::Surface,
-    pub drop_shadows: skia::Surface,
-    pub inner_shadows: skia::Surface,
-    pub text_drop_shadows: skia::Surface,
-    /// Bitmask: bit n set ↔ scratch n is dirty and needs clearing
-    /// before next use. Same bit layout as legacy `Surfaces.dirty_surfaces`
-    /// for the per-pass slots.
-    pub dirty: u32,
-}
-
-impl SinglePassScratches {
-    pub const FILLS_BIT: u32 = 1 << 0;
-    pub const STROKES_BIT: u32 = 1 << 1;
-    pub const DROP_SHADOWS_BIT: u32 = 1 << 2;
-    pub const INNER_SHADOWS_BIT: u32 = 1 << 3;
-    pub const TEXT_DROP_SHADOWS_BIT: u32 = 1 << 4;
-
-    /// Mark a scratch dirty so the next reuse path knows to clear it.
-    pub fn mark_dirty(&mut self, bit: u32) {
-        self.dirty |= bit;
-    }
-
-    /// Clear a scratch if it's dirty, then mark clean. Returns true
-    /// if a clear actually happened (for perf_trace counting).
-    pub fn clear_if_dirty(&mut self, bit: u32) -> bool {
-        if self.dirty & bit == 0 {
-            return false;
-        }
-        let canvas = match bit {
-            Self::FILLS_BIT => self.shape_fills.canvas(),
-            Self::STROKES_BIT => self.shape_strokes.canvas(),
-            Self::DROP_SHADOWS_BIT => self.drop_shadows.canvas(),
-            Self::INNER_SHADOWS_BIT => self.inner_shadows.canvas(),
-            Self::TEXT_DROP_SHADOWS_BIT => self.text_drop_shadows.canvas(),
-            _ => return false,
-        };
-        canvas.clear(skia::Color::TRANSPARENT);
-        self.dirty &= !bit;
-        true
-    }
-
-    /// Clear all dirty scratches. Called at end-of-Paint to keep the
-    /// scratches clean for the next caller.
-    pub fn clear_all_dirty(&mut self) {
-        let bits = [
-            Self::FILLS_BIT,
-            Self::STROKES_BIT,
-            Self::DROP_SHADOWS_BIT,
-            Self::INNER_SHADOWS_BIT,
-            Self::TEXT_DROP_SHADOWS_BIT,
-        ];
-        for bit in bits {
-            self.clear_if_dirty(bit);
-        }
-    }
-}
+// `SinglePassScratches` was the originally-planned ownership wrapper
+// for the per-pass scratch surfaces (`shape_fills`, `shape_strokes`,
+// `drop_shadows`, `inner_shadows`, `text_drop_shadows`). Currently no
+// SSA renderer needs them — fills draw directly to `ctx.surface` with
+// no offscreen scratch step, and the shadow/text/scatter renderers
+// that do need scratches haven't been ported yet. When those renderers
+// land, the struct + `&'a mut SinglePassScratches` field on PaintCtx
+// can be re-introduced from this file's history.
 
 /// Per-call rendering context. Holds exactly what an SSA renderer
 /// needs to produce pixels into a surface — no globals.
