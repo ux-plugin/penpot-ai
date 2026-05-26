@@ -22,13 +22,11 @@
 
 use skia_safe as skia;
 
-use super::allocator::SurfaceAllocator;
 use super::step::{EffectKey, GatherFx, LayerPaint, Step};
 use super::surface_map::SurfaceMap;
 use super::surface_ref::SurfaceRef;
 use super::validator::IrValidator;
 use crate::error::Result;
-use crate::render::gpu_state::GpuState;
 use crate::tiles::Tile;
 
 /// Per-step trace record. Tests use this to verify the dispatcher
@@ -127,10 +125,10 @@ impl DispatchSink for DispatchTrace {
     }
 }
 
-/// The dispatcher proper.
-pub struct Dispatcher<'a, 'b, S: DispatchSink> {
-    pub allocator: &'a mut SurfaceAllocator,
-    pub gpu: &'a mut GpuState,
+/// The dispatcher proper. Reaches the GPU + allocator through the
+/// `SurfaceMap` passed to `execute` — keeps a single owner for the
+/// mutable borrows on `GpuState` and `SurfaceAllocator`.
+pub struct Dispatcher<'b, S: DispatchSink> {
     pub sink: &'b mut S,
     /// Default tile-sized surface dimensions. Used when a write-to
     /// ref doesn't otherwise indicate a size (e.g. ScopeOf in a
@@ -139,16 +137,9 @@ pub struct Dispatcher<'a, 'b, S: DispatchSink> {
     pub default_tile_size: (i32, i32),
 }
 
-impl<'a, 'b, S: DispatchSink> Dispatcher<'a, 'b, S> {
-    pub fn new(
-        allocator: &'a mut SurfaceAllocator,
-        gpu: &'a mut GpuState,
-        sink: &'b mut S,
-        default_tile_size: (i32, i32),
-    ) -> Self {
+impl<'b, S: DispatchSink> Dispatcher<'b, S> {
+    pub fn new(sink: &'b mut S, default_tile_size: (i32, i32)) -> Self {
         Self {
-            allocator,
-            gpu,
             sink,
             default_tile_size,
         }

@@ -36,12 +36,17 @@
 mod allocator;
 mod dep_graph;
 mod dispatcher;
+#[cfg(feature = "ssa-ir")]
+mod entry;
 mod liveness;
 mod schedule_builder;
 mod step;
 mod surface_map;
 mod surface_ref;
 mod validator;
+
+#[cfg(feature = "ssa-ir")]
+pub use entry::{render_via_ssa, RenderArgs, RenderOutput};
 
 #[cfg(test)]
 mod tests;
