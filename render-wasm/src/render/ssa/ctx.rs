@@ -141,9 +141,6 @@ pub struct PaintCtx<'a> {
     pub world_clip: skia::Rect,
     /// Viewbox zoom level. Equivalent to legacy `render_state.get_scale()`.
     pub scale: f32,
-    /// Per-pass scratches. Borrowed mutably for the duration of the
-    /// render call.
-    pub scratches: &'a mut SinglePassScratches,
     /// Read-only.
     pub fonts: &'a FontStore,
     pub images: &'a ImageStore,

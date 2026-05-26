@@ -173,16 +173,15 @@ impl<'a> ProductionSink<'a> {
         shape: Uuid,
         write_to: SurfaceRef,
         effects: &[EffectKey],
+        world_origin: skia::Point,
+        clip_rect: skia::Rect,
     ) -> Result<()> {
-        // Need the shape's `&Shape` for the legacy call.
         let element = match self.shapes.get(&shape) {
             Some(s) => s.clone(),
             None => return Ok(()),
         };
-        let tree = self.shapes;
 
-        // Filter out gather effects — they're emitted separately as
-        // PaintGather steps.
+        // Filter gather effects — emitted separately as PaintGather.
         let non_gather: Vec<EffectKey> = effects
             .iter()
             .copied()
@@ -192,11 +191,40 @@ impl<'a> ProductionSink<'a> {
             return Ok(());
         }
 
-        self.with_pooled_as_current(write_to, |state| {
-            state
-                .scheduler_render_effects(&element, tree, SurfaceId::Current, &non_gather)
-                .ok();
-        });
+        let tile = write_to.tile.expect("non-Target ref has a tile");
+        let mut binding = self
+            .map
+            .take(write_to)
+            .expect("SSA invariant: write_to bound before paint");
+
+        // SSA-native dispatch — explicit PaintCtx, no swap_current,
+        // no update_render_context, no scheduler_render_effects.
+        {
+            let scale = self.state.viewbox.zoom;
+            let margins = self.state.surfaces.margins;
+            let sampling = skia::SamplingOptions::default();
+            let mut ctx = crate::render::ssa::PaintCtx {
+                surface: &mut binding.surface,
+                tile,
+                world_origin,
+                world_clip: clip_rect,
+                scale,
+                fonts: &self.state.fonts,
+                images: &self.state.images,
+                viewbox: &self.state.viewbox,
+                options: &self.state.options,
+                nested_fills: &mut self.state.nested_fills,
+                sampling,
+                gpu: &mut self.state.gpu_state,
+                allocator: self.allocator,
+                margins,
+            };
+            for effect in &non_gather {
+                crate::render::ssa::dispatch_effect(&mut ctx, &element, *effect)?;
+            }
+        }
+
+        self.map.put_back(write_to, binding);
         Ok(())
     }
 }
@@ -242,14 +270,15 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             shape,
             effects,
             write_to,
-            ..
+            world_origin,
+            clip_rect,
         } = step
         {
             let target = match write_to.first() {
                 Some(r) if !r.is_target() => *r,
                 _ => return Ok(()),
             };
-            self.paint_into_pooled(*shape, target, effects)?;
+            self.paint_into_pooled(*shape, target, effects, *world_origin, *clip_rect)?;
         }
         Ok(())
     }

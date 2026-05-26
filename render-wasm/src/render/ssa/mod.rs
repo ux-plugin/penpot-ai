@@ -40,5 +40,5 @@ pub mod shadows;
 pub mod shape_body;
 pub mod strokes;
 
-pub use ctx::{PaintCtx, SinglePassScratches};
+pub use ctx::PaintCtx;
 pub use dispatch::dispatch_effect;
