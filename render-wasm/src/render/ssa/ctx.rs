@@ -186,4 +186,24 @@ impl<'a> PaintCtx<'a> {
             margin_h - self.world_clip.top,
         )
     }
+
+    /// Apply the full draw transform — tile scale + tile translation
+    /// + shape's local transform (center-pivoted). Mirrors the
+    /// canvas transform stack the legacy `render_body_direct` sets
+    /// up before drawing shape fills/strokes.
+    ///
+    /// Caller is responsible for `canvas.save()` / `canvas.restore()`
+    /// around the draw sequence.
+    pub fn apply_tile_and_shape_transform(
+        &self,
+        canvas: &skia::Canvas,
+        shape: &crate::shapes::Shape,
+    ) {
+        self.apply_tile_transform(canvas);
+        let center = shape.center();
+        let mut matrix = shape.transform;
+        matrix.post_translate(center);
+        matrix.pre_translate(-center);
+        canvas.concat(&matrix);
+    }
 }

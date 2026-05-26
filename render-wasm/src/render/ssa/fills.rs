@@ -65,7 +65,7 @@ fn draw_fill_to_surface(
 ) {
     let canvas = ctx.surface.canvas();
     canvas.save();
-    apply_tile_transform_with_shape(canvas, ctx, shape);
+    ctx.apply_tile_and_shape_transform(canvas, shape);
 
     match &shape.shape_type {
         Type::Rect(_) | Type::Frame(_) => {
@@ -82,23 +82,6 @@ fn draw_fill_to_surface(
     }
 
     canvas.restore();
-}
-
-/// Apply the canvas transform stack the legacy renderer uses:
-///   1. scale to device pixels
-///   2. translate so world (render_area.origin) is at the content
-///      region origin (margin_w/scale, margin_h/scale in scaled coords)
-///   3. concat the shape's local transform (center-pivoted)
-fn apply_tile_transform_with_shape(canvas: &skia::Canvas, ctx: &PaintCtx<'_>, shape: &Shape) {
-    let translation = ctx.tile_translation_device();
-    canvas.scale((ctx.scale, ctx.scale));
-    canvas.translate(translation);
-
-    let center = shape.center();
-    let mut matrix = shape.transform;
-    matrix.post_translate(center);
-    matrix.pre_translate(-center);
-    canvas.concat(&matrix);
 }
 
 // ── Per-shape-type draw helpers (replaces Surfaces::draw_rect_to etc.) ──

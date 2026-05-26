@@ -11,7 +11,7 @@
 use crate::error::Result;
 use crate::shapes::{Shape, Type};
 
-use super::{fills, PaintCtx};
+use super::{fills, strokes, PaintCtx};
 
 /// Mirror of `RenderState::render_shape_into_target`'s body-paint
 /// path. Routes text/svg to (currently stubbed) helpers, everything
@@ -42,7 +42,13 @@ fn render_body_direct(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
     fills::render(ctx, shape, &fills_vec, antialias, None)?;
 
     // 2. Fill inner shadows — TODO(ssa-port::shadows)
-    // 3. Strokes — TODO(ssa-port::strokes)
+
+    // 3. Strokes
+    let stroke_refs: Vec<_> = shape.visible_strokes().collect();
+    if !stroke_refs.is_empty() {
+        strokes::render(ctx, shape, &stroke_refs, antialias, None)?;
+    }
+
     // 4. Stroke inner shadows — TODO(ssa-port::shadows)
 
     Ok(())
