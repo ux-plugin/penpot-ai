@@ -34,7 +34,10 @@
 #![allow(dead_code, unused_imports)]
 
 mod allocator;
+mod dep_graph;
 mod dispatcher;
+mod liveness;
+mod schedule_builder;
 mod step;
 mod surface_map;
 mod surface_ref;
@@ -44,7 +47,10 @@ mod validator;
 mod tests;
 
 pub use allocator::{AllocatorStats, SurfaceAllocator};
+pub use dep_graph::DepGraph;
 pub use dispatcher::{DispatchSink, DispatchTrace, Dispatcher, TraceEvent};
+pub use liveness::{LiveInterval, LivenessPass};
+pub use schedule_builder::{EffectBody, Schedule, ScheduleBuilder, ScheduleInputs};
 pub use step::{EffectKey, GatherFx, LayerPaint, Step};
 pub use surface_map::SurfaceMap;
 pub use surface_ref::{SizeClass, SurfaceRef, SurfaceRole};

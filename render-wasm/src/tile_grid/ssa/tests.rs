@@ -804,3 +804,226 @@ mod dispatcher_logic {
         assert_eq!(count_of("EraseSurface"), 2);
     }
 }
+
+// ── DepGraph (Checkpoint C) ──────────────────────────────────────────
+
+mod dep_graph_tests {
+    use super::super::dep_graph::DepGraph;
+    use super::super::surface_ref::SurfaceRef;
+    use super::*;
+
+    #[test]
+    fn dep_graph_natural_order_is_topologically_valid() {
+        let f1 = uuid_n(1);
+        let glass = uuid_n(7);
+        let f1_t00 = scope_of(f1, T00);
+        let snap = snapshot_of(glass, T00);
+        let bd = backdrop_of(glass, T00);
+        let f3 = uuid_n(3);
+        let f3_t00 = scope_of(f3, T00);
+
+        let schedule = vec![
+            paint(f1, f1_t00),
+            Step::Snapshot {
+                from: f1_t00,
+                rect: IRect::new(0, 0, 256, 256),
+                write_to: snap,
+            },
+            Step::ComposeBackdrop {
+                shape: glass,
+                read_from: vec![snap],
+                extent: Rect::new(0.0, 0.0, 256.0, 256.0),
+                write_to: bd,
+            },
+            Step::PaintGather {
+                shape: glass,
+                backdrop: bd,
+                effects: vec![],
+                write_to: f3_t00,
+            },
+            composite(f3_t00, f1_t00, true),
+            composite(f1_t00, SurfaceRef::target(), true),
+        ];
+
+        let graph = DepGraph::build(&schedule);
+        assert!(graph.is_topologically_valid(schedule.len()));
+        assert!(graph.is_acyclic());
+
+        let topo = graph.topological_sort();
+        assert_eq!(topo.len(), schedule.len());
+    }
+
+    #[test]
+    fn dep_graph_records_producer_consumer_edges() {
+        let f1 = uuid_n(1);
+        let f1_t00 = scope_of(f1, T00);
+        // 0: produces f1_t00
+        // 1: consumes f1_t00 (via WriteTileCache)
+        // 2: consumes f1_t00 (via Composite)
+        let schedule = vec![
+            paint(f1, f1_t00),
+            write_cache(f1_t00, T00),
+            composite(f1_t00, SurfaceRef::target(), true),
+        ];
+        let graph = DepGraph::build(&schedule);
+
+        // Step 0 has 2 dependents (steps 1 and 2).
+        let s0_deps = graph.edges.get(&0).cloned().unwrap_or_default();
+        assert_eq!(s0_deps.len(), 2);
+        assert!(s0_deps.contains(&1));
+        assert!(s0_deps.contains(&2));
+    }
+
+    #[test]
+    fn dep_graph_composite_chains_into_target() {
+        let f1 = uuid_n(1);
+        let f2 = uuid_n(2);
+        let f1_t00 = scope_of(f1, T00);
+        let f2_t10 = scope_of(f2, T10);
+        // Two composites into Target — second should depend on first.
+        let schedule = vec![
+            paint(f1, f1_t00),
+            composite(f1_t00, SurfaceRef::target(), true),
+            paint(f2, f2_t10),
+            composite(f2_t10, SurfaceRef::target(), true),
+        ];
+        let graph = DepGraph::build(&schedule);
+        // Step 3 (second composite) depends on step 1 (first composite,
+        // which is the latest Target producer at that point).
+        let s1_deps = graph.edges.get(&1).cloned().unwrap_or_default();
+        assert!(
+            s1_deps.contains(&3),
+            "expected step 3 to depend on step 1, edges = {:?}",
+            s1_deps
+        );
+    }
+}
+
+// ── LivenessPass (Checkpoint C) ──────────────────────────────────────
+
+mod liveness_tests {
+    use super::super::liveness::LivenessPass;
+    use super::super::surface_ref::SurfaceRef;
+    use super::*;
+
+    #[test]
+    fn liveness_derives_natural_kill_at_last_read() {
+        let f1 = uuid_n(1);
+        let f1_t00 = scope_of(f1, T00);
+        // Without explicit erase, kill_after = last_use.
+        let schedule = vec![
+            paint(f1, f1_t00),
+            // Composite with erase_after: false won't kill from
+            // implicitly via the step's `kills()` set, so kill_after
+            // should be the step index of the composite (= last_use).
+            Step::Composite {
+                from: f1_t00,
+                to: SurfaceRef::target(),
+                paint: super::super::step::LayerPaint(0),
+                rect: Rect::new(0.0, 0.0, 256.0, 256.0),
+                erase_after: false,
+            },
+        ];
+        let live = LivenessPass::run(&schedule);
+        let interval = live.intervals[&f1_t00];
+        assert_eq!(interval.first_def, 0);
+        assert_eq!(interval.last_use, 1);
+        assert_eq!(interval.kill_after, 1);
+        assert!(!interval.explicit_kill);
+    }
+
+    #[test]
+    fn liveness_records_explicit_erase() {
+        let f1 = uuid_n(1);
+        let f1_t00 = scope_of(f1, T00);
+        let schedule = vec![
+            paint(f1, f1_t00),
+            composite(f1_t00, SurfaceRef::target(), false),
+            Step::EraseSurface(f1_t00),
+        ];
+        let live = LivenessPass::run(&schedule);
+        let interval = live.intervals[&f1_t00];
+        assert_eq!(interval.kill_after, 2);
+        assert!(interval.explicit_kill);
+    }
+
+    #[test]
+    fn liveness_records_erase_after_fold_in() {
+        let f1 = uuid_n(1);
+        let f1_t00 = scope_of(f1, T00);
+        let schedule = vec![
+            paint(f1, f1_t00),
+            composite(f1_t00, SurfaceRef::target(), /* erase_after */ true),
+        ];
+        let live = LivenessPass::run(&schedule);
+        let interval = live.intervals[&f1_t00];
+        assert_eq!(interval.kill_after, 1);
+        assert!(interval.explicit_kill);
+    }
+
+    #[test]
+    fn liveness_releases_at_indexes_correctly() {
+        let f1 = uuid_n(1);
+        let f2 = uuid_n(2);
+        let f1_t00 = scope_of(f1, T00);
+        let f2_t00 = scope_of(f2, T00);
+        let schedule = vec![
+            paint(f1, f1_t00),         // 0
+            paint(f2, f2_t00),         // 1
+            composite(f2_t00, f1_t00, true), // 2 (kills f2_t00)
+            composite(f1_t00, SurfaceRef::target(), true), // 3 (kills f1_t00)
+        ];
+        let live = LivenessPass::run(&schedule);
+        let releases_at_2: Vec<SurfaceRef> = live.releases_at(2).to_vec();
+        assert!(releases_at_2.contains(&f2_t00));
+        let releases_at_3: Vec<SurfaceRef> = live.releases_at(3).to_vec();
+        assert!(releases_at_3.contains(&f1_t00));
+    }
+
+    #[test]
+    fn liveness_peak_concurrent_matches_overlap() {
+        // 3 refs, all live simultaneously at step 2.
+        let f1 = uuid_n(1);
+        let f2 = uuid_n(2);
+        let f3 = uuid_n(3);
+        let f1_t00 = scope_of(f1, T00);
+        let f2_t00 = scope_of(f2, T00);
+        let f3_t00 = scope_of(f3, T00);
+        let schedule = vec![
+            paint(f1, f1_t00),
+            paint(f2, f2_t00),
+            paint(f3, f3_t00),
+            composite(f3_t00, f1_t00, true),
+            composite(f2_t00, f1_t00, true),
+            composite(f1_t00, SurfaceRef::target(), true),
+        ];
+        let live = LivenessPass::run(&schedule);
+        // At step 2, f1/f2/f3 all live. Target also tracked but it's
+        // pre-live anyway. peak = 3 (excluding Target, which has its
+        // own interval starting at step 5).
+        let peak = live.peak_concurrent_live(schedule.len());
+        assert!(peak >= 3, "expected peak ≥ 3, got {}", peak);
+    }
+}
+
+// ── ScheduleBuilder (Checkpoint C structural) ─────────────────────────
+
+mod schedule_builder_tests {
+    use super::super::schedule_builder::{Schedule, ScheduleBuilder};
+
+    #[test]
+    fn schedule_builder_constructs_empty_schedule() {
+        let builder = ScheduleBuilder::new();
+        // No inputs supplied; just verifying the builder constructs
+        // without panic. Real input-driven tests live in
+        // skia-rs-wasm/test/visual once the lowering is wired.
+        let _ = builder;
+    }
+
+    #[test]
+    fn schedule_starts_empty() {
+        let sched = Schedule::new();
+        assert!(sched.steps.is_empty());
+        assert!(sched.effect_table.is_empty());
+    }
+}
