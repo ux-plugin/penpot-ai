@@ -1,35 +1,42 @@
 //! Real-GL `DispatchSink` — the production implementation.
 //!
-//! Owns the per-schedule `SurfaceMap` and bridges into the legacy
-//! `RenderState::scheduler_render_effects` for each `Paint` step.
-//! The bridge uses an adapter pattern:
+//! Owns the per-schedule `SurfaceMap` and routes every Step to an
+//! **SSA-native** renderer. There is no adapter pattern bridging into
+//! the legacy `Surfaces.current` + `scheduler_render_effects` model:
+//! the sink takes pool surfaces straight out of the map, wraps them
+//! in a `render::ssa::PaintCtx` carrying the Step's explicit
+//! `world_origin` / `clip_rect` / `tile`, and calls
+//! `render::ssa::dispatch_effect` for each EffectKey. The
+//! `render::ssa::*` per-effect renderers paint directly into the
+//! ctx's surface — no globals, no swap-into-Current, no
+//! `update_render_context` mutation.
 //!
-//!   1. Pull the pooled surface for the step's `write_to` ref out of
-//!      the `SurfaceMap`.
-//!   2. `mem::swap` it into `Surfaces.current` (the slot the legacy
-//!      per-effect renderers paint into).
-//!   3. Call `scheduler_render_effects`.
-//!   4. Swap back; put the (now-painted) surface back into the map.
+//! Per-handler routing:
 //!
-//! This keeps the per-effect renderers (`render::glass`, `render::gather`,
-//! `render::scatter`, `render::local`, `render::shape_body`,
-//! `render::strokes`, `render::shadows`) **untouched**.
+//! - `paint` — pulls binding for the Step's `write_to[0]`, builds
+//!   PaintCtx, iterates non-gather effects through `dispatch_effect`.
+//! - `snapshot` — `map.get_mut(from).image_snapshot_with_bounds(rect)`
+//!   for pool sources, `Surfaces::target_image_snapshot_for_rect` for
+//!   the Target sentinel.
+//! - `compose_backdrop` — no-op stub; gather renderer port will fuse
+//!   per-tile snapshots into the backdrop surface here.
+//! - `paint_gather` — same PaintCtx flow as `paint` but for
+//!   `EffectKey::Gather(_)` effects only.
+//! - `composite` (to Target) — `image_snapshot()` the source, then
+//!   `Surfaces::ssa_composite_image_to_target(image, tile_rect)`.
+//! - `write_tile_cache` — `image_snapshot()` the source, then
+//!   `Surfaces::ssa_cache_tile_image(viewbox, tile, rect, image)`.
 //!
-//! `Composite { to: Target }` steps use the legacy
-//! `Surfaces::composite_current_to_target` — Target is a sentinel, the
-//! map never holds it. `WriteTileCache` uses the legacy
-//! `Surfaces::cache_current_tile_texture`.
+//! Both `ssa_composite_image_to_target` and `ssa_cache_tile_image`
+//! are clean public methods on `Surfaces` that take their work
+//! product (an Image) explicitly — they do NOT depend on
+//! `Surfaces.current` being set up.
 //!
-//! Snapshot / ComposeBackdrop / PaintGather use legacy paths too:
-//!   - Snapshot calls `image_snapshot_with_bounds` on the source pool
-//!     surface; the result image is held until the consumer fires
-//!     (currently kept in a side-table — moved into the map's
-//!     `Binding` for a "snapshot image" variant in follow-up work).
-//!   - ComposeBackdrop is a no-op for now (the snapshots cover the
-//!     simple case where the gather sample fits in one tile).
-//!   - PaintGather routes the gather shape's effect to the legacy
-//!     `render::gather` / `render::glass` paths via
-//!     `scheduler_render_effects` with `EffectKey::Gather(_)` only.
+//! The `render::ssa::*` renderer module is partial:
+//! `fills`/`strokes`/`shape_body` are ported (solid subset);
+//! `shadows`/`gather`/`glass`/`scatter`/`local`/`text` are stubs
+//! returning Ok(()). Scenes using stubbed effects render with that
+//! effect missing — no hacks bridge to legacy to fill the gap.
 
 #![cfg(feature = "ssa-ir")]
 
@@ -60,9 +67,16 @@ pub struct ProductionSink<'a> {
     /// Cross-frame surface pool. Caller-owned; the sink borrows it
     /// for its lifetime.
     allocator: &'a mut super::allocator::SurfaceAllocator,
-    /// The legacy RenderState — its `gpu_state`, `surfaces`,
-    /// `scheduler_render_effects` etc. are all the sink needs to
-    /// route SSA steps to the existing per-effect renderers.
+    /// RenderState — the sink reads `gpu_state` (for SurfaceMap
+    /// allocations), `surfaces.{target, tiles, cache, margins}` (for
+    /// Target compositing + tile cache writes via the
+    /// `ssa_composite_image_to_target` / `ssa_cache_tile_image`
+    /// public methods on Surfaces), `viewbox` (zoom for tile size),
+    /// `tile_viewbox` (for tile cache keying), `fonts`/`images`/
+    /// `options`/`nested_fills` (carried in PaintCtx).
+    ///
+    /// `RenderState::scheduler_render_effects` is no longer called —
+    /// `render::ssa::dispatch_effect` replaces it.
     state: &'a mut crate::render::v2::RenderState,
     /// Shape pool, separate from RenderState. The orchestrator
     /// (the cutover wiring in v2.rs) holds and passes both.
