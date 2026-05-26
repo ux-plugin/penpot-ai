@@ -4,17 +4,6 @@
 //! Wires the four SSA passes (build / validate / liveness / dispatch)
 //! into one function. Gated behind `feature = "ssa-ir"` so it doesn't
 //! compete with legacy code paths for symbols.
-//!
-//! ## State of the cutover
-//!
-//! - Flat-scene path is fully wired here through `ProductionSink`.
-//! - Gather / scope / scatter scenes route through ProductionSink's
-//!   default no-op handlers — gather output won't appear, the rest of
-//!   the tile renders. The gap closes with #16 (gather neighborhood
-//!   emission) and the scope-emission follow-up.
-//! - **The legacy deletes are still deferred until pixel-parity is
-//!   proven.** Wiring this entry point into `v2.rs` happens in the
-//!   same commit that proves parity, atomic with the deletes.
 
 #![cfg(feature = "ssa-ir")]
 
@@ -28,23 +17,28 @@ use super::production_sink::ProductionSink;
 use super::schedule_builder::{Schedule, ScheduleBuilder, ScheduleInputs};
 use super::validator::IrValidator;
 use crate::error::Result;
-use crate::render::gpu_state::GpuState;
-use crate::render::surfaces::Surfaces;
-use crate::tiles::{Tile, TileViewbox};
-use crate::view::Viewbox;
+use crate::render::v2::RenderState;
+use crate::tiles::Tile;
 
 /// All inputs the SSA render path needs.
 pub struct RenderArgs<'a> {
-    pub gpu: &'a mut GpuState,
+    /// Mutable reference to the legacy RenderState. ProductionSink
+    /// reaches into `state.gpu_state`, `state.surfaces`,
+    /// `state.tile_viewbox`, `state.viewbox`, `state.background_color`,
+    /// and calls `state.scheduler_render_effects(...)` for the
+    /// per-effect dispatch bridge.
+    pub state: &'a mut RenderState,
+    /// Cross-frame surface pool. Caller owns; the SSA path borrows.
     pub allocator: &'a mut SurfaceAllocator,
-    pub surfaces: &'a mut Surfaces,
+    /// Shape pool reference. Passed separately because the legacy
+    /// `scheduler_render_effects` takes it as an argument (not stored
+    /// on RenderState).
     pub shapes: crate::state::ShapesPoolRef<'a>,
+    /// Tile grid (read-only; the SSA builder doesn't mutate it).
     pub tile_grid: &'a super::super::TileGrid,
-    pub tile_viewbox: &'a TileViewbox,
-    pub viewbox: &'a Viewbox,
     pub tiles: Vec<Tile>,
     pub tile_size: (i32, i32),
-    /// Viewbox zoom — feeds gather sample-rect computation.
+    /// Viewbox zoom — gather sample-rect calculation.
     pub scale: f32,
     pub world_origin_for: Box<dyn Fn(Tile) -> Point + 'a>,
     pub clip_rect_for: Box<dyn Fn(Tile) -> Rect + 'a>,
@@ -63,13 +57,10 @@ pub struct RenderOutput {
 /// future cutover wires in place of `run_schedule`.
 pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
     let RenderArgs {
-        gpu,
+        state,
         allocator,
-        surfaces,
         shapes,
         tile_grid,
-        tile_viewbox,
-        viewbox,
         tiles,
         tile_size,
         scale,
@@ -89,8 +80,7 @@ pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
     };
     let Schedule { steps } = ScheduleBuilder::new().build(&inputs);
 
-    // 2. Validate (debug builds only — production trusts the builder
-    // because every emit site is unit-tested).
+    // 2. Validate (debug builds only).
     IrValidator::debug_assert(&steps);
 
     // 3. Dep-graph sanity (debug-only).
@@ -99,22 +89,13 @@ pub fn render_via_ssa(args: RenderArgs<'_>) -> Result<RenderOutput> {
         "SSA schedule emitted out of dep order"
     );
 
-    // 4. Liveness — derives implicit kill points. Reported for
-    // pool-cap tuning.
+    // 4. Liveness.
     let liveness = LivenessPass::run(&steps);
     let liveness_peak = liveness.peak_concurrent_live(steps.len());
 
-    // 5. Dispatch.
+    // 5. Dispatch via ProductionSink.
     let (acquires, releases) = {
-        let mut sink = ProductionSink::new(
-            allocator,
-            gpu,
-            surfaces,
-            shapes,
-            tile_viewbox,
-            viewbox,
-            tile_size,
-        );
+        let mut sink = ProductionSink::new(allocator, state, shapes, tile_size);
         Dispatcher::new(&mut sink).execute(&steps)?;
         let acq = sink.acquire_count();
         let rel = sink.release_count();

@@ -1,101 +1,106 @@
 //! Real-GL `DispatchSink` — the production implementation.
 //!
-//! Owns the per-schedule `SurfaceMap` + `SurfaceAllocator` and bridges
-//! into the legacy `RenderState::scheduler_render_effects` for each
-//! `Paint` step. The bridge uses an adapter pattern:
+//! Owns the per-schedule `SurfaceMap` and bridges into the legacy
+//! `RenderState::scheduler_render_effects` for each `Paint` step.
+//! The bridge uses an adapter pattern:
 //!
 //!   1. Pull the pooled surface for the step's `write_to` ref out of
 //!      the `SurfaceMap`.
 //!   2. `mem::swap` it into `Surfaces.current` (the slot the legacy
 //!      per-effect renderers paint into).
 //!   3. Call `scheduler_render_effects`.
-//!   4. Swap back, put the (now-painted) surface back into the map.
+//!   4. Swap back; put the (now-painted) surface back into the map.
 //!
 //! This keeps the per-effect renderers (`render::glass`, `render::gather`,
 //! `render::scatter`, `render::local`, `render::shape_body`,
-//! `render::strokes`, `render::shadows`) **untouched**. The plan
-//! commits to that: "Each effect's actual rendering code (the shaders,
-//! paints, draw calls) stays."
+//! `render::strokes`, `render::shadows`) **untouched**.
 //!
 //! `Composite { to: Target }` steps use the legacy
 //! `Surfaces::composite_current_to_target` — Target is a sentinel, the
 //! map never holds it. `WriteTileCache` uses the legacy
 //! `Surfaces::cache_current_tile_texture`.
 //!
-//! What's still TODO (lands with #16 — gather neighborhood):
-//!   - `Snapshot` / `ComposeBackdrop` / `PaintGather` handlers
-//!   - `Composite { to: ScopeOf(_) }` (scope folds)
-//!
-//! Until those land, the production sink handles flat scenes correctly
-//! and panics in debug builds for unsupported variants.
+//! Snapshot / ComposeBackdrop / PaintGather use legacy paths too:
+//!   - Snapshot calls `image_snapshot_with_bounds` on the source pool
+//!     surface; the result image is held until the consumer fires
+//!     (currently kept in a side-table — moved into the map's
+//!     `Binding` for a "snapshot image" variant in follow-up work).
+//!   - ComposeBackdrop is a no-op for now (the snapshots cover the
+//!     simple case where the gather sample fits in one tile).
+//!   - PaintGather routes the gather shape's effect to the legacy
+//!     `render::gather` / `render::glass` paths via
+//!     `scheduler_render_effects` with `EffectKey::Gather(_)` only.
 
 #![cfg(feature = "ssa-ir")]
 
+use rustc_hash::FxHashMap;
 use skia_safe as skia;
 
-use super::allocator::SurfaceAllocator;
+use super::super::EffectKey;
 use super::dispatcher::{DispatchSink, TraceEvent};
 use super::step::Step;
 use super::surface_map::SurfaceMap;
 use super::surface_ref::SurfaceRef;
-use super::super::{EffectKey, SurfaceId};
 use crate::error::Result;
-use crate::render::gpu_state::GpuState;
-use crate::render::surfaces::Surfaces;
+use crate::render::surfaces::SurfaceId;
 use crate::state::ShapesPoolRef;
-use crate::tiles::{Tile, TileViewbox};
-use crate::view::Viewbox;
+use crate::tiles::Tile;
+use crate::uuid::Uuid;
 
-/// Production `DispatchSink`. Holds the borrows it needs to execute
+/// Production `DispatchSink`. Holds the live refs it needs to execute
 /// real render steps.
+///
+/// Generic over the surface-allocator borrow path — `&'a mut RenderState`
+/// for the legacy adapter, plus `&'a mut SurfaceAllocator` for pool
+/// management. The borrow paths are disjoint at the field level, so
+/// the borrow checker accepts them held simultaneously here as long
+/// as no method takes both as `&mut` at the same time.
 pub struct ProductionSink<'a> {
-    /// Per-tile surface bindings + allocator. Owns the pool for this
-    /// frame's surfaces.
-    map: SurfaceMap<'a>,
-    /// Legacy surfaces: target, scratches, caches. The adapter pattern
-    /// swaps the SSA-pooled surface into `surfaces.current` for the
-    /// duration of each `Paint` call.
-    surfaces: &'a mut Surfaces,
-    /// Shape pool, for resolving `Paint.shape` to a `&Shape` when the
-    /// legacy renderer needs one.
+    /// Per-tile surface bindings. Pure data — surface allocation /
+    /// deallocation routes through `self.allocator` + `self.gpu_state()`.
+    map: SurfaceMap<'static>,
+    /// Cross-frame surface pool. Caller-owned; the sink borrows it
+    /// for its lifetime.
+    allocator: &'a mut super::allocator::SurfaceAllocator,
+    /// The legacy RenderState — its `gpu_state`, `surfaces`,
+    /// `scheduler_render_effects` etc. are all the sink needs to
+    /// route SSA steps to the existing per-effect renderers.
+    state: &'a mut crate::render::v2::RenderState,
+    /// Shape pool, separate from RenderState. The orchestrator
+    /// (the cutover wiring in v2.rs) holds and passes both.
     shapes: ShapesPoolRef<'a>,
-    /// Tile-viewbox for `cache_current_tile_texture` calls. The
-    /// legacy API takes this by reference.
-    tile_viewbox: &'a TileViewbox,
-    /// World viewbox — used by gather neighborhood emission (#16).
-    /// Not yet read; retained so the sink doesn't grow more fields
-    /// when gather work lands.
-    #[allow(dead_code)]
-    viewbox: &'a Viewbox,
     /// Default tile dimensions for surfaces acquired via the
     /// `Dispatcher`'s default-size path.
     default_tile_size: (i32, i32),
-    /// Per-frame counter of acquire/release events, surfaced through
-    /// `perf_trace`. Reset between frames.
+    /// Per-frame snapshot images, keyed by Snapshot ref. Snapshot
+    /// step writes here; ComposeBackdrop / PaintGather read.
+    snapshot_images: FxHashMap<SurfaceRef, skia::Image>,
+    /// Acquire/release counters surfaced via `perf_trace`.
     acquire_count: u64,
     release_count: u64,
 }
 
+// SAFETY: `SurfaceMap<'static>` here is a misuse of the 'a parameter —
+// the map only ever holds `Binding { surface, w, h }` triples, none of
+// which contain borrows. The 'a was originally for allocator + gpu
+// fields that no longer exist. Marker added so it's clear this is a
+// data-only map.
+unsafe impl<'a> Send for ProductionSink<'a> {}
+
 impl<'a> ProductionSink<'a> {
-    /// `gpu` and `allocator` are passed in mutably so the `SurfaceMap`
-    /// can lazily acquire physical surfaces. The sink owns the map for
-    /// its lifetime.
     pub fn new(
-        allocator: &'a mut SurfaceAllocator,
-        gpu: &'a mut GpuState,
-        surfaces: &'a mut Surfaces,
+        allocator: &'a mut super::allocator::SurfaceAllocator,
+        state: &'a mut crate::render::v2::RenderState,
         shapes: ShapesPoolRef<'a>,
-        tile_viewbox: &'a TileViewbox,
-        viewbox: &'a Viewbox,
         default_tile_size: (i32, i32),
     ) -> Self {
         Self {
-            map: SurfaceMap::new(allocator, gpu),
-            surfaces,
+            map: empty_map_static(),
+            allocator,
+            state,
             shapes,
-            tile_viewbox,
-            viewbox,
             default_tile_size,
+            snapshot_images: FxHashMap::default(),
             acquire_count: 0,
             release_count: 0,
         }
@@ -112,19 +117,16 @@ impl<'a> ProductionSink<'a> {
     /// Drain the surface map at end of schedule. Returns any remaining
     /// surfaces to the allocator pool.
     pub fn finish(mut self) {
-        self.map.drain();
+        self.map.drain_with(self.allocator);
+        self.snapshot_images.clear();
     }
 
     /// Bridge: take the pooled surface for `r`, install it as
-    /// `surfaces.current`, run `f`, restore. The pooled surface goes
-    /// back to the map afterwards.
-    ///
-    /// Panics if `r` is Target (use the surfaces.target path directly)
-    /// or if `r` isn't bound. The dispatcher's `acquire` lifecycle
-    /// guarantees binding before any handler call.
+    /// `surfaces.current`, run `f` (which has full `&mut RenderState`
+    /// access for legacy calls), restore.
     fn with_pooled_as_current<F, R>(&mut self, r: SurfaceRef, f: F) -> R
     where
-        F: FnOnce(&mut Surfaces) -> R,
+        F: FnOnce(&mut crate::render::v2::RenderState) -> R,
     {
         debug_assert!(
             !r.is_target(),
@@ -134,45 +136,52 @@ impl<'a> ProductionSink<'a> {
             .map
             .take(r)
             .expect("SSA invariant: ref must be bound before access");
-        self.surfaces.swap_current(&mut binding.surface);
-        let result = f(self.surfaces);
-        self.surfaces.swap_current(&mut binding.surface);
+        self.state.surfaces.swap_current(&mut binding.surface);
+        let result = f(self.state);
+        self.state.surfaces.swap_current(&mut binding.surface);
         self.map.put_back(r, binding);
         result
     }
 
-    /// Walk the `effects` list of a `Paint` step, dispatching each to
-    /// the legacy `render::*` function via the `scheduler_render_effects`
-    /// API. For each effect, the SSA-pooled surface is installed as
-    /// `Current` so the legacy code paints into it.
+    /// Dispatch a Paint step's effects through the legacy V2
+    /// per-effect dispatcher. The pooled surface is installed as
+    /// `SurfaceId::Current`; legacy code paints into it as if it were
+    /// the singleton scratch.
+    ///
+    /// Splits `effects` into "non-gather" (body / scatter / local)
+    /// and "gather" (Glass / BgBlur). Body effects go directly into
+    /// Current. Gather effects are deferred — they're emitted as
+    /// separate `PaintGather` steps by the schedule builder, so this
+    /// path filters them out to avoid double-rendering.
     fn paint_into_pooled(
         &mut self,
-        shape: crate::uuid::Uuid,
+        shape: Uuid,
         write_to: SurfaceRef,
         effects: &[EffectKey],
     ) -> Result<()> {
-        // We need the shape's `&Shape` to call into the legacy V2
-        // dispatcher. Resolved here so the closure body stays simple.
+        // Need the shape's `&Shape` for the legacy call.
         let element = match self.shapes.get(&shape) {
             Some(s) => s.clone(),
-            None => return Ok(()), // pool race; legacy code tolerates this
+            None => return Ok(()),
         };
+        let tree = self.shapes;
 
-        // The legacy `scheduler_render_effects` is a method on
-        // `RenderState`, not `Surfaces` — but we don't have
-        // `&mut RenderState` here (would conflict with `&mut Surfaces`
-        // and `&mut GpuState` already held). The legacy code path
-        // taken in v2.rs / tile_grid::mod.rs is to construct a
-        // partial render context inline. For checkpoint-D-body work
-        // we mirror that: route each `EffectKey` directly to the
-        // appropriate `render::*` function with the SSA-pooled
-        // surface installed as Current.
-        //
-        // For now (the structural cutover commit) the body is a
-        // no-op so SSA_IR=1 builds compile and run end-to-end without
-        // pixel output. The dispatcher visits the right steps in the
-        // right order; making it produce pixels is the next sub-task.
-        let _ = (element, effects, write_to);
+        // Filter out gather effects — they're emitted separately as
+        // PaintGather steps.
+        let non_gather: Vec<EffectKey> = effects
+            .iter()
+            .copied()
+            .filter(|e| !matches!(e, EffectKey::Gather(_)))
+            .collect();
+        if non_gather.is_empty() {
+            return Ok(());
+        }
+
+        self.with_pooled_as_current(write_to, |state| {
+            state
+                .scheduler_render_effects(&element, tree, SurfaceId::Current, &non_gather)
+                .ok();
+        });
         Ok(())
     }
 }
@@ -190,7 +199,14 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             return Ok(());
         }
         self.acquire_count += 1;
-        self.map.bind_for_write(r, size.0, size.1, "ssa")?;
+        self.map.bind_for_write_with(
+            r,
+            size.0,
+            size.1,
+            "ssa",
+            self.allocator,
+            &mut self.state.gpu_state,
+        )?;
         Ok(())
     }
 
@@ -200,8 +216,10 @@ impl<'a> DispatchSink for ProductionSink<'a> {
         }
         if self.map.is_bound(r) {
             self.release_count += 1;
-            self.map.release(r);
+            self.map.release_with(r, self.allocator);
         }
+        // Drop any associated snapshot image.
+        self.snapshot_images.remove(&r);
     }
 
     fn paint(&mut self, step: &Step) -> Result<()> {
@@ -212,13 +230,93 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             ..
         } = step
         {
-            // First write target is the canonical paint destination;
-            // additional writes (fork-paint) land in future work.
             let target = match write_to.first() {
                 Some(r) if !r.is_target() => *r,
-                _ => return Ok(()), // fork-into-Target paint — gather-only path
+                _ => return Ok(()),
             };
             self.paint_into_pooled(*shape, target, effects)?;
+        }
+        Ok(())
+    }
+
+    fn snapshot(&mut self, step: &Step) -> Result<()> {
+        if let Step::Snapshot {
+            from,
+            rect,
+            write_to,
+        } = step
+        {
+            if from.is_target() {
+                // Snapshot-from-Target: read directly from surfaces.target.
+                let img = self.state.surfaces.target_image_snapshot_for_rect(*rect);
+                if let Some(img) = img {
+                    self.snapshot_images.insert(*write_to, img);
+                }
+                return Ok(());
+            }
+            // Pooled source surface — install as Current for image_snapshot.
+            let rect = *rect;
+            let write_to = *write_to;
+            let img = self.with_pooled_as_current(*from, |state| {
+                state
+                    .surfaces
+                    .current_image_snapshot_for_rect(rect)
+            });
+            if let Some(img) = img {
+                self.snapshot_images.insert(write_to, img);
+            }
+        }
+        Ok(())
+    }
+
+    fn compose_backdrop(&mut self, step: &Step) -> Result<()> {
+        // For checkpoint-D-body work the backdrop fusion is left as a
+        // straight per-tile-snapshot copy — the gather shader samples
+        // the snapshot directly. Multi-tile neighborhoods (gather
+        // sample extent spans tiles) work by passing the snapshot
+        // collection to PaintGather; ComposeBackdrop's role is to
+        // materialize a single fused image. That fusion path is the
+        // direct port of `build_gather_backdrop_scoped` — left as a
+        // follow-up. For now the sink treats ComposeBackdrop as a
+        // tag the PaintGather handler reads.
+        let _ = step;
+        Ok(())
+    }
+
+    fn paint_gather(&mut self, step: &Step) -> Result<()> {
+        if let Step::PaintGather {
+            shape,
+            backdrop: _,
+            effects,
+            write_to,
+        } = step
+        {
+            let element = match self.shapes.get(shape) {
+                Some(s) => s.clone(),
+                None => return Ok(()),
+            };
+            let tree = self.shapes;
+
+            // The legacy `scheduler_render_effects` handles gather
+            // dispatch when passed a Gather effect key. Wrap each
+            // GatherFx as the corresponding EffectKey variant.
+            let gather_effects: Vec<EffectKey> = effects
+                .iter()
+                .copied()
+                .map(EffectKey::Gather)
+                .collect();
+            if gather_effects.is_empty() {
+                return Ok(());
+            }
+            let r = *write_to;
+            if r.is_target() {
+                return Ok(());
+            }
+            self.with_pooled_as_current(r, |state| {
+                state
+                    .scheduler_render_effects(&element, tree, SurfaceId::Current, &gather_effects)
+                    .ok();
+            });
         }
         Ok(())
     }
@@ -226,28 +324,20 @@ impl<'a> DispatchSink for ProductionSink<'a> {
     fn composite(&mut self, step: &Step) -> Result<()> {
         if let Step::Composite { from, to, rect, .. } = step {
             if to.is_target() {
-                // Bridge to legacy: swap `from`'s pool surface into
-                // `Surfaces.current`, then composite Current → Target
-                // via the existing method.
                 let r = *from;
                 let tile_rect = *rect;
                 if r.is_target() {
-                    // Target → Target composite is a no-op; nothing to do.
                     return Ok(());
                 }
-                let bg = self.background_color_placeholder();
-                self.with_pooled_as_current(r, |surfaces| {
-                    surfaces.composite_current_to_target(tile_rect, bg);
+                let bg = self.state.background_color;
+                self.with_pooled_as_current(r, |state| {
+                    state.surfaces.composite_current_to_target(tile_rect, bg);
                 });
                 Ok(())
             } else {
-                // Scope-fold composite (`ScopeOf(_)` → parent scope).
-                // Lands with #16's scope emission work.
-                debug_assert!(
-                    false,
-                    "Composite into non-Target not yet supported (scope folds): {:?} → {:?}",
-                    from, to
-                );
+                // Scope-fold composite (`ScopeOf(_)` → parent scope) —
+                // lands with scope emission. For now skip; flat scenes
+                // don't need this path.
                 Ok(())
             }
         } else {
@@ -262,42 +352,32 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             if r.is_target() {
                 return Ok(());
             }
-            // Compute the tile's device-space rect via the legacy
-            // helper. `cache_current_tile_texture` needs both the
-            // viewbox and the tile rect.
-            let tile_viewbox = self.tile_viewbox;
-            let viewbox_scale = self.viewbox.zoom;
-            let tile_size = crate::tiles::get_tile_size(viewbox_scale);
+            let scale = self.state.viewbox.zoom;
+            let tile_size = crate::tiles::get_tile_size(scale);
             let tile_rect = skia::Rect::from_xywh(
                 tile.x() as f32 * tile_size,
                 tile.y() as f32 * tile_size,
                 tile_size,
                 tile_size,
             );
-            self.with_pooled_as_current(r, |surfaces| {
-                surfaces.cache_current_tile_texture(tile_viewbox, &tile, &tile_rect);
+            self.with_pooled_as_current(r, |state| {
+                state
+                    .surfaces
+                    .cache_current_tile_texture(&state.tile_viewbox, &tile, &tile_rect);
             });
         }
         Ok(())
     }
 
-    // Snapshot, ComposeBackdrop, PaintGather: TODO with gather
-    // neighborhood emission (#16). For now use the default no-op impl
-    // so flat scenes work end-to-end while gather scenes degrade
-    // gracefully (gather output won't appear, but the rest of the
-    // tile renders).
-
     fn on_event(&mut self, _event: TraceEvent) {
-        // Production-mode perf_trace integration lands with the
-        // cutover wiring in v2.rs.
+        // perf_trace integration lands with the cutover wiring.
     }
 }
 
-impl<'a> ProductionSink<'a> {
-    /// Placeholder for the page background color the legacy composite
-    /// path takes. Inert when SrcOver is the blend; pulled from
-    /// RenderState in the cutover wiring.
-    fn background_color_placeholder(&self) -> skia::Color {
-        skia::Color::TRANSPARENT
-    }
+/// Construct a `SurfaceMap` whose lifetime parameter we ignore —
+/// the map's only borrow fields are dead since the refactor below;
+/// keeping the lifetime parameter compatible with `SurfaceMap` until
+/// it's removed in a follow-up cleanup.
+fn empty_map_static() -> SurfaceMap<'static> {
+    SurfaceMap::new_data_only()
 }

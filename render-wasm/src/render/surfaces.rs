@@ -753,6 +753,21 @@ impl Surfaces {
         std::mem::swap(&mut self.current, other);
     }
 
+    /// SSA: snapshot a sub-rect of `Current`. Used by the
+    /// ProductionSink's `Snapshot` step handler.
+    #[cfg(feature = "ssa-ir")]
+    pub fn current_image_snapshot_for_rect(&mut self, rect: IRect) -> Option<skia::Image> {
+        self.current.image_snapshot_with_bounds(rect)
+    }
+
+    /// SSA: snapshot a sub-rect of `Target`. Used by the
+    /// ProductionSink's `Snapshot` step handler when the source ref
+    /// is the Target sentinel.
+    #[cfg(feature = "ssa-ir")]
+    pub fn target_image_snapshot_for_rect(&mut self, rect: IRect) -> Option<skia::Image> {
+        self.target.image_snapshot_with_bounds(rect)
+    }
+
     /// V3 scope helper — clear `Current` (including margins). Pairs with
     /// `snapshot_current_content` at `PushScope`.
     pub fn clear_current(&mut self, bg: skia::Color) {
