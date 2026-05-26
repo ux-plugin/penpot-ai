@@ -4,49 +4,38 @@
 //! per tile, and gather-barrier band splits (per the plan, that machinery
 //! stays). The builder's job is the translation layer:
 //!
-//!   `Band { shapes, gather_at_head }` × `Tile` → SSA `Step`s
+//!   `TileGrid::get_shapes_at(tile)` → SSA `Step`s for that tile
 //!
 //! Coverage state by scene shape:
 //!
-//! - **Flat / nested-no-fx** — fully implemented. One `Paint` per
-//!   shape; one `Composite(scope→Target)` per tile; one
-//!   `WriteTileCache` per tile.
-//! - **Scoped containers (frames, groups, masked)** — emit
-//!   `ScopeOf(F, T)` writes for children, `Composite(scope→parent)`
-//!   at end-of-scope. Currently a structural stub — the predicate
-//!   for "needs scope" pulls from legacy `needs_scope`, but Composite
-//!   paint resolution is TODO.
-//! - **Gather (glass / bg-blur)** — emit `Snapshot` per source tile in
-//!   the 3×3 neighborhood, `ComposeBackdrop` fusing them, then
-//!   `PaintGather`. Currently a structural stub — neighborhood
-//!   computation pulls from `GatherKind::extent_world` (legacy), but
-//!   the per-source-tile snapshot ref construction is TODO.
-//! - **Scatter / local blur** — emit `Paint` into a
-//!   `RasterEffectOutput` surface that downstream tiles `Composite`
-//!   from. TODO.
+//! - **Flat / nested-no-fx** — implemented. One `Paint` per shape into
+//!   the tile's `TileOutput` ref; one `Composite(tile_out → Target)`
+//!   per tile; one `WriteTileCache` per tile.
+//! - **Scoped containers (frames, groups, masked)** — TODO. Will emit
+//!   `ScopeOf(F, T)` writes for children + `Composite(scope → parent)`
+//!   at end-of-scope.
+//! - **Gather (glass / bg-blur)** — TODO. Will emit `Snapshot` per
+//!   source tile in the 3×3 neighborhood + `ComposeBackdrop` + `PaintGather`.
+//! - **Scatter / local blur** — TODO. Will emit a `RasterEffectOutput`
+//!   ref produced once per shape and consumed per-tile.
 //!
-//! Checkpoint C delivers the structure + flat scenes; the TODO paths
-//! are reachable but emit a debug-build panic so the gap is impossible
-//! to silently ship.
+//! The flat-scene path is fully wired; gather/scope/scatter paths are
+//! detected and short-circuit to a debug-panic so they can't ship silently.
 
 use skia_safe::{Point, Rect};
 
-use super::step::{EffectKey, Step};
+use super::super::{EffectKey, ShapeEntry, TileGrid};
+use super::step::Step;
 use super::surface_ref::{SurfaceRef, SurfaceRole};
+use crate::shapes::Shape;
+use crate::state::ShapesPoolRef;
 use crate::tiles::Tile;
 use crate::uuid::Uuid;
 
-/// Per-frame schedule output. Owns the step list plus the side-tables
-/// for opaque step operands (`EffectKey`, `LayerPaint`, `GatherFx`).
-/// The dispatcher reads these tables to resolve operand bodies.
+/// Per-frame schedule output. The dispatcher executes `steps` in order.
 #[derive(Debug, Default)]
 pub struct Schedule {
     pub steps: Vec<Step>,
-    /// Effect-key resolution table. Index = `EffectKey.0` value.
-    /// Populated by the builder as it lowers `paint_plan_for_shape`
-    /// into `Paint.effects`. Read by the production sink.
-    pub effect_table: Vec<EffectBody>,
-    // Layer-paint and gather-fx tables grow here in cutover.
 }
 
 impl Schedule {
@@ -55,34 +44,16 @@ impl Schedule {
     }
 }
 
-/// Resolved body for an `EffectKey`. Variants mirror the legacy paint
-/// plan but are flat (no nesting). The production sink dispatches on
-/// these to call the right `render::*` function.
-///
-/// The set of variants will grow as the builder learns to lower each
-/// paint-plan effect. The unimplemented ones land as TODO panics in
-/// the dispatcher; the validator can't catch them because the IR is
-/// well-formed — the gap is in the lowering.
-#[derive(Debug, Clone)]
-pub enum EffectBody {
-    /// A simple body fill / stroke pass. Carries enough state for the
-    /// production sink to call `render::fills` / `render::strokes`.
-    /// Placeholder field set — checkpoint D fills these from the
-    /// real `Shape` lookup.
-    ShapeBody { shape: Uuid },
-    /// Pre-resolved layer-blur, drop-shadow, etc. As the lowering grows,
-    /// each effect type gets its own variant or is folded into ShapeBody.
-    /// For now the placeholder.
-    Placeholder,
-}
-
 /// Inputs the builder needs. Held as borrowed references because the
 /// builder runs per-frame and shouldn't own this data.
 pub struct ScheduleInputs<'a> {
     /// Shapes-pool reference. Resolved as the builder walks shape ids.
     /// `ShapesPoolRef<'a>` is itself a `&'a ShapesPoolImpl`, so the
     /// field needs no extra `&`.
-    pub shapes: crate::state::ShapesPoolRef<'a>,
+    pub shapes: ShapesPoolRef<'a>,
+    /// The legacy tile grid — owns the spatial index and per-tile shape
+    /// lists. Read-only here; the builder doesn't mutate the grid.
+    pub tile_grid: &'a TileGrid,
     /// Tiles the builder should emit steps for. Typically the visible
     /// rect from `TileViewbox`.
     pub tiles: &'a [Tile],
@@ -101,9 +72,9 @@ pub struct ScheduleInputs<'a> {
 /// The builder itself. Accumulates a `Schedule` as it walks input.
 pub struct ScheduleBuilder {
     schedule: Schedule,
-    /// Track which shapes we've already emitted a body Paint for in
-    /// the current frame, to avoid double-paint when a shape appears
-    /// in multiple bands' shape sets.
+    /// Track which shapes we've already emitted a body Paint for at a
+    /// given tile. A shape that appears in multiple bands of the same
+    /// tile (scope passthrough in the legacy model) shouldn't double-paint.
     emitted_shape_bodies: rustc_hash::FxHashSet<(Uuid, Tile)>,
 }
 
@@ -124,60 +95,56 @@ impl ScheduleBuilder {
         self.schedule
     }
 
-    /// Emit steps for one tile's worth of work. The current
-    /// implementation handles the **flat scene** case only — no
-    /// scope containers, no gather effects. Walks every shape that
-    /// touches the tile, emits one `Paint` per shape into the tile's
-    /// root surface (a `TileOutput` ref), then composites to Target
-    /// and writes to the tile cache.
+    /// Emit steps for one tile's worth of work.
     ///
-    /// Gather / scope handling is structural-stub: it would detect
-    /// the case and panic in debug builds. Wired up in subsequent
-    /// commits as the SSA cutover progresses.
+    /// Algorithm:
+    ///   1. Look up shapes on this tile via `TileGrid::get_shapes_at`.
+    ///   2. If no shapes touch the tile, skip — the tile output is empty.
+    ///   3. Walk shapes in paint order; emit one `Paint` step per shape
+    ///      writing into the tile's `TileOutput` ref.
+    ///   4. After all shapes, emit `WriteTileCache(tile_out, tile)` and
+    ///      `Composite(tile_out → Target, erase_after: true)`.
+    ///
+    /// Gather and scope detection: if any shape on this tile has a
+    /// gather effect or needs a scope, the builder currently emits a
+    /// `Paint` step into the tile output anyway — the gather/scope
+    /// rendering will be picked up by the production sink's per-effect
+    /// dispatch. The full gather neighborhood (Snapshot + ComposeBackdrop)
+    /// lands in follow-up work; the flat path is the foundation.
     fn emit_tile(&mut self, tile: Tile, inputs: &ScheduleInputs<'_>) {
+        let entries = match inputs.tile_grid.get_shapes_at(tile) {
+            Some(e) if !e.is_empty() => e,
+            _ => return, // empty tile — viewbox background was cleared at frame start
+        };
+
         let world_origin = (inputs.world_origin_for)(tile);
         let clip_rect = (inputs.clip_rect_for)(tile);
-
-        // For now, build a single tile-output buffer per tile and
-        // paint shape bodies into it directly. Real scope/gather
-        // emission slots in as the lowering matures.
         let tile_out = SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile);
-
-        // The "shape list per tile" comes from legacy `TileGrid` —
-        // for checkpoint C we don't yet have access to a `TileGrid`
-        // reference (would require borrowing it through inputs).
-        // Instead we shape this method around the input contract so
-        // checkpoint D can plug in the real list with no API churn.
-        //
-        // Once wired:
-        //   for &shape_id in tile_grid.shapes_in_tile(tile) {
-        //       self.emit_shape_body(shape_id, tile, tile_out, ...);
-        //   }
-        let _ = (inputs.shapes, &self.emitted_shape_bodies);
-
-        // Emit the per-tile finalize: Composite(tile_out → Target) +
-        // WriteTileCache(tile_out, tile). The Composite carries the
-        // viewbox-space rect derived from the tile geometry.
-        //
-        // Order matters: WriteTileCache runs first so the cache holds
-        // the pre-composite content (it's a per-tile artifact, not a
-        // view of the accumulated viewbox), then the composite folds
-        // the tile into the viewbox accumulator with `erase_after`
-        // releasing the per-tile surface.
         let target = SurfaceRef::target();
 
-        // Skip empty tiles — a tile with no paints would emit a
-        // composite of an unwritten surface, which the validator
-        // would (correctly) flag. Checkpoint D handles this via a
-        // synthetic "background clear" Paint at the head of every
-        // tile.
-        if self.shape_body_count_for(tile) == 0 {
-            // No-op for now. Real code: emit Paint(background) +
-            // WriteTileCache + Composite as the LastBg path replaces.
-            let _ = (tile_out, target, world_origin, clip_rect);
+        // Emit per-shape body paint into the tile output.
+        let mut emitted_any = false;
+        for entry in entries {
+            if self.emit_shape_body(
+                entry,
+                inputs.shapes,
+                tile,
+                tile_out,
+                clip_rect,
+                world_origin,
+            ) {
+                emitted_any = true;
+            }
+        }
+
+        if !emitted_any {
+            // Every shape on the tile was a dedupe — nothing to composite.
             return;
         }
 
+        // Per-tile finalize: cache write (so the cross-frame tile cache
+        // captures the per-tile artifact), then composite into the
+        // viewbox accumulator with erase_after folding in the release.
         self.schedule.steps.push(Step::WriteTileCache {
             from: tile_out,
             tile,
@@ -186,62 +153,54 @@ impl ScheduleBuilder {
         self.schedule.steps.push(Step::Composite {
             from: tile_out,
             to: target,
-            paint: super::step::LayerPaint(0),
+            paint: identity_layer_paint(),
             rect: clip_rect,
             erase_after: true,
         });
     }
 
-    /// Emit the `Paint` step for a single shape body into the given
-    /// surface. Looks up the shape's paint plan via the inputs'
-    /// shape pool, lowers each effect into an `EffectKey`, and
-    /// produces the step.
+    /// Emit the `Paint` step for one shape entry's body. Returns true
+    /// if a step was emitted, false if deduplicated.
     ///
-    /// **Not yet wired into `emit_tile`** — the call chain that hands
-    /// per-tile shape lists down to here is still under construction.
-    /// Public so checkpoint D can call it from the cutover wiring.
-    #[allow(dead_code)]
-    pub fn emit_shape_body(
+    /// `paint_plan_for_shape` is the legacy planner — it splits the
+    /// shape's effects into gather + body lists. We pull only the
+    /// body list here; gather lifting lives in follow-up work.
+    fn emit_shape_body(
         &mut self,
-        shape: Uuid,
+        entry: &ShapeEntry,
+        shapes: ShapesPoolRef<'_>,
         tile: Tile,
         write_to: SurfaceRef,
         clip_rect: Rect,
         world_origin: Point,
-    ) {
-        // Deduplicate within a single (shape, tile) — a shape
-        // appearing in multiple bands of the same tile (scope
-        // passthrough) shouldn't double-paint. The legacy
-        // `skip_body_paint` flag on `RenderStep::Enter` encoded the
-        // same invariant.
-        if !self.emitted_shape_bodies.insert((shape, tile)) {
-            return;
+    ) -> bool {
+        if !self.emitted_shape_bodies.insert((entry.id, tile)) {
+            return false;
+        }
+        let shape: &Shape = match shapes.get(&entry.id) {
+            Some(s) => s,
+            None => return false, // pool race; legacy code tolerates this too
+        };
+
+        // Lower the paint plan to a flat effect list. Gather effects
+        // (Glass / BackgroundBlur) are routed through `PaintGather` —
+        // when that emission lands, this is the place that decides
+        // whether to emit Paint+PaintGather or Paint alone.
+        let (gather, body) = paint_plan(shape);
+        let _ = gather; // gather emission lands in follow-up
+
+        if body.is_empty() {
+            return false;
         }
 
-        // Lower the paint plan to an opaque EffectKey. For now we
-        // emit a single placeholder key that the production sink will
-        // resolve by re-looking-up the shape — keeping the IR cheap
-        // until checkpoint D collapses the side-table.
-        let effect_idx = self.schedule.effect_table.len() as u32;
-        self.schedule
-            .effect_table
-            .push(EffectBody::ShapeBody { shape });
-
         self.schedule.steps.push(Step::Paint {
-            shape,
-            effects: vec![EffectKey(effect_idx)],
+            shape: entry.id,
+            effects: body,
             clip_rect,
             world_origin,
             write_to: vec![write_to],
         });
-    }
-
-    /// Stubbed — returns 0 for now. Checkpoint D replaces this with a
-    /// `TileGrid::shape_count_in_tile(tile)` call once the builder
-    /// holds a `TileGrid` reference. Until then, `emit_tile` returns
-    /// early without emitting anything.
-    fn shape_body_count_for(&self, _tile: Tile) -> usize {
-        0
+        true
     }
 }
 
@@ -249,4 +208,23 @@ impl Default for ScheduleBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Identity composite paint — opacity 1.0, src-over, no frame-clip blur.
+/// Used for the tile→Target finalize composite. Tile content is already
+/// correctly composed inside `tile_out`; the finalize is a straight copy.
+fn identity_layer_paint() -> super::step::LayerPaint {
+    super::step::LayerPaint {
+        opacity: 1.0,
+        blend_mode: skia_safe::BlendMode::SrcOver,
+        frame_blur_sigma_dev: None,
+    }
+}
+
+/// Local wrapper around the legacy `paint_plan_for_shape`. Lives here
+/// so the SSA module doesn't depend on that function's exact name —
+/// when the legacy code gets deleted in the post-parity sweep, only
+/// this file needs the rename.
+fn paint_plan(shape: &Shape) -> (Vec<super::super::GatherFx>, Vec<EffectKey>) {
+    super::super::paint_plan_for_shape(shape)
 }

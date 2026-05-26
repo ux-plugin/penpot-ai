@@ -3,9 +3,13 @@
 //! The dispatcher uses this to resolve a `SurfaceRef` from the IR into
 //! a concrete `skia::Surface` it can paint into / read from. Bindings
 //! are created lazily on first write (via `bind_for_write`) and torn
-//! down explicitly on kill (`release`). `Target` is a special case —
-//! it's bound externally to the renderer's accumulator surface and
-//! lives across the entire schedule.
+//! down on kill (`release`).
+//!
+//! `SurfaceRef::target()` is a **sentinel** — it's never bound in this
+//! map. Steps writing to / reading from Target are special-cased by
+//! the `DispatchSink` impl, which routes them to the renderer's
+//! externally-owned accumulator (`Surfaces.target`). Keeping Target
+//! out of the map avoids fighting Skia's non-`Clone` surfaces.
 //!
 //! Per-frame lifetime: created at schedule start, drained at end. The
 //! allocator backing the physical surfaces survives between frames so
@@ -31,7 +35,7 @@ pub struct Binding {
 /// Per-schedule surface map. Borrows the allocator and GPU context so
 /// it can lazily acquire backings.
 pub struct SurfaceMap<'a> {
-    /// Active bindings — one per live `SurfaceRef`.
+    /// Active bindings — one per live non-Target `SurfaceRef`.
     bindings: FxHashMap<SurfaceRef, Binding>,
     allocator: &'a mut SurfaceAllocator,
     gpu: &'a mut GpuState,
@@ -46,31 +50,13 @@ impl<'a> SurfaceMap<'a> {
         }
     }
 
-    /// Bind `Target` to an externally-owned surface (the renderer's
-    /// `Surfaces.target`). The map does NOT take ownership — on
-    /// `drain()` Target is just dropped from the map without going
-    /// back to the allocator.
-    ///
-    /// Note: skia::Surface doesn't implement Clone, so we use the
-    /// caller-passed surface by-value here and don't put it in the
-    /// allocator pool. Released via `release_external_target` at the
-    /// end of the schedule.
-    pub fn bind_target(&mut self, surface: skia::Surface, width: i32, height: i32) {
-        let r = SurfaceRef::target();
-        self.bindings.insert(
-            r,
-            Binding {
-                surface,
-                width,
-                height,
-            },
-        );
-    }
-
     /// Acquire a fresh backing for `ref` at the given size. Panics in
     /// debug builds if the ref is already bound — the SSA invariant
     /// the validator enforces is that each non-Target ref is written
     /// exactly once.
+    ///
+    /// `Target` is rejected here in debug builds — it's a sentinel
+    /// that the sink handles directly, not a poolable surface.
     pub fn bind_for_write(
         &mut self,
         r: SurfaceRef,
@@ -79,8 +65,12 @@ impl<'a> SurfaceMap<'a> {
         label: &str,
     ) -> Result<&mut skia::Surface> {
         debug_assert!(
-            r.is_target() || !self.bindings.contains_key(&r),
-            "SSA violation: rebinding non-Target ref {:?} (already bound)",
+            !r.is_target(),
+            "SurfaceMap should never bind Target — it's a sentinel"
+        );
+        debug_assert!(
+            !self.bindings.contains_key(&r),
+            "SSA violation: rebinding {:?} (already bound)",
             r
         );
         let surface = self.allocator.acquire(width, height, self.gpu, label)?;
@@ -94,41 +84,47 @@ impl<'a> SurfaceMap<'a> {
         Ok(&mut self.bindings.get_mut(&r).unwrap().surface)
     }
 
-    /// Read access to the surface backing `ref`. Returns `None` if
-    /// the ref isn't bound (validator should have caught this earlier).
+    /// Read access to the surface backing `ref`. Returns `None` for
+    /// `Target` (use the renderer's `Surfaces.target` directly) and
+    /// for unbound refs (validator should have caught this earlier).
     pub fn get(&self, r: SurfaceRef) -> Option<&skia::Surface> {
         self.bindings.get(&r).map(|b| &b.surface)
     }
 
-    /// Mutable access. Same caveat as `get`. Used by `Composite` and
-    /// any step that writes to a pre-existing surface (i.e. Target).
+    /// Mutable access. Same caveat as `get`.
     pub fn get_mut(&mut self, r: SurfaceRef) -> Option<&mut skia::Surface> {
         self.bindings.get_mut(&r).map(|b| &mut b.surface)
     }
 
-    /// Drop the binding for `ref` and return its surface to the
-    /// allocator pool (for non-Target refs). Target bindings are
-    /// dropped silently without returning to the pool — they're
-    /// externally owned.
-    pub fn release(&mut self, r: SurfaceRef) {
-        if let Some(binding) = self.bindings.remove(&r) {
-            if !r.is_target() {
-                self.allocator
-                    .release(binding.surface, binding.width, binding.height);
-            }
-            // For Target: surface drops, externally owned reference is
-            // gone. Caller (Dispatcher::finish) should snatch it back
-            // via `take_external_target` before calling drain().
-        }
+    /// Take a surface out of the map without releasing it to the pool.
+    /// Used by the `ProductionSink`'s adapter pattern: it pulls the
+    /// pooled surface out, temporarily installs it in `Surfaces.current`
+    /// for the legacy render call, then puts it back via `put_back`.
+    pub fn take(&mut self, r: SurfaceRef) -> Option<Binding> {
+        debug_assert!(
+            !r.is_target(),
+            "Target is a sentinel — never present in the map"
+        );
+        self.bindings.remove(&r)
     }
 
-    /// Pull Target's surface out without releasing to the pool. Used
-    /// by the dispatcher at schedule end so the caller can hand the
-    /// Target surface back to `Surfaces`.
-    pub fn take_external_target(&mut self) -> Option<skia::Surface> {
-        self.bindings
-            .remove(&SurfaceRef::target())
-            .map(|b| b.surface)
+    /// Inverse of `take` — put a binding back into the map under the
+    /// given ref. Called after the legacy render adapter finishes.
+    pub fn put_back(&mut self, r: SurfaceRef, binding: Binding) {
+        debug_assert!(!r.is_target());
+        self.bindings.insert(r, binding);
+    }
+
+    /// Drop the binding for `ref` and return its surface to the
+    /// allocator pool. No-op for `Target` (not in the map).
+    pub fn release(&mut self, r: SurfaceRef) {
+        if r.is_target() {
+            return;
+        }
+        if let Some(binding) = self.bindings.remove(&r) {
+            self.allocator
+                .release(binding.surface, binding.width, binding.height);
+        }
     }
 
     /// Number of currently-bound refs. Used by tests and by the
@@ -137,15 +133,18 @@ impl<'a> SurfaceMap<'a> {
         self.bindings.len()
     }
 
-    /// True if `ref` has a live binding.
+    /// True if `ref` has a live binding. `Target` always returns true
+    /// — it's the externally-owned accumulator, perpetually available.
     pub fn is_bound(&self, r: SurfaceRef) -> bool {
+        if r.is_target() {
+            return true;
+        }
         self.bindings.contains_key(&r)
     }
 
-    /// Drain at end of schedule. Every remaining binding (except
-    /// Target, which the caller should already have taken) is
-    /// returned to the allocator pool. The validator should have
-    /// ensured no leaks, but we drain defensively.
+    /// Drain at end of schedule. Every remaining binding is returned
+    /// to the allocator pool. The validator should have ensured no
+    /// leaks, but we drain defensively.
     pub fn drain(&mut self) {
         let refs: Vec<SurfaceRef> = self.bindings.keys().copied().collect();
         for r in refs {

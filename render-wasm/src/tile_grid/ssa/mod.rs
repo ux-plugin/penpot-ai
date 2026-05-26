@@ -39,6 +39,8 @@ mod dispatcher;
 #[cfg(feature = "ssa-ir")]
 mod entry;
 mod liveness;
+#[cfg(feature = "ssa-ir")]
+mod production_sink;
 mod schedule_builder;
 mod step;
 mod surface_map;
@@ -47,6 +49,8 @@ mod validator;
 
 #[cfg(feature = "ssa-ir")]
 pub use entry::{render_via_ssa, RenderArgs, RenderOutput};
+#[cfg(feature = "ssa-ir")]
+pub use production_sink::ProductionSink;
 
 #[cfg(test)]
 mod tests;
@@ -55,8 +59,8 @@ pub use allocator::{AllocatorStats, SurfaceAllocator};
 pub use dep_graph::DepGraph;
 pub use dispatcher::{DispatchSink, DispatchTrace, Dispatcher, TraceEvent};
 pub use liveness::{LiveInterval, LivenessPass};
-pub use schedule_builder::{EffectBody, Schedule, ScheduleBuilder, ScheduleInputs};
-pub use step::{EffectKey, GatherFx, LayerPaint, Step};
+pub use schedule_builder::{Schedule, ScheduleBuilder, ScheduleInputs};
+pub use step::Step;
 pub use surface_map::SurfaceMap;
 pub use surface_ref::{SizeClass, SurfaceRef, SurfaceRole};
 pub use validator::{compute_liveness, IrValidator, ValidationError};

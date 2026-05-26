@@ -741,6 +741,18 @@ impl Surfaces {
         self.current.image_snapshot_with_bounds(rect)
     }
 
+    /// SSA adapter — swap `other` into `Current`'s slot. Used by the
+    /// `ssa::ProductionSink` to install a pooled surface for the
+    /// duration of a legacy render call, then swap back. Until the
+    /// per-effect renderers are refactored to take a `&mut skia::Surface`
+    /// directly, this is the bridge between the SSA `SurfaceRef`-keyed
+    /// model and the legacy `SurfaceId::Current` model. Deleted along
+    /// with `Surfaces.current` itself once the cutover sweep lands.
+    #[cfg(feature = "ssa-ir")]
+    pub fn swap_current(&mut self, other: &mut skia::Surface) {
+        std::mem::swap(&mut self.current, other);
+    }
+
     /// V3 scope helper — clear `Current` (including margins). Pairs with
     /// `snapshot_current_content` at `PushScope`.
     pub fn clear_current(&mut self, bg: skia::Color) {

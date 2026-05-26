@@ -6,34 +6,23 @@
 //! resolves operands through the `SurfaceAllocator` and executes — no
 //! global "current tile" state, no scope stack, no implicit cache lookups.
 //!
-//! Checkpoint A defines the operand surface only — fields that connect
-//! to the existing render code (`EffectKey`, `LayerPaint`, `GatherFx`)
-//! are placeholder opaque newtypes here. Checkpoint B fills them out
-//! when the dispatcher gets wired to `render::{shape_body, glass,
-//! gather, scatter, local, strokes, shadows}`.
+//! Effect bodies are the legacy `EffectKey` / `LayerPaint` / `GatherFx`
+//! enums imported directly from `tile_grid::mod`. They already encode
+//! exactly the dispatch information the production sink needs to call
+//! into `render::*`. Wrapping them in opaque newtypes would only add
+//! indirection.
+
+use skia_safe::{IRect, Point, Rect};
 
 use crate::tiles::Tile;
 use crate::uuid::Uuid;
-use skia_safe::{IRect, Point, Rect};
+
+// Re-exported from the legacy scheduler — these data types stay even
+// after the legacy code paths around them get deleted, because they
+// canonically describe "which renderer to call with what input."
+pub use super::super::{EffectKey, GatherFx, LayerPaint};
 
 use super::surface_ref::SurfaceRef;
-
-/// Index into the shape's paint plan (`paint_plan_for_shape`). Resolves
-/// inside the dispatcher to a concrete fill/stroke/shadow pass. Opaque
-/// to the IR — the validator only cares that `write_to` is well-formed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EffectKey(pub u32);
-
-/// Opaque handle for a `save_layer`-style paint bundle (opacity, blend
-/// mode, clip). Resolved inside the dispatcher. Wrapped as an index so
-/// the IR stays cheap to clone in tests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LayerPaint(pub u32);
-
-/// Reference to a gather effect kind (Glass / BackgroundBlur) attached to
-/// a shape's paint plan. Dispatched via `render::gather` / `render::glass`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GatherFx(pub u32);
 
 /// Single step in the SSA schedule. Variants are coarse-grained — one
 /// `Paint` step covers a shape's full body (fills + strokes + drop/inner/

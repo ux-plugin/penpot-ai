@@ -1,29 +1,19 @@
 //! Flat-loop step interpreter — the SSA IR's run-time.
 //!
 //! Replaces `run_schedule`'s ~700-line match over `RenderStep` plus the
-//! implicit `Surfaces.current`/`scope_allocations`/`glass_backdrop_cache`
-//! global state. Each step is self-contained: the dispatcher resolves
-//! operands through `SurfaceMap`/`SurfaceAllocator`, calls the per-variant
-//! handler, and updates the binding set. No scope stack, no current-tile
-//! flag, no implicit cache lookups.
+//! implicit `Surfaces.current` / `scope_allocations` / `glass_backdrop_cache`
+//! global state. Each step is self-contained: the dispatcher walks the
+//! schedule in order, fires lifecycle hooks (`acquire` / `release`) on
+//! the `DispatchSink`, then routes the step to a per-variant handler.
+//! The sink owns the actual surface management and rendering; the
+//! dispatcher just sequences.
 //!
-//! Checkpoint B delivers the dispatch skeleton with **stub** per-variant
-//! handlers. Each handler:
-//!
-//! - Resolves operands (creating bindings for `write_to`, asserting
-//!   bindings exist for `read_from`)
-//! - Records what it would have done into a `DispatchTrace` (if one
-//!   is attached) so tests can verify operand resolution without GL
-//! - Returns Ok(())
-//!
-//! Real rendering lands in Checkpoint C when `ScheduleBuilder` is
-//! wired up; the handlers will dispatch to existing `render::*`
-//! functions at that point.
+//! This factoring keeps the dispatcher independent of where surfaces
+//! and GPU state are held — production code routes them through a sink
+//! that wraps `RenderState`; tests route them through a `DispatchTrace`
+//! that records events instead.
 
-use skia_safe as skia;
-
-use super::step::{EffectKey, GatherFx, LayerPaint, Step};
-use super::surface_map::SurfaceMap;
+use super::step::Step;
 use super::surface_ref::SurfaceRef;
 use super::validator::IrValidator;
 use crate::error::Result;
@@ -33,6 +23,11 @@ use crate::tiles::Tile;
 /// visited steps in the right order with the right operand resolutions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TraceEvent {
+    Acquire {
+        r: SurfaceRef,
+        size: (i32, i32),
+    },
+    Release(SurfaceRef),
     Paint {
         shape_idx: u64,
         write_to: Vec<SurfaceRef>,
@@ -63,55 +58,74 @@ pub enum TraceEvent {
         tile: Tile,
     },
     EraseSurface(SurfaceRef),
-    /// Logged when a step's `write_to` operand triggered a new binding.
-    /// Used by allocator tests to verify hit/miss patterns.
-    Bind {
-        r: SurfaceRef,
-        size: (i32, i32),
-    },
-    /// Logged when a step ended a binding (explicit erase, fold-in
-    /// erase_after, or implicit liveness kill).
-    Unbind { r: SurfaceRef },
 }
 
-/// Sink that the dispatcher writes operations to. Tests use
-/// `DispatchTrace`; production wraps the real render functions.
+/// Sink that owns surface management + rendering. The dispatcher
+/// sequences calls into this trait; the implementation decides how to
+/// back logical refs with physical surfaces and how to execute each
+/// step.
+///
+/// `acquire` fires before any step that writes to a fresh ref;
+/// `release` fires after a step that kills a ref (explicit
+/// `EraseSurface` or `Composite { erase_after: true }`). Production
+/// sinks back these with a `SurfaceMap` / `SurfaceAllocator` pair;
+/// the test sink (`DispatchTrace`) just records.
 pub trait DispatchSink {
-    fn on_event(&mut self, event: TraceEvent);
+    /// Default size hint when the dispatcher needs to back a logical
+    /// ref before knowing its true size. Per-step sizing arrives in
+    /// follow-up work via metadata on the step (rect / extent fields).
+    fn default_tile_size(&self) -> (i32, i32);
 
-    /// Per-variant hooks. Default impls call `on_event` so simple
-    /// sinks only need to override that one method. Real-render
-    /// sinks override these to call into `render::{glass, gather,
-    /// scatter, shape_body, ...}`.
-    fn paint(&mut self, _step: &Step, _map: &mut SurfaceMap) -> Result<()> {
+    /// Acquire physical backing for `r`. May be called once per
+    /// fresh-write ref. The dispatcher guarantees it won't call
+    /// `acquire(r)` again for the same `r` without an intervening
+    /// `release(r)`.
+    fn acquire(&mut self, r: SurfaceRef, size: (i32, i32)) -> Result<()>;
+
+    /// Release the binding for `r`. May be called once after `acquire`,
+    /// at the step where liveness ends.
+    fn release(&mut self, r: SurfaceRef);
+
+    /// Per-variant handlers. The default impls are no-ops, suitable
+    /// for the test sink. Production sinks override these.
+    fn paint(&mut self, _step: &Step) -> Result<()> {
         Ok(())
     }
-    fn snapshot(&mut self, _step: &Step, _map: &mut SurfaceMap) -> Result<()> {
+    fn snapshot(&mut self, _step: &Step) -> Result<()> {
         Ok(())
     }
-    fn compose_backdrop(&mut self, _step: &Step, _map: &mut SurfaceMap) -> Result<()> {
+    fn compose_backdrop(&mut self, _step: &Step) -> Result<()> {
         Ok(())
     }
-    fn paint_gather(&mut self, _step: &Step, _map: &mut SurfaceMap) -> Result<()> {
+    fn paint_gather(&mut self, _step: &Step) -> Result<()> {
         Ok(())
     }
-    fn composite(&mut self, _step: &Step, _map: &mut SurfaceMap) -> Result<()> {
+    fn composite(&mut self, _step: &Step) -> Result<()> {
         Ok(())
     }
-    fn write_tile_cache(&mut self, _step: &Step, _map: &mut SurfaceMap) -> Result<()> {
+    fn write_tile_cache(&mut self, _step: &Step) -> Result<()> {
         Ok(())
     }
+
+    /// Notification of each `TraceEvent` — production sinks override
+    /// to feed `perf_trace`; tests collect them into a vec.
+    fn on_event(&mut self, _event: TraceEvent) {}
 }
 
-/// Test sink that records every dispatched event.
+/// Test sink: records events, holds no surfaces. Used by the
+/// dispatcher unit tests to verify operand resolution.
 #[derive(Debug, Default)]
 pub struct DispatchTrace {
     pub events: Vec<TraceEvent>,
+    pub default_size: (i32, i32),
 }
 
 impl DispatchTrace {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            default_size: (256, 256),
+            ..Default::default()
+        }
     }
 
     pub fn clear(&mut self) {
@@ -120,45 +134,46 @@ impl DispatchTrace {
 }
 
 impl DispatchSink for DispatchTrace {
+    fn default_tile_size(&self) -> (i32, i32) {
+        self.default_size
+    }
+
+    fn acquire(&mut self, _r: SurfaceRef, _size: (i32, i32)) -> Result<()> {
+        Ok(())
+    }
+
+    fn release(&mut self, _r: SurfaceRef) {}
+
     fn on_event(&mut self, event: TraceEvent) {
         self.events.push(event);
     }
 }
 
-/// The dispatcher proper. Reaches the GPU + allocator through the
-/// `SurfaceMap` passed to `execute` — keeps a single owner for the
-/// mutable borrows on `GpuState` and `SurfaceAllocator`.
+/// The dispatcher proper. Walks the schedule, fires lifecycle hooks
+/// and per-variant calls on the sink.
 pub struct Dispatcher<'b, S: DispatchSink> {
     pub sink: &'b mut S,
-    /// Default tile-sized surface dimensions. Used when a write-to
-    /// ref doesn't otherwise indicate a size (e.g. ScopeOf in a
-    /// per-tile context). Set by the caller per-frame from the tile
-    /// geometry. `(width, height)`.
-    pub default_tile_size: (i32, i32),
 }
 
 impl<'b, S: DispatchSink> Dispatcher<'b, S> {
-    pub fn new(sink: &'b mut S, default_tile_size: (i32, i32)) -> Self {
-        Self {
-            sink,
-            default_tile_size,
-        }
+    pub fn new(sink: &'b mut S) -> Self {
+        Self { sink }
     }
 
     /// Execute a full schedule. Validates the schedule in debug builds
-    /// first, then walks it in order, resolving operands and calling
-    /// per-variant handlers. `map` must be pre-bound with Target.
-    pub fn execute(&mut self, schedule: &[Step], map: &mut SurfaceMap) -> Result<()> {
+    /// first, then walks it in order.
+    pub fn execute(&mut self, schedule: &[Step]) -> Result<()> {
         IrValidator::debug_assert(schedule);
 
-        for (idx, step) in schedule.iter().enumerate() {
-            self.dispatch_one(idx, step, map)?;
+        for step in schedule {
+            self.dispatch_one(step)?;
         }
 
         Ok(())
     }
 
-    fn dispatch_one(&mut self, _idx: usize, step: &Step, map: &mut SurfaceMap) -> Result<()> {
+    fn dispatch_one(&mut self, step: &Step) -> Result<()> {
+        let size = self.sink.default_tile_size();
         match step {
             Step::Paint {
                 shape,
@@ -166,29 +181,33 @@ impl<'b, S: DispatchSink> Dispatcher<'b, S> {
                 write_to,
                 ..
             } => {
-                // Acquire bindings for every write target.
                 for r in write_to {
-                    self.bind_if_missing(*r, map)?;
+                    if !r.is_target() {
+                        self.sink.acquire(*r, size)?;
+                        self.sink.on_event(TraceEvent::Acquire { r: *r, size });
+                    }
                 }
                 self.sink.on_event(TraceEvent::Paint {
                     shape_idx: uuid_as_u64(*shape),
                     write_to: write_to.clone(),
                     effect_count: effects.len(),
                 });
-                self.sink.paint(step, map)?;
+                self.sink.paint(step)?;
             }
             Step::Snapshot { from, write_to, .. } => {
-                debug_assert!(
-                    map.is_bound(*from),
-                    "Snapshot reads unbound {:?}",
-                    from
-                );
-                self.bind_if_missing(*write_to, map)?;
+                let _ = from; // sink's snapshot handler reads from the map
+                if !write_to.is_target() {
+                    self.sink.acquire(*write_to, size)?;
+                    self.sink.on_event(TraceEvent::Acquire {
+                        r: *write_to,
+                        size,
+                    });
+                }
                 self.sink.on_event(TraceEvent::Snapshot {
                     from: *from,
                     write_to: *write_to,
                 });
-                self.sink.snapshot(step, map)?;
+                self.sink.snapshot(step)?;
             }
             Step::ComposeBackdrop {
                 shape,
@@ -196,20 +215,19 @@ impl<'b, S: DispatchSink> Dispatcher<'b, S> {
                 write_to,
                 ..
             } => {
-                for r in read_from {
-                    debug_assert!(
-                        map.is_bound(*r),
-                        "ComposeBackdrop reads unbound {:?}",
-                        r
-                    );
+                if !write_to.is_target() {
+                    self.sink.acquire(*write_to, size)?;
+                    self.sink.on_event(TraceEvent::Acquire {
+                        r: *write_to,
+                        size,
+                    });
                 }
-                self.bind_if_missing(*write_to, map)?;
                 self.sink.on_event(TraceEvent::ComposeBackdrop {
                     shape_idx: uuid_as_u64(*shape),
                     read_from: read_from.clone(),
                     write_to: *write_to,
                 });
-                self.sink.compose_backdrop(step, map)?;
+                self.sink.compose_backdrop(step)?;
             }
             Step::PaintGather {
                 shape,
@@ -218,19 +236,20 @@ impl<'b, S: DispatchSink> Dispatcher<'b, S> {
                 write_to,
                 ..
             } => {
-                debug_assert!(
-                    map.is_bound(*backdrop),
-                    "PaintGather reads unbound backdrop {:?}",
-                    backdrop
-                );
-                self.bind_if_missing(*write_to, map)?;
+                if !write_to.is_target() {
+                    self.sink.acquire(*write_to, size)?;
+                    self.sink.on_event(TraceEvent::Acquire {
+                        r: *write_to,
+                        size,
+                    });
+                }
                 self.sink.on_event(TraceEvent::PaintGather {
                     shape_idx: uuid_as_u64(*shape),
                     backdrop: *backdrop,
                     write_to: *write_to,
                     effect_count: effects.len(),
                 });
-                self.sink.paint_gather(step, map)?;
+                self.sink.paint_gather(step)?;
             }
             Step::Composite {
                 from,
@@ -238,92 +257,37 @@ impl<'b, S: DispatchSink> Dispatcher<'b, S> {
                 erase_after,
                 ..
             } => {
-                debug_assert!(
-                    map.is_bound(*from),
-                    "Composite reads unbound from {:?}",
-                    from
-                );
-                debug_assert!(
-                    map.is_bound(*to),
-                    "Composite reads unbound to {:?}",
-                    to
-                );
                 self.sink.on_event(TraceEvent::Composite {
                     from: *from,
                     to: *to,
                     erase_after: *erase_after,
                 });
-                self.sink.composite(step, map)?;
+                self.sink.composite(step)?;
                 if *erase_after {
-                    self.sink.on_event(TraceEvent::Unbind { r: *from });
-                    map.release(*from);
+                    self.sink.release(*from);
+                    self.sink.on_event(TraceEvent::Release(*from));
                 }
             }
             Step::WriteTileCache { from, tile } => {
-                debug_assert!(
-                    map.is_bound(*from),
-                    "WriteTileCache reads unbound from {:?}",
-                    from
-                );
                 self.sink.on_event(TraceEvent::WriteTileCache {
                     from: *from,
                     tile: *tile,
                 });
-                self.sink.write_tile_cache(step, map)?;
+                self.sink.write_tile_cache(step)?;
             }
             Step::EraseSurface(r) => {
                 self.sink.on_event(TraceEvent::EraseSurface(*r));
-                self.sink.on_event(TraceEvent::Unbind { r: *r });
-                map.release(*r);
+                self.sink.release(*r);
+                self.sink.on_event(TraceEvent::Release(*r));
             }
         }
         Ok(())
-    }
-
-    /// Acquire a binding for `r` if it's not already bound. Size is
-    /// inferred from the ref's role + dispatcher's default tile size.
-    /// Checkpoint C will replace this with proper size derivation from
-    /// the schedule's metadata (per-step `clip_rect`/`extent`).
-    fn bind_if_missing(&mut self, r: SurfaceRef, map: &mut SurfaceMap) -> Result<()> {
-        if map.is_bound(r) {
-            return Ok(());
-        }
-        let (w, h) = self.default_tile_size;
-        let label = role_label(r);
-        map.bind_for_write(r, w, h, label)?;
-        self.sink.on_event(TraceEvent::Bind { r, size: (w, h) });
-        Ok(())
-    }
-}
-
-fn role_label(r: SurfaceRef) -> &'static str {
-    use super::surface_ref::SurfaceRole;
-    match r.role {
-        SurfaceRole::ScopeOf(_) => "ssa-scope",
-        SurfaceRole::Snapshot { .. } => "ssa-snapshot",
-        SurfaceRole::Backdrop(_) => "ssa-backdrop",
-        SurfaceRole::RasterEffectOutput(_) => "ssa-raster",
-        SurfaceRole::TileOutput => "ssa-tile-output",
-        SurfaceRole::Target => "ssa-target",
     }
 }
 
 fn uuid_as_u64(uuid: crate::uuid::Uuid) -> u64 {
-    // Stable trace key — low 64 bits of the UUID. Tests compare these
-    // against fixture values so they need to be deterministic.
     let bytes: [u8; 16] = uuid.into();
     u64::from_le_bytes([
         bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
     ])
-}
-
-// Allow unused imports for Checkpoint B — `EffectKey`, `LayerPaint`,
-// `GatherFx` aren't read in the stub handlers yet but the dispatcher
-// will pull them out of `Step` variants in Checkpoint C.
-#[allow(dead_code)]
-fn _suppress_unused() {
-    let _: EffectKey;
-    let _: LayerPaint;
-    let _: GatherFx;
-    let _: skia::Surface;
 }

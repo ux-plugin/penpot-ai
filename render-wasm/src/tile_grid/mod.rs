@@ -577,7 +577,7 @@ fn paint_order_children(shape: &Shape, tree: ShapesPoolRef) -> Vec<Uuid> {
 ///   for scatter, `ScatterBlit` is the whole-body equivalent and replaces
 ///   `DropShadows + ShapeBody` (the scatter blit applies its own shadows).
 /// - `ShapeBody` last — fills + strokes + inner shadows on top.
-fn paint_plan_for_shape(shape: &Shape) -> (Vec<GatherFx>, Vec<EffectKey>) {
+pub(crate) fn paint_plan_for_shape(shape: &Shape) -> (Vec<GatherFx>, Vec<EffectKey>) {
     let is_scatter = shape
         .texture
         .as_ref()
