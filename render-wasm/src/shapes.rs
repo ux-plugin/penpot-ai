@@ -61,7 +61,6 @@ use crate::math::{self, Bounds, Matrix, Point};
 
 use crate::state::ShapesPoolRef;
 
-const MIN_VISIBLE_SIZE: f32 = 2.0;
 const MIN_STROKE_WIDTH: f32 = 0.001;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -805,11 +804,6 @@ impl Shape {
 
     pub fn extrect(&self, shapes_pool: ShapesPoolRef, scale: f32) -> math::Rect {
         self.calculate_extrect(shapes_pool, scale)
-    }
-
-    pub fn visually_insignificant(&self, scale: f32, shapes_pool: ShapesPoolRef) -> bool {
-        let extrect = self.extrect(shapes_pool, scale);
-        extrect.width() * scale < MIN_VISIBLE_SIZE && extrect.height() * scale < MIN_VISIBLE_SIZE
     }
 
     pub fn should_use_antialias(&self, scale: f32, threshold: f32) -> bool {

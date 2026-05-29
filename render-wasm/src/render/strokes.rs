@@ -11,7 +11,7 @@ use crate::render::filters::compose_filters;
 use crate::render::{get_dest_rect, get_source_rect};
 
 #[allow(clippy::too_many_arguments)]
-fn draw_stroke_on_rect(
+pub(crate) fn draw_stroke_on_rect(
     canvas: &skia::Canvas,
     stroke: &Stroke,
     rect: &Rect,
@@ -96,7 +96,7 @@ fn draw_stroke_on_rect(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_stroke_on_circle(
+pub(crate) fn draw_stroke_on_circle(
     canvas: &skia::Canvas,
     stroke: &Stroke,
     rect: &Rect,
@@ -202,7 +202,7 @@ fn draw_inner_stroke_path(
 
 // For outer stroke we draw a center stroke (with double width) and use another path with blend mode clear to remove the inner stroke added
 #[allow(clippy::too_many_arguments)]
-fn draw_stroke_on_path(
+pub(crate) fn draw_stroke_on_path(
     canvas: &skia::Canvas,
     stroke: &Stroke,
     path: &Path,
@@ -286,7 +286,7 @@ fn handle_stroke_cap(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_stroke_caps(
+pub(crate) fn handle_stroke_caps(
     path: &skia::Path,
     stroke: &Stroke,
     canvas: &skia::Canvas,

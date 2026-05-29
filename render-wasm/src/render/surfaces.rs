@@ -36,20 +36,20 @@ pub enum SurfaceId {
 pub struct Surfaces {
     // is the final destination surface, the one that it is represented in the canvas element.
     target: skia::Surface,
-    filter: skia::Surface,
+    pub(crate) filter: skia::Surface,
     cache: skia::Surface,
     // keeps the current render
     current: skia::Surface,
     // keeps the current shape's fills
-    shape_fills: skia::Surface,
+    pub(crate) shape_fills: skia::Surface,
     // keeps the current shape's strokes
-    shape_strokes: skia::Surface,
+    pub(crate) shape_strokes: skia::Surface,
     // used for rendering shadows
-    drop_shadows: skia::Surface,
+    pub(crate) drop_shadows: skia::Surface,
     // used for rendering over shadows.
-    inner_shadows: skia::Surface,
+    pub(crate) inner_shadows: skia::Surface,
     // used for rendering text drop shadows
-    text_drop_shadows: skia::Surface,
+    pub(crate) text_drop_shadows: skia::Surface,
     // used for displaying auxiliary workspace elements
     ui: skia::Surface,
     // for drawing debug info.
@@ -81,6 +81,13 @@ pub struct Surfaces {
     /// "no localMatrix shift needed beyond the surface offset"
     /// — same as before phase 7).
     glass_backdrop_origin_cache: HashMap<Uuid, skia::IPoint>,
+    /// World-space origin variant — sibling of
+    /// `glass_backdrop_origin_cache` but keyed in world-coord float
+    /// space rather than device-pixel integer space. Populated by
+    /// `insert_glass_backdrop_with_world_origin` for callers that
+    /// reason about the backdrop's placement in world coordinates
+    /// (e.g. the SSA scheduler path).
+    glass_backdrop_world_origin_cache: HashMap<Uuid, skia::Point>,
     /// V2c.1 — per-shape pre-rendered, layer-blurred body image
     /// (for leaf shapes with `shape.blur = LayerBlur(_)`). Built by
     /// `BuildCache(LocalBlur(id))`, consumed per-tile by the
@@ -163,6 +170,7 @@ impl Surfaces {
             interband_cache: HashMap::new(),
             glass_backdrop_cache: HashMap::new(),
             glass_backdrop_origin_cache: HashMap::new(),
+            glass_backdrop_world_origin_cache: HashMap::new(),
             local_blur_output_cache: HashMap::new(),
             scatter_output_cache: HashMap::new(),
             sampling_options,
@@ -178,6 +186,19 @@ impl Surfaces {
 
     pub fn margins(&self) -> skia::ISize {
         self.margins
+    }
+
+    /// Margin-padded tile-surface dimensions
+    /// (`TILE_SIZE × TILE_SIZE_MULTIPLIER` per axis = 1024×1024 at the
+    /// default multiplier of 2). Equal to `Current`'s dimensions: a
+    /// `TILE_SIZE × TILE_SIZE` content region centered in a square
+    /// surface with `margins` of free space on every side, so filter
+    /// kernels (drop shadow, blur, etc.) have headroom outside the
+    /// shape rect. SSA's pool surfaces must match this exact layout
+    /// so the legacy renderer code (which assumes margins) ports
+    /// without arithmetic divergence.
+    pub fn extra_tile_dims(&self) -> skia::ISize {
+        self.extra_tile_dims
     }
 
     pub fn resize(
@@ -745,9 +766,18 @@ impl Surfaces {
     /// ProductionSink's `Snapshot` step handler when the source ref
     /// is the Target sentinel (Target is never bound in the SurfaceMap
     /// — it's the externally-owned accumulator).
-    #[cfg(feature = "ssa-ir")]
     pub fn target_image_snapshot_for_rect(&mut self, rect: IRect) -> Option<skia::Image> {
         self.target.image_snapshot_with_bounds(rect)
+    }
+
+    /// SSA: clear `Target` with bg color at frame start. The legacy
+    /// renderer clears Target implicitly via `FinalizeBand{LastBg}` for
+    /// empty tiles + per-tile compositing; the SSA path needs an
+    /// explicit clear since `ClearTileCacheRegion` only wipes the
+    /// cross-frame tile cache (not Target itself). Without this,
+    /// tiles a shape moved AWAY from keep stale pixels visible.
+    pub fn target_canvas_clear(&mut self, color: skia::Color) {
+        self.target.canvas().clear(color);
     }
 
     /// SSA: composite an externally-snapshotted tile image into
@@ -755,7 +785,6 @@ impl Surfaces {
     /// `composite_current_to_target` adapter dance — the caller has
     /// the source pool surface, snapshots it directly, and hands the
     /// image here.
-    #[cfg(feature = "ssa-ir")]
     pub fn ssa_composite_image_to_target(
         &mut self,
         image: &skia::Image,
@@ -772,10 +801,28 @@ impl Surfaces {
         );
     }
 
-    /// SSA: cache an externally-snapshotted tile image into the
-    /// cross-frame tile texture cache. Mirrors
-    /// `cache_current_tile_texture` but takes the image directly.
-    #[cfg(feature = "ssa-ir")]
+    /// SSA: clear the cross-frame cache's pixels in a tile-sized rect.
+    /// Used when a tile becomes shape-empty (the shape moved away) and
+    /// the previous frame's cache content would otherwise persist as a
+    /// ghost.
+    pub fn ssa_clear_tile_cache_rect(
+        &mut self,
+        tile_viewbox: &TileViewbox,
+        tile: &Tile,
+        tile_rect: &skia::Rect,
+    ) {
+        // BlendMode::Clear writes (0,0,0,0) regardless of source/dest —
+        // exactly what we need to wipe the cache rect.
+        let mut paint = skia::Paint::default();
+        paint.set_blend_mode(skia::BlendMode::Clear);
+        self.cache.canvas().draw_rect(*tile_rect, &paint);
+        // Also drop the texture cache entry so the next render
+        // generates a fresh one rather than blit-cached stale content.
+        let _ = tile_viewbox;
+        self.tiles.remove(*tile);
+        crate::perf_count!(tile_write);
+    }
+
     pub fn ssa_cache_tile_image(
         &mut self,
         tile_viewbox: &TileViewbox,
@@ -784,14 +831,19 @@ impl Surfaces {
         image: skia::Image,
     ) {
         // Mirror legacy: write into the intermediate `cache` surface
-        // first (it's the source for any later draw_cached_tile_surface
-        // path), then add to the TileTextureCache.
-        self.cache.canvas().draw_image_rect(
-            &image,
-            None,
-            tile_rect,
-            &skia::Paint::default(),
-        );
+        // first (source for `draw_cache_to_target` and other paths),
+        // then add to the TileTextureCache.
+        //
+        // BlendMode::Src is critical: when a shape moves out of a tile,
+        // the new tile image has transparent pixels where the shape
+        // used to be. Default SrcOver would let the previous frame's
+        // cache content bleed through. Src overwrites unconditionally —
+        // the new image fully replaces the cache rect.
+        let mut paint = skia::Paint::default();
+        paint.set_blend_mode(skia::BlendMode::Src);
+        self.cache
+            .canvas()
+            .draw_image_rect(&image, None, tile_rect, &paint);
         self.tiles.add(tile_viewbox, tile, image);
         crate::perf_count!(tile_write);
     }
@@ -851,6 +903,7 @@ impl Surfaces {
     pub fn clear_glass_backdrop_cache(&mut self) {
         self.glass_backdrop_cache.clear();
         self.glass_backdrop_origin_cache.clear();
+        self.glass_backdrop_world_origin_cache.clear();
     }
 
     /// Read a previously snapshotted gather backdrop directly. Returns
@@ -866,6 +919,7 @@ impl Surfaces {
     pub fn remove_glass_backdrop(&mut self, shape_id: Uuid) {
         self.glass_backdrop_cache.remove(&shape_id);
         self.glass_backdrop_origin_cache.remove(&shape_id);
+        self.glass_backdrop_world_origin_cache.remove(&shape_id);
     }
 
     /// Phase 7 — read both the cached backdrop image and its origin
@@ -897,6 +951,39 @@ impl Surfaces {
         self.glass_backdrop_cache.insert(shape_id, image);
         self.glass_backdrop_origin_cache
             .insert(shape_id, origin_devpx);
+    }
+
+    /// World-coord variant of `get_glass_backdrop_with_origin`. The
+    /// second tuple element is the world-space origin recorded by
+    /// `insert_glass_backdrop_with_world_origin`, or `None` if the
+    /// cache was populated via one of the legacy device-pixel
+    /// `insert_*` methods.
+    pub fn get_glass_backdrop_with_world_origin(
+        &self,
+        shape_id: Uuid,
+    ) -> Option<(skia::Image, Option<skia::Point>)> {
+        let image = self.glass_backdrop_cache.get(&shape_id).cloned()?;
+        let origin = self
+            .glass_backdrop_world_origin_cache
+            .get(&shape_id)
+            .copied();
+        Some((image, origin))
+    }
+
+    /// World-coord variant of `insert_glass_backdrop_with_origin`.
+    /// Stores both the backdrop image and a world-space origin so
+    /// consumers (e.g. the SSA dispatcher) can compute localMatrix
+    /// transforms in world coordinates without an extra device-pixel
+    /// conversion.
+    pub fn insert_glass_backdrop_with_world_origin(
+        &mut self,
+        shape_id: Uuid,
+        image: skia::Image,
+        world_origin: skia::Point,
+    ) {
+        self.glass_backdrop_cache.insert(shape_id, image);
+        self.glass_backdrop_world_origin_cache
+            .insert(shape_id, world_origin);
     }
 
     // ── V2c.1 layer-blur output cache ────────────────────────────────

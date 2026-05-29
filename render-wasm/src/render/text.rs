@@ -241,7 +241,7 @@ pub fn render(
     )
 }
 
-fn render_text_on_canvas(
+pub(crate) fn render_text_on_canvas(
     canvas: &Canvas,
     shape: &Shape,
     paragraph_builders: &mut [Vec<ParagraphBuilder>],

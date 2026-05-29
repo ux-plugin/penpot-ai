@@ -57,6 +57,17 @@ pub enum TraceEvent {
         from: SurfaceRef,
         tile: Tile,
     },
+    ClearTileCacheRegion {
+        tile: Tile,
+    },
+    BeginLayer {
+        shape_idx: u64,
+        write_to: SurfaceRef,
+    },
+    EndLayer {
+        shape_idx: u64,
+        write_to: SurfaceRef,
+    },
     EraseSurface(SurfaceRef),
 }
 
@@ -104,6 +115,15 @@ pub trait DispatchSink {
         Ok(())
     }
     fn write_tile_cache(&mut self, _step: &Step) -> Result<()> {
+        Ok(())
+    }
+    fn clear_tile_cache_region(&mut self, _step: &Step) -> Result<()> {
+        Ok(())
+    }
+    fn begin_layer(&mut self, _step: &Step) -> Result<()> {
+        Ok(())
+    }
+    fn end_layer(&mut self, _step: &Step) -> Result<()> {
         Ok(())
     }
 
@@ -213,13 +233,19 @@ impl<'b, S: DispatchSink> Dispatcher<'b, S> {
                 shape,
                 read_from,
                 write_to,
+                backdrop_size,
                 ..
             } => {
+                // Use the step's per-instance size (extent in device
+                // pixels) instead of the default tile size — the
+                // backdrop has to fit the full world-space sample rect,
+                // which grows with zoom.
+                let bsize = *backdrop_size;
                 if !write_to.is_target() {
-                    self.sink.acquire(*write_to, size)?;
+                    self.sink.acquire(*write_to, bsize)?;
                     self.sink.on_event(TraceEvent::Acquire {
                         r: *write_to,
-                        size,
+                        size: bsize,
                     });
                 }
                 self.sink.on_event(TraceEvent::ComposeBackdrop {
@@ -274,6 +300,30 @@ impl<'b, S: DispatchSink> Dispatcher<'b, S> {
                     tile: *tile,
                 });
                 self.sink.write_tile_cache(step)?;
+            }
+            Step::ClearTileCacheRegion { tile, .. } => {
+                self.sink
+                    .on_event(TraceEvent::ClearTileCacheRegion { tile: *tile });
+                self.sink.clear_tile_cache_region(step)?;
+            }
+            Step::BeginLayer {
+                shape, write_to, ..
+            } => {
+                if !write_to.is_target() {
+                    self.sink.acquire(*write_to, size)?;
+                }
+                self.sink.on_event(TraceEvent::BeginLayer {
+                    shape_idx: uuid_as_u64(*shape),
+                    write_to: *write_to,
+                });
+                self.sink.begin_layer(step)?;
+            }
+            Step::EndLayer { shape, write_to } => {
+                self.sink.on_event(TraceEvent::EndLayer {
+                    shape_idx: uuid_as_u64(*shape),
+                    write_to: *write_to,
+                });
+                self.sink.end_layer(step)?;
             }
             Step::EraseSurface(r) => {
                 self.sink.on_event(TraceEvent::EraseSurface(*r));

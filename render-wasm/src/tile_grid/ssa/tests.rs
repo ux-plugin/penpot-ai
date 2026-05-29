@@ -137,6 +137,7 @@ fn validator_accepts_glass_scenario() {
             shape: glass,
             read_from: vec![snap],
             extent: Rect::new(0.0, 0.0, 256.0, 256.0),
+            backdrop_size: (256, 256),
             write_to: bd,
         },
         Step::EraseSurface(snap),
@@ -380,6 +381,7 @@ fn liveness_covers_first_def_to_last_use() {
             shape: glass,
             read_from: vec![snap],
             extent: Rect::new(0.0, 0.0, 256.0, 256.0),
+            backdrop_size: (256, 256),
             write_to: bd,
         },
         Step::PaintGather {
@@ -404,6 +406,7 @@ fn liveness_covers_first_def_to_last_use() {
             shape: glass,
             read_from: vec![snap],
             extent: Rect::new(0.0, 0.0, 256.0, 256.0),
+            backdrop_size: (256, 256),
             write_to: bd,
         },
         Step::PaintGather {
@@ -650,6 +653,7 @@ mod dispatcher_logic {
                 shape: glass,
                 read_from: vec![snap],
                 extent: Rect::new(0.0, 0.0, 256.0, 256.0),
+                backdrop_size: (256, 256),
                 write_to: bd,
             },
             Step::EraseSurface(snap),
@@ -692,6 +696,7 @@ mod dispatcher_logic {
                 shape: glass,
                 read_from: vec![snap],
                 extent: Rect::new(0.0, 0.0, 256.0, 256.0),
+                backdrop_size: (256, 256),
                 write_to: bd,
             },
             Step::PaintGather {
@@ -764,6 +769,7 @@ mod dep_graph_tests {
                 shape: glass,
                 read_from: vec![snap],
                 extent: Rect::new(0.0, 0.0, 256.0, 256.0),
+                backdrop_size: (256, 256),
                 write_to: bd,
             },
             Step::PaintGather {

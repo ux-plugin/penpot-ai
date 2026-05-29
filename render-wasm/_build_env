@@ -48,20 +48,6 @@ export EM_CACHE="/tmp/emsdk_cache";
 
 export CARGO_PARAMS="${@:2}";
 
-# Enable tile-scheduler feature for dependency-aware tile rendering.
-# Set TILE_SCHEDULER=1 to build with the new TileGrid-based renderer.
-if [ "$TILE_SCHEDULER" = "1" ]; then
-    export CARGO_PARAMS="--features tile-scheduler $CARGO_PARAMS"
-fi
-
-# Enable the SSA Surface IR cutover scaffold. Implies tile-scheduler
-# (the SSA path replaces the scheduler internals). Once Checkpoint D's
-# body work proves pixel-parity, this becomes the default and the
-# legacy path is deleted.
-if [ "$SSA_IR" = "1" ]; then
-    export CARGO_PARAMS="--features ssa-ir $CARGO_PARAMS"
-fi
-
 # Enable permanent perf instrumentation (per-tag accumulator, snapshot
 # export). Set PERF_TRACE=1 to layer on top of any base build. Used by
 # the skia-rs-wasm perf bench harness.

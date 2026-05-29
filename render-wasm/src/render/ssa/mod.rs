@@ -31,14 +31,22 @@
 //! `local`, `gather`, `glass`) get added under this module without
 //! disturbing what's here.
 
-#![cfg(feature = "ssa-ir")]
-
 pub mod ctx;
+pub mod debug;
 pub mod dispatch;
+pub mod filter;
 pub mod fills;
+pub mod gather;
+pub mod glass;
+pub mod local;
+pub mod mask;
+pub mod noise;
 pub mod shadows;
+pub mod scatter;
 pub mod shape_body;
 pub mod strokes;
+pub mod svg;
+pub mod text;
 
 pub use ctx::PaintCtx;
 pub use dispatch::dispatch_effect;

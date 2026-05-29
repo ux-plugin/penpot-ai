@@ -8,10 +8,7 @@ mod render;
 mod shapes;
 mod state;
 mod tiles;
-#[cfg(feature = "tile-scheduler")]
 mod tile_grid;
-#[cfg(feature = "tile-scheduler")]
-mod effect_cache;
 #[cfg(feature = "perf-trace")]
 mod perf_trace;
 #[cfg(feature = "perf-trace")]
@@ -259,13 +256,6 @@ pub extern "C" fn build_perf_scene(scene_id: u32) -> Result<()> {
             Error::RecoverableError(format!("Unknown perf scene id: {}", scene_id))
         })?;
         with_state_mut!(state, {
-            // Drop cross-frame effect cache before rebuilding the
-            // scene — entries reference shape ids and bucket scales
-            // tied to the previous scene. Carrying them across
-            // scenes pins GPU images for resources that no longer
-            // exist and inflates memory through the scene matrix.
-            #[cfg(feature = "tile-scheduler")]
-            state.render_state.effect_cache.clear();
             test_fixtures::build_into_state(state, &spec);
         });
     }
@@ -981,7 +971,6 @@ pub extern "C" fn clean_modifiers() -> Result<()> {
     with_state_mut!(state, {
         // Reverting modifiers also alters the visible scene — bump
         // scene revision so cached glass / bg-blur backdrops drop.
-        #[cfg(feature = "tile-scheduler")]
         {
             state.render_state.scene_revision =
                 state.render_state.scene_revision.wrapping_add(1);

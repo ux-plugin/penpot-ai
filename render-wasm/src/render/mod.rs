@@ -1,25 +1,16 @@
 //! Renderer module root.
 //!
-//! Cfg-routes the orchestrator: V1 (legacy traversal) when
-//! `tile-scheduler` is off, V2 (scheduler-native) when on. Submodules
-//! below are shared draw helpers — pure per-aspect functions, no
-//! traversal state — so both orchestrators call into the same code.
-//!
-//! See `docs/render-v1-v2-split.md` for the migration plan.
+//! Orchestrator lives in `v2.rs` — the legacy `v1.rs` traversal was
+//! deleted along with the `tile-scheduler` feature gate (Phase A of
+//! the legacy-deletion plan). Submodules below are shared draw helpers
+//! — pure per-aspect functions, no traversal state.
 
-#[cfg(not(feature = "tile-scheduler"))]
-mod v1;
-#[cfg(not(feature = "tile-scheduler"))]
-pub use v1::*;
-
-#[cfg(feature = "tile-scheduler")]
 mod v2;
-#[cfg(feature = "tile-scheduler")]
 pub use v2::*;
 
 // Bridge re-exports so submodules' `super::Foo` / `super::tiles::*`
-// paths keep resolving when the orchestrator body lives in `v1.rs` /
-// `v2.rs` rather than directly in this file.
+// paths keep resolving when the orchestrator body lives in `v2.rs`
+// rather than directly in this file.
 pub(crate) use crate::shapes::Shape;
 pub(crate) use crate::state::ShapesPoolRef;
 pub(crate) use crate::tiles;
@@ -28,15 +19,13 @@ pub(crate) mod debug;
 mod fills;
 pub mod filters;
 pub(crate) mod fonts;
-#[cfg(feature = "tile-scheduler")]
-pub(crate) mod gather;
 pub(crate) mod glass;
-#[cfg(feature = "tile-scheduler")]
 pub(crate) mod local;
 pub(crate) mod gpu_state;
 pub mod grid_layout;
-mod images;
-mod noise;
+pub(crate) mod images;
+pub(crate) use images::{get_dest_rect, get_source_rect};
+pub(crate) mod noise;
 pub(crate) mod options;
 mod shadows;
 mod strokes;
@@ -46,8 +35,5 @@ pub mod text_editor;
 pub(crate) mod texture;
 pub(crate) mod ui;
 
-// SSA-native renderers — explicit per-call context. Lives behind the
-// `ssa-ir` feature gate; the legacy renderers above stay during the
-// cutover for `legacy-snapshot` debugging.
-#[cfg(feature = "ssa-ir")]
+// SSA-native renderers — explicit per-call context.
 pub(crate) mod ssa;

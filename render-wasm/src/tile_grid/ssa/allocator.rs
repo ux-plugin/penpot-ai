@@ -73,12 +73,13 @@ impl SurfaceAllocator {
     /// surface of this exact size, returns it (hit). Otherwise creates
     /// one via `GpuState::create_surface_with_dimensions` (miss).
     ///
-    /// The returned surface is the caller's to use until `release()`.
-    /// The caller is responsible for clearing it before painting if
-    /// they need a known starting state — the allocator does not
-    /// guarantee a cleared surface (a fresh allocation is zero-cleared
-    /// by Skia, but a pooled surface carries the prior contents until
-    /// the caller clears).
+    /// **Returned surface is canvas-cleared (transparent pixels +
+    /// identity matrix).** Pool hits would otherwise carry the
+    /// previous tile's pixels and matrix into the next tile's paint;
+    /// the symptom is staircase-pattern accumulation of draws across
+    /// pool reuse. Fresh allocations are already zero-cleared by Skia,
+    /// but we still issue the matrix reset for them so the post-condition
+    /// is uniform.
     pub fn acquire(
         &mut self,
         width: i32,
@@ -87,18 +88,37 @@ impl SurfaceAllocator {
         label: &str,
     ) -> Result<skia::Surface> {
         let key = (width, height);
-        let surface = if let Some(bucket) = self.pool.get_mut(&key) {
+        let (mut surface, was_pool_hit) = if let Some(bucket) = self.pool.get_mut(&key) {
             if let Some(surface) = bucket.pop() {
                 self.stats.hits += 1;
-                surface
+                (surface, true)
             } else {
                 self.stats.misses += 1;
-                gpu.create_surface_with_dimensions(label.to_string(), width, height)?
+                (
+                    gpu.create_surface_with_dimensions(label.to_string(), width, height)?,
+                    false,
+                )
             }
         } else {
             self.stats.misses += 1;
-            gpu.create_surface_with_dimensions(label.to_string(), width, height)?
+            (
+                gpu.create_surface_with_dimensions(label.to_string(), width, height)?,
+                false,
+            )
         };
+        {
+            let canvas = surface.canvas();
+            // Pool hits inherit pixels from the previous use — clear
+            // them. Fresh allocations are already transparent but the
+            // call is a no-op cost.
+            if was_pool_hit {
+                canvas.clear(skia::Color::TRANSPARENT);
+            }
+            // Always reset the matrix so the post-condition is "canvas
+            // starts at identity," regardless of where the surface came
+            // from.
+            canvas.reset_matrix();
+        }
 
         self.stats.outstanding += 1;
         if self.stats.outstanding > self.stats.peak_outstanding {

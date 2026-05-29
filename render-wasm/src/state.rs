@@ -164,9 +164,6 @@ impl State {
                 for y in rsy..=rey {
                     let tile = tiles::Tile(x, y);
                     self.render_state.remove_cached_tile(tile);
-                    #[cfg(not(feature = "tile-scheduler"))]
-                    self.render_state.tiles.remove_shape_at(tile, shape.id);
-                    #[cfg(feature = "tile-scheduler")]
                     self.render_state.tile_grid.remove_shape_at(tile, shape.id);
                 }
             }
@@ -291,7 +288,6 @@ impl State {
         // render. Coarse — invalidates every gather entry even when
         // the moved shape doesn't intersect a particular glass shape.
         // Phase 6 narrows this with per-shape invalidation.
-        #[cfg(feature = "tile-scheduler")]
         {
             self.render_state.scene_revision =
                 self.render_state.scene_revision.wrapping_add(1);

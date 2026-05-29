@@ -36,10 +36,8 @@
 mod allocator;
 mod dep_graph;
 mod dispatcher;
-#[cfg(feature = "ssa-ir")]
 mod entry;
 mod liveness;
-#[cfg(feature = "ssa-ir")]
 mod production_sink;
 mod schedule_builder;
 mod step;
@@ -47,9 +45,7 @@ mod surface_map;
 mod surface_ref;
 mod validator;
 
-#[cfg(feature = "ssa-ir")]
 pub use entry::{render_via_ssa, RenderArgs, RenderOutput};
-#[cfg(feature = "ssa-ir")]
 pub use production_sink::ProductionSink;
 
 #[cfg(test)]

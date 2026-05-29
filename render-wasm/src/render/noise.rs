@@ -109,7 +109,7 @@ const FRACTAL_NOISE_SIGMA: f32 = 0.15;
 /// Returns a threshold `t` such that P(noise.r < t) ≈ `cdf_target` under the
 /// N(FRACTAL_NOISE_MU, FRACTAL_NOISE_SIGMA) approximation of `fractal_noise`.
 /// Pixels with `noise.r >= t` become colored, so coverage ≈ 1 - cdf_target.
-fn percentile_threshold(cdf_target: f32) -> f32 {
+pub(crate) fn percentile_threshold(cdf_target: f32) -> f32 {
     let z = normal_inv_cdf(cdf_target);
     (FRACTAL_NOISE_MU + FRACTAL_NOISE_SIGMA * z).clamp(0.0, 1.0)
 }
@@ -125,7 +125,7 @@ fn percentile_threshold(cdf_target: f32) -> f32 {
 ///   blur doesn't soften the noise's alpha (which would let the shape's fill
 ///   show through in partial regions).
 #[allow(clippy::too_many_arguments)]
-fn build_noise_shader(
+pub(crate) fn build_noise_shader(
     noise: &NoiseEffect,
     freq: f32,
     threshold: f32,
@@ -215,7 +215,7 @@ fn build_noise_shader(
 ///      crisp — so the shape's fill underneath is either fully covered or
 ///      fully visible, never partially tinted through a soft edge).
 ///   3. On restore the outer layer composites to the canvas with `blend_mode`.
-fn draw_noise_pass(
+pub(crate) fn draw_noise_pass(
     canvas: &skia::Canvas,
     mask_shader: skia::Shader,
     color_shader: Option<skia::Shader>,

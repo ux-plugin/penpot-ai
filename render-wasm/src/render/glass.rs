@@ -13,20 +13,73 @@ thread_local! {
     static COMPOSITE_EFFECT: OnceCell<RuntimeEffect> = const { OnceCell::new() };
 }
 
-fn compile(src: &str) -> RuntimeEffect {
+/// Build the glass composite shader (pass 3) using the cached, compiled
+/// `GLASS_SKSL` runtime effect. Exposed `pub(crate)` so `render::ssa::glass`
+/// can reuse the same compiled shader the legacy path uses — avoids a
+/// duplicate compile + ensures pixel parity for the composite math.
+pub(crate) fn make_glass_composite_shader(
+    iw: i32,
+    ih: i32,
+    glass: &GlassEffect,
+    scale: f32,
+    blurred_shader: skia::Shader,
+    original_shader: skia::Shader,
+    displacement_shader: skia::Shader,
+) -> Option<skia::Shader> {
+    COMPOSITE_EFFECT.with(|cell| {
+        let effect = cell.get_or_init(|| compile(GLASS_SKSL));
+
+        let uniform_size = effect.uniform_size();
+        let mut data = vec![0u8; uniform_size];
+
+        for u in effect.uniforms().iter() {
+            let name: &str = &u.name();
+            let off = u.offset();
+            match name {
+                "u_resolution" => {
+                    write_f32(&mut data, off, iw as f32);
+                    write_f32(&mut data, off + 4, ih as f32);
+                }
+                "u_frost" => {
+                    write_f32(&mut data, off, glass.frost);
+                }
+                "u_specularOpacity" => {
+                    write_f32(&mut data, off, glass.specular_opacity);
+                }
+                "u_specularSaturation" => {
+                    write_f32(&mut data, off, glass.specular_saturation);
+                }
+                "u_scale" => {
+                    write_f32(&mut data, off, scale);
+                }
+                _ => {}
+            }
+        }
+
+        let children = vec![
+            skia::runtime_effect::ChildPtr::Shader(blurred_shader),
+            skia::runtime_effect::ChildPtr::Shader(original_shader),
+            skia::runtime_effect::ChildPtr::Shader(displacement_shader),
+        ];
+
+        effect.make_shader(skia::Data::new_copy(&data), &children, None)
+    })
+}
+
+pub(crate) fn compile(src: &str) -> RuntimeEffect {
     RuntimeEffect::make_for_shader(src, None).expect("SkSL compile failed")
 }
 
-fn write_f32(data: &mut [u8], offset: usize, val: f32) {
+pub(crate) fn write_f32(data: &mut [u8], offset: usize, val: f32) {
     data[offset..offset + 4].copy_from_slice(&val.to_ne_bytes());
 }
 
-fn write_i32(data: &mut [u8], offset: usize, val: i32) {
+pub(crate) fn write_i32(data: &mut [u8], offset: usize, val: i32) {
     data[offset..offset + 4].copy_from_slice(&val.to_ne_bytes());
 }
 
 /// Clip canvas to the shape's actual geometry.
-fn clip_to_shape(canvas: &skia::Canvas, shape: &Shape) {
+pub(crate) fn clip_to_shape(canvas: &skia::Canvas, shape: &Shape) {
     match &shape.shape_type {
         Type::Rect(data) if data.corners.is_some() => {
             let rrect = RRect::new_rect_radii(shape.selrect, data.corners.as_ref().unwrap());
@@ -57,7 +110,7 @@ fn clip_to_shape(canvas: &skia::Canvas, shape: &Shape) {
 /// Create a blurred version of an image as a shader, using Skia's built-in blur.
 /// Uses a GPU surface to keep all operations on the GPU (raster surfaces cannot
 /// read back GPU-backed textures in the WASM/WebGL context).
-fn make_blurred_shader(
+pub(crate) fn make_blurred_shader(
     gpu_state: &mut GpuState,
     image: &skia::Image,
     sigma: f32,
@@ -92,7 +145,7 @@ fn make_blurred_shader(
 /// The displacement shader computes SDF, surface profiles, Snell's Law
 /// refraction, specular highlights, and outputs raw float values:
 ///   half4(dx, dy, specular, mask)
-fn render_displacement_pass(
+pub(crate) fn render_displacement_pass(
     gpu_state: &mut GpuState,
     iw: i32,
     ih: i32,
@@ -194,7 +247,7 @@ fn render_displacement_pass(
 
 /// Pass 2: Apply refraction and chromatic aberration to the unblurred backdrop.
 /// Renders to a GPU surface and returns the refracted image.
-fn render_refraction_pass(
+pub(crate) fn render_refraction_pass(
     gpu_state: &mut GpuState,
     iw: i32,
     ih: i32,

@@ -262,19 +262,44 @@ export default function PerfPage() {
         <strong>perf harness</strong> — scene={sceneId} scenario={scenario ?? '—'} frames={frames}
         <div style={{ marginTop: 4, color: '#aaa' }}>{status}</div>
       </div>
-      <canvas
-        ref={canvasRef}
-        width={VIEWPORT_W}
-        height={VIEWPORT_H}
+      {/*
+        The canvas backing buffer is 1920×1080 (set by `canvas.width`).
+        `initCanvasContext` calls `setCanvasSize(module, canvas, dpr)`,
+        which reads `clientWidth/clientHeight` (CSS layout size) and
+        OVERWRITES `canvas.width`/`canvas.height` to match. If the CSS
+        layout size differs from the backing-buffer attribute, half the
+        framebuffer ends up clipped while Skia keeps drawing to the
+        full 1920×1080 surface — leaving every world coord that maps
+        outside the (smaller) framebuffer invisible.
+
+        Fix: pin the CSS layout dims to the backing-buffer dims and use
+        `transform: scale(...)` purely for visual scaling on the page.
+        `transform` doesn't affect `clientWidth/clientHeight`, so
+        `setCanvasSize` reads 1920×1080 and the backing buffer stays
+        consistent with Skia's surface.
+      */}
+      <div
         style={{
-          display: 'block',
-          background: '#fff',
-          width: '80%',
-          maxWidth: 960,
+          width: VIEWPORT_W * 0.5,
+          height: VIEWPORT_H * 0.5,
           margin: '12px auto',
-          border: '1px solid #222',
         }}
-      />
+      >
+        <canvas
+          ref={canvasRef}
+          width={VIEWPORT_W}
+          height={VIEWPORT_H}
+          style={{
+            display: 'block',
+            background: '#fff',
+            width: VIEWPORT_W,
+            height: VIEWPORT_H,
+            transform: 'scale(0.5)',
+            transformOrigin: 'top left',
+            border: '1px solid #222',
+          }}
+        />
+      </div>
       {lastResult && (
         <pre
           style={{

@@ -10,10 +10,10 @@
 //! legacy path).
 
 use crate::error::Result;
-use crate::shapes::Shape;
+use crate::shapes::{Shape, Type};
 use crate::tile_grid::{EffectKey, GatherFx, LocalFx, ScatterFx};
 
-use super::{shape_body, PaintCtx};
+use super::{gather, local, shadows, shape_body, text, PaintCtx};
 
 /// Route one effect to its renderer. Unported effects are no-ops for
 /// now — those scenes render incompletely. The ported set grows as
@@ -29,24 +29,24 @@ pub fn dispatch_effect(
         // can still execute the schedule. Scenes that depend on these
         // effects render with that effect missing until the port lands.
         EffectKey::Gather(GatherFx::BackgroundBlur) => {
-            // TODO(ssa-port::gather)
-            Ok(())
+            gather::render_background_blur(ctx, shape)
         }
         EffectKey::Gather(GatherFx::Glass) => {
-            // TODO(ssa-port::glass)
-            Ok(())
+            super::glass::render(ctx, shape)
         }
         EffectKey::Scatter(ScatterFx::DropShadows) => {
-            // TODO(ssa-port::shadows)
-            Ok(())
+            // Text shapes use the glyph-aware shadow path; everything
+            // else uses the silhouette path (which now also handles
+            // recursive Frame/Group children).
+            if matches!(shape.shape_type, Type::Text(_)) {
+                text::render_drop_shadows(ctx, shape)
+            } else {
+                shadows::render_drop_shadows(ctx, shape)
+            }
         }
         EffectKey::Scatter(ScatterFx::Blit) => {
-            // TODO(ssa-port::scatter)
-            Ok(())
+            super::scatter::render_blit(ctx, shape)
         }
-        EffectKey::Local(LocalFx::LayerBlur) => {
-            // TODO(ssa-port::local)
-            Ok(())
-        }
+        EffectKey::Local(LocalFx::LayerBlur) => local::render_layer_blur(ctx, shape),
     }
 }

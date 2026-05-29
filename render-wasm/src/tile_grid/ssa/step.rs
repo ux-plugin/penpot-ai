@@ -70,6 +70,14 @@ pub enum Step {
         /// `GatherKind::extent_world`. Backdrop dimensions derive from
         /// this.
         extent: Rect,
+        /// Required backdrop surface size in DEVICE pixels. Computed
+        /// at schedule build time from `extent * scale` (rounded up,
+        /// padded for blur kernel halo). The dispatcher uses this when
+        /// acquiring the backdrop surface — bypassing `default_tile_size`
+        /// which is too small at high zoom (extent in device px exceeds
+        /// 1024 → backdrop crops off the right/bottom, blur kernel reads
+        /// see only bg pre-fill → blur fades on zoom-in).
+        backdrop_size: (i32, i32),
         write_to: SurfaceRef,
     },
 
@@ -100,6 +108,32 @@ pub enum Step {
     /// cache. Replaces the implicit cache-write at `FinalizeBand`.
     WriteTileCache { from: SurfaceRef, tile: Tile },
 
+    /// Clear the cross-frame cache's pixels for a tile's region. Used
+    /// to overwrite stale content from previous frames when the tile
+    /// no longer has any shape-bearing content (the shape moved away).
+    /// Doesn't reference any logical surface — fires directly against
+    /// `Surfaces::cache`. Distinct from `WriteTileCache` because there
+    /// is no source to snapshot.
+    ClearTileCacheRegion { tile: Tile, rect: Rect },
+
+    /// Push a `save_layer` onto `write_to`'s canvas with the given
+    /// `LayerPaint` (opacity + blend mode + optional frame-clip blur).
+    /// Paired with a later `EndLayer` step for the same surface. Used
+    /// to wrap a shape's body draws so its fills/strokes/shadows
+    /// composite onto the parent as a single layer with opacity/blend
+    /// applied, mirroring legacy `RenderStep::BeginLayer`.
+    BeginLayer {
+        shape: Uuid,
+        write_to: SurfaceRef,
+        paint: LayerPaint,
+    },
+
+    /// Pop the matching `save_layer` pushed by `BeginLayer`.
+    EndLayer {
+        shape: Uuid,
+        write_to: SurfaceRef,
+    },
+
     /// Explicit kill marker. Optional in the schedule — the liveness
     /// pass (Checkpoint C) derives implicit kills at last-use, and the
     /// validator treats either form as equivalent. Useful for debugging
@@ -118,6 +152,9 @@ impl Step {
             Step::PaintGather { backdrop, .. } => vec![*backdrop],
             Step::Composite { from, .. } => vec![*from],
             Step::WriteTileCache { from, .. } => vec![*from],
+            Step::ClearTileCacheRegion { .. } => Vec::new(),
+            Step::BeginLayer { .. } => Vec::new(),
+            Step::EndLayer { .. } => Vec::new(),
             Step::EraseSurface(_) => Vec::new(),
         }
     }
@@ -134,6 +171,12 @@ impl Step {
             Step::PaintGather { write_to, .. } => vec![*write_to],
             Step::Composite { .. } => Vec::new(),
             Step::WriteTileCache { .. } => Vec::new(),
+            Step::ClearTileCacheRegion { .. } => Vec::new(),
+            // BeginLayer/EndLayer rewrite `write_to` in-place
+            // (save_layer/restore on its canvas) — they're not in the
+            // SSA-writes set since they don't produce a fresh value.
+            Step::BeginLayer { .. } => Vec::new(),
+            Step::EndLayer { .. } => Vec::new(),
             Step::EraseSurface(_) => Vec::new(),
         }
     }
@@ -144,6 +187,11 @@ impl Step {
     pub fn rewrites(&self) -> Vec<SurfaceRef> {
         match self {
             Step::Composite { to, .. } => vec![*to],
+            // BeginLayer/EndLayer modify the surface's canvas state
+            // (save_layer / restore) without producing a fresh logical
+            // value — they're RMW on the bound surface.
+            Step::BeginLayer { write_to, .. } => vec![*write_to],
+            Step::EndLayer { write_to, .. } => vec![*write_to],
             _ => Vec::new(),
         }
     }

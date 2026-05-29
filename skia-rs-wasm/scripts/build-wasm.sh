@@ -3,14 +3,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Pass TILE_SCHEDULER=1 to build with the new dependency-aware tile renderer.
-# Usage: TILE_SCHEDULER=1 ./scripts/build-wasm.sh
+# Pass PERF_TRACE=1 to layer the optional perf-trace feature on top of
+# the default build. Usage: PERF_TRACE=1 ./scripts/build-wasm.sh
 
 echo "[build:wasm] Building render-wasm (WASM + JS glue) via Docker..."
 if ! docker run --rm \
   -e NODE_ENV=production \
   -e CI=true \
-  -e TILE_SCHEDULER="${TILE_SCHEDULER:-}" \
   -e PERF_TRACE="${PERF_TRACE:-}" \
   -v "$REPO_ROOT:/home/penpot/penpot:z" \
   -w /home/penpot/penpot/render-wasm \

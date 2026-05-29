@@ -138,26 +138,6 @@ pub fn render(render_state: &mut RenderState) {
     );
 }
 
-pub fn render_workspace_current_tile(
-    render_state: &mut RenderState,
-    prefix: String,
-    tile: tiles::Tile,
-    rect: skia::Rect,
-) {
-    let canvas = render_state.surfaces.canvas(SurfaceId::Debug);
-    let mut p = skia::Paint::default();
-    p.set_stroke_width(2.);
-    p.set_style(skia::PaintStyle::Stroke);
-    canvas.draw_rect(rect, &p);
-
-    let tile_position_origin = skia::Point::new(rect.x() + 10., rect.y() + 20.);
-    p.set_style(skia::PaintStyle::Fill);
-    let str = format!("{prefix} {}:{}", tile.x(), tile.y());
-    let mut debug_font = render_state.fonts.debug_font().clone();
-    debug_font.set_size(16.);
-    canvas.draw_str(str, tile_position_origin, &debug_font, &p);
-}
-
 pub fn render_debug_shape(
     render_state: &mut RenderState,
     shape_selrect: Option<skia::Rect>,

@@ -53,6 +53,7 @@ use super::super::options::RenderOptions;
 use super::super::ImageStore;
 use super::super::fonts::FontStore;
 use crate::shapes::Fill;
+use crate::state::ShapesPoolRef;
 use crate::tile_grid::ssa::SurfaceAllocator;
 use crate::tiles::Tile;
 use crate::view::Viewbox;
@@ -86,7 +87,7 @@ pub struct PaintCtx<'a> {
     pub scale: f32,
     /// Read-only.
     pub fonts: &'a FontStore,
-    pub images: &'a ImageStore,
+    pub images: &'a mut ImageStore,
     pub viewbox: &'a Viewbox,
     pub options: &'a RenderOptions,
     /// Group-ancestor fill propagation stack. Same semantics as
@@ -103,19 +104,36 @@ pub struct PaintCtx<'a> {
     /// `Surfaces.margins`. Renderers need this to compute scratch-
     /// surface translations matching the tile content region.
     pub margins: skia::ISize,
+
+    // ── Legacy singleton scratch surfaces ─────────────────────────
+    // Same `extra_tile_dims` (e.g. 1024×1024) layout as `ctx.surface`,
+    // pre-allocated on `Surfaces` at startup. Each effect renderer
+    // clears, transform-sets, and draws into the one it needs, then
+    // composites the snapshot back onto `ctx.surface`.
+    //
+    // Borrowed disjointly from `Surfaces` at PaintCtx-build time so
+    // any renderer can grab the one it needs without re-acquiring.
+    pub fills_scratch: &'a mut skia::Surface,
+    pub strokes_scratch: &'a mut skia::Surface,
+    pub inner_shadows_scratch: &'a mut skia::Surface,
+    pub drop_shadows_scratch: &'a mut skia::Surface,
+    pub text_drop_shadows_scratch: &'a mut skia::Surface,
+    pub filter_scratch: &'a mut skia::Surface,
+
+    /// Shape pool for renderers that walk children (frame/group
+    /// recursive drop shadows, mask groups, etc.). Read-only; same
+    /// `ShapesPoolRef` the `ProductionSink` was constructed with.
+    pub tree: ShapesPoolRef<'a>,
+
+    /// Fused gather backdrop (when this PaintCtx is built inside a
+    /// `PaintGather` handler). Carries the `(image, world_extent)`
+    /// pair the gather renderers (`render::ssa::gather`,
+    /// `render::ssa::glass`) need to draw their effect against the
+    /// neighborhood. `None` for ordinary Paint steps.
+    pub gather_backdrop: Option<(skia::Image, skia::Rect)>,
 }
 
 impl<'a> PaintCtx<'a> {
-    /// Apply the canvas-translation the legacy `Surfaces.update_render_context`
-    /// would have set: scale + per-tile world→device offset. Idempotent
-    /// per-canvas — call once at the start of a paint sequence on a given
-    /// canvas, then issue draw calls. Mirrors `surfaces.get_render_context_translation`.
-    pub fn apply_tile_transform(&self, canvas: &skia::Canvas) {
-        let translation = self.tile_translation_device();
-        canvas.scale((self.scale, self.scale));
-        canvas.translate(translation);
-    }
-
     /// Device-pixel translation that maps world coords to canvas
     /// coords for the current tile. Equal to
     /// `(margins_w - render_area.left*scale, margins_h - render_area.top*scale) / scale`
@@ -130,23 +148,42 @@ impl<'a> PaintCtx<'a> {
         )
     }
 
-    /// Apply the full draw transform — tile scale + tile translation
-    /// + shape's local transform (center-pivoted). Mirrors the
-    /// canvas transform stack the legacy `render_body_direct` sets
-    /// up before drawing shape fills/strokes.
-    ///
-    /// Caller is responsible for `canvas.save()` / `canvas.restore()`
-    /// around the draw sequence.
-    pub fn apply_tile_and_shape_transform(
+    /// Combined `scale × translate` matrix for the current tile —
+    /// the canvas matrix the legacy `Surfaces.update_render_context`
+    /// would have set. Returned as a value so callers can snapshot it
+    /// *before* taking the `&mut surface.canvas()` borrow (which
+    /// otherwise blocks any `&self` method call on the ctx).
+    pub fn tile_transform_matrix(&self) -> skia::Matrix {
+        let translation = self.tile_translation_device();
+        // canvas.scale(s) then canvas.translate(t) composes as M = S * T.
+        let mut m = skia::Matrix::scale((self.scale, self.scale));
+        m.pre_translate(translation);
+        m
+    }
+
+    /// Combined tile + shape matrix — what the legacy `render_body_direct`
+    /// applies before drawing the shape body. Equal to
+    /// `tile_transform_matrix * shape.transform_pivoted_around_center`.
+    /// Caller concats this onto the canvas in a single call.
+    pub fn tile_and_shape_transform_matrix(
         &self,
-        canvas: &skia::Canvas,
         shape: &crate::shapes::Shape,
-    ) {
-        self.apply_tile_transform(canvas);
+    ) -> skia::Matrix {
+        let mut tile = self.tile_transform_matrix();
         let center = shape.center();
-        let mut matrix = shape.transform;
-        matrix.post_translate(center);
-        matrix.pre_translate(-center);
-        canvas.concat(&matrix);
+        let mut shape_matrix = shape.transform;
+        shape_matrix.post_translate(center);
+        shape_matrix.pre_translate(-center);
+        tile.pre_concat(&shape_matrix);
+        tile
+    }
+
+    /// Apply the tile transform to `canvas`. Use only when you can
+    /// already hold the `&mut surface.canvas()` borrow without also
+    /// needing `&self` calls — most renderers should prefer
+    /// `tile_transform_matrix()` + `canvas.concat(...)` instead.
+    pub fn apply_tile_transform(&self, canvas: &skia::Canvas) {
+        let m = self.tile_transform_matrix();
+        canvas.concat(&m);
     }
 }

@@ -10,17 +10,10 @@ build = "build.rs"
 
 [features]
 default = []
-tile-scheduler = []
-# SSA Surface IR — opt-in path for the new flat per-tile IR with explicit
-# readFrom/writeTo operands. Lives alongside legacy `tile-scheduler` while
-# the rewrite is in flight; becomes the default in Checkpoint D.
-# Requires `tile-scheduler` to be enabled too (the SSA path replaces the
-# scheduler internals, not the orchestrator above it).
-ssa-ir = ["tile-scheduler"]
 # Permanent perf instrumentation. Adds a thread-local accumulator and
-# RAII guards around hot-path sites (per RenderStep, per EffectKey, per
-# Enter sub-phase, per render_shape sub-phase). Surfaces a snapshot via
-# `dump_perf_snapshot` exported fn. Designed to pair with `tile-scheduler`.
+# RAII guards around hot-path sites (per Step, per EffectKey, per
+# render_shape sub-phase). Surfaces a snapshot via `dump_perf_snapshot`
+# exported fn.
 perf-trace = []
 profile = ["profile-macros", "profile-raf"]
 profile-macros = []
