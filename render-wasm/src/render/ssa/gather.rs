@@ -2,7 +2,7 @@
 //!
 //! Consumes the `gather_backdrop` field of `PaintCtx` (a `(skia::Image,
 //! world_extent_rect)` pair populated by the `paint_gather` handler in
-//! `production_sink.rs`). Mirrors `render::v2::render_background_blur_from_image`
+//! `production_sink.rs`). Mirrors `render::render_state::render_background_blur_from_image`
 //! with the source surface translation rewritten in terms of the
 //! per-tile `world_origin` carried on `PaintCtx`.
 //!

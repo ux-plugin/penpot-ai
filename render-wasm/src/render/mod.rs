@@ -1,15 +1,16 @@
 //! Renderer module root.
 //!
-//! Orchestrator lives in `v2.rs` — the legacy `v1.rs` traversal was
-//! deleted along with the `tile-scheduler` feature gate (Phase A of
-//! the legacy-deletion plan). Submodules below are shared draw helpers
+//! The shared `RenderState` container lives in `render_state.rs`. The legacy
+//! V1/V2 orchestrators (and `v1.rs`) were deleted along with the
+//! `tile-scheduler` feature gate; SSA (`ssa/`) is now the only draw path and
+//! operates on that `RenderState`. Submodules below are shared draw helpers
 //! — pure per-aspect functions, no traversal state.
 
-mod v2;
-pub use v2::*;
+mod render_state;
+pub use render_state::*;
 
 // Bridge re-exports so submodules' `super::Foo` / `super::tiles::*`
-// paths keep resolving when the orchestrator body lives in `v2.rs`
+// paths keep resolving when `RenderState` lives in `render_state.rs`
 // rather than directly in this file.
 pub(crate) use crate::shapes::Shape;
 pub(crate) use crate::state::ShapesPoolRef;

@@ -77,8 +77,8 @@ pub struct ProductionSink<'a> {
     /// `RenderState::scheduler_render_effects` is no longer called —
     /// `render::ssa::dispatch_effect` replaces it.
     state: &'a mut crate::render::RenderState,
-    /// Shape pool, separate from RenderState. The orchestrator
-    /// (the cutover wiring in v2.rs) holds and passes both.
+    /// Shape pool, separate from RenderState. The render entry points
+    /// (in render_state.rs) hold and pass both.
     shapes: ShapesPoolRef<'a>,
     /// Default tile dimensions for surfaces acquired via the
     /// `Dispatcher`'s default-size path.

@@ -1,4 +1,4 @@
-//! SSA-native SVG renderer. Port of `render::v2::render_svg_into_target`.
+//! SSA-native SVG renderer. Port of `render::render_state::render_svg_into_target`.
 //!
 //! Draws `shape.svg` (a `skia::svg::Dom`) into `ctx.surface` under
 //! the tile+shape (+optional `svg_transform`) matrix. Falls back to
