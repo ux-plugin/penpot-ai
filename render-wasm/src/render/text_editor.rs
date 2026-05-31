@@ -1,10 +1,18 @@
+use crate::render::options::RenderOptions;
 use crate::shapes::{Shape, TextContent, Type, VerticalAlign};
 use crate::state::{TextEditorState, TextSelection};
+use crate::view::Viewbox;
 use skia_safe::textlayout::{RectHeightStyle, RectWidthStyle};
-use skia_safe::{BlendMode, Canvas, Paint, Rect};
+use skia_safe::{BlendMode, Canvas, Color, Paint, Rect};
 
-pub fn render_overlay(canvas: &Canvas, editor_state: &TextEditorState, shape: &Shape) {
-    if !editor_state.is_active {
+pub fn render_overlay(
+    canvas: &Canvas,
+    viewbox: &Viewbox,
+    options: &RenderOptions,
+    editor_state: &TextEditorState,
+    shape: &Shape,
+) {
+    if !editor_state.has_focus {
         return;
     }
 
@@ -13,17 +21,24 @@ pub fn render_overlay(canvas: &Canvas, editor_state: &TextEditorState, shape: &S
     };
 
     canvas.save();
+    let zoom = viewbox.zoom * options.dpr();
+    canvas.scale((zoom, zoom));
+    canvas.translate((-viewbox.area.left, -viewbox.area.top));
+
     if editor_state.selection.is_selection() {
         render_selection(canvas, editor_state, text_content, shape);
     }
+
     if editor_state.cursor_visible {
-        render_cursor(canvas, editor_state, text_content, shape);
+        render_cursor(canvas, zoom, editor_state, text_content, shape);
     }
+
     canvas.restore();
 }
 
 fn render_cursor(
     canvas: &Canvas,
+    zoom: f32,
     editor_state: &TextEditorState,
     text_content: &TextContent,
     shape: &Shape,
@@ -32,14 +47,32 @@ fn render_cursor(
         return;
     };
 
+    let mut cursor_rect = Rect::new_empty();
+    cursor_rect.set_xywh(
+        rect.x(),
+        rect.y(),
+        if editor_state.is_overtype_mode {
+            rect.width()
+        } else {
+            editor_state.theme.cursor_width / zoom
+        },
+        rect.height(),
+    );
+
     let mut paint = Paint::default();
-    paint.set_color(editor_state.theme.cursor_color);
-    paint.set_anti_alias(true);
+    paint.set_anti_alias(false);
+    if editor_state.is_overtype_mode {
+        paint.set_blend_mode(BlendMode::Exclusion);
+        paint.set_color(Color::WHITE);
+    } else {
+        paint.set_blend_mode(BlendMode::SrcOver);
+        paint.set_color(editor_state.theme.cursor_color);
+    }
 
     let shape_matrix = shape.get_matrix();
     canvas.save();
     canvas.concat(&shape_matrix);
-    canvas.draw_rect(rect, &paint);
+    canvas.draw_rect(cursor_rect, &paint);
     canvas.restore();
 }
 
@@ -114,9 +147,9 @@ fn calculate_cursor_rect(
                 .map(|span| span.text.chars().count())
                 .sum();
 
-            let (cursor_x, cursor_y, cursor_height) = if para_char_count == 0 {
+            let (cursor_x, cursor_y, cursor_width, cursor_height) = if para_char_count == 0 {
                 // Empty paragraph - use default height
-                (0.0, 0.0, laid_out_para.height())
+                (0.0, 0.0, 1.0, laid_out_para.height())
             } else if char_pos == 0 {
                 let rects = laid_out_para.get_rects_for_range(
                     0..1,
@@ -125,9 +158,9 @@ fn calculate_cursor_rect(
                 );
                 if !rects.is_empty() {
                     let r = &rects[0].rect;
-                    (r.left(), r.top(), r.height())
+                    (r.left(), r.top(), r.width(), r.height())
                 } else {
-                    (0.0, 0.0, laid_out_para.height())
+                    (0.0, 0.0, 1.0, laid_out_para.height())
                 }
             } else if char_pos >= para_char_count {
                 let rects = laid_out_para.get_rects_for_range(
@@ -137,9 +170,14 @@ fn calculate_cursor_rect(
                 );
                 if !rects.is_empty() {
                     let r = &rects[0].rect;
-                    (r.right(), r.top(), r.height())
+                    (r.right(), r.top(), r.width(), r.height())
                 } else {
-                    (laid_out_para.longest_line(), 0.0, laid_out_para.height())
+                    (
+                        laid_out_para.longest_line(),
+                        0.0,
+                        1.0,
+                        laid_out_para.height(),
+                    )
                 }
             } else {
                 let rects = laid_out_para.get_rects_for_range(
@@ -149,18 +187,18 @@ fn calculate_cursor_rect(
                 );
                 if !rects.is_empty() {
                     let r = &rects[0].rect;
-                    (r.left(), r.top(), r.height())
+                    (r.left(), r.top(), r.width(), r.height())
                 } else {
                     // Fallback: use glyph position
                     let pos = laid_out_para.get_glyph_position_at_coordinate((0.0, 0.0));
-                    (pos.position as f32, 0.0, laid_out_para.height())
+                    (pos.position as f32, 0.0, 1.0, laid_out_para.height())
                 }
             };
 
             return Some(Rect::from_xywh(
                 cursor_x,
                 y_offset + cursor_y,
-                editor_state.theme.cursor_width,
+                cursor_width, // cursor_width
                 cursor_height,
             ));
         }

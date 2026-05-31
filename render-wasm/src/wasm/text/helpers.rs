@@ -1,4 +1,4 @@
-use crate::shapes::{Paragraph, TextContent, TextPositionWithAffinity};
+use crate::shapes::{Paragraph, TextContent, TextDirection, TextPositionWithAffinity};
 use crate::state::TextSelection;
 
 /// Get total character count in a paragraph.
@@ -10,11 +10,11 @@ pub fn paragraph_char_count(para: &Paragraph) -> usize {
 }
 
 /// Get the text direction of the span at a given offset in a paragraph.
-pub fn get_span_text_direction_at_offset(
+pub fn get_text_span_text_direction_at_offset(
     para: &Paragraph,
     char_offset: usize,
-) -> skia_safe::textlayout::TextDirection {
-    if let Some((span_idx, _)) = find_span_at_offset(para, char_offset) {
+) -> TextDirection {
+    if let Some((span_idx, _)) = find_text_span_at_offset(para, char_offset) {
         if let Some(span) = para.children().get(span_idx) {
             return span.text_direction;
         }
@@ -258,7 +258,7 @@ pub fn paragraph_text_char_at(para: &Paragraph, offset: usize) -> Option<char> {
     None
 }
 
-pub fn find_span_at_offset(para: &Paragraph, char_offset: usize) -> Option<(usize, usize)> {
+pub fn find_text_span_at_offset(para: &Paragraph, char_offset: usize) -> Option<(usize, usize)> {
     let children = para.children();
     let mut accumulated = 0;
     for (span_idx, span) in children.iter().enumerate() {
@@ -274,6 +274,43 @@ pub fn find_span_at_offset(para: &Paragraph, char_offset: usize) -> Option<(usiz
         return Some((last_idx, last_len));
     }
     None
+}
+
+pub fn replace_text_with_newlines(
+    text_content: &mut TextContent,
+    cursor: &TextPositionWithAffinity,
+    text: &str,
+) -> Option<TextPositionWithAffinity> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.split('\n').collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut current_cursor = *cursor;
+
+    if let Some(new_offset) = replace_text_at_cursor(text_content, &current_cursor, lines[0]) {
+        current_cursor =
+            TextPositionWithAffinity::new_without_affinity(current_cursor.paragraph, new_offset);
+    } else {
+        return None;
+    }
+
+    for line in lines.iter().skip(1) {
+        if !split_paragraph_at_cursor(text_content, &current_cursor) {
+            break;
+        }
+        current_cursor =
+            TextPositionWithAffinity::new_without_affinity(current_cursor.paragraph + 1, 0);
+        if let Some(new_offset) = replace_text_at_cursor(text_content, &current_cursor, line) {
+            current_cursor = TextPositionWithAffinity::new_without_affinity(
+                current_cursor.paragraph,
+                new_offset,
+            );
+        }
+    }
+
+    Some(current_cursor)
 }
 
 /// Insert text at a cursor position, splitting on newlines into multiple paragraphs.
@@ -338,7 +375,7 @@ pub fn insert_text_at_cursor(
         return Some(text.chars().count());
     }
 
-    let (span_idx, offset_in_span) = find_span_at_offset(para, cursor.offset)?;
+    let (span_idx, offset_in_span) = find_text_span_at_offset(para, cursor.offset)?;
 
     let children = para.children_mut();
     let span = &mut children[span_idx];
@@ -354,6 +391,58 @@ pub fn insert_text_at_cursor(
     span.set_text(new_text);
 
     Some(cursor.offset + text.chars().count())
+}
+
+/// Replace text at cursor position (overtype mode). Replaces N characters where N is the
+/// length of the input text, returning the new cursor offset.
+pub fn replace_text_at_cursor(
+    text_content: &mut TextContent,
+    cursor: &TextPositionWithAffinity,
+    text: &str,
+) -> Option<usize> {
+    let text_len = text.chars().count();
+    if text_len == 0 {
+        return Some(cursor.offset);
+    }
+
+    let paragraphs = text_content.paragraphs_mut();
+    if cursor.paragraph >= paragraphs.len() {
+        return None;
+    }
+
+    let para = &mut paragraphs[cursor.paragraph];
+    let children = para.children_mut();
+    if children.is_empty() {
+        return None;
+    }
+
+    if children.len() == 1 && children[0].text.is_empty() {
+        children[0].set_text(text.to_string());
+        return Some(text_len);
+    }
+
+    let (span_idx, offset_in_span) = find_text_span_at_offset(para, cursor.offset)?;
+
+    let children = para.children_mut();
+    let span = &mut children[span_idx];
+    let mut new_text = span.text.clone();
+
+    let byte_offset = new_text
+        .char_indices()
+        .nth(offset_in_span)
+        .map(|(i, _)| i)
+        .unwrap_or(new_text.len());
+
+    let end_byte_offset = new_text
+        .char_indices()
+        .nth(offset_in_span + text_len)
+        .map(|(i, _)| i)
+        .unwrap_or(new_text.len());
+
+    new_text.replace_range(byte_offset..end_byte_offset, text);
+    span.set_text(new_text);
+
+    Some(cursor.offset + text_len)
 }
 
 /// Delete a range of text specified by a selection.
@@ -690,7 +779,7 @@ pub fn split_paragraph_at_cursor(
 
     let para = &paragraphs[cursor.paragraph];
 
-    let Some((span_idx, offset_in_span)) = find_span_at_offset(para, cursor.offset) else {
+    let Some((span_idx, offset_in_span)) = find_text_span_at_offset(para, cursor.offset) else {
         return false;
     };
 
