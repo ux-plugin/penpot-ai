@@ -36,6 +36,7 @@ export interface WasmModule {
   _malloc(size: number): number
   _free(ptr: number): void
   stringToUTF8(str: string, outPtr: number, maxBytesToWrite: number): void
+  UTF8ToString(ptr: number, maxBytesToRead?: number): string
 
   // Initialization
   _init(width: number, height: number): void
@@ -353,6 +354,61 @@ export interface WasmModule {
   // Push a gesture marker (e.g. "pan_start"). JS first writes the UTF-8
   // label into BUFFERU8 via _alloc_bytes+HEAPU8.set, then calls this.
   _mark_perf_event(): void
+
+  // ─── Text editor (interactive editing) ────────────────────────────────
+  // Lifecycle. focus/has_focus_with_id take a UUID as 4×u32. Returns whether
+  // the editor accepted/holds focus for that shape.
+  _text_editor_focus(a: number, b: number, c: number, d: number): boolean
+  _text_editor_blur(): boolean
+  _text_editor_dispose(): boolean
+  _text_editor_has_focus(): boolean
+  _text_editor_has_focus_with_id(a: number, b: number, c: number, d: number): boolean
+  _text_editor_has_selection(): boolean
+  // Writes the active shape UUID (4×u32) into the buffer at the given u32 ptr.
+  _text_editor_get_active_shape_id(bufferPtr: number): void
+
+  // Theme (selection + cursor colors, packed RGBA u32).
+  _text_editor_apply_theme(selectionColor: number, cursorColor: number): void
+
+  // Input. insert_text / composition_update / composition_end read their UTF-8
+  // payload from the _alloc_bytes buffer (write via HEAPU8.set, then call).
+  _text_editor_insert_text(): void
+  _text_editor_insert_paragraph(): void
+  _text_editor_delete_backward(wordBoundary: boolean): void
+  _text_editor_delete_forward(wordBoundary: boolean): void
+  // direction: 0=left 1=right 2=up 3=down 4=home 5=end
+  _text_editor_move_cursor(direction: number, wordBoundary: boolean, extendSelection: boolean): void
+  _text_editor_toggle_overtype_mode(): void
+  _text_editor_composition_start(): void
+  _text_editor_composition_update(): void
+  _text_editor_composition_end(): void
+
+  // Pointer (coords in shape-local space).
+  _text_editor_pointer_down(x: number, y: number): void
+  _text_editor_pointer_move(x: number, y: number): void
+  _text_editor_pointer_up(x: number, y: number): void
+  _text_editor_set_cursor_from_offset(x: number, y: number): void
+  _text_editor_set_cursor_from_point(x: number, y: number): void
+  _text_editor_select_word_boundary(x: number, y: number): void
+  _text_editor_select_all(): boolean
+
+  // Selection. Writes 4×u32 (anchor-para, anchor-offset, focus-para,
+  // focus-offset) into the buffer at the given u32 ptr; returns has-selection.
+  _text_editor_get_selection(bufferPtr: number): boolean
+
+  // Caret blink + overlay (called each render frame). poll_event returns a
+  // nonzero code when an editor event occurred and a re-render is needed.
+  _text_editor_update_blink(timestampMs: number): void
+  _text_editor_render_overlay(): void
+  _text_editor_poll_event(): number
+
+  // Pointer-returning getters. Each returns a *mut u8 into BUFFERU8; read it,
+  // then call _free_bytes(). See api/text-editor.ts for the buffer layouts.
+  _text_editor_get_cursor_rect(): number      // [left,top,width,height] f32
+  _text_editor_get_selection_rects(): number   // u32 count, then count×4 f32
+  _text_editor_get_current_styles(): number    // style-data buffer (see decoder)
+  _text_editor_export_content(): number         // null-terminated JSON
+  _text_editor_export_selection(): number       // null-terminated plain text
 }
 
 export type WasmModuleFactory = (options?: {
