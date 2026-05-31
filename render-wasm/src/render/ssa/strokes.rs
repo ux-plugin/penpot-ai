@@ -136,6 +136,7 @@ pub fn render_single(
                     path_transform.as_ref(),
                     shadow,
                     blur.as_ref(),
+                    svg_attrs,
                     antialias,
                 );
             }
@@ -237,6 +238,7 @@ fn render_merged(
                     path_transform.as_ref(),
                     None,
                     blur.as_ref(),
+                    svg_attrs,
                     antialias,
                 );
             }
@@ -313,7 +315,7 @@ fn draw_image_stroke(
         shape_type @ (Type::Path(_) | Type::Bool(_)) => {
             if let Some(p) = shape_type.path() {
                 canvas.save();
-                let path = p.to_skia_path().make_transform(
+                let path = p.to_skia_path(svg_attrs).make_transform(
                     &path_transform
                         .ok_or(Error::CriticalError("No path transform".to_string()))?,
                 );
@@ -374,7 +376,7 @@ fn draw_image_stroke(
     // Clear the inner stroke region for outer-kind paths.
     if let Type::Path(p) = &shape.shape_type {
         if stroke.render_kind(p.is_open()) == StrokeKind::Outer {
-            let path = p.to_skia_path().make_transform(
+            let path = p.to_skia_path(svg_attrs).make_transform(
                 &path_transform
                     .ok_or(Error::CriticalError("No path transform".to_string()))?,
             );

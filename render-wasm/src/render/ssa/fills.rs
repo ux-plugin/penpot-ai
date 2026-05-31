@@ -152,7 +152,7 @@ fn draw_image_fill(
             if let Some(path) = shape.shape_type.path() {
                 if let Some(pxf) = path_transform {
                     canvas.clip_path(
-                        &path.to_skia_path().make_transform(&pxf),
+                        &path.to_skia_path(shape.svg_attrs.as_ref()).make_transform(&pxf),
                         skia::ClipOp::Intersect,
                         antialias,
                     );
@@ -286,7 +286,7 @@ fn draw_path(
     let Some(transform) = shape.to_path_transform() else {
         return;
     };
-    let sk_path = path.to_skia_path().make_transform(&transform);
+    let sk_path = path.to_skia_path(shape.svg_attrs.as_ref()).make_transform(&transform);
     canvas.draw_path(&sk_path, paint);
 }
 

@@ -69,6 +69,12 @@ impl TryFrom<&shapes::Fill> for RawFillData {
             shapes::Fill::Image(_) => {
                 Err("Image fill serialization is not implemented".to_string())
             }
+            shapes::Fill::AngularGradient(_) => {
+                Err("AngularGradient serialization is not implemented".to_string())
+            }
+            shapes::Fill::DiamondGradient(_) => {
+                Err("DiamondGradient serialization is not implemented".to_string())
+            }
         }
     }
 }
@@ -166,7 +172,7 @@ pub extern "C" fn set_fill_modifier() -> Result<()> {
             .try_into()
             .map_err(|_| Error::RecoverableError("fill count".into()))?,
     ) as usize;
-    let fills = parse_fills_from_bytes(&bytes[20..], num_fills);
+    let fills = read_fills_from_bytes(&bytes[20..], num_fills);
 
     with_state_mut!(state, {
         state.shapes.set_fill_modifier(uuid, fills);

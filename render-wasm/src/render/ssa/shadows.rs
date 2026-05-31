@@ -245,7 +245,7 @@ fn draw_silhouette(canvas: &skia::Canvas, shape: &Shape, paint: &Paint) {
         Type::Path(_) | Type::Bool(_) => {
             if let Some(path) = shape.shape_type.path() {
                 if let Some(transform) = shape.to_path_transform() {
-                    let sk_path = path.to_skia_path().make_transform(&transform);
+                    let sk_path = path.to_skia_path(shape.svg_attrs.as_ref()).make_transform(&transform);
                     canvas.draw_path(&sk_path, paint);
                 }
             }
