@@ -21,6 +21,9 @@ export interface CanvasContext {
   drawTool: DrawTool | null
   areaSelectionAppend: boolean
   areaSelectionRemove: boolean
+  /** Shape currently being text-edited (the `textEditing` mode). High-frequency
+   * caret/selection geometry lives in signals, not here. */
+  textEditingShapeId: string | null
 }
 
 export type CanvasEvent =
@@ -34,6 +37,8 @@ export type CanvasEvent =
   | { type: 'PAN_END' }
   | { type: 'DRAW_TOOL_ACTIVATE'; tool: DrawTool }
   | { type: 'DRAW_TOOL_DEACTIVATE' }
+  | { type: 'START_TEXT_EDIT'; shapeId: string }
+  | { type: 'STOP_TEXT_EDIT' }
 
 const canvasMachineSetup = setup({
   types: {
@@ -69,6 +74,7 @@ export const canvasMachine = canvasMachineSetup.createMachine({
     drawTool: null,
     areaSelectionAppend: false,
     areaSelectionRemove: false,
+    textEditingShapeId: null,
   },
   on: {
     DRAW_TOOL_ACTIVATE: {
@@ -100,6 +106,10 @@ export const canvasMachine = canvasMachineSetup.createMachine({
         POINTER_DOWN_ON_GRADIENT_HANDLE: { target: 'draggingGradient' },
         POINTER_DOWN_DRAW: { target: 'drawingShape' },
         PAN_START: { target: 'panning' },
+        START_TEXT_EDIT: {
+          target: 'textEditing',
+          actions: assign({ textEditingShapeId: ({ event }) => event.shapeId }),
+        },
       },
     },
     moving: {
@@ -180,6 +190,21 @@ export const canvasMachine = canvasMachineSetup.createMachine({
     panning: {
       on: {
         PAN_END: { target: 'idle' },
+      },
+    },
+    // Text-editing mode. Normal pointer gestures (only wired on `idle`) are
+    // naturally suspended here; pointer/keyboard input is routed to the WASM
+    // editor by the TextEditorOverlay while this state is active.
+    textEditing: {
+      on: {
+        // Switch directly between text shapes without bouncing through idle.
+        START_TEXT_EDIT: {
+          actions: assign({ textEditingShapeId: ({ event }) => event.shapeId }),
+        },
+        STOP_TEXT_EDIT: {
+          target: 'idle',
+          actions: assign({ textEditingShapeId: () => null }),
+        },
       },
     },
   },

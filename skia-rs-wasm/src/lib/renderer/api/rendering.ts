@@ -5,13 +5,27 @@
 import type { WasmModule } from '../wasm-types'
 import { uuidToU32Tuple } from '../types'
 import { checkContext, getContextInitialized, getContextLost, getPendingRender, setPendingRender } from './context'
+import { textEditorActive } from '../signals/text-editor'
+import { textEditorUpdateBlink, textEditorRenderOverlay, textEditorPollEvent } from './text-editor'
 
 /**
- * Renders with timestamp
+ * Renders with timestamp.
+ *
+ * When a text shape is being edited, the caret/selection overlay is drawn on
+ * top after the main render, the blink state is advanced, and any editor event
+ * (poll != 0) schedules a follow-up frame. Gated on `textEditorActive` so the
+ * non-editing hot path is a single signal read.
  */
 export function render(module: WasmModule, timestamp: number): void {
   checkContext()
   module._render(timestamp)
+  if (textEditorActive.value) {
+    textEditorUpdateBlink(module, timestamp)
+    textEditorRenderOverlay(module)
+    if (textEditorPollEvent(module) !== 0) {
+      requestRender(module, 'text-editor-event')
+    }
+  }
 }
 
 /**
