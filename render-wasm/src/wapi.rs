@@ -57,6 +57,22 @@ macro_rules! wapi_post_log {
     }};
 }
 
+#[macro_export]
+macro_rules! notify_tiles_render_complete {
+    () => {{
+        #[cfg(target_arch = "wasm32")]
+        unsafe extern "C" {
+            pub fn wapi_notifyTilesRenderComplete();
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            wapi_notifyTilesRenderComplete()
+        };
+    }};
+}
+
 pub use cancel_animation_frame;
+pub use notify_tiles_render_complete;
 pub use request_animation_frame;
 pub use wapi_post_log;

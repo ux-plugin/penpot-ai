@@ -627,6 +627,7 @@ impl RenderState {
         if sync_render {
             self.run_schedule(tree)?;
             self.flush_and_submit();
+            wapi::notify_tiles_render_complete!();
         } else {
             self.run_schedule(tree)?;
             self.flush_and_submit();
@@ -634,6 +635,7 @@ impl RenderState {
                 self.cancel_animation_frame();
                 self.render_request_id = Some(wapi::request_animation_frame!());
             } else {
+                wapi::notify_tiles_render_complete!();
                 performance::end_measure!("render");
             }
         }
@@ -665,6 +667,7 @@ impl RenderState {
                 self.cancel_animation_frame();
                 self.render_request_id = Some(wapi::request_animation_frame!());
             } else {
+                wapi::notify_tiles_render_complete!();
                 performance::end_measure!("render");
             }
         }
@@ -683,6 +686,7 @@ impl RenderState {
             self.run_schedule(tree)?;
         }
         self.flush_and_submit();
+        wapi::notify_tiles_render_complete!();
         Ok(())
     }
 

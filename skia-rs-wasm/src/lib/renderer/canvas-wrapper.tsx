@@ -49,6 +49,13 @@ function CanvasWorkspace({
   const { workerClient, wasmModule, renderer } = useWorkspaceStore()
 
   useEffect(() => {
+    // Fired by the WASM renderer (wapi_notifyTilesRenderComplete) on the main
+    // thread once a full tile render pass settles. For now we just log it.
+    const handleTilesRenderComplete = () => {
+      console.log('[skia-rs-wasm] penpot:wasm:tiles-complete fired')
+    }
+    document.addEventListener('penpot:wasm:tiles-complete', handleTilesRenderComplete)
+
     initWasmModule(wasmPath).catch((error) => {
       console.error('Failed to load WASM module:', error)
     })
@@ -59,6 +66,7 @@ function CanvasWorkspace({
     })
 
     return () => {
+      document.removeEventListener('penpot:wasm:tiles-complete', handleTilesRenderComplete)
       console.log('Cleaning up worker')
       cleanupWorker()
     }
