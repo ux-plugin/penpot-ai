@@ -1,5 +1,11 @@
 # Tile Scheduler V2: per-effect Paint payload
 
+> **Status: superseded / historical (2026-06).** The V1/V2 tile-scheduler
+> orchestrators and the `tile-scheduler` feature gate were deleted; **SSA
+> Surface IR (`render/ssa/`) is now the only draw path.** The per-effect
+> dispatch pattern described here lives on in `render/ssa/dispatch.rs`. Kept as
+> a design-rationale record, not active guidance.
+
 Plan for the second phase of the per-effect tile scheduler refactor. V1 (already landed) gave the scheduler ownership of cache lifecycle (`BuildCache` / `FreeCache`, `CacheKind::{Scatter, Gather}`, `emitted_caches` set, `Paint(Uuid)` step). V2 makes the *paint* itself per-effect: the `Paint` step carries a list of explicit actions with `(input, output, effects)`, and the renderer becomes a stateless dispatcher that paints exactly what each action says.
 
 ## Context

@@ -1,5 +1,10 @@
 # Tile Scheduler Refactor — Performance Tracking
 
+> **Status: historical (2026-06).** These checkpoints track the now-deleted V2
+> per-effect scheduler. V2 was superseded by SSA Surface IR (`render/ssa/`).
+> Retained as a historical perf record; re-baseline against SSA before using
+> these numbers for comparison.
+
 Tracks measured performance of the tile-scheduler rendering pipeline through the per-effect refactor described in the plan. Each row in the tables below represents the same set of repeatable scenarios captured at a checkpoint in the work, so regressions can be localized to the change that introduced them.
 
 ## Primary measurement: Rust bench (deterministic, no browser)

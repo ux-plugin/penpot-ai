@@ -1,8 +1,14 @@
 # SSA Surface IR — Transition Plan
 
-Status: design proposal
-Branch: `render-wasm-ssa-surface-ir`
+Status: SHIPPED / historical (2026-06) — SSA is now the only draw path (`render/ssa/`).
+Branch: `render-wasm-ssa-surface-ir` (merged)
 Owner: TBD
+
+> **Note:** This is the original transition plan, kept for architecture
+> rationale. The transition is complete. Some tooling referenced below was
+> removed during the debug-infra teardown and no longer exists:
+> `perf_trace` / `perf_guard!`, the `ssa-log-server`, and the
+> `tests/golden_legacy/` baselines.
 
 ## Goal
 
