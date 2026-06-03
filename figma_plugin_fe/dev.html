@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Figma Plugin Dev Environment</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #2c2c2c;
+        color: white;
+      }
+      .container {
+        display: flex;
+        gap: 20px;
+        height: calc(100vh - 40px);
+      }
+      .panel {
+        background: #1e1e1e;
+        border-radius: 8px;
+        padding: 16px;
+        overflow: hidden;
+      }
+      .figma-canvas {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+      .plugin-ui {
+        width: 500px;
+        display: flex;
+        flex-direction: column;
+      }
+      iframe {
+        flex: 1;
+        border: none;
+        border-radius: 4px;
+        background: white;
+      }
+      h3 {
+        margin: 0 0 16px 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: #ccc;
+      }
+      .canvas-placeholder {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f5f5f5;
+        border-radius: 4px;
+        color: #666;
+        font-size: 14px;
+        position: relative;
+        overflow: hidden;
+      }
+      .canvas-content {
+        position: relative;
+        width: 100%;
+        height: 100%;
+      }
+      .status {
+        margin-bottom: 12px;
+        padding: 8px 12px;
+        background: #333;
+        border-radius: 4px;
+        font-size: 12px;
+        font-family: monospace;
+      }
+      .status.success {
+        background: #0f5132;
+        color: #a3cfbb;
+      }
+      .status.error {
+        background: #58151c;
+        color: #ea868f;
+      }
+      
+      /* Browser Window Styles */
+      .browser-window {
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        width: 500px;
+        height: 600px;
+        background: #1e1e1e;
+        border: 1px solid #444;
+        border-radius: 8px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        display: flex;
+        flex-direction: column;
+        z-index: 1000;
+        overflow: auto;
+        min-width: 70px;
+        min-height: 50px;
+      }
+      
+      .browser-window.hidden {
+        display: none;
+      }
+      
+      .window-header {
+        background: #2a2a2a;
+        border-bottom: 1px solid #444;
+        padding: 8px 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        cursor: move;
+        user-select: none;
+        border-radius: 8px 8px 0 0;
+      }
+      
+      .window-title {
+        font-size: 13px;
+        font-weight: 500;
+        color: #ccc;
+      }
+      
+      .window-controls {
+        display: flex;
+        gap: 8px;
+      }
+      
+      .close-btn {
+        width: 20px;
+        height: 20px;
+        border: none;
+        border-radius: 50%;
+        background: #ff5f56;
+        color: #8b0000;
+        font-size: 14px;
+        font-weight: bold;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        transition: background-color 0.2s;
+      }
+      
+      .close-btn:hover {
+        background: #ff3b30;
+      }
+      
+      .window-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        padding: 12px;
+        overflow: auto;
+      }
+      
+      .browser-window .status {
+        margin-bottom: 8px;
+        font-size: 11px;
+      }
+      
+      .browser-window iframe {
+        flex: 1;
+        border: none;
+        border-radius: 4px;
+        background: white;
+      }
+      
+      /* Context Menu Styles */
+      .context-menu {
+        position: fixed;
+        background: #2a2a2a;
+        border: 1px solid #444;
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        padding: 4px 0;
+        z-index: 10000;
+        min-width: 180px;
+        display: none;
+      }
+      
+      .context-menu-item {
+        padding: 8px 16px;
+        font-size: 13px;
+        color: #ccc;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        transition: background-color 0.15s;
+      }
+      
+      .context-menu-item:hover {
+        background: #3a3a3a;
+      }
+      
+      .context-menu-item.disabled {
+        color: #666;
+        cursor: default;
+      }
+      
+      .context-menu-item.disabled:hover {
+        background: transparent;
+      }
+      
+      .context-menu-icon {
+        width: 14px;
+        height: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="panel figma-canvas">
+        <h3>Figma Canvas (Simulated)</h3>
+        <div id="worker-status" class="status">Initializing worker...</div>
+        <div class="canvas-placeholder">
+          Plugin canvas simulation - check console for Figma API calls
+        </div>
+      </div>
+      
+    </div>
+    
+    <!-- Draggable Browser Window for Plugin UI -->
+    <div id="plugin-window" class="browser-window">
+      <div class="window-header">
+        <div class="window-title">Plugin UI</div>
+        <div class="window-controls">
+          <button id="close-button" class="close-btn">×</button>
+        </div>
+      </div>
+      <div class="window-content">
+        <div id="ui-status" class="status">Loading UI...</div>
+        <iframe id="plugin-iframe" src="/ui.html"></iframe>
+      </div>
+    </div>
+    
+    <!-- Context Menu -->
+    <div id="context-menu" class="context-menu">
+      <div id="show-plugin-window" class="context-menu-item">
+        <div class="context-menu-icon">🪟</div>
+        Show Plugin Window
+      </div>
+    </div>
+    
+    <script>
+      // Make the browser window draggable
+      let isDragging = false;
+      let dragOffsetX = 0;
+      let dragOffsetY = 0;
+      
+      const pluginWindow = document.getElementById('plugin-window');
+      const windowHeader = pluginWindow.querySelector('.window-header');
+      const closeButton = document.getElementById('close-button');
+      const contextMenu = document.getElementById('context-menu');
+      const showPluginWindowItem = document.getElementById('show-plugin-window');
+      
+      // Close button functionality
+      closeButton.addEventListener('click', () => {
+        pluginWindow.classList.add('hidden');
+      });
+      
+      // Double-click header to show window if hidden
+      document.addEventListener('dblclick', (e) => {
+        if (pluginWindow.classList.contains('hidden') && e.target !== closeButton) {
+          pluginWindow.classList.remove('hidden');
+        }
+      });
+      
+      // Dragging functionality
+      windowHeader.addEventListener('mousedown', (e) => {
+        if (e.target === closeButton) return;
+        
+        isDragging = true;
+        const rect = pluginWindow.getBoundingClientRect();
+        dragOffsetX = e.clientX - rect.left;
+        dragOffsetY = e.clientY - rect.top;
+        
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+        
+        // Prevent text selection while dragging
+        e.preventDefault();
+      });
+      
+      function handleMouseMove(e) {
+        if (!isDragging) return;
+        
+        const newX = e.clientX - dragOffsetX;
+        const newY = e.clientY - dragOffsetY;
+        
+        // Keep window within viewport bounds
+        const maxX = window.innerWidth - pluginWindow.offsetWidth;
+        const maxY = window.innerHeight - pluginWindow.offsetHeight;
+        
+        const constrainedX = Math.max(0, Math.min(newX, maxX));
+        const constrainedY = Math.max(0, Math.min(newY, maxY));
+        
+        pluginWindow.style.left = constrainedX + 'px';
+        pluginWindow.style.top = constrainedY + 'px';
+        pluginWindow.style.right = 'auto'; // Override the CSS right positioning
+      }
+      
+      function handleMouseUp() {
+        isDragging = false;
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      }
+      
+      // Add a show/hide toggle for testing (Ctrl+P)
+      document.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.key === 'p') {
+          e.preventDefault();
+          pluginWindow.classList.toggle('hidden');
+        }
+      });
+      
+      // Context Menu functionality
+      function showContextMenu(e) {
+        e.preventDefault();
+        
+        // Update menu item state based on plugin window visibility
+        if (pluginWindow.classList.contains('hidden')) {
+          showPluginWindowItem.classList.remove('disabled');
+        } else {
+          showPluginWindowItem.classList.add('disabled');
+        }
+        
+        // Position the context menu
+        contextMenu.style.display = 'block';
+        contextMenu.style.left = e.clientX + 'px';
+        contextMenu.style.top = e.clientY + 'px';
+        
+        // Adjust position if menu would go off screen
+        const menuRect = contextMenu.getBoundingClientRect();
+        const windowWidth = window.innerWidth;
+        const windowHeight = window.innerHeight;
+        
+        if (menuRect.right > windowWidth) {
+          contextMenu.style.left = (windowWidth - menuRect.width) + 'px';
+        }
+        if (menuRect.bottom > windowHeight) {
+          contextMenu.style.top = (windowHeight - menuRect.height) + 'px';
+        }
+      }
+      
+      function hideContextMenu() {
+        contextMenu.style.display = 'none';
+      }
+      
+      // Right-click event listener
+      document.addEventListener('contextmenu', showContextMenu);
+      
+      // Hide context menu when clicking elsewhere
+      document.addEventListener('click', (e) => {
+        if (!contextMenu.contains(e.target)) {
+          hideContextMenu();
+        }
+      });
+      
+      // Show Plugin Window menu item functionality
+      showPluginWindowItem.addEventListener('click', (e) => {
+        if (!showPluginWindowItem.classList.contains('disabled')) {
+          pluginWindow.classList.remove('hidden');
+          hideContextMenu();
+        }
+      });
+      
+      // Hide context menu on escape key
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          hideContextMenu();
+        }
+      });
+      
+      // Add instruction text to canvas for user guidance
+      const canvasPlaceholder = document.querySelector('.canvas-placeholder');
+      const instructionText = document.createElement('div');
+      instructionText.style.position = 'absolute';
+      instructionText.style.bottom = '20px';
+      instructionText.style.left = '20px';
+      instructionText.style.fontSize = '12px';
+      instructionText.style.color = '#999';
+      instructionText.innerHTML = 'Plugin window: Drag by header • Close with ✕ • Show/Hide with Ctrl+P • Right-click for menu • Double-click anywhere to show if hidden';
+      canvasPlaceholder.appendChild(instructionText);
+      
+      // Handle resize and reposition messages from the iframe
+      window.addEventListener('message', (event) => {
+        const iframe = document.getElementById('plugin-iframe');
+        
+        // Check if message came from our iframe
+        if (event.source !== iframe?.contentWindow) {
+          return;
+        }
+        
+        const message = event.data;
+        
+        // Check if this is a resize message
+        if (message.category === 'system' && message.type === 'resize' && message.payload) {
+          const { width, height, x, y } = message.payload;
+          
+          // Apply minimum size constraints
+          const minWidth = 70;
+          const minHeight = 50;
+          const constrainedWidth = Math.max(width, minWidth);
+          const constrainedHeight = Math.max(height, minHeight);
+          
+          // Update the plugin window dimensions
+          pluginWindow.style.width = constrainedWidth + 'px';
+          pluginWindow.style.height = constrainedHeight + 'px';
+          
+          // Handle repositioning if x and y are provided
+          if (x !== undefined && y !== undefined) {
+            // Keep window within viewport bounds
+            const maxX = window.innerWidth - constrainedWidth;
+            const maxY = window.innerHeight - constrainedHeight;
+            
+            const constrainedX = Math.max(0, Math.min(x, maxX));
+            const constrainedY = Math.max(0, Math.min(y, maxY));
+            
+            // Update position and override initial CSS positioning
+            pluginWindow.style.left = constrainedX + 'px';
+            pluginWindow.style.top = constrainedY + 'px';
+            pluginWindow.style.right = 'auto'; // Override the CSS right positioning
+          }
+          
+          // Send response back to iframe
+          const response = {
+            id: message.id,
+            category: 'system',
+            type: 'resize',
+            timestamp: Date.now(),
+            source: 'code',
+            success: true,
+            result: {
+              resized: true,
+              width: constrainedWidth,
+              height: constrainedHeight,
+              ...(x !== undefined && y !== undefined && { x, y })
+            }
+          };
+          
+          iframe.contentWindow?.postMessage(response, '*');
+        }
+      });
+    </script>
+    
+    <script type="module" src="src/dev/host.ts"></script>
+  </body>
+</html>

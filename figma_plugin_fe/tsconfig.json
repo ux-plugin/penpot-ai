@@ -1,0 +1,102 @@
+{
+  "compilerOptions": {
+    "target": "ES2015",
+    "useDefineForClassFields": false,
+    "stripInternal": true,
+    "module": "ESNext",
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "typeRoots": [
+      "./node_modules/@types",
+      "./node_modules/@figma"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      // External library mappings
+      "@noble/ciphers/*": [
+        "./node_modules/@noble/ciphers/*"
+      ],
+      // Root alias
+      "@/*": [
+        "./src/*"
+      ],
+      // Widget environment
+      "@widget/*": [
+        "./src/widget/*"
+      ],
+      "@widget/stores": [
+        "./src/widget/stores"
+      ],
+      "@widget/messaging": [
+        "./src/widget/messaging"
+      ],
+      "@widget/utils": [
+        "./src/widget/utils"
+      ],
+      "@widget/types": [
+        "./src/widget/types"
+      ],
+      // Plugin UI app layer
+      "@app/*": [
+        "./src/plugin-ui/app/*"
+      ],
+      "@app/providers": [
+        "./src/plugin-ui/app/providers"
+      ],
+      // Plugin UI structure (post-refactor)
+      "@ui/*": [
+        "./src/plugin-ui/components/ui/*"
+      ],
+      "@components/*": [
+        "./src/plugin-ui/components/*"
+      ],
+      "@stores/*": [
+        "./src/plugin-ui/stores/*"
+      ],
+      "@api/*": [
+        "./src/plugin-ui/api/*"
+      ],
+      "@utils/*": [
+        "./src/plugin-ui/utils/*"
+      ],
+      // Cross-environment shared code
+      "@shared-core/*": [
+        "./src/shared/*"
+      ],
+      "@shared-types/*": [
+        "./src/shared/types/*"
+      ],
+      "@shared-constants/*": [
+        "./src/shared/constants/*"
+      ],
+      // Plugin UI messaging and views
+      "@shared/*": [
+        "./src/shared/*"
+      ],
+      "@views/*": [
+        "./src/plugin-ui/views/*"
+      ],
+      "@assets/*": [
+        "./src/plugin-ui/assets/*"
+      ]
+    },
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": [
+    "src",
+    "node_modules/@figma/plugin-typings"
+  ]
+}

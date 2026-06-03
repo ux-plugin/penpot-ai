@@ -1,0 +1,22 @@
+{
+  "name": "AI-assistant",
+  "id": "1412919504924588284",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "capabilities": [],
+  "enableProposedApi": false,
+  "documentAccess": "dynamic-page",
+  "editorType": [
+    "figma"
+  ],
+  "ui": "dist/redirect.html",
+  "networkAccess": {
+    "allowedDomains": [
+      "none"
+    ],
+    "reasoning": "When using VITE_CDN_URL, add your CDN host to allowedDomains (e.g. [\"https://your-cdn.example.com\"]). For dev, devAllowedDomains [\"*\"] allows all.",
+    "devAllowedDomains": [
+      "*"
+    ]
+  }
+}
