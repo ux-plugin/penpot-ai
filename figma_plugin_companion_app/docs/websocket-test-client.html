@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Client Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #log {
+            background-color: #f5f5f5;
+            border: 1px solid #ddd;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid #4CAF50;
+        }
+        .log-error {
+            border-left-color: #f44336;
+            background-color: #ffebee;
+        }
+        .log-info {
+            border-left-color: #2196F3;
+            background-color: #e3f2fd;
+        }
+        input {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Client Test</h1>
+    
+    <div class="container">
+        <h2>Configuration</h2>
+        <label>Port: <input type="number" id="port" value="3000" placeholder="Enter port"></label>
+        <label>Encryption Key (base64): <input type="text" id="key" placeholder="Enter encryption key" size="50"></label>
+    </div>
+
+    <div class="container">
+        <h2>General Commands</h2>
+        <button id="connectBtn" onclick="connect()">Connect to /ws</button>
+        <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+        <button id="initBtn" onclick="sendInit()" disabled>Send Init</button>
+        <button id="healthBtn" onclick="sendHealthCheck()" disabled>Health Check</button>
+        <button id="stopBtn" onclick="sendStopRecording()" disabled>Stop Recording</button>
+    </div>
+
+    <div class="container">
+        <h2>Audio Recording</h2>
+        <button id="connectRecBtn" onclick="connectRecording()">Connect to /ws/recording</button>
+        <button id="disconnectRecBtn" onclick="disconnectRecording()" disabled>Disconnect Recording</button>
+        <button id="startRecBtn" onclick="startRecording()" disabled>Start Recording</button>
+        <button id="stopRecBtn" onclick="stopRecordingWs()" disabled>Stop Recording</button>
+        <p>Received chunks: <span id="chunkCount">0</span></p>
+    </div>
+
+    <div class="container">
+        <h2>Log</h2>
+        <button onclick="clearLog()">Clear Log</button>
+        <div id="log"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let wsRecording = null;
+        let chunkCount = 0;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            chunkCount = 0;
+            document.getElementById('chunkCount').textContent = '0';
+        }
+
+        async function encryptAesGcm(plaintext, keyBase64, nonce) {
+            // Decode the base64 key
+            const keyData = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+            
+            // Import the key
+            const key = await crypto.subtle.importKey(
+                'raw',
+                keyData,
+                { name: 'AES-GCM' },
+                false,
+                ['encrypt']
+            );
+
+            // Encrypt the data
+            const encodedText = new TextEncoder().encode(plaintext);
+            const encryptedData = await crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv: nonce },
+                key,
+                encodedText
+            );
+
+            return new Uint8Array(encryptedData);
+        }
+
+        async function createEncryptedMessage(commandObj) {
+            const keyBase64 = document.getElementById('key').value;
+            if (!keyBase64) {
+                throw new Error('Encryption key is required');
+            }
+
+            // 1. Generate unique nonce (12 bytes)
+            const nonce = new Uint8Array(12);
+            crypto.getRandomValues(nonce);
+            
+            // 2. Create payload with timestamp
+            const payload = {
+                data: JSON.stringify(commandObj),
+                timestamp_ms: Date.now()
+            };
+            
+            // 3. Encrypt payload with AES-GCM
+            const encryptedPayload = await encryptAesGcm(
+                JSON.stringify(payload),
+                keyBase64,
+                nonce
+            );
+            
+            // 4. Concatenate nonce + encrypted payload
+            const message = new Uint8Array(12 + encryptedPayload.length);
+            message.set(nonce, 0);
+            message.set(encryptedPayload, 12);
+            
+            // 5. Return as base64
+            return btoa(String.fromCharCode(...message));
+        }
+
+        function connect() {
+            const port = document.getElementById('port').value;
+            if (!port) {
+                log('Please enter a port number', 'error');
+                return;
+            }
+
+            ws = new WebSocket(`ws://localhost:${port}/ws`);
+
+            ws.onopen = () => {
+                log('Connected to /ws', 'info');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                document.getElementById('initBtn').disabled = false;
+                document.getElementById('healthBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = false;
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    const response = JSON.parse(event.data);
+                    log(`Received: ${JSON.stringify(response)}`, 'info');
+                    
+                    if (response.type === 'error') {
+                        log(`Error ${response.code}: ${response.message}`, 'error');
+                    }
+                } catch (e) {
+                    log(`Parse error: ${e.message}`, 'error');
+                }
+            };
+
+            ws.onclose = () => {
+                log('Disconnected from /ws', 'info');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+                document.getElementById('initBtn').disabled = true;
+                document.getElementById('healthBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = true;
+            };
+
+            ws.onerror = (error) => {
+                log(`WebSocket error: ${error}`, 'error');
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        async function sendInit() {
+            try {
+                const encrypted = await createEncryptedMessage({ command: 'init' });
+                ws.send(encrypted);
+                log('Sent init command', 'info');
+            } catch (e) {
+                log(`Error sending init: ${e.message}`, 'error');
+            }
+        }
+
+        async function sendHealthCheck() {
+            try {
+                const encrypted = await createEncryptedMessage({ command: 'health-check' });
+                ws.send(encrypted);
+                log('Sent health-check command', 'info');
+            } catch (e) {
+                log(`Error sending health-check: ${e.message}`, 'error');
+            }
+        }
+
+        async function sendStopRecording() {
+            try {
+                const encrypted = await createEncryptedMessage({ command: 'stop-recording' });
+                ws.send(encrypted);
+                log('Sent stop-recording command', 'info');
+            } catch (e) {
+                log(`Error sending stop-recording: ${e.message}`, 'error');
+            }
+        }
+
+        function connectRecording() {
+            const port = document.getElementById('port').value;
+            if (!port) {
+                log('Please enter a port number', 'error');
+                return;
+            }
+
+            wsRecording = new WebSocket(`ws://localhost:${port}/ws/recording`);
+
+            wsRecording.onopen = () => {
+                log('Connected to /ws/recording', 'info');
+                document.getElementById('connectRecBtn').disabled = true;
+                document.getElementById('disconnectRecBtn').disabled = false;
+                document.getElementById('startRecBtn').disabled = false;
+            };
+
+            wsRecording.onmessage = async (event) => {
+                try {
+                    const response = JSON.parse(event.data);
+                    
+                    if (response.type === 'audio-chunk') {
+                        chunkCount++;
+                        document.getElementById('chunkCount').textContent = chunkCount;
+                        if (chunkCount % 10 === 0) {
+                            log(`Received ${chunkCount} audio chunks`, 'info');
+                        }
+                    } else if (response.type === 'recording-stopped') {
+                        log('Recording stopped', 'info');
+                        document.getElementById('stopRecBtn').disabled = true;
+                    } else if (response.type === 'error') {
+                        log(`Error ${response.code}: ${response.message}`, 'error');
+                    } else {
+                        log(`Received: ${JSON.stringify(response)}`, 'info');
+                    }
+                } catch (e) {
+                    log(`Parse error: ${e.message}`, 'error');
+                }
+            };
+
+            wsRecording.onclose = () => {
+                log('Disconnected from /ws/recording', 'info');
+                document.getElementById('connectRecBtn').disabled = false;
+                document.getElementById('disconnectRecBtn').disabled = true;
+                document.getElementById('startRecBtn').disabled = true;
+                document.getElementById('stopRecBtn').disabled = true;
+            };
+
+            wsRecording.onerror = (error) => {
+                log(`Recording WebSocket error: ${error}`, 'error');
+            };
+        }
+
+        function disconnectRecording() {
+            if (wsRecording) {
+                wsRecording.close();
+                wsRecording = null;
+            }
+        }
+
+        async function startRecording() {
+            try {
+                const encrypted = await createEncryptedMessage({ command: 'start-recording' });
+                wsRecording.send(encrypted);
+                log('Sent start-recording command', 'info');
+                document.getElementById('startRecBtn').disabled = true;
+                document.getElementById('stopRecBtn').disabled = false;
+            } catch (e) {
+                log(`Error starting recording: ${e.message}`, 'error');
+            }
+        }
+
+        async function stopRecordingWs() {
+            try {
+                const encrypted = await createEncryptedMessage({ command: 'stop-recording' });
+                wsRecording.send(encrypted);
+                log('Sent stop-recording command to /ws/recording', 'info');
+            } catch (e) {
+                log(`Error stopping recording: ${e.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>

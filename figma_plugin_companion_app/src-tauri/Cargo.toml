@@ -1,0 +1,50 @@
+[package]
+name = "figma_plugin_companion_app"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant, but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "figma_plugin_companion_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-store = "2"
+axum = { version = "0.8.3", features = ["macros", "ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tokio = { version = "1", features = ["full"] }
+cpal = "0.15.2"
+rubato = "0.15.0"
+bytes = "1.5.0"
+tokio-stream = "0.1.17"
+base64 = "0.21"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+tauri-plugin-shell = "2"
+chrono = "0.4.41"
+tauri-plugin-http = { version = "2", features = ["json"] }
+dotenv = "0.15.0"
+log = "0.4.28"
+aes-gcm = "0.10"
+rand = "0.8"
+futures-util = "0.3"
+uuid = { version = "1.11", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
