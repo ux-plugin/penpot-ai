@@ -9,6 +9,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useAuth0 } from "@auth0/auth0-react";
 import {
   forwardRef,
   useCallback,
@@ -19,6 +20,7 @@ import {
   type ButtonHTMLAttributes,
   type ReactNode,
 } from "react";
+import { useApi, type ApiKeyRecord } from "../lib/api";
 
 export type ApiKey = {
   id: string;
@@ -115,17 +117,6 @@ function shortDate(iso: string): string {
     month: "short",
     day: "numeric",
   });
-}
-
-function randomHex(n: number): string {
-  const chars = "0123456789abcdef";
-  let out = "";
-  for (let i = 0; i < n; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
-}
-
-function generatePlaintextKey(): string {
-  return `pk_live_demo${randomHex(36)}`;
 }
 
 function StatusPill({ active }: { active: boolean }) {
@@ -323,7 +314,7 @@ function CopyButton({
   );
 }
 
-function Modal({
+export function Modal({
   open,
   onClose,
   labelledBy,
@@ -418,44 +409,48 @@ function Modal({
 
 function CreateKeyDialog({
   open,
-  initialStage = "form",
-  initialName = "",
   onClose,
-  onCreated,
+  onCreate,
 }: {
   open: boolean;
-  initialStage?: "form" | "reveal";
-  initialName?: string;
   onClose: () => void;
-  onCreated?: (k: { name: string; plaintext: string }) => void;
+  onCreate: (name: string) => Promise<{ plaintext: string }>;
 }) {
-  const [stage, setStage] = useState<"form" | "reveal">(initialStage);
-  const [name, setName] = useState(initialName);
+  const [stage, setStage] = useState<"form" | "reveal">("form");
+  const [name, setName] = useState("");
   const [plaintext, setPlaintext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const titleId = useId();
   const descId = useId();
 
   useEffect(() => {
     if (open) {
-      setStage(initialStage);
-      setName(initialName);
-      if (initialStage === "reveal" && !plaintext) {
-        setPlaintext(generatePlaintextKey());
-      }
+      setStage("form");
+      setName("");
+      setPlaintext("");
+      setBusy(false);
+      setError(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initialStage, initialName]);
+  }, [open]);
 
   const trimmed = name.trim();
   const valid = trimmed.length > 0 && trimmed.length <= 64;
 
-  const submit = (e?: React.FormEvent) => {
+  const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!valid) return;
-    const key = generatePlaintextKey();
-    setPlaintext(key);
-    setStage("reveal");
-    onCreated?.({ name: trimmed, plaintext: key });
+    if (!valid || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await onCreate(trimmed);
+      setPlaintext(result.plaintext);
+      setStage("reveal");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create key");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const done = () => {
@@ -510,7 +505,8 @@ function CreateKeyDialog({
               onChange={(e) => setName(e.target.value.slice(0, 64))}
               placeholder="Production ingest"
               maxLength={64}
-              className="mt-1.5 block w-full rounded-lg bg-white dark:bg-neutral-950 ring-1 ring-inset ring-neutral-300 dark:ring-neutral-700 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              disabled={busy}
+              className="mt-1.5 block w-full rounded-lg bg-white dark:bg-neutral-950 ring-1 ring-inset ring-neutral-300 dark:ring-neutral-700 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
               autoComplete="off"
               spellCheck={false}
             />
@@ -519,20 +515,31 @@ function CreateKeyDialog({
             </p>
           </div>
 
+          {error && (
+            <div className="mt-3 flex gap-2 rounded-md bg-rose-50 dark:bg-rose-500/10 p-2.5 ring-1 ring-inset ring-rose-600/20 dark:ring-rose-400/20 text-xs text-rose-700 dark:text-rose-300">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span className="break-all">{error}</span>
+            </div>
+          )}
+
           <div className="mt-6 flex items-center justify-end gap-2 border-t border-neutral-200 dark:border-neutral-800 -mx-6 px-6 pt-4">
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex items-center justify-center h-9 rounded-md px-3 text-sm font-medium text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 focus-ring"
+              disabled={busy}
+              className="inline-flex items-center justify-center h-9 rounded-md px-3 text-sm font-medium text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 focus-ring disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={!valid}
-              className="inline-flex items-center justify-center h-9 rounded-md px-3 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400 disabled:opacity-50 disabled:pointer-events-none focus-ring shadow-sm"
+              disabled={!valid || busy}
+              className="inline-flex items-center justify-center gap-1.5 h-9 rounded-md px-3 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400 disabled:opacity-50 disabled:pointer-events-none focus-ring shadow-sm"
             >
-              Create key
+              {busy && (
+                <span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+              )}
+              {busy ? "Creating…" : "Create key"}
             </button>
           </div>
         </form>
@@ -875,7 +882,7 @@ function KeyCard({
 
 type Toast = { id: string; message: string };
 
-function useToasts() {
+export function useToasts() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const push = useCallback((message: string) => {
     const id = Math.random().toString(36).slice(2, 8);
@@ -887,7 +894,7 @@ function useToasts() {
   return { toasts, push };
 }
 
-function Toaster({ toasts }: { toasts: Toast[] }) {
+export function Toaster({ toasts }: { toasts: Toast[] }) {
   return (
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center gap-2 pointer-events-none">
       {toasts.map((t) => (
@@ -903,40 +910,90 @@ function Toaster({ toasts }: { toasts: Toast[] }) {
   );
 }
 
-const showEmpty = false;
+function toApiKey(record: ApiKeyRecord, createdByName: string): ApiKey {
+  return {
+    id: record.id,
+    name: record.name,
+    prefix: record.prefix,
+    createdAt: record.createdAt,
+    lastUsedAt: record.lastUsedAt,
+    revokedAt: record.revokedAt,
+    createdBy: { id: "u_me", name: createdByName },
+  };
+}
 
 export default function SettingsApiKeys() {
-  const [keys, setKeys] = useState<ApiKey[]>(MOCK_KEYS);
+  const api = useApi();
+  const { user } = useAuth0();
+  const createdByName = user?.name ?? user?.email ?? "You";
+
+  const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [orgId, setOrgId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [renameTarget, setRenameTarget] = useState<ApiKey | null>(null);
   const { toasts, push } = useToasts();
 
-  const displayedKeys = showEmpty ? [] : keys;
-
-  const handleCreate = ({ name, plaintext }: { name: string; plaintext: string }) => {
-    const prefix = plaintext.slice(0, 12);
-    const newKey: ApiKey = {
-      id: "key_" + Math.random().toString(36).slice(2, 8),
-      name,
-      prefix,
-      createdAt: new Date().toISOString(),
-      lastUsedAt: null,
-      revokedAt: null,
-      createdBy: { id: "u_me", name: "You" },
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const orgs = await api.listOrganizations();
+        if (cancelled) return;
+        if (orgs.length === 0) {
+          setOrgId(null);
+          setKeys([]);
+          setLoadError(
+            "No organization found for this account. Create one before managing API keys.",
+          );
+          return;
+        }
+        const id = orgs[0].id;
+        setOrgId(id);
+        const records = await api.listApiKeys(id);
+        if (cancelled) return;
+        setKeys(records.map((r) => toApiKey(r, createdByName)));
+      } catch (err) {
+        if (cancelled) return;
+        setLoadError(err instanceof Error ? err.message : "Failed to load API keys");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
-    setKeys((ks) => [newKey, ...ks]);
+    // api/createdByName are stable per session; reload would re-mount component
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleCreate = async (name: string): Promise<{ plaintext: string }> => {
+    if (!orgId) throw new Error("No organization selected.");
+    const created = await api.createApiKey(orgId, name);
+    setKeys((ks) => [toApiKey(created, createdByName), ...ks]);
     push(`Created “${name}”`);
+    return { plaintext: created.plaintext };
   };
 
-  const handleRevoke = () => {
+  const handleRevoke = async () => {
     if (!revokeTarget) return;
-    const id = revokeTarget.id;
-    setKeys((ks) =>
-      ks.map((k) => (k.id === id ? { ...k, revokedAt: new Date().toISOString() } : k)),
-    );
-    push(`Revoked “${revokeTarget.name}”`);
+    const target = revokeTarget;
     setRevokeTarget(null);
+    try {
+      await api.revokeApiKey(target.id);
+      setKeys((ks) =>
+        ks.map((k) =>
+          k.id === target.id ? { ...k, revokedAt: new Date().toISOString() } : k,
+        ),
+      );
+      push(`Revoked “${target.name}”`);
+    } catch (err) {
+      push(err instanceof Error ? err.message : "Failed to revoke key");
+    }
   };
 
   const handleCopyPrefix = (k: ApiKey) => {
@@ -945,6 +1002,8 @@ export default function SettingsApiKeys() {
     push("Copied prefix");
   };
 
+  // Rename has no backend endpoint yet — this updates display state only and is
+  // lost on reload. Wire to a server call once a PATCH endpoint exists.
   const handleRenameSubmit = (newName: string) => {
     if (!renameTarget) return;
     setKeys((ks) => ks.map((k) => (k.id === renameTarget.id ? { ...k, name: newName } : k)));
@@ -967,14 +1026,24 @@ export default function SettingsApiKeys() {
         <button
           type="button"
           onClick={() => setCreateOpen(true)}
-          className="inline-flex items-center gap-1.5 h-9 rounded-md px-3 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-ring shadow-sm"
+          disabled={!orgId || loading}
+          className="inline-flex items-center gap-1.5 h-9 rounded-md px-3 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400 focus-ring shadow-sm disabled:opacity-50 disabled:pointer-events-none"
         >
           <Plus className="h-4 w-4" />
           Create API key
         </button>
       </header>
 
-      {displayedKeys.length === 0 ? (
+      {loading ? (
+        <div className="rounded-xl bg-white dark:bg-neutral-900 ring-1 ring-neutral-200 dark:ring-neutral-800 shadow-sm p-10 text-center text-sm text-neutral-500 dark:text-neutral-400">
+          Loading API keys…
+        </div>
+      ) : loadError ? (
+        <div className="rounded-xl bg-rose-50 dark:bg-rose-500/10 ring-1 ring-inset ring-rose-600/20 dark:ring-rose-400/20 p-4 flex gap-3 text-sm text-rose-700 dark:text-rose-300">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <span className="break-words">{loadError}</span>
+        </div>
+      ) : keys.length === 0 ? (
         <EmptyState onCreate={() => setCreateOpen(true)} />
       ) : (
         <div className="rounded-xl bg-white dark:bg-neutral-900 ring-1 ring-neutral-200 dark:ring-neutral-800 shadow-sm overflow-hidden">
@@ -1003,7 +1072,7 @@ export default function SettingsApiKeys() {
                 </tr>
               </thead>
               <tbody>
-                {displayedKeys.map((k) => (
+                {keys.map((k) => (
                   <KeyRow
                     key={k.id}
                     apiKey={k}
@@ -1017,7 +1086,7 @@ export default function SettingsApiKeys() {
           </div>
 
           <div className="sm:hidden">
-            {displayedKeys.map((k) => (
+            {keys.map((k) => (
               <KeyCard
                 key={k.id}
                 apiKey={k}
@@ -1030,7 +1099,7 @@ export default function SettingsApiKeys() {
         </div>
       )}
 
-      {displayedKeys.length > 0 && (
+      {!loading && !loadError && keys.length > 0 && (
         <div className="text-xs text-neutral-500 dark:text-neutral-400">
           Need to rotate keys regularly? Read the{" "}
           <a href="#" className="text-indigo-600 dark:text-indigo-400 hover:underline">
@@ -1043,7 +1112,7 @@ export default function SettingsApiKeys() {
       <CreateKeyDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={handleCreate}
+        onCreate={handleCreate}
       />
       <RevokeDialog
         open={!!revokeTarget}

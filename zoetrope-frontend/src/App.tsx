@@ -1,21 +1,30 @@
 import {
+  Building2,
   ChevronDown,
   CreditCard,
   KeyRound,
   LogOut,
   Moon,
+  Plug,
   Search,
   Settings,
   Sun,
-  Users,
   Webhook,
 } from "lucide-react";
 import { useAuth0 } from "@auth0/auth0-react";
 import { useEffect, useState, type ComponentType, type SVGProps } from "react";
 import SettingsApiKeys, { MOCK_KEYS } from "./components/SettingsApiKeys";
-import LoginPage from "./pages/LoginPage";
+import SettingsConnectors from "./components/SettingsConnectors";
+import SettingsOrganizations from "./components/SettingsOrganizations";
+import LandingPage from "./pages/LandingPage";
 
-type SectionId = "general" | "members" | "api-keys" | "billing" | "webhooks";
+type SectionId =
+  | "general"
+  | "organizations"
+  | "api-keys"
+  | "connectors"
+  | "billing"
+  | "webhooks";
 
 const SECTIONS: Array<{
   id: SectionId;
@@ -23,8 +32,9 @@ const SECTIONS: Array<{
   icon: ComponentType<SVGProps<SVGSVGElement>>;
 }> = [
   { id: "general", label: "General", icon: Settings },
-  { id: "members", label: "Members", icon: Users },
+  { id: "organizations", label: "Organizations", icon: Building2 },
   { id: "api-keys", label: "API keys", icon: KeyRound },
+  { id: "connectors", label: "Connectors", icon: Plug },
   { id: "billing", label: "Billing", icon: CreditCard },
   { id: "webhooks", label: "Webhooks", icon: Webhook },
 ];
@@ -159,7 +169,7 @@ export default function App() {
   const { isAuthenticated, isLoading } = useAuth0();
 
   if (isLoading) return <FullPageLoader />;
-  if (!isAuthenticated) return <LoginPage />;
+  if (!isAuthenticated) return <LandingPage />;
   return <AuthedShell resolved={resolved} setThemePref={setThemePref} />;
 }
 
@@ -261,6 +271,10 @@ function AuthedShell({
             <div className="max-w-3xl xl:max-w-4xl">
               {section === "api-keys" ? (
                 <SettingsApiKeys />
+              ) : section === "connectors" ? (
+                <SettingsConnectors />
+              ) : section === "organizations" ? (
+                <SettingsOrganizations />
               ) : (
                 <PlaceholderSection
                   label={SECTIONS.find((s) => s.id === section)?.label ?? section}
