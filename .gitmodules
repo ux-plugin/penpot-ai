@@ -4,21 +4,9 @@
 [submodule "skia-rs-wasm/packages/penpot-exporter-figma-plugin"]
 	path = skia-rs-wasm/packages/penpot-exporter-figma-plugin
 	url = https://github.com/ux-plugin/penpot-exporter-figma-plugin.git
-[submodule "figma_plugin_fe"]
-	path = figma_plugin_fe
-	url = https://github.com/ux-plugin/figma_plugin_fe.git
 [submodule "skia-rs-wasm/packages/penpot-exporter"]
 	path = skia-rs-wasm/packages/penpot-exporter
 	url = https://github.com/ux-plugin/penpot-exporter-figma-plugin.git
 [submodule "sdk/zoetrope"]
 	path = sdk/zoetrope
 	url = https://github.com/ux-plugin/rrweb.git
-[submodule "figma_plugin_api"]
-	path = figma_plugin_api
-	url = https://github.com/ux-plugin/figma_plugin_api.git
-[submodule "figma_plugin_companion_app"]
-	path = figma_plugin_companion_app
-	url = https://github.com/ux-plugin/figma_plugin_companion_app
-[submodule "demo-app"]
-	path = demo-app
-	url = https://github.com/ux-plugin/demo-app.git
