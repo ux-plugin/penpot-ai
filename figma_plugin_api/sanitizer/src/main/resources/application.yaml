@@ -1,0 +1,70 @@
+spring:
+  application:
+    name: sanitizer
+  config:
+    import:
+      - optional:file:../.env.dev[.properties]
+      - optional:file:.env.dev[.properties]
+  # Redis kept available for ad-hoc worker-side use (caches, dedup, etc.). The ETL
+  # pipeline itself runs on Kafka — no Redis on the ingest → sanitize → anonymize
+  # → process path.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  cloud:
+    function:
+      definition: sanitize
+    stream:
+      kafka:
+        streams:
+          binder:
+            brokers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+            configuration:
+              # Required: Kafka Streams needs a stable application-id per topology.
+              # Distinct from the api / anonymizer / processor so each gets its own
+              # consumer group + state-store changelog topics.
+              application.id: sanitizer-pipeline
+              default.key.serde: org.apache.kafka.common.serialization.Serdes$StringSerde
+              # spring-kafka's JsonSerde reads/writes a class-name header so we don't
+              # need a per-binding value-serde declaration. Trust the pipeline + topology
+              # packages explicitly.
+              default.value.serde: org.springframework.kafka.support.serializer.JsonSerde
+              spring.json.add.type.headers: true
+              spring.json.use.type.headers: true
+              spring.json.trusted.packages: "com.plugin.core.pipeline,com.plugin.sanitizer.topology"
+              processing.guarantee: at_least_once
+      bindings:
+        sanitize-in-0:
+          destination: chunks.raw
+        # Kafka Streams topology does its own `.to()` for outputs (chunks.sanitized,
+        # sessions.closed) so we only declare the input binding here. Output topics
+        # are auto-created by the broker on first publish.
+
+# Object store (MinIO via S3 protocol). Sanitizer no longer reads/writes S3 in v1
+# (chunks pass through by reference); kept here so future per-chunk classification
+# can re-enable raw reads without re-introducing the config.
+objectstore:
+  endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
+  region: ${OBJECTSTORE_REGION:us-east-1}
+  access-key: ${SANITIZER_S3_ACCESS_KEY:minioadmin}
+  secret-key: ${SANITIZER_S3_SECRET_KEY:minioadmin}
+  bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
+  path-style: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.plugin: ${APP_LOG_LEVEL:DEBUG}

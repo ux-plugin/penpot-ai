@@ -1,0 +1,65 @@
+GetUserResponse:
+  type: object
+  description: User profile information response
+  required:
+    - id
+    - name
+    - username
+  properties:
+    id:
+      type: string
+      description: Unique user identifier
+      example: "user_123456789"
+    name:
+      type: string
+      description: User's display name
+      example: "John Doe"
+    username:
+      type: string
+      description: User's username
+      example: "johndoe"
+    allowSavingCompletions:
+      type: boolean
+      description: Whether user allows saving AI completions
+      example: true
+  examples:
+    - id: "user_123456789"
+      name: "John Doe"
+      username: "johndoe"
+      allowSavingCompletions: true
+    - id: "user_987654321"
+      name: "Jane Smith"
+      username: "janesmith"
+      allowSavingCompletions: false
+    - id: "admin_555666777"
+      name: "Admin User"
+      username: "admin"
+      allowSavingCompletions: true
+
+UpdateUserRequest:
+  type: object
+  description: Request to update user profile information
+  properties:
+    name:
+      type: string
+      nullable: true
+      description: Updated display name
+      example: "John Updated Doe"
+    username:
+      type: string
+      nullable: true
+      description: Updated username
+      example: "johnupdated"
+    allowSavingCompletions:
+      type: boolean
+      nullable: true
+      description: Updated preference for saving AI completions
+      example: false
+  examples:
+    - name: "John Updated Doe"
+      username: "johnupdated"
+      allowSavingCompletions: false
+    - name: "Jane Updated Smith"
+      allowSavingCompletions: true
+    - username: "newusername"
+    - allowSavingCompletions: false

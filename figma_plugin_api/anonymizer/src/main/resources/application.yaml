@@ -1,0 +1,73 @@
+spring:
+  application:
+    name: anonymizer
+  config:
+    import:
+      - optional:file:../.env.dev[.properties]
+      - optional:file:.env.dev[.properties]
+  liquibase:
+    enabled: false
+  # Redis kept available for ad-hoc worker-side use; ETL pipeline runs on Kafka.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  cloud:
+    function:
+      definition: anonymize
+    stream:
+      kafka:
+        streams:
+          binder:
+            brokers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+            configuration:
+              application.id: anonymizer-pipeline
+              default.key.serde: org.apache.kafka.common.serialization.Serdes$StringSerde
+              default.value.serde: org.springframework.kafka.support.serializer.JsonSerde
+              spring.json.add.type.headers: true
+              spring.json.use.type.headers: true
+              spring.json.trusted.packages: "com.plugin.core.pipeline"
+              processing.guarantee: at_least_once
+      bindings:
+        anonymize-in-0:
+          destination: chunks.sanitized
+        anonymize-out-0:
+          destination: chunks.anonymized
+
+# Anonymizer rules. Kept the legacy `anonymizer.*` shape so existing
+# AnonymizerProperties bind cleanly; stream-name fields are no longer used and
+# can be removed in a follow-up cleanup pass.
+anonymizer:
+  enabled: true
+  input-stream: chunks.sanitized
+  anon-stream: chunks.anonymized
+  raw-processed-stream: ""
+  s3-key-prefix: ""
+  rules:
+    drop-input-events: true
+    strip-url-query-strings: true
+
+objectstore:
+  endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
+  region: ${OBJECTSTORE_REGION:us-east-1}
+  access-key: ${ANONYMIZER_S3_ACCESS_KEY:minioadmin}
+  secret-key: ${ANONYMIZER_S3_SECRET_KEY:minioadmin}
+  bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
+  path-style: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.plugin: ${APP_LOG_LEVEL:DEBUG}

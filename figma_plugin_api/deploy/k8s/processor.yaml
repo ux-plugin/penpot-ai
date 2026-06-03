@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor
+  labels:
+    app.kubernetes.io/name: processor
+    app.kubernetes.io/part-of: ingest-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: processor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: processor
+        app.kubernetes.io/part-of: ingest-pipeline
+    spec:
+      containers:
+        - name: processor
+          image: ghcr.io/REPLACE_ORG/figma-plugin-processor:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: actuator
+              containerPort: 8080
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+          envFrom:
+            - configMapRef:
+                name: ingest-pipeline-env
+            - secretRef:
+                name: ingest-pipeline-shared-secrets
+            - secretRef:
+                name: processor-s3-creds
+          resources:
+            requests: { cpu: "100m", memory: "384Mi" }
+            limits:   { cpu: "500m", memory: "768Mi" }
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: actuator }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: actuator }
+            initialDelaySeconds: 10
+            periodSeconds: 5

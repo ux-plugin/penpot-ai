@@ -1,0 +1,631 @@
+asyncapi: 3.0.0
+info:
+  title: WebSocket API
+  version: 0.1.0
+  description: |
+    Unified WebSocket API for real-time features including authentication, completions, and user subscriptions.
+    
+    ## Message Structure
+    
+    All messages use JSON with a `type` field (namespaced: "auth:", "completions:", "user:"), `payload` object, and optional `requestId`.
+    
+    ## Authentication
+    
+    Connect using JWT token as query parameter:
+    ```
+    ws://localhost:8080/ws?token=YOUR_JWT_TOKEN
+    ```
+    
+    Token must contain valid `subject` claim (user ID). Invalid token results in connection closure (code 1008).
+    Token can be refreshed using `auth:refresh_token` message without reconnecting.
+
+  contact:
+    name: Support
+    email: support@example.com
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  production:
+    host: localhost:8080
+    protocol: ws
+    description: Local development WebSocket server
+    tags:
+      - name: env:development
+        description: Development environment
+
+channels:
+  websocket:
+    address: /ws
+    messages:
+      authRefreshToken:
+        $ref: '#/components/messages/AuthRefreshToken'
+      completionsRequest:
+        $ref: '#/components/messages/CompletionsRequest'
+      completionsRequestEnd:
+        $ref: '#/components/messages/CompletionsRequestEnd'
+      completionsResponse:
+        $ref: '#/components/messages/CompletionsResponse'
+      completionsResponseEnd:
+        $ref: '#/components/messages/CompletionsResponseEnd'
+      userSubscribePorts:
+        $ref: '#/components/messages/UserSubscribePorts'
+      userUnsubscribePorts:
+        $ref: '#/components/messages/UserUnsubscribePorts'
+      userPortUpdate:
+        $ref: '#/components/messages/UserPortUpdate'
+      acknowledgment:
+        $ref: '#/components/messages/Acknowledgment'
+      error:
+        $ref: '#/components/messages/Error'
+    description: |
+      Unified WebSocket channel for all features. Requires JWT authentication via query parameter.
+      Messages are routed by type prefix to appropriate handlers.
+
+operations:
+  sendAuthRefreshToken:
+    action: send
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/authRefreshToken'
+    description: Update JWT token without reconnecting.
+
+  sendCompletionsRequest:
+    action: send
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/completionsRequest'
+    description: Stream drawing and audio data to server.
+
+  sendCompletionsRequestEnd:
+    action: send
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/completionsRequestEnd'
+    description: Signal end of request stream, triggers server processing.
+
+  receiveCompletionsResponse:
+    action: receive
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/completionsResponse'
+    description: Receive AI-generated component actions.
+
+  receiveCompletionsResponseEnd:
+    action: receive
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/completionsResponseEnd'
+    description: Receive end-of-response signal.
+
+  sendUserSubscribePorts:
+    action: send
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/userSubscribePorts'
+    description: Subscribe to port configuration updates.
+
+  sendUserUnsubscribePorts:
+    action: send
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/userUnsubscribePorts'
+    description: Unsubscribe from port configuration updates.
+
+  receiveUserPortUpdate:
+    action: receive
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/userPortUpdate'
+    description: Receive port configuration updates.
+
+  receiveAcknowledgment:
+    action: receive
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/acknowledgment'
+    description: Receive command acknowledgments.
+
+  receiveError:
+    action: receive
+    channel:
+      $ref: '#/channels/websocket'
+    messages:
+      - $ref: '#/channels/websocket/messages/error'
+    description: Receive error responses.
+
+components:
+  messages:
+    AuthRefreshToken:
+      name: AuthRefreshToken
+      title: Refresh Token Message
+      summary: Update JWT token during active session
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/AuthRefreshTokenPayload'
+      examples:
+        - name: tokenRefresh
+          summary: Refresh authentication token
+          payload:
+            type: "auth:refresh_token"
+            payload:
+              access_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+            requestId: "req_001"
+
+    CompletionsRequest:
+      name: CompletionsRequest
+      title: Completions Request Message
+      summary: Stream drawing and audio data
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CompletionsRequestPayload'
+      examples:
+        - name: buttonDrawing
+          summary: Drawing with voice description
+          payload:
+            type: "completions:request"
+            payload:
+              fe_id: "req_1234567890"
+              drawn_path: "M 0 0 L 120 0 L 120 40 L 0 40 Z"
+              audio_chunk: "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
+              timestamp: 1734041923456
+            requestId: "req_002"
+
+    CompletionsRequestEnd:
+      name: CompletionsRequestEnd
+      title: Completions Request End Message
+      summary: Signal end of request stream
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CompletionsRequestEndPayload'
+      examples:
+        - name: requestComplete
+          summary: Drawing complete
+          payload:
+            type: "completions:request_end"
+            payload:
+              fe_id: "req_1234567890"
+            requestId: "req_003"
+
+    CompletionsResponse:
+      name: CompletionsResponse
+      title: Completions Response Message
+      summary: AI-generated component action
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CompletionsResponsePayload'
+      examples:
+        - name: createNode
+          summary: Create button node
+          payload:
+            type: "completions:response"
+            payload:
+              fe_id: "req_1234567890"
+              action: "create_node"
+              target: "button_main"
+              params: '{"type":"RECTANGLE","width":120,"height":40}'
+            requestId: "req_002"
+
+    CompletionsResponseEnd:
+      name: CompletionsResponseEnd
+      title: Completions Response End Message
+      summary: Signal end of response stream
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CompletionsResponseEndPayload'
+      examples:
+        - name: responseComplete
+          summary: All actions sent
+          payload:
+            type: "completions:response_end"
+            payload:
+              fe_id: "req_1234567890"
+            requestId: "req_002"
+
+    UserSubscribePorts:
+      name: UserSubscribePorts
+      title: User Subscribe Ports Message
+      summary: Subscribe to port configuration updates
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/UserSubscribePortsPayload'
+      examples:
+        - name: subscribe
+          summary: Subscribe to port updates
+          payload:
+            type: "user:subscribe_ports"
+            payload: {}
+            requestId: "req_004"
+
+    UserUnsubscribePorts:
+      name: UserUnsubscribePorts
+      title: User Unsubscribe Ports Message
+      summary: Unsubscribe from port configuration updates
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/UserUnsubscribePortsPayload'
+      examples:
+        - name: unsubscribe
+          summary: Unsubscribe from port updates
+          payload:
+            type: "user:unsubscribe_ports"
+            payload: {}
+            requestId: "req_005"
+
+    UserPortUpdate:
+      name: UserPortUpdate
+      title: User Port Update Message
+      summary: Port configuration update notification
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/UserPortUpdatePayload'
+      examples:
+        - name: portChanged
+          summary: Port configuration changed
+          payload:
+            type: "user:port_update"
+            payload:
+              port: 3000
+            requestId: "req_004"
+
+    Acknowledgment:
+      name: Acknowledgment
+      title: Server Acknowledgment
+      summary: Command acknowledgment
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/AcknowledgmentPayload'
+      examples:
+        - name: success
+          summary: Successful processing
+          payload:
+            type: "ack"
+            payload:
+              status: "ok"
+            requestId: "req_001"
+        - name: tokenRefreshSuccess
+          summary: Token refresh success
+          payload:
+            type: "auth:refresh_token"
+            payload:
+              status: "ok"
+              expires_at: 1734041923
+            requestId: "req_001"
+
+    Error:
+      name: Error
+      title: Error Response
+      summary: Error message from server
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ErrorPayload'
+      examples:
+        - name: invalidMessage
+          summary: Invalid message type
+          payload:
+            type: "error"
+            payload: {}
+            requestId: "req_006"
+            error: "Unknown message type: invalid:type"
+
+  schemas:
+    AuthRefreshTokenPayload:
+      type: object
+      description: Auth refresh token message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          const: "auth:refresh_token"
+          description: Message type
+        payload:
+          type: object
+          required:
+            - access_token
+          properties:
+            access_token:
+              type: string
+              description: New JWT access token
+              minLength: 1
+              example: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_001"
+
+    CompletionsRequestPayload:
+      type: object
+      description: Completions request message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          const: "completions:request"
+          description: Message type
+        payload:
+          type: object
+          required:
+            - fe_id
+            - drawn_path
+            - audio_chunk
+            - timestamp
+          properties:
+            fe_id:
+              type: string
+              description: Frontend correlation ID
+              example: "req_1234567890"
+              minLength: 1
+            drawn_path:
+              type: string
+              description: SVG path data (M, L, Q, C, Z commands)
+              example: "M 0 0 L 100 100 Z"
+              minLength: 1
+            audio_chunk:
+              type: string
+              format: byte
+              description: Base64-encoded PCM WAV audio chunk
+              example: "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
+              minLength: 1
+            timestamp:
+              type: integer
+              format: int64
+              description: Capture time (Unix milliseconds)
+              minimum: 0
+              example: 1734041923456
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_002"
+
+    CompletionsRequestEndPayload:
+      type: object
+      description: Completions request end message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          const: "completions:request_end"
+          description: Message type
+        payload:
+          type: object
+          required:
+            - fe_id
+          properties:
+            fe_id:
+              type: string
+              description: Frontend correlation ID
+              example: "req_1234567890"
+              minLength: 1
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_003"
+
+    CompletionsResponsePayload:
+      type: object
+      description: Completions response message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          const: "completions:response"
+          description: Message type
+        payload:
+          type: object
+          required:
+            - fe_id
+            - action
+            - target
+            - params
+          properties:
+            fe_id:
+              type: string
+              description: Frontend correlation ID
+              example: "req_1234567890"
+              minLength: 1
+            action:
+              type: string
+              description: Action type (create_node, set_property, set_text, set_style, add_constraint)
+              example: "create_node"
+              minLength: 1
+            target:
+              type: string
+              description: Target node or element ID
+              example: "button_main"
+              minLength: 1
+            params:
+              type: string
+              description: JSON-encoded action parameters
+              example: '{"type":"RECTANGLE","width":120,"height":40}'
+              minLength: 1
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_002"
+
+    CompletionsResponseEndPayload:
+      type: object
+      description: Completions response end message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          const: "completions:response_end"
+          description: Message type
+        payload:
+          type: object
+          required:
+            - fe_id
+          properties:
+            fe_id:
+              type: string
+              description: Frontend correlation ID
+              example: "req_1234567890"
+              minLength: 1
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_002"
+
+    UserSubscribePortsPayload:
+      type: object
+      description: User subscribe ports message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          const: "user:subscribe_ports"
+          description: Message type
+        payload:
+          type: object
+          description: Empty payload object
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_004"
+
+    UserUnsubscribePortsPayload:
+      type: object
+      description: User unsubscribe ports message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          const: "user:unsubscribe_ports"
+          description: Message type
+        payload:
+          type: object
+          description: Empty payload object
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_005"
+
+    UserPortUpdatePayload:
+      type: object
+      description: User port update message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          const: "user:port_update"
+          description: Message type
+        payload:
+          type: object
+          required:
+            - port
+          properties:
+            port:
+              type: integer
+              description: Port number
+              example: 3000
+              minimum: 1
+              maximum: 65535
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_004"
+
+    AcknowledgmentPayload:
+      type: object
+      description: Server acknowledgment message structure
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          description: Message type (can be 'ack' or original message type)
+          example: "ack"
+        payload:
+          type: object
+          required:
+            - status
+          properties:
+            status:
+              type: string
+              description: Processing status
+              enum: ["ok", "error"]
+              example: "ok"
+            expires_at:
+              type: integer
+              format: int64
+              description: New token expiration (Unix seconds, for auth:refresh_token only)
+              example: 1734041923
+            fe_id:
+              type: string
+              description: Frontend correlation ID (if applicable)
+              example: "req_1234567890"
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_001"
+
+    ErrorPayload:
+      type: object
+      description: Error response message structure
+      required:
+        - type
+        - payload
+        - error
+      properties:
+        type:
+          type: string
+          const: "error"
+          description: Message type
+        payload:
+          type: object
+          description: Empty payload object
+        requestId:
+          type: string
+          description: Optional correlation ID
+          example: "req_006"
+        error:
+          type: string
+          description: Error message
+          example: "Unknown message type: invalid:type"
+
+  securitySchemes:
+    jwtAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT authentication required. Provide token as query parameter during WebSocket connection:
+        ```
+        ws://localhost:8080/ws?token=YOUR_JWT_TOKEN
+        ```
+        
+        **Requirements**:
+        - Valid JWT with non-empty `subject` claim
+        - Token can be refreshed using `auth:refresh_token` message
+        
+        **Error Codes**:
+        - 1008: Invalid or missing token
+        - 4001: Token expired

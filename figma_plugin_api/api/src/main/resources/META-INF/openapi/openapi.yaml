@@ -1,0 +1,107 @@
+openapi: 3.1.0
+info:
+  contact:
+    email: support@example.com
+    name: Support
+  description: API for Figma Plugin
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  title: Figma Plugin API
+  version: 0.0.1
+
+servers:
+  - url: http://localhost:8080
+    description: Auto generated value
+  - url: http://0.0.0.0:8080
+    description: Auto generated value
+
+components:
+  securitySchemes:
+    JWT:
+      type: http
+      description: JWT authentication with bearer token
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # Common schemas - Basic types and utilities
+    Instant:
+      $ref: './common/common-schemas.yaml#/Instant'
+    Cookie:
+      $ref: './common/common-schemas.yaml#/Cookie'
+    UserRole:
+      $ref: './common/common-schemas.yaml#/UserRole'
+    
+    # Auth schemas
+    OAuthInitResponse:
+      $ref: './auth/auth-schemas.yaml#/OAuthInitResponse'
+    ReadTokenResponse:
+      $ref: './auth/auth-schemas.yaml#/AccessTokenResponse'
+
+    # User schemas
+    GetUserResponse:
+      $ref: './user/user-schemas.yaml#/GetUserResponse'
+    UpdateUserRequest:
+      $ref: './user/user-schemas.yaml#/UpdateUserRequest'
+    
+    # Completions schemas
+    ComponentCompletionResponse:
+      $ref: './completions/completions-schemas.yaml#/ComponentCompletionResponse'
+    PromptRequest:
+      $ref: './completions/completions-schemas.yaml#/PromptRequest'
+    FrameNode:
+      $ref: './completions/completions-schemas.yaml#/FrameNode'
+    BlendMode:
+      $ref: './completions/completions-schemas.yaml#/BlendMode'
+    ConstraintType:
+      $ref: './completions/completions-schemas.yaml#/ConstraintType'
+    Constraints:
+      $ref: './completions/completions-schemas.yaml#/Constraints'
+    CornerRadius:
+      $ref: './completions/completions-schemas.yaml#/CornerRadius'
+    Effect:
+      $ref: './completions/completions-schemas.yaml#/Effect'
+    LayoutAlign:
+      $ref: './completions/completions-schemas.yaml#/LayoutAlign'
+    LayoutPositioning:
+      $ref: './completions/completions-schemas.yaml#/LayoutPositioning'
+    LayoutSizing:
+      $ref: './completions/completions-schemas.yaml#/LayoutSizing'
+    MaskType:
+      $ref: './completions/completions-schemas.yaml#/MaskType'
+    PaintProps:
+      $ref: './completions/completions-schemas.yaml#/PaintProps'
+    StrokeAlign:
+      $ref: './completions/completions-schemas.yaml#/StrokeAlign'
+    StrokeCap:
+      $ref: './completions/completions-schemas.yaml#/StrokeCap'
+    StrokeJoin:
+      $ref: './completions/completions-schemas.yaml#/StrokeJoin'
+    StrokeWeight:
+      $ref: './completions/completions-schemas.yaml#/StrokeWeight'
+    VectorPath:
+      $ref: './completions/completions-schemas.yaml#/VectorPath'
+    WindingRule:
+      $ref: './completions/completions-schemas.yaml#/WindingRule'
+    
+paths:
+  # Completions paths
+  /completions:
+    $ref: './completions/completions-paths.yaml#/paths/~1completions'
+  /completions/{completionId}:
+    $ref: './completions/completions-paths.yaml#/paths/~1completions~1{completionId}'
+  
+  # User paths
+  /user/{userId}:
+    $ref: './user/user-paths.yaml#/paths/~1user~1{userId}'
+  /user/{userId}/update:
+    $ref: './user/user-paths.yaml#/paths/~1user~1{userId}~1update'
+  /user/{userId}/delete:
+    $ref: './user/user-paths.yaml#/paths/~1user~1{userId}~1delete'
+  /user/key:
+    $ref: './user/user-paths.yaml#/paths/~1user~1key'
+  /user/port:
+    $ref: './user/user-paths.yaml#/paths/~1user~1port'
+  /user/port/listen:
+    $ref: './user/user-paths.yaml#/paths/~1user~1port~1listen'

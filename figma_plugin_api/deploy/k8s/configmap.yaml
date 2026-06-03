@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingest-pipeline-env
+  labels:
+    app.kubernetes.io/part-of: ingest-pipeline
+data:
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "figma_plugin"
+
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+
+  OBJECTSTORE_ENDPOINT: "http://minio:9000"
+  OBJECTSTORE_BUCKET: "zoetrope-data"
+  OBJECTSTORE_REGION: "us-east-1"
+
+  LOG_LEVEL: "INFO"
+  APP_LOG_LEVEL: "INFO"

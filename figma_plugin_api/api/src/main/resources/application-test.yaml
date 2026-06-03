@@ -1,0 +1,70 @@
+quarkus:
+  liquibase:
+    migrate-at-start: true
+    clean-at-start: true
+  rest-client:
+    github-api:
+      url: http://localhost:5500
+    github-auth:
+      url: http://localhost:5500
+mp:
+  jwt:
+    verify:
+      issuer: ux-plugin
+      publickey:
+        location: classpath:META-INF/resources/publicKey-dev.pem
+
+smallrye:
+  jwt:
+    new-token:
+      lifespan: 600
+    sign:
+      key:
+        location: classpath:META-INF/resources/privateKey-dev.pem
+
+openai:
+  api:
+    base-url: http://localhost:8003
+    key: nothing
+
+  mock:
+    base-url: localhost
+    port: 5050
+
+auth:
+  access-token-ttl-s: 900  # 15 minutes
+  refresh-token-ttl-s: 2592000  # 30 days
+  figma:
+    client-id: client id
+    client-secret: client secret
+    auth-url: https://www.figma.com/oauth
+    login-redirect-uri: http://localhost:8080/auth/figma/callback
+    connect-redirect-uri: http://localhost:8080/auth/figma/connect/callback
+    login:
+      random-key:
+        max-retries: 5
+      timeout-sec: 60
+    rest-client:
+      access-token:
+        redis-key-prefix: "figma-login:"
+    read-token:
+      redis-key-prefix: "figma-read-token:"
+    write-token:
+      redis-key-prefix: "figma-write-token:"
+  github:
+    client-id: github-client-id
+    client-secret: github-client-secret
+    auth-url: https://github.com/login/oauth/authorize
+    login-redirect-uri: http://localhost:8080/auth/github/callback
+    connect-redirect-uri: http://localhost:8080/auth/github/connect/callback
+    login:
+      random-key:
+        max-retries: 5
+      timeout-sec: 60
+    rest-client:
+      access-token:
+        redis-key-prefix: "github-login:"
+    read-token:
+      redis-key-prefix: "github-read-token:"
+    write-token:
+      redis-key-prefix: "github-write-token:"

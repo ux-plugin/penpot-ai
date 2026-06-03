@@ -1,0 +1,210 @@
+PromptRequest:
+  button_prompt:
+    summary: Button creation prompt
+    description: Example prompt for creating a button component
+    value:
+      prompt: "Create a blue button with rounded corners and white text"
+  
+  card_prompt:
+    summary: Card creation prompt
+    description: Example prompt for creating a card component
+    value:
+      prompt: "Design a product card with image, title, description, and price"
+  
+  form_prompt:
+    summary: Form creation prompt
+    description: Example prompt for creating a form component
+    value:
+      prompt: "Create a contact form with name, email, message fields and submit button"
+
+FrameNode:
+  button_completion:
+    summary: Generated button component
+    description: Example AI-generated button component
+    value:
+      id: "button_frame_001"
+      name: "Blue Button"
+      width: 120
+      height: 40
+      x: 0
+      y: 0
+      fills:
+        - visible: true
+          opacity: 1.0
+          blendMode: "NORMAL"
+      cornerRadius:
+        topLeftRadius: 8
+        topRightRadius: 8
+        bottomLeftRadius: 8
+        bottomRightRadius: 8
+      opacity: 1.0
+      blendMode: "NORMAL"
+  
+  card_completion:
+    summary: Generated card component
+    description: Example AI-generated card component
+    value:
+      id: "card_frame_001"
+      name: "Product Card"
+      width: 300
+      height: 400
+      x: 0
+      y: 0
+      children: [ "image_001", "title_001", "description_001", "price_001" ]
+      fills:
+        - visible: true
+          opacity: 1.0
+          blendMode: "NORMAL"
+      cornerRadius:
+        topLeftRadius: 12
+        topRightRadius: 12
+        bottomLeftRadius: 12
+        bottomRightRadius: 12
+      opacity: 1.0
+      blendMode: "NORMAL"
+
+ComponentCompletionResponse:
+  button_completion_details:
+    summary: Button completion details
+    description: Complete details of a button completion
+    value:
+      id: "completion_123456789"
+      prompt: "Create a blue button with rounded corners and white text"
+      aiCompletion:
+        id: "button_frame_001"
+        name: "Blue Button"
+        width: 120
+        height: 40
+        x: 0
+        y: 0
+        fills:
+          - visible: true
+            opacity: 1.0
+            blendMode: "NORMAL"
+        cornerRadius:
+          topLeftRadius: 8
+          topRightRadius: 8
+          bottomLeftRadius: 8
+          bottomRightRadius: 8
+        opacity: 1.0
+        blendMode: "NORMAL"
+      createdAt: "2024-08-06T16:01:00Z"
+  
+  card_completion_details:
+    summary: Card completion details
+    description: Complete details of a card completion
+    value:
+      id: "completion_987654321"
+      prompt: "Design a product card with image, title, description, and price"
+      aiCompletion:
+        id: "card_frame_001"
+        name: "Product Card"
+        width: 300
+        height: 400
+        x: 0
+        y: 0
+        children: [ "image_001", "title_001", "description_001", "price_001" ]
+        fills:
+          - visible: true
+            opacity: 1.0
+            blendMode: "NORMAL"
+        cornerRadius:
+          topLeftRadius: 12
+          topRightRadius: 12
+          bottomLeftRadius: 12
+          bottomRightRadius: 12
+        opacity: 1.0
+        blendMode: "NORMAL"
+      createdAt: "2024-08-06T15:30:00Z"
+
+CompletionsList:
+  user_completions:
+    summary: User's completions list
+    description: Example list of user completions
+    value:
+      - id: "completion_123456789"
+        prompt: "Create a blue button with rounded corners"
+        aiCompletion:
+          id: "button_frame_001"
+          name: "Blue Button"
+          width: 120
+          height: 40
+        createdAt: "2024-08-06T16:01:00Z"
+      - id: "completion_987654321"
+        prompt: "Design a product card"
+        aiCompletion:
+          id: "card_frame_001"
+          name: "Product Card"
+          width: 300
+          height: 400
+        createdAt: "2024-08-06T15:30:00Z"
+  
+  empty_completions:
+    summary: Empty completions list
+    description: Example empty completions list for new user
+    value: [ ]
+
+ErrorResponses:
+  bad_request:
+    summary: Bad request error
+    description: Generic bad request error
+    value:
+      error: "bad_request"
+      message: "The request is malformed or contains invalid parameters"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  unauthorized:
+    summary: Unauthorized error
+    description: User not authenticated
+    value:
+      error: "unauthorized"
+      message: "Authentication required. Please provide a valid JWT token"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  forbidden:
+    summary: Forbidden error
+    description: User not allowed to access resource
+    value:
+      error: "forbidden"
+      message: "You don't have permission to access this resource"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  server_error:
+    summary: Internal server error
+    description: Generic server error
+    value:
+      error: "internal_server_error"
+      message: "An unexpected error occurred. Please try again later"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  invalid_prompt:
+    summary: Invalid prompt error
+    description: Error when prompt is invalid or empty
+    value:
+      error: "invalid_prompt"
+      message: "The prompt cannot be empty and must be a valid string"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  ai_service_error:
+    summary: AI service error
+    description: Error when AI service is unavailable
+    value:
+      error: "ai_service_unavailable"
+      message: "The AI completion service is currently unavailable. Please try again later"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  invalid_completion_id:
+    summary: Invalid completion ID error
+    description: Error when completion ID format is invalid
+    value:
+      error: "invalid_completion_id"
+      message: "The completion ID format is invalid"
+      timestamp: "2024-08-06T16:01:00Z"
+  
+  completion_not_found:
+    summary: Completion not found error
+    description: Error when completion doesn't exist
+    value:
+      error: "completion_not_found"
+      message: "The requested completion was not found or you don't have access to it"
+      timestamp: "2024-08-06T16:01:00Z"

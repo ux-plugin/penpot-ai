@@ -1,0 +1,326 @@
+{
+  "id": "mock-frame-id",
+  "name": "Example Frame Node",
+  "clipsContent": true,
+  "children": [
+    "child-1",
+    "child-2"
+  ],
+  "parent": "parent-1",
+  "fills": [
+    {
+      "ty": "SOLID",
+      "color": {
+        "r": 0.33,
+        "g": 0.55,
+        "b": 0.99
+      },
+      "blendMode": "NORMAL",
+      "visible": true,
+      "opacity": 0.85
+    },
+    {
+      "ty": "GRADIENT_LINEAR",
+      "gradientTransform": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "gradientStops": [
+        {
+          "position": 0.0,
+          "color": {
+            "r": 1,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          }
+        },
+        {
+          "position": 1.0,
+          "color": {
+            "r": 0,
+            "g": 0,
+            "b": 1,
+            "a": 1
+          }
+        }
+      ],
+      "blendMode": "MULTIPLY",
+      "visible": true,
+      "opacity": 1
+    },
+    {
+      "ty": "GRADIENT_RADIAL",
+      "gradientTransform": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "gradientStops": [
+        {
+          "position": 0.0,
+          "color": {
+            "r": 1,
+            "g": 1,
+            "b": 0,
+            "a": 0.8
+          }
+        },
+        {
+          "position": 1.0,
+          "color": {
+            "r": 0,
+            "g": 1,
+            "b": 0,
+            "a": 0.8
+          }
+        }
+      ]
+    },
+    {
+      "ty": "GRADIENT_ANGULAR",
+      "gradientTransform": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "gradientStops": [
+        {
+          "position": 0.0,
+          "color": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          }
+        },
+        {
+          "position": 1.0,
+          "color": {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          }
+        }
+      ]
+    },
+    {
+      "ty": "GRADIENT_DIAMOND",
+      "gradientTransform": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "gradientStops": [
+        {
+          "position": 0.0,
+          "color": {
+            "r": 1,
+            "g": 0,
+            "b": 1,
+            "a": 1
+          }
+        },
+        {
+          "position": 1.0,
+          "color": {
+            "r": 0,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          }
+        }
+      ]
+    },
+    {
+      "ty": "IMAGE",
+      "src": "https://example.com/image.png",
+      "imageHash": "abcd1234",
+      "scaleMode": "FILL",
+      "imageTransform": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "scalingFactor": 2,
+      "rotation": 0,
+      "opacity": 0.6,
+      "visible": true,
+      "blendMode": "SCREEN"
+    },
+    {
+      "ty": "VIDEO",
+      "videoHash": "video123",
+      "videoTransform": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "scaleMode": "FIT",
+      "scalingFactor": 1,
+      "rotation": 0,
+      "filters": {
+        "exposure": 0.1,
+        "contrast": 1.2,
+        "saturation": 1.0
+      },
+      "opacity": 1,
+      "visible": true,
+      "blendMode": "OVERLAY"
+    }
+  ],
+  "fillStyleId": [
+    "solid-style",
+    "gradient-style"
+  ],
+  "strokes": [
+    {
+      "ty": "SOLID",
+      "color": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+      },
+      "blendMode": "NORMAL",
+      "visible": true,
+      "opacity": 1
+    }
+  ],
+  "strokeStyleId": "stroke-style",
+  "strokeWeight": {
+    "strokeTopWeight": 4,
+    "strokeLeftWeight": 5,
+    "strokeRightWeight": 3,
+    "strokeBottomWeight": 1
+  },
+  "strokeJoin": "ROUND",
+  "strokeAlign": "INSIDE",
+  "dashPattern": [
+    4,
+    2
+  ],
+  "strokeCap": "ROUND",
+  "strokeMiterLimit": 4,
+  "cornerRadius": {
+    "topLeftRadius": 8,
+    "topRightRadius": 3,
+    "bottomLeftRadius": 4,
+    "bottomRightRadius": 5
+  },
+  "cornerSmoothing": 2,
+  "opacity": 0.95,
+  "blendMode": "NORMAL",
+  "isMask": false,
+  "maskType": "ALPHA",
+  "effects": [
+    {
+      "ty": "DROP_SHADOW",
+      "color": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 0.6
+      },
+      "offset": {
+        "x": 2,
+        "y": 2
+      },
+      "radius": 8,
+      "spread": 2,
+      "visible": true,
+      "blendMode": "MULTIPLY",
+      "showShadowBehindNode": true
+    },
+    {
+      "ty": "INNER_SHADOW",
+      "color": {
+        "r": 1,
+        "g": 0,
+        "b": 0,
+        "a": 0.7
+      },
+      "offset": {
+        "x": 0,
+        "y": 1
+      },
+      "radius": 4,
+      "spread": 1,
+      "visible": true,
+      "blendMode": "NORMAL"
+    },
+    {
+      "ty": "BACKGROUND_BLUR",
+      "radius": 12,
+      "visible": true
+    },
+    {
+      "ty": "LAYER_BLUR",
+      "radius": 4,
+      "visible": true
+    }
+  ],
+  "effectStyleId": "shadow-style",
+  "x": 100,
+  "y": 50,
+  "width": 400,
+  "height": 300,
+  "minWidth": 100,
+  "maxWidth": 600,
+  "minHeight": 50,
+  "maxHeight": 350,
+  "layoutAlign": "CENTER",
+  "layoutGrow": 1,
+  "layoutPositioning": "AUTO",
+  "constrainProportions": false,
+  "rotation": 0,
+  "layoutSizingHorizontal": "FILL",
+  "layoutSizingVertical": "HUG",
+  "constraints": {
+    "horizontal": "STRETCH",
+    "vertical": "MIN"
+  }
+}

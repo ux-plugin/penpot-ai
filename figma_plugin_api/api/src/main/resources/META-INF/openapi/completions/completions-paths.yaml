@@ -1,0 +1,131 @@
+openapi: 3.1.0
+info:
+  contact:
+    email: support@example.com
+    name: Support
+  description: Component Completions API for Figma Plugin
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  title: Component Completions API
+  version: 0.0.1
+
+tags:
+  - name: Component Resource
+    description: Component completion management endpoints
+
+paths:
+  /completions:
+    get:
+      summary: Get all completions for a user
+      description: Returns all completions for the specified user
+      tags:
+        - Component Resource
+      responses:
+        "200":
+          description: List of completions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "./completions-schemas.yaml#/ComponentCompletionResponse"
+              examples:
+                user_completions:
+                  $ref: "./completions-examples.yaml#/CompletionsList/user_completions"
+                empty_completions:
+                  $ref: "./completions-examples.yaml#/CompletionsList/empty_completions"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              examples:
+                bad_request:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/bad_request"
+        "401":
+          description: Not Authorized
+          content:
+            application/json:
+              examples:
+                unauthorized:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/unauthorized"
+        "403":
+          description: Not Allowed
+          content:
+            application/json:
+              examples:
+                forbidden:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/forbidden"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              examples:
+                server_error:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/server_error"
+      security:
+        - JWT: [ ]
+
+  /completions/{completionId}:
+    get:
+      summary: Get a specific completion
+      description: Returns a specific completion for the specified user
+      tags:
+        - Component Resource
+      parameters:
+        - description: The ID of the completion
+          required: true
+          name: completionId
+          in: path
+          schema:
+            type: string
+          example: "completion_123456789"
+      responses:
+        "200":
+          description: Completion details
+          content:
+            application/json:
+              schema:
+                $ref: "./completions-schemas.yaml#/ComponentCompletionResponse"
+              examples:
+                button_completion_details:
+                  $ref: "./completions-examples.yaml#/ComponentCompletionResponse/button_completion_details"
+                card_completion_details:
+                  $ref: "./completions-examples.yaml#/ComponentCompletionResponse/card_completion_details"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              examples:
+                invalid_completion_id:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/invalid_completion_id"
+        "401":
+          description: Not Authorized
+          content:
+            application/json:
+              examples:
+                unauthorized:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/unauthorized"
+        "403":
+          description: Not Allowed
+          content:
+            application/json:
+              examples:
+                forbidden:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/forbidden"
+        "404":
+          description: Completion not found
+          content:
+            application/json:
+              examples:
+                completion_not_found:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/completion_not_found"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              examples:
+                server_error:
+                  $ref: "./completions-examples.yaml#/ErrorResponses/server_error"
+      security:
+        - JWT: [ ]

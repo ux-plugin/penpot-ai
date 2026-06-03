@@ -1,0 +1,43 @@
+Instant:
+  type: string
+  format: date-time
+  description: ISO 8601 date-time format
+  examples:
+    - "2022-03-10T16:15:50Z"
+    - "2024-08-06T16:01:00Z"
+
+Cookie:
+  type: object
+  description: HTTP Cookie representation
+  properties:
+    name:
+      type: string
+      description: Cookie name
+      example: "session_id"
+    value:
+      type: string
+      description: Cookie value
+      example: "abc123def456"
+    version:
+      type: integer
+      format: int32
+      description: Cookie version
+      example: 1
+    path:
+      type: string
+      description: Cookie path
+      example: "/"
+    domain:
+      type: string
+      description: Cookie domain
+      example: "example.com"
+
+UserRole:
+  type: string
+  description: User role in the system
+  enum:
+    - ADMIN
+    - USER
+  examples:
+    - "ADMIN"
+    - "USER"

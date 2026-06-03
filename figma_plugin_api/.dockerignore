@@ -1,0 +1,67 @@
+# Gradle
+.gradle
+build/
+!build/libs/
+!build/docker/**
+!build/*-runner
+!build/*-runner.jar
+!build/*-runner.jar.original
+!build/generated
+
+# Maven
+target/
+pom.xml
+.mvn/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local configuration files
+.env.dev
+.env.local
+
+# Test files
+*.test
+
+# Git
+.git/
+.gitignore
+
+# Build output
+out/
+
+# Node
+node_modules/
+
+# BAML specific
+baml_src/
+!baml_client/
+
+# Other
+*.bak
+*.tmp
+*.tmp.*
+*~
+*.swp
+*.swo
+*#
+.attach_pid*
+.history
+.hs_err_pid*
+.repl-history
+.vertx/
+*.log.*
+*.bak.*

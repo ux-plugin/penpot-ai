@@ -1,0 +1,26 @@
+OAuthInitResponse:
+  type: object
+  description: Response containing OAuth initialization data — the opaque read-token used to poll the access-token endpoint, plus the redirect URL to send the user to.
+  required:
+    - readToken
+    - loginUrl
+  properties:
+    readToken:
+      type: string
+      description: Opaque read-token used as a query param when polling /auth/auth0/access-token.
+      example: "auth0-read-token:5e2f4a73c7"
+    loginUrl:
+      type: string
+      description: URL to redirect user for OAuth authentication
+      example: "https://your-tenant.auth0.com/authorize?response_type=code&client_id=abc123&redirect_uri=...&audience=...&state=..."
+
+AccessTokenResponse:
+  type: object
+  description: Response containing access token for an external service
+  required:
+    - accessToken
+  properties:
+    accessToken:
+      type: string
+      description: Access token for the external service API
+      example: "figd_U2FsdGVkX1-example-token-hash"

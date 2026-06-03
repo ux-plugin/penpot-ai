@@ -1,0 +1,282 @@
+# Spring Boot YAML configuration
+spring:
+  application:
+    name: figma-plugin-api
+
+  # Server configuration
+  webflux:
+    base-path: /
+
+  rsocket:
+    server:
+      transport: websocket
+      mapping-path: /rsocket
+
+  # R2DBC Database configuration
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:password}
+
+  # Liquibase configuration (uses JDBC)
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/master.yaml
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
+    user: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:password}
+
+  # Redis configuration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 70000ms
+      lettuce:
+        pool:
+          max-active: ${REDIS_MAX_POOL_SIZE:50}
+          max-idle: 10
+          min-idle: 5
+          max-wait: ${REDIS_MAX_WAITING:100}ms
+        shutdown-timeout: 5000ms
+
+  # Jackson configuration
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+
+  # Spring Cloud Stream — Kafka producer binding for chunks.raw. The API uses the
+  # plain Kafka binder (not Kafka Streams) since it's just a producer; only the
+  # downstream workers run Kafka Streams topologies.
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+      bindings:
+        chunkProducer-out-0:
+          destination: chunks.raw
+          producer:
+            useNativeEncoding: true
+          # Native Kafka producer configuration — JsonSerializer with type headers
+          # so downstream Kafka Streams workers (JsonSerde + trusted packages) can
+          # deserialize without per-message type config.
+      kafka.bindings:
+        chunkProducer-out-0:
+          producer:
+            configuration:
+              key.serializer: org.apache.kafka.common.serialization.StringSerializer
+              value.serializer: org.springframework.kafka.support.serializer.JsonSerializer
+              spring.json.add.type.headers: true
+
+server:
+  port: ${API_PORT:8080}
+  address: ${API_HOST:0.0.0.0}
+
+# CORS configuration
+cors:
+  allowed-origins: "*"
+  allowed-methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
+  allowed-headers: Authorization,Content-Type,Accept,Cache-Control,Upgrade,Connection,Sec-WebSocket-Key,Sec-WebSocket-Version,Sec-WebSocket-Protocol,Sec-WebSocket-Extensions
+  exposed-headers: Content-Disposition
+  max-age: 3600
+
+# OpenAPI/Swagger configuration
+springdoc:
+  api-docs:
+    path: /openapi
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+  info:
+    title: Figma Plugin API
+    version: 0.0.1
+    description: API for Figma Plugin
+
+# Ingest pipeline. Required for IngestionController + IngestionService beans to wire.
+# Transport is Spring Cloud Stream → Kafka; see `spring.cloud.stream.bindings`
+# below for the `chunkProducer-out-0` → `chunks.raw` binding.
+ingest:
+  enabled: true
+  max-chunk-size-bytes: ${INGEST_MAX_CHUNK_SIZE_BYTES:5242880}
+  s3-key-prefix: ""
+
+# API key validator (used by ApiKeyAuthenticationConverter to recognize bearer tokens).
+apikey:
+  prefix: ${APIKEY_PREFIX:pk_live_}
+  secret-length: 32
+  redis-cache-prefix: "apikey:"
+  redis-cache-ttl-sec: 60
+  last-used-debounce-sec: 60
+
+# Object store. In docker-compose: OBJECTSTORE_ENDPOINT=http://minio:9000 routes
+# through the docker DNS network. Dev profile overrides to localhost:9000.
+objectstore:
+  endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
+  region: ${OBJECTSTORE_REGION:us-east-1}
+  access-key: ${INGEST_API_S3_ACCESS_KEY:minioadmin}
+  secret-key: ${INGEST_API_S3_SECRET_KEY:minioadmin}
+  bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
+  path-style: true
+  create-bucket-on-startup: ${OBJECTSTORE_CREATE_BUCKET:true}
+
+# Spring Cloud Stream bindings — see top-level `spring.cloud.stream.*` block.
+
+# Logging configuration
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.plugin: ${APP_LOG_LEVEL:DEBUG}  # Your custom application logs
+    org.springframework: ${SPRING_LOG_LEVEL:INFO}
+    org.springframework.data.redis: ${REDIS_LOG_LEVEL:INFO}
+    org.springframework.web: ${WEB_LOG_LEVEL:INFO}
+    org.springframework.web.socket: ${WEBSOCKET_LOG_LEVEL:INFO}
+    org.springframework.web.reactive: ${REACTIVE_LOG_LEVEL:INFO}
+    io.lettuce: ${LETTUCE_LOG_LEVEL:INFO}
+    reactor.netty: ${NETTY_LOG_LEVEL:INFO}
+    reactor.netty.http.client: ${HTTP_CLIENT_LOG_LEVEL:INFO}
+
+# OpenAI configuration
+openai:
+  api:
+    key: ${OPENAI_API_KEY}
+  project:
+    id: ${OPENAI_PROJECT_ID}
+  org:
+    id: ${OPENAI_ORG_ID}
+
+# Fireworks AI configuration for audio transcription
+fireworks:
+  api:
+    key: ${FIREWORKS_API_KEY}
+    base-url: ${FIREWORKS_API_BASE_URL:https://api.fireworks.ai}
+  whisper:
+    model: ${FIREWORKS_WHISPER_MODEL:whisper-v3-large}
+
+# Agent configuration
+agent:
+  figma-design:
+    provider: ${FIGMA_DESIGN_PROVIDER:openai}
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      model-name: ${FIGMA_DESIGN_OPENAI_MODEL:gpt-5}
+      reasoning-effort: ${FIGMA_DESIGN_OPENAI_REASONING_EFFORT:medium}
+      return-thinking: ${FIGMA_DESIGN_OPENAI_RETURN_THINKING:true}
+      temperature: ${FIGMA_DESIGN_OPENAI_TEMPERATURE:}
+      max-tokens: ${FIGMA_DESIGN_OPENAI_MAX_TOKENS:}
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY}
+      model-name: ${FIGMA_DESIGN_ANTHROPIC_MODEL:claude-3-5-sonnet-20241022}
+      max-tokens: ${FIGMA_DESIGN_ANTHROPIC_MAX_TOKENS:4096}
+      temperature: ${FIGMA_DESIGN_ANTHROPIC_TEMPERATURE:}
+    gemini:
+      api-key: ${GEMINI_API_KEY}
+      model-name: ${FIGMA_DESIGN_GEMINI_MODEL:gemini-1.5-pro}
+      temperature: ${FIGMA_DESIGN_GEMINI_TEMPERATURE:0.7}
+      max-output-tokens: ${FIGMA_DESIGN_GEMINI_MAX_OUTPUT_TOKENS:}
+
+
+# Auth0 configuration. Auth0 is the sole identity issuer for the plugin.
+# Leave AUTH0_ISSUER_URI unset to disable Auth0 validation entirely.
+auth0:
+  issuer: ${AUTH0_ISSUER_URI:}
+  audience: ${AUTH0_AUDIENCE:}
+  jwk-set-uri: ${AUTH0_JWK_SET_URI:}
+  # Auth0 as OAuth IdP for the plugin login flow. Backend is a Regular Web Application
+  # (confidential client) registered in Auth0 with the audience above. Leave AUTH0_CLIENT_ID
+  # unset to disable the /auth/auth0/* endpoints entirely.
+  oauth:
+    client-id: ${AUTH0_CLIENT_ID:}
+    client-secret: ${AUTH0_CLIENT_SECRET:}
+    login-redirect-uri: ${AUTH0_LOGIN_REDIRECT_URI:}
+    refresh-token-lifetime-sec: ${AUTH0_REFRESH_TOKEN_LIFETIME_SEC:2592000}
+    login:
+      random-key:
+        max-retries: 3
+      timeout-sec: 60
+    read-token:
+      redis-key-prefix: "auth0-read-token:"
+    write-token:
+      redis-key-prefix: "auth0-write-token:"
+    tokens:
+      redis-key-prefix: "auth0-tokens:"
+
+# WebSocket configuration
+websocket:
+  auth:
+    path: /completions/create
+    token-query-param: token
+    upgrade-header: upgrade
+    websocket-value: websocket
+    session:
+      user-id-key: ws.auth.userId
+      token-expiration-key: ws.auth.tokenExpiration
+
+# Auth configuration. Identity is issued by Auth0 (see auth0.* above);
+# the figma/github sections only configure the connect flow that links
+# upstream provider accounts via AddSocialAccountMenu.
+auth:
+  figma:
+    client-id: ${AUTH_FIGMA_CLIENT_ID}
+    client-secret: ${AUTH_FIGMA_CLIENT_SECRET}
+    auth-url: https://www.figma.com/oauth
+    token-url: https://api.figma.com/v1/oauth/token
+    connect-redirect-uri: http://localhost:8080/auth/figma/connect/callback
+    user-id:
+      result-key-prefix: "figma-user-id:"
+    connect:
+      redis-key-prefix: "figma-connect:"
+    flow:
+      random-key:
+        max-retries: 3
+      timeout-sec: 60
+    read-token:
+      redis-key-prefix: "figma-read-token:"
+    write-token:
+      redis-key-prefix: "figma-write-token:"
+  github:
+    client-id: ${AUTH_GITHUB_CLIENT_ID}
+    client-secret: ${AUTH_GITHUB_CLIENT_SECRET}
+    auth-url: https://github.com/login/oauth/authorize
+    token-url: https://github.com/login/oauth/access_token
+    connect-redirect-uri: http://localhost:8080/auth/github/connect/callback
+    connect:
+      result-key-prefix: "github-connect:"
+    user-id:
+      result-key-prefix: "github-user-id:"
+    flow:
+      random-key:
+        max-retries: 3
+      timeout-sec: 60
+    read-token:
+      redis-key-prefix: "github-read-token:"
+    write-token:
+      redis-key-prefix: "github-write-token:"
+
+# User configuration
+user:
+  companion-app-key-prefix: "companion-app:"
+  encryption-key-ttl-s: 3600
+
+# REST Client configurations
+rest-client:
+  ai-server:
+    url: ${AI_SERVER_URL:http://localhost:8002}
+  github-api:
+    url: https://github.com
+  fireworks-api:
+    url: https://audio-prod.api.fireworks.ai
+    connect-timeout: 30000  # 30 seconds
+    read-timeout: 120000    # 120 seconds (for large audio files)
+
+# Management/Actuator configuration (production-safe defaults)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,refresh  # Only expose minimal endpoints in production
+  endpoint:
+    health:
+      show-details: when-authorized  # Only show details when authenticated

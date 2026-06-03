@@ -1,0 +1,64 @@
+spring:
+  application:
+    name: processor
+  config:
+    import:
+      - optional:file:../.env.dev[.properties]
+      - optional:file:.env.dev[.properties]
+  liquibase:
+    enabled: false
+  # R2DBC for session_metadata writes. Liquibase stays off — the api service owns
+  # migrations; the processor only reads/writes existing tables.
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:figma_plugin}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:password}
+  # Redis kept available for ad-hoc worker-side use; ETL pipeline runs on Kafka.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  cloud:
+    function:
+      definition: finalize
+    stream:
+      kafka:
+        streams:
+          binder:
+            brokers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+            configuration:
+              application.id: processor-pipeline
+              default.key.serde: org.apache.kafka.common.serialization.Serdes$StringSerde
+              default.value.serde: org.springframework.kafka.support.serializer.JsonSerde
+              spring.json.add.type.headers: true
+              spring.json.use.type.headers: true
+              spring.json.trusted.packages: "com.plugin.core.pipeline"
+              processing.guarantee: at_least_once
+      bindings:
+        finalize-in-0:
+          destination: sessions.closed
+
+objectstore:
+  endpoint: ${OBJECTSTORE_ENDPOINT:http://localhost:9000}
+  region: ${OBJECTSTORE_REGION:us-east-1}
+  access-key: ${PROCESSOR_S3_ACCESS_KEY:minioadmin}
+  secret-key: ${PROCESSOR_S3_SECRET_KEY:minioadmin}
+  bucket: ${OBJECTSTORE_BUCKET:zoetrope-data}
+  path-style: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.plugin: ${APP_LOG_LEVEL:DEBUG}

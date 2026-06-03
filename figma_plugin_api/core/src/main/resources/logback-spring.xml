@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Spring profile-specific properties -->
+    <springProperty scope="context" name="APP_NAME" source="spring.application.name" defaultValue="figma-plugin-api"/>
+    
+    <!-- Console appender configuration -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%thread] %cyan(%logger{36}) - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- File appender for all logs -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/application.log</file>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/archived/application-%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- File appender for error logs only -->
+    <appender name="ERROR_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/application-error.log</file>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>ERROR</level>
+        </filter>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n%ex{full}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/archived/application-error-%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- Async appender for better performance -->
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <appender-ref ref="FILE" />
+    </appender>
+
+    <appender name="ASYNC_ERROR_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>256</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <appender-ref ref="ERROR_FILE" />
+    </appender>
+
+    <!-- Development profile: Console + File with DEBUG level -->
+    <springProfile name="dev">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE" />
+            <appender-ref ref="ASYNC_FILE" />
+            <appender-ref ref="ASYNC_ERROR_FILE" />
+        </root>
+        
+        <!-- Application-specific logging -->
+        <logger name="com.plugin" level="DEBUG" />
+        
+        <!-- Spring framework logging -->
+        <logger name="org.springframework" level="INFO" />
+        <logger name="org.springframework.web" level="INFO" />
+        <logger name="org.springframework.web.socket" level="DEBUG" />
+        <logger name="org.springframework.web.reactive" level="INFO" />
+        <logger name="org.springframework.security" level="DEBUG" />
+        
+        <!-- Database logging -->
+        <logger name="org.springframework.data.redis" level="INFO" />
+        <logger name="org.springframework.r2dbc" level="DEBUG" />
+        <logger name="io.r2dbc" level="DEBUG" />
+        <logger name="org.jetbrains.exposed" level="DEBUG" />
+        
+        <!-- Redis logging -->
+        <logger name="io.lettuce" level="INFO" />
+        
+        <!-- Netty logging -->
+        <logger name="reactor.netty" level="INFO" />
+        <logger name="reactor.netty.http.client" level="DEBUG" />
+    </springProfile>
+
+    <!-- Test profile: Console only with WARN level -->
+    <springProfile name="test">
+        <root level="WARN">
+            <appender-ref ref="CONSOLE" />
+        </root>
+        
+        <logger name="com.plugin" level="DEBUG" />
+        <logger name="org.springframework" level="WARN" />
+        <logger name="org.testcontainers" level="INFO" />
+    </springProfile>
+
+    <!-- Production profile: File only with INFO level -->
+    <springProfile name="prod">
+        <root level="INFO">
+            <appender-ref ref="ASYNC_FILE" />
+            <appender-ref ref="ASYNC_ERROR_FILE" />
+        </root>
+        
+        <!-- Application-specific logging -->
+        <logger name="com.plugin" level="INFO" />
+        
+        <!-- Spring framework logging -->
+        <logger name="org.springframework" level="WARN" />
+        <logger name="org.springframework.web" level="WARN" />
+        <logger name="org.springframework.security" level="WARN" />
+        
+        <!-- Database logging -->
+        <logger name="org.springframework.data.redis" level="WARN" />
+        <logger name="org.springframework.r2dbc" level="WARN" />
+        <logger name="org.jetbrains.exposed" level="WARN" />
+        
+        <!-- Redis logging -->
+        <logger name="io.lettuce" level="WARN" />
+        
+        <!-- Netty logging -->
+        <logger name="reactor.netty" level="WARN" />
+    </springProfile>
+
+    <!-- Default profile (when no profile is active) -->
+    <springProfile name="default">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE" />
+            <appender-ref ref="ASYNC_FILE" />
+            <appender-ref ref="ASYNC_ERROR_FILE" />
+        </root>
+        
+        <logger name="com.plugin" level="INFO" />
+    </springProfile>
+
+</configuration>

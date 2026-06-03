@@ -1,0 +1,201 @@
+# Spring Boot Development Profile Configuration
+
+spring:
+  # Import dev secrets from .env.dev. Both paths listed because IDE working dir = api
+  # module root, CLI working dir = repo root. Don't load .env here — .env is the
+  # docker-compose env file with placeholder values that would clobber real dev values.
+  config:
+    import:
+      - optional:file:../.env.dev[.properties]
+      - optional:file:.env.dev[.properties]
+
+  # Spring Boot DevTools configuration
+  devtools:
+    restart:
+      enabled: true                    # Enable automatic restart
+      poll-interval: 1000ms           # Check for changes every second
+      quiet-period: 400ms             # Wait 400ms before restarting
+      exclude: static/**,public/**    # Don't restart for static resources
+      additional-exclude: "*.log"     # Also exclude log files
+    livereload:
+      enabled: true                    # Enable LiveReload server
+      port: 35729                      # Default LiveReload port
+
+  # Liquibase configuration (development) — drops + recreates schema on every startup
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/master.yaml
+    url: jdbc:postgresql://localhost:5432/figma_plugin
+    user: postgres
+    password: password
+    drop-first: true  # WARNING: drops all database objects before running migrations in dev
+
+# Logging configuration (development)
+logging:
+  level:
+    root: INFO
+    com.plugin: DEBUG  # Your custom application logs
+    org.springframework: INFO
+    org.springframework.data.redis: INFO
+    org.springframework.web: INFO
+    org.springframework.web.socket: INFO
+    org.springframework.web.reactive: INFO
+    org.springframework.web.reactive.function.client: INFO
+    io.lettuce: INFO
+    reactor.netty: INFO
+    reactor.netty.http.client: INFO
+
+# Ingest pipeline (development)
+ingest:
+  enabled: true
+  max-chunk-size-bytes: 5242880
+  s3-key-prefix: ""
+  stream:
+    name: "ingest.raw"
+    max-pending: 10000
+    backpressure-retry-after-sec: 5
+    backpressure-cache-ttl-ms: 1000
+
+# API key generation (development overrides prefix to pk_test_)
+apikey:
+  prefix: pk_test_
+  secret-length: 32
+  redis-cache-prefix: "apikey:"
+  redis-cache-ttl-sec: 60
+  last-used-debounce-sec: 60
+
+# Object store (MinIO via S3 protocol) — development defaults.
+# Per-stage credentials in production — api's IAM policy in
+# deploy/iac/opentofu/ allows only `s3:PutObject raw/*`. Falls back to
+# minioadmin in dev.
+objectstore:
+  endpoint: http://localhost:9000
+  region: us-east-1
+  access-key: ${INGEST_API_S3_ACCESS_KEY:minioadmin}
+  secret-key: ${INGEST_API_S3_SECRET_KEY:minioadmin}
+  bucket: zoetrope-data
+  path-style: true
+  create-bucket-on-startup: true
+
+# OpenAI configuration (development with defaults)
+openai:
+  api:
+    key: ${OPENAI_API_KEY:sk-dummy-key-for-dev}
+  project:
+    id: dev-project
+  org:
+    id: dev-org
+
+# Fireworks AI configuration (development with defaults)
+fireworks:
+  api:
+    key: ${FIREWORKS_API_KEY:dummy-fireworks-key}
+    base-url: https://audio-prod.api.fireworks.ai
+  whisper:
+    model: whisper-v3
+
+# Agent configuration (development with static values)
+agent:
+  figma-design:
+    provider: anthropic
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      model-name: gpt-4o
+      reasoning-effort: medium
+      return-thinking: true
+      temperature: 0.7
+      max-tokens: 4096
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY}
+      model-name: claude-sonnet-4-20250514
+      max-tokens: 4096
+      thinking-budget-tokens: 2000
+      temperature: 1.0
+    gemini:
+      api-key: ${GEMINI_API_KEY}
+      model-name: gemini-2.0-flash-exp
+      temperature: 0.7
+      max-output-tokens: 8192
+
+
+# JWT configuration (development)
+jwt:
+  private-key-location: classpath:META-INF/resources/privateKey-dev.pem
+  public-key-location: classpath:META-INF/resources/publicKey-dev.pem
+  token:
+    lifespan: 90000  # Extended for development (25 hours)
+
+# Auth configuration (development)
+auth:
+  access-token-ttl-s: 90000  # Extended for development
+  refresh-token-ttl-s: 2592000  # 30 days
+  figma:
+    client-id: ${AUTH_FIGMA_CLIENT_ID}
+    client-secret: ${AUTH_FIGMA_CLIENT_SECRET}
+    auth-url: https://www.figma.com/oauth
+    token-url: https://api.figma.com/v1/oauth/token
+    login-redirect-uri: http://localhost:8080/auth/figma/callback
+    connect-redirect-uri: http://localhost:8080/auth/figma/connect/callback
+    user-id:
+      result-key-prefix: "figma-user-id:"
+    connect:
+      redis-key-prefix: "figma-connect:"
+    login:
+      random-key:
+        max-retries: 3
+      timeout-sec: 60
+    rest-client:
+      access-token:
+        redis-key-prefix: "figma-login:"
+    read-token:
+      redis-key-prefix: "figma-read-token:"
+    write-token:
+      redis-key-prefix: "figma-write-token:"
+  github:
+    client-id: ${AUTH_GITHUB_CLIENT_ID}
+    client-secret: ${AUTH_GITHUB_CLIENT_SECRET}
+    auth-url: https://github.com/login/oauth/authorize
+    token-url: https://github.com/login/oauth/access_token
+    login-redirect-uri: http://localhost:8080/auth/github/callback
+    connect-redirect-uri: http://localhost:8080/auth/github/connect/callback
+    connect:
+      result-key-prefix: "github-connect:"
+    user-id:
+      result-key-prefix: "github-user-id:"
+    login:
+      random-key:
+        max-retries: 3
+      timeout-sec: 60
+    rest-client:
+      access-token:
+        redis-key-prefix: "github-login:"
+    read-token:
+      redis-key-prefix: "github-read-token:"
+    write-token:
+      redis-key-prefix: "github-write-token:"
+
+# User configuration (development)
+user:
+  companion-app-key-prefix: "companion-app:"
+  encryption-key-ttl-s: 3600
+
+# REST Client configurations (development)
+rest-client:
+  ai-server:
+    url: http://localhost:8002
+  github-api:
+    url: https://api.github.com
+  fireworks-api:
+    url: https://audio-prod.api.fireworks.ai
+    connect-timeout: 30000  # 30 seconds
+    read-timeout: 120000    # 120 seconds (for large audio files)
+
+# Management/Actuator configuration (development)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'  # Expose all actuator endpoints in dev
+  endpoint:
+    health:
+      show-details: always  # Show detailed health information

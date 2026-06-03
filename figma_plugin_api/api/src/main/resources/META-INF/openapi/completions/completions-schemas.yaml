@@ -1,0 +1,529 @@
+ComponentCompletionResponse:
+  type: object
+  description: Response containing AI-generated component completion
+  required:
+    - id
+    - prompt
+    - aiCompletion
+    - createdAt
+  properties:
+    id:
+      type: string
+      description: Unique completion identifier
+      example: "completion_123456789"
+    prompt:
+      type: string
+      description: Original user prompt
+      example: "Create a blue button with rounded corners"
+    aiCompletion:
+      $ref: "#/FrameNode"
+    createdAt:
+      $ref: "../common/common-schemas.yaml#/Instant"
+  examples:
+    - id: "completion_123456789"
+      prompt: "Create a blue button with rounded corners"
+      aiCompletion:
+        id: "frame_001"
+        name: "Blue Button"
+        width: 120
+        height: 40
+        fills:
+          - visible: true
+            opacity: 1.0
+            blendMode: "NORMAL"
+        cornerRadius:
+          topLeftRadius: 8
+          topRightRadius: 8
+          bottomLeftRadius: 8
+          bottomRightRadius: 8
+      createdAt: "2024-08-06T16:01:00Z"
+
+PromptRequest:
+  type: object
+  description: Request containing user prompt for AI completion
+  required:
+    - prompt
+  properties:
+    prompt:
+      type: string
+      description: User's natural language prompt
+      example: "Create a red card with a title and description"
+  examples:
+    - prompt: "Create a red card with a title and description"
+    - prompt: "Design a navigation bar with logo and menu items"
+    - prompt: "Make a form with input fields and submit button"
+
+FrameNode:
+  type: object
+  description: Figma frame node representation
+  required:
+    - id
+  properties:
+    id:
+      type: string
+      description: Unique node identifier
+      example: "frame_001"
+    name:
+      type: string
+      nullable: true
+      description: Node name
+      example: "Main Frame"
+    clipsContent:
+      type: boolean
+      nullable: true
+      description: Whether content is clipped
+      example: false
+    children:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: Child node IDs
+      example: [ "child_001", "child_002" ]
+    parent:
+      type: string
+      nullable: true
+      description: Parent node ID
+      example: "parent_001"
+    fills:
+      type: array
+      nullable: true
+      items:
+        $ref: "#/PaintProps"
+      description: Fill properties
+    fillStyleId:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: Fill style IDs
+    strokes:
+      type: array
+      nullable: true
+      items:
+        $ref: "#/PaintProps"
+      description: Stroke properties
+    strokeStyleId:
+      type: string
+      nullable: true
+      description: Stroke style ID
+    strokeWeight:
+      $ref: "#/StrokeWeight"
+      nullable: true
+    strokeJoin:
+      $ref: "#/StrokeJoin"
+      nullable: true
+    strokeAlign:
+      $ref: "#/StrokeAlign"
+      nullable: true
+    dashPattern:
+      type: array
+      nullable: true
+      items:
+        type: integer
+        format: int32
+      description: Dash pattern for strokes
+    strokeGeometry:
+      type: array
+      nullable: true
+      items:
+        $ref: "#/VectorPath"
+      description: Stroke geometry
+    strokeCap:
+      $ref: "#/StrokeCap"
+      nullable: true
+    strokeMiterLimit:
+      type: integer
+      nullable: true
+      format: int32
+      description: Stroke miter limit
+    fillGeometry:
+      type: array
+      nullable: true
+      items:
+        $ref: "#/VectorPath"
+      description: Fill geometry
+    cornerRadius:
+      $ref: "#/CornerRadius"
+      nullable: true
+    cornerSmoothing:
+      type: integer
+      nullable: true
+      format: int32
+      description: Corner smoothing value
+    opacity:
+      type: number
+      nullable: true
+      format: float
+      description: Node opacity (0-1)
+      example: 1.0
+    blendMode:
+      $ref: "#/BlendMode"
+      nullable: true
+    isMask:
+      type: boolean
+      nullable: true
+      description: Whether node is a mask
+    maskType:
+      $ref: "#/MaskType"
+      nullable: true
+    effects:
+      type: array
+      nullable: true
+      items:
+        $ref: "#/Effect"
+      description: Visual effects
+    effectStyleId:
+      type: string
+      nullable: true
+      description: Effect style ID
+    x:
+      type: integer
+      nullable: true
+      format: int32
+      description: X position
+      example: 0
+    y:
+      type: integer
+      nullable: true
+      format: int32
+      description: Y position
+      example: 0
+    width:
+      type: integer
+      nullable: true
+      format: int32
+      description: Width
+      example: 100
+    height:
+      type: integer
+      nullable: true
+      format: int32
+      description: Height
+      example: 50
+    minWidth:
+      type: integer
+      nullable: true
+      format: int32
+      description: Minimum width
+    maxWidth:
+      type: integer
+      nullable: true
+      format: int32
+      description: Maximum width
+    minHeight:
+      type: integer
+      nullable: true
+      format: int32
+      description: Minimum height
+    maxHeight:
+      type: integer
+      nullable: true
+      format: int32
+      description: Maximum height
+    layoutAlign:
+      $ref: "#/LayoutAlign"
+      nullable: true
+    layoutGrow:
+      type: number
+      nullable: true
+      format: float
+      description: Layout grow factor
+    layoutPositioning:
+      $ref: "#/LayoutPositioning"
+      nullable: true
+    constrainProportions:
+      type: boolean
+      nullable: true
+      description: Whether proportions are constrained
+    rotation:
+      type: integer
+      nullable: true
+      format: int32
+      description: Rotation in degrees
+    layoutSizingHorizontal:
+      $ref: "#/LayoutSizing"
+      nullable: true
+    layoutSizingVertical:
+      $ref: "#/LayoutSizing"
+      nullable: true
+    constraints:
+      $ref: "#/Constraints"
+      nullable: true
+
+BlendMode:
+  type: string
+  description: Blend mode for visual elements
+  enum:
+    - NORMAL
+    - MULTIPLY
+    - SCREEN
+    - OVERLAY
+    - DARKEN
+    - LIGHTEN
+    - COLOR_DODGE
+    - COLOR_BURN
+    - HARD_LIGHT
+    - SOFT_LIGHT
+    - DIFFERENCE
+    - EXCLUSION
+    - HUE
+    - SATURATION
+    - COLOR
+    - LUMINOSITY
+  examples:
+    - "NORMAL"
+    - "MULTIPLY"
+    - "OVERLAY"
+
+ConstraintType:
+  type: string
+  description: Constraint type for layout
+  enum:
+    - MIN
+    - CENTER
+    - MAX
+    - STRETCH
+    - SCALE
+  examples:
+    - "MIN"
+    - "CENTER"
+    - "STRETCH"
+
+Constraints:
+  type: object
+  description: Layout constraints
+  required:
+    - horizontal
+    - vertical
+  properties:
+    horizontal:
+      $ref: "#/ConstraintType"
+    vertical:
+      $ref: "#/ConstraintType"
+  examples:
+    - horizontal: "MIN"
+      vertical: "MIN"
+    - horizontal: "CENTER"
+      vertical: "CENTER"
+
+CornerRadius:
+  type: object
+  description: Corner radius values
+  properties:
+    topLeftRadius:
+      type: integer
+      format: int32
+      description: Top left corner radius
+      example: 8
+    topRightRadius:
+      type: integer
+      format: int32
+      description: Top right corner radius
+      example: 8
+    bottomLeftRadius:
+      type: integer
+      format: int32
+      description: Bottom left corner radius
+      example: 8
+    bottomRightRadius:
+      type: integer
+      format: int32
+      description: Bottom right corner radius
+      example: 8
+  examples:
+    - topLeftRadius: 8
+      topRightRadius: 8
+      bottomLeftRadius: 8
+      bottomRightRadius: 8
+    - topLeftRadius: 0
+      topRightRadius: 0
+      bottomLeftRadius: 4
+      bottomRightRadius: 4
+
+Effect:
+  type: object
+  description: Visual effect properties
+  properties:
+    visible:
+      type: boolean
+      description: Whether effect is visible
+      example: true
+  examples:
+    - visible: true
+    - visible: false
+
+LayoutAlign:
+  type: string
+  description: Layout alignment
+  enum:
+    - MIN
+    - CENTER
+    - MAX
+    - STRETCH
+    - INHERIT
+  examples:
+    - "MIN"
+    - "CENTER"
+    - "STRETCH"
+
+LayoutPositioning:
+  type: string
+  description: Layout positioning type
+  enum:
+    - AUTO
+    - ABSOLUTE
+  examples:
+    - "AUTO"
+    - "ABSOLUTE"
+
+LayoutSizing:
+  type: string
+  description: Layout sizing behavior
+  enum:
+    - FIXED
+    - HUG
+    - FILL
+  examples:
+    - "FIXED"
+    - "HUG"
+    - "FILL"
+
+MaskType:
+  type: string
+  description: Mask type
+  enum:
+    - ALPHA
+    - VECTOR
+    - LUMINANCE
+  examples:
+    - "ALPHA"
+    - "VECTOR"
+
+PaintProps:
+  type: object
+  description: Paint properties for fills and strokes
+  properties:
+    blendMode:
+      $ref: "#/BlendMode"
+      nullable: true
+    visible:
+      type: boolean
+      nullable: true
+      description: Whether paint is visible
+      example: true
+    opacity:
+      type: number
+      nullable: true
+      format: float
+      description: Paint opacity (0-1)
+      example: 1.0
+  examples:
+    - blendMode: "NORMAL"
+      visible: true
+      opacity: 1.0
+    - visible: false
+      opacity: 0.5
+
+StrokeAlign:
+  type: string
+  description: Stroke alignment
+  enum:
+    - CENTER
+    - INSIDE
+    - OUTSIDE
+  examples:
+    - "CENTER"
+    - "INSIDE"
+    - "OUTSIDE"
+
+StrokeCap:
+  type: string
+  description: Stroke cap style
+  enum:
+    - NONE
+    - ROUND
+    - SQUARE
+    - ARROW_LINES
+    - ARROW_EQUILATERAL
+  examples:
+    - "NONE"
+    - "ROUND"
+    - "SQUARE"
+
+StrokeJoin:
+  type: string
+  description: Stroke join style
+  enum:
+    - MITER
+    - BEVEL
+    - ROUND
+  examples:
+    - "MITER"
+    - "BEVEL"
+    - "ROUND"
+
+StrokeWeight:
+  type: object
+  description: Stroke weight values
+  properties:
+    strokeTopWeight:
+      type: number
+      format: float
+      description: Top stroke weight
+      example: 1.0
+    strokeBottomWeight:
+      type: number
+      format: float
+      description: Bottom stroke weight
+      example: 1.0
+    strokeLeftWeight:
+      type: number
+      format: float
+      description: Left stroke weight
+      example: 1.0
+    strokeRightWeight:
+      type: number
+      format: float
+      description: Right stroke weight
+      example: 1.0
+  examples:
+    - strokeTopWeight: 1.0
+      strokeBottomWeight: 1.0
+      strokeLeftWeight: 1.0
+      strokeRightWeight: 1.0
+    - strokeTopWeight: 2.0
+      strokeBottomWeight: 2.0
+      strokeLeftWeight: 1.0
+      strokeRightWeight: 1.0
+
+VectorPath:
+  type: object
+  description: Vector path data
+  required:
+    - windingRule
+    - data
+  properties:
+    windingRule:
+      $ref: "#/WindingRule"
+    data:
+      type: string
+      description: SVG path data
+      example: "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+  examples:
+    - windingRule: "EVENODD"
+      data: "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+    - windingRule: "NONZERO"
+      data: "M 10 10 Q 50 0 90 10 T 90 50"
+
+WindingRule:
+  type: string
+  description: Winding rule for vector paths
+  enum:
+    - EVENODD
+    - NONZERO
+    - NONE
+  examples:
+    - "EVENODD"
+    - "NONZERO"
+    - "NONE"

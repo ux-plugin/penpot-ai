@@ -1,0 +1,24 @@
+openapi: 3.1.0
+info:
+  contact:
+    email: support@example.com
+    name: Support
+  description: Authentication API for Figma Plugin
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  title: Authentication API
+  version: 0.0.1
+
+# Identity is issued by Auth0 (POST /auth/auth0/*) and the GitHub/Figma sections cover only
+# the *connect* flow that links upstream provider accounts via AddSocialAccountMenu. The
+# legacy self-hosted /auth/{provider}/{login,callback,access-token} and /auth/plugin-ui/*
+# endpoints were retired in figma_plugin_api#41.
+
+tags:
+  - name: Auth0
+    description: Auth0 OAuth identity flow (the only login path)
+  - name: Connect
+    description: GitHub/Figma connect flows for linking upstream provider accounts
+
+paths: {}
