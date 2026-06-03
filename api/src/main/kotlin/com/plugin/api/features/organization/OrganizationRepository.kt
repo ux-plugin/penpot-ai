@@ -9,6 +9,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.innerJoin
 import org.jetbrains.exposed.v1.r2dbc.R2dbcDatabase
+import org.jetbrains.exposed.v1.r2dbc.deleteWhere
 import org.jetbrains.exposed.v1.r2dbc.insert
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
@@ -50,6 +51,11 @@ class OrganizationRepository(private val database: R2dbcDatabase) {
             .where { OrganizationMembersTable.userId eq userId }
             .map { it.toEntity() to it[OrganizationMembersTable.role] }
             .toList()
+    }
+
+    // Cascade FKs on organization_members and api_keys clean up dependent rows.
+    suspend fun delete(id: String): Int = suspendTransaction(database) {
+        OrganizationsTable.deleteWhere { OrganizationsTable.id eq id }
     }
 
     suspend fun findMembership(orgId: String, userId: String): OrganizationMemberEntity? = suspendTransaction(database) {

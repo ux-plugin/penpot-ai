@@ -39,6 +39,16 @@ class OrganizationService(private val repository: OrganizationRepository) {
         return OrganizationResponse(org.id, org.slug, org.name, membership.role, org.createdAt)
     }
 
+    // Only OWNERs may delete an org. Throws NotFoundException if the caller isn't a member
+    // (or the org doesn't exist) — we don't leak existence to non-members. Cascade FKs
+    // drop members + api_keys.
+    suspend fun delete(orgId: String, userId: String) {
+        val membership = repository.findMembership(orgId, userId)
+            ?: throw NotFoundException("Organization $orgId not found")
+        if (membership.role != OrgMemberRole.OWNER) throw OrganizationForbiddenException(orgId)
+        repository.delete(orgId)
+    }
+
     suspend fun roleOf(orgId: String, userId: String): OrgMemberRole? = repository.findMembership(orgId, userId)?.role
 
     private fun slugify(name: String): String =
@@ -50,3 +60,6 @@ class OrganizationService(private val repository: OrganizationRepository) {
 
 class OrganizationSlugTakenException(val slug: String, cause: Throwable? = null) :
     RuntimeException("Organization slug '$slug' already taken", cause)
+
+class OrganizationForbiddenException(val orgId: String) :
+    RuntimeException("Not authorized to modify org $orgId")
