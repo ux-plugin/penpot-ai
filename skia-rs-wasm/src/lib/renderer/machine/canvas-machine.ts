@@ -122,6 +122,16 @@ export const canvasMachine = canvasMachineSetup.createMachine({
         onDone: { target: 'idle' },
         onError: { target: 'idle' },
       },
+      on: {
+        // A double-click begins with a mousedown that transiently enters
+        // `moving`; the async hit-test that decides to edit a text shape may
+        // resolve before the move actor settles. Accept the transition here so
+        // the edit isn't dropped (the move actor is auto-stopped on exit).
+        START_TEXT_EDIT: {
+          target: 'textEditing',
+          actions: assign({ textEditingShapeId: ({ event }) => event.shapeId }),
+        },
+      },
     },
     rotating: {
       invoke: {

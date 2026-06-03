@@ -335,7 +335,6 @@ impl TileGrid {
         let tile_size = tiles::get_tile_size(scale);
         let interest_rect = &tile_viewbox.interest_rect;
 
-        crate::perf_guard!("rebuild_step1_index_shapes");
         let root_id = Uuid::nil();
         let mut paint_counter: u32 = 0;
         if let Some(root) = tree.get(&root_id) {
@@ -569,7 +568,6 @@ impl RenderState {
         // frame's CPU-side wasm work take?". Sub-guards
         // (`tile_grid_rebuild`, `run_schedule_TOTAL`, ...) still break
         // it down.
-        crate::perf_guard!("frame_TOTAL");
         let _start = performance::begin_timed_log!("start_render_loop");
         let scale = self.get_scale();
 
@@ -611,7 +609,6 @@ impl RenderState {
 
         performance::begin_measure!("tile_grid_rebuild");
         {
-            crate::perf_guard!("tile_grid_rebuild");
             self.tile_grid.rebuild(tree, &self.tile_viewbox, scale);
         }
         performance::end_measure!("tile_grid_rebuild");
@@ -642,7 +639,6 @@ impl RenderState {
 
         performance::end_measure!("start_render_loop");
         performance::end_timed_log!("start_render_loop", _start);
-        crate::perf_record_frame!();
         Ok(())
     }
 
@@ -655,7 +651,6 @@ impl RenderState {
         // Continuation-frame top-level guard. Same role as
         // `frame_TOTAL` in `start_render_loop` but for chunked async
         // continuations. Sums to the full per-frame CPU cost.
-        crate::perf_guard!("frame_TOTAL");
         performance::begin_measure!("process_animation_frame");
         if self.render_in_progress {
             if tree.len() != 0 {
@@ -672,7 +667,6 @@ impl RenderState {
             }
         }
         performance::end_measure!("process_animation_frame");
-        crate::perf_record_frame!();
         Ok(())
     }
 
@@ -697,7 +691,6 @@ impl RenderState {
     /// `ProductionSink`. The sole frame-render entry point now that V2
     /// is gone.
     fn run_schedule(&mut self, tree: ShapesPoolRef) -> Result<()> {
-        crate::perf_guard!("run_schedule_TOTAL");
         let scale = self.get_scale();
         let tile_size = crate::tiles::get_tile_size(scale);
         // Pool surfaces must match legacy `Current` exactly: 1024×1024
@@ -723,32 +716,6 @@ impl RenderState {
             for tx in interest.x1()..=interest.x2() {
                 tiles.push(Tile(tx, ty));
             }
-        }
-
-        // /debug-mode: which tiles enter the SSA pipeline this frame?
-        // Compare against the shape's tile coverage to see if vacated
-        // tiles are still being iterated.
-        {
-            let vb = self.viewbox.area;
-            let dbg_value = format!(
-                "{{\"viewbox\":[{:.1},{:.1},{:.1},{:.1}],\"zoom\":{:.3},\"tile_size\":{:.1},\"interest_rect\":[{},{},{},{}],\"tile_count\":{}}}",
-                vb.left,
-                vb.top,
-                vb.width(),
-                vb.height(),
-                self.viewbox.zoom,
-                tile_size,
-                interest.x1(),
-                interest.y1(),
-                interest.x2(),
-                interest.y2(),
-                tiles.len(),
-            );
-            crate::render::ssa::debug::event(
-                "ssa-schedule-entry",
-                &dbg_value,
-                "tile_grid/mod.rs::run_schedule_via_ssa",
-            );
         }
 
         let origin = move |t: Tile| {
@@ -795,11 +762,7 @@ impl RenderState {
         self.surfaces.gc();
         self.cached_viewbox = self.viewbox;
 
-        if self.options.is_debug_visible() {
-            crate::render::debug::render(self);
-        }
         crate::render::ui::render(self, tree);
-        crate::render::debug::render_wasm_label(self);
 
         dispatch_result
     }

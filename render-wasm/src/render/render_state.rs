@@ -9,7 +9,7 @@ use super::options::RenderOptions;
 pub use super::surfaces::{SurfaceId, Surfaces};
 
 use super::{
-    debug, fills, filters, fonts, glass, grid_layout, noise, shadows, strokes, text, texture, ui,
+    fills, filters, fonts, glass, grid_layout, noise, shadows, strokes, text, texture, ui,
 };
 use super::local;
 
@@ -618,7 +618,6 @@ impl RenderState {
     }
 
     pub fn flush_and_submit(&mut self) {
-        crate::perf_guard!("gpu_flush_and_submit");
         self.surfaces
             .flush_and_submit(&mut self.gpu_state, SurfaceId::Target);
     }
@@ -843,11 +842,6 @@ impl RenderState {
         // Restore layer-blur isolation layer (composites blurred body onto target).
         if layer_sigma.is_some() {
             self.surfaces.canvas(target).restore();
-        }
-
-        if self.options.is_debug_visible() {
-            let shape_selrect_bounds = self.get_shape_selrect_bounds(shape);
-            debug::render_debug_shape(self, Some(shape_selrect_bounds), None);
         }
 
         self.surfaces.canvas(target).restore();
@@ -1482,12 +1476,7 @@ impl RenderState {
             // Restore canvas state
             self.surfaces.canvas(SurfaceId::Target).restore();
 
-            if self.options.is_debug_visible() {
-                debug::render(self);
-            }
-
             ui::render(self, shapes);
-            debug::render_wasm_label(self);
 
             self.flush_and_submit();
         }

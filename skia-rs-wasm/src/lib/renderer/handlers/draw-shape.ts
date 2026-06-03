@@ -12,7 +12,7 @@ import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { screenToWorld } from '../viewport'
 import { makeSelrect } from '../../worker/types'
 import { applyChanges } from '../../page-crud'
-import { createFrame, createRect } from '../node-factory'
+import { createFrame, createRect, createText } from '../node-factory'
 import type { AddObjChange } from 'penpot-exporter/types'
 import type { DrawTool } from '../machine/canvas-machine'
 
@@ -66,7 +66,12 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
           tap(() => {
             shapeDrawPreviewSignal.value = null
 
-            if (lastRect.width < MIN_DRAW_SCREEN_PX || lastRect.height < MIN_DRAW_SCREEN_PX) {
+            // Click (no real drag) vs drag. Like Penpot: the text tool supports
+            // click-to-create (a small auto-width box that grows with typing);
+            // rect/frame require a real drag.
+            const isClick =
+              lastRect.width < MIN_DRAW_SCREEN_PX || lastRect.height < MIN_DRAW_SCREEN_PX
+            if (isClick && tool !== 'text') {
               return
             }
 
@@ -74,9 +79,11 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
             if (!vp) return
 
             const worldOrigin = screenToWorld(vp, lastRect.x, lastRect.y)
-            const w = lastRect.width / vp.zoom
-            const h = lastRect.height / vp.zoom
-            if (w < 1e-6 || h < 1e-6) return
+            // Click-created text: Penpot's tiny initial box (4×17 world units) with
+            // auto-width grow. Dragged: the drawn size, fixed grow.
+            const w = isClick ? 4 : lastRect.width / vp.zoom
+            const h = isClick ? 17 : lastRect.height / vp.zoom
+            if (!isClick && (w < 1e-6 || h < 1e-6)) return
 
             const currentPage = effectivePageId ? getPage(effectivePageId) : undefined
             if (!currentPage) return
@@ -96,17 +103,29 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
                     strokeColor: '#9CA3AF',
                     strokeWidth: 1,
                   })
-                : createRect({
-                    x: worldOrigin.x,
-                    y: worldOrigin.y,
-                    width: w,
-                    height: h,
-                    parentId: rootId,
-                    fillColor: '#3B82F6',
-                    fillOpacity: 0.85,
-                    strokeColor: '#1E40AF',
-                    strokeWidth: 2,
-                  })
+                : tool === 'text'
+                  ? createText({
+                      x: worldOrigin.x,
+                      y: worldOrigin.y,
+                      width: w,
+                      height: h,
+                      parentId: rootId,
+                      text: 'Text',
+                      // Click → auto-width box that grows with typing; drag → fixed
+                      // box at the drawn size (Penpot's text-tool behaviour).
+                      growType: isClick ? 'auto-width' : 'fixed',
+                    })
+                  : createRect({
+                      x: worldOrigin.x,
+                      y: worldOrigin.y,
+                      width: w,
+                      height: h,
+                      parentId: rootId,
+                      fillColor: '#3B82F6',
+                      fillOpacity: 0.85,
+                      strokeColor: '#1E40AF',
+                      strokeWidth: 2,
+                    })
 
             const addChange: AddObjChange = {
               type: 'add-obj',

@@ -76,6 +76,15 @@ export interface Viewport {
 export interface RendererOptions {
   dpr?: number
   debug?: boolean
+  /**
+   * Render-wasm picture-in-picture cache debug overlay. When true, the
+   * renderer draws a strip along the right edge of the canvas showing
+   * the latest scope_F / anc_F / gather backdrop / per-tile cache /
+   * Current snapshots captured during the frame. Useful for diagnosing
+   * stale tile or backdrop cache contents. Maps to render-wasm flag
+   * 0x10 in `set_render_options`.
+   */
+  debugPip?: boolean
   background?: string
 }
 

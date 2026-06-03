@@ -675,7 +675,6 @@ impl Surfaces {
             );
 
             self.tiles.add(tile_viewbox, tile, tile_image);
-            crate::perf_count!(tile_write);
         }
     }
 
@@ -822,7 +821,6 @@ impl Surfaces {
         // generates a fresh one rather than blit-cached stale content.
         let _ = tile_viewbox;
         self.tiles.remove(*tile);
-        crate::perf_count!(tile_write);
     }
 
     pub fn ssa_cache_tile_image(
@@ -847,7 +845,6 @@ impl Surfaces {
             .canvas()
             .draw_image_rect(&image, None, tile_rect, &paint);
         self.tiles.add(tile_viewbox, tile, image);
-        crate::perf_count!(tile_write);
     }
 
     /// V3 scope helper — clear `Current` (including margins). Pairs with

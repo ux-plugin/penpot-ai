@@ -1,6 +1,18 @@
 /**
- * React hook for viewport interactions
- * Manages event listeners for canvas and window interactions (wheel, mouse, keyboard)
+ * React hook for viewport interactions.
+ *
+ * Pointer surface for canvas gestures: all non-text pointer events land on ONE
+ * full-size wrapper element (`surfaceRef`) layered over the canvas (canvas itself
+ * is `pointerEvents:'none'`). Being a single element makes the native `dblclick`
+ * for entering text editing reliable (both presses share it), the way Penpot's
+ * single `viewport-controls` SVG does. Selection handles sit above the wrapper.
+ *
+ * Text editing pointers (caret / drag-select / word-select) are NOT handled here —
+ * they go to the contentEditable in `TextEditorOverlay`, which sits over the shape
+ * and reads element-local `offsetX/offsetY` (shape-local for free), exactly like
+ * Penpot's `v3_editor`. The sink's only job during editing is click-away: a
+ * mousedown that reaches the wrapper is outside the text box → `STOP_TEXT_EDIT`.
+ * Keyboard/zoom shortcuts stay on the window.
  */
 
 import type { RefObject } from 'react'
@@ -58,13 +70,14 @@ function isPointInSelectionBounds(
 }
 
 interface UseViewportInteractionsParams {
-  canvasRef: RefObject<HTMLCanvasElement | null>
+  /** The single full-size pointer surface (wrapper) layered over the canvas. */
+  surfaceRef: RefObject<HTMLElement | null>
   /** Called with the new Viewport instance after each pan/zoom; consumer should update store from it. */
   onViewportUpdate?: (next: Viewport) => void
 }
 
 export function useViewportInteractions({
-  canvasRef,
+  surfaceRef,
   onViewportUpdate,
 }: UseViewportInteractionsParams) {
   const canvasActor = useCanvasActor()
@@ -79,15 +92,14 @@ export function useViewportInteractions({
 
   // Handle mouse wheel for zooming
   const handleWheel = useCallback((e: WheelEvent) => {
-    const canvasElement = canvasRef.current
-    if (!viewport.value || !renderer || !canvasElement) return
+    const surface = surfaceRef.current
+    if (!viewport.value || !renderer || !surface) return
     if (!shortcuts.wheelZoomEnabled) return
 
     e.preventDefault()
     e.stopPropagation()
 
-    // Get mouse position relative to canvas (use same coordinate space as viewport)
-    const rect = canvasElement.getBoundingClientRect()
+    const rect = surface.getBoundingClientRect()
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
 
@@ -99,12 +111,12 @@ export function useViewportInteractions({
     next.zoomAt({ x, y }, zoomFactor)
     renderer.applyViewport(next)
     onViewportUpdate?.(next)
-  }, [canvasRef, renderer, onViewportUpdate, shortcuts.wheelZoomEnabled, shortcuts.wheelScalePerPixel])
+  }, [surfaceRef, renderer, onViewportUpdate, shortcuts.wheelZoomEnabled, shortcuts.wheelScalePerPixel])
 
   // Handle mouse down
   const handleMouseDown = useCallback((e: MouseEvent) => {
-    const canvasElement = canvasRef.current
-    if (!canvasElement) return
+    const surface = surfaceRef.current
+    if (!surface) return
 
     const panWithButton = e.button === shortcuts.panMouseButton
     const panWithMod = e.button === 0 && hasPanModifier(e, shortcuts.panWithModifier)
@@ -114,20 +126,29 @@ export function useViewportInteractions({
       pendingPanViewportRef.current = null
       canvasActor.send({ type: 'PAN_START' })
       lastPanPosRef.current = { x: e.clientX, y: e.clientY }
-      canvasElement.style.cursor = 'grabbing'
+      surface.style.cursor = 'grabbing'
       return
     }
 
-    // Left mouse button for selection/moving
+    // Left mouse button for selection/moving/text
     if (e.button === 0) {
       e.preventDefault()
 
-      const rect = canvasElement.getBoundingClientRect()
+      const rect = surface.getBoundingClientRect()
       const screenX = e.clientX - rect.left
       const screenY = e.clientY - rect.top
+      const snap = canvasActor.getSnapshot()
+
+      // Any mousedown that reaches the wrapper during editing is *outside* the
+      // text box — clicks inside land on the contentEditable (which sits above
+      // the wrapper) and never get here. So this is a Penpot-style click-away:
+      // commit + exit, then fall through to normal select/move handling.
+      if (snap.matches('textEditing')) {
+        canvasActor.send({ type: 'STOP_TEXT_EDIT' })
+      }
 
       const activeDrawTool = canvasActor.getSnapshot().context.drawTool
-      if (activeDrawTool === 'rect' || activeDrawTool === 'frame') {
+      if (activeDrawTool != null) {
         pointerPos.value = { x: screenX, y: screenY }
         canvasActor.send({ type: 'POINTER_DOWN_DRAW' })
         return
@@ -189,12 +210,12 @@ export function useViewportInteractions({
         }
       )
     }
-  }, [canvasRef, canvasActor, shortcuts.panMouseButton, shortcuts.panWithModifier])
+  }, [surfaceRef, canvasActor, shortcuts.panMouseButton, shortcuts.panWithModifier])
 
-  // Handle mouse move for panning and cursor (grab only when pan modifier held; resize cursor when resizing)
+  // Handle mouse move for text-drag-select, panning, and cursor.
   const handleMouseMove = useCallback((e: MouseEvent) => {
-    const canvasElement = canvasRef.current
-    if (!canvasElement) return
+    const surface = surfaceRef.current
+    if (!surface) return
 
     if (!isPanningRef.current) {
       const snap = canvasActor.getSnapshot()
@@ -202,13 +223,14 @@ export function useViewportInteractions({
       if (snap.matches('resizing') && snap.context.resizeHandle) {
         const rotation = wasmRect != null ? matrixToRotationDeg(wasmRect.transform) : undefined
         const halfFlip = wasmRect != null ? matrixHasHalfFlip(wasmRect.transform) : false
-        canvasElement.style.cursor = getResizeCursor(snap.context.resizeHandle, rotation, halfFlip)
-      } else if (e.target === canvasElement) {
-        const drawTool = snap.context.drawTool
-        if (drawTool === 'rect' || drawTool === 'frame') {
-          canvasElement.style.cursor = 'crosshair'
+        surface.style.cursor = getResizeCursor(snap.context.resizeHandle, rotation, halfFlip)
+      } else if (e.target === surface) {
+        if (snap.matches('textEditing')) {
+          surface.style.cursor = 'text'
+        } else if (snap.context.drawTool != null) {
+          surface.style.cursor = 'crosshair'
         } else {
-          canvasElement.style.cursor = hasPanModifier(e, shortcuts.panWithModifier) ? 'grab' : 'default'
+          surface.style.cursor = hasPanModifier(e, shortcuts.panWithModifier) ? 'grab' : 'default'
         }
       }
     }
@@ -240,11 +262,12 @@ export function useViewportInteractions({
         })
       }
     }
-  }, [canvasRef, canvasActor, renderer, onViewportUpdate, shortcuts.panWithModifier])
+  }, [surfaceRef, canvasActor, renderer, onViewportUpdate, shortcuts.panWithModifier])
 
   // Handle mouse up
   const handleMouseUp = useCallback(() => {
-    const canvas = canvasRef.current
+    const surface = surfaceRef.current
+
     if (isPanningRef.current) {
       canvasActor.send({ type: 'PAN_END' })
       isPanningRef.current = false
@@ -255,62 +278,93 @@ export function useViewportInteractions({
         renderer.applyViewport(Viewport.from(vp))
         onViewportUpdate?.(Viewport.from(vp))
       }
-      if (canvas) {
-        canvas.style.cursor = 'default'
+      if (surface) {
+        surface.style.cursor = 'default'
       }
     }
+  }, [surfaceRef, canvasActor, renderer, onViewportUpdate])
 
-  }, [canvasRef, canvasActor, renderer, onViewportUpdate])
+  // Double-click to ENTER text editing. Mirrors Penpot's viewport on-double-click
+  // (native `dblclick`, then act on the hovered/hit shape). Reliable because the
+  // wrapper is the single body surface, so both presses land on it. Word-select
+  // *while* editing is handled by the contentEditable's own onDoubleClick (its
+  // pointers land on the editor element, not the wrapper).
+  const handleDoubleClick = useCallback((e: MouseEvent) => {
+    if (e.button !== 0) return
+    const surface = surfaceRef.current
+    if (!surface) return
+    const snap = canvasActor.getSnapshot()
+    if (snap.context.drawTool != null || snap.matches('textEditing')) return
+
+    const rect = surface.getBoundingClientRect()
+    const screenX = e.clientX - rect.left
+    const screenY = e.clientY - rect.top
+
+    const { workerClient } = useWorkspaceStore.getState()
+    const hitPageId = getActiveOrSinglePageId()
+    const page = hitPageId ? getPage(hitPageId) : undefined
+    const vp = viewport.value
+    if (!workerClient || !vp || !hitPageId || !page) return
+
+    queryNodesAtPoint(workerClient, hitPageId, vp, screenX, screenY).then((ids) => {
+      const topId = pickTopmostNode(page, ids)
+      const node = topId ? (page.objects[topId] as { type?: string } | undefined) : undefined
+      if (topId && node?.type === 'text') {
+        setSelectedIds(new Set([topId]))
+        canvasActor.send({ type: 'START_TEXT_EDIT', shapeId: topId })
+      }
+    })
+  }, [surfaceRef, canvasActor])
 
   // Handle mouse enter: normal cursor unless pan modifier is held (updated in mousemove)
   const handleMouseEnter = useCallback(() => {
-    const canvas = canvasRef.current
-    if (canvas && !isPanningRef.current) {
-      const drawTool = canvasActor.getSnapshot().context.drawTool
-      canvas.style.cursor = drawTool === 'rect' || drawTool === 'frame' ? 'crosshair' : 'default'
+    const surface = surfaceRef.current
+    if (surface && !isPanningRef.current) {
+      const snap = canvasActor.getSnapshot()
+      surface.style.cursor = snap.matches('textEditing') ? 'text' : snap.context.drawTool != null ? 'crosshair' : 'default'
     }
-  }, [canvasRef, canvasActor])
+  }, [surfaceRef, canvasActor])
 
   // Handle mouse leave to reset cursor
   const handleMouseLeave = useCallback(() => {
-    const canvas = canvasRef.current
-    if (canvas && !isPanningRef.current) {
-      canvas.style.cursor = 'default'
+    const surface = surfaceRef.current
+    if (surface && !isPanningRef.current) {
+      surface.style.cursor = 'default'
     }
-  }, [canvasRef])
+  }, [surfaceRef])
 
   // When pan modifier key is released, revert to default cursor (if not panning)
   const handleKeyUp = useCallback((e: KeyboardEvent) => {
-    const canvas = canvasRef.current
-    if (canvas && !isPanningRef.current && isPanModifierKey(e, shortcuts.panWithModifier)) {
-      canvas.style.cursor = 'default'
+    const surface = surfaceRef.current
+    if (surface && !isPanningRef.current && isPanModifierKey(e, shortcuts.panWithModifier)) {
+      surface.style.cursor = 'default'
     }
-  }, [canvasRef, shortcuts.panWithModifier])
+  }, [surfaceRef, shortcuts.panWithModifier])
 
   // Handle keyboard for panning and zooming
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.code === 'Escape' && canvasActor.getSnapshot().context.drawTool != null) {
       e.preventDefault()
       canvasActor.send({ type: 'DRAW_TOOL_DEACTIVATE' })
-      const canvasElement = canvasRef.current
-      if (canvasElement) canvasElement.style.cursor = 'default'
+      const surface = surfaceRef.current
+      if (surface) surface.style.cursor = 'default'
       return
     }
 
-    if ((e.code === 'KeyR' || e.code === 'KeyF') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if ((e.code === 'KeyR' || e.code === 'KeyF' || e.code === 'KeyT') && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const el = e.target as HTMLElement | null
       if (!el?.closest('input, textarea, select, [contenteditable="true"]')) {
         e.preventDefault()
-        const tool = e.code === 'KeyF' ? 'frame' : 'rect'
+        const tool = e.code === 'KeyF' ? 'frame' : e.code === 'KeyT' ? 'text' : 'rect'
         const active = canvasActor.getSnapshot().context.drawTool === tool
         if (active) {
           canvasActor.send({ type: 'DRAW_TOOL_DEACTIVATE' })
         } else {
           canvasActor.send({ type: 'DRAW_TOOL_ACTIVATE', tool })
         }
-        const canvasElement = canvasRef.current
-        if (canvasElement) {
-          canvasElement.style.cursor = active ? 'default' : 'crosshair'
+        const surface = surfaceRef.current
+        if (surface) {
+          surface.style.cursor = active ? 'default' : 'crosshair'
         }
         return
       }
@@ -319,7 +373,7 @@ export function useViewportInteractions({
     const vp = viewport.value
     if (!vp || !renderer) return
 
-    const canvasElement = canvasRef.current
+    const surface = surfaceRef.current
     const step = shortcuts.panStep
     if (e.code === shortcuts.panLeft) {
       e.preventDefault()
@@ -356,8 +410,8 @@ export function useViewportInteractions({
 
     if (shortcuts.zoomInKeys.includes(e.code)) {
       e.preventDefault()
-      if (canvasElement) {
-        const rect = canvasElement.getBoundingClientRect()
+      if (surface) {
+        const rect = surface.getBoundingClientRect()
         const next = Viewport.from(vp)
         next.zoomAt({ x: rect.width / 2, y: rect.height / 2 }, shortcuts.zoomInFactor)
         renderer.applyViewport(next)
@@ -367,8 +421,8 @@ export function useViewportInteractions({
     }
     if (shortcuts.zoomOutKeys.includes(e.code)) {
       e.preventDefault()
-      if (canvasElement) {
-        const rect = canvasElement.getBoundingClientRect()
+      if (surface) {
+        const rect = surface.getBoundingClientRect()
         const next = Viewport.from(vp)
         next.zoomAt({ x: rect.width / 2, y: rect.height / 2 }, shortcuts.zoomOutFactor)
         renderer.applyViewport(next)
@@ -384,36 +438,36 @@ export function useViewportInteractions({
       renderer.applyViewport(next)
       onViewportUpdate?.(next)
     }
-  }, [canvasRef, canvasActor, renderer, onViewportUpdate, shortcuts])
+  }, [surfaceRef, canvasActor, renderer, onViewportUpdate, shortcuts])
 
   // Set up event listeners (read ref inside effect, not during render)
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
+    const surface = surfaceRef.current
+    if (!surface) return
 
-    // Attach wheel to the container (parent of canvas + selection overlay) so
-    // zoom works even when the cursor is over an interactive SVG overlay element
-    // (MoveHitArea / resize / rotation handles) that has pointerEvents: 'auto'.
-    const wheelTarget = canvas.parentElement ?? canvas
+    // Wheel on the container (parent) so zoom works even when the cursor is over
+    // an interactive SVG handle (which sits above the wrapper).
+    const wheelTarget = surface.parentElement ?? surface
+    surface.addEventListener('mousedown', handleMouseDown)
+    surface.addEventListener('dblclick', handleDoubleClick)
+    surface.addEventListener('mouseenter', handleMouseEnter)
+    surface.addEventListener('mouseleave', handleMouseLeave)
     wheelTarget.addEventListener('wheel', handleWheel, { passive: false })
-    canvas.addEventListener('mousedown', handleMouseDown)
-    canvas.addEventListener('mouseenter', handleMouseEnter)
-    canvas.addEventListener('mouseleave', handleMouseLeave)
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('keyup', handleKeyUp)
 
     return () => {
+      surface.removeEventListener('mousedown', handleMouseDown)
+      surface.removeEventListener('dblclick', handleDoubleClick)
+      surface.removeEventListener('mouseenter', handleMouseEnter)
+      surface.removeEventListener('mouseleave', handleMouseLeave)
       wheelTarget.removeEventListener('wheel', handleWheel)
-      canvas.removeEventListener('mousedown', handleMouseDown)
-      canvas.removeEventListener('mouseenter', handleMouseEnter)
-      canvas.removeEventListener('mouseleave', handleMouseLeave)
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('keyup', handleKeyUp)
     }
-  }, [canvasRef, handleWheel, handleMouseDown, handleMouseEnter, handleMouseLeave, handleMouseMove, handleMouseUp, handleKeyDown, handleKeyUp])
+  }, [surfaceRef, handleWheel, handleDoubleClick, handleMouseDown, handleMouseEnter, handleMouseLeave, handleMouseMove, handleMouseUp, handleKeyDown, handleKeyUp])
 }
-

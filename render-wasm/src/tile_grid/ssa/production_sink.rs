@@ -225,13 +225,6 @@ impl<'a> ProductionSink<'a> {
                 tree: self.shapes,
                 gather_backdrop: None,
             };
-            // Debug: log the step's geometry. No-op unless the
-            // user-toggled debug-visible flag is on.
-            crate::render::ssa::debug::log_paint_step(
-                &ctx,
-                &element,
-                non_gather.len(),
-            );
             for effect in &non_gather {
                 crate::render::ssa::dispatch_effect(&mut ctx, &element, *effect)?;
             }
@@ -354,42 +347,6 @@ impl<'a> DispatchSink for ProductionSink<'a> {
         // this same rect, NOT a re-derivation via `extent_world`.
         self.backdrop_extents.insert(*write_to, *extent);
 
-        // DEBUG: trace what compose_backdrop is about to fuse.
-        let dbg_snaps: Vec<String> = read_from
-            .iter()
-            .map(|r| {
-                let t = match r.role {
-                    super::surface_ref::SurfaceRole::Snapshot { source_tile, .. } => {
-                        format!("[{},{}]", source_tile.x(), source_tile.y())
-                    }
-                    _ => "?".into(),
-                };
-                let has_img = self.snapshot_images.contains_key(r);
-                format!("{{\"tile\":{},\"has_img\":{}}}", t, has_img)
-            })
-            .collect();
-        let backdrop_dim = self
-            .map
-            .get_mut(*write_to)
-            .map(|s| (s.width(), s.height()))
-            .unwrap_or((0, 0));
-        let dbg_value = format!(
-            "{{\"extent\":[{:.1},{:.1},{:.1},{:.1}],\"scale\":{:.3},\"backdrop_dim\":[{},{}],\"snaps\":[{}]}}",
-            extent.left,
-            extent.top,
-            extent.width(),
-            extent.height(),
-            scale,
-            backdrop_dim.0,
-            backdrop_dim.1,
-            dbg_snaps.join(",")
-        );
-        crate::render::ssa::debug::event(
-            "ssa-compose-backdrop",
-            &dbg_value,
-            "tile_grid/ssa/production_sink.rs::compose_backdrop",
-        );
-
         // Resolve snapshot images BEFORE borrowing the backdrop surface
         // (snapshot_images is on self; backdrop surface is on self.map).
         let snaps: Vec<(skia::Image, Tile)> = read_from
@@ -471,32 +428,6 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             let extent_world = self.backdrop_extents.get(backdrop).copied();
             let backdrop_img: Option<skia::Image> =
                 self.map.get_mut(*backdrop).map(|s| s.image_snapshot());
-
-            // DEBUG: which extent did paint_gather pick up, and what
-            // are the backdrop image dimensions?
-            let dbg_value = format!(
-                "{{\"shape\":{:?},\"extent_found\":{},\"extent\":{},\"img_dim\":{},\"backdrop_ref_tile\":[{},{}]}}",
-                shape.to_string(),
-                extent_world.is_some(),
-                match extent_world {
-                    Some(e) => format!(
-                        "[{:.1},{:.1},{:.1},{:.1}]",
-                        e.left, e.top, e.width(), e.height()
-                    ),
-                    None => "null".into(),
-                },
-                match &backdrop_img {
-                    Some(i) => format!("[{},{}]", i.width(), i.height()),
-                    None => "null".into(),
-                },
-                backdrop.tile.map(|t| t.x()).unwrap_or(-1),
-                backdrop.tile.map(|t| t.y()).unwrap_or(-1),
-            );
-            crate::render::ssa::debug::event(
-                "ssa-paint-gather",
-                &dbg_value,
-                "tile_grid/ssa/production_sink.rs::paint_gather",
-            );
 
             let backdrop_payload: Option<(skia::Image, skia::Rect)> =
                 match (backdrop_img, extent_world) {
@@ -672,21 +603,6 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             if r.is_target() {
                 return Ok(());
             }
-            // /debug-mode: which tiles actually get a cache write this
-            // frame? If the OLD shape position's tiles never appear
-            // here after a move, the cache for those tiles is stale.
-            let has_surface = self.map.is_bound(r);
-            let dbg_value = format!(
-                "{{\"tile\":[{},{}],\"has_bound_surface\":{}}}",
-                tile.x(),
-                tile.y(),
-                has_surface,
-            );
-            crate::render::ssa::debug::event(
-                "ssa-write-tile-cache",
-                &dbg_value,
-                "tile_grid/ssa/production_sink.rs::write_tile_cache",
-            );
             // Cache uses the **tile-snapped** offset that legacy
             // `get_aligned_tile_bounds` produces:
             //   aligned_x = floor(viewbox.left * scale / TILE_SIZE) * TILE_SIZE

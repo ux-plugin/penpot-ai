@@ -124,8 +124,45 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
     const before = getCommittedNodeOnActivePage(nodeId)
     const pid = getActiveOrSinglePageId()
     if (!before || !pid) return
+    const n = before as PenpotNode
+    const sr = n.selrect as
+      | { x?: number; y?: number; width?: number; height?: number }
+      | undefined
     const w = (before as { width?: number }).width ?? initialNode.width ?? 0
     const h = (before as { height?: number }).height ?? initialNode.height ?? 0
+
+    // Commit position/rotation the SAME way the live preview and the rotate
+    // handle do: as a world-space transform applied to the node, so `transform`
+    // + rotated `points` + `rotation` are emitted together. `rectLayoutPartial`
+    // only emits a bare rotation scalar with axis-aligned points and NO
+    // transform; the WASM sync then calls `setShapeRotation` *without*
+    // `setShapeTransform`, so the shape body (rendered from `self.transform`)
+    // never rotates and, while editing, the caret (drawn from the rotation
+    // scalar via `get_matrix`) diverges from the unrotated body and disappears.
+    // Same delta-on-committed-node math as `liveRotationPartial` above; this
+    // also preserves rotation when only moving a rotated shape.
+    if (sr && (sr.width ?? 0) > 0 && (sr.height ?? 0) > 0) {
+      const curX = (before as { x?: number }).x ?? sr.x ?? 0
+      const curY = (before as { y?: number }).y ?? sr.y ?? 0
+      const curRot = before.rotation ?? 0
+      const dRot = draft.rotation - curRot
+      const dx = draft.x - curX
+      const dy = draft.y - curY
+      const cx = (sr.x ?? 0) + (sr.width ?? 0) / 2
+      const cy = (sr.y ?? 0) + (sr.height ?? 0) / 2
+      // M = translate(dx,dy) ∘ rotateAround(center, dRot): translation only adds
+      // to the (e,f) components of the rotation matrix.
+      const rot = rotationMatrixAroundPoint(cx, cy, dRot)
+      const M = { ...rot, e: rot.e + dx, f: rot.f + dy }
+      const partial = applyTransformToNode(n, M)
+      if (partial) {
+        await commitNodePartialUpdate(nodeId, before, partial, pid)
+        setDraft(null)
+        return
+      }
+    }
+
+    // Fallback for nodes without a usable selrect (degenerate / non-rect-like).
     await commitNodePartialUpdate(
       nodeId,
       before,

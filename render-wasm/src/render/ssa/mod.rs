@@ -32,7 +32,6 @@
 //! disturbing what's here.
 
 pub mod ctx;
-pub mod debug;
 pub mod dispatch;
 pub mod filter;
 pub mod fills;

@@ -11,31 +11,25 @@
 use crate::error::Result;
 use crate::shapes::{Shape, Type};
 
-use super::{debug, fills, noise, shadows, strokes, PaintCtx};
+use super::{fills, noise, shadows, strokes, PaintCtx};
 
 /// Mirror of `RenderState::render_shape_into_target`'s body-paint
 /// path. Routes text/svg to (currently stubbed) helpers, everything
 /// else through `render_body_direct`.
 pub fn render(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
-    // Containers without own visible content: still draw the debug
-    // overlay so empty-container tiles are visible in debug mode.
+    // Containers without own visible content paint nothing themselves.
     let empty_container = matches!(shape.shape_type, Type::Group(_) | Type::Frame(_))
         && shape.fills.is_empty()
         && shape.visible_strokes().next().is_none();
     if empty_container {
-        debug::paint_overlay(ctx, shape);
         return Ok(());
     }
 
-    let result = match &shape.shape_type {
+    match &shape.shape_type {
         Type::Text(_) => super::text::render(ctx, shape),
         Type::SVGRaw(_) => super::svg::render(ctx, shape),
         _ => render_body_direct(ctx, shape),
-    };
-    // Overlay goes on top of the body paint — drawn last so it's
-    // visible. No-op when debug is off.
-    debug::paint_overlay(ctx, shape);
-    result
+    }
 }
 
 /// Direct-draw body: fills (TODO: + strokes + inner shadows + noise +

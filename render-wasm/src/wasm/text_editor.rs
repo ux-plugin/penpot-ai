@@ -391,6 +391,17 @@ pub extern "C" fn text_editor_composition_end() -> Result<()> {
             .text_editor_state
             .push_event(crate::state::TextEditorEvent::NeedsLayout);
 
+        // The editor mutates the shape's TextContent in place, bypassing the
+        // geometry setters that normally invalidate these caches. Without this,
+        // the shape's extrect (derived from the laid-out text bounds) stays at
+        // its pre-edit size, so tile coverage doesn't grow with the text and
+        // glyphs typed past the cached bounds are clipped at a tile border —
+        // even inside a large fixed box. Invalidate so `rebuild_touched_tiles`
+        // recomputes coverage from the current text.
+        if let Some(shape) = state.shapes.get_mut(&shape_id) {
+            shape.invalidate_extrect();
+            shape.invalidate_bounds();
+        }
         state.render_state.mark_touched(shape_id);
 
         state.text_editor_state.composition.end();
@@ -448,6 +459,17 @@ pub extern "C" fn text_editor_composition_update() -> Result<()> {
             .text_editor_state
             .push_event(crate::state::TextEditorEvent::NeedsLayout);
 
+        // The editor mutates the shape's TextContent in place, bypassing the
+        // geometry setters that normally invalidate these caches. Without this,
+        // the shape's extrect (derived from the laid-out text bounds) stays at
+        // its pre-edit size, so tile coverage doesn't grow with the text and
+        // glyphs typed past the cached bounds are clipped at a tile border —
+        // even inside a large fixed box. Invalidate so `rebuild_touched_tiles`
+        // recomputes coverage from the current text.
+        if let Some(shape) = state.shapes.get_mut(&shape_id) {
+            shape.invalidate_extrect();
+            shape.invalidate_bounds();
+        }
         state.render_state.mark_touched(shape_id);
     });
 
@@ -523,6 +545,17 @@ pub extern "C" fn text_editor_insert_text() -> Result<()> {
             .text_editor_state
             .push_event(TextEditorEvent::NeedsLayout);
 
+        // The editor mutates the shape's TextContent in place, bypassing the
+        // geometry setters that normally invalidate these caches. Without this,
+        // the shape's extrect (derived from the laid-out text bounds) stays at
+        // its pre-edit size, so tile coverage doesn't grow with the text and
+        // glyphs typed past the cached bounds are clipped at a tile border —
+        // even inside a large fixed box. Invalidate so `rebuild_touched_tiles`
+        // recomputes coverage from the current text.
+        if let Some(shape) = state.shapes.get_mut(&shape_id) {
+            shape.invalidate_extrect();
+            shape.invalidate_bounds();
+        }
         state.render_state.mark_touched(shape_id);
     });
 
@@ -552,6 +585,17 @@ pub extern "C" fn text_editor_delete_backward(word_boundary: bool) {
         state
             .text_editor_state
             .delete_backward(text_content, word_boundary);
+        // The editor mutates the shape's TextContent in place, bypassing the
+        // geometry setters that normally invalidate these caches. Without this,
+        // the shape's extrect (derived from the laid-out text bounds) stays at
+        // its pre-edit size, so tile coverage doesn't grow with the text and
+        // glyphs typed past the cached bounds are clipped at a tile border —
+        // even inside a large fixed box. Invalidate so `rebuild_touched_tiles`
+        // recomputes coverage from the current text.
+        if let Some(shape) = state.shapes.get_mut(&shape_id) {
+            shape.invalidate_extrect();
+            shape.invalidate_bounds();
+        }
         state.render_state.mark_touched(shape_id);
     });
 }
@@ -578,6 +622,17 @@ pub extern "C" fn text_editor_delete_forward(word_boundary: bool) {
         state
             .text_editor_state
             .delete_forward(text_content, word_boundary);
+        // The editor mutates the shape's TextContent in place, bypassing the
+        // geometry setters that normally invalidate these caches. Without this,
+        // the shape's extrect (derived from the laid-out text bounds) stays at
+        // its pre-edit size, so tile coverage doesn't grow with the text and
+        // glyphs typed past the cached bounds are clipped at a tile border —
+        // even inside a large fixed box. Invalidate so `rebuild_touched_tiles`
+        // recomputes coverage from the current text.
+        if let Some(shape) = state.shapes.get_mut(&shape_id) {
+            shape.invalidate_extrect();
+            shape.invalidate_bounds();
+        }
         state.render_state.mark_touched(shape_id);
     });
 }
@@ -602,6 +657,17 @@ pub extern "C" fn text_editor_insert_paragraph() {
         };
 
         state.text_editor_state.insert_paragraph(text_content);
+        // The editor mutates the shape's TextContent in place, bypassing the
+        // geometry setters that normally invalidate these caches. Without this,
+        // the shape's extrect (derived from the laid-out text bounds) stays at
+        // its pre-edit size, so tile coverage doesn't grow with the text and
+        // glyphs typed past the cached bounds are clipped at a tile border —
+        // even inside a large fixed box. Invalidate so `rebuild_touched_tiles`
+        // recomputes coverage from the current text.
+        if let Some(shape) = state.shapes.get_mut(&shape_id) {
+            shape.invalidate_extrect();
+            shape.invalidate_bounds();
+        }
         state.render_state.mark_touched(shape_id);
     });
 }

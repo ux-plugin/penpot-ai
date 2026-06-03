@@ -6,12 +6,30 @@ import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { createNewDocument, setDocument, undo, redo } from './lib/page-crud'
 import { Button } from '@/components/ui/button'
+import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
+
+/**
+ * Read the initial value of the render-wasm cache PiP debug overlay
+ * from the URL: `?debugPip=1` enables it on first init. Toggle at
+ * runtime with Shift+P. Returns false unconditionally in production
+ * builds so the entire feature drops out of the bundle.
+ */
+function readDebugPipFromUrl(): boolean {
+  if (!import.meta.env.DEV) return false
+  if (typeof window === 'undefined') return false
+  const v = new URLSearchParams(window.location.search).get('debugPip')
+  return v === '1' || v === 'true'
+}
 
 function App() {
   const [error, setError] = useState<string | null>(null)
+  // PiP cache overlay is a dev-only feature. In production, `DEV` is
+  // statically false → esbuild folds the state, options field and the
+  // keyboard handler / pill below out of the bundle.
+  const [debugPip, setDebugPip] = useState<boolean>(() => readDebugPipFromUrl())
   const rendererOptions = useMemo(
-    () => ({ debug: false }),
-    []
+    () => (import.meta.env.DEV ? { debug: false, debugPip } : { debug: false }),
+    [debugPip]
   )
 
   const handleError = useCallback((err: Error) => {
@@ -34,6 +52,20 @@ function App() {
       } else if (mod && e.key === 'z' && e.shiftKey) {
         e.preventDefault()
         void redo()
+      } else if (
+        import.meta.env.DEV &&
+        e.shiftKey && (e.key === 'P' || e.key === 'p') && !mod
+      ) {
+        // Shift+P toggles the render-wasm PiP cache overlay live (no
+        // re-init). Wrapped in `DEV` so the handler and the call into
+        // `setDebugPip` get stripped from production bundles.
+        e.preventDefault()
+        setDebugPip(prev => {
+          const next = !prev
+          const renderer = useWorkspaceStore.getState().renderer
+          renderer?.setDebugPip(next)
+          return next
+        })
       }
     }
     window.addEventListener('keydown', onKey)

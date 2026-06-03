@@ -12,6 +12,7 @@ import { useViewportShortcutsStore } from './store/shortcuts-store'
 import { modAlt, modCtrl, modMeta, modShift, viewport } from './signals/pointer'
 import { initRendererClient, cleanupRendererClient } from './renderer-init'
 import { SelectionOverlay } from '../components/Overlay/SelectionOverlay'
+import { TextEditorOverlay } from '../components/Overlay/TextEditorOverlay'
 import { useViewportInteractions } from './hooks/use-viewport-interactions'
 import { useStreams } from './hooks/use-streams'
 import { cleanupWorker, initWorker } from '../worker-init'
@@ -36,6 +37,7 @@ function CanvasWorkspace({
 }: Omit<CanvasWrapperProps, 'overlays'>) {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
   const [canvasSize, setCanvasSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
   const setViewportShortcuts = useViewportShortcutsStore((state) => state.setViewportShortcuts)
 
@@ -151,7 +153,7 @@ function CanvasWorkspace({
 
   useStreams(canvasRef)
   useViewportInteractions({
-    canvasRef,
+    surfaceRef,
     onViewportUpdate: (next) => {
       viewport.value = { panX: next.panX, panY: next.panY, zoom: next.zoom }
     },
@@ -177,9 +179,17 @@ function CanvasWorkspace({
         width={canvasSize.width}
         height={canvasSize.height}
         className={className}
-        style={{ display: 'block', width: '100%', height: '100%', border: 'none', boxSizing: 'content-box' }}
+        style={{ display: 'block', width: '100%', height: '100%', border: 'none', boxSizing: 'content-box', pointerEvents: 'none' }}
+      />
+      {/* Single pointer sink: full-size surface over the canvas, below the SVG
+          handles (Stage 1) and the text-editor overlay. All pointer listeners
+          attach here (see use-viewport-interactions). */}
+      <div
+        ref={surfaceRef}
+        style={{ position: 'absolute', inset: 0, pointerEvents: 'all', touchAction: 'none' }}
       />
       <SelectionOverlay canvasSize={canvasSize} canvasRef={canvasRef} />
+      <TextEditorOverlay />
     </div>
   )
 

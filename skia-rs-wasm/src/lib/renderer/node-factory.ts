@@ -11,6 +11,31 @@ import { newShapeId } from '../common/shape-id'
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
 /**
+ * Per-type counter for human-friendly auto names. Each shape created
+ * by these factories gets a name like `Rect 1`, `Rect 2`, `Circle 1`,
+ * `Frame 1`, … so the layers panel, right side panel, and dev
+ * `/scheduler` timeline can refer to shapes by name instead of UUID.
+ *
+ * Counters are process-local: they don't survive page reload, but
+ * within a session they're stable, which is exactly what we need for
+ * debug tooling that shows "shape Rect 3 just re-rendered".
+ */
+const nextIndexByType: Record<string, number> = {}
+
+/**
+ * Produce the default name for a shape of the given type. Caller can
+ * still pass an explicit `name` to the factory to override.
+ */
+function defaultName(type: string): string {
+  const idx = (nextIndexByType[type] ?? 0) + 1
+  nextIndexByType[type] = idx
+  // Capitalise the type so labels read `Rect 1` not `rect 1`. `svg-raw`
+  // → `Svg-raw 1` is acceptable; we don't generally create those by hand.
+  const pretty = type.length > 0 ? type[0].toUpperCase() + type.slice(1) : type
+  return `${pretty} ${idx}`
+}
+
+/**
  * Creates a selrect from position and size
  */
 function createSelRect(x: number, y: number, width: number, height: number): Selrect {
@@ -42,6 +67,7 @@ function rectPoints(x: number, y: number, width: number, height: number) {
 export function createRect(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number
@@ -85,6 +111,7 @@ export function createRect(
   const node: PenpotNode = {
     id,
     type: 'rect',
+    name: options.name ?? defaultName('rect'),
     x,
     y,
     width,
@@ -113,6 +140,7 @@ export function createRect(
 export function createCircle(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     radius?: number
@@ -155,6 +183,7 @@ export function createCircle(
   return {
     id,
     type: 'circle',
+    name: options.name ?? defaultName('circle'),
     x,
     y,
     width,
@@ -173,6 +202,7 @@ export function createCircle(
 export function createText(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number
@@ -181,6 +211,12 @@ export function createText(
     parentId?: string
     fillColor?: string
     opacity?: number
+    /** Text box grow behaviour. Defaults to `fixed` (Penpot's default for a text
+     * box you *draw*): the box keeps the size you gave it and is fully resizable.
+     * `auto-width`/`auto-height` make the box content-driven (it resizes to fit the
+     * text and can't be manually resized in that axis); `syncTextEditGeometry`
+     * grows those while editing. */
+    growType?: string
   } = {}
 ): PenpotNode {
   const id = options.id || newShapeId()
@@ -188,6 +224,7 @@ export function createText(
   const y = options.y ?? 100
   const width = options.width ?? 200
   const height = options.height ?? 50
+  const growType = options.growType ?? 'fixed'
 
   const fillColor = options.fillColor ?? '#000000'
   const spanFill: Fill = { fillColor, fillOpacity: 1 }
@@ -195,6 +232,7 @@ export function createText(
   return {
     id,
     type: 'text',
+    name: options.name ?? defaultName('text'),
     x,
     y,
     width,
@@ -202,6 +240,7 @@ export function createText(
     parentId: options.parentId ?? ROOT_UUID,
     selrect: createSelRect(x, y, width, height),
     fills: [spanFill],
+    growType,
     content: {
       type: 'root',
       verticalAlign: 'top',
@@ -233,6 +272,7 @@ export function createText(
 export function createFrame(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number
@@ -277,6 +317,7 @@ export function createFrame(
   return {
     id,
     type: 'frame',
+    name: options.name ?? defaultName('frame'),
     x,
     y,
     width,
@@ -299,6 +340,7 @@ export function createFrame(
 export function createGroup(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number
@@ -317,6 +359,7 @@ export function createGroup(
   return {
     id,
     type: 'group',
+    name: options.name ?? defaultName('group'),
     x,
     y,
     width,
@@ -334,6 +377,7 @@ export function createGroup(
 export function createPath(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number
@@ -387,6 +431,7 @@ export function createPath(
   return {
     id,
     type: 'path',
+    name: options.name ?? defaultName('path'),
     x,
     y,
     width,
@@ -406,6 +451,7 @@ export function createPath(
 export function createBool(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number
@@ -425,6 +471,7 @@ export function createBool(
   return {
     id,
     type: 'bool',
+    name: options.name ?? defaultName('bool'),
     x,
     y,
     width,
@@ -443,6 +490,7 @@ export function createBool(
 export function createImage(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number
@@ -474,6 +522,7 @@ export function createImage(
   return {
     id,
     type: 'image',
+    name: options.name ?? defaultName('image'),
     x,
     y,
     width,
@@ -491,6 +540,7 @@ export function createImage(
 export function createSvgRaw(
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number
@@ -509,6 +559,7 @@ export function createSvgRaw(
   return {
     id,
     type: 'svg-raw',
+    name: options.name ?? defaultName('svg-raw'),
     x,
     y,
     width,
@@ -527,6 +578,7 @@ export function createNode(
   type: ShapeType,
   options: {
     id?: string
+    name?: string
     x?: number
     y?: number
     width?: number

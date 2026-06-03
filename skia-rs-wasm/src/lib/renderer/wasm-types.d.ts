@@ -342,19 +342,6 @@ export interface WasmModule {
   _alloc_bytes(len: number): number
   _free_bytes(): void
 
-  // Perf bench harness (only present when wasm built with `perf-trace`).
-  // dump_perf_snapshot returns a pointer to a length-prefixed UTF-8 JSON
-  // payload in BUFFERU8 (4-byte LE length, then payload bytes). The
-  // caller must read length, slice payload bytes, then call _free_bytes.
-  // build_perf_scene replaces the shape pool with a deterministic preset.
-  _dump_perf_snapshot(): number
-  _clear_perf_snapshot(): void
-  _build_perf_scene(scene_id: number): void
-  _perf_preset_count(): number
-  // Push a gesture marker (e.g. "pan_start"). JS first writes the UTF-8
-  // label into BUFFERU8 via _alloc_bytes+HEAPU8.set, then calls this.
-  _mark_perf_event(): void
-
   // ─── Text editor (interactive editing) ────────────────────────────────
   // Lifecycle. focus/has_focus_with_id take a UUID as 4×u32. Returns whether
   // the editor accepted/holds focus for that shape.

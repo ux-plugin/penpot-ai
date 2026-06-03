@@ -22,7 +22,8 @@ export function render(module: WasmModule, timestamp: number): void {
   if (textEditorActive.value) {
     textEditorUpdateBlink(module, timestamp)
     textEditorRenderOverlay(module)
-    if (textEditorPollEvent(module) !== 0) {
+    const poll = textEditorPollEvent(module)
+    if (poll !== 0) {
       requestRender(module, 'text-editor-event')
     }
   }

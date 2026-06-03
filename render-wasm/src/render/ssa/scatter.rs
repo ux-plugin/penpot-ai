@@ -135,32 +135,5 @@ pub fn render_blit(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
         canvas.restore(); // pop the outer save
     }
 
-    // DEBUG: trace the scatter render.
-    let dbg_value = format!(
-        "{{\"shape\":{:?},\"tile\":[{},{}],\"texture_radius\":{:.2},\"noise_size\":{:.2},\"world_clip\":[{:.1},{:.1},{:.1},{:.1}],\"bounds_dev\":[{:.1},{:.1},{:.1},{:.1}],\"extrect\":[{:.1},{:.1},{:.1},{:.1}]}}",
-        shape.id.to_string(),
-        ctx.tile.x(),
-        ctx.tile.y(),
-        texture.radius,
-        texture.noise_size,
-        ctx.world_clip.left,
-        ctx.world_clip.top,
-        ctx.world_clip.width(),
-        ctx.world_clip.height(),
-        bounds_dev.left,
-        bounds_dev.top,
-        bounds_dev.width(),
-        bounds_dev.height(),
-        extrect_world.left,
-        extrect_world.top,
-        extrect_world.width(),
-        extrect_world.height(),
-    );
-    crate::render::ssa::debug::event(
-        "ssa-scatter-blit",
-        &dbg_value,
-        "render/ssa/scatter.rs::render_blit",
-    );
-
     fill_result.and(stroke_result)
 }

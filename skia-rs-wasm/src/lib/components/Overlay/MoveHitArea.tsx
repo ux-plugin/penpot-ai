@@ -27,7 +27,12 @@ export function MoveHitArea({ bounds, hitSize, overrideCursor, onPointerDown }: 
       width={innerRect.width}
       height={innerRect.height}
       fill="transparent"
-      style={{ pointerEvents: 'auto', cursor: overrideCursor ?? 'default' }}
+      // Move initiation flows through the wrapper pointer surface (worker hit-test
+      // → POINTER_DOWN_ON_SELECTION), so this hit-area must let body clicks fall
+      // through to the wrapper below — otherwise it would also swallow the
+      // double-click that enters text editing. Kept (inert) for now; `onPointerDown`
+      // never fires while pointerEvents is 'none'.
+      style={{ pointerEvents: 'none', cursor: overrideCursor ?? 'default' }}
       onPointerDown={onPointerDown}
     />
   )

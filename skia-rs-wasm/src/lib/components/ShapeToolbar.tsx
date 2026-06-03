@@ -54,6 +54,7 @@ export function ShapeToolbar() {
 
   const onRect = useCallback(() => toggleDrawTool('rect'), [toggleDrawTool])
   const onFrame = useCallback(() => toggleDrawTool('frame'), [toggleDrawTool])
+  const onText = useCallback(() => toggleDrawTool('text'), [toggleDrawTool])
 
   const toolBtn = (
     pressed: boolean,
@@ -111,7 +112,12 @@ export function ShapeToolbar() {
         {disabledTool('Polygon', Hexagon)}
         {disabledTool('Line', Minus)}
         {disabledTool('Draw', Pencil)}
-        {disabledTool('Text', Type)}
+        {toolBtn(
+          drawTool === 'text',
+          onText,
+          'Draw text (T)',
+          <Type className="size-5 shrink-0 stroke-[1.5]" />,
+        )}
         {disabledTool('Image', Image)}
         {disabledTool('Comment', MessageCircle)}
       </ul>

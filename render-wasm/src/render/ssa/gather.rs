@@ -113,40 +113,6 @@ pub fn render_background_blur(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<(
     let img_x = (extent.left + translation.x) * scale;
     let img_y = (extent.top + translation.y) * scale;
 
-    // DEBUG: where on the destination surface does the backdrop land?
-    let dbg_value = format!(
-        "{{\"shape\":{:?},\"tile\":[{},{}],\"extent\":[{:.1},{:.1},{:.1},{:.1}],\"world_clip\":[{:.1},{:.1},{:.1},{:.1}],\"translation\":[{:.2},{:.2}],\"scale\":{:.3},\"margin_w\":{},\"img_origin_dev\":[{:.1},{:.1}],\"img_dim\":[{},{}],\"sigma\":{:.2},\"selrect\":[{:.1},{:.1},{:.1},{:.1}]}}",
-        shape.id.to_string(),
-        ctx.tile.x(),
-        ctx.tile.y(),
-        extent.left,
-        extent.top,
-        extent.width(),
-        extent.height(),
-        ctx.world_clip.left,
-        ctx.world_clip.top,
-        ctx.world_clip.width(),
-        ctx.world_clip.height(),
-        translation.x,
-        translation.y,
-        scale,
-        ctx.margins.width,
-        img_x,
-        img_y,
-        backdrop_img.width(),
-        backdrop_img.height(),
-        sigma,
-        shape.selrect.left,
-        shape.selrect.top,
-        shape.selrect.width(),
-        shape.selrect.height(),
-    );
-    crate::render::ssa::debug::event(
-        "ssa-bgblur-render",
-        &dbg_value,
-        "render/ssa/gather.rs::render_background_blur",
-    );
-
     let mut paint = skia::Paint::default();
     paint.set_image_filter(blur_filter);
     // SrcOver (not Src) so the blurred backdrop composites on top of

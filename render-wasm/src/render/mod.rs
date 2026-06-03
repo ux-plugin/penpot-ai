@@ -16,7 +16,6 @@ pub(crate) use crate::shapes::Shape;
 pub(crate) use crate::state::ShapesPoolRef;
 pub(crate) use crate::tiles;
 
-pub(crate) mod debug;
 mod fills;
 pub mod filters;
 pub(crate) mod fonts;

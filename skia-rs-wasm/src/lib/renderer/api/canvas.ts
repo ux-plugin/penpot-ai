@@ -55,11 +55,48 @@ export function setCanvasSize(_module: WasmModule, canvas: HTMLCanvasElement, dp
 /**
  * Initialize canvas context
  */
+/**
+ * Build the render-wasm flags bitmask passed to `_set_render_options`.
+ * Bits must mirror `render-wasm/src/render/options.rs`:
+ *   0x01 DEBUG_VISIBLE
+ *   0x10 DEBUG_PIP  (dev-only — see below)
+ *
+ * The PiP bit handling is gated on `import.meta.env.DEV` so esbuild
+ * drops the OR-line from production bundles. Production wasm also has
+ * the matching cfg behind the `debug-pip` cargo feature, so even if
+ * the bit were set, the renderer wouldn't act on it.
+ */
+export function buildRenderFlags(opts: { debug?: boolean; debugPip?: boolean }): number {
+  let f = 0
+  if (opts.debug) f |= 0x01
+  if (import.meta.env.DEV && opts.debugPip) f |= 0x10
+  return f
+}
+
+/**
+ * Toggle render-wasm options at runtime without re-initializing the
+ * context. Used by the dev-only `Renderer.setDebugPip` to flip the
+ * PiP overlay live. Stays in the bundle because `buildRenderFlags`
+ * also serves the non-debug `debug` bit.
+ */
+export function setRenderOptions(
+  module: WasmModule,
+  opts: { debug?: boolean; debugPip?: boolean; dpr?: number }
+): void {
+  const flags = buildRenderFlags(opts)
+  const dpr = opts.dpr ?? 1
+  module._set_render_options(flags, dpr)
+}
+
 export function initCanvasContext(
   module: WasmModule,
   canvas: HTMLCanvasElement,
   dpr: number = 1,
-  debug: boolean = false
+  debug: boolean = false,
+  // PiP overlay is dev-only — caller is expected to pass `false` in
+  // production. The flag flows through `buildRenderFlags` which is
+  // also DEV-gated, so a stray `true` from prod is silently ignored.
+  debugPip: boolean = false
 ): boolean {
   // Check if context is already initialized
   if (getContextInitialized()) {
@@ -68,7 +105,7 @@ export function initCanvasContext(
   }
 
   const gl = module.GL
-  const flags = debug ? 1 : 0
+  const flags = buildRenderFlags({ debug, debugPip })
   const contextId = 'webgl2'
   const contextAttributes = {
     alpha: true,

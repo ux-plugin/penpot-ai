@@ -282,7 +282,6 @@ impl State {
     }
 
     pub fn set_modifiers(&mut self, modifiers: HashMap<Uuid, skia::Matrix>) {
-        crate::perf_guard!("set_modifiers");
         // Bump scene revision so any cached glass / bg-blur output
         // keyed on the previous backdrop_hash misses on the next
         // render. Coarse — invalidates every gather entry even when
@@ -293,16 +292,6 @@ impl State {
                 self.render_state.scene_revision.wrapping_add(1);
         }
 
-        // perf-trace: log every modified shape with its key attributes
-        // so the agent can identify exactly which shape the user is
-        // dragging — bypasses the scheduler-walk view (which can miss
-        // shapes that never enter the visible-root path).
-        #[cfg(feature = "perf-trace")]
-        for (uuid, _) in modifiers.iter() {
-            if let Some(shape) = self.shapes.get(uuid) {
-                crate::perf_trace::log_modified_shape(*uuid, shape);
-            }
-        }
 
         self.shapes.set_modifiers(modifiers);
     }

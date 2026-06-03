@@ -13,7 +13,7 @@ import type {
 } from 'penpot-exporter/types'
 import type { Line } from '../types'
 import { makeSelrect } from '@skia-rs-wasm/common/conversions'
-import { rectToPoints } from './rect'
+import { rectToPoints, overlapsRects } from './rect'
 import { point } from './point'
 
 /** Shape with ellipse geometry (CircleShape or synthetic bounds for stroke band). */
@@ -367,6 +367,14 @@ function overlapsText(shape: TextShape, rect: Selrect): boolean {
   // Use points directly
   if (points && points.length > 0) {
     return overlapsRectPoints(rect, points)
+  }
+
+  // Fallback: AABB selrect overlap. Freshly-created text has a selrect but no
+  // `points` and no `positionData` until layout runs; without this it would be
+  // unhittable. Exact for unrotated text; matches how other shapes degrade.
+  const sel = shape.selrect
+  if (sel) {
+    return overlapsRects(rect, sel)
   }
 
   return false

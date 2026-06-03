@@ -230,31 +230,5 @@ pub fn render(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
 
     canvas.restore();
 
-    // DEBUG: full glass parameter dump for the trace. Confirms which
-    // shape param (frost, specular, blur) is producing the visible
-    // result — easy to spot a glass with all defaults at zero.
-    let dbg_value = format!(
-        "{{\"shape\":{:?},\"tile\":[{},{}],\"sigma_world\":{:.3},\"sigma_dev\":{:.3},\"frost\":{:.3},\"spec_op\":{:.3},\"spec_sat\":{:.3},\"refr_idx\":{:.3},\"thickness\":{:.3},\"selrect\":[{:.1},{:.1},{:.1},{:.1}]}}",
-        shape.id.to_string(),
-        ctx.tile.x(),
-        ctx.tile.y(),
-        glass.total_blur_sigma(),
-        total_sigma,
-        glass.frost,
-        glass.specular_opacity,
-        glass.specular_saturation,
-        glass.refractive_index,
-        glass.glass_thickness,
-        shape.selrect.left,
-        shape.selrect.top,
-        shape.selrect.width(),
-        shape.selrect.height(),
-    );
-    crate::render::ssa::debug::event(
-        "ssa-glass-params",
-        &dbg_value,
-        "render/ssa/glass.rs::render",
-    );
-
     Ok(())
 }

@@ -17,6 +17,7 @@ import {
   clearCanvas,
   clearCanvasPixels,
   getSelectionRect,
+  setRenderOptions,
 } from './api/canvas'
 import { setViewBox, resizeViewbox, initializeViewport } from './api/viewport'
 import { getContextInitialized } from './api/context'
@@ -39,6 +40,7 @@ function defaultOptions(options?: RendererOptions): Required<RendererOptions> {
   return {
     dpr: options?.dpr ?? getDPR(),
     debug: options?.debug ?? false,
+    debugPip: options?.debugPip ?? false,
     background: options?.background ?? '#FFFFFF',
   }
 }
@@ -115,6 +117,29 @@ export class Renderer {
   }
 
   /**
+   * Toggle the render-wasm cache PiP debug overlay at runtime. Stores
+   * the new value so a subsequent `initPage` (re-init) keeps the flag.
+   * Calls `_set_render_options` directly so the change is live without
+   * losing the WebGL context.
+   *
+   * Dev-only: in production builds `import.meta.env.DEV` is statically
+   * `false` so the body is stripped by esbuild and the method becomes
+   * a no-op. The wasm flag bit 0x10 only does anything when the wasm
+   * itself was compiled with the `debug-pip` cargo feature.
+   */
+  setDebugPip(on: boolean): void {
+    if (!import.meta.env.DEV) return
+    this.options.debugPip = on
+    setRenderOptions(this.module, {
+      debug: this.options.debug,
+      debugPip: on,
+      dpr: this.options.dpr,
+    })
+    // Force a render so the new flag is applied immediately.
+    requestRender(this.module, 'set-debug-pip')
+  }
+
+  /**
    * Initializes or re-initializes the context and loads the given page (first load or page change).
    */
   async initPage(indexedPage: IndexedPage): Promise<void> {
@@ -128,7 +153,8 @@ export class Renderer {
       this.module,
       this.canvas,
       this.options.dpr,
-      this.options.debug
+      this.options.debug,
+      this.options.debugPip
     )
     if (!success) {
       throw new Error('Failed to initialize WebGL context')

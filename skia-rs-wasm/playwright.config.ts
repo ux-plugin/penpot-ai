@@ -1,17 +1,14 @@
 import { defineConfig, devices } from '@playwright/test'
 
 /**
- * Self-contained Playwright config for the perf bench harness.
+ * Self-contained Playwright config for the visual capture harness.
  *
  * Independent from any test infra in `frontend/playwright`. The
  * `webServer` block spins up the skia-rs-wasm dev server long enough
- * for the perf spec to navigate; `reuseExistingServer` is on locally
+ * for the visual spec to navigate; `reuseExistingServer` is on locally
  * so iterating on the spec doesn't re-launch vite each time.
  *
- * The test corpus is `test/perf/**\/*.spec.ts`. Browser is locked to
- * Chromium with software GL (`swiftshader`) — counts coming back
- * from the perf snapshot are deterministic regardless of GPU; absolute
- * timings vary, which the diff tool handles via ratio thresholds.
+ * The test corpus is `test/visual/**\/*.spec.ts`.
  */
 export default defineConfig({
   testDir: './test',
@@ -21,13 +18,10 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
-  reporter: [
-    ['list'],
-    ['json', { outputFile: 'test/perf/.results/last-run.json' }],
-  ],
+  reporter: [['list']],
   webServer: {
     command: 'pnpm dev --host 127.0.0.1 --port 5173',
-    url: 'http://127.0.0.1:5173/perf?ready-check=1',
+    url: 'http://127.0.0.1:5173/?ready-check=1',
     reuseExistingServer: true,
     timeout: 60_000,
     stdout: 'ignore',
@@ -53,11 +47,6 @@ export default defineConfig({
     },
   },
   projects: [
-    {
-      name: 'perf-chromium',
-      testDir: './test/perf',
-      use: { ...devices['Desktop Chrome'] },
-    },
     {
       // Visual capture project. Runs each cell once, saves a canvas
       // screenshot to `test/visual/screenshots/<scene>__<scenario>__f<frame>.png`.

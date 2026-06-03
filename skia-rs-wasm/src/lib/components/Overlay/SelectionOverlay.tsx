@@ -80,11 +80,15 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const resizeHandle = useSelector(canvasActor, (s) => s.context.resizeHandle)
   const isRotating = useSelector(canvasActor, (s) => s.matches('rotating'))
   const rotationCorner = useSelector(canvasActor, (s) => s.context.rotationCorner)
+  // While text-editing, suppress selection handles so the MoveHitArea (pointerEvents
+  // 'auto') doesn't intercept clicks meant for caret placement / drag-selection.
+  const isTextEditing = useSelector(canvasActor, (s) => s.matches('textEditing'))
 
   const rawZoom = viewport?.zoom ?? 1
   const safeZoom = Number.isFinite(rawZoom) && rawZoom > 0 ? rawZoom : 1
   const hasFiniteSelectionRect = finiteSelectionOverlayRect(wasmSelectionRect)
-  const showHandles = selectedIds.size >= 1 && hasFiniteSelectionRect && viewport != null && !isMoving
+  const showHandles =
+    selectedIds.size >= 1 && hasFiniteSelectionRect && viewport != null && !isMoving && !isTextEditing
 
   const hitSize = HANDLE_SIZE_WORLD / safeZoom
 

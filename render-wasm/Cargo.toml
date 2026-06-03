@@ -10,11 +10,6 @@ build = "build.rs"
 
 [features]
 default = []
-# Permanent perf instrumentation. Adds a thread-local accumulator and
-# RAII guards around hot-path sites (per Step, per EffectKey, per
-# render_shape sub-phase). Surfaces a snapshot via `dump_perf_snapshot`
-# exported fn.
-perf-trace = []
 profile = ["profile-macros", "profile-raf"]
 profile-macros = []
 profile-raf = []

@@ -60,7 +60,12 @@ fn render_cursor(
     );
 
     let mut paint = Paint::default();
-    paint.set_anti_alias(false);
+    // Keep the caret a crisp 1px hairline when axis-aligned (non-AA snaps it to
+    // the pixel grid), but enable AA when the shape is rotated: a 1px-wide
+    // non-antialiased rect drawn through a rotation matrix covers almost no
+    // pixel centers during non-AA scan conversion and rasterizes to nothing,
+    // making the caret invisible on rotated text boxes.
+    paint.set_anti_alias(shape.rotation != 0.0);
     if editor_state.is_overtype_mode {
         paint.set_blend_mode(BlendMode::Exclusion);
         paint.set_color(Color::WHITE);

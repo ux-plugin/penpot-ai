@@ -9,10 +9,6 @@ mod shapes;
 mod state;
 mod tiles;
 mod tile_grid;
-#[cfg(feature = "perf-trace")]
-mod perf_trace;
-#[cfg(feature = "perf-trace")]
-mod test_fixtures;
 mod utils;
 mod uuid;
 mod view;
@@ -106,72 +102,6 @@ macro_rules! with_state_mut_current_shape {
     };
 }
 
-/// Drop a per-tag timing guard at the current scope. Expands to a
-/// no-op when the `perf-trace` feature is off, so call sites stay
-/// zero-cost in production builds.
-#[macro_export]
-macro_rules! perf_guard {
-    ($tag:expr) => {
-        #[cfg(feature = "perf-trace")]
-        let _perf_guard = $crate::perf_trace::Guard::new($tag);
-    };
-}
-
-/// Bump a named counter (tile cache hit/miss/write). No-op without
-/// `perf-trace`.
-#[macro_export]
-macro_rules! perf_count {
-    (tile_hit) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::tile_hit();
-        }
-    };
-    (tile_miss) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::tile_miss();
-        }
-    };
-    (tile_write) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::tile_write();
-        }
-    };
-    (effect_cache_hit) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::effect_cache_hit();
-        }
-    };
-    (effect_cache_miss) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::effect_cache_miss();
-        }
-    };
-    (effect_cache_evict) => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::effect_cache_evict();
-        }
-    };
-}
-
-/// Mark the end of a top-level render entry point so the per-frame
-/// counter and wall-clock accumulator advance. No-op without
-/// `perf-trace`.
-#[macro_export]
-macro_rules! perf_record_frame {
-    () => {
-        #[cfg(feature = "perf-trace")]
-        {
-            $crate::perf_trace::record_frame();
-        }
-    };
-}
-
 #[no_mangle]
 #[wasm_error]
 pub extern "C" fn init(width: i32, height: i32) -> Result<()> {
@@ -189,96 +119,6 @@ pub extern "C" fn set_browser(browser: u8) -> Result<()> {
         state.set_browser(browser);
     });
     Ok(())
-}
-
-/// Write a length-prefixed UTF-8 JSON snapshot of the perf accumulator
-/// into `BUFFERU8`. Layout: 4-byte little-endian payload length, then
-/// payload bytes. Returns the buffer pointer. JS side reads length,
-/// then slices that many bytes, then calls `free_bytes`.
-///
-/// Returns an empty (length=0) buffer when `perf-trace` is disabled.
-#[no_mangle]
-#[wasm_error]
-pub extern "C" fn dump_perf_snapshot() -> Result<*mut u8> {
-    #[cfg(feature = "perf-trace")]
-    {
-        Ok(mem::write_bytes(perf_trace::snapshot_bytes()))
-    }
-    #[cfg(not(feature = "perf-trace"))]
-    {
-        Ok(mem::write_bytes(vec![0u8; 4]))
-    }
-}
-
-#[no_mangle]
-#[wasm_error]
-pub extern "C" fn clear_perf_snapshot() -> Result<()> {
-    #[cfg(feature = "perf-trace")]
-    perf_trace::clear();
-    Ok(())
-}
-
-/// Push a gesture marker into the perf snapshot's timeline. JS writes
-/// a UTF-8 label into `BUFFERU8` (e.g. "pan_start"), then calls this.
-/// Captured at current `(frame, wall_ms)`. Used to segment a snapshot
-/// by user-action boundaries so each gesture's cost is recoverable
-/// from the otherwise-aggregate stats. No-op without `perf-trace`.
-#[no_mangle]
-#[wasm_error]
-pub extern "C" fn mark_perf_event() -> Result<()> {
-    #[cfg(feature = "perf-trace")]
-    {
-        let bytes = mem::bytes_or_empty();
-        let label = String::from_utf8(bytes)
-            .map_err(|e| Error::RecoverableError(e.to_string()))?
-            .trim_end_matches('\0')
-            .to_string();
-        perf_trace::mark_event(&label);
-    }
-    #[cfg(not(feature = "perf-trace"))]
-    {
-        let _ = mem::bytes_or_empty();
-    }
-    Ok(())
-}
-
-/// Replace the current shape pool with a deterministic perf-bench
-/// scene. `scene_id` must reference a preset registered in
-/// `test_fixtures::preset` — out-of-range ids return a recoverable
-/// error so the JS runner can surface a clear failure. No-op when
-/// `perf-trace` is disabled.
-#[no_mangle]
-#[wasm_error]
-pub extern "C" fn build_perf_scene(scene_id: u32) -> Result<()> {
-    #[cfg(feature = "perf-trace")]
-    {
-        let spec = test_fixtures::preset(scene_id).ok_or_else(|| {
-            Error::RecoverableError(format!("Unknown perf scene id: {}", scene_id))
-        })?;
-        with_state_mut!(state, {
-            test_fixtures::build_into_state(state, &spec);
-        });
-    }
-    #[cfg(not(feature = "perf-trace"))]
-    {
-        let _ = scene_id;
-    }
-    Ok(())
-}
-
-/// Total number of registered perf presets. Returns 0 when
-/// `perf-trace` is disabled. JS uses this to size the scene matrix.
-#[no_mangle]
-#[wasm_error]
-pub extern "C" fn perf_preset_count() -> Result<u32> {
-    #[cfg(feature = "perf-trace")]
-    {
-        Ok(test_fixtures::preset_count())
-    }
-    #[cfg(not(feature = "perf-trace"))]
-    {
-        Ok(0)
-    }
 }
 
 #[no_mangle]
@@ -445,8 +285,6 @@ pub extern "C" fn set_view(zoom: f32, x: f32, y: f32) -> Result<()> {
         render_state.set_view(zoom, x, y);
         performance::end_measure!("set_view");
     });
-    #[cfg(feature = "perf-trace")]
-    perf_trace::mark_event(&format!("set_view z={:.3} x={:.1} y={:.1}", zoom, x, y));
     Ok(())
 }
 
@@ -465,8 +303,6 @@ pub extern "C" fn set_view_start() -> Result<()> {
         state.render_state.options.set_fast_mode(true);
         performance::end_measure!("set_view_start");
     });
-    #[cfg(feature = "perf-trace")]
-    perf_trace::mark_event("view_interaction_start");
     Ok(())
 }
 
@@ -499,8 +335,6 @@ pub extern "C" fn set_view_end() -> Result<()> {
 
         performance::end_measure!("set_view_end");
     });
-    #[cfg(feature = "perf-trace")]
-    perf_trace::mark_event("view_interaction_end");
     Ok(())
 }
 
@@ -997,15 +831,10 @@ pub extern "C" fn set_modifiers() -> Result<()> {
         ids.push(entry.id);
     }
 
-    #[cfg(feature = "perf-trace")]
-    let n_mods = modifiers.len();
-
     with_state_mut!(state, {
         state.set_modifiers(modifiers);
         state.rebuild_modifier_tiles(ids)?;
     });
-    #[cfg(feature = "perf-trace")]
-    perf_trace::mark_event(&format!("set_modifiers n={}", n_mods));
     Ok(())
 }
 
