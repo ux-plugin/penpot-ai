@@ -84,3 +84,7 @@
 /.pnpm-store
 .cursor/
 .claude/worktrees
+
+# IDE / OS junk
+.idea/
+.DS_Store
