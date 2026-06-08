@@ -7,6 +7,15 @@ import type { Selrect } from 'penpot-exporter/types'
 export const ZERO_UUID = '00000000-0000-0000-0000-000000000000'
 
 /**
+ * Rounds a number to 2 decimal places (the "second float").
+ * Used to normalize values committed from numeric input fields so the
+ * model never stores noisy sub-cent precision (e.g. 3.14159 -> 3.14).
+ */
+export function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
+/**
  * Converts a UUID string to a Uint32Array of 4 elements
  * UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
  */

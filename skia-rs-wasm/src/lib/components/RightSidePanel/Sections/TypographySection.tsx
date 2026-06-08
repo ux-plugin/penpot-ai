@@ -72,6 +72,7 @@ import { setShapeVerticalAlign } from '@/lib/renderer/api/shape'
 import { syncTextEditGeometry, refreshEditorStyles } from '@/lib/renderer/handlers/text-edit'
 import { requestRender } from '@/lib/renderer/api/rendering'
 import { useWorkspaceStore } from '@/lib/renderer/store/workspace-store'
+import { round2 } from '@/lib/common/conversions'
 import { cn } from '@/lib/utils'
 import { FontPickerPanel } from '../FontPickerPanel'
 
@@ -268,7 +269,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
   )
 
   const commitNumber = (raw: string, key: 'fontSize' | 'lineHeight' | 'letterSpacing') => {
-    const n = parseFloat(raw)
+    const n = round2(parseFloat(raw))
     if (!Number.isFinite(n)) return
     void commit({ span: { [key]: String(n) } })
   }

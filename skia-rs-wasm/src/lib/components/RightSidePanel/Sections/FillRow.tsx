@@ -7,6 +7,7 @@ import { fillSwatchBackground } from '../../FillEditor/fill-swatch-background'
 import { isColorFill, isImageFill } from '@/lib/renderer/verification'
 import { normalizeHex } from '@/lib/renderer/properties/panel-utils'
 import { useColorEditorFor } from '../use-color-editor'
+import { round2 } from '@/lib/common/conversions'
 
 export interface FillRowProps {
   fill: Fill
@@ -107,7 +108,7 @@ export function FillRow({ fill, index, readOnly, onChange, onRemove }: FillRowPr
           max={100}
           value={isSolid ? Math.round((fill.fillOpacity ?? 1) * 100) : 100}
           disabled={!isSolid}
-          onChange={(e) => handleOpacityChange(Number(e.target.value))}
+          onChange={(e) => handleOpacityChange(round2(Number(e.target.value)))}
         />
         <Button
           type="button"

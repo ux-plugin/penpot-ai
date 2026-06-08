@@ -31,6 +31,7 @@ import { rotatePreviewDeltaDeg as rotatePreviewDeltaDegSignal } from '@/lib/rend
 import { useSignalCoalesced } from '@/lib/renderer/signals/use-signal-coalesced'
 import { getLayoutMode, type LayoutMode } from './layout-mode'
 import { GridPlacementPicker, type Placement } from './GridPlacementPicker'
+import { round2 } from '@/lib/common/conversions'
 
 type GeomDraft = { x: number; y: number; rotation: number }
 type Axis3 = 'start' | 'center' | 'end'
@@ -359,8 +360,8 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
                   id="rsp-x"
                   type="number"
                   disabled={fieldsDisabled}
-                  value={Number.isFinite(x) ? x : 0}
-                  onChange={(e) => patchDraft({ x: parseFloat(e.target.value) || 0 })}
+                  value={Number.isFinite(x) ? round2(x) : 0}
+                  onChange={(e) => patchDraft({ x: round2(parseFloat(e.target.value) || 0) })}
                   onBlur={() => void commitGeom()}
                 />
               </div>
@@ -370,8 +371,8 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
                   id="rsp-y"
                   type="number"
                   disabled={fieldsDisabled}
-                  value={Number.isFinite(y) ? y : 0}
-                  onChange={(e) => patchDraft({ y: parseFloat(e.target.value) || 0 })}
+                  value={Number.isFinite(y) ? round2(y) : 0}
+                  onChange={(e) => patchDraft({ y: round2(parseFloat(e.target.value) || 0) })}
                   onBlur={() => void commitGeom()}
                 />
               </div>
@@ -382,8 +383,8 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
                 id="rsp-rot"
                 type="number"
                 disabled={fieldsDisabled}
-                value={Number.isFinite(rotationDisplay) ? rotationDisplay : 0}
-                onChange={(e) => patchDraft({ rotation: parseFloat(e.target.value) || 0 })}
+                value={Number.isFinite(rotationDisplay) ? round2(rotationDisplay) : 0}
+                onChange={(e) => patchDraft({ rotation: round2(parseFloat(e.target.value) || 0) })}
                 onBlur={() => void commitGeom()}
               />
             </div>

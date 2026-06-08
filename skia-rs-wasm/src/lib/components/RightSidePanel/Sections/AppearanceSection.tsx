@@ -25,6 +25,7 @@ import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 import { docProxy, getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import { getLayoutMode, type LayoutMode } from './layout-mode'
 import { isTextNode, pinGrowAxis } from './text-typography'
+import { round2 } from '@/lib/common/conversions'
 
 type GrowType = 'fixed' | 'auto-width' | 'auto-height'
 
@@ -184,13 +185,13 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   )
 
   const commitRadiusSingle = (raw: string) => {
-    const n = Math.max(0, parseFloat(raw) || 0)
+    const n = Math.max(0, round2(parseFloat(raw) || 0))
     const next: Corners = { r1: n, r2: n, r3: n, r4: n }
     setCorners(next)
     void commitCorners(next)
   }
   const commitCornerSide = (key: keyof Corners, raw: string) => {
-    const n = Math.max(0, parseFloat(raw) || 0)
+    const n = Math.max(0, round2(parseFloat(raw) || 0))
     const next: Corners = { ...corners, [key]: n }
     setCorners(next)
     void commitCorners(next)
@@ -237,13 +238,13 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   )
 
   const commitMarginSingle = (raw: string) => {
-    const n = Math.max(0, parseFloat(raw) || 0)
+    const n = Math.max(0, round2(parseFloat(raw) || 0))
     const next: Margin = { m1: n, m2: n, m3: n, m4: n }
     setMargin(next)
     void commitMargin(next)
   }
   const commitMarginSide = (key: keyof Margin, raw: string) => {
-    const n = Math.max(0, parseFloat(raw) || 0)
+    const n = Math.max(0, round2(parseFloat(raw) || 0))
     const next: Margin = { ...margin, [key]: n }
     setMargin(next)
     void commitMargin(next)
@@ -317,9 +318,9 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   type="number"
                   disabled={fieldsDisabled || widthComputed}
                   title={widthComputed ? 'Width is auto-sized (see Auto resize)' : undefined}
-                  value={Number.isFinite(width) ? width : 0}
+                  value={Number.isFinite(width) ? round2(width) : 0}
                   onChange={(e) =>
-                    patchDraft({ width: Math.max(1, parseFloat(e.target.value) || 1) })
+                    patchDraft({ width: Math.max(1, round2(parseFloat(e.target.value) || 1)) })
                   }
                   onBlur={() => void commitSize('w')}
                 />
@@ -331,9 +332,9 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   type="number"
                   disabled={fieldsDisabled || heightComputed}
                   title={heightComputed ? 'Height is auto-sized (see Auto resize)' : undefined}
-                  value={Number.isFinite(height) ? height : 0}
+                  value={Number.isFinite(height) ? round2(height) : 0}
                   onChange={(e) =>
-                    patchDraft({ height: Math.max(1, parseFloat(e.target.value) || 1) })
+                    patchDraft({ height: Math.max(1, round2(parseFloat(e.target.value) || 1)) })
                   }
                   onBlur={() => void commitSize('h')}
                 />
@@ -352,7 +353,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   <PrefixedNumber
                     id="rsp-r1"
                     prefix="⌜"
-                    value={r1Draft ?? String(corners.r1)}
+                    value={r1Draft ?? String(round2(corners.r1))}
                     disabled={readOnly}
                     onChange={setR1Draft}
                     onBlur={() => {
@@ -364,7 +365,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   <PrefixedNumber
                     id="rsp-r2"
                     prefix="⌝"
-                    value={r2Draft ?? String(corners.r2)}
+                    value={r2Draft ?? String(round2(corners.r2))}
                     disabled={readOnly}
                     onChange={setR2Draft}
                     onBlur={() => {
@@ -376,7 +377,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   <PrefixedNumber
                     id="rsp-r4"
                     prefix="⌞"
-                    value={r4Draft ?? String(corners.r4)}
+                    value={r4Draft ?? String(round2(corners.r4))}
                     disabled={readOnly}
                     onChange={setR4Draft}
                     onBlur={() => {
@@ -388,7 +389,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   <PrefixedNumber
                     id="rsp-r3"
                     prefix="⌟"
-                    value={r3Draft ?? String(corners.r3)}
+                    value={r3Draft ?? String(round2(corners.r3))}
                     disabled={readOnly}
                     onChange={setR3Draft}
                     onBlur={() => {
@@ -401,7 +402,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
               ) : (
                 <NumberWithSuffix
                   id="rsp-radius"
-                  value={radiusDraft ?? String(corners.r1)}
+                  value={radiusDraft ?? String(round2(corners.r1))}
                   disabled={readOnly}
                   suffix="px"
                   onChange={setRadiusDraft}
@@ -427,7 +428,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                     <PrefixedNumber
                       id="rsp-m-t"
                       prefix="T"
-                      value={mTopDraft ?? String(margin.m1)}
+                      value={mTopDraft ?? String(round2(margin.m1))}
                       disabled={readOnly}
                       onChange={setMTopDraft}
                       onBlur={() => {
@@ -439,7 +440,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                     <PrefixedNumber
                       id="rsp-m-r"
                       prefix="R"
-                      value={mRightDraft ?? String(margin.m2)}
+                      value={mRightDraft ?? String(round2(margin.m2))}
                       disabled={readOnly}
                       onChange={setMRightDraft}
                       onBlur={() => {
@@ -451,7 +452,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                     <PrefixedNumber
                       id="rsp-m-b"
                       prefix="B"
-                      value={mBottomDraft ?? String(margin.m3)}
+                      value={mBottomDraft ?? String(round2(margin.m3))}
                       disabled={readOnly}
                       onChange={setMBottomDraft}
                       onBlur={() => {
@@ -463,7 +464,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                     <PrefixedNumber
                       id="rsp-m-l"
                       prefix="L"
-                      value={mLeftDraft ?? String(margin.m4)}
+                      value={mLeftDraft ?? String(round2(margin.m4))}
                       disabled={readOnly}
                       onChange={setMLeftDraft}
                       onBlur={() => {
@@ -476,7 +477,7 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                 ) : (
                   <NumberWithSuffix
                     id="rsp-m"
-                    value={marginDraft ?? String(margin.m1)}
+                    value={marginDraft ?? String(round2(margin.m1))}
                     disabled={readOnly}
                     suffix="px"
                     onChange={setMarginDraft}

@@ -24,6 +24,7 @@ import {
 } from '@/lib/renderer/properties/commit-node-properties'
 import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
+import { round2 } from '@/lib/common/conversions'
 
 type FlexDir = 'row' | 'row-reverse' | 'column' | 'column-reverse'
 type WrapType = 'wrap' | 'nowrap'
@@ -200,12 +201,12 @@ export function LayoutFlexBody({ nodeId, initialNode, readOnly }: LayoutFlexBody
       <ControlBlock label="Gap">
         <NumberWithSuffix
           id="rsp-flex-gap"
-          value={gapDraft ?? String(gap)}
+          value={gapDraft ?? String(round2(gap))}
           disabled={readOnly}
           suffix="px"
           onChange={(s) => setGapDraft(s)}
           onBlur={() => {
-            const n = Math.max(0, parseFloat(gapDraft ?? String(gap)) || 0)
+            const n = Math.max(0, round2(parseFloat(gapDraft ?? String(gap)) || 0))
             setGapDraft(null)
             commitGap(n)
           }}
@@ -215,12 +216,12 @@ export function LayoutFlexBody({ nodeId, initialNode, readOnly }: LayoutFlexBody
       <ControlBlock label="Padding">
         <NumberWithSuffix
           id="rsp-flex-padding"
-          value={paddingDraft ?? String(padding)}
+          value={paddingDraft ?? String(round2(padding))}
           disabled={readOnly}
           suffix="px"
           onChange={(s) => setPaddingDraft(s)}
           onBlur={() => {
-            const n = Math.max(0, parseFloat(paddingDraft ?? String(padding)) || 0)
+            const n = Math.max(0, round2(parseFloat(paddingDraft ?? String(padding)) || 0))
             setPaddingDraft(null)
             commitPadding(n)
           }}

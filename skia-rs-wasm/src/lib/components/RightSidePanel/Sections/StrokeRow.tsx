@@ -7,6 +7,7 @@ import { fillSwatchBackground } from '../../FillEditor/fill-swatch-background'
 import { isColorFill } from '../../../renderer/api/constants'
 import { normalizeHex } from '../../../renderer/properties/panel-utils'
 import { useColorEditorFor } from '../use-color-editor'
+import { round2 } from '@/lib/common/conversions'
 
 const ALIGN_OPTIONS = ['center', 'inner', 'outer'] as const
 const STYLE_OPTIONS = ['solid', 'dotted', 'dashed', 'mixed'] as const
@@ -138,7 +139,7 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove }: Strok
           max={100}
           value={isSolid ? Math.round(opacity * 100) : 100}
           disabled={!isSolid}
-          onChange={(e) => handleOpacityChange(Number(e.target.value))}
+          onChange={(e) => handleOpacityChange(round2(Number(e.target.value)))}
         />
         <Button
           type="button"
@@ -158,9 +159,9 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove }: Strok
           className="h-7 w-14 shrink-0 px-1 text-xs"
           min={0}
           step={0.5}
-          value={Number.isFinite(width) ? width : 0}
+          value={Number.isFinite(width) ? round2(width) : 0}
           onChange={(e) =>
-            onChange({ ...stroke, strokeWidth: Math.max(0, parseFloat(e.target.value) || 0) }, index)
+            onChange({ ...stroke, strokeWidth: Math.max(0, round2(parseFloat(e.target.value) || 0)) }, index)
           }
           title="Width"
         />

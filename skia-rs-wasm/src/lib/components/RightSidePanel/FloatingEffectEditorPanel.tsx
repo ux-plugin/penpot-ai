@@ -10,6 +10,7 @@ import { isColorFill } from '@/lib/renderer/verification'
 import { fillSwatchBackground } from '../FillEditor/fill-swatch-background'
 import { useColorEditor } from './use-color-editor'
 import { FloatingPanelShell } from './FloatingPanelShell'
+import { round2 } from '@/lib/common/conversions'
 
 const EFFECT_KIND_OPTIONS: { value: EffectKind; label: string }[] = [
   { value: 'drop-shadow', label: 'Drop shadow' },
@@ -109,7 +110,7 @@ function EffectField({
         max={max}
         step={step}
         value={value % 1 !== 0 ? parseFloat(value.toFixed(2)) : value}
-        onChange={(e) => onChange(Math.min(max, Math.max(min, parseFloat(e.target.value) || 0)))}
+        onChange={(e) => onChange(Math.min(max, Math.max(min, round2(parseFloat(e.target.value) || 0))))}
       />
     </div>
   )
@@ -284,7 +285,7 @@ export function FloatingEffectEditorPanel() {
                 max={100}
                 value={isSolid ? Math.round(opacity * 100) : 100}
                 disabled={!isSolid}
-                onChange={(e) => handleOpacityChange(Number(e.target.value))}
+                onChange={(e) => handleOpacityChange(round2(Number(e.target.value)))}
               />
             </div>
           </div>
@@ -470,7 +471,7 @@ export function FloatingEffectEditorPanel() {
                         max={100}
                         value={Math.round((s.opacity ?? 1) * 100)}
                         onChange={(e) => {
-                          const o = Math.max(0, Math.min(100, Number(e.target.value))) / 100
+                          const o = Math.max(0, Math.min(100, round2(Number(e.target.value)))) / 100
                           updateSlot(
                             i,
                             isPrism

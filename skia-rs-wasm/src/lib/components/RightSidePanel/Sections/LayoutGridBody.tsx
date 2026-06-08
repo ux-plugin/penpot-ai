@@ -32,6 +32,7 @@ import {
   trackTypeOption,
   type GridTrackType,
 } from './grid-tracks'
+import { round2 } from '@/lib/common/conversions'
 
 type GridDir = 'row' | 'column'
 type AxisAlign = 'start' | 'center' | 'end' | 'stretch'
@@ -330,11 +331,11 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
             <PrefixedNumber
               id="rsp-grid-row-gap"
               prefix="↕"
-              value={rowGapDraft ?? String(rowGap)}
+              value={rowGapDraft ?? String(round2(rowGap))}
               disabled={readOnly}
               onChange={(s) => setRowGapDraft(s)}
               onBlur={() => {
-                const n = parseFloat(rowGapDraft ?? String(rowGap)) || 0
+                const n = round2(parseFloat(rowGapDraft ?? String(rowGap)) || 0)
                 setRowGapDraft(null)
                 commitRowGap(n)
               }}
@@ -342,11 +343,11 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
             <PrefixedNumber
               id="rsp-grid-col-gap"
               prefix="↔"
-              value={colGapDraft ?? String(colGap)}
+              value={colGapDraft ?? String(round2(colGap))}
               disabled={readOnly}
               onChange={(s) => setColGapDraft(s)}
               onBlur={() => {
-                const n = parseFloat(colGapDraft ?? String(colGap)) || 0
+                const n = round2(parseFloat(colGapDraft ?? String(colGap)) || 0)
                 setColGapDraft(null)
                 commitColGap(n)
               }}
@@ -355,12 +356,12 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
         ) : (
           <NumberWithSuffix
             id="rsp-grid-gap"
-            value={gapDraft ?? String(rowGap)}
+            value={gapDraft ?? String(round2(rowGap))}
             disabled={readOnly}
             suffix="px"
             onChange={(s) => setGapDraft(s)}
             onBlur={() => {
-              const n = parseFloat(gapDraft ?? String(rowGap)) || 0
+              const n = round2(parseFloat(gapDraft ?? String(rowGap)) || 0)
               setGapDraft(null)
               commitGapSingle(n)
             }}
@@ -380,11 +381,11 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
             <PrefixedNumber
               id="rsp-grid-pad-t"
               prefix="T"
-              value={padTopDraft ?? String(pad.p1)}
+              value={padTopDraft ?? String(round2(pad.p1))}
               disabled={readOnly}
               onChange={(s) => setPadTopDraft(s)}
               onBlur={() => {
-                const n = parseFloat(padTopDraft ?? String(pad.p1)) || 0
+                const n = round2(parseFloat(padTopDraft ?? String(pad.p1)) || 0)
                 setPadTopDraft(null)
                 commitPadSide('p1', n)
               }}
@@ -392,11 +393,11 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
             <PrefixedNumber
               id="rsp-grid-pad-r"
               prefix="R"
-              value={padRightDraft ?? String(pad.p2)}
+              value={padRightDraft ?? String(round2(pad.p2))}
               disabled={readOnly}
               onChange={(s) => setPadRightDraft(s)}
               onBlur={() => {
-                const n = parseFloat(padRightDraft ?? String(pad.p2)) || 0
+                const n = round2(parseFloat(padRightDraft ?? String(pad.p2)) || 0)
                 setPadRightDraft(null)
                 commitPadSide('p2', n)
               }}
@@ -404,11 +405,11 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
             <PrefixedNumber
               id="rsp-grid-pad-b"
               prefix="B"
-              value={padBottomDraft ?? String(pad.p3)}
+              value={padBottomDraft ?? String(round2(pad.p3))}
               disabled={readOnly}
               onChange={(s) => setPadBottomDraft(s)}
               onBlur={() => {
-                const n = parseFloat(padBottomDraft ?? String(pad.p3)) || 0
+                const n = round2(parseFloat(padBottomDraft ?? String(pad.p3)) || 0)
                 setPadBottomDraft(null)
                 commitPadSide('p3', n)
               }}
@@ -416,11 +417,11 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
             <PrefixedNumber
               id="rsp-grid-pad-l"
               prefix="L"
-              value={padLeftDraft ?? String(pad.p4)}
+              value={padLeftDraft ?? String(round2(pad.p4))}
               disabled={readOnly}
               onChange={(s) => setPadLeftDraft(s)}
               onBlur={() => {
-                const n = parseFloat(padLeftDraft ?? String(pad.p4)) || 0
+                const n = round2(parseFloat(padLeftDraft ?? String(pad.p4)) || 0)
                 setPadLeftDraft(null)
                 commitPadSide('p4', n)
               }}
@@ -429,12 +430,12 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
         ) : (
           <NumberWithSuffix
             id="rsp-grid-pad"
-            value={padDraft ?? String(pad.p1)}
+            value={padDraft ?? String(round2(pad.p1))}
             disabled={readOnly}
             suffix="px"
             onChange={(s) => setPadDraft(s)}
             onBlur={() => {
-              const n = parseFloat(padDraft ?? String(pad.p1)) || 0
+              const n = round2(parseFloat(padDraft ?? String(pad.p1)) || 0)
               setPadDraft(null)
               commitPadSingle(n)
             }}
@@ -738,7 +739,7 @@ function TrackRow({
     const raw = draft ?? String(track.value ?? opt.defaultValue ?? 0)
     setDraft(null)
     if (!opt.hasValue) return
-    const n = Math.max(0, parseFloat(raw))
+    const n = Math.max(0, round2(parseFloat(raw)))
     if (Number.isNaN(n)) return
     onChange({ type, value: n })
   }
@@ -752,7 +753,7 @@ function TrackRow({
         <Input
           type="number"
           min={0}
-          value={draft ?? String(track.value ?? opt.defaultValue ?? 0)}
+          value={draft ?? String(round2(track.value ?? opt.defaultValue ?? 0))}
           disabled={disabled}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={onValueBlur}

@@ -7,6 +7,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import type { Fill, Gradient } from 'penpot-exporter/types'
 import { isAngularGradient, isDiamondGradient, isColorFill, isLinearGradient, isRadialGradient } from '../../renderer/api/constants'
 import { MAX_GRADIENT_STOPS } from '../../renderer/api/constants'
+import { round2 } from '../../common/conversions'
 
 export type FillEditorMode = 'solid' | 'linear' | 'radial' | 'angular' | 'diamond'
 
@@ -268,7 +269,7 @@ export function FillEditor({
               <input
                 type="number"
                 value={Math.round(fillOpacity * 100)}
-                onChange={(e) => setFillOpacity(Number(e.target.value) / 100)}
+                onChange={(e) => setFillOpacity(round2(Number(e.target.value)) / 100)}
                 min={0}
                 max={100}
                 style={{ width: 48, padding: '4px 6px', fontSize: 12 }}
@@ -491,7 +492,7 @@ export function FillEditor({
                   value={Math.round(stop.offset * 100)}
                   onChange={(e) => {
                     e.stopPropagation()
-                    updateStop(i, { offset: Number(e.target.value) / 100 })
+                    updateStop(i, { offset: round2(Number(e.target.value)) / 100 })
                   }}
                   onClick={(e) => e.stopPropagation()}
                   min={0}
@@ -547,7 +548,7 @@ export function FillEditor({
                   value={Math.round((stop.opacity ?? 1) * 100)}
                   onChange={(e) => {
                     e.stopPropagation()
-                    updateStop(i, { opacity: Number(e.target.value) / 100 })
+                    updateStop(i, { opacity: round2(Number(e.target.value)) / 100 })
                   }}
                   onClick={(e) => e.stopPropagation()}
                   min={0}
