@@ -29,8 +29,6 @@ export async function initWasmModule(wasmPath?: string): Promise<WasmModule> {
     store.setWasmModule(module)
     store.setIsWasmModuleLoading(false)
 
-    console.log('WASM module initialized', module)
-    
     return module
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error))

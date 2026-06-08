@@ -35,6 +35,8 @@ function dtsBundlePlugin(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => ({
+  // The font backend/proxy origin comes from VITE_FONT_BACKEND_URL via Vite's
+  // env files (.env.development / .env.production), read through import.meta.env.
   define:
     command === 'build'
       ? { 'process.env.NODE_ENV': '"production"' }
@@ -79,15 +81,10 @@ export default defineConfig(({ command }) => ({
           const url = req.url?.split('?')[0] || '';
           if (url.endsWith('.wasm')) {
             const wasmPath = join(publicDir, url);
-            console.log('WASM request:', url, '-> Looking for:', wasmPath);
-            
             if (fs.existsSync(wasmPath)) {
-              console.log('Found WASM file, serving with correct MIME type');
               res.setHeader('Content-Type', 'application/wasm');
               fs.createReadStream(wasmPath).pipe(res);
               return;
-            } else {
-              console.log('WASM file NOT found at:', wasmPath);
             }
           }
           next();

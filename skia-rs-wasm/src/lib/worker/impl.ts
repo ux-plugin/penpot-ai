@@ -31,7 +31,6 @@ registerHandler('echo', (message) => message)
 registerHandler('configure', (message) => {
   const config = typeof message.payload === 'object' && message.payload !== null && 'config' in message.payload ? (message.payload as Record<string, unknown>).config : undefined
   if (config) {
-    console.info('Configure worker:', Object.keys(config))
     // Configuration would be stored here
   }
   return null

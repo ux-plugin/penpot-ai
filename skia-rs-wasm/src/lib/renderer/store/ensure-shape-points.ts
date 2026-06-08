@@ -64,7 +64,6 @@ function ensureShapePoints(node: PenpotNode): PenpotNode {
   if (points && points.length > 0) {
     return node
   }
-  console.log('ensureShapePoints', node)
   const computed = computePointsFromSelrectAndTransform(node)
   if (computed.length === 0) return node
   return { ...node, points: computed }

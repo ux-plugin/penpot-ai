@@ -49,20 +49,14 @@ registerHandler('index/clear', () => {
 })
 
 registerHandler('index/initialize', (message: WorkerMessage) => {
-  console.log('index/initialize', message)
   const indexed = (message.payload as { page?: IndexedPage } | undefined)?.page
   if (!indexed) {
     return null
   }
 
-  const startTime = performance.now()
-
   try {
     state.pagesIndex[indexed.id] = indexed
     state.selection = selection.addPage(state.selection, indexed)
-
-    const elapsed = performance.now() - startTime
-    console.debug(`Page indexed: ${indexed.id}, elapsed: ${elapsed}ms`)
 
     return null
   } catch (error) {
@@ -80,8 +74,6 @@ registerHandler('index/update', (message: WorkerMessage) => {
   if (!pageId) {
     return null
   }
-
-  const startTime = performance.now()
 
   try {
     const oldPage = state.pagesIndex[pageId]
@@ -102,9 +94,6 @@ registerHandler('index/update', (message: WorkerMessage) => {
     } else {
       return null
     }
-
-    const elapsed = performance.now() - startTime
-    console.debug(`Page index updated: ${pageId}, elapsed: ${elapsed}ms`)
 
     return null
   } catch (error) {
@@ -234,7 +223,6 @@ registerHandler('index/update-text-rect', (message: WorkerMessage) => {
 
 // Main worker message handler
 self.addEventListener('message', (event: MessageEvent) => {
-  console.log('Worker message received:', event.data)
   const raw = event.data as SerializedMessage
   const replyTo = raw?.replyTo
   try {

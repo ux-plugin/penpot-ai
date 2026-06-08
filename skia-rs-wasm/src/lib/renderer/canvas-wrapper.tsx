@@ -52,24 +52,22 @@ function CanvasWorkspace({
 
   useEffect(() => {
     // Fired by the WASM renderer (wapi_notifyTilesRenderComplete) on the main
-    // thread once a full tile render pass settles. For now we just log it.
+    // thread once a full tile render pass settles. Reserved as a hook for
+    // post-render work; nothing to do yet.
     const handleTilesRenderComplete = () => {
-      console.log('[skia-rs-wasm] penpot:wasm:tiles-complete fired')
+      // Placeholder: no-op until post-tile-render work is needed.
     }
     document.addEventListener('penpot:wasm:tiles-complete', handleTilesRenderComplete)
 
     initWasmModule(wasmPath).catch((error) => {
       console.error('Failed to load WASM module:', error)
     })
-    initWorker(workerScriptUrl).then(() => {
-      console.log('Worker initialized')
-    }).catch((error) => {
+    initWorker(workerScriptUrl).catch((error) => {
       console.error('Failed to initialize worker:', error)
     })
 
     return () => {
       document.removeEventListener('penpot:wasm:tiles-complete', handleTilesRenderComplete)
-      console.log('Cleaning up worker')
       cleanupWorker()
     }
   }, [wasmPath, workerScriptUrl])
@@ -78,13 +76,10 @@ function CanvasWorkspace({
     if (!workerClient || !wasmModule) return
     const canvas = canvasRef.current
     if (!canvas) return
-    initRendererClient(canvas, rendererOptions).then(() => {
-      console.log('Renderer initialized')
-    }).catch((error) => {
+    initRendererClient(canvas, rendererOptions).catch((error) => {
       console.error('Failed to initialize renderer:', error)
     })
     return () => {
-      console.log('Cleaning up renderer client')
       cleanupRendererClient()
     }
   }, [workerClient, wasmModule, rendererOptions])
