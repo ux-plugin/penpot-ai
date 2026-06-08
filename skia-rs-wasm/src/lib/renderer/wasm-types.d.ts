@@ -396,6 +396,8 @@ export interface WasmModule {
   _text_editor_get_current_styles(): number    // style-data buffer (see decoder)
   _text_editor_export_content(): number         // null-terminated JSON
   _text_editor_export_selection(): number       // null-terminated plain text
+  _text_editor_export_styled(): number          // null-terminated JSON (styled content)
+  _text_editor_apply_styles(): void              // applies the patch in the input buffer
 }
 
 export type WasmModuleFactory = (options?: {

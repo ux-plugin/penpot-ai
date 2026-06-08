@@ -21,6 +21,15 @@ const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 /** Minimum rubber-band size in screen pixels before committing a shape. */
 const MIN_DRAW_SCREEN_PX = 3
 
+/**
+ * After a draw commits, the canvas machine's `drawingShape.onDone` reads this to
+ * decide whether to drop into text-edit mode: it holds the new shape id for a
+ * text shape, and is reset to null at the start of every draw. Single-flight —
+ * draws are sequential (one `drawingShape` invocation at a time). A `fromObservable`
+ * actor has no typed `output`, so this ref is how the id reaches the machine.
+ */
+export const pendingTextEdit: { id: string | null } = { id: null }
+
 export function handleDrawShape(tool: DrawTool): Observable<void> {
   const initialVp = viewport.value
   const effectivePageId = getActiveOrSinglePageId()
@@ -63,8 +72,11 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
           map(() => undefined)
         ),
         of(null).pipe(
-          tap(() => {
+          // async so we can await the WASM sync below before the actor completes.
+          switchMap(async () => {
             shapeDrawPreviewSignal.value = null
+            // Reset per draw; set below only when a text shape is committed.
+            pendingTextEdit.id = null
 
             // Click (no real drag) vs drag. Like Penpot: the text tool supports
             // click-to-create (a small auto-width box that grows with typing);
@@ -110,7 +122,9 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
                       width: w,
                       height: h,
                       parentId: rootId,
-                      text: 'Text',
+                      // Empty: the box opens into edit mode with a blinking caret
+                      // (no placeholder text), and the user types into it.
+                      text: '',
                       // Click → auto-width box that grows with typing; drag → fixed
                       // box at the drawn size (Penpot's text-tool behaviour).
                       growType: isClick ? 'auto-width' : 'fixed',
@@ -136,10 +150,14 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
               index: root?.shapes?.length ?? 0,
               pageId: effectivePageId,
             }
-            void applyChanges([addChange])
+            // Await so the shape is in the WASM scene before we enter edit mode —
+            // `text_editor_focus` needs it present, otherwise the caret never
+            // shows on the first click that creates the box (the sync is async).
+            await applyChanges([addChange])
             setSelectedIds(new Set([newNode.id]))
-          }),
-          map(() => undefined)
+            // A freshly created text shape opens straight into edit mode.
+            if (tool === 'text') pendingTextEdit.id = newNode.id
+          })
         )
       )
     })

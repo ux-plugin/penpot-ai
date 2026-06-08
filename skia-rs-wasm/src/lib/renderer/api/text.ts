@@ -6,6 +6,8 @@ import type { WasmModule } from '../wasm-types'
 import type { PenpotNode, Fill, TextContent, Paragraph, TextNode } from 'penpot-exporter/types'
 import type { PendingImageCallback, ResolveFontUrlCallback, FontInfo, FontData } from '../types'
 import { uuidToU32Tuple, uuidToU32 } from '../types'
+import { googleFontUrl } from './google-fonts'
+import { fontSlugToUuid } from './font-id-map'
 import {
   freeBytes,
   offset8To32,
@@ -147,15 +149,14 @@ function serializeLetterSpacing(spacing?: number | string): number {
 }
 
 /**
- * Normalizes font-id to UUID format
- * Handles gfont-*, custom-*, builtin fonts
+ * Resolves a font slug (e.g. "sourcesanspro") to the renderer's font-cache
+ * UUID. The font store (`storeFont` → `wasmId`), the upload check
+ * (`_is_font_uploaded`) and the span serializer (`writeSpans`) all route through
+ * here, so they stay coherent on a single mapping. The slug remains the
+ * persisted identity; the UUID is a transient cache key (see `font-id-map`).
  */
 function normalizeFontId(fontId?: string): string {
-  if (!fontId) return ZERO_UUID
-  // For now, return as-is - in a full implementation this would convert
-  // gfont-* and custom-* prefixes to UUIDs
-  // This is a simplified version - full implementation would query font database
-  return fontId
+  return fontSlugToUuid(fontId)
 }
 
 /**
@@ -278,10 +279,13 @@ function storeFont(
     return null
   }
   
-  // Resolve font URL
-  const fontUrl = resolveFontUrl
-    ? resolveFontUrl(fontId, font.fontVariantId, fontWeight, fontStyleStr)
-    : `/fonts/${fontId}`
+  // Resolve font URL: explicit resolver wins; otherwise load the matching
+  // static TTF from Google Fonts (so weight / italic / family actually render);
+  // local `/fonts/<id>` remains the last resort for non-catalog ids.
+  const fontUrl =
+    resolveFontUrl?.(fontId, font.fontVariantId, fontWeight, fontStyleStr) ??
+    googleFontUrl(fontId, fontWeight, fontStyleStr) ??
+    `/fonts/${fontId}`
   
   // Create font data
   const fontData: FontData = {
@@ -313,6 +317,24 @@ function storeFonts(
     }
   }
   return pending
+}
+
+/**
+ * Ensure a single font face is loaded into the renderer, fetching + uploading it
+ * when it isn't already cached. For the interactive text editor's apply path
+ * (changing family / weight / italic), which sets the face on the spans but
+ * bypasses the content-set font pipeline — so without this the new face renders
+ * with a fallback until the next full sync (commit). Resolves `true` when a font
+ * was actually uploaded, so the caller can re-render once it lands.
+ */
+export async function ensureFontLoaded(
+  module: WasmModule,
+  font: FontInfo,
+  resolveFontUrl?: ResolveFontUrlCallback
+): Promise<boolean> {
+  const pending = storeFont(module, font, resolveFontUrl)
+  if (!pending) return false // already cached (or no font id)
+  return pending.callback()
 }
 
 /**
@@ -464,71 +486,81 @@ function hashString(str: string): number {
 }
 
 /**
- * Writes shape text content to WASM memory
- * Buffer format: [<num-spans: u32> <paragraph_attributes: 12 bytes> <spans_attributes: 64 bytes each + fills> <text: UTF-8>]
+ * Serializes a single paragraph into WASM memory and appends it to the current
+ * shape via `_set_shape_text_content` (which reads + frees the buffer, pushing
+ * one paragraph per call). Buffer format:
+ * [<num-spans: u32> <paragraph_attributes: 12 bytes> <spans_attributes: 64 bytes each + fills> <text: UTF-8>]
  */
-function writeShapeText(module: WasmModule, content: TextContent): void {
-  if (!content || !content.children) {
-    return
-  }
-  
-  // Get paragraph-set (first child)
-  const paragraphSet = content.children[0]
-  if (!paragraphSet || !paragraphSet.children) {
-    return
-  }
-  
-  const paragraphs = paragraphSet.children
-  
-  // Process first paragraph (simplified - full implementation would handle multiple paragraphs)
-  if (paragraphs.length === 0) {
-    return
-  }
-  
-  const paragraph = paragraphs[0]
-  const spans = paragraph.children || []
-  
-  if (spans.length === 0) {
-    return
-  }
-  
-  // Collect all text from spans
+function writeShapeParagraph(module: WasmModule, paragraph: Paragraph): void {
+  // A blank line is a paragraph with one empty span; never drop it, or every
+  // line after a break collapses on the next render. Synthesize an empty span
+  // when the paragraph somehow has none so the line (and its height) survives.
+  const spans = paragraph.children && paragraph.children.length > 0
+    ? paragraph.children
+    : ([{ text: '' }] as TextNode[])
+
+  // Collect all text from this paragraph's spans
   const text = spans.map((span: TextNode) => span.text || '').join('')
   const textBuffer = encodeText(text)
   const textSize = textBuffer.length
-  
+
   // Calculate sizes
   const fillsSize = MAX_TEXT_FILLS * FILL_U8_SIZE
   const metadataSize = PARAGRAPH_ATTR_U8_SIZE + spans.length * (SPAN_ATTR_U8_SIZE + fillsSize)
   const totalSize = 4 + metadataSize + textSize // 4 bytes for num-spans
-  
+
   // Allocate memory
   const offset = allocBytes(module, totalSize)
   const dataView = new DataView(module.HEAPU8.buffer, module.HEAPU8.byteOffset)
   const heapU8 = module.HEAPU8
-  
+
   let currentOffset = offset
-  
+
   // Write number of spans (u32)
   dataView.setUint32(currentOffset, spans.length, true)
   currentOffset += 4
-  
+
   // Write paragraph attributes
   currentOffset = writeParagraph(currentOffset, dataView, paragraph)
-  
+
   // Write spans
   currentOffset = writeSpans(currentOffset, dataView, spans, paragraph)
-  
+
   // Write text buffer
   const textOffset = currentOffset
   for (let i = 0; i < textBuffer.length; i++) {
     heapU8[textOffset + i] = textBuffer[i]
   }
-  
-  // Call WASM to set text content
+
+  // Append this paragraph (WASM reads + frees the buffer).
   module._set_shape_text_content()
-  
-  // Note: Memory will be freed by WASM after processing
+}
+
+/**
+ * Writes a shape's full text content to WASM memory, one paragraph at a time.
+ * The renderer appends each paragraph (after `_clear_shape_text`), so every
+ * paragraph must be serialized — otherwise content after the first line break
+ * is silently dropped on the next non-editor render.
+ */
+function writeShapeText(module: WasmModule, content: TextContent): void {
+  if (!content || !content.children) {
+    return
+  }
+
+  // Get paragraph-set (first child)
+  const paragraphSet = content.children[0]
+  if (!paragraphSet || !paragraphSet.children) {
+    return
+  }
+
+  const paragraphs = paragraphSet.children
+  if (paragraphs.length === 0) {
+    return
+  }
+
+  for (const paragraph of paragraphs) {
+    writeShapeParagraph(module, paragraph)
+  }
 }
 
 /**

@@ -23,7 +23,8 @@ import {
 import { commitChangesPublic } from '../../page-crud'
 import { cleanModifiers, propagateModifiers } from '../api/modifiers'
 import { clearLayout, setFlexLayout, setGridLayout, setLayoutData } from '../api/layout'
-import { moduleUseShape } from '../api/shape'
+import { moduleUseShape, setShapeGrowType } from '../api/shape'
+import { getTextDimensions } from '../api/text'
 import { identityMatrix } from '../geom/matrix'
 import { applyTransformToNode } from '../geom/apply-transform-to-node'
 import { useWorkspaceStore } from '../store/workspace-store'
@@ -247,4 +248,53 @@ export async function commitNodePartialUpdate(
   })
 
   clearModifierOverlay()
+}
+
+/**
+ * Commit a text shape's `grow-type` and, for the content-driven modes, resize
+ * the box to fit the text in the same history frame.
+ *
+ * Switching to `auto-width`/`auto-height` only changes how the box *should*
+ * size; the geometry isn't recomputed until a later layout pass. To make the
+ * toggle feel immediate, we set the grow type on the WASM shape, read back the
+ * laid-out text size (`get_text_dimensions`, the same source `syncTextEditGeometry`
+ * uses while editing), and fold the new selrect/width/height into the commit so
+ * the box hugs the text right away. `fixed` keeps the current size. Measurement
+ * is best-effort: if WASM is unavailable or returns a degenerate size, we fall
+ * back to a mode-only change.
+ */
+export async function commitTextGrowType(
+  id: string,
+  nodeBefore: PenpotNode,
+  growType: 'fixed' | 'auto-width' | 'auto-height',
+  pageId: string | null | undefined,
+): Promise<void> {
+  const pid = pageId ?? undefined
+  let partial: Partial<PenpotNode> = { growType }
+
+  if (growType === 'auto-width' || growType === 'auto-height') {
+    const module = useWorkspaceStore.getState().renderer?.getModule?.()
+    const sel = (nodeBefore as { selrect?: { x?: number; y?: number; width?: number; height?: number } }).selrect
+    const x = sel?.x ?? (nodeBefore as { x?: number }).x ?? 0
+    const y = sel?.y ?? (nodeBefore as { y?: number }).y ?? 0
+    const rot = (nodeBefore as { rotation?: number }).rotation ?? 0
+    const curWidth = sel?.width ?? (nodeBefore as { width?: number }).width ?? 0
+
+    if (module) {
+      try {
+        moduleUseShape(module, id)
+        setShapeGrowType(module, growType)
+        const dims = getTextDimensions(module, id)
+        const width = growType === 'auto-width' ? dims.width : curWidth
+        const height = dims.height
+        if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+          partial = { growType, ...rectLayoutPartial(x, y, width, height, rot) }
+        }
+      } catch {
+        // Measurement unavailable (SSR/tests/degenerate layout) — mode-only change.
+      }
+    }
+  }
+
+  await commitNodePartialUpdate(id, nodeBefore, partial, pid)
 }

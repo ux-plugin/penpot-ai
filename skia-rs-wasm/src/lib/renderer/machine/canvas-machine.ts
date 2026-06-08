@@ -8,12 +8,12 @@ import { startMoveSelected } from '../handlers/move'
 import { startRotateSelected } from '../handlers/rotate'
 import { startResizeSelected } from '../handlers/resize'
 import { handleAreaSelection } from '../handlers/selection'
-import { handleDrawShape } from '../handlers/draw-shape'
+import { handleDrawShape, pendingTextEdit } from '../handlers/draw-shape'
 import { startGradientDrag } from '../handlers/gradient'
 import type { GradientHandleKind } from '../handlers/gradient'
 import type { Point, ResizeHandlePosition } from '../types'
 
-export type DrawTool = 'rect' | 'frame'
+export type DrawTool = 'rect' | 'frame' | 'text'
 
 export interface CanvasContext {
   resizeHandle: ResizeHandlePosition | null
@@ -182,7 +182,19 @@ export const canvasMachine = canvasMachineSetup.createMachine({
       invoke: {
         src: 'drawActor',
         input: ({ context }) => ({ tool: context.drawTool ?? 'rect' }),
-        onDone: { target: 'idle' },
+        onDone: [
+          {
+            // A freshly drawn text shape drops straight into edit mode so a
+            // blinking caret appears (no placeholder text). The id comes via the
+            // `pendingTextEdit` ref since observable actors have no typed output.
+            guard: () => pendingTextEdit.id != null,
+            target: 'textEditing',
+            actions: assign({
+              textEditingShapeId: () => pendingTextEdit.id,
+            }),
+          },
+          { target: 'idle' },
+        ],
         onError: { target: 'idle' },
       },
     },

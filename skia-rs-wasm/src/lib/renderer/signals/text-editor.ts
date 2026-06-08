@@ -6,7 +6,7 @@
  */
 
 import { signal } from '@preact/signals-core'
-import type { Rect } from '../api/text-editor'
+import type { Rect, CurrentStyles } from '../api/text-editor'
 
 /** True while a text shape is being edited. The render loop gates the
  * editor frame calls (update_blink / render_overlay / poll_event) on this. */
@@ -24,3 +24,17 @@ export const textSelectionRects = signal<Rect[]>([])
 
 /** True between compositionstart and compositionend (IME). */
 export const textIsComposing = signal<boolean>(false)
+
+/** Whether the live WASM editor currently holds no text. Refreshed after every
+ * edit while editing (the typed content lives in the editor, not `node.content`,
+ * until commit). Lets the selection overlay hide the outline for a freshly
+ * click-created empty text box and reveal it the moment a character is typed.
+ * Reset to `true` when an edit session ends. */
+export const textEditorIsEmpty = signal<boolean>(true)
+
+/** Live, mixed-aware style of the caret / current selection in the edited
+ * shape, read from the WASM editor (`text_editor_get_current_styles`). Null when
+ * not editing. Drives the typography/fills panels' display while editing: per-
+ * property `MULTIPLE` renders as "Mixed", and `selectedColors` lists every fill
+ * used across the selection. Refreshed after each editor interaction. */
+export const currentStyles = signal<CurrentStyles | null>(null)

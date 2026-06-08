@@ -253,7 +253,10 @@ export function createText(
               children: [
                 {
                   type: 'text',
-                  text: options.text || 'Hello World',
+                  // Default to empty: a text box opens into edit mode with a
+                  // blinking caret and no placeholder text. Callers pass `text`
+                  // only when they have real content.
+                  text: options.text ?? '',
                   fills: [spanFill],
                 },
               ],

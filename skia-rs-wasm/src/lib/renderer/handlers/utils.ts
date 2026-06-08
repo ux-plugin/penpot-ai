@@ -82,11 +82,22 @@ export async function applyModifiersAndCommit(
   for (const { id, transform } of propagated) {
     const node = pageObjects?.[id] as PenpotNode | undefined
     if (!node) continue
-    const undoAssign = snapshotGeometryForUndo(node)
+    const undoAssign = snapshotGeometryForUndo(node) as Record<string, unknown>
     const partial = applyTransformToNode(node, transform)
     if (!partial) continue
+    const redoAssign = partial as Record<string, unknown>
+    // Persist a grow-type change (e.g. resizing pins an auto-size text box to
+    // `fixed`) in the SAME frame as the geometry, but only when it actually
+    // differs — callers that pass the current grow type to preserve it (move /
+    // reparent) leave the model untouched.
+    const requestedGrow = options?.textGrowTypes?.get(id)
+    const currentGrow = (node as { growType?: string }).growType
+    if (requestedGrow !== undefined && requestedGrow !== currentGrow) {
+      redoAssign.growType = requestedGrow
+      undoAssign.growType = currentGrow
+    }
     builder = appendModObjPair(builder, pageId, id, {
-      redoAssign: partial as Record<string, unknown>,
+      redoAssign,
       undoAssign,
     })
   }

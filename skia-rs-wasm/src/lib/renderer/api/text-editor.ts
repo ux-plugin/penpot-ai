@@ -14,8 +14,9 @@
 
 import type { WasmModule } from '../wasm-types'
 import { checkContext } from './context'
-import { allocBytes, freeBytes, offset8To32 } from '../utils'
+import { allocBytes, freeBytes, offset8To32, writeUUIDToDataView } from '../utils'
 import { uuidToU32Tuple, u32ToUUID } from '@skia-rs-wasm/common/conversions'
+import { fontSlugToUuid } from './font-id-map'
 import { FILL_U8_SIZE } from './constants'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -357,6 +358,173 @@ export function textEditorExportContent(module: WasmModule): string[][] | null {
 export function textEditorExportSelection(module: WasmModule): string | null {
   const ptr = module._text_editor_export_selection()
   return readPtrString(module, ptr)
+}
+
+/** One styled fill in the export: a solid colour, or a non-solid placeholder. */
+export type StyledFill = { c: string; o: number } | { k: number }
+
+/** One span in the styled export. Enum fields are the same numeric indices as
+ * the style-data buffer (`fy`=FONT_STYLE, `td`=TEXT_DECORATION, `tt`=
+ * TEXT_TRANSFORM, `dr`=TEXT_DIRECTION); `ff` is a u32 quartet (→ `u32ToUUID`). */
+export interface StyledSpan {
+  tx: string
+  ff: [number, number, number, number]
+  fy: number
+  fw: number
+  sz: number
+  lh: number
+  ls: number
+  td: number
+  tt: number
+  dr: number
+  fl: StyledFill[]
+}
+
+export interface StyledParagraph {
+  ta: number
+  ss: StyledSpan[]
+}
+
+/** Full styled content tree from the editor (`va`=VERTICAL_ALIGN index). */
+export interface StyledContent {
+  va: number
+  ps: StyledParagraph[]
+}
+
+/** Editor content WITH per-span styling, for a faithful commit (the plain-text
+ * `textEditorExportContent` loses styling). Null when not editing. */
+export function textEditorExportStyled(module: WasmModule): StyledContent | null {
+  const ptr = module._text_editor_export_styled()
+  const json = readPtrString(module, ptr)
+  if (json == null) return null
+  try {
+    return JSON.parse(json) as StyledContent
+  } catch {
+    return null
+  }
+}
+
+// ─── v3 styles (apply) ───────────────────────────────────────────────────────
+
+/** A per-range style change from the panel. Only the provided fields are
+ * applied (so toggling one control doesn't reset the others). `fontFamilyId` is
+ * a catalog slug (resolved to the renderer UUID here); `fills` are solid colours
+ * (`color` = "#rrggbb", `opacity` 0..1). */
+export interface ApplyStylePatch {
+  fontFamilyId?: string
+  fontWeight?: number
+  italic?: boolean
+  fontSize?: number
+  lineHeight?: number
+  letterSpacing?: number
+  decoration?: 'none' | 'underline' | 'line-through'
+  textCase?: 'none' | 'uppercase' | 'lowercase' | 'capitalize'
+  direction?: 'ltr' | 'rtl'
+  textAlign?: 'left' | 'center' | 'right' | 'justify'
+  fills?: Array<{ color: string; opacity: number }>
+}
+
+const DECORATION_IDX: Record<NonNullable<ApplyStylePatch['decoration']>, number> = {
+  none: 0,
+  underline: 1,
+  'line-through': 2,
+}
+const TRANSFORM_IDX: Record<NonNullable<ApplyStylePatch['textCase']>, number> = {
+  none: 0,
+  uppercase: 1,
+  lowercase: 2,
+  capitalize: 3,
+}
+const DIRECTION_IDX: Record<NonNullable<ApplyStylePatch['direction']>, number> = { ltr: 0, rtl: 1 }
+const ALIGN_IDX: Record<NonNullable<ApplyStylePatch['textAlign']>, number> = {
+  left: 0,
+  center: 1,
+  right: 2,
+  justify: 3,
+}
+
+/** "#rrggbb" + opacity(0..1) → packed ARGB u32 (matches the Rust decode). */
+function colorToArgb(hex: string, opacity: number): number {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16) || 0
+  const g = parseInt(h.slice(2, 4), 16) || 0
+  const b = parseInt(h.slice(4, 6), 16) || 0
+  const a = Math.round(Math.max(0, Math.min(1, opacity)) * 255)
+  return ((a << 24) | (r << 16) | (g << 8) | b) >>> 0
+}
+
+/** Fixed header size of the patch buffer (see `StylePatch::decode` in Rust). */
+const PATCH_HEADER = 48
+
+/**
+ * Apply a style patch to the editor's current selection (or all content when the
+ * selection is collapsed). Encodes the little-endian patch buffer consumed by
+ * `StylePatch::decode`, then invokes the editor. Caller should re-render and sync
+ * geometry afterwards (size can change).
+ */
+export function textEditorApplyStyles(module: WasmModule, patch: ApplyStylePatch): void {
+  checkContext()
+  const hasFills = patch.fills !== undefined
+  const fills = patch.fills ?? []
+  const size = PATCH_HEADER + (hasFills ? fills.length * 4 : 0)
+  const offset = allocBytes(module, size)
+  const dv = new DataView(module.HEAPU8.buffer, module.HEAPU8.byteOffset + offset, size)
+  for (let i = 0; i < size; i++) dv.setUint8(i, 0) // zero header + padding
+
+  let presence = 0
+  const set = (bit: number): void => {
+    presence |= 1 << bit
+  }
+
+  if (patch.fontFamilyId !== undefined) {
+    set(0)
+    writeUUIDToDataView(dv, 28, fontSlugToUuid(patch.fontFamilyId))
+  }
+  if (patch.fontWeight !== undefined) {
+    set(1)
+    dv.setInt32(16, patch.fontWeight, true)
+  }
+  if (patch.italic !== undefined) {
+    set(2)
+    dv.setUint8(8, patch.italic ? 1 : 0)
+  }
+  if (patch.fontSize !== undefined) {
+    set(3)
+    dv.setFloat32(12, patch.fontSize, true)
+  }
+  if (patch.lineHeight !== undefined) {
+    set(4)
+    dv.setFloat32(20, patch.lineHeight, true)
+  }
+  if (patch.letterSpacing !== undefined) {
+    set(5)
+    dv.setFloat32(24, patch.letterSpacing, true)
+  }
+  if (patch.decoration !== undefined) {
+    set(6)
+    dv.setUint8(4, DECORATION_IDX[patch.decoration])
+  }
+  if (patch.textCase !== undefined) {
+    set(7)
+    dv.setUint8(5, TRANSFORM_IDX[patch.textCase])
+  }
+  if (patch.direction !== undefined) {
+    set(8)
+    dv.setUint8(6, DIRECTION_IDX[patch.direction])
+  }
+  if (patch.textAlign !== undefined) {
+    set(9)
+    dv.setUint8(7, ALIGN_IDX[patch.textAlign])
+  }
+  if (hasFills) {
+    set(10)
+    dv.setUint32(44, fills.length, true)
+    fills.forEach((f, i) => dv.setUint32(PATCH_HEADER + i * 4, colorToArgb(f.color, f.opacity), true))
+  }
+  dv.setUint32(0, presence >>> 0, true)
+
+  module._text_editor_apply_styles()
+  freeBytes(module)
 }
 
 // ─── v3 styles (read) ────────────────────────────────────────────────────────

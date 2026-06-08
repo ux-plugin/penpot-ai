@@ -225,10 +225,13 @@ export function useViewportInteractions({
         const halfFlip = wasmRect != null ? matrixHasHalfFlip(wasmRect.transform) : false
         surface.style.cursor = getResizeCursor(snap.context.resizeHandle, rotation, halfFlip)
       } else if (e.target === surface) {
-        if (snap.matches('textEditing')) {
-          surface.style.cursor = 'text'
-        } else if (snap.context.drawTool != null) {
+        if (snap.context.drawTool != null) {
+          // Draw tool active (incl. text): crosshair over empty canvas — even
+          // while a freshly created text box is being edited. (Over the box
+          // itself the editor element shows the text caret, not this surface.)
           surface.style.cursor = 'crosshair'
+        } else if (snap.matches('textEditing')) {
+          surface.style.cursor = 'text'
         } else {
           surface.style.cursor = hasPanModifier(e, shortcuts.panWithModifier) ? 'grab' : 'default'
         }
@@ -321,7 +324,8 @@ export function useViewportInteractions({
     const surface = surfaceRef.current
     if (surface && !isPanningRef.current) {
       const snap = canvasActor.getSnapshot()
-      surface.style.cursor = snap.matches('textEditing') ? 'text' : snap.context.drawTool != null ? 'crosshair' : 'default'
+      surface.style.cursor =
+        snap.context.drawTool != null ? 'crosshair' : snap.matches('textEditing') ? 'text' : 'default'
     }
   }, [surfaceRef, canvasActor])
 

@@ -14,6 +14,8 @@ import { getCurrentPage } from '../store/doc-proxy'
 import { getModifierKeys } from '../store/shortcuts-store'
 import { applyModifiersAndCommit } from './utils'
 import { collectTextGrowTypes } from './reparent-detection'
+import { pinGrowAxis } from '../../components/RightSidePanel/Sections/text-typography'
+import { moduleUseShape, setShapeGrowType } from '../api/shape'
 import type { Point } from '../types'
 import type { Matrix } from 'penpot-exporter/types'
 import type { ResizeHandlePosition } from '../types'
@@ -97,6 +99,25 @@ export function startResizeSelected(
   const stopper = dragStopper()
   const zoom = vp.zoom
   const mult = getHandlerMultiplier(handle)
+
+  // Auto-size text can't preview a resize: WASM keeps its content-driven size,
+  // so the live modifier only translates the box — it appears to slide and then
+  // snaps on release. Pin the auto axes to `fixed` in WASM up front so the
+  // preview scales like any other shape; the commit writes the final per-axis
+  // grow type, and a no-op release restores the originals.
+  const module = renderer.getModule?.()
+  const startPage = getCurrentPage()
+  const originalTextGrow = startPage
+    ? collectTextGrowTypes(selectedIds, startPage)
+    : new Map<string, string | undefined>()
+  if (module) {
+    for (const [id, grow] of originalTextGrow) {
+      if (grow === 'auto-width' || grow === 'auto-height') {
+        moduleUseShape(module, id)
+        setShapeGrowType(module, 'fixed')
+      }
+    }
+  }
 
   const selectedId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
   const singleNode = selectedId ? getCurrentPage()?.objects[selectedId] ?? null : null
@@ -193,14 +214,35 @@ export function startResizeSelected(
     take(1),
     tap(() => {
       if (!modifiersAppliedRef.current) {
+        // No drag happened — undo the preview pin so the box stays auto-sized.
+        if (module) {
+          for (const [id, grow] of originalTextGrow) {
+            if (grow === 'auto-width' || grow === 'auto-height') {
+              moduleUseShape(module, id)
+              setShapeGrowType(module, grow)
+            }
+          }
+          renderer.requestRenderFrame()
+        }
         return
       }
       const entries: Array<[string, Matrix]> = Array.from(selectedIds).map((id) => [
         id,
         latestMatrixRef.current,
       ])
-      const page = getCurrentPage()
-      const textGrowTypes = page ? collectTextGrowTypes(selectedIds, page) : new Map<string, string | undefined>()
+      // Resizing a text box pins the dragged axis: a side handle fixes just that
+      // axis (dragging the right edge fixes width but leaves height auto), a
+      // corner fixes both. pinGrowAxis snaps to the nearest legal mode;
+      // applyModifiersAndCommit commits the grow type only when it differs.
+      const resizeW = mult.x !== 0
+      const resizeH = mult.y !== 0
+      const textGrowTypes = new Map<string, string | undefined>()
+      for (const [id, grow] of originalTextGrow) {
+        let next: string | undefined = grow
+        if (resizeW) next = pinGrowAxis(next, 'w')
+        if (resizeH) next = pinGrowAxis(next, 'h')
+        textGrowTypes.set(id, next)
+      }
       applyModifiersAndCommit(entries, {
         textGrowTypes: textGrowTypes.size > 0 ? textGrowTypes : undefined,
       })
