@@ -10,8 +10,11 @@ import { useLayoutEffect, useMemo, useRef } from 'react'
 import { useSelector } from '@xstate/react'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { useSnapshot } from 'valtio'
-import { docProxy } from '../../renderer/store/doc-proxy'
+import { docProxy, getActiveOrSinglePageId, getPage } from '../../renderer/store/doc-proxy'
+import type { TextContent } from 'penpot-exporter/types'
+import { isEmptyTextContent } from '../RightSidePanel/Sections/text-typography'
 import { pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
+import { textEditorIsEmpty, textEditorShapeId } from '../../renderer/signals/text-editor'
 import {
   selectionCornerHandlesVisible,
   selectionRectOutlineVisible,
@@ -83,6 +86,11 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   // While text-editing, suppress selection handles so the MoveHitArea (pointerEvents
   // 'auto') doesn't intercept clicks meant for caret placement / drag-selection.
   const isTextEditing = useSelector(canvasActor, (s) => s.matches('textEditing'))
+  // Live editor emptiness + which shape is being edited: while editing, the typed
+  // text lives in the WASM editor (not `node.content`), so the outline gate below
+  // reads these instead of the stale doc content.
+  const editorIsEmpty = useSignalCoalesced(textEditorIsEmpty)
+  const editingId = useSignalCoalesced(textEditorShapeId)
 
   const rawZoom = viewport?.zoom ?? 1
   const safeZoom = Number.isFinite(rawZoom) && rawZoom > 0 ? rawZoom : 1
@@ -172,9 +180,31 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     selectionCornerHandlesVisible.value = showHandles && showCornerHandles
   }, [showHandles, showCornerHandles])
 
+  // Hide the selection outline only for an empty *click-created* text box, so it
+  // shows just the caret until characters are typed. Click-created boxes are
+  // `auto-width` (content-driven); a *drag-created* box is `fixed` and keeps its
+  // outline even while empty (the user explicitly drew that box). Recomputed each
+  // render; on commit the machine leaves `textEditing` and re-reads the content.
+  const selectedTextEmpty = (() => {
+    if (selectedIds.size !== 1) return false
+    const id = selectedIds.values().next().value
+    const pid = getActiveOrSinglePageId()
+    const node =
+      id && pid
+        ? (getPage(pid)?.objects[id] as
+            | { type?: string; content?: TextContent; growType?: string }
+            | undefined)
+        : undefined
+    if (node?.type !== 'text' || node.growType !== 'auto-width') return false
+    // While this shape is being edited, the typed text isn't in `node.content`
+    // yet — read the live editor signal so the outline appears on the first key.
+    if (isTextEditing && editingId === id) return editorIsEmpty
+    return isEmptyTextContent(node.content)
+  })()
+
   useLayoutEffect(() => {
-    selectionRectOutlineVisible.value = !isMoving
-  }, [isMoving])
+    selectionRectOutlineVisible.value = !isMoving && !selectedTextEmpty
+  }, [isMoving, selectedTextEmpty])
 
   const gradientForOverlay = useGradientFill()
 

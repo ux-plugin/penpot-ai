@@ -9,13 +9,30 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { useCanvasActor } from '@/lib/renderer/machine/canvas-actor-context'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   commitNodePartialUpdate,
+  commitTextGrowType,
   getCommittedNodeOnActivePage,
   rectLayoutPartial,
 } from '@/lib/renderer/properties/commit-node-properties'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 import { docProxy, getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import { getLayoutMode, type LayoutMode } from './layout-mode'
+import { isTextNode, pinGrowAxis } from './text-typography'
+
+type GrowType = 'fixed' | 'auto-width' | 'auto-height'
+
+const GROW_MODES: ReadonlyArray<{ value: GrowType; label: string }> = [
+  { value: 'fixed', label: 'Fixed' },
+  { value: 'auto-width', label: 'Auto width' },
+  { value: 'auto-height', label: 'Auto height' },
+]
 
 type SizeDraft = { width: number; height: number }
 type Corners = { r1: number; r2: number; r3: number; r4: number }
@@ -108,22 +125,47 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const isRotating = useSelector(canvasActor, (s) => s.matches('rotating'))
   const fieldsDisabled = readOnly || isMoving || isRotating
 
-  const commitSize = useCallback(async () => {
-    if (readOnly || !draft) return
-    const before = getCommittedNodeOnActivePage(nodeId)
-    const pid = getActiveOrSinglePageId()
-    if (!before || !pid) return
-    const x = (before as { x?: number }).x ?? 0
-    const y = (before as { y?: number }).y ?? 0
-    const rot = (before as { rotation?: number }).rotation ?? 0
-    await commitNodePartialUpdate(
-      nodeId,
-      before,
-      rectLayoutPartial(x, y, draft.width, draft.height, rot),
-      pid,
-    )
-    setDraft(null)
-  }, [readOnly, nodeId, draft])
+  // Text auto-size (set in the "Auto resize" section near Position) decides
+  // which W/H fields are renderer-controlled: auto-width computes both,
+  // auto-height computes height (width stays the wrap width), fixed computes
+  // neither. A computed dimension is shown read-only here.
+  const isText = isTextNode(initialNode)
+  const growType = (initialNode as { growType?: string }).growType
+  const mode = (growType as GrowType | undefined) ?? 'fixed'
+  const widthComputed = isText && growType === 'auto-width'
+  const heightComputed = isText && (growType === 'auto-width' || growType === 'auto-height')
+
+  const commitGrow = useCallback(
+    async (next: string) => {
+      if (readOnly || next === mode) return
+      const before = getCommittedNodeOnActivePage(nodeId)
+      const pid = getActiveOrSinglePageId()
+      if (!before || !pid) return
+      await commitTextGrowType(nodeId, before, next as GrowType, pid)
+    },
+    [nodeId, readOnly, mode],
+  )
+
+  const commitSize = useCallback(
+    async (axis: 'w' | 'h') => {
+      if (readOnly || !draft) return
+      const before = getCommittedNodeOnActivePage(nodeId)
+      const pid = getActiveOrSinglePageId()
+      if (!before || !pid) return
+      const x = (before as { x?: number }).x ?? 0
+      const y = (before as { y?: number }).y ?? 0
+      const rot = (before as { rotation?: number }).rotation ?? 0
+      let partial: Partial<PenpotNode> = rectLayoutPartial(x, y, draft.width, draft.height, rot)
+      if (isText) {
+        // Typing a dimension pins that axis — it's no longer content-driven.
+        const grow = pinGrowAxis((before as { growType?: string }).growType, axis)
+        partial = { ...partial, growType: grow }
+      }
+      await commitNodePartialUpdate(nodeId, before, partial, pid)
+      setDraft(null)
+    },
+    [readOnly, nodeId, draft, isText],
+  )
 
   const commitCorners = useCallback(
     async (next: Corners) => {
@@ -244,18 +286,42 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
 
         {!collapsed && (
           <div className="space-y-3">
+            {isText && (
+              <div className="space-y-1">
+                <Label htmlFor="rsp-autosize">Auto resize</Label>
+                <Select value={mode} onValueChange={commitGrow} disabled={readOnly}>
+                  <SelectTrigger
+                    id="rsp-autosize"
+                    size="sm"
+                    className="w-full min-w-0"
+                    aria-label="Auto resize"
+                  >
+                    <SelectValue placeholder="Fixed" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GROW_MODES.map((m) => (
+                      <SelectItem key={m.value} value={m.value}>
+                        {m.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label htmlFor="rsp-w">W</Label>
                 <Input
                   id="rsp-w"
                   type="number"
-                  disabled={fieldsDisabled}
+                  disabled={fieldsDisabled || widthComputed}
+                  title={widthComputed ? 'Width is auto-sized (see Auto resize)' : undefined}
                   value={Number.isFinite(width) ? width : 0}
                   onChange={(e) =>
                     patchDraft({ width: Math.max(1, parseFloat(e.target.value) || 1) })
                   }
-                  onBlur={() => void commitSize()}
+                  onBlur={() => void commitSize('w')}
                 />
               </div>
               <div className="space-y-1">
@@ -263,12 +329,13 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                 <Input
                   id="rsp-h"
                   type="number"
-                  disabled={fieldsDisabled}
+                  disabled={fieldsDisabled || heightComputed}
+                  title={heightComputed ? 'Height is auto-sized (see Auto resize)' : undefined}
                   value={Number.isFinite(height) ? height : 0}
                   onChange={(e) =>
                     patchDraft({ height: Math.max(1, parseFloat(e.target.value) || 1) })
                   }
-                  onBlur={() => void commitSize()}
+                  onBlur={() => void commitSize('h')}
                 />
               </div>
             </div>

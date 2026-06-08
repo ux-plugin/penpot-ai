@@ -26,7 +26,12 @@ import { useEffect, useRef } from 'react'
 import { useSelector } from '@xstate/react'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { useWorkspaceStore } from '../../renderer/store/workspace-store'
-import { startTextEdit, commitTextEdit, syncTextEditGeometry } from '../../renderer/handlers/text-edit'
+import {
+  startTextEdit,
+  commitTextEdit,
+  syncTextEditGeometry,
+  refreshEditorStyles,
+} from '../../renderer/handlers/text-edit'
 import { requestRender } from '../../renderer/api/rendering'
 import { textIsComposing } from '../../renderer/signals/text-editor'
 import { viewport as viewportSignal } from '../../renderer/signals/pointer'
@@ -86,9 +91,18 @@ export function TextEditorOverlay() {
     if (!shapeId) return
     const module = getModule()
     if (!module) return
-    startTextEdit(module, shapeId)
+    // A just-created shape may not be in the WASM scene yet, so the first focus
+    // can fail (caret never shows). Retry on the next frame(s) until it takes.
+    let raf = 0
+    let tries = 0
+    const tryStart = () => {
+      if (startTextEdit(module, shapeId) || tries++ >= 10) return
+      raf = requestAnimationFrame(tryStart)
+    }
+    tryStart()
     editorRef.current?.focus()
     return () => {
+      cancelAnimationFrame(raf)
       const m = getModule()
       if (m) commitTextEdit(m, shapeId)
     }
@@ -137,6 +151,9 @@ export function TextEditorOverlay() {
     // Grow the shape to fit the text (Penpot syncs size every keystroke) so tile
     // coverage + caret bounds track the text; then repaint.
     syncTextEditGeometry(m, shapeId)
+    // Refresh the panel's live style after every edit/selection change (typing,
+    // arrows, click caret, drag-select, word/all select all route through here).
+    refreshEditorStyles(m)
     requestRender(m, 'text-edit-input')
   }
 
@@ -252,7 +269,13 @@ export function TextEditorOverlay() {
     const module = getModule()
     if (!module) return
     const n = e.nativeEvent
-    textEditorSetCursorFromOffset(module, n.offsetX, n.offsetY)
+    // Click count: 1 = place caret, 2 = word (handled by onDoubleClick),
+    // 3+ = select all the text.
+    if (e.detail >= 3) {
+      textEditorSelectAll(module)
+    } else {
+      textEditorSetCursorFromOffset(module, n.offsetX, n.offsetY)
+    }
     afterMutation()
   }
 
@@ -307,7 +330,17 @@ export function TextEditorOverlay() {
       onCompositionStart={onCompositionStart}
       onCompositionUpdate={onCompositionUpdate}
       onCompositionEnd={onCompositionEnd}
-      onBlur={() => actor.send({ type: 'STOP_TEXT_EDIT' })}
+      onBlur={(e) => {
+        // Don't exit edit mode when focus moves to the properties panel or a
+        // floating editor (font picker / colour editor) — those drive the
+        // per-range apply, which needs the live selection to stay alive. Only a
+        // blur to the canvas / elsewhere ends editing.
+        const next = e.relatedTarget
+        if (next instanceof HTMLElement && next.closest('[data-right-side-panel],[data-floating-panel]')) {
+          return
+        }
+        actor.send({ type: 'STOP_TEXT_EDIT' })
+      }}
       style={{
         position: 'absolute',
         left: 0,

@@ -91,6 +91,7 @@ export function FloatingPanelShell({
   return (
     <div
       ref={panelRef}
+      data-floating-panel
       className="pointer-events-auto fixed z-100 flex flex-col overflow-hidden rounded-lg border border-border/80 bg-white text-card-foreground shadow-md"
       style={{
         width,
