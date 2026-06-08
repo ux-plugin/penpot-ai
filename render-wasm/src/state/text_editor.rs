@@ -3,9 +3,10 @@
 use macros::ToJs;
 
 use crate::shapes::{
-    Fill, FontFamily, TextAlign, TextContent, TextDecoration, TextDirection,
-    TextPositionWithAffinity, TextTransform, VerticalAlign,
+    Fill, FontFamily, FontStyle, Paragraph, SolidColor, TextAlign, TextContent, TextDecoration,
+    TextDirection, TextPositionWithAffinity, TextSpan, TextTransform, VerticalAlign,
 };
+use crate::utils::uuid_from_u32_quartet;
 use crate::uuid::Uuid;
 use crate::wasm::text::helpers::{self as text_helpers, find_text_span_at_offset};
 use crate::wasm::text_editor::CursorDirection;
@@ -878,8 +879,306 @@ impl TextEditorState {
         self.push_event(TextEditorEvent::SelectionChanged);
         true
     }
+
+    /// Apply a style patch to the current selection — or, when the selection is
+    /// collapsed/absent, to ALL content (the panel's "no selection ⇒ whole shape"
+    /// rule). Splits spans at the selection boundaries, mutates the shape's
+    /// TextContent in place, then invalidates layout and refreshes the style
+    /// buffer so the panel reflects the result.
+    pub fn apply_styles(&mut self, text_content: &mut TextContent, patch: &StylePatch) {
+        let paragraph_count = text_content.paragraphs().len();
+        if paragraph_count == 0 {
+            return;
+        }
+
+        if self.selection.is_selection() {
+            let start = self.selection.start();
+            let end = self.selection.end();
+            let end_paragraph = end.paragraph.min(paragraph_count - 1);
+            for para_idx in start.paragraph..=end_paragraph {
+                let Some(para) = text_content.paragraphs_mut().get_mut(para_idx) else {
+                    continue;
+                };
+                let para_char_count: usize = para
+                    .children()
+                    .iter()
+                    .map(|span| span.text.chars().count())
+                    .sum();
+                let range_start = if para_idx == start.paragraph {
+                    start.offset.min(para_char_count)
+                } else {
+                    0
+                };
+                let range_end = if para_idx == end.paragraph {
+                    end.offset.min(para_char_count)
+                } else {
+                    para_char_count
+                };
+                apply_styles_to_range_in_paragraph(para, range_start, range_end, patch);
+            }
+        } else {
+            for para in text_content.paragraphs_mut().iter_mut() {
+                let para_char_count: usize = para
+                    .children()
+                    .iter()
+                    .map(|span| span.text.chars().count())
+                    .sum();
+                apply_styles_to_range_in_paragraph(para, 0, para_char_count, patch);
+            }
+        }
+
+        text_content.layout.paragraphs.clear();
+        text_content.layout.paragraph_builders.clear();
+
+        self.reset_blink();
+        self.push_event(TextEditorEvent::ContentChanged);
+        self.push_event(TextEditorEvent::NeedsLayout);
+        self.update_styles(text_content);
+    }
 }
 
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// A set of style attributes to apply to a span range. Only `Some` fields are
+/// written, so toggling one control doesn't clobber the others. Decoded from the
+/// little-endian patch buffer the TS `textEditorApplyStyles` writes.
+#[derive(Debug, Clone, Default)]
+pub struct StylePatch {
+    pub font_family_id: Option<Uuid>,
+    pub font_weight: Option<i32>,
+    pub font_style: Option<FontStyle>,
+    pub font_size: Option<f32>,
+    pub line_height: Option<f32>,
+    pub letter_spacing: Option<f32>,
+    /// Outer = present; inner = the decoration (`None` ⇒ "no decoration").
+    pub text_decoration: Option<Option<TextDecoration>>,
+    pub text_transform: Option<Option<TextTransform>>,
+    pub text_direction: Option<TextDirection>,
+    pub text_align: Option<TextAlign>,
+    pub fills: Option<Vec<Fill>>,
+}
+
+impl StylePatch {
+    /// Decode the patch buffer (all little-endian):
+    ///   0  u32 presence · 4 u8 decoration · 5 u8 transform · 6 u8 direction
+    ///   7  u8 align · 8 u8 font_style · 9..=11 pad · 12 f32 font_size
+    ///   16 i32 font_weight · 20 f32 line_height · 24 f32 letter_spacing
+    ///   28..=43 font-family UUID (4×u32) · 44 u32 fill_count
+    ///   48.. fill_count × u32 ARGB (solid only).
+    /// Presence bits: 0 family, 1 weight, 2 style, 3 size, 4 line_height,
+    /// 5 letter_spacing, 6 decoration, 7 transform, 8 direction, 9 align, 10 fills.
+    pub fn decode(bytes: &[u8]) -> Option<StylePatch> {
+        if bytes.len() < 48 {
+            return None;
+        }
+        let u32_at =
+            |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+        let i32_at =
+            |o: usize| i32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+        let f32_at =
+            |o: usize| f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+
+        let presence = u32_at(0);
+        let has = |bit: u32| presence & (1u32 << bit) != 0;
+
+        let font_family_id = if has(0) {
+            Some(uuid_from_u32_quartet(
+                u32_at(28),
+                u32_at(32),
+                u32_at(36),
+                u32_at(40),
+            ))
+        } else {
+            None
+        };
+        let font_weight = if has(1) { Some(i32_at(16)) } else { None };
+        let font_style = if has(2) {
+            Some(match bytes[8] {
+                1 => FontStyle::Italic,
+                _ => FontStyle::Normal,
+            })
+        } else {
+            None
+        };
+        let font_size = if has(3) { Some(f32_at(12)) } else { None };
+        let line_height = if has(4) { Some(f32_at(20)) } else { None };
+        let letter_spacing = if has(5) { Some(f32_at(24)) } else { None };
+        let text_decoration = if has(6) {
+            Some(match bytes[4] {
+                1 => Some(TextDecoration::UNDERLINE),
+                2 => Some(TextDecoration::LINE_THROUGH),
+                3 => Some(TextDecoration::OVERLINE),
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let text_transform = if has(7) {
+            Some(match bytes[5] {
+                1 => Some(TextTransform::Uppercase),
+                2 => Some(TextTransform::Lowercase),
+                3 => Some(TextTransform::Capitalize),
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let text_direction = if has(8) {
+            Some(match bytes[6] {
+                1 => TextDirection::RTL,
+                _ => TextDirection::LTR,
+            })
+        } else {
+            None
+        };
+        let text_align = if has(9) {
+            Some(match bytes[7] {
+                1 => TextAlign::Center,
+                2 => TextAlign::Right,
+                3 => TextAlign::Justify,
+                _ => TextAlign::Left,
+            })
+        } else {
+            None
+        };
+        let fills = if has(10) {
+            let count = u32_at(44) as usize;
+            if bytes.len() < 48 + count * 4 {
+                return None;
+            }
+            let mut list = Vec::with_capacity(count);
+            for i in 0..count {
+                let argb = u32_at(48 + i * 4);
+                let a = ((argb >> 24) & 0xff) as u8;
+                let r = ((argb >> 16) & 0xff) as u8;
+                let g = ((argb >> 8) & 0xff) as u8;
+                let b = (argb & 0xff) as u8;
+                list.push(Fill::Solid(SolidColor(Color::from_argb(a, r, g, b))));
+            }
+            Some(list)
+        } else {
+            None
+        };
+
+        Some(StylePatch {
+            font_family_id,
+            font_weight,
+            font_style,
+            font_size,
+            line_height,
+            letter_spacing,
+            text_decoration,
+            text_transform,
+            text_direction,
+            text_align,
+            fills,
+        })
+    }
+
+    /// Write the present fields onto a span. Font face (family/weight/style) is
+    /// recombined into one `FontFamily`, mirroring how the serializer stores
+    /// weight/style on the family (and weight also on the span).
+    fn apply_to_span(&self, span: &mut TextSpan) {
+        let mut family_id = span.font_family.id();
+        let mut family_weight = span.font_family.weight();
+        let mut family_style = span.font_family.style();
+        let mut face_changed = false;
+        if let Some(id) = self.font_family_id {
+            family_id = id;
+            face_changed = true;
+        }
+        if let Some(weight) = self.font_weight {
+            family_weight = weight as u32;
+            span.font_weight = weight;
+            face_changed = true;
+        }
+        if let Some(style) = self.font_style {
+            family_style = style;
+            face_changed = true;
+        }
+        if face_changed {
+            span.font_family = FontFamily::new(family_id, family_weight, family_style);
+        }
+        if let Some(size) = self.font_size {
+            span.font_size = size;
+        }
+        if let Some(line_height) = self.line_height {
+            span.line_height = line_height;
+        }
+        if let Some(letter_spacing) = self.letter_spacing {
+            span.letter_spacing = letter_spacing;
+        }
+        if let Some(decoration) = self.text_decoration {
+            span.text_decoration = decoration;
+        }
+        if let Some(transform) = self.text_transform {
+            span.text_transform = transform;
+        }
+        if let Some(direction) = self.text_direction {
+            span.text_direction = direction;
+        }
+        if let Some(ref fills) = self.fills {
+            span.fills = fills.clone();
+        }
+    }
+}
+
+/// Ensure a span boundary exists at `char_offset`, so the characters before and
+/// after it live in separate spans. No-op when the offset already falls on a
+/// boundary or past the paragraph's end.
+fn split_span_at(para: &mut Paragraph, char_offset: usize) {
+    let mut accumulated = 0usize;
+    let children = para.children_mut();
+    for idx in 0..children.len() {
+        let span_len = children[idx].text.chars().count();
+        let span_start = accumulated;
+        let span_end = accumulated + span_len;
+        if char_offset <= span_start {
+            return; // already on a boundary
+        }
+        if char_offset < span_end {
+            let split_at = char_offset - span_start;
+            let chars: Vec<char> = children[idx].text.chars().collect();
+            let left: String = chars[..split_at].iter().collect();
+            let right: String = chars[split_at..].iter().collect();
+            let mut right_span = children[idx].clone();
+            children[idx].set_text(left);
+            right_span.set_text(right);
+            children.insert(idx + 1, right_span);
+            return;
+        }
+        accumulated = span_end;
+    }
+}
+
+/// Split the paragraph at `start`/`end`, then apply `patch` to every span fully
+/// inside `[start, end)`. Paragraph alignment (when present) applies to the whole
+/// paragraph regardless of the character range.
+fn apply_styles_to_range_in_paragraph(
+    para: &mut Paragraph,
+    start: usize,
+    end: usize,
+    patch: &StylePatch,
+) {
+    if start < end {
+        split_span_at(para, start);
+        split_span_at(para, end);
+
+        let mut accumulated = 0usize;
+        for span in para.children_mut().iter_mut() {
+            let span_len = span.text.chars().count();
+            let span_start = accumulated;
+            let span_end = accumulated + span_len;
+            accumulated = span_end;
+            if span_len > 0 && span_start >= start && span_end <= end {
+                patch.apply_to_span(span);
+            }
+        }
+    }
+
+    if let Some(align) = patch.text_align {
+        para.set_text_align(align);
+    }
 }

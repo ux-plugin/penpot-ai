@@ -1137,6 +1137,12 @@ impl Paragraph {
         self.text_align
     }
 
+    /// Set the paragraph alignment (used by the interactive editor's apply-styles
+    /// path, which mutates the content tree in place).
+    pub fn set_text_align(&mut self, text_align: TextAlign) {
+        self.text_align = text_align;
+    }
+
     pub fn text_direction(&self) -> TextDirection {
         self.text_direction
     }

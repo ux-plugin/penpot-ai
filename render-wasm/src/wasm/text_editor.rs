@@ -5,7 +5,7 @@ use crate::mem;
 use crate::render::text_editor as text_editor_render;
 use crate::render::SurfaceId;
 use crate::shapes::{Shape, TextAlign, TextContent, TextPositionWithAffinity, Type, VerticalAlign};
-use crate::state::{TextEditorEvent, TextSelection};
+use crate::state::{StylePatch, TextEditorEvent, TextSelection};
 use crate::utils::uuid_from_u32_quartet;
 use crate::utils::uuid_to_u32_quartet;
 use crate::wasm::fills::RawFillData;
@@ -132,7 +132,12 @@ pub extern "C" fn text_editor_select_all() -> bool {
         let Type::Text(text_content) = &shape.shape_type else {
             return false;
         };
-        state.text_editor_state.select_all(text_content)
+        let selected = state.text_editor_state.select_all(text_content);
+        // Refresh the aggregated style buffer so the panel reflects the new
+        // selection (mirrors the pointer ops). Without this, entering edit mode
+        // (which select-alls), Cmd+A and triple-click leave styles stale.
+        state.text_editor_state.update_styles(text_content);
+        selected
     })
 }
 
@@ -160,6 +165,7 @@ pub extern "C" fn text_editor_select_word_boundary(x: f32, y: f32) {
             state
                 .text_editor_state
                 .select_word_boundary(text_content, &position);
+            state.text_editor_state.update_styles(text_content);
         }
     })
 }
@@ -291,6 +297,7 @@ pub extern "C" fn text_editor_set_cursor_from_offset(x: f32, y: f32) {
 
         if let Some(position) = text_content.get_caret_position_from_shape_coords(&point) {
             state.text_editor_state.set_caret_from_position(&position);
+            state.text_editor_state.update_styles(text_content);
         }
     });
 }
@@ -318,6 +325,7 @@ pub extern "C" fn text_editor_set_cursor_from_point(x: f32, y: f32) {
             text_content.get_caret_position_from_screen_coords(&point, &view_matrix, &shape_matrix)
         {
             state.text_editor_state.set_caret_from_position(&position);
+            state.text_editor_state.update_styles(text_content);
         }
     });
 }
@@ -746,6 +754,43 @@ pub extern "C" fn text_editor_get_cursor_rect() -> *mut u8 {
     })
 }
 
+/// Apply a style patch (read from the input buffer) to the current selection, or
+/// to all content when the selection is collapsed/absent. Mirrors the in-place
+/// mutation + cache-invalidation of the other editor ops (see `insert_text`).
+#[no_mangle]
+pub extern "C" fn text_editor_apply_styles() {
+    let bytes = crate::mem::bytes_or_empty();
+    with_state_mut!(state, {
+        if !state.text_editor_state.has_focus {
+            return;
+        }
+
+        let Some(shape_id) = state.text_editor_state.active_shape_id else {
+            return;
+        };
+
+        let Some(patch) = StylePatch::decode(&bytes) else {
+            return;
+        };
+
+        let Some(shape) = state.shapes.get_mut(&shape_id) else {
+            return;
+        };
+
+        let Type::Text(text_content) = &mut shape.shape_type else {
+            return;
+        };
+
+        state.text_editor_state.apply_styles(text_content, &patch);
+
+        if let Some(shape) = state.shapes.get_mut(&shape_id) {
+            shape.invalidate_extrect();
+            shape.invalidate_bounds();
+        }
+        state.render_state.mark_touched(shape_id);
+    });
+}
+
 #[no_mangle]
 pub extern "C" fn text_editor_get_current_styles() -> *mut u8 {
     with_state_mut!(state, {
@@ -1046,6 +1091,127 @@ pub extern "C" fn text_editor_export_content() -> *mut u8 {
             json_parts.push(format!("[{}]", span_parts.join(",")));
         }
         let json = format!("[{}]", json_parts.join(","));
+
+        let mut bytes = json.into_bytes();
+        bytes.push(0);
+        crate::mem::write_bytes(bytes)
+    })
+}
+
+/// Export the edited shape's content WITH per-span styling, as JSON, so the JS
+/// side can rebuild a faithful Penpot content tree on commit (the plain-text
+/// `export_content` loses styling). Enums are emitted as the same numeric
+/// indices the style-data buffer uses (decoded in TS with the existing arrays),
+/// UUIDs as `[a,b,c,d]` u32 quartets (`uuid_to_u32_quartet`, paired with TS
+/// `u32ToUUID`), and solid fills as `{c:"#rrggbb",o:opacity}`; non-solid fills
+/// emit `{k:1}` and the JS commit keeps the span's original fill for those.
+///
+/// Shape: `{"va":<vAlign>,"ps":[{"ta":<align>,"ss":[<span>...]}...]}` where a
+/// span is `{"tx","ff":[u32;4],"fy","fw","sz","lh","ls","td","tt","dr","fl":[]}`.
+#[no_mangle]
+pub extern "C" fn text_editor_export_styled() -> *mut u8 {
+    use crate::shapes::{Fill, SolidColor};
+    with_state!(state, {
+        if !state.text_editor_state.has_focus {
+            return std::ptr::null_mut();
+        }
+
+        let Some(shape_id) = state.text_editor_state.active_shape_id else {
+            return std::ptr::null_mut();
+        };
+
+        let Some(shape) = state.shapes.get(&shape_id) else {
+            return std::ptr::null_mut();
+        };
+
+        let Type::Text(text_content) = &shape.shape_type else {
+            return std::ptr::null_mut();
+        };
+
+        let vertical_align = match shape.vertical_align() {
+            VerticalAlign::Top => 0u32,
+            VerticalAlign::Center => 1u32,
+            VerticalAlign::Bottom => 2u32,
+        };
+
+        let mut para_jsons: Vec<String> = Vec::new();
+        for para in text_content.paragraphs() {
+            let text_align = match para.text_align() {
+                TextAlign::Center => 1u32,
+                TextAlign::Right | TextAlign::End => 2u32,
+                TextAlign::Justify => 3u32,
+                _ => 0u32, // Left / Start
+            };
+
+            let mut span_jsons: Vec<String> = Vec::new();
+            for span in para.children() {
+                let escaped = span
+                    .text
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+                    .replace('\t', "\\t");
+
+                let (fa, fb, fc, fd) = uuid_to_u32_quartet(&span.font_family.id());
+                let font_style = span.font_family.style() as u32;
+
+                let decoration = match span.text_decoration {
+                    Some(d) if d == skia_safe::textlayout::TextDecoration::UNDERLINE => 1u32,
+                    Some(d) if d == skia_safe::textlayout::TextDecoration::LINE_THROUGH => 2u32,
+                    Some(d) if d == skia_safe::textlayout::TextDecoration::OVERLINE => 3u32,
+                    _ => 0u32,
+                };
+                let transform = match span.text_transform {
+                    Some(crate::shapes::TextTransform::Uppercase) => 1u32,
+                    Some(crate::shapes::TextTransform::Lowercase) => 2u32,
+                    Some(crate::shapes::TextTransform::Capitalize) => 3u32,
+                    _ => 0u32,
+                };
+                let direction = match span.text_direction {
+                    skia_safe::textlayout::TextDirection::RTL => 1u32,
+                    _ => 0u32,
+                };
+
+                let mut fill_jsons: Vec<String> = Vec::new();
+                for fill in &span.fills {
+                    if let Fill::Solid(SolidColor(color)) = fill {
+                        fill_jsons.push(format!(
+                            "{{\"c\":\"#{:02x}{:02x}{:02x}\",\"o\":{}}}",
+                            color.r(),
+                            color.g(),
+                            color.b(),
+                            color.a() as f32 / 255.0
+                        ));
+                    } else {
+                        fill_jsons.push("{\"k\":1}".to_string());
+                    }
+                }
+
+                span_jsons.push(format!(
+                    "{{\"tx\":\"{}\",\"ff\":[{},{},{},{}],\"fy\":{},\"fw\":{},\"sz\":{},\"lh\":{},\"ls\":{},\"td\":{},\"tt\":{},\"dr\":{},\"fl\":[{}]}}",
+                    escaped,
+                    fa, fb, fc, fd,
+                    font_style,
+                    span.font_weight,
+                    span.font_size,
+                    span.line_height,
+                    span.letter_spacing,
+                    decoration,
+                    transform,
+                    direction,
+                    fill_jsons.join(",")
+                ));
+            }
+
+            para_jsons.push(format!(
+                "{{\"ta\":{},\"ss\":[{}]}}",
+                text_align,
+                span_jsons.join(",")
+            ));
+        }
+
+        let json = format!("{{\"va\":{},\"ps\":[{}]}}", vertical_align, para_jsons.join(","));
 
         let mut bytes = json.into_bytes();
         bytes.push(0);
