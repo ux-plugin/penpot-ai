@@ -5,6 +5,7 @@ import { AppearanceSection } from './Sections/AppearanceSection'
 import { TypographySection } from './Sections/TypographySection'
 import { isTextNode } from './Sections/text-typography'
 import { NodeLayoutSection } from './Sections/NodeLayoutSection'
+import { supportsLayout } from './Sections/layout-mode'
 import { FillsSection } from './Sections/FillsSection'
 import { StrokesSection } from './Sections/StrokesSection'
 import { EffectsSection } from './Sections/EffectsSection'
@@ -34,7 +35,9 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
         <TypographySection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
       )}
 
-      <NodeLayoutSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+      {supportsLayout(initialNode) && (
+        <NodeLayoutSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+      )}
 
       <FillsSection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
 

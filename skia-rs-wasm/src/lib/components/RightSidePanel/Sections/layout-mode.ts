@@ -16,6 +16,12 @@ type LayoutFieldsView = {
   layoutPadding?: unknown
 }
 
+// Only frames (boards) support flex/grid layout, matching render-wasm where
+// `Shape::has_layout` is reachable solely for `Type::Frame`.
+export function supportsLayout(node: { type?: string } | null | undefined): boolean {
+  return node?.type === 'frame'
+}
+
 export function getLayoutMode(node: RectLikeNode): LayoutMode | null {
   const n = node as LayoutFieldsView
   if (n.layoutFlexDir) return 'flex'
