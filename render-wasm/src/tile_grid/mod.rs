@@ -230,11 +230,11 @@ pub(crate) fn paint_plan_for_shape(shape: &Shape) -> (Vec<GatherFx>, Vec<EffectK
     if is_scatter {
         body.push(EffectKey::Scatter(ScatterFx::Blit));
     } else {
-        // Drop shadows are skipped for text shapes — text emits its
-        // shadows via the paragraph image filter inside `render_shape`,
-        // so the scheduler doesn't need a separate `DropShadows` step.
-        let is_text = matches!(shape.shape_type, Type::Text(_));
-        if !is_text && shape.drop_shadows_visible().next().is_some() {
+        // Drop shadows: text shapes route to the glyph-aware
+        // `text::render_drop_shadows`, all others to the silhouette
+        // path — both via this `DropShadows` step (see dispatch.rs).
+        // Emitted before ShapeBody so the shadow lands behind the shape.
+        if shape.drop_shadows_visible().next().is_some() {
             body.push(EffectKey::Scatter(ScatterFx::DropShadows));
         }
         if crate::render::local::shape_qualifies_for_layer_blur_cache(shape) {

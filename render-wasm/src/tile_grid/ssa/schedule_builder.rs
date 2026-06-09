@@ -108,8 +108,8 @@ fn paint_plan_for_shape_ssa(
 
     // Append DropShadows after Blit so shadows render on top of the
     // displaced silhouette (matches legacy's after-blit shadow pass).
-    let is_text = matches!(shape.shape_type, Type::Text(_));
-    if !is_text && shape.drop_shadows_visible().next().is_some() {
+    // Text routes to the glyph-aware shadow path in dispatch.rs.
+    if shape.drop_shadows_visible().next().is_some() {
         body.push(EffectKey::Scatter(ScatterFx::DropShadows));
     }
 
