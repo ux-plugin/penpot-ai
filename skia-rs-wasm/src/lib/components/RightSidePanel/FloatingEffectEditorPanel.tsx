@@ -294,8 +294,8 @@ export function FloatingEffectEditorPanel() {
           <div className="space-y-2">
             <EffectField label="Horizontal Offset" title="Shadow horizontal offset (px)" value={shadow.offsetX} min={-999} max={999} step={1} onChange={(v) => handleShadowUpdate({ offsetX: v })} />
             <EffectField label="Vertical Offset" title="Shadow vertical offset (px)" value={shadow.offsetY} min={-999} max={999} step={1} onChange={(v) => handleShadowUpdate({ offsetY: v })} />
-            <EffectField label="Blur Radius" title="Shadow blur radius (px)" value={shadow.blur} min={0} max={999} step={1} onChange={(v) => handleShadowUpdate({ blur: v })} />
-            <EffectField label="Spread Distance" title="Shadow spread distance (px)" value={shadow.spread} min={-999} max={999} step={1} onChange={(v) => handleShadowUpdate({ spread: v })} />
+            <EffectField label="Blur Radius" title="Shadow blur radius (px)" value={shadow.blur} min={1} max={999} step={1} onChange={(v) => handleShadowUpdate({ blur: v })} />
+            <EffectField label="Spread Distance" title="Shadow spread distance (px)" value={shadow.spread} min={0} max={999} step={1} onChange={(v) => handleShadowUpdate({ spread: v })} />
           </div>
         </div>
       )}
