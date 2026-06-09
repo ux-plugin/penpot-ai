@@ -2,9 +2,7 @@ use std::cell::OnceCell;
 
 use skia_safe::{self as skia, ColorChannel, RuntimeEffect};
 
-use super::{RenderState, SurfaceId};
-use crate::shapes::{Shape, Stroke, TextureEffect};
-use crate::state::ShapesPoolRef;
+use crate::shapes::{Shape, TextureEffect};
 use crate::tiles;
 
 pub const RADIUS_SCALE: f32 = 3.0;

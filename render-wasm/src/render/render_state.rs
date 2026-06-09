@@ -9,17 +9,16 @@ use super::options::RenderOptions;
 pub use super::surfaces::{SurfaceId, Surfaces};
 
 use super::{
-    fills, filters, fonts, glass, grid_layout, noise, shadows, strokes, text, texture, ui,
+    fills, noise, shadows, strokes, text, ui,
 };
-use super::local;
 
 use crate::error::{Error, Result};
 use crate::performance;
 use crate::shapes::{
-    all_with_ancestors, radius_to_sigma, Blur, BlurType, Corners, Fill, Shadow, Shape, SolidColor,
+    radius_to_sigma, Blur, BlurType, Corners, Fill, Shadow, Shape,
     Stroke, StrokeKind, Type,
 };
-use crate::state::{ShapesPoolMutRef, ShapesPoolRef};
+use crate::state::ShapesPoolRef;
 use crate::tiles::{self, TileRect};
 use crate::uuid::Uuid;
 use crate::view::Viewbox;
@@ -1515,7 +1514,7 @@ impl RenderState {
 
 
     #[inline]
-    #[inline]
+    
     pub fn render_shape_enter(
         &mut self,
         element: &Shape,

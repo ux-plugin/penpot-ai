@@ -44,7 +44,7 @@ pub use glass::{GlassEffect, GLASS_DISPLACEMENT_SKSL, GLASS_REFRACTION_SKSL, GLA
 pub use groups::*;
 pub use layouts::*;
 pub use modifiers::*;
-pub use noise::{NoiseEffect, NoiseSlot, SlotKind, MAX_NOISE_SLOTS, NOISE_SKSL};
+pub use noise::{NoiseEffect, SlotKind, MAX_NOISE_SLOTS, NOISE_SKSL};
 pub use paths::*;
 pub use rects::*;
 pub use shadows::*;
