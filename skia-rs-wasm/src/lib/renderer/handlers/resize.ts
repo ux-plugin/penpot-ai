@@ -12,6 +12,7 @@ import { getSelectedIdsSet } from '../store/document-selection'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { getCurrentPage } from '../store/doc-proxy'
 import { getModifierKeys } from '../store/shortcuts-store'
+import { isSnapPixelGridEnabled } from '../store/workspace-settings'
 import { applyModifiersAndCommit } from './utils'
 import { collectTextGrowTypes } from './reparent-detection'
 import { pinGrowAxis } from '../../components/RightSidePanel/Sections/text-typography'
@@ -99,6 +100,12 @@ export function startResizeSelected(
   const stopper = dragStopper()
   const zoom = vp.zoom
   const mult = getHandlerMultiplier(handle)
+
+  // Snap final geometry to the whole-pixel grid via the WASM modifier pipeline
+  // (`set_pixel_precision`): rounds local width/height + the bounding box, and
+  // handles rotation / constraints / children. Mirrors the frontend passing
+  // `snap-pixel?` into `propagate-modifiers` (modifiers.cljs).
+  const pixelPrecision = isSnapPixelGridEnabled() ? 1 : 0
 
   // Auto-size text can't preview a resize: WASM keeps its content-driven size,
   // so the live modifier only translates the box — it appears to slide and then
@@ -200,7 +207,7 @@ export function startResizeSelected(
             id,
             latestMatrixRef.current,
           ])
-          renderer.setWasmModifiers(entries)
+          renderer.setWasmModifiers(entries, { pixelPrecision })
           renderer.requestRenderFrame()
           wasmSelRect.value = querySelectionRect(renderer, selectedIds)
         })
@@ -245,6 +252,7 @@ export function startResizeSelected(
       }
       applyModifiersAndCommit(entries, {
         textGrowTypes: textGrowTypes.size > 0 ? textGrowTypes : undefined,
+        pixelPrecision,
       })
         .then(() => {
           commitDoneRef.current = true

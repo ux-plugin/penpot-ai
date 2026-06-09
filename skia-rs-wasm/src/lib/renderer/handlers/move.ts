@@ -23,6 +23,8 @@ import { querySelectionRect, wasmSelectionRect as wasmSelRect } from '../signals
 import { dragStopper } from '../streams/drag-stopper'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { getModifierKeys } from '../store/shortcuts-store'
+import { isSnapPixelGridEnabled } from '../store/workspace-settings'
+import { snapMoveDeltaToGrid } from './pixel-snap'
 import { getSelectedIdsSet } from '../store/document-selection'
 import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { applyModifiersAndCommit } from './utils'
@@ -75,6 +77,19 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
     ? cloneSelectionRect(wasmSelRect.peek()!)
     : null
 
+  // Pre-drag selection top-left in world units; non-null only when pixel snap is
+  // on (and we have a finite baseline), in which case the move delta is rounded
+  // so the selection steps on the whole-pixel grid. Snapping the delta (rather
+  // than the WASM `pixelPrecision` flag) keeps this handler's TS-computed overlay
+  // in lockstep with the committed geometry and leaves the size untouched.
+  const snapBaseTopLeft =
+    isSnapPixelGridEnabled() && baselineRect
+      ? {
+          x: baselineRect.center.x - baselineRect.width / 2,
+          y: baselineRect.center.y - baselineRect.height / 2,
+        }
+      : null
+
   const lastEventDeltaRef = { current: { x: 0, y: 0 } }
   // Pre-compute "remove from real parent" structure entries for any selected
   // shape whose parent has a layout. These are stable across the gesture so we
@@ -104,6 +119,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
       y: delta.y / zoom,
     })),
     map(constrainDeltaByShift),
+    map((worldDelta) => snapMoveDeltaToGrid(worldDelta, snapBaseTopLeft, getModifierKeys().shift)),
     tap((worldDelta) => {
       modifiersAppliedRef.current = true
       lastEventDeltaRef.current = { x: worldDelta.x, y: worldDelta.y }

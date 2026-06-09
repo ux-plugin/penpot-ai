@@ -11,6 +11,8 @@ import { shapeDrawPreview as shapeDrawPreviewSignal } from '../signals/selection
 import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { screenToWorld } from '../viewport'
 import { makeSelrect } from '../../worker/types'
+import { isSnapPixelGridEnabled } from '../store/workspace-settings'
+import { snapDrawRectToGrid, type DrawRect } from './pixel-snap'
 import { applyChanges } from '../../page-crud'
 import { createFrame, createRect, createText } from '../node-factory'
 import type { AddObjChange } from 'penpot-exporter/types'
@@ -41,6 +43,7 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
   }
 
   const stopper = dragStopper()
+  const snap = isSnapPixelGridEnabled()
 
   return signalToObservable(pointerPos).pipe(
     filter((pos): pos is { x: number; y: number } => pos !== null),
@@ -61,13 +64,24 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
         takeUntil(stopper)
       )
 
+      // `lastRect` stays the RAW screen rect (drives the click-vs-drag threshold
+      // below); `lastWorld` holds the snapped world geometry when snap is on.
       let lastRect = makeSelrect(0, 0, 0, 0)
+      let lastWorld: DrawRect | null = null
 
       return concat(
         selrectStream.pipe(
           tap((rect) => {
             lastRect = rect
-            shapeDrawPreviewSignal.value = rect
+            const vp = snap ? viewport.value : null
+            if (vp) {
+              const snapped = snapDrawRectToGrid(rect, vp)
+              lastWorld = snapped.world
+              shapeDrawPreviewSignal.value = snapped.screenRect
+            } else {
+              lastWorld = null
+              shapeDrawPreviewSignal.value = rect
+            }
           }),
           map(() => undefined)
         ),
@@ -90,11 +104,16 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
             const vp = viewport.value
             if (!vp) return
 
-            const worldOrigin = screenToWorld(vp, lastRect.x, lastRect.y)
+            // When pixel snap is on, reuse the exact snapped world rect from the
+            // live preview so the created shape matches the preview pixel-for-pixel.
+            const snapped = snap ? lastWorld : null
+            const worldOrigin = snapped
+              ? { x: snapped.x, y: snapped.y }
+              : screenToWorld(vp, lastRect.x, lastRect.y)
             // Click-created text: Penpot's tiny initial box (4×17 world units) with
-            // auto-width grow. Dragged: the drawn size, fixed grow.
-            const w = isClick ? 4 : lastRect.width / vp.zoom
-            const h = isClick ? 17 : lastRect.height / vp.zoom
+            // auto-width grow. Dragged: the drawn size, fixed grow (min 1px when snapped).
+            const w = isClick ? 4 : snapped ? Math.max(1, snapped.width) : lastRect.width / vp.zoom
+            const h = isClick ? 17 : snapped ? Math.max(1, snapped.height) : lastRect.height / vp.zoom
             if (!isClick && (w < 1e-6 || h < 1e-6)) return
 
             const currentPage = effectivePageId ? getPage(effectivePageId) : undefined
