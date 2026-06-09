@@ -85,7 +85,7 @@ impl SurfaceAllocator {
         width: i32,
         height: i32,
         gpu: &mut GpuState,
-        label: &str,
+        _label: &str, // unused since pool surfaces are now budgeted (Skia-owned)
     ) -> Result<skia::Surface> {
         let key = (width, height);
         let (mut surface, was_pool_hit) = if let Some(bucket) = self.pool.get_mut(&key) {
@@ -95,14 +95,22 @@ impl SurfaceAllocator {
             } else {
                 self.stats.misses += 1;
                 (
-                    gpu.create_surface_with_dimensions(label.to_string(), width, height)?,
+                    // Budgeted = Skia owns + frees the backing texture when the
+                    // surface drops (and tracks it in the resource-cache budget).
+                    // The old create_surface_with_dimensions path wrapped a raw
+                    // glGenTextures texture with NO release proc, so every
+                    // bucket-overflow drop() below leaked the GL texture
+                    // (untracked GPU memory — the zoom+move OOM).
+                    gpu.create_budgeted_surface(width, height)?,
                     false,
                 )
             }
         } else {
             self.stats.misses += 1;
             (
-                gpu.create_surface_with_dimensions(label.to_string(), width, height)?,
+                // Budgeted (Skia-owned) — see note above; prevents the GL
+                // texture leak on bucket-overflow drop().
+                gpu.create_budgeted_surface(width, height)?,
                 false,
             )
         };
