@@ -12,13 +12,15 @@ use crate::shapes::{BlurType, Shape, Type};
 
 /// Returns `true` when `shape` is a leaf with a non-trivial layer-blur
 /// effect that the SSA layer-blur path should handle. Returns `false`
-/// for shapes outside scope (text/SVG, inner shadows, no blur, hidden
+/// for shapes outside scope (SVG, inner shadows, no blur, hidden
 /// blur, zero sigma, scatter/glass/bg-blur which use their own
 /// pipelines).
 pub fn shape_qualifies_for_layer_blur_cache(shape: &Shape) -> bool {
-    // Text / SVG: blur is handled inside the paragraph filter or the
-    // SVG DOM render path, not via save_layer.
-    if matches!(shape.shape_type, Type::Text(_)) || matches!(shape.shape_type, Type::SVGRaw(_)) {
+    // SVG: blur is handled inside the SVG DOM render path, not via
+    // save_layer. Text *does* qualify — `ssa::local::render_layer_blur`
+    // wraps the glyph body (`ssa::text::render`) in the blur save_layer
+    // just like any other leaf shape.
+    if matches!(shape.shape_type, Type::SVGRaw(_)) {
         return false;
     }
 
