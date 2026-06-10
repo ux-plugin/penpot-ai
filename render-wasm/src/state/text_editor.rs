@@ -334,6 +334,11 @@ pub struct TextEditorState {
     pub cursor_visible: bool,
     pub last_blink_time_ms: f32,
     pub current_styles: TextEditorStyles,
+    /// Style picked at a collapsed caret but not yet typed. Applied to the next
+    /// inserted text (the editor's "typing attributes") instead of restyling the
+    /// whole shape. Cleared once consumed, on a ranged restyle, on caret moves,
+    /// and on focus/blur/dispose.
+    pending_style: Option<StylePatch>,
     pending_events: Vec<TextEditorEvent>,
 }
 
@@ -355,6 +360,7 @@ impl TextEditorState {
             cursor_visible: true,
             last_blink_time_ms: 0.0,
             pending_events: Vec::new(),
+            pending_style: None,
             current_styles: TextEditorStyles::new(),
         }
     }
@@ -368,6 +374,7 @@ impl TextEditorState {
         self.is_pointer_selection_active = false;
         self.is_overtype_mode = false;
         self.pending_events.clear();
+        self.pending_style = None;
     }
 
     pub fn blur(&mut self) {
@@ -379,6 +386,7 @@ impl TextEditorState {
         self.is_pointer_selection_active = false;
         self.is_overtype_mode = false;
         self.pending_events.clear();
+        self.pending_style = None;
     }
 
     pub fn dispose(&mut self) {
@@ -390,6 +398,7 @@ impl TextEditorState {
         self.is_pointer_selection_active = false;
         self.is_overtype_mode = false;
         self.pending_events.clear();
+        self.pending_style = None;
     }
 
     pub fn start_pointer_selection(&mut self) -> bool {
@@ -516,6 +525,8 @@ impl TextEditorState {
     }
 
     pub fn set_caret_from_position(&mut self, position: &TextPositionWithAffinity) {
+        // Moving the caret discards a not-yet-typed pending style.
+        self.pending_style = None;
         self.selection.set_caret(*position);
         self.push_event(TextEditorEvent::SelectionChanged);
     }
@@ -697,11 +708,55 @@ impl TextEditorState {
             return styles_were_updated;
         }
         // It is a caret.
-        let styles_were_updated = self.update_styles_from_caret(text_content);
+        let mut styles_were_updated = self.update_styles_from_caret(text_content);
+        // A style picked at a collapsed caret isn't written to any glyph yet;
+        // surface it here so the panel previews what the next typed text uses.
+        if self.overlay_pending_into_current_styles() {
+            styles_were_updated = true;
+        }
         if styles_were_updated {
             self.push_event(TextEditorEvent::StylesChanged);
         }
         styles_were_updated
+    }
+
+    /// Overlay the pending caret style onto `current_styles` so the panel shows
+    /// what newly typed text will use. Returns whether anything was overlaid.
+    /// Font *face* (family/weight/style) still applies on insert but isn't
+    /// previewed here — it doesn't map onto a single `FontFamily` cleanly.
+    fn overlay_pending_into_current_styles(&mut self) -> bool {
+        let Some(pending) = self.pending_style.clone() else {
+            return false;
+        };
+        if let Some(fills) = pending.fills {
+            self.current_styles.fills = fills;
+            self.current_styles.fills_are_multiple = false;
+        }
+        if let Some(v) = pending.font_size {
+            self.current_styles.font_size.set_single(Some(v));
+        }
+        if let Some(v) = pending.font_weight {
+            self.current_styles.font_weight.set_single(Some(v));
+        }
+        if let Some(v) = pending.line_height {
+            self.current_styles.line_height.set_single(Some(v));
+        }
+        if let Some(v) = pending.letter_spacing {
+            self.current_styles.letter_spacing.set_single(Some(v));
+        }
+        if let Some(v) = pending.text_decoration {
+            self.current_styles.text_decoration.set_single(v);
+        }
+        if let Some(v) = pending.text_transform {
+            self.current_styles.text_transform.set_single(v);
+        }
+        if let Some(v) = pending.text_direction {
+            self.current_styles.text_direction.set_single(Some(v));
+        }
+        if let Some(v) = pending.text_align {
+            self.current_styles.text_align.set_single(Some(v));
+        }
+        true
     }
 
     pub fn update_blink(&mut self, timestamp_ms: f32) {
@@ -891,41 +946,31 @@ impl TextEditorState {
             return;
         }
 
-        if self.selection.is_selection() {
-            let start = self.selection.start();
-            let end = self.selection.end();
-            let end_paragraph = end.paragraph.min(paragraph_count - 1);
-            for para_idx in start.paragraph..=end_paragraph {
-                let Some(para) = text_content.paragraphs_mut().get_mut(para_idx) else {
-                    continue;
-                };
-                let para_char_count: usize = para
-                    .children()
-                    .iter()
-                    .map(|span| span.text.chars().count())
-                    .sum();
-                let range_start = if para_idx == start.paragraph {
-                    start.offset.min(para_char_count)
-                } else {
-                    0
-                };
-                let range_end = if para_idx == end.paragraph {
-                    end.offset.min(para_char_count)
-                } else {
-                    para_char_count
-                };
-                apply_styles_to_range_in_paragraph(para, range_start, range_end, patch);
+        // Collapsed caret: don't restyle existing glyphs. Remember the patch as
+        // the pending "typing style" — `text_editor_insert_text` applies it to
+        // the next inserted text. `update_styles` surfaces it to the panel.
+        if !self.selection.is_selection() {
+            match self.pending_style {
+                Some(ref mut pending) => pending.merge(patch),
+                None => self.pending_style = Some(patch.clone()),
             }
-        } else {
-            for para in text_content.paragraphs_mut().iter_mut() {
-                let para_char_count: usize = para
-                    .children()
-                    .iter()
-                    .map(|span| span.text.chars().count())
-                    .sum();
-                apply_styles_to_range_in_paragraph(para, 0, para_char_count, patch);
-            }
+            self.reset_blink();
+            self.update_styles(text_content);
+            return;
         }
+
+        let start = self.selection.start();
+        let end = self.selection.end();
+        apply_patch_to_range(
+            text_content,
+            start.paragraph,
+            start.offset,
+            end.paragraph,
+            end.offset,
+            patch,
+        );
+        // An explicit ranged restyle supersedes any caret-pending style.
+        self.pending_style = None;
 
         text_content.layout.paragraphs.clear();
         text_content.layout.paragraph_builders.clear();
@@ -933,6 +978,32 @@ impl TextEditorState {
         self.reset_blink();
         self.push_event(TextEditorEvent::ContentChanged);
         self.push_event(TextEditorEvent::NeedsLayout);
+        self.update_styles(text_content);
+    }
+
+    /// Apply the pending caret style (if any) to the just-inserted range
+    /// `[start, end)` and clear it. Continuity for further typing comes from
+    /// span inheritance — the next characters inherit the now-styled preceding
+    /// glyph — so the pending style only has to seed the first insert.
+    pub fn consume_pending_style(
+        &mut self,
+        text_content: &mut TextContent,
+        start: TextPositionWithAffinity,
+        end: TextPositionWithAffinity,
+    ) {
+        let Some(patch) = self.pending_style.take() else {
+            return;
+        };
+        apply_patch_to_range(
+            text_content,
+            start.paragraph,
+            start.offset,
+            end.paragraph,
+            end.offset,
+            &patch,
+        );
+        text_content.layout.paragraphs.clear();
+        text_content.layout.paragraph_builders.clear();
         self.update_styles(text_content);
     }
 }
@@ -961,6 +1032,44 @@ pub struct StylePatch {
 }
 
 impl StylePatch {
+    /// Overlay another patch's set fields onto this one (other wins). Lets
+    /// successive caret-pending edits accumulate before the next insert.
+    pub fn merge(&mut self, other: &StylePatch) {
+        if other.font_family_id.is_some() {
+            self.font_family_id = other.font_family_id;
+        }
+        if other.font_weight.is_some() {
+            self.font_weight = other.font_weight;
+        }
+        if other.font_style.is_some() {
+            self.font_style = other.font_style;
+        }
+        if other.font_size.is_some() {
+            self.font_size = other.font_size;
+        }
+        if other.line_height.is_some() {
+            self.line_height = other.line_height;
+        }
+        if other.letter_spacing.is_some() {
+            self.letter_spacing = other.letter_spacing;
+        }
+        if other.text_decoration.is_some() {
+            self.text_decoration = other.text_decoration;
+        }
+        if other.text_transform.is_some() {
+            self.text_transform = other.text_transform;
+        }
+        if other.text_direction.is_some() {
+            self.text_direction = other.text_direction;
+        }
+        if other.text_align.is_some() {
+            self.text_align = other.text_align;
+        }
+        if other.fills.is_some() {
+            self.fills = other.fills.clone();
+        }
+    }
+
     /// Decode the patch buffer (all little-endian):
     ///   0  u32 presence · 4 u8 decoration · 5 u8 transform · 6 u8 direction
     ///   7  u8 align · 8 u8 font_style · 9..=11 pad · 12 f32 font_size
@@ -1156,6 +1265,45 @@ fn split_span_at(para: &mut Paragraph, char_offset: usize) {
 /// Split the paragraph at `start`/`end`, then apply `patch` to every span fully
 /// inside `[start, end)`. Paragraph alignment (when present) applies to the whole
 /// paragraph regardless of the character range.
+/// Apply `patch` to the character range `[start, end)` across paragraphs,
+/// splitting spans at the boundaries. Shared by ranged selection restyles and
+/// pending-style consumption on insert.
+fn apply_patch_to_range(
+    text_content: &mut TextContent,
+    start_paragraph: usize,
+    start_offset: usize,
+    end_paragraph: usize,
+    end_offset: usize,
+    patch: &StylePatch,
+) {
+    let paragraph_count = text_content.paragraphs().len();
+    if paragraph_count == 0 {
+        return;
+    }
+    let end_paragraph = end_paragraph.min(paragraph_count - 1);
+    for para_idx in start_paragraph..=end_paragraph {
+        let Some(para) = text_content.paragraphs_mut().get_mut(para_idx) else {
+            continue;
+        };
+        let para_char_count: usize = para
+            .children()
+            .iter()
+            .map(|span| span.text.chars().count())
+            .sum();
+        let range_start = if para_idx == start_paragraph {
+            start_offset.min(para_char_count)
+        } else {
+            0
+        };
+        let range_end = if para_idx == end_paragraph {
+            end_offset.min(para_char_count)
+        } else {
+            para_char_count
+        };
+        apply_styles_to_range_in_paragraph(para, range_start, range_end, patch);
+    }
+}
+
 fn apply_styles_to_range_in_paragraph(
     para: &mut Paragraph,
     start: usize,

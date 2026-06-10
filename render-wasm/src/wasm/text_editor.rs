@@ -530,16 +530,18 @@ pub extern "C" fn text_editor_insert_text() -> Result<()> {
         }
 
         let cursor = state.text_editor_state.selection.focus;
-        if !state.text_editor_state.is_overtype_mode {
-            if let Some(new_cursor) =
-                text_helpers::insert_text_with_newlines(text_content, &cursor, &text)
-            {
-                state.text_editor_state.selection.set_caret(new_cursor);
-            }
-        } else if let Some(new_cursor) =
+        let new_cursor = if !state.text_editor_state.is_overtype_mode {
+            text_helpers::insert_text_with_newlines(text_content, &cursor, &text)
+        } else {
             text_helpers::replace_text_with_newlines(text_content, &cursor, &text)
-        {
+        };
+        if let Some(new_cursor) = new_cursor {
             state.text_editor_state.selection.set_caret(new_cursor);
+            // Apply any caret-pending style (e.g. a colour picked before typing)
+            // to just the inserted text, instead of the whole shape.
+            state
+                .text_editor_state
+                .consume_pending_style(text_content, cursor, new_cursor);
         }
 
         text_content.layout.paragraphs.clear();
