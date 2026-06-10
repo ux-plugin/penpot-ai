@@ -32,7 +32,7 @@ pub fn render_background_blur(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<(
     if ctx.options.is_fast_mode() {
         return Ok(());
     }
-    if matches!(shape.shape_type, Type::Text(_)) || matches!(shape.shape_type, Type::SVGRaw(_)) {
+    if matches!(shape.shape_type, Type::SVGRaw(_)) {
         return Ok(());
     }
     let Some(blur) = shape.background_blur.filter(|b| !b.hidden) else {
@@ -55,6 +55,13 @@ pub fn render_background_blur(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<(
     else {
         return Ok(());
     };
+
+    // Text has no fillable path — the geometry clip below would fall
+    // back to the bounding box and blur the whole text block. Mask the
+    // blurred backdrop to the glyph coverage instead.
+    if matches!(shape.shape_type, Type::Text(_)) {
+        return draw_bg_blur_masked_to_text(ctx, shape, &backdrop_img, extent, blur_filter);
+    }
 
     // Tile-space translation: same `tile_translation_device()` PaintCtx
     // already builds. Apply scale + translate + shape transform so clip
@@ -123,5 +130,72 @@ pub fn render_background_blur(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<(
     canvas.draw_image(&backdrop_img, (img_x, img_y), Some(&paint));
 
     canvas.restore();
+    Ok(())
+}
+
+/// Draw the blurred backdrop masked to a text shape's glyph coverage —
+/// the glyph-masking idiom from `glass::draw_glass_masked_to_text`:
+/// paint the opaque glyph mask in the text body's transform, then draw
+/// the blurred backdrop with `SrcIn` so it survives only where glyphs
+/// have alpha. The body fills draw on top afterwards (gather runs
+/// before ShapeBody), so semi-transparent text shows the blur through.
+fn draw_bg_blur_masked_to_text(
+    ctx: &mut PaintCtx<'_>,
+    shape: &Shape,
+    backdrop_img: &skia::Image,
+    extent: skia::Rect,
+    blur_filter: skia::ImageFilter,
+) -> Result<()> {
+    let Type::Text(text_content_orig) = &shape.shape_type else {
+        return Ok(());
+    };
+
+    // Snapshot transform + device-pixel image origin BEFORE borrowing
+    // the canvas (mirrors `ssa::text::render`). Same `(world + translation)
+    // * scale` mapping as the generic path above.
+    let scale = ctx.scale;
+    let translation = ctx.tile_translation_device();
+    let xform = ctx.tile_and_shape_transform_matrix(shape);
+    let img_x = (extent.left + translation.x) * scale;
+    let img_y = (extent.top + translation.y) * scale;
+
+    let text_content = text_content_orig.new_bounds(shape.selrect());
+    let mut mask_paragraphs = text_content.paragraph_builder_group_opaque();
+
+    let canvas = ctx.surface.canvas();
+    canvas.save();
+
+    // Isolation layer so the `SrcIn` pass composites against this
+    // layer's own content (the glyph mask), not the surface beneath.
+    canvas.save_layer(&skia::canvas::SaveLayerRec::default());
+
+    // 1. Destination = opaque glyph coverage, drawn with the text body's
+    //    transform so the mask lines up exactly with the rendered glyphs.
+    canvas.reset_matrix();
+    canvas.concat(&xform);
+    crate::render::text::render_text_on_canvas(
+        canvas,
+        shape,
+        &mut mask_paragraphs,
+        None, // shadow
+        None, // blur
+        None, // fill_inset
+        None, // layer_opacity
+    );
+
+    // 2. Source = blurred backdrop at device pixels, kept only where the
+    //    glyph mask has alpha.
+    let mut src_in = skia::Paint::default();
+    src_in.set_blend_mode(skia::BlendMode::SrcIn);
+    canvas.save_layer(&skia::canvas::SaveLayerRec::default().paint(&src_in));
+    canvas.reset_matrix();
+    let mut paint = skia::Paint::default();
+    paint.set_image_filter(blur_filter);
+    canvas.draw_image(backdrop_img, (img_x, img_y), Some(&paint));
+    canvas.restore(); // SrcIn layer
+
+    canvas.restore(); // isolation layer → masked blur composites onto surface
+    canvas.restore(); // outer save
+
     Ok(())
 }
