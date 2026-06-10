@@ -116,6 +116,34 @@ pub fn render(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
     Ok(())
 }
 
+/// Draw the text fill glyphs FLAT onto the active canvas — no isolating
+/// `save_layer`, the same way `fills::render` draws shape geometry.
+///
+/// The scatter/texture path needs this. `render_blit` wraps the body in
+/// a `save_layer` whose `image_filter` is the displacement map; that
+/// filter reads the layer raster as its implicit source. The nested
+/// `save_layer` the normal `render`/`draw_text` path opens stops the
+/// displacement filter from picking up the glyphs at all (text vanishes
+/// at any radius > 0). Painting the glyphs flat — like a shape fill —
+/// lets the displacement warp them. Strokes are not handled here yet.
+pub fn render_glyphs_flat(ctx: &mut PaintCtx<'_>, shape: &Shape) {
+    let Type::Text(text_content_orig) = &shape.shape_type else {
+        return;
+    };
+
+    // Snapshot the transform BEFORE borrowing the canvas.
+    let xform = ctx.tile_and_shape_transform_matrix(shape);
+    let text_content = text_content_orig.new_bounds(shape.selrect());
+    let mut paragraphs = text_content.paragraph_builder_group_from_text(None);
+
+    let canvas = ctx.surface.canvas();
+    canvas.save();
+    canvas.reset_matrix();
+    canvas.concat(&xform);
+    text::paint_text(canvas, shape, &mut paragraphs);
+    canvas.restore();
+}
+
 /// Text drop shadows: for each visible drop shadow, run the text draw
 /// inside a `save_layer { image_filter = drop_shadow_filter }`. Uses the
 /// `text_drop_shadows_scratch` so the shadow filter snaps glyphs to

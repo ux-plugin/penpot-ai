@@ -103,12 +103,15 @@ pub fn render_blit(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
         canvas.save_layer(&rec);
     }
 
-    // Render body INSIDE the layer. Text needs the glyph-aware renderer
-    // (`ssa::text::render`); the generic fills/strokes pass below draws
-    // the shape's path, not glyphs, so on text it would warp an empty
-    // body. Everything else renders fills + shape noise + strokes.
+    // Render body INSIDE the layer. Text needs glyphs drawn FLAT (no
+    // isolating save_layer) so the displacement filter's implicit source
+    // captures them — `ssa::text::render` wraps glyphs in nested
+    // save_layers the filter can't see through, making text vanish at
+    // any radius. The generic fills/strokes pass below draws the shape
+    // path (empty for text), so it can't be used either.
     let body_result = if matches!(shape.shape_type, Type::Text(_)) {
-        super::text::render(ctx, shape)
+        super::text::render_glyphs_flat(ctx, shape);
+        Ok(())
     } else {
         // Mirrors `render::texture::render_and_filter_to_image`'s leaf
         // closure. Inner shadows are out of scope here; they fire as a

@@ -285,7 +285,7 @@ pub(crate) fn render_text_on_canvas(
 }
 
 /// Lays out and paints paragraph builders without any layer management.
-fn paint_text(
+pub(crate) fn paint_text(
     canvas: &Canvas,
     shape: &Shape,
     paragraph_builder_groups: &mut [Vec<ParagraphBuilder>],
