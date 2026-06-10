@@ -45,7 +45,7 @@
 use skia_safe as skia;
 
 use crate::error::Result;
-use crate::shapes::Shape;
+use crate::shapes::{Shape, Type};
 
 use super::PaintCtx;
 
@@ -103,29 +103,38 @@ pub fn render_blit(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
         canvas.save_layer(&rec);
     }
 
-    // Render body — fills, shape noise, strokes — INSIDE the layer.
-    // Mirrors `render::texture::render_and_filter_to_image`'s leaf
-    // closure. Inner shadows are out of scope here; they fire as a
-    // separate body effect via the dispatcher's `ShapeBody` arm
-    // (not currently in the scatter body plan, but available if we
-    // extend `paint_plan_for_shape_ssa`).
-    let antialias =
-        shape.should_use_antialias(ctx.scale, ctx.options.antialias_threshold);
-
-    let fills_vec: Vec<_> = shape.fills.iter().cloned().collect();
-    let fill_result = super::fills::render(ctx, shape, &fills_vec, antialias, None);
-
-    // Shape's own noise overlay (`shape.shape_noise`) — separate from
-    // the texture's internal displacement noise. Lands inside the
-    // displacement layer so it gets warped along with the body.
-    super::noise::render_shape_noise(ctx, shape);
-
-    // Strokes (border) — also warped by the parent displacement.
-    let stroke_refs: Vec<_> = shape.visible_strokes().collect();
-    let stroke_result = if !stroke_refs.is_empty() {
-        super::strokes::render(ctx, shape, &stroke_refs, antialias, None)
+    // Render body INSIDE the layer. Text needs the glyph-aware renderer
+    // (`ssa::text::render`); the generic fills/strokes pass below draws
+    // the shape's path, not glyphs, so on text it would warp an empty
+    // body. Everything else renders fills + shape noise + strokes.
+    let body_result = if matches!(shape.shape_type, Type::Text(_)) {
+        super::text::render(ctx, shape)
     } else {
-        Ok(())
+        // Mirrors `render::texture::render_and_filter_to_image`'s leaf
+        // closure. Inner shadows are out of scope here; they fire as a
+        // separate body effect via the dispatcher's `ShapeBody` arm
+        // (not currently in the scatter body plan, but available if we
+        // extend `paint_plan_for_shape_ssa`).
+        let antialias =
+            shape.should_use_antialias(ctx.scale, ctx.options.antialias_threshold);
+
+        let fills_vec: Vec<_> = shape.fills.iter().cloned().collect();
+        let fill_result = super::fills::render(ctx, shape, &fills_vec, antialias, None);
+
+        // Shape's own noise overlay (`shape.shape_noise`) — separate from
+        // the texture's internal displacement noise. Lands inside the
+        // displacement layer so it gets warped along with the body.
+        super::noise::render_shape_noise(ctx, shape);
+
+        // Strokes (border) — also warped by the parent displacement.
+        let stroke_refs: Vec<_> = shape.visible_strokes().collect();
+        let stroke_result = if !stroke_refs.is_empty() {
+            super::strokes::render(ctx, shape, &stroke_refs, antialias, None)
+        } else {
+            Ok(())
+        };
+
+        fill_result.and(stroke_result)
     };
 
     // Close save_layer (Skia applies displacement filter now) + restore.
@@ -135,5 +144,5 @@ pub fn render_blit(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
         canvas.restore(); // pop the outer save
     }
 
-    fill_result.and(stroke_result)
+    body_result
 }
