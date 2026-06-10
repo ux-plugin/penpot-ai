@@ -3,6 +3,7 @@ import type { Fill } from 'penpot-exporter/types'
 import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { FillEditor } from '../FillEditor/FillEditor'
+import { textEditorActive, refocusTextEditor } from '@/lib/renderer/signals/text-editor'
 import { useColorEditor } from './use-color-editor'
 
 export function FloatingColorEditorPanel() {
@@ -88,7 +89,21 @@ export function FloatingColorEditorPanel() {
   return (
     <div
       ref={panelRef}
+      data-floating-panel
       className="pointer-events-auto fixed z-100 flex flex-col overflow-hidden rounded-lg border border-border/80 bg-white text-card-foreground shadow-md"
+      onMouseDownCapture={(e) => {
+        // Keep DOM focus on the canvas text editor while picking a colour:
+        // pointer-driven controls (sliders, swatches, drag areas) don't need
+        // focus, and letting them take it would blur the contentEditable —
+        // with a null relatedTarget the overlay's panel guard can't see where
+        // focus went and would end the edit session. Real text fields (hex,
+        // opacity) still take focus; their blur carries a relatedTarget inside
+        // this panel, which the guard recognises via data-floating-panel.
+        const target = e.target as HTMLElement
+        if (!target.closest('input, textarea, select, [contenteditable="true"]')) {
+          e.preventDefault()
+        }
+      }}
       style={{
         width: 284,
         minHeight: 200,
@@ -112,7 +127,13 @@ export function FloatingColorEditorPanel() {
           size="icon"
           className="h-8 w-8 shrink-0 text-muted-foreground"
           aria-label="Close color editor"
-          onClick={closeEditor}
+          onClick={() => {
+            closeEditor()
+            // Hand the keyboard back to the canvas editor (if a text edit
+            // session is live) so typing resumes at the same caret — without
+            // a caret-moving canvas click.
+            if (textEditorActive.value) refocusTextEditor()
+          }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <X className="size-4" />

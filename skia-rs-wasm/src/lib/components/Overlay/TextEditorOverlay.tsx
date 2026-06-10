@@ -33,7 +33,7 @@ import {
   refreshEditorStyles,
 } from '../../renderer/handlers/text-edit'
 import { requestRender } from '../../renderer/api/rendering'
-import { textIsComposing } from '../../renderer/signals/text-editor'
+import { textIsComposing, textEditorDomNode } from '../../renderer/signals/text-editor'
 import { viewport as viewportSignal } from '../../renderer/signals/pointer'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
 import { getActiveOrSinglePageId, getPage } from '../../renderer/store/doc-proxy'
@@ -101,11 +101,38 @@ export function TextEditorOverlay() {
     }
     tryStart()
     editorRef.current?.focus()
+    // Expose the element so panels can hand keyboard focus back after an
+    // interaction (refocusTextEditor) without a caret-moving canvas click.
+    textEditorDomNode.value = editorRef.current
     return () => {
       cancelAnimationFrame(raf)
+      textEditorDomNode.value = null
       const m = getModule()
       if (m) commitTextEdit(m, shapeId)
     }
+  }, [shapeId])
+
+  // Reclaim stranded keyboard focus. While editing, panel inputs (size, hex…)
+  // legitimately take DOM focus; when such a control blurs to nothing focusable
+  // (body), focus is stranded — typing goes nowhere until the user clicks the
+  // text again (which moves the caret and discards a pending caret style).
+  // Watch focusout document-wide: when focus leaves a panel control and lands
+  // nowhere, hand it back to this editor. Deliberate focus moves (to another
+  // panel control, or any focusable element elsewhere) are left alone. Deferred
+  // a frame so a canvas click-away can exit edit mode first — the unmount
+  // cleanup clears `textEditorDomNode`, making the refocus a no-op.
+  useEffect(() => {
+    if (!shapeId) return
+    const onFocusOut = (e: FocusEvent) => {
+      const from = e.target
+      const to = e.relatedTarget
+      if (!(from instanceof HTMLElement)) return
+      if (!from.closest('[data-right-side-panel],[data-floating-panel]')) return
+      if (to instanceof HTMLElement) return // deliberate move — don't steal
+      requestAnimationFrame(() => textEditorDomNode.value?.focus())
+    }
+    document.addEventListener('focusout', onFocusOut)
+    return () => document.removeEventListener('focusout', onFocusOut)
   }, [shapeId])
 
   // Caret blink driver (mirrors Penpot's v3_editor): request a render on a steady

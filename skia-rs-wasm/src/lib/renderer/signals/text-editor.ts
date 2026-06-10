@@ -38,3 +38,15 @@ export const textEditorIsEmpty = signal<boolean>(true)
  * property `MULTIPLE` renders as "Mixed", and `selectedColors` lists every fill
  * used across the selection. Refreshed after each editor interaction. */
 export const currentStyles = signal<CurrentStyles | null>(null)
+
+/** The contentEditable overlay element of the active edit session (null when
+ * not editing). Lets panels hand keyboard focus back to the canvas editor
+ * after an interaction (e.g. typing a hex colour) without a caret-moving
+ * canvas click. */
+export const textEditorDomNode = signal<HTMLElement | null>(null)
+
+/** Return keyboard focus to the text-editor overlay, if a session is active.
+ * Does not touch the WASM caret/selection — only DOM focus. */
+export function refocusTextEditor(): void {
+  textEditorDomNode.value?.focus()
+}
