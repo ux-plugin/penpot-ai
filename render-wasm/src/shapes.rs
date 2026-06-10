@@ -694,6 +694,16 @@ impl Shape {
     }
 
     pub fn set_fills(&mut self, fills: Vec<Fill>) {
+        // Text shapes render from per-span fills, not the shape-level `fills`
+        // vec. Propagate a real (non-empty) fill onto the content spans so a
+        // colour applied to the whole text shape is actually drawn. An empty
+        // list is left alone here: it would otherwise wipe per-span colours on
+        // every full re-sync (which sends the shape's empty shape-level fills).
+        if let Type::Text(text_content) = &mut self.shape_type {
+            if !fills.is_empty() {
+                text_content.set_fills(&fills);
+            }
+        }
         self.fills = fills;
     }
 
