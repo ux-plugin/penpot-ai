@@ -15,7 +15,7 @@
 import type { WasmModule } from '../wasm-types'
 import { checkContext } from './context'
 import { allocBytes, freeBytes, offset8To32, writeUUIDToDataView } from '../utils'
-import { uuidToU32Tuple, u32ToUUID } from '@skia-rs-wasm/common/conversions'
+import { uuidToU32Tuple, u32ToUUID, round2 } from '@skia-rs-wasm/common/conversions'
 import { fontSlugToUuid } from './font-id-map'
 import { FILL_U8_SIZE } from './constants'
 
@@ -566,11 +566,13 @@ export function textEditorGetCurrentStyles(module: WasmModule): CurrentStyles | 
   const textTransformVal = TEXT_TRANSFORM[u32[o + 16]] ?? 'none'
   const fontFamilyId = u32ToUUID([u32[o + 17], u32[o + 18], u32[o + 19], u32[o + 20]])
   const fontStyleVal = FONT_STYLE[u32[o + 21]] ?? 'normal'
-  const fontSizeVal = f32[o + 23]
+  // f32 reads pick up float32 representation noise (1.2 → 1.2000000476…);
+  // round to 2 decimals at the boundary so every consumer sees clean values.
+  const fontSizeVal = round2(f32[o + 23])
   const fontWeightVal = i32[o + 24]
   const fontVariantId = u32ToUUID([u32[o + 25], u32[o + 26], u32[o + 27], u32[o + 28]])
-  const lineHeightVal = f32[o + 29]
-  const letterSpacingVal = f32[o + 30]
+  const lineHeightVal = round2(f32[o + 29])
+  const letterSpacingVal = round2(f32[o + 30])
 
   // Fills (after the 124-byte fixed section)
   const fills: EditorFill[] = []

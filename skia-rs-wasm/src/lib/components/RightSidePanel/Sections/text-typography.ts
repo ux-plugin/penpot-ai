@@ -16,6 +16,7 @@
 
 import type { Fill, PenpotNode, TextContent, Paragraph, TextNode } from 'penpot-exporter/types'
 import { MULTIPLE, type CurrentStyles, type MaybeMultiple } from '@/lib/renderer/api/text-editor'
+import { round2 } from '@/lib/common/conversions'
 
 export type HAlign = 'left' | 'center' | 'right' | 'justify'
 export type VAlign = 'top' | 'center' | 'bottom'
@@ -99,6 +100,110 @@ function firstSpan(content: TextContent | undefined): TextNode | undefined {
 export function textContentFills(content: TextContent | undefined): Fill[] {
   const fills = firstSpan(content)?.fills
   return fills ? [...fills] : []
+}
+
+/**
+ * Spans that should count when deciding whether a parameter is "Mixed":
+ * non-empty spans, paired with their paragraph for attribute fallback. Empty
+ * spans (blank lines) carry invisible styling, so they only count when the
+ * whole shape is empty.
+ */
+function styledSpans(
+  content: TextContent | undefined,
+): Array<{ span: TextNode; paragraph: Paragraph }> {
+  const all: Array<{ span: TextNode; paragraph: Paragraph }> = []
+  for (const paragraph of allParagraphs(content)) {
+    for (const span of paragraph.children ?? []) all.push({ span, paragraph })
+  }
+  const nonEmpty = all.filter(({ span }) => (span.text ?? '').length > 0)
+  return nonEmpty.length > 0 ? nonEmpty : all
+}
+
+/** True when the content's leaves don't all share one fill set. */
+export function textContentFillsAreMixed(content: TextContent | undefined): boolean {
+  const entries = styledSpans(content)
+  if (entries.length < 2) return false
+  const keys = new Set(entries.map(({ span }) => JSON.stringify(span.fills ?? [])))
+  return keys.size > 1
+}
+
+/**
+ * Doc-model panel display: representative values (`readTypography`) plus
+ * per-parameter Mixed flags from scanning every (non-empty) span. The editor's
+ * live `CurrentStyles` covers this while editing; this covers the selected-but-
+ * not-editing state, where per-range styling can also leave mixed values.
+ * Numeric parameters are compared after rounding to 2 decimals so f32 round-trip
+ * noise ("1.2" vs "1.2000000476…") doesn't read as a real difference.
+ */
+export function readTypographyDisplay(node: NodeWithText): DisplayTypography {
+  const values = readTypography(node)
+
+  // Never show more than 2 decimals, even for content committed with f32 noise.
+  const roundStr = (s: string): string => {
+    const n = parseFloat(s)
+    return Number.isFinite(n) ? String(round2(n)) : s
+  }
+  values.size = roundStr(values.size)
+  values.lineHeight = roundStr(values.lineHeight)
+  values.letterSpacing = roundStr(values.letterSpacing)
+
+  const mixed: DisplayTypography['mixed'] = {}
+  const entries = styledSpans(node.content)
+  if (entries.length > 1) {
+    const differs = (key: (e: { span: TextNode; paragraph: Paragraph }) => string): boolean =>
+      new Set(entries.map(key)).size > 1
+    const num = (v: unknown, dflt: number): string => {
+      const n = parseFloat(String(v))
+      return String(Number.isFinite(n) ? round2(n) : dflt)
+    }
+
+    if (
+      differs(({ span: s, paragraph: p }) =>
+        String(s.fontId ?? s.fontFamily ?? p.fontId ?? p.fontFamily ?? DEFAULTS.fontId),
+      )
+    ) {
+      mixed.family = true
+      mixed.fontId = true
+    }
+    if (differs(({ span: s, paragraph: p }) => num(s.fontWeight ?? p.fontWeight, 400))) {
+      mixed.weight = true
+    }
+    if (differs(({ span: s, paragraph: p }) => String((s.fontStyle ?? p.fontStyle) === 'italic'))) {
+      mixed.italic = true
+    }
+    if (differs(({ span: s, paragraph: p }) => num(s.fontSize ?? p.fontSize, 14))) {
+      mixed.size = true
+    }
+    if (differs(({ span: s, paragraph: p }) => num(s.lineHeight ?? p.lineHeight, 1.2))) {
+      mixed.lineHeight = true
+    }
+    if (differs(({ span: s, paragraph: p }) => num(s.letterSpacing ?? p.letterSpacing, 0))) {
+      mixed.letterSpacing = true
+    }
+    if (
+      differs(({ span: s, paragraph: p }) => String(s.textDecoration ?? p.textDecoration ?? 'none'))
+    ) {
+      mixed.decoration = true
+    }
+    if (
+      differs(({ span: s, paragraph: p }) => String(s.textTransform ?? p.textTransform ?? 'none'))
+    ) {
+      mixed.textCase = true
+    }
+    if (
+      differs(({ span: s, paragraph: p }) =>
+        (s.textDirection ?? p.textDirection) === 'rtl' ? 'rtl' : 'ltr',
+      )
+    ) {
+      mixed.direction = true
+    }
+    // Horizontal alignment lives on the paragraph.
+    if (differs(({ paragraph: p }) => String(p.textAlign ?? 'left'))) {
+      mixed.hAlign = true
+    }
+  }
+
+  return { values, mixed }
 }
 
 /**

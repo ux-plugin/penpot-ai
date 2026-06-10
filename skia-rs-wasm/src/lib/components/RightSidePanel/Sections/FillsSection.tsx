@@ -21,7 +21,12 @@ import { refreshEditorStyles, syncTextEditGeometry } from '@/lib/renderer/handle
 import { requestRender } from '@/lib/renderer/api/rendering'
 import { useWorkspaceStore } from '@/lib/renderer/store/workspace-store'
 import { FillRow } from './FillRow'
-import { isTextNode, patchContent, textContentFills } from './text-typography'
+import {
+  isTextNode,
+  patchContent,
+  textContentFills,
+  textContentFillsAreMixed,
+} from './text-typography'
 import { useColorEditor, useColorEditorFor } from '../use-color-editor'
 
 export interface FillsSectionProps {
@@ -49,10 +54,9 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
   const [fills, setFills] = useState<Fill[]>(() => initialFills(initialNode))
   const [collapsed, setCollapsed] = useState(false)
 
+  // Mirrors external document updates into the controlled fills state.
   useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect -- mirrors external document updates into controlled fields */
     setFills(initialFills(initialNode))
-    /* eslint-enable react-hooks/set-state-in-effect */
   }, [initialNode])
 
   // ── Shape fills (not editing text) ─────────────────────────────────────────
@@ -166,6 +170,14 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
     )
   }
 
+  // Not editing, text shape: the content leaves may carry differing fills
+  // (per-range colour). Show the same read-only Mixed treatment as editing —
+  // the representative first-leaf colour would be misleading.
+  const docFillsMixed =
+    !isEditingThis &&
+    isTextNode(initialNode as { type?: string }) &&
+    textContentFillsAreMixed((initialNode as { content?: TextContent }).content)
+
   const hasFills = fills.length > 0
   const canAdd = !readOnly && fills.length < MAX_FILLS
 
@@ -188,15 +200,19 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
             Fill
           </button>
           <div className="flex items-center gap-1">
-            {/* "Mixed" chip when the selection's colours differ. */}
-            {isEditingThis && showMixedFill && (
+            {/* "Mixed" chip when the selection's (or content's) colours differ. */}
+            {((isEditingThis && showMixedFill) || docFillsMixed) && (
               <span className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[9px] leading-none tracking-wide text-muted-foreground uppercase">
                 Mixed
               </span>
             )}
             {/* "+" — in text-edit mode it sets one color across the whole
-                selection (replace-all); otherwise it adds a shape fill. */}
+                selection (replace-all); otherwise it adds a shape fill. Hidden
+                while content colours are mixed: appending to the first leaf's
+                representative fills would clobber per-range colours — the
+                Mixed row's swatch is the replace action instead. */}
             {!readOnly &&
+              !docFillsMixed &&
               (isEditingThis ? (
                 <Button
                   ref={addColorBtnRef}
@@ -260,8 +276,27 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
           </div>
         )}
 
+        {/* Not editing, text with per-range colours: read-only Mixed row —
+            picking a colour replaces it on every content leaf. */}
+        {!collapsed && docFillsMixed && (
+          <div className="space-y-1 pl-0.5">
+            <EditingColorTrigger
+              variant="mixed"
+              readOnly={readOnly}
+              onPick={(f) => {
+                setFills([f])
+                void commitFills([f])
+              }}
+            />
+            <p className="flex items-start gap-1.5 px-0.5 pt-0.5 text-[11px] leading-snug text-muted-foreground">
+              <Info className="mt-px size-3 shrink-0" aria-hidden />
+              <span>Picking a color replaces it across the text.</span>
+            </p>
+          </div>
+        )}
+
         {/* Not editing: the editable shape fills. */}
-        {!collapsed && !isEditingThis && hasFills && (
+        {!collapsed && !isEditingThis && !docFillsMixed && hasFills && (
           <div className="space-y-2 pl-0.5">
             {fills.map((fill, i) => (
               <FillRow
@@ -276,7 +311,7 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
           </div>
         )}
 
-        {!collapsed && !isEditingThis && !hasFills && !readOnly && (
+        {!collapsed && !isEditingThis && !docFillsMixed && !hasFills && !readOnly && (
           <p className="text-xs text-muted-foreground">No fills. Use + to add.</p>
         )}
       </div>

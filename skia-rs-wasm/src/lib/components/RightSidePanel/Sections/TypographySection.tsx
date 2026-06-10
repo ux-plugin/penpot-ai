@@ -47,12 +47,11 @@ import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import {
   patchContent,
-  readTypography,
+  readTypographyDisplay,
   displayFromCurrentStyles,
   weightLabel,
   type ContentPatch,
   type Decoration,
-  type DisplayTypography,
   type HAlign,
   type TextCase,
   type TextDirection,
@@ -128,7 +127,16 @@ function contentPatchToApply(patch: ContentPatch): ApplyStylePatch | null {
   return any ? out : null
 }
 
-const NO_MIXED: DisplayTypography['mixed'] = {}
+/** Quiet caption under a segmented control whose values differ across the
+ * selection: no segment is active, and clicking one makes it the shared value
+ * (the "Empty + quiet caption" mixed treatment). */
+function MixedHint({ label }: { label: string }) {
+  return (
+    <p className="px-0.5 text-[11px] leading-snug text-muted-foreground italic">
+      Mixed — no common {label}
+    </p>
+  )
+}
 
 export interface TypographySectionProps {
   nodeId: string
@@ -170,11 +178,12 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
   const editing = useSignalCoalesced(textEditorActive)
   const editingId = useSignalCoalesced(textEditorShapeId)
   const liveStyles = useSignalCoalesced(currentStyles)
-  const docValues = readTypography(initialNode)
+  // Doc-model display carries its own Mixed flags (per-range styling can leave
+  // differing span values even when nothing is being edited).
+  const docDisplay = readTypographyDisplay(initialNode)
+  const docValues = docDisplay.values
   const live = editing && editingId === nodeId && liveStyles != null
-  const { values, mixed } = live
-    ? displayFromCurrentStyles(liveStyles, docValues)
-    : { values: docValues, mixed: NO_MIXED }
+  const { values, mixed } = live ? displayFromCurrentStyles(liveStyles, docValues) : docDisplay
 
   // Number fields are edited as drafts and committed on blur (matches
   // AppearanceSection), so intermediate keystrokes don't each round-trip.
@@ -274,6 +283,13 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
     void commit({ span: { [key]: String(n) } })
   }
 
+  // Enter commits a draft by blurring the field. While text editing, the
+  // overlay's stranded-focus watcher then hands the keyboard back to the
+  // canvas editor, so Enter = "apply and resume typing".
+  const blurOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') e.currentTarget.blur()
+  }
+
   const openPicker = () => {
     if (readOnly) return
     setPickerAnchorY(fontTriggerRef.current?.getBoundingClientRect().top ?? 12)
@@ -348,7 +364,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
               </Select>
               <div className="flex gap-1">
                 <ToggleButton
-                  active={values.italic}
+                  active={!mixed.italic && values.italic}
                   disabled={readOnly}
                   label="Italic"
                   onClick={() =>
@@ -375,6 +391,8 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                 </ToggleButton>
               </div>
             </div>
+            {mixed.italic && <MixedHint label="font style" />}
+            {mixed.decoration && <MixedHint label="decoration" />}
 
             {/* Size + line height. */}
             <div className="grid grid-cols-2 gap-2">
@@ -389,6 +407,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                   value={sizeDraft ?? (mixed.size ? '' : values.size)}
                   placeholder={mixed.size ? 'Mixed' : undefined}
                   onChange={(e) => setSizeDraft(e.target.value)}
+                  onKeyDown={blurOnEnter}
                   onBlur={() => {
                     const draft = sizeDraft
                     setSizeDraft(null)
@@ -407,6 +426,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                   value={lineDraft ?? (mixed.lineHeight ? '' : values.lineHeight)}
                   placeholder={mixed.lineHeight ? 'Mixed' : undefined}
                   onChange={(e) => setLineDraft(e.target.value)}
+                  onKeyDown={blurOnEnter}
                   onBlur={() => {
                     const draft = lineDraft
                     setLineDraft(null)
@@ -447,6 +467,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                   ))}
                 </div>
               </div>
+              {mixed.hAlign && <MixedHint label="alignment" />}
             </div>
 
             {/* Letter spacing sits next to Case. (Paragraph spacing has no
@@ -462,6 +483,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                   value={letterDraft ?? (mixed.letterSpacing ? '' : values.letterSpacing)}
                   placeholder={mixed.letterSpacing ? 'Mixed' : undefined}
                   onChange={(e) => setLetterDraft(e.target.value)}
+                  onKeyDown={blurOnEnter}
                   onBlur={() => {
                     const draft = letterDraft
                     setLetterDraft(null)
@@ -489,6 +511,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                     )
                   })}
                 </div>
+                {mixed.textCase && <MixedHint label="case" />}
               </div>
             </div>
 
@@ -515,6 +538,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                   )
                 })}
               </div>
+              {mixed.direction && <MixedHint label="direction" />}
             </div>
           </div>
         )}

@@ -23,7 +23,7 @@ import {
 } from '../api/text-editor'
 import type { StyledContent, StyledSpan, StyledFill } from '../api/text-editor'
 import { fontUuidToSlugOrNull } from '../api/font-id-map'
-import { u32ToUUID } from '@skia-rs-wasm/common/conversions'
+import { u32ToUUID, round2 } from '@skia-rs-wasm/common/conversions'
 import { requestRender } from '../api/rendering'
 import { getTextDimensions } from '../api/text'
 import {
@@ -294,9 +294,11 @@ function buildContentFromStyled(styled: StyledContent, original: unknown): unkno
     fontVariantId: origVariant,
     fontWeight: String(s.fw),
     fontStyle: STYLED_FONT_STYLE[s.fy] ?? 'normal',
-    fontSize: String(s.sz),
-    lineHeight: String(s.lh),
-    letterSpacing: String(s.ls),
+    // f32 round-trip noise (1.2 → 1.2000000476…) must not be committed into
+    // the document — panels and serializers read these strings back.
+    fontSize: String(round2(s.sz)),
+    lineHeight: String(round2(s.lh)),
+    letterSpacing: String(round2(s.ls)),
     textDecoration: STYLED_DECORATION[s.td] ?? 'none',
     textTransform: STYLED_TRANSFORM[s.tt] ?? 'none',
     textDirection: STYLED_DIRECTION[s.dr] ?? 'ltr',
