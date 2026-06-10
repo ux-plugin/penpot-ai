@@ -390,19 +390,6 @@ impl TextContent {
         &mut self.paragraphs
     }
 
-    /// Apply a single fill set to every span of every paragraph. The text
-    /// renderer draws glyphs from per-span fills only (shape-level `fills`
-    /// are never read for text), so setting a non-editing text shape's fill
-    /// has to be pushed down onto the content leaves — mirroring Penpot,
-    /// where a fill applied to the whole text shape colours all of it.
-    pub fn set_fills(&mut self, fills: &[shapes::Fill]) {
-        for paragraph in self.paragraphs.iter_mut() {
-            for span in paragraph.children_mut() {
-                span.fills = fills.to_vec();
-            }
-        }
-    }
-
     pub fn width(&self) -> f32 {
         self.size.width
     }

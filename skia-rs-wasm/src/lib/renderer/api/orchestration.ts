@@ -225,8 +225,11 @@ export function setObject(
     pendingFull.push(...setShapeTextImages(module, id, textContent, false, resolveImageUrl))
   }
 
-  // Fills and strokes
-  if (wantsKey('fills')) {
+  // Fills and strokes. Text colour lives on the content leaves (pushed via
+  // setShapeTextContent above), not the shape-level `fills`. Pushing shape
+  // fills for a text node would re-introduce a second, diverging colour source
+  // that the renderer ignores anyway.
+  if (wantsKey('fills') && type !== 'text') {
     const fills = shape.fills || []
     pendingThumbnails.push(...setShapeFills(module, id, fills, true, resolveImageUrl))
     pendingFull.push(...setShapeFills(module, id, fills, false, resolveImageUrl))

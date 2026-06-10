@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Fill } from 'penpot-exporter/types'
+import type { Fill, PenpotNode, TextContent } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -21,6 +21,7 @@ import { refreshEditorStyles, syncTextEditGeometry } from '@/lib/renderer/handle
 import { requestRender } from '@/lib/renderer/api/rendering'
 import { useWorkspaceStore } from '@/lib/renderer/store/workspace-store'
 import { FillRow } from './FillRow'
+import { isTextNode, patchContent, textContentFills } from './text-typography'
 import { useColorEditor, useColorEditorFor } from '../use-color-editor'
 
 export interface FillsSectionProps {
@@ -33,16 +34,24 @@ export interface FillsSectionProps {
 // above any real fill row index so it never collides with a per-fill editor.
 const FILL_ALL_INDEX = 1000
 
+// Initial fills shown in the panel. For a text shape the colour lives on the
+// content leaves (per-range capable), not the shape-level `fills`, so read the
+// representative leaf fills; every other shape uses its shape-level `fills`.
+function initialFills(node: RectLikeNode): Fill[] {
+  if (isTextNode(node as { type?: string })) {
+    return textContentFills((node as { content?: TextContent }).content)
+  }
+  return node.fills ? [...node.fills] : []
+}
+
 export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProps) {
   const { activeTarget, closeEditor } = useColorEditor()
-  const [fills, setFills] = useState<Fill[]>(() =>
-    initialNode.fills ? [...initialNode.fills] : [],
-  )
+  const [fills, setFills] = useState<Fill[]>(() => initialFills(initialNode))
   const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- mirrors external document updates into controlled fields */
-    setFills(initialNode.fills ? [...initialNode.fills] : [])
+    setFills(initialFills(initialNode))
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [initialNode])
 
@@ -53,6 +62,18 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
       const before = getCommittedNodeOnActivePage(nodeId)
       const pid = getActiveOrSinglePageId()
       if (!before || !pid) return
+      if (isTextNode(before as { type?: string })) {
+        // Text colour lives on the content leaves (per-range capable), not the
+        // shape-level `fills`. Apply to every leaf through the same content path
+        // the typography panel uses, so colour and typography share one source
+        // of truth and a later content re-send can't revert the colour.
+        const content = patchContent(
+          (before as { content?: TextContent }).content,
+          { span: { fills: next } },
+        )
+        await commitNodePartialUpdate(nodeId, before, { content } as Partial<PenpotNode>, pid)
+        return
+      }
       await commitNodePartialUpdate(nodeId, before, { fills: next }, pid)
     },
     [readOnly, nodeId],

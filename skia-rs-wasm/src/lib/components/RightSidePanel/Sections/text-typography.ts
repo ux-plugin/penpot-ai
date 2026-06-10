@@ -14,7 +14,7 @@
  * is intentionally absent.
  */
 
-import type { PenpotNode, TextContent, Paragraph, TextNode } from 'penpot-exporter/types'
+import type { Fill, PenpotNode, TextContent, Paragraph, TextNode } from 'penpot-exporter/types'
 import { MULTIPLE, type CurrentStyles, type MaybeMultiple } from '@/lib/renderer/api/text-editor'
 
 export type HAlign = 'left' | 'center' | 'right' | 'justify'
@@ -90,6 +90,18 @@ function firstSpan(content: TextContent | undefined): TextNode | undefined {
 }
 
 /**
+ * Representative fills shown by the fill panel for a text shape. Text colour
+ * lives on the content leaves (per-range capable), not the shape-level `fills`,
+ * so the first span's fills stand in for the whole shape — the same
+ * "first/common value" convention `readTypography` uses. Edits apply to every
+ * leaf via `patchContent({ span: { fills } })`.
+ */
+export function textContentFills(content: TextContent | undefined): Fill[] {
+  const fills = firstSpan(content)?.fills
+  return fills ? [...fills] : []
+}
+
+/**
  * Reads the representative typography values shown in the panel. Mirrors
  * Penpot's "first/common value" behaviour: the first span (with paragraph- and
  * root-level fallbacks) stands in for the whole shape, since edits are applied
@@ -138,6 +150,7 @@ export type SpanPatch = Partial<
     | 'textDecoration'
     | 'textTransform'
     | 'textDirection'
+    | 'fills'
   >
 >
 
