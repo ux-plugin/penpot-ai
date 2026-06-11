@@ -65,10 +65,14 @@ import {
   currentStyles,
 } from '@/lib/renderer/signals/text-editor'
 import { MULTIPLE, textEditorApplyStyles, type ApplyStylePatch } from '@/lib/renderer/api/text-editor'
-import { ensureFontLoaded } from '@/lib/renderer/api/text'
+import { ensureFontLoaded, setShapeTextContent } from '@/lib/renderer/api/text'
 import { fontUuidToSlug } from '@/lib/renderer/api/font-id-map'
-import { setShapeVerticalAlign } from '@/lib/renderer/api/shape'
-import { syncTextEditGeometry, refreshEditorStyles } from '@/lib/renderer/handlers/text-edit'
+import { setShapeVerticalAlign, moduleUseShape } from '@/lib/renderer/api/shape'
+import {
+  syncTextEditGeometry,
+  refreshEditorStyles,
+  computeAutoSize,
+} from '@/lib/renderer/handlers/text-edit'
 import { requestRender } from '@/lib/renderer/api/rendering'
 import { useWorkspaceStore } from '@/lib/renderer/store/workspace-store'
 import { round2 } from '@/lib/common/conversions'
@@ -272,7 +276,28 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
       const pid = getActiveOrSinglePageId()
       if (!before || !pid) return
       const content = patchContent((before as { content?: TextContent }).content, patch)
-      await commitNodePartialUpdate(nodeId, before, { content } as Partial<PenpotNode>, pid)
+
+      // Push the patched content to WASM first so its text layout is current,
+      // then read back the auto-size geometry and fold it into the SAME commit.
+      // Without this the box keeps its old size after a size/line-height/etc.
+      // change (auto-width/auto-height boxes wouldn't grow/shrink to fit). One
+      // mod-obj = one undo frame; `fixed` boxes get null geom and keep their
+      // drawn size. Mirrors `commitTextEdit`'s re-assert-on-exit.
+      let geom: Partial<PenpotNode> = {}
+      const module = useWorkspaceStore.getState().wasmModule
+      if (module) {
+        moduleUseShape(module, nodeId)
+        setShapeTextContent(module, nodeId, content)
+        const auto = computeAutoSize(module, nodeId)
+        if (auto) geom = auto as unknown as Partial<PenpotNode>
+      }
+
+      await commitNodePartialUpdate(
+        nodeId,
+        before,
+        { content, ...geom } as Partial<PenpotNode>,
+        pid,
+      )
     },
     [nodeId, readOnly],
   )

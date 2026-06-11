@@ -127,7 +127,7 @@ interface AutoSize {
  * size) or when the shape/selrect is missing. Used both for the per-keystroke
  * grow and to re-assert the final size on commit.
  */
-function computeAutoSize(module: WasmModule, shapeId: string): AutoSize | null {
+export function computeAutoSize(module: WasmModule, shapeId: string): AutoSize | null {
   const pageId = getActiveOrSinglePageId()
   if (!pageId) return null
   const node = getPage(pageId)?.objects[shapeId] as
