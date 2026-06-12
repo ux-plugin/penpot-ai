@@ -68,41 +68,53 @@ pub fn render(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
             None,           // layer_opacity
         );
 
-        // Strokes (incl. inner strokes for text).
-        if !fast_mode {
-            for (i, (stroke_paragraphs, layer_opacity)) in stroke_paragraphs_list
-                .iter_mut()
-                .zip(stroke_opacities.iter())
-                .enumerate()
-            {
-                if i < stroke_kinds.len() && stroke_kinds[i] == StrokeKind::Inner {
-                    let mut mask_builders = text_content.paragraph_builder_group_opaque();
-                    let mut fill_builders = text_content.paragraph_builder_group_from_text(None);
-                    text::render_inner_stroke(
-                        None,
-                        Some(canvas),
-                        shape,
-                        &mut mask_builders,
-                        stroke_paragraphs,
-                        &mut fill_builders,
-                        None,
-                        None,
-                        0.0,
-                        *layer_opacity,
-                    )?;
-                } else {
-                    text::render(
-                        None,
-                        Some(canvas),
-                        shape,
-                        stroke_paragraphs,
-                        None,
-                        None,
-                        None,
-                        None,
-                        *layer_opacity,
-                    )?;
-                }
+        canvas.restore();
+    }
+
+    // Noise overlay — same slot in the stack as `render_body_direct` gives
+    // every other shape: fills → noise → strokes. (Borrows ctx, so it sits
+    // between the two canvas blocks.)
+    super::noise::render_text_noise(ctx, shape);
+
+    // Strokes (incl. inner strokes for text).
+    if !fast_mode {
+        let canvas = ctx.surface.canvas();
+        canvas.save();
+        canvas.reset_matrix();
+        canvas.concat(&xform);
+
+        for (i, (stroke_paragraphs, layer_opacity)) in stroke_paragraphs_list
+            .iter_mut()
+            .zip(stroke_opacities.iter())
+            .enumerate()
+        {
+            if i < stroke_kinds.len() && stroke_kinds[i] == StrokeKind::Inner {
+                let mut mask_builders = text_content.paragraph_builder_group_opaque();
+                let mut fill_builders = text_content.paragraph_builder_group_from_text(None);
+                text::render_inner_stroke(
+                    None,
+                    Some(canvas),
+                    shape,
+                    &mut mask_builders,
+                    stroke_paragraphs,
+                    &mut fill_builders,
+                    None,
+                    None,
+                    0.0,
+                    *layer_opacity,
+                )?;
+            } else {
+                text::render(
+                    None,
+                    Some(canvas),
+                    shape,
+                    stroke_paragraphs,
+                    None,
+                    None,
+                    None,
+                    None,
+                    *layer_opacity,
+                )?;
             }
         }
 
