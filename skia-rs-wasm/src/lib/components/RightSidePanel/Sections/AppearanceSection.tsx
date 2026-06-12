@@ -86,6 +86,13 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const [r3Draft, setR3Draft] = useState<string | null>(null)
   const [r4Draft, setR4Draft] = useState<string | null>(null)
 
+  // Opacity — stored 0..1 on the node, edited as 0–100 % (same
+  // convention as fill opacity in FillRow).
+  const committedOpacityPct = Math.round(
+    (((initialNode as { opacity?: number }).opacity ?? 1) * 100),
+  )
+  const [opacityDraft, setOpacityDraft] = useState<string | null>(null)
+
   const initialMargin: Margin = {
     m1: node.layoutItemMargin?.m1 ?? 0,
     m2: node.layoutItemMargin?.m2 ?? 0,
@@ -131,6 +138,20 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   // auto-height computes height (width stays the wrap width), fixed computes
   // neither. A computed dimension is shown read-only here.
   const isText = isTextNode(initialNode)
+
+  // Corner radius only applies to rect-backed geometry: the renderer
+  // honors `corners` for Rect/Frame only; `image` serializes as a wasm
+  // rect and `instance`/`component` as frames (see orchestration.ts /
+  // serializers.ts). Circle, path, bool, text, group and svg-raw have
+  // no corners to round.
+  const nodeType = (initialNode as { type?: string }).type
+  const showRadius =
+    nodeType === 'rect' ||
+    nodeType === 'image' ||
+    nodeType === 'frame' ||
+    nodeType === 'instance' ||
+    nodeType === 'component'
+
   const growType = (initialNode as { growType?: string }).growType
   const mode = (growType as GrowType | undefined) ?? 'fixed'
   const widthComputed = isText && growType === 'auto-width'
@@ -208,6 +229,23 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
       return next
     })
   }
+
+  const commitOpacity = useCallback(
+    async (raw: string) => {
+      if (readOnly) return
+      const pct = Math.max(0, Math.min(100, round2(parseFloat(raw) || 0)))
+      const before = getCommittedNodeOnActivePage(nodeId)
+      const pid = getActiveOrSinglePageId()
+      if (!before || !pid) return
+      await commitNodePartialUpdate(
+        nodeId,
+        before,
+        { opacity: pct / 100 } as Partial<PenpotNode>,
+        pid,
+      )
+    },
+    [readOnly, nodeId],
+  )
 
   // Margin — gated on parent layout.
   const doc = useSnapshot(docProxy)
@@ -341,79 +379,97 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
               </div>
             </div>
 
-            <SectionWithMultiToggle
-              label="Radius"
-              multi={cornersMulti}
-              onToggleMulti={onToggleCornersMulti}
-              toggleTitle="Independent corners"
-              disabled={readOnly}
-            >
-              {cornersMulti ? (
-                <div className="grid grid-cols-2 gap-2">
-                  <PrefixedNumber
-                    id="rsp-r1"
-                    prefix="⌜"
-                    value={r1Draft ?? String(round2(corners.r1))}
+            <div className="space-y-1">
+              <Label htmlFor="rsp-opacity">Opacity</Label>
+              <NumberWithSuffix
+                id="rsp-opacity"
+                value={opacityDraft ?? String(committedOpacityPct)}
+                disabled={readOnly}
+                suffix="%"
+                onChange={setOpacityDraft}
+                onBlur={() => {
+                  const v = opacityDraft ?? String(committedOpacityPct)
+                  setOpacityDraft(null)
+                  void commitOpacity(v)
+                }}
+              />
+            </div>
+
+            {showRadius && (
+              <SectionWithMultiToggle
+                label="Radius"
+                multi={cornersMulti}
+                onToggleMulti={onToggleCornersMulti}
+                toggleTitle="Independent corners"
+                disabled={readOnly}
+              >
+                {cornersMulti ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <PrefixedNumber
+                      id="rsp-r1"
+                      prefix="⌜"
+                      value={r1Draft ?? String(round2(corners.r1))}
+                      disabled={readOnly}
+                      onChange={setR1Draft}
+                      onBlur={() => {
+                        const v = r1Draft ?? String(corners.r1)
+                        setR1Draft(null)
+                        commitCornerSide('r1', v)
+                      }}
+                    />
+                    <PrefixedNumber
+                      id="rsp-r2"
+                      prefix="⌝"
+                      value={r2Draft ?? String(round2(corners.r2))}
+                      disabled={readOnly}
+                      onChange={setR2Draft}
+                      onBlur={() => {
+                        const v = r2Draft ?? String(corners.r2)
+                        setR2Draft(null)
+                        commitCornerSide('r2', v)
+                      }}
+                    />
+                    <PrefixedNumber
+                      id="rsp-r4"
+                      prefix="⌞"
+                      value={r4Draft ?? String(round2(corners.r4))}
+                      disabled={readOnly}
+                      onChange={setR4Draft}
+                      onBlur={() => {
+                        const v = r4Draft ?? String(corners.r4)
+                        setR4Draft(null)
+                        commitCornerSide('r4', v)
+                      }}
+                    />
+                    <PrefixedNumber
+                      id="rsp-r3"
+                      prefix="⌟"
+                      value={r3Draft ?? String(round2(corners.r3))}
+                      disabled={readOnly}
+                      onChange={setR3Draft}
+                      onBlur={() => {
+                        const v = r3Draft ?? String(corners.r3)
+                        setR3Draft(null)
+                        commitCornerSide('r3', v)
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <NumberWithSuffix
+                    id="rsp-radius"
+                    value={radiusDraft ?? String(round2(corners.r1))}
                     disabled={readOnly}
-                    onChange={setR1Draft}
+                    suffix="px"
+                    onChange={setRadiusDraft}
                     onBlur={() => {
-                      const v = r1Draft ?? String(corners.r1)
-                      setR1Draft(null)
-                      commitCornerSide('r1', v)
+                      const v = radiusDraft ?? String(corners.r1)
+                      setRadiusDraft(null)
+                      commitRadiusSingle(v)
                     }}
                   />
-                  <PrefixedNumber
-                    id="rsp-r2"
-                    prefix="⌝"
-                    value={r2Draft ?? String(round2(corners.r2))}
-                    disabled={readOnly}
-                    onChange={setR2Draft}
-                    onBlur={() => {
-                      const v = r2Draft ?? String(corners.r2)
-                      setR2Draft(null)
-                      commitCornerSide('r2', v)
-                    }}
-                  />
-                  <PrefixedNumber
-                    id="rsp-r4"
-                    prefix="⌞"
-                    value={r4Draft ?? String(round2(corners.r4))}
-                    disabled={readOnly}
-                    onChange={setR4Draft}
-                    onBlur={() => {
-                      const v = r4Draft ?? String(corners.r4)
-                      setR4Draft(null)
-                      commitCornerSide('r4', v)
-                    }}
-                  />
-                  <PrefixedNumber
-                    id="rsp-r3"
-                    prefix="⌟"
-                    value={r3Draft ?? String(round2(corners.r3))}
-                    disabled={readOnly}
-                    onChange={setR3Draft}
-                    onBlur={() => {
-                      const v = r3Draft ?? String(corners.r3)
-                      setR3Draft(null)
-                      commitCornerSide('r3', v)
-                    }}
-                  />
-                </div>
-              ) : (
-                <NumberWithSuffix
-                  id="rsp-radius"
-                  value={radiusDraft ?? String(round2(corners.r1))}
-                  disabled={readOnly}
-                  suffix="px"
-                  onChange={setRadiusDraft}
-                  onBlur={() => {
-                    const v = radiusDraft ?? String(corners.r1)
-                    setRadiusDraft(null)
-                    commitRadiusSingle(v)
-                  }}
-                />
-              )}
-            </SectionWithMultiToggle>
+                )}
+              </SectionWithMultiToggle>
+            )}
 
             {showMargin && (
               <SectionWithMultiToggle
