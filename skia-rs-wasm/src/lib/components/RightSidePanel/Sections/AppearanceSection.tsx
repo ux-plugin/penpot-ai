@@ -4,7 +4,6 @@ import { useSnapshot } from 'valtio'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { useCanvasActor } from '@/lib/renderer/machine/canvas-actor-context'
@@ -17,15 +16,15 @@ import {
 } from '@/components/ui/select'
 import {
   commitNodePartialUpdate,
+  commitNodeGeometry,
   commitTextGrowType,
   getCommittedNodeOnActivePage,
-  rectLayoutPartial,
 } from '@/lib/renderer/properties/commit-node-properties'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 import { docProxy, getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import { getLayoutMode, type LayoutMode } from './layout-mode'
 import { isTextNode, pinGrowAxis } from './text-typography'
-import { round2 } from '@/lib/common/conversions'
+import { NumericField } from '../NumericField'
 
 type GrowType = 'fixed' | 'auto-width' | 'auto-height'
 
@@ -35,7 +34,6 @@ const GROW_MODES: ReadonlyArray<{ value: GrowType; label: string }> = [
   { value: 'auto-height', label: 'Auto height' },
 ]
 
-type SizeDraft = { width: number; height: number }
 type Corners = { r1: number; r2: number; r3: number; r4: number }
 type Margin = { m1: number; m2: number; m3: number; m4: number }
 
@@ -55,7 +53,6 @@ function isMultiMargin(m: Margin): boolean {
 
 export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceSectionProps) {
   const [collapsed, setCollapsed] = useState(false)
-  const [draft, setDraft] = useState<SizeDraft | null>(null)
 
   const node = initialNode as RectLikeNode & {
     r1?: number
@@ -65,11 +62,10 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
     layoutItemMargin?: Partial<Margin>
   }
 
-  const committed: SizeDraft = {
-    width: initialNode.width ?? 100,
-    height: initialNode.height ?? 100,
-  }
-  const { width, height } = draft ?? committed
+  // NumericField owns each field's editing draft; we only feed it the committed
+  // values and receive clean numbers back on commit.
+  const width = initialNode.width ?? 100
+  const height = initialNode.height ?? 100
 
   const initialCorners: Corners = {
     r1: node.r1 ?? 0,
@@ -80,18 +76,11 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   const [corners, setCorners] = useState<Corners>(initialCorners)
   const [cornersMulti, setCornersMulti] = useState<boolean>(isMultiCorners(initialCorners))
 
-  const [radiusDraft, setRadiusDraft] = useState<string | null>(null)
-  const [r1Draft, setR1Draft] = useState<string | null>(null)
-  const [r2Draft, setR2Draft] = useState<string | null>(null)
-  const [r3Draft, setR3Draft] = useState<string | null>(null)
-  const [r4Draft, setR4Draft] = useState<string | null>(null)
-
   // Opacity — stored 0..1 on the node, edited as 0–100 % (same
   // convention as fill opacity in FillRow).
   const committedOpacityPct = Math.round(
     (((initialNode as { opacity?: number }).opacity ?? 1) * 100),
   )
-  const [opacityDraft, setOpacityDraft] = useState<string | null>(null)
 
   const initialMargin: Margin = {
     m1: node.layoutItemMargin?.m1 ?? 0,
@@ -101,11 +90,6 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   }
   const [margin, setMargin] = useState<Margin>(initialMargin)
   const [marginMulti, setMarginMulti] = useState<boolean>(isMultiMargin(initialMargin))
-  const [marginDraft, setMarginDraft] = useState<string | null>(null)
-  const [mTopDraft, setMTopDraft] = useState<string | null>(null)
-  const [mRightDraft, setMRightDraft] = useState<string | null>(null)
-  const [mBottomDraft, setMBottomDraft] = useState<string | null>(null)
-  const [mLeftDraft, setMLeftDraft] = useState<string | null>(null)
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- mirror external snapshots */
@@ -168,25 +152,20 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
     [nodeId, readOnly, mode],
   )
 
-  const commitSize = useCallback(
-    async (axis: 'w' | 'h') => {
-      if (readOnly || !draft) return
+  const commitSizeAxis = useCallback(
+    async (axis: 'w' | 'h', value: number) => {
+      if (readOnly) return
       const before = getCommittedNodeOnActivePage(nodeId)
       const pid = getActiveOrSinglePageId()
       if (!before || !pid) return
-      const x = (before as { x?: number }).x ?? 0
-      const y = (before as { y?: number }).y ?? 0
-      const rot = (before as { rotation?: number }).rotation ?? 0
-      let partial: Partial<PenpotNode> = rectLayoutPartial(x, y, draft.width, draft.height, rot)
-      if (isText) {
-        // Typing a dimension pins that axis — it's no longer content-driven.
-        const grow = pinGrowAxis((before as { growType?: string }).growType, axis)
-        partial = { ...partial, growType: grow }
-      }
-      await commitNodePartialUpdate(nodeId, before, partial, pid)
-      setDraft(null)
+      const target = axis === 'w' ? { width: value } : { height: value }
+      // Typing a dimension pins that text axis — it's no longer content-driven.
+      const extra = isText
+        ? ({ growType: pinGrowAxis((before as { growType?: string }).growType, axis) } as Partial<PenpotNode>)
+        : undefined
+      await commitNodeGeometry(nodeId, before, target, pid, extra)
     },
-    [readOnly, nodeId, draft, isText],
+    [readOnly, nodeId, isText],
   )
 
   const commitCorners = useCallback(
@@ -205,14 +184,12 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
     [readOnly, nodeId],
   )
 
-  const commitRadiusSingle = (raw: string) => {
-    const n = Math.max(0, round2(parseFloat(raw) || 0))
+  const commitRadiusSingle = (n: number) => {
     const next: Corners = { r1: n, r2: n, r3: n, r4: n }
     setCorners(next)
     void commitCorners(next)
   }
-  const commitCornerSide = (key: keyof Corners, raw: string) => {
-    const n = Math.max(0, round2(parseFloat(raw) || 0))
+  const commitCornerSide = (key: keyof Corners, n: number) => {
     const next: Corners = { ...corners, [key]: n }
     setCorners(next)
     void commitCorners(next)
@@ -231,9 +208,8 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   }
 
   const commitOpacity = useCallback(
-    async (raw: string) => {
+    async (pct: number) => {
       if (readOnly) return
-      const pct = Math.max(0, Math.min(100, round2(parseFloat(raw) || 0)))
       const before = getCommittedNodeOnActivePage(nodeId)
       const pid = getActiveOrSinglePageId()
       if (!before || !pid) return
@@ -275,14 +251,12 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
     [readOnly, nodeId],
   )
 
-  const commitMarginSingle = (raw: string) => {
-    const n = Math.max(0, round2(parseFloat(raw) || 0))
+  const commitMarginSingle = (n: number) => {
     const next: Margin = { m1: n, m2: n, m3: n, m4: n }
     setMargin(next)
     void commitMargin(next)
   }
-  const commitMarginSide = (key: keyof Margin, raw: string) => {
-    const n = Math.max(0, round2(parseFloat(raw) || 0))
+  const commitMarginSide = (key: keyof Margin, n: number) => {
     const next: Margin = { ...margin, [key]: n }
     setMargin(next)
     void commitMargin(next)
@@ -299,9 +273,6 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
       return next
     })
   }
-
-  const patchDraft = (patch: Partial<SizeDraft>) =>
-    setDraft((d) => ({ ...(d ?? committed), ...patch }))
 
   return (
     <>
@@ -351,47 +322,38 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label htmlFor="rsp-w">W</Label>
-                <Input
+                <NumericField
                   id="rsp-w"
-                  type="number"
+                  value={Number.isFinite(width) ? width : 0}
+                  min={1}
                   disabled={fieldsDisabled || widthComputed}
                   title={widthComputed ? 'Width is auto-sized (see Auto resize)' : undefined}
-                  value={Number.isFinite(width) ? round2(width) : 0}
-                  onChange={(e) =>
-                    patchDraft({ width: Math.max(1, round2(parseFloat(e.target.value) || 1)) })
-                  }
-                  onBlur={() => void commitSize('w')}
+                  onCommit={(n) => void commitSizeAxis('w', n)}
                 />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="rsp-h">H</Label>
-                <Input
+                <NumericField
                   id="rsp-h"
-                  type="number"
+                  value={Number.isFinite(height) ? height : 0}
+                  min={1}
                   disabled={fieldsDisabled || heightComputed}
                   title={heightComputed ? 'Height is auto-sized (see Auto resize)' : undefined}
-                  value={Number.isFinite(height) ? round2(height) : 0}
-                  onChange={(e) =>
-                    patchDraft({ height: Math.max(1, round2(parseFloat(e.target.value) || 1)) })
-                  }
-                  onBlur={() => void commitSize('h')}
+                  onCommit={(n) => void commitSizeAxis('h', n)}
                 />
               </div>
             </div>
 
             <div className="space-y-1">
               <Label htmlFor="rsp-opacity">Opacity</Label>
-              <NumberWithSuffix
+              <NumericField
                 id="rsp-opacity"
-                value={opacityDraft ?? String(committedOpacityPct)}
-                disabled={readOnly}
+                value={committedOpacityPct}
+                min={0}
+                max={100}
                 suffix="%"
-                onChange={setOpacityDraft}
-                onBlur={() => {
-                  const v = opacityDraft ?? String(committedOpacityPct)
-                  setOpacityDraft(null)
-                  void commitOpacity(v)
-                }}
+                disabled={readOnly}
+                onCommit={(n) => void commitOpacity(n)}
               />
             </div>
 
@@ -405,67 +367,47 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
               >
                 {cornersMulti ? (
                   <div className="grid grid-cols-2 gap-2">
-                    <PrefixedNumber
+                    <NumericField
                       id="rsp-r1"
                       prefix="⌜"
-                      value={r1Draft ?? String(round2(corners.r1))}
+                      value={corners.r1}
+                      min={0}
                       disabled={readOnly}
-                      onChange={setR1Draft}
-                      onBlur={() => {
-                        const v = r1Draft ?? String(corners.r1)
-                        setR1Draft(null)
-                        commitCornerSide('r1', v)
-                      }}
+                      onCommit={(n) => commitCornerSide('r1', n)}
                     />
-                    <PrefixedNumber
+                    <NumericField
                       id="rsp-r2"
                       prefix="⌝"
-                      value={r2Draft ?? String(round2(corners.r2))}
+                      value={corners.r2}
+                      min={0}
                       disabled={readOnly}
-                      onChange={setR2Draft}
-                      onBlur={() => {
-                        const v = r2Draft ?? String(corners.r2)
-                        setR2Draft(null)
-                        commitCornerSide('r2', v)
-                      }}
+                      onCommit={(n) => commitCornerSide('r2', n)}
                     />
-                    <PrefixedNumber
+                    <NumericField
                       id="rsp-r4"
                       prefix="⌞"
-                      value={r4Draft ?? String(round2(corners.r4))}
+                      value={corners.r4}
+                      min={0}
                       disabled={readOnly}
-                      onChange={setR4Draft}
-                      onBlur={() => {
-                        const v = r4Draft ?? String(corners.r4)
-                        setR4Draft(null)
-                        commitCornerSide('r4', v)
-                      }}
+                      onCommit={(n) => commitCornerSide('r4', n)}
                     />
-                    <PrefixedNumber
+                    <NumericField
                       id="rsp-r3"
                       prefix="⌟"
-                      value={r3Draft ?? String(round2(corners.r3))}
+                      value={corners.r3}
+                      min={0}
                       disabled={readOnly}
-                      onChange={setR3Draft}
-                      onBlur={() => {
-                        const v = r3Draft ?? String(corners.r3)
-                        setR3Draft(null)
-                        commitCornerSide('r3', v)
-                      }}
+                      onCommit={(n) => commitCornerSide('r3', n)}
                     />
                   </div>
                 ) : (
-                  <NumberWithSuffix
+                  <NumericField
                     id="rsp-radius"
-                    value={radiusDraft ?? String(round2(corners.r1))}
-                    disabled={readOnly}
+                    value={corners.r1}
+                    min={0}
                     suffix="px"
-                    onChange={setRadiusDraft}
-                    onBlur={() => {
-                      const v = radiusDraft ?? String(corners.r1)
-                      setRadiusDraft(null)
-                      commitRadiusSingle(v)
-                    }}
+                    disabled={readOnly}
+                    onCommit={(n) => commitRadiusSingle(n)}
                   />
                 )}
               </SectionWithMultiToggle>
@@ -481,67 +423,47 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
               >
                 {marginMulti ? (
                   <div className="grid grid-cols-2 gap-2">
-                    <PrefixedNumber
+                    <NumericField
                       id="rsp-m-t"
                       prefix="T"
-                      value={mTopDraft ?? String(round2(margin.m1))}
+                      value={margin.m1}
+                      min={0}
                       disabled={readOnly}
-                      onChange={setMTopDraft}
-                      onBlur={() => {
-                        const v = mTopDraft ?? String(margin.m1)
-                        setMTopDraft(null)
-                        commitMarginSide('m1', v)
-                      }}
+                      onCommit={(n) => commitMarginSide('m1', n)}
                     />
-                    <PrefixedNumber
+                    <NumericField
                       id="rsp-m-r"
                       prefix="R"
-                      value={mRightDraft ?? String(round2(margin.m2))}
+                      value={margin.m2}
+                      min={0}
                       disabled={readOnly}
-                      onChange={setMRightDraft}
-                      onBlur={() => {
-                        const v = mRightDraft ?? String(margin.m2)
-                        setMRightDraft(null)
-                        commitMarginSide('m2', v)
-                      }}
+                      onCommit={(n) => commitMarginSide('m2', n)}
                     />
-                    <PrefixedNumber
+                    <NumericField
                       id="rsp-m-b"
                       prefix="B"
-                      value={mBottomDraft ?? String(round2(margin.m3))}
+                      value={margin.m3}
+                      min={0}
                       disabled={readOnly}
-                      onChange={setMBottomDraft}
-                      onBlur={() => {
-                        const v = mBottomDraft ?? String(margin.m3)
-                        setMBottomDraft(null)
-                        commitMarginSide('m3', v)
-                      }}
+                      onCommit={(n) => commitMarginSide('m3', n)}
                     />
-                    <PrefixedNumber
+                    <NumericField
                       id="rsp-m-l"
                       prefix="L"
-                      value={mLeftDraft ?? String(round2(margin.m4))}
+                      value={margin.m4}
+                      min={0}
                       disabled={readOnly}
-                      onChange={setMLeftDraft}
-                      onBlur={() => {
-                        const v = mLeftDraft ?? String(margin.m4)
-                        setMLeftDraft(null)
-                        commitMarginSide('m4', v)
-                      }}
+                      onCommit={(n) => commitMarginSide('m4', n)}
                     />
                   </div>
                 ) : (
-                  <NumberWithSuffix
+                  <NumericField
                     id="rsp-m"
-                    value={marginDraft ?? String(round2(margin.m1))}
-                    disabled={readOnly}
+                    value={margin.m1}
+                    min={0}
                     suffix="px"
-                    onChange={setMarginDraft}
-                    onBlur={() => {
-                      const v = marginDraft ?? String(margin.m1)
-                      setMarginDraft(null)
-                      commitMarginSingle(v)
-                    }}
+                    disabled={readOnly}
+                    onCommit={(n) => commitMarginSingle(n)}
                   />
                 )}
               </SectionWithMultiToggle>
@@ -592,70 +514,3 @@ function SectionWithMultiToggle({
   )
 }
 
-function NumberWithSuffix({
-  id,
-  value,
-  onChange,
-  onBlur,
-  disabled,
-  suffix,
-}: {
-  id: string
-  value: string
-  onChange: (s: string) => void
-  onBlur: () => void
-  disabled?: boolean
-  suffix: string
-}) {
-  return (
-    <div className="relative">
-      <Input
-        id={id}
-        type="number"
-        min={0}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        className="pr-8"
-      />
-      <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-muted-foreground">
-        {suffix}
-      </span>
-    </div>
-  )
-}
-
-function PrefixedNumber({
-  id,
-  prefix,
-  value,
-  onChange,
-  onBlur,
-  disabled,
-}: {
-  id: string
-  prefix: string
-  value: string
-  onChange: (s: string) => void
-  onBlur: () => void
-  disabled?: boolean
-}) {
-  return (
-    <div className="relative">
-      <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[12px] font-medium text-muted-foreground">
-        {prefix}
-      </span>
-      <Input
-        id={id}
-        type="number"
-        min={0}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        className="pl-7"
-      />
-    </div>
-  )
-}

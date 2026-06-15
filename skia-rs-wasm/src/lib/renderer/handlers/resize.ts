@@ -20,7 +20,7 @@ import { moduleUseShape, setShapeGrowType } from '../api/shape'
 import type { Point } from '../types'
 import type { Matrix } from 'penpot-exporter/types'
 import type { ResizeHandlePosition } from '../types'
-import { invertMatrix } from '../geom/matrix'
+import { invertMatrix, buildResizeMatrix, IDENTITY_MATRIX } from '../geom/matrix'
 
 const MIN_SIZE = 1
 
@@ -44,35 +44,6 @@ function getHandlerMultiplier(handle: ResizeHandlePosition): { x: number; y: num
       return { x: -1, y: 1 }
     default:
       return { x: 1, y: 1 }
-  }
-}
-
-const IDENTITY_MATRIX: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
-
-/** Unified resize matrix: T · S(localOrigin) · T⁻¹. When T = identity degenerates to axis-aligned scale. */
-function buildResizeMatrix(
-  T: Matrix,
-  Tinv: Matrix,
-  sx: number,
-  sy: number,
-  shapeCx: number,
-  shapeCy: number,
-  localOx: number,
-  localOy: number
-): Matrix {
-  const Aa = sx * T.a * Tinv.a + sy * T.c * Tinv.b
-  const Ab = sx * T.b * Tinv.a + sy * T.d * Tinv.b
-  const Ac = sx * T.a * Tinv.c + sy * T.c * Tinv.d
-  const Ad = sx * T.b * Tinv.c + sy * T.d * Tinv.d
-  const woX = shapeCx + T.a * localOx + T.c * localOy
-  const woY = shapeCy + T.b * localOx + T.d * localOy
-  return {
-    a: Aa,
-    b: Ab,
-    c: Ac,
-    d: Ad,
-    e: (1 - Aa) * woX - Ac * woY,
-    f: (1 - Ad) * woY - Ab * woX,
   }
 }
 

@@ -5,6 +5,7 @@
 
 import type { PenpotNode, PenpotPage } from 'penpot-exporter/types'
 import { ZERO_UUID } from '@skia-rs-wasm/common/conversions'
+import { applyGeometryDefaults } from '@skia-rs-wasm/common/shape-defaults'
 import type { IndexedPage, IndexedShape } from './types'
 
 /**
@@ -110,6 +111,13 @@ export function flattenPageToIndexed(page: PenpotPage): IndexedPage {
       const childResult = flattenChildrenRec(childList, nodeId, resolvedFrameId)
       Object.assign(objects, childResult.objects)
     }
+  }
+
+  // Normalize geometry defaults once over every indexed shape (root + nested),
+  // so loaded/imported shapes carry explicit r1–r4/rotation and undo can
+  // restore them. One pass covers all construction sites above.
+  for (const key of Object.keys(objects)) {
+    objects[key] = applyGeometryDefaults(objects[key])
   }
 
   return {

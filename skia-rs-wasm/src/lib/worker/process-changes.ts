@@ -19,6 +19,7 @@ import type {
 import type { PenpotNode } from 'penpot-exporter/types'
 import { isFrameShape } from './geometry/shapes'
 import { assignHierarchy, ensureShapes, isIndexedShape } from './helpers'
+import { applyGeometryDefaults } from '@skia-rs-wasm/common/shape-defaults'
 
 /** Normalize shapes to array (Penpot sends single id or array) */
 function normalizeShapes(shapes: unknown): string[] {
@@ -122,7 +123,7 @@ function processAddObj(data: IndexedPage, change: AddObjChange): IndexedPage {
   const frameIdForShape =
     obj.type === 'frame' ? id ?? obj.id ?? resolvedFrameId : resolvedFrameId
   const shapeWithMeta = ensureShapes(
-    assignHierarchy(obj, id, resolvedParentId, frameIdForShape),
+    assignHierarchy(applyGeometryDefaults(obj), id, resolvedParentId, frameIdForShape),
     childIds
   )
 

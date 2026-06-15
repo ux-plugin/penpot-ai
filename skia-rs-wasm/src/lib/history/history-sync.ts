@@ -1,23 +1,32 @@
 /**
- * Subscriber that pushes a CommitFrame onto the history stack after a commit.
+ * Records a CommitFrame onto the history stack for a commit.
  *
- * Was inlined inside `commitChanges` as a final `if (!fromHistory && saveUndo)`
- * block; relocated here so the commit step doesn't own history concerns.
+ * Called SYNCHRONOUSLY from `commitChanges`, before the async `emitChangesApplied`
+ * dispatch — not as a subscriber. Recording is pure in-memory work and has no
+ * dependency on the renderer/worker/selection subscribers, so keeping it on the
+ * synchronous side means the undo frame exists before `commitX()` returns to the
+ * caller. That's what lets interaction code group edits with plain begin/commit
+ * boundaries (focus/blur, pointer down/up) without racing the async render.
  *
  * Skips on undo/redo replay (`fromHistory: true`) and when there's nothing to
- * undo. Otherwise pushes a single frame containing the full redoChanges +
- * undoChanges from the original commit (history is global, not per-page).
+ * undo. Otherwise records a single frame with the full redo + undo vectors
+ * (history is global, not per-page).
  */
 
-import type { ChangesAppliedEvent } from '../changes/change-emitter'
+import type { Change } from 'penpot-exporter/types'
 import { useHistoryStore } from './history-store'
 
-export function historySyncHandler(event: ChangesAppliedEvent): void {
-  if (event.fromHistory) return
-  if (!event.saveUndo) return
-  if (event.undoChanges.length === 0) return
+export function recordHistoryFrame(params: {
+  redoChanges: Change[]
+  undoChanges: Change[]
+  fromHistory: boolean
+  saveUndo: boolean
+}): void {
+  if (params.fromHistory) return
+  if (!params.saveUndo) return
+  if (params.undoChanges.length === 0) return
   useHistoryStore.getState().pushCommitFrame({
-    redoChanges: event.redoChanges,
-    undoChanges: event.undoChanges,
+    redoChanges: params.redoChanges,
+    undoChanges: params.undoChanges,
   })
 }

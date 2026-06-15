@@ -69,7 +69,13 @@ export {
   mergeBundle,
   toCommitBundle,
 } from './lib/changes/changes-builder'
-export { useHistoryStore } from './lib/history/history-store'
+export {
+  useHistoryStore,
+  beginHistoryTransaction,
+  commitHistoryTransaction,
+  discardHistoryTransactions,
+  markHistoryInteraction,
+} from './lib/history/history-store'
 
 // Document selection
 export { setSelectedIds, clearSelection, getSelectedIdsSet } from './lib/renderer/store/document-selection'

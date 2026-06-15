@@ -7,6 +7,7 @@ import type { ShapeType } from './types'
 import type { PenpotNode, Selrect } from 'penpot-exporter/types'
 import type { Fill, Stroke } from 'penpot-exporter/types'
 import { newShapeId } from '../common/shape-id'
+import { applyGeometryDefaults } from '../common/shape-defaults'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -131,7 +132,7 @@ export function createRect(
     node.r4 = options.borderRadius
   }
 
-  return node
+  return applyGeometryDefaults(node)
 }
 
 /**
@@ -229,7 +230,7 @@ export function createText(
   const fillColor = options.fillColor ?? '#000000'
   const spanFill: Fill = { fillColor, fillOpacity: 1 }
 
-  return {
+  return applyGeometryDefaults({
     id,
     type: 'text',
     name: options.name ?? defaultName('text'),
@@ -266,7 +267,7 @@ export function createText(
       ],
     },
     opacity: options.opacity ?? 1,
-  }
+  })
 }
 
 /**
@@ -317,7 +318,7 @@ export function createFrame(
       ]
     : []
 
-  return {
+  return applyGeometryDefaults({
     id,
     type: 'frame',
     name: options.name ?? defaultName('frame'),
@@ -334,7 +335,7 @@ export function createFrame(
     // Default to non-clipping so the frame's own fill/shadows render — the
     // tile-scheduler's clipped-frame path clears them before stroke rendering.
     showContent: options.showContent ?? true,
-  }
+  })
 }
 
 /**

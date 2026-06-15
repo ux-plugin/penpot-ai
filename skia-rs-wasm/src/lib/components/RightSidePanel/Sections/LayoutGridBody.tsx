@@ -25,6 +25,7 @@ import {
 } from '@/lib/renderer/properties/commit-node-properties'
 import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
+import { NumericField } from '../NumericField'
 import {
   TRACK_TYPE_OPTIONS,
   defaultTrack,
@@ -108,15 +109,6 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
 
   const [colsOpen, setColsOpen] = useState(true)
   const [rowsOpen, setRowsOpen] = useState(true)
-
-  const [gapDraft, setGapDraft] = useState<string | null>(null)
-  const [rowGapDraft, setRowGapDraft] = useState<string | null>(null)
-  const [colGapDraft, setColGapDraft] = useState<string | null>(null)
-  const [padDraft, setPadDraft] = useState<string | null>(null)
-  const [padTopDraft, setPadTopDraft] = useState<string | null>(null)
-  const [padRightDraft, setPadRightDraft] = useState<string | null>(null)
-  const [padBottomDraft, setPadBottomDraft] = useState<string | null>(null)
-  const [padLeftDraft, setPadLeftDraft] = useState<string | null>(null)
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- mirrors external document updates */
@@ -328,43 +320,31 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
       >
         {gapMulti ? (
           <div className="grid grid-cols-2 gap-2">
-            <PrefixedNumber
+            <NumericField
               id="rsp-grid-row-gap"
               prefix="↕"
-              value={rowGapDraft ?? String(round2(rowGap))}
+              value={rowGap}
+              min={0}
               disabled={readOnly}
-              onChange={(s) => setRowGapDraft(s)}
-              onBlur={() => {
-                const n = round2(parseFloat(rowGapDraft ?? String(rowGap)) || 0)
-                setRowGapDraft(null)
-                commitRowGap(n)
-              }}
+              onCommit={commitRowGap}
             />
-            <PrefixedNumber
+            <NumericField
               id="rsp-grid-col-gap"
               prefix="↔"
-              value={colGapDraft ?? String(round2(colGap))}
+              value={colGap}
+              min={0}
               disabled={readOnly}
-              onChange={(s) => setColGapDraft(s)}
-              onBlur={() => {
-                const n = round2(parseFloat(colGapDraft ?? String(colGap)) || 0)
-                setColGapDraft(null)
-                commitColGap(n)
-              }}
+              onCommit={commitColGap}
             />
           </div>
         ) : (
-          <NumberWithSuffix
+          <NumericField
             id="rsp-grid-gap"
-            value={gapDraft ?? String(round2(rowGap))}
-            disabled={readOnly}
+            value={rowGap}
+            min={0}
             suffix="px"
-            onChange={(s) => setGapDraft(s)}
-            onBlur={() => {
-              const n = round2(parseFloat(gapDraft ?? String(rowGap)) || 0)
-              setGapDraft(null)
-              commitGapSingle(n)
-            }}
+            disabled={readOnly}
+            onCommit={commitGapSingle}
           />
         )}
       </SectionWithMultiToggle>
@@ -378,67 +358,47 @@ export function LayoutGridBody({ nodeId, initialNode, readOnly }: LayoutGridBody
       >
         {padMulti ? (
           <div className="grid grid-cols-2 gap-2">
-            <PrefixedNumber
+            <NumericField
               id="rsp-grid-pad-t"
               prefix="T"
-              value={padTopDraft ?? String(round2(pad.p1))}
+              value={pad.p1}
+              min={0}
               disabled={readOnly}
-              onChange={(s) => setPadTopDraft(s)}
-              onBlur={() => {
-                const n = round2(parseFloat(padTopDraft ?? String(pad.p1)) || 0)
-                setPadTopDraft(null)
-                commitPadSide('p1', n)
-              }}
+              onCommit={(n) => commitPadSide('p1', n)}
             />
-            <PrefixedNumber
+            <NumericField
               id="rsp-grid-pad-r"
               prefix="R"
-              value={padRightDraft ?? String(round2(pad.p2))}
+              value={pad.p2}
+              min={0}
               disabled={readOnly}
-              onChange={(s) => setPadRightDraft(s)}
-              onBlur={() => {
-                const n = round2(parseFloat(padRightDraft ?? String(pad.p2)) || 0)
-                setPadRightDraft(null)
-                commitPadSide('p2', n)
-              }}
+              onCommit={(n) => commitPadSide('p2', n)}
             />
-            <PrefixedNumber
+            <NumericField
               id="rsp-grid-pad-b"
               prefix="B"
-              value={padBottomDraft ?? String(round2(pad.p3))}
+              value={pad.p3}
+              min={0}
               disabled={readOnly}
-              onChange={(s) => setPadBottomDraft(s)}
-              onBlur={() => {
-                const n = round2(parseFloat(padBottomDraft ?? String(pad.p3)) || 0)
-                setPadBottomDraft(null)
-                commitPadSide('p3', n)
-              }}
+              onCommit={(n) => commitPadSide('p3', n)}
             />
-            <PrefixedNumber
+            <NumericField
               id="rsp-grid-pad-l"
               prefix="L"
-              value={padLeftDraft ?? String(round2(pad.p4))}
+              value={pad.p4}
+              min={0}
               disabled={readOnly}
-              onChange={(s) => setPadLeftDraft(s)}
-              onBlur={() => {
-                const n = round2(parseFloat(padLeftDraft ?? String(pad.p4)) || 0)
-                setPadLeftDraft(null)
-                commitPadSide('p4', n)
-              }}
+              onCommit={(n) => commitPadSide('p4', n)}
             />
           </div>
         ) : (
-          <NumberWithSuffix
+          <NumericField
             id="rsp-grid-pad"
-            value={padDraft ?? String(round2(pad.p1))}
-            disabled={readOnly}
+            value={pad.p1}
+            min={0}
             suffix="px"
-            onChange={(s) => setPadDraft(s)}
-            onBlur={() => {
-              const n = round2(parseFloat(padDraft ?? String(pad.p1)) || 0)
-              setPadDraft(null)
-              commitPadSingle(n)
-            }}
+            disabled={readOnly}
+            onCommit={commitPadSingle}
           />
         )}
       </SectionWithMultiToggle>
@@ -543,74 +503,6 @@ function IconRow<V extends string>({
           </Button>
         )
       })}
-    </div>
-  )
-}
-
-function NumberWithSuffix({
-  id,
-  value,
-  onChange,
-  onBlur,
-  disabled,
-  suffix,
-}: {
-  id: string
-  value: string
-  onChange: (s: string) => void
-  onBlur: () => void
-  disabled?: boolean
-  suffix: string
-}) {
-  return (
-    <div className="relative">
-      <Input
-        id={id}
-        type="number"
-        min={0}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        className="pr-8"
-      />
-      <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-muted-foreground">
-        {suffix}
-      </span>
-    </div>
-  )
-}
-
-function PrefixedNumber({
-  id,
-  prefix,
-  value,
-  onChange,
-  onBlur,
-  disabled,
-}: {
-  id: string
-  prefix: string
-  value: string
-  onChange: (s: string) => void
-  onBlur: () => void
-  disabled?: boolean
-}) {
-  return (
-    <div className="relative">
-      <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[11px] font-medium text-muted-foreground">
-        {prefix}
-      </span>
-      <Input
-        id={id}
-        type="number"
-        min={0}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        className="pl-7"
-      />
     </div>
   )
 }
