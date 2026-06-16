@@ -218,8 +218,10 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   })()
 
   useLayoutEffect(() => {
-    selectionRectOutlineVisible.value = !isMoving && !selectedTextEmpty
-  }, [isMoving, selectedTextEmpty])
+    // Hide the box outline while vector-editing too — the PathEditorOverlay's
+    // anchor/handle markers stand in for the selection box.
+    selectionRectOutlineVisible.value = !isMoving && !selectedTextEmpty && !isPathEditing
+  }, [isMoving, selectedTextEmpty, isPathEditing])
 
   const gradientForOverlay = useGradientFill()
 

@@ -3,6 +3,7 @@ import { NodeIdentitySection } from './Sections/NodeIdentitySection'
 import { PositionSection } from './Sections/PositionSection'
 import { AppearanceSection } from './Sections/AppearanceSection'
 import { ShapeSection } from './Sections/ShapeSection'
+import { VectorEditSection } from './Sections/VectorEditSection'
 import { TypographySection } from './Sections/TypographySection'
 import { isTextNode } from './Sections/text-typography'
 import { NodeLayoutSection } from './Sections/NodeLayoutSection'
@@ -33,6 +34,8 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
       <AppearanceSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
       <ShapeSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+
+      <VectorEditSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
       {isTextNode(initialNode) && (
         <TypographySection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
