@@ -14,7 +14,7 @@ import {
   Hexagon,
   Image,
   MessageCircle,
-  Minus,
+  PenTool,
   Pencil,
   Star,
   Triangle,
@@ -73,7 +73,7 @@ export function ShapeToolbar() {
 
   const onFrame = useCallback(() => toggleDrawTool('frame'), [toggleDrawTool])
   const onText = useCallback(() => toggleDrawTool('text'), [toggleDrawTool])
-  const onLine = useCallback(() => toggleDrawTool('line'), [toggleDrawTool])
+  const onPen = useCallback(() => toggleDrawTool('pen'), [toggleDrawTool])
 
   // Pick a shape from the menu: always activate it (not toggle), remember it as
   // the menu face, and close the popover.
@@ -204,10 +204,10 @@ export function ShapeToolbar() {
         </li>
 
         {toolBtn(
-          drawTool === 'line',
-          onLine,
-          'Draw line (L)',
-          <Minus className="size-5 shrink-0 stroke-[1.5]" />,
+          drawTool === 'pen',
+          onPen,
+          'Pen — click to add points, Esc/Enter to finish (P)',
+          <PenTool className="size-5 shrink-0 stroke-[1.5]" />,
         )}
         {disabledTool('Draw', Pencil)}
         {toolBtn(

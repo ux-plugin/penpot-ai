@@ -148,6 +148,16 @@ export function useViewportInteractions({
       }
 
       const activeDrawTool = canvasActor.getSnapshot().context.drawTool
+      if (activeDrawTool === 'pen') {
+        // The pen handler owns its own click stream once a path is in progress;
+        // only the first click (from idle) opens the session. Either way the pen
+        // consumes this press, so don't fall through to draw/select.
+        pointerPos.value = { x: screenX, y: screenY }
+        if (canvasActor.getSnapshot().matches('idle')) {
+          canvasActor.send({ type: 'POINTER_DOWN_PEN' })
+        }
+        return
+      }
       if (activeDrawTool != null) {
         pointerPos.value = { x: screenX, y: screenY }
         canvasActor.send({ type: 'POINTER_DOWN_DRAW' })

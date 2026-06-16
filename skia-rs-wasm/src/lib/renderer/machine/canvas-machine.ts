@@ -9,6 +9,7 @@ import { startRotateSelected } from '../handlers/rotate'
 import { startResizeSelected } from '../handlers/resize'
 import { handleAreaSelection } from '../handlers/selection'
 import { handleDrawShape, pendingTextEdit } from '../handlers/draw-shape'
+import { handlePenDraw } from '../handlers/draw-path'
 import { startGradientDrag } from '../handlers/gradient'
 import type { GradientHandleKind } from '../handlers/gradient'
 import type { Point, ResizeHandlePosition } from '../types'
@@ -18,7 +19,7 @@ export type DrawTool =
   | 'frame'
   | 'text'
   | 'ellipse'
-  | 'line'
+  | 'pen'
   | 'triangle'
   | 'polygon'
   | 'star'
@@ -41,6 +42,7 @@ export type CanvasEvent =
   | { type: 'POINTER_DOWN_ON_CANVAS'; append: boolean; remove: boolean }
   | { type: 'POINTER_DOWN_ON_GRADIENT_HANDLE'; handle: GradientHandleKind; position: Point }
   | { type: 'POINTER_DOWN_DRAW' }
+  | { type: 'POINTER_DOWN_PEN' }
   | { type: 'PAN_START' }
   | { type: 'PAN_END' }
   | { type: 'DRAW_TOOL_ACTIVATE'; tool: DrawTool }
@@ -66,6 +68,7 @@ const canvasMachineSetup = setup({
         handleAreaSelection(input.append, input.remove, input.ignoreGroups),
     ),
     drawActor: fromObservable(({ input }: { input: { tool: DrawTool } }) => handleDrawShape(input.tool)),
+    penActor: fromObservable(() => handlePenDraw()),
     gradientActor: fromObservable(
       ({ input }: { input: { handle: GradientHandleKind; position: Point } }) =>
         startGradientDrag(input.handle, input.position),
@@ -113,6 +116,7 @@ export const canvasMachine = canvasMachineSetup.createMachine({
         },
         POINTER_DOWN_ON_GRADIENT_HANDLE: { target: 'draggingGradient' },
         POINTER_DOWN_DRAW: { target: 'drawingShape' },
+        POINTER_DOWN_PEN: { target: 'drawingPath' },
         PAN_START: { target: 'panning' },
         START_TEXT_EDIT: {
           target: 'textEditing',
@@ -203,6 +207,15 @@ export const canvasMachine = canvasMachineSetup.createMachine({
           },
           { target: 'idle' },
         ],
+        onError: { target: 'idle' },
+      },
+    },
+    // Pen tool: a click-driven path-drawing session that spans many clicks and
+    // ends on close / Esc / Enter / double-click (the actor completes itself).
+    drawingPath: {
+      invoke: {
+        src: 'penActor',
+        onDone: { target: 'idle' },
         onError: { target: 'idle' },
       },
     },

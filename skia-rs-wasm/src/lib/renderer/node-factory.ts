@@ -405,6 +405,78 @@ export function createLine(options: {
 }
 
 /**
+ * Creates a multi-point `path` node from a list of anchors (the pen tool's
+ * output). Segments are world-space; `closed` appends a close-path and lets the
+ * shape carry a fill. A two-point open polyline is just a straight line.
+ */
+export function createPolyline(
+  anchors: Array<{ x: number; y: number }>,
+  options: {
+    id?: string
+    name?: string
+    parentId?: string
+    closed?: boolean
+    fillColor?: string
+    fillOpacity?: number
+    strokeColor?: string
+    strokeWidth?: number
+    opacity?: number
+  } = {}
+): PenpotNode {
+  const id = options.id || newShapeId()
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const p of anchors) {
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
+  }
+  const width = Math.max(0, maxX - minX)
+  const height = Math.max(0, maxY - minY)
+
+  const segments: PathSegment[] = anchors.map((p, i) =>
+    i === 0 ? { type: 'move-to', x: p.x, y: p.y } : { type: 'line-to', x: p.x, y: p.y },
+  )
+  if (options.closed) segments.push({ type: 'close-path' })
+
+  const fills: Fill[] =
+    options.closed && options.fillColor
+      ? [{ fillColor: options.fillColor, fillOpacity: options.fillOpacity ?? 1 }]
+      : []
+  const strokes: Stroke[] = options.strokeColor
+    ? [
+        {
+          strokeColor: options.strokeColor,
+          strokeOpacity: 1,
+          strokeWidth: options.strokeWidth ?? 2,
+          strokeStyle: 'solid',
+          strokeAlignment: 'center',
+        },
+      ]
+    : []
+
+  return applyGeometryDefaults({
+    id,
+    type: 'path',
+    name: options.name ?? defaultName(options.closed ? 'path' : 'line'),
+    x: minX,
+    y: minY,
+    width,
+    height,
+    parentId: options.parentId ?? ROOT_UUID,
+    selrect: createSelRect(minX, minY, width, height),
+    points: anchors.map((p) => ({ x: p.x, y: p.y })),
+    fills,
+    strokes,
+    content: { segments } as PenpotNode['content'],
+    opacity: options.opacity ?? 1,
+  })
+}
+
+/**
  * Creates a text node
  */
 export function createText(

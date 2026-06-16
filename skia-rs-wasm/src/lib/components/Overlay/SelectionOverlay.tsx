@@ -20,7 +20,7 @@ import {
   selectionRectOutlineVisible,
   selectionRect as selectionRectSignal,
   shapeDrawPreview as shapeDrawPreviewSignal,
-  lineDrawPreview as lineDrawPreviewSignal,
+  penDrawPreview as penDrawPreviewSignal,
   wasmSelectionRect as wasmSelectionRectSignal,
 } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
@@ -105,10 +105,11 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     usePointerDownFactory(canvasRef, canvasActor)
 
   const shapeDrawPreview = useSignalCoalesced(shapeDrawPreviewSignal)
-  const lineDrawPreview = useSignalCoalesced(lineDrawPreviewSignal)
+  const penDrawPreview = useSignalCoalesced(penDrawPreviewSignal)
   const isDrawingShape = useSelector(canvasActor, (s) => s.matches('drawingShape'))
-  // Line preview is already in world coordinates (rendered in the world-space SVG).
-  const lineDrawWorld = isDrawingShape && lineDrawPreview != null ? lineDrawPreview : null
+  const isDrawingPath = useSelector(canvasActor, (s) => s.matches('drawingPath'))
+  // Pen preview is already in world coordinates (rendered in the world-space SVG).
+  const penDrawWorld = isDrawingPath && penDrawPreview != null ? penDrawPreview : null
   const shapeDrawWorld =
     isDrawingShape &&
       shapeDrawPreview != null &&
@@ -318,17 +319,48 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
         </>
       )}
       {shapeDrawWorld && <AreaMarquee world={shapeDrawWorld} zoom={safeZoom} />}
-      {lineDrawWorld && (
-        <line
-          x1={lineDrawWorld.x1}
-          y1={lineDrawWorld.y1}
-          x2={lineDrawWorld.x2}
-          y2={lineDrawWorld.y2}
-          stroke={SELECTION_STROKE}
-          strokeWidth={1.5}
-          strokeLinecap="round"
-          vectorEffect="non-scaling-stroke"
-        />
+      {penDrawWorld && (
+        <g>
+          {penDrawWorld.anchors.length >= 2 && (
+            <polyline
+              points={penDrawWorld.anchors.map((p) => `${p.x},${p.y}`).join(' ')}
+              fill="none"
+              stroke={SELECTION_STROKE}
+              strokeWidth={1.5}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+          {penDrawWorld.cursor && penDrawWorld.anchors.length >= 1 && (
+            <line
+              x1={penDrawWorld.anchors[penDrawWorld.anchors.length - 1].x}
+              y1={penDrawWorld.anchors[penDrawWorld.anchors.length - 1].y}
+              x2={penDrawWorld.cursor.x}
+              y2={penDrawWorld.cursor.y}
+              stroke={SELECTION_STROKE}
+              strokeWidth={1.5}
+              strokeDasharray="4 3"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+          {penDrawWorld.anchors.map((p, i) => {
+            const closeTarget = i === 0 && penDrawWorld.willClose
+            return (
+              <circle
+                key={i}
+                cx={p.x}
+                cy={p.y}
+                r={(closeTarget ? 6 : 3.5) / safeZoom}
+                fill={closeTarget ? SELECTION_STROKE : HANDLE_FILL}
+                stroke={SELECTION_STROKE}
+                strokeWidth={1.25}
+                vectorEffect="non-scaling-stroke"
+              />
+            )
+          })}
+        </g>
       )}
       {areaMarqueeWorld && <AreaMarquee world={areaMarqueeWorld} zoom={safeZoom} />}
     </svg>

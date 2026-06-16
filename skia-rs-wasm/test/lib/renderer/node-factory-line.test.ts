@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createLine } from '../../../src/lib/renderer/node-factory'
+import { createLine, createPolyline } from '../../../src/lib/renderer/node-factory'
 
 describe('createLine', () => {
   it('stores the actual endpoints as world segments (any direction)', () => {
@@ -29,5 +29,33 @@ describe('createLine', () => {
     expect(segs.some((s) => s.type === 'close-path')).toBe(false)
     expect(node.fills ?? []).toHaveLength(0)
     expect(node.strokes).toHaveLength(1)
+  })
+})
+
+describe('createPolyline', () => {
+  const pts = [
+    { x: 10, y: 10 },
+    { x: 110, y: 30 },
+    { x: 60, y: 130 },
+  ]
+
+  it('open polyline: move-to + line-tos, no close, stroke only', () => {
+    const node = createPolyline(pts, { strokeColor: '#1E40AF' })
+    const segs = (node as { content: { segments: Array<{ type: string }> } }).content.segments
+    expect(segs.map((s) => s.type)).toEqual(['move-to', 'line-to', 'line-to'])
+    expect(node.fills ?? []).toHaveLength(0)
+    expect(node.strokes).toHaveLength(1)
+    expect(node.selrect).toMatchObject({ x: 10, y: 10, width: 100, height: 120 })
+  })
+
+  it('closed polyline: appends close-path and carries a fill', () => {
+    const node = createPolyline(pts, { closed: true, strokeColor: '#1E40AF', fillColor: '#3B82F6' })
+    const segs = (node as { content: { segments: Array<{ type: string }> } }).content.segments
+    expect(segs.map((s) => s.type)).toEqual(['move-to', 'line-to', 'line-to', 'close-path'])
+    expect(node.fills).toHaveLength(1)
+  })
+
+  it('points hull mirrors the anchors', () => {
+    expect(createPolyline(pts, {}).points).toEqual(pts)
   })
 })
