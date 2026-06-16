@@ -206,7 +206,7 @@ export function ShapeToolbar() {
         {toolBtn(
           drawTool === 'pen',
           onPen,
-          'Pen — click to add points, Esc/Enter to finish (P)',
+          'Pen — click for corners, drag for curves; Esc/Enter to finish (P)',
           <PenTool className="size-5 shrink-0 stroke-[1.5]" />,
         )}
         {disabledTool('Draw', Pencil)}

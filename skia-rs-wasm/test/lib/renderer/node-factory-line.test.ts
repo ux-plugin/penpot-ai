@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createLine, createPolyline } from '../../../src/lib/renderer/node-factory'
+import { createLine, createPolyline, createBezierPath } from '../../../src/lib/renderer/node-factory'
+import type { Anchor } from '../../../src/lib/renderer/geom/anchors'
 
 describe('createLine', () => {
   it('stores the actual endpoints as world segments (any direction)', () => {
@@ -57,5 +58,49 @@ describe('createPolyline', () => {
 
   it('points hull mirrors the anchors', () => {
     expect(createPolyline(pts, {}).points).toEqual(pts)
+  })
+})
+
+describe('createBezierPath', () => {
+  it('all-corner anchors produce the same line segments as a polyline', () => {
+    const anchors: Anchor[] = [
+      { point: { x: 10, y: 10 } },
+      { point: { x: 110, y: 30 } },
+      { point: { x: 60, y: 130 } },
+    ]
+    const node = createBezierPath(anchors, { strokeColor: '#1E40AF' })
+    const segs = (node as { content: { segments: Array<{ type: string }> } }).content.segments
+    expect(segs.map((s) => s.type)).toEqual(['move-to', 'line-to', 'line-to'])
+    expect(node.points).toEqual(anchors.map((a) => a.point))
+    expect(node.selrect).toMatchObject({ x: 10, y: 10, width: 100, height: 120 })
+  })
+
+  it('emits curve-to segments and selrect bounds the handles', () => {
+    const anchors: Anchor[] = [
+      { point: { x: 0, y: 0 }, handleOut: { x: 10, y: -40 } },
+      { point: { x: 100, y: 0 }, handleIn: { x: 90, y: -40 } },
+    ]
+    const node = createBezierPath(anchors, { strokeColor: '#1E40AF' })
+    const segs = (node as { content: { segments: Array<Record<string, number>> } }).content.segments
+    expect(segs[1]).toMatchObject({ type: 'curve-to', x: 100, y: 0, c1x: 10, c1y: -40, c2x: 90, c2y: -40 })
+    // The handles reach up to y = -40, so the box extends above the anchors.
+    expect(node.selrect).toMatchObject({ x: 0, y: -40, width: 100, height: 40 })
+    // points stays the vertex hull (handles excluded).
+    expect(node.points).toEqual([
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ])
+  })
+
+  it('closed path appends close-path and carries a fill', () => {
+    const anchors: Anchor[] = [
+      { point: { x: 0, y: 0 } },
+      { point: { x: 10, y: 0 } },
+      { point: { x: 5, y: 10 } },
+    ]
+    const node = createBezierPath(anchors, { closed: true, strokeColor: '#1E40AF', fillColor: '#3B82F6' })
+    const segs = (node as { content: { segments: Array<{ type: string }> } }).content.segments
+    expect(segs[segs.length - 1].type).toBe('close-path')
+    expect(node.fills).toHaveLength(1)
   })
 })

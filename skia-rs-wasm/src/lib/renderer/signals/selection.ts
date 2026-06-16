@@ -26,15 +26,26 @@ export const activeEditorTarget = signal<ActiveEditorTarget | null>(null)
 export const selectionRect = signal<Selrect | null>(null)
 export const shapeDrawPreview = signal<Selrect | null>(null)
 
+/** A pen anchor as seen by the overlay: a point plus optional bézier handles
+ * (absolute world coords), mirroring the editable `Anchor` model. */
+export interface PenAnchorView {
+  point: { x: number; y: number }
+  handleIn?: { x: number; y: number }
+  handleOut?: { x: number; y: number }
+}
+
 /**
  * Live preview for the pen tool, in WORLD coordinates. `anchors` are the placed
- * points; `cursor` is the in-flight next point (trailing the mouse, null when
- * off-canvas); `willClose` is true when the cursor is hovering the first anchor
- * (so the overlay can highlight the close target). Drives a polyline + preview
- * segment rather than a rubber-band rect.
+ * points (with handles); `pending` is the anchor under the mouse button, whose
+ * handles are being dragged out (null between clicks); `cursor` is the in-flight
+ * free point trailing the mouse (null when off-canvas or while dragging a
+ * handle); `willClose` is true when the cursor hovers the first anchor (so the
+ * overlay can highlight the close target). Drives a bézier path + handle lines
+ * rather than a rubber-band rect.
  */
 export interface PenDrawPreview {
-  anchors: Array<{ x: number; y: number }>
+  anchors: PenAnchorView[]
+  pending: PenAnchorView | null
   cursor: { x: number; y: number } | null
   willClose: boolean
 }

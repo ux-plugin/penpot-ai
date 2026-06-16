@@ -14,6 +14,7 @@ import {
   outlineWorldPoints,
   type PathShapeKind,
 } from './geom/primitives'
+import { anchorsToSegments, type Anchor } from './geom/anchors'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -469,6 +470,83 @@ export function createPolyline(
     parentId: options.parentId ?? ROOT_UUID,
     selrect: createSelRect(minX, minY, width, height),
     points: anchors.map((p) => ({ x: p.x, y: p.y })),
+    fills,
+    strokes,
+    content: { segments } as PenpotNode['content'],
+    opacity: options.opacity ?? 1,
+  })
+}
+
+/**
+ * Creates a `path` node from bézier anchors (the pen tool's output once handles
+ * are involved). Segments are world-space; an all-corner anchor list yields the
+ * same line-to segments as `createPolyline`. `closed` appends a close-path (and
+ * an explicit closing curve when the closing edge is curved) and lets the shape
+ * carry a fill. The selrect bounds the anchors *and* their handles so curves
+ * bulging past the vertices stay inside the box; `points` stays the vertex hull.
+ */
+export function createBezierPath(
+  anchors: Anchor[],
+  options: {
+    id?: string
+    name?: string
+    parentId?: string
+    closed?: boolean
+    fillColor?: string
+    fillOpacity?: number
+    strokeColor?: string
+    strokeWidth?: number
+    opacity?: number
+  } = {}
+): PenpotNode {
+  const id = options.id || newShapeId()
+  const segments = anchorsToSegments(anchors, options.closed)
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  const extend = (p: { x: number; y: number }) => {
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
+  }
+  for (const a of anchors) {
+    extend(a.point)
+    if (a.handleIn) extend(a.handleIn)
+    if (a.handleOut) extend(a.handleOut)
+  }
+  const width = Math.max(0, maxX - minX)
+  const height = Math.max(0, maxY - minY)
+
+  const fills: Fill[] =
+    options.closed && options.fillColor
+      ? [{ fillColor: options.fillColor, fillOpacity: options.fillOpacity ?? 1 }]
+      : []
+  const strokes: Stroke[] = options.strokeColor
+    ? [
+        {
+          strokeColor: options.strokeColor,
+          strokeOpacity: 1,
+          strokeWidth: options.strokeWidth ?? 2,
+          strokeStyle: 'solid',
+          strokeAlignment: 'center',
+        },
+      ]
+    : []
+
+  return applyGeometryDefaults({
+    id,
+    type: 'path',
+    name: options.name ?? defaultName(options.closed ? 'path' : 'line'),
+    x: minX,
+    y: minY,
+    width,
+    height,
+    parentId: options.parentId ?? ROOT_UUID,
+    selrect: createSelRect(minX, minY, width, height),
+    points: anchors.map((a) => ({ x: a.point.x, y: a.point.y })),
     fills,
     strokes,
     content: { segments } as PenpotNode['content'],

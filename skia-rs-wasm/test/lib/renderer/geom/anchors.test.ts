@@ -1,0 +1,103 @@
+import { describe, expect, it } from 'vitest'
+import {
+  anchorsToSegments,
+  segmentsToAnchors,
+  segmentsToSvgPath,
+  reflect,
+  type Anchor,
+} from '../../../../src/lib/renderer/geom/anchors'
+
+const corner = (x: number, y: number): Anchor => ({ point: { x, y } })
+
+describe('reflect', () => {
+  it('mirrors a handle through the anchor point', () => {
+    expect(reflect({ x: 10, y: 10 }, { x: 14, y: 12 })).toEqual({ x: 6, y: 8 })
+  })
+})
+
+describe('anchorsToSegments', () => {
+  it('open all-corner path → move-to + line-tos', () => {
+    const segs = anchorsToSegments([corner(0, 0), corner(10, 0), corner(10, 10)])
+    expect(segs).toEqual([
+      { type: 'move-to', x: 0, y: 0 },
+      { type: 'line-to', x: 10, y: 0 },
+      { type: 'line-to', x: 10, y: 10 },
+    ])
+  })
+
+  it('emits a curve-to when an endpoint carries a handle', () => {
+    const a: Anchor = { point: { x: 0, y: 0 }, handleOut: { x: 4, y: 0 } }
+    const b: Anchor = { point: { x: 10, y: 0 }, handleIn: { x: 6, y: 0 } }
+    expect(anchorsToSegments([a, b])).toEqual([
+      { type: 'move-to', x: 0, y: 0 },
+      { type: 'curve-to', x: 10, y: 0, c1x: 4, c1y: 0, c2x: 6, c2y: 0 },
+    ])
+  })
+
+  it('a one-sided handle still curves (other control = its own point)', () => {
+    const a: Anchor = { point: { x: 0, y: 0 }, handleOut: { x: 4, y: 4 } }
+    const segs = anchorsToSegments([a, corner(10, 0)])
+    expect(segs[1]).toEqual({ type: 'curve-to', x: 10, y: 0, c1x: 4, c1y: 4, c2x: 10, c2y: 0 })
+  })
+
+  it('closed all-corner path closes with close-path only (no explicit edge)', () => {
+    const segs = anchorsToSegments([corner(0, 0), corner(10, 0), corner(10, 10)], true)
+    expect(segs.map((s) => s.type)).toEqual(['move-to', 'line-to', 'line-to', 'close-path'])
+  })
+
+  it('closed curved path adds an explicit closing curve-to before close-path', () => {
+    const first: Anchor = { point: { x: 0, y: 0 }, handleIn: { x: -2, y: 2 } }
+    const last: Anchor = { point: { x: 10, y: 10 }, handleOut: { x: 12, y: 8 } }
+    const segs = anchorsToSegments([first, corner(10, 0), last], true)
+    expect(segs.map((s) => s.type)).toEqual(['move-to', 'line-to', 'line-to', 'curve-to', 'close-path'])
+    expect(segs[3]).toMatchObject({ type: 'curve-to', x: 0, y: 0, c1x: 12, c1y: 8, c2x: -2, c2y: 2 })
+  })
+})
+
+describe('segmentsToAnchors ⇄ anchorsToSegments round-trip', () => {
+  const cases: { name: string; anchors: Anchor[]; closed: boolean }[] = [
+    { name: 'open polyline', anchors: [corner(0, 0), corner(10, 0), corner(5, 9)], closed: false },
+    {
+      name: 'open curve',
+      anchors: [
+        { point: { x: 0, y: 0 }, handleOut: { x: 3, y: 5 } },
+        { point: { x: 10, y: 0 }, handleIn: { x: 7, y: 5 }, handleOut: { x: 13, y: -5 } },
+        { point: { x: 20, y: 0 }, handleIn: { x: 17, y: -5 } },
+      ],
+      closed: false,
+    },
+    { name: 'closed polygon', anchors: [corner(0, 0), corner(10, 0), corner(10, 10), corner(0, 10)], closed: true },
+    {
+      name: 'closed curve',
+      anchors: [
+        { point: { x: 0, y: 0 }, handleIn: { x: -3, y: 3 }, handleOut: { x: 3, y: -3 } },
+        { point: { x: 10, y: 0 }, handleIn: { x: 7, y: -3 }, handleOut: { x: 13, y: 3 } },
+        { point: { x: 5, y: 10 }, handleIn: { x: 8, y: 9 }, handleOut: { x: 2, y: 9 } },
+      ],
+      closed: true,
+    },
+  ]
+
+  for (const c of cases) {
+    it(c.name, () => {
+      const segs = anchorsToSegments(c.anchors, c.closed)
+      const back = segmentsToAnchors(segs)
+      expect(back.closed).toBe(c.closed)
+      expect(back.anchors).toEqual(c.anchors)
+      // Idempotent: re-encoding the recovered anchors yields identical segments.
+      expect(anchorsToSegments(back.anchors, back.closed)).toEqual(segs)
+    })
+  }
+})
+
+describe('segmentsToSvgPath', () => {
+  it('encodes move/line/curve/close', () => {
+    const d = segmentsToSvgPath([
+      { type: 'move-to', x: 0, y: 0 },
+      { type: 'line-to', x: 10, y: 0 },
+      { type: 'curve-to', x: 20, y: 10, c1x: 14, c1y: 0, c2x: 20, c2y: 4 },
+      { type: 'close-path' },
+    ])
+    expect(d).toBe('M0 0L10 0C14 0 20 4 20 10Z')
+  })
+})
