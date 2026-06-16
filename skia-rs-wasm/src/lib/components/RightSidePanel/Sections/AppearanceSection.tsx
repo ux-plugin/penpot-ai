@@ -123,15 +123,13 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   // neither. A computed dimension is shown read-only here.
   const isText = isTextNode(initialNode)
 
-  // Corner radius only applies to rect-backed geometry: the renderer
-  // honors `corners` for Rect/Frame only; `image` serializes as a wasm
-  // rect and `instance`/`component` as frames (see orchestration.ts /
-  // serializers.ts). Circle, path, bool, text, group and svg-raw have
-  // no corners to round.
+  // Corner radius is exposed only on frame-backed containers (`frame`, plus
+  // `instance`/`component` which serialize as frames). In the path-composition
+  // model a rectangle is just a closed path, so its corners are rounded as a
+  // per-vertex fillet (P4) rather than via the `r1–r4` parameter; `image` and
+  // the rect path both drop the dedicated control.
   const nodeType = (initialNode as { type?: string }).type
   const showRadius =
-    nodeType === 'rect' ||
-    nodeType === 'image' ||
     nodeType === 'frame' ||
     nodeType === 'instance' ||
     nodeType === 'component'
