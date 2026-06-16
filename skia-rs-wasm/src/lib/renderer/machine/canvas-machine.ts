@@ -13,7 +13,15 @@ import { startGradientDrag } from '../handlers/gradient'
 import type { GradientHandleKind } from '../handlers/gradient'
 import type { Point, ResizeHandlePosition } from '../types'
 
-export type DrawTool = 'rect' | 'frame' | 'text'
+export type DrawTool =
+  | 'rect'
+  | 'frame'
+  | 'text'
+  | 'ellipse'
+  | 'line'
+  | 'triangle'
+  | 'polygon'
+  | 'star'
 
 export interface CanvasContext {
   resizeHandle: ResizeHandlePosition | null

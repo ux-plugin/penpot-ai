@@ -14,8 +14,14 @@ import { makeSelrect } from '../../worker/types'
 import { isSnapPixelGridEnabled } from '../store/workspace-settings'
 import { snapDrawRectToGrid, type DrawRect } from './pixel-snap'
 import { applyChanges } from '../../page-crud'
-import { createFrame, createRect, createText } from '../node-factory'
-import type { AddObjChange } from 'penpot-exporter/types'
+import {
+  createEllipse,
+  createFrame,
+  createParametricPath,
+  createRect,
+  createText,
+} from '../node-factory'
+import type { AddObjChange, PenpotNode } from 'penpot-exporter/types'
 import type { DrawTool } from '../machine/canvas-machine'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -95,8 +101,13 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
             // Click (no real drag) vs drag. Like Penpot: the text tool supports
             // click-to-create (a small auto-width box that grows with typing);
             // rect/frame require a real drag.
+            // Line cares about drag length (a horizontal/vertical line has a
+            // near-zero bbox side); every other tool needs both sides to clear
+            // the click threshold.
             const isClick =
-              lastRect.width < MIN_DRAW_SCREEN_PX || lastRect.height < MIN_DRAW_SCREEN_PX
+              tool === 'line'
+                ? Math.hypot(lastRect.width, lastRect.height) < MIN_DRAW_SCREEN_PX
+                : lastRect.width < MIN_DRAW_SCREEN_PX || lastRect.height < MIN_DRAW_SCREEN_PX
             if (isClick && tool !== 'text') {
               return
             }
@@ -114,51 +125,71 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
             // auto-width grow. Dragged: the drawn size, fixed grow (min 1px when snapped).
             const w = isClick ? 4 : snapped ? Math.max(1, snapped.width) : lastRect.width / vp.zoom
             const h = isClick ? 17 : snapped ? Math.max(1, snapped.height) : lastRect.height / vp.zoom
-            if (!isClick && (w < 1e-6 || h < 1e-6)) return
+            if (!isClick) {
+              if (tool === 'line') {
+                if (Math.hypot(w, h) < 1e-6) return
+              } else if (w < 1e-6 || h < 1e-6) {
+                return
+              }
+            }
 
             const currentPage = effectivePageId ? getPage(effectivePageId) : undefined
             if (!currentPage) return
 
             const root = Object.values(currentPage.objects).find((o) => o.parentId == null)
             const rootId = root?.id ?? ROOT_UUID
-            const newNode =
-              tool === 'frame'
-                ? createFrame({
-                    x: worldOrigin.x,
-                    y: worldOrigin.y,
-                    width: w,
-                    height: h,
-                    parentId: rootId,
-                    fillColor: '#F3F4F6',
-                    fillOpacity: 1,
-                    strokeColor: '#9CA3AF',
-                    strokeWidth: 1,
-                  })
-                : tool === 'text'
-                  ? createText({
-                      x: worldOrigin.x,
-                      y: worldOrigin.y,
-                      width: w,
-                      height: h,
-                      parentId: rootId,
-                      // Empty: the box opens into edit mode with a blinking caret
-                      // (no placeholder text), and the user types into it.
-                      text: '',
-                      // Click → auto-width box that grows with typing; drag → fixed
-                      // box at the drawn size (Penpot's text-tool behaviour).
-                      growType: isClick ? 'auto-width' : 'fixed',
-                    })
-                  : createRect({
-                      x: worldOrigin.x,
-                      y: worldOrigin.y,
-                      width: w,
-                      height: h,
-                      parentId: rootId,
-                      fillColor: '#3B82F6',
-                      fillOpacity: 0.85,
-                      strokeColor: '#1E40AF',
-                      strokeWidth: 2,
-                    })
+
+            // Shared geometry + the default fill/stroke used by the filled shapes.
+            const geom = { x: worldOrigin.x, y: worldOrigin.y, width: w, height: h, parentId: rootId }
+            const filled = {
+              fillColor: '#3B82F6',
+              fillOpacity: 0.85,
+              strokeColor: '#1E40AF',
+              strokeWidth: 2,
+            }
+
+            let newNode: PenpotNode
+            switch (tool) {
+              case 'frame':
+                newNode = createFrame({
+                  ...geom,
+                  fillColor: '#F3F4F6',
+                  fillOpacity: 1,
+                  strokeColor: '#9CA3AF',
+                  strokeWidth: 1,
+                })
+                break
+              case 'text':
+                newNode = createText({
+                  ...geom,
+                  // Empty: the box opens into edit mode with a blinking caret
+                  // (no placeholder text), and the user types into it.
+                  text: '',
+                  // Click → auto-width box that grows with typing; drag → fixed
+                  // box at the drawn size (Penpot's text-tool behaviour).
+                  growType: isClick ? 'auto-width' : 'fixed',
+                })
+                break
+              case 'ellipse':
+                newNode = createEllipse({ ...geom, ...filled })
+                break
+              case 'line':
+                // Open path — stroke only, no fill.
+                newNode = createParametricPath('line', {
+                  ...geom,
+                  strokeColor: '#1E40AF',
+                  strokeWidth: 2,
+                })
+                break
+              case 'triangle':
+              case 'polygon':
+              case 'star':
+                newNode = createParametricPath(tool, { ...geom, ...filled })
+                break
+              default:
+                newNode = createRect({ ...geom, ...filled })
+                break
+            }
 
             const addChange: AddObjChange = {
               type: 'add-obj',

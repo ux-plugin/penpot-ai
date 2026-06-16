@@ -3,11 +3,17 @@
  * Provides factory functions to create PenpotNode instances with proper defaults
  */
 
-import type { ShapeType } from './types'
+import type { ShapeType, PathSegment } from './types'
 import type { PenpotNode, Selrect } from 'penpot-exporter/types'
 import type { Fill, Stroke } from 'penpot-exporter/types'
 import { newShapeId } from '../common/shape-id'
 import { applyGeometryDefaults } from '../common/shape-defaults'
+import {
+  shapeOutline,
+  translateSegments,
+  outlineWorldPoints,
+  type PathShapeKind,
+} from './geom/primitives'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -195,6 +201,145 @@ export function createCircle(
     strokes,
     opacity: options.opacity ?? 1,
   }
+}
+
+/**
+ * Creates an ellipse as a native `circle` node. Penpot's circle type is a
+ * general ellipse — render-wasm draws it via `add_oval(selrect)`, so width may
+ * differ from height. Routing the ellipse tool here reuses native rendering and
+ * the worker's `overlapsEllipse` hit-test instead of a bézier path.
+ */
+export function createEllipse(
+  options: {
+    id?: string
+    name?: string
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    parentId?: string
+    fillColor?: string
+    fillOpacity?: number
+    strokeColor?: string
+    strokeWidth?: number
+    opacity?: number
+  } = {}
+): PenpotNode {
+  const id = options.id || newShapeId()
+  const x = options.x ?? 100
+  const y = options.y ?? 100
+  const width = options.width ?? 100
+  const height = options.height ?? 100
+
+  const fills: Fill[] = options.fillColor
+    ? [{ fillColor: options.fillColor, fillOpacity: options.fillOpacity ?? 1 }]
+    : []
+
+  const strokes: Stroke[] = options.strokeColor
+    ? [
+        {
+          strokeColor: options.strokeColor,
+          strokeOpacity: 1,
+          strokeWidth: options.strokeWidth ?? 2,
+          strokeStyle: 'solid',
+          strokeAlignment: 'center',
+        },
+      ]
+    : []
+
+  return applyGeometryDefaults({
+    id,
+    type: 'circle',
+    name: options.name ?? defaultName('ellipse'),
+    x,
+    y,
+    width,
+    height,
+    parentId: options.parentId ?? ROOT_UUID,
+    selrect: createSelRect(x, y, width, height),
+    fills,
+    strokes,
+    opacity: options.opacity ?? 1,
+  })
+}
+
+/**
+ * Creates a `path` node for a parametric shape with no native Penpot type
+ * (line, triangle, polygon, star). Geometry comes from the shared
+ * `shapeOutline` generator; the world-space `points` hull is populated so the
+ * worker's path selection (`overlapsRectPoints` → `overlapsPath`) can hit-test
+ * it. The human-facing `name` reflects the drawn kind (`Star 1`, `Line 2`, …).
+ */
+export function createParametricPath(
+  kind: PathShapeKind,
+  options: {
+    id?: string
+    name?: string
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    parentId?: string
+    fillColor?: string
+    fillOpacity?: number
+    strokeColor?: string
+    strokeWidth?: number
+    opacity?: number
+    sides?: number
+    points?: number
+    innerRatio?: number
+  } = {}
+): PenpotNode {
+  const id = options.id || newShapeId()
+  const x = options.x ?? 100
+  const y = options.y ?? 100
+  const width = options.width ?? 100
+  const height = options.height ?? 100
+
+  // Generate the outline at the local origin, then shift to the shape's world
+  // origin: render-wasm draws path segments in absolute coordinates (no selrect
+  // offset), so the geometry must be world-space to land where it was dragged.
+  const localSegments = shapeOutline(kind, {
+    width,
+    height,
+    sides: options.sides,
+    points: options.points,
+    innerRatio: options.innerRatio,
+  })
+  const segments: PathSegment[] = translateSegments(localSegments, x, y)
+
+  const fills: Fill[] = options.fillColor
+    ? [{ fillColor: options.fillColor, fillOpacity: options.fillOpacity ?? 1 }]
+    : []
+
+  const strokes: Stroke[] = options.strokeColor
+    ? [
+        {
+          strokeColor: options.strokeColor,
+          strokeOpacity: 1,
+          strokeWidth: options.strokeWidth ?? 2,
+          strokeStyle: 'solid',
+          strokeAlignment: 'center',
+        },
+      ]
+    : []
+
+  return applyGeometryDefaults({
+    id,
+    type: 'path',
+    name: options.name ?? defaultName(kind),
+    x,
+    y,
+    width,
+    height,
+    parentId: options.parentId ?? ROOT_UUID,
+    selrect: createSelRect(x, y, width, height),
+    points: outlineWorldPoints(localSegments, x, y),
+    fills,
+    strokes,
+    content: { segments },
+    opacity: options.opacity ?? 1,
+  })
 }
 
 /**

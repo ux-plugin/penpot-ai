@@ -4,8 +4,11 @@
  */
 
 import type { Matrix, PenpotNode } from 'penpot-exporter/types'
+import type { PathSegment } from '../types'
 import { makeSelrect } from '../types'
 import { invertMatrix } from './matrix'
+
+const IDENTITY: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
 
 export function applyTransformToNode(
   node: PenpotNode,
@@ -79,5 +82,73 @@ export function applyTransformToNode(
   if (typeof node.y === 'number') updates.y = newY
   if (typeof node.width === 'number') updates.width = newWidth
   if (typeof node.height === 'number') updates.height = newHeight
+
+  // Path geometry lives in absolute `content.segments` — render-wasm draws them
+  // directly (applying only the shape transform around its centre). The rect/
+  // circle decomposition above updates selrect/transform but leaves the segments
+  // untouched, so a path snaps back to its original shape on commit (and never
+  // moves). Bake the matrix into the segments instead, derive the bbox from
+  // them, and keep the transform identity (its creation state) so the renderer
+  // doesn't double-apply.
+  const content = (node as { content?: { segments?: PathSegment[] } }).content
+  const segs = content?.segments
+  if (content && Array.isArray(segs) && segs.length > 0) {
+    const newSegments: PathSegment[] = segs.map((s) => {
+      if (s.type === 'move-to' || s.type === 'line-to') {
+        const p = applyM({ x: s.x, y: s.y })
+        return { ...s, x: p.x, y: p.y }
+      }
+      if (s.type === 'curve-to') {
+        const p = applyM({ x: s.x, y: s.y })
+        const c1 = applyM({ x: s.c1x, y: s.c1y })
+        const c2 = applyM({ x: s.c2x, y: s.c2y })
+        return { ...s, x: p.x, y: p.y, c1x: c1.x, c1y: c1.y, c2x: c2.x, c2y: c2.y }
+      }
+      return s
+    })
+
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    const acc = (px: number, py: number) => {
+      if (px < minX) minX = px
+      if (py < minY) minY = py
+      if (px > maxX) maxX = px
+      if (py > maxY) maxY = py
+    }
+    for (const s of newSegments) {
+      if (s.type === 'move-to' || s.type === 'line-to') acc(s.x, s.y)
+      else if (s.type === 'curve-to') {
+        acc(s.x, s.y)
+        acc(s.c1x, s.c1y)
+        acc(s.c2x, s.c2y)
+      }
+    }
+    if (!Number.isFinite(minX)) return updates
+
+    const bw = Math.max(0, maxX - minX)
+    const bh = Math.max(0, maxY - minY)
+
+    const pathUpdates: Partial<PenpotNode> = {
+      content: { ...content, segments: newSegments } as PenpotNode['content'],
+      selrect: makeSelrect(minX, minY, bw, bh),
+      points: [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY },
+      ],
+      transform: IDENTITY,
+      transformInverse: IDENTITY,
+      rotation: 0,
+    }
+    if (typeof node.x === 'number') pathUpdates.x = minX
+    if (typeof node.y === 'number') pathUpdates.y = minY
+    if (typeof node.width === 'number') pathUpdates.width = bw
+    if (typeof node.height === 'number') pathUpdates.height = bh
+    return pathUpdates
+  }
+
   return updates
 }
