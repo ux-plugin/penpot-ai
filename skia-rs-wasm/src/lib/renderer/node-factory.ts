@@ -14,7 +14,7 @@ import {
   outlineWorldPoints,
   type PathShapeKind,
 } from './geom/primitives'
-import { anchorsToSegments, type Anchor } from './geom/anchors'
+import { anchorsToSegments, anchorsBounds, type Anchor } from './geom/anchors'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -501,24 +501,7 @@ export function createBezierPath(
 ): PenpotNode {
   const id = options.id || newShapeId()
   const segments = anchorsToSegments(anchors, options.closed)
-
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  const extend = (p: { x: number; y: number }) => {
-    if (p.x < minX) minX = p.x
-    if (p.y < minY) minY = p.y
-    if (p.x > maxX) maxX = p.x
-    if (p.y > maxY) maxY = p.y
-  }
-  for (const a of anchors) {
-    extend(a.point)
-    if (a.handleIn) extend(a.handleIn)
-    if (a.handleOut) extend(a.handleOut)
-  }
-  const width = Math.max(0, maxX - minX)
-  const height = Math.max(0, maxY - minY)
+  const { x: minX, y: minY, width, height } = anchorsBounds(anchors)
 
   const fills: Fill[] =
     options.closed && options.fillColor

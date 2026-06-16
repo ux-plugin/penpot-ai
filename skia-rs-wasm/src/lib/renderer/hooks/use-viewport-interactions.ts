@@ -147,6 +147,13 @@ export function useViewportInteractions({
         canvasActor.send({ type: 'STOP_TEXT_EDIT' })
       }
 
+      // Same click-away rule for vector editing: anchor/handle presses are caught
+      // by the overlay markers (pointerEvents 'auto') and never reach the surface,
+      // so any mousedown that lands here is outside the path → commit + exit.
+      if (snap.matches('pathEditing')) {
+        canvasActor.send({ type: 'STOP_PATH_EDIT' })
+      }
+
       const activeDrawTool = canvasActor.getSnapshot().context.drawTool
       if (activeDrawTool === 'pen') {
         // The pen handler owns its own click stream once a path is in progress;
@@ -325,6 +332,11 @@ export function useViewportInteractions({
       if (topId && node?.type === 'text') {
         setSelectedIds(new Set([topId]))
         canvasActor.send({ type: 'START_TEXT_EDIT', shapeId: topId })
+      } else if (topId && node?.type === 'path') {
+        // A path drops into vector-edit mode (drag its anchors/handles), the
+        // path analogue of double-clicking a text shape to edit its content.
+        setSelectedIds(new Set([topId]))
+        canvasActor.send({ type: 'START_PATH_EDIT', shapeId: topId })
       }
     })
   }, [surfaceRef, canvasActor])
@@ -362,6 +374,12 @@ export function useViewportInteractions({
       canvasActor.send({ type: 'DRAW_TOOL_DEACTIVATE' })
       const surface = surfaceRef.current
       if (surface) surface.style.cursor = 'default'
+      return
+    }
+
+    if (e.code === 'Escape' && canvasActor.getSnapshot().matches('pathEditing')) {
+      e.preventDefault()
+      canvasActor.send({ type: 'STOP_PATH_EDIT' })
       return
     }
 

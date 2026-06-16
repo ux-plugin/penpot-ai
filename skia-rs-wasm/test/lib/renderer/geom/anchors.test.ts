@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   anchorsToSegments,
+  anchorsBounds,
   segmentsToAnchors,
   segmentsToSvgPath,
   reflect,
@@ -88,6 +89,29 @@ describe('segmentsToAnchors ⇄ anchorsToSegments round-trip', () => {
       expect(anchorsToSegments(back.anchors, back.closed)).toEqual(segs)
     })
   }
+})
+
+describe('anchorsBounds', () => {
+  it('bounds the anchor points', () => {
+    expect(anchorsBounds([corner(0, 0), corner(10, 4), corner(3, 12)])).toEqual({
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 12,
+    })
+  })
+
+  it('extends to include handles that poke past the vertices', () => {
+    const anchors: Anchor[] = [
+      { point: { x: 0, y: 0 }, handleOut: { x: 5, y: -20 } },
+      { point: { x: 10, y: 0 }, handleIn: { x: 5, y: -20 } },
+    ]
+    expect(anchorsBounds(anchors)).toEqual({ x: 0, y: -20, width: 10, height: 20 })
+  })
+
+  it('empty input → zero rect', () => {
+    expect(anchorsBounds([])).toEqual({ x: 0, y: 0, width: 0, height: 0 })
+  })
 })
 
 describe('segmentsToSvgPath', () => {

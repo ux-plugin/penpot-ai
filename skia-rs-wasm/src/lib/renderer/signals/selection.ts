@@ -5,6 +5,7 @@
 
 import { signal } from '@preact/signals-core'
 import type { Fill, Gradient, Selrect } from 'penpot-exporter/types'
+import type { Anchor } from '../geom/anchors'
 import type { Renderer } from '../renderer'
 import type { SelectionRectResult } from '../types'
 
@@ -50,6 +51,14 @@ export interface PenDrawPreview {
   willClose: boolean
 }
 export const penDrawPreview = signal<PenDrawPreview | null>(null)
+
+/**
+ * Live working anchors during a vector-edit drag (world coords), or null when no
+ * drag is in flight (the PathEditorOverlay then reads the committed segments).
+ * Written at pointer rate by the overlay's drag handler so the markers track the
+ * cursor without a history commit per frame.
+ */
+export const pathEditAnchors = signal<Anchor[] | null>(null)
 
 /** Synced from React: showHandles && showCornerHandles. Drives imperative corner-square `effect()`. */
 export const selectionCornerHandlesVisible = signal(false)

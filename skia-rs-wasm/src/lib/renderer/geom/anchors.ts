@@ -94,6 +94,33 @@ export function segmentsToAnchors(segments: PathSegment[]): { anchors: Anchor[];
   return { anchors, closed }
 }
 
+/** Axis-aligned bounds over the anchors *and* their handles, so a curve bulging
+ * past its vertices stays inside the box. Empty input → a zero rect. */
+export function anchorsBounds(anchors: Anchor[]): {
+  x: number
+  y: number
+  width: number
+  height: number
+} {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  const ext = (p: Pt) => {
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
+  }
+  for (const a of anchors) {
+    ext(a.point)
+    if (a.handleIn) ext(a.handleIn)
+    if (a.handleOut) ext(a.handleOut)
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, width: 0, height: 0 }
+  return { x: minX, y: minY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) }
+}
+
 /** Render segments to an SVG path `d` (world coords) — shared by the pen preview
  * and the future vector editor. */
 export function segmentsToSvgPath(segments: PathSegment[]): string {

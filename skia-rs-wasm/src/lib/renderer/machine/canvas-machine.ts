@@ -33,6 +33,9 @@ export interface CanvasContext {
   /** Shape currently being text-edited (the `textEditing` mode). High-frequency
    * caret/selection geometry lives in signals, not here. */
   textEditingShapeId: string | null
+  /** Path node currently in vector-edit mode (the `pathEditing` mode). Live anchor
+   * drag geometry lives in signals, not here. */
+  pathEditingShapeId: string | null
 }
 
 export type CanvasEvent =
@@ -49,6 +52,8 @@ export type CanvasEvent =
   | { type: 'DRAW_TOOL_DEACTIVATE' }
   | { type: 'START_TEXT_EDIT'; shapeId: string }
   | { type: 'STOP_TEXT_EDIT' }
+  | { type: 'START_PATH_EDIT'; shapeId: string }
+  | { type: 'STOP_PATH_EDIT' }
 
 const canvasMachineSetup = setup({
   types: {
@@ -86,6 +91,7 @@ export const canvasMachine = canvasMachineSetup.createMachine({
     areaSelectionAppend: false,
     areaSelectionRemove: false,
     textEditingShapeId: null,
+    pathEditingShapeId: null,
   },
   on: {
     DRAW_TOOL_ACTIVATE: {
@@ -122,6 +128,10 @@ export const canvasMachine = canvasMachineSetup.createMachine({
           target: 'textEditing',
           actions: assign({ textEditingShapeId: ({ event }) => event.shapeId }),
         },
+        START_PATH_EDIT: {
+          target: 'pathEditing',
+          actions: assign({ pathEditingShapeId: ({ event }) => event.shapeId }),
+        },
       },
     },
     moving: {
@@ -142,6 +152,10 @@ export const canvasMachine = canvasMachineSetup.createMachine({
         START_TEXT_EDIT: {
           target: 'textEditing',
           actions: assign({ textEditingShapeId: ({ event }) => event.shapeId }),
+        },
+        START_PATH_EDIT: {
+          target: 'pathEditing',
+          actions: assign({ pathEditingShapeId: ({ event }) => event.shapeId }),
         },
       },
     },
@@ -247,6 +261,22 @@ export const canvasMachine = canvasMachineSetup.createMachine({
         STOP_TEXT_EDIT: {
           target: 'idle',
           actions: assign({ textEditingShapeId: () => null }),
+        },
+      },
+    },
+    // Vector-edit mode. Like `textEditing`, normal pointer gestures (wired on
+    // `idle`) are naturally suspended; the PathEditorOverlay drives anchor/handle
+    // dragging while this state is active and the surface treats any stray
+    // mousedown as a click-away that exits.
+    pathEditing: {
+      on: {
+        // Switch directly between path shapes without bouncing through idle.
+        START_PATH_EDIT: {
+          actions: assign({ pathEditingShapeId: ({ event }) => event.shapeId }),
+        },
+        STOP_PATH_EDIT: {
+          target: 'idle',
+          actions: assign({ pathEditingShapeId: () => null }),
         },
       },
     },
