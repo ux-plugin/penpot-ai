@@ -343,6 +343,68 @@ export function createParametricPath(
 }
 
 /**
+ * Creates a straight `line` as a two-point open `path` node. Unlike the
+ * parametric shapes, a line is defined by its actual endpoints — so it follows
+ * the drag direction in every quadrant. Segments are stored in world
+ * coordinates and the selrect is their bounding box.
+ */
+export function createLine(options: {
+  id?: string
+  name?: string
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  parentId?: string
+  strokeColor?: string
+  strokeWidth?: number
+  opacity?: number
+}): PenpotNode {
+  const id = options.id || newShapeId()
+  const { x1, y1, x2, y2 } = options
+  const minX = Math.min(x1, x2)
+  const minY = Math.min(y1, y2)
+  const width = Math.abs(x2 - x1)
+  const height = Math.abs(y2 - y1)
+
+  const strokes: Stroke[] = options.strokeColor
+    ? [
+        {
+          strokeColor: options.strokeColor,
+          strokeOpacity: 1,
+          strokeWidth: options.strokeWidth ?? 2,
+          strokeStyle: 'solid',
+          strokeAlignment: 'center',
+        },
+      ]
+    : []
+
+  const segments: PathSegment[] = [
+    { type: 'move-to', x: x1, y: y1 },
+    { type: 'line-to', x: x2, y: y2 },
+  ]
+
+  return applyGeometryDefaults({
+    id,
+    type: 'path',
+    name: options.name ?? defaultName('line'),
+    x: minX,
+    y: minY,
+    width,
+    height,
+    parentId: options.parentId ?? ROOT_UUID,
+    selrect: createSelRect(minX, minY, width, height),
+    points: [
+      { x: x1, y: y1 },
+      { x: x2, y: y2 },
+    ],
+    strokes,
+    content: { segments } as PenpotNode['content'],
+    opacity: options.opacity ?? 1,
+  })
+}
+
+/**
  * Creates a text node
  */
 export function createText(

@@ -20,6 +20,7 @@ import {
   selectionRectOutlineVisible,
   selectionRect as selectionRectSignal,
   shapeDrawPreview as shapeDrawPreviewSignal,
+  lineDrawPreview as lineDrawPreviewSignal,
   wasmSelectionRect as wasmSelectionRectSignal,
 } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
@@ -104,7 +105,10 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     usePointerDownFactory(canvasRef, canvasActor)
 
   const shapeDrawPreview = useSignalCoalesced(shapeDrawPreviewSignal)
+  const lineDrawPreview = useSignalCoalesced(lineDrawPreviewSignal)
   const isDrawingShape = useSelector(canvasActor, (s) => s.matches('drawingShape'))
+  // Line preview is already in world coordinates (rendered in the world-space SVG).
+  const lineDrawWorld = isDrawingShape && lineDrawPreview != null ? lineDrawPreview : null
   const shapeDrawWorld =
     isDrawingShape &&
       shapeDrawPreview != null &&
@@ -314,6 +318,18 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
         </>
       )}
       {shapeDrawWorld && <AreaMarquee world={shapeDrawWorld} zoom={safeZoom} />}
+      {lineDrawWorld && (
+        <line
+          x1={lineDrawWorld.x1}
+          y1={lineDrawWorld.y1}
+          x2={lineDrawWorld.x2}
+          y2={lineDrawWorld.y2}
+          stroke={SELECTION_STROKE}
+          strokeWidth={1.5}
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
       {areaMarqueeWorld && <AreaMarquee world={areaMarqueeWorld} zoom={safeZoom} />}
     </svg>
   )

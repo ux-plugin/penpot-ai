@@ -26,6 +26,15 @@ export const activeEditorTarget = signal<ActiveEditorTarget | null>(null)
 export const selectionRect = signal<Selrect | null>(null)
 export const shapeDrawPreview = signal<Selrect | null>(null)
 
+/**
+ * Live preview for the line tool, in WORLD coordinates. Unlike box shapes the
+ * line follows the actual drag endpoints (not a normalized bbox), so it needs
+ * its own endpoint-based preview rather than the rubber-band rect.
+ */
+export const lineDrawPreview = signal<{ x1: number; y1: number; x2: number; y2: number } | null>(
+  null,
+)
+
 /** Synced from React: showHandles && showCornerHandles. Drives imperative corner-square `effect()`. */
 export const selectionCornerHandlesVisible = signal(false)
 
