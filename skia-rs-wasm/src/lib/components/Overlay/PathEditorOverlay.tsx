@@ -48,6 +48,11 @@ type DragKind = 'anchor' | 'in' | 'out'
 
 /** Screen-px reach for the add-anchor hit band and hover ghost (half the band). */
 const ADD_HIT_PX = 8
+/** Screen-px radius around the opposite open end that closes the path. */
+const CLOSE_HIT_PX = 12
+/** UI chrome whose clicks must not be treated as canvas extend clicks. */
+const UI_CHROME =
+  'aside, button, input, textarea, select, [contenteditable], [role="dialog"], [role="menu"], [role="toolbar"]'
 
 const cloneAnchor = (a: Anchor): Anchor => ({
   point: { x: a.point.x, y: a.point.y },
@@ -95,10 +100,18 @@ export function PathEditorOverlay() {
   const [selected, setSelected] = useState<{ shapeId: string; index: number } | null>(null)
   const selectedAnchor = selected && selected.shapeId === shapeId ? selected.index : null
 
-  // Live drag anchors belong to one shape+session; clear any leftover when the
-  // edited shape changes or editing starts/stops.
+  // Which open end (if any) we're continuing to draw from, scoped to its shape.
+  const [extend, setExtend] = useState<{ shapeId: string; end: 'start' | 'end' } | null>(null)
+  const extendFrom = isPathEditing && extend && extend.shapeId === shapeId ? extend.end : null
+  // Cursor world point while extending (drives the trailing preview segment).
+  const [extendCursor, setExtendCursor] = useState<Pt | null>(null)
+
+  // Live drag anchors belong to one shape+session; clear any leftover (and any
+  // extend session) when the edited shape changes or editing starts/stops.
   useEffect(() => {
     pathEditAnchors.value = null
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset on shape/mode change
+    setExtend(null)
     return () => {
       dragCleanupRef.current?.()
       pathEditAnchors.value = null
@@ -230,8 +243,20 @@ export function PathEditorOverlay() {
       function onUp(ev: PointerEvent) {
         if (ev.pointerId !== pointerId) return
         cleanup()
-        if (moved) commit(apply(toWorld(ev), ev.altKey), closed)
-        else pathEditAnchors.value = null
+        if (moved) {
+          commit(apply(toWorld(ev), ev.altKey), closed)
+          return
+        }
+        pathEditAnchors.value = null
+        // A plain click on an OPEN end starts (or toggles off) continuing the
+        // path from it — the pen-style "click an open end to keep drawing".
+        if (kind === 'anchor' && !closed && shapeId && (index === 0 || index === start.length - 1)) {
+          const end: 'start' | 'end' = index === 0 ? 'start' : 'end'
+          setExtend((prev) =>
+            prev && prev.end === end && prev.shapeId === shapeId ? null : { shapeId, end },
+          )
+          setExtendCursor(null)
+        }
       }
       function cleanup() {
         window.removeEventListener('pointermove', onMove)
@@ -333,6 +358,80 @@ export function PathEditorOverlay() {
     return () => window.removeEventListener('keydown', onKey)
   }, [selectedAnchor, isPathEditing, deleteSelected])
 
+  // Extend mode: continue the open path from one end. A canvas click appends a
+  // vertex to that end; clicking the OTHER open end closes the path; Esc/Enter
+  // stops extending (without leaving edit mode).
+  useEffect(() => {
+    if (!extendFrom || !shapeId) return
+    const screenOf = (e: MouseEvent, svg: SVGSVGElement) => {
+      const r = svg.getBoundingClientRect()
+      return { x: e.clientX - r.left, y: e.clientY - r.top }
+    }
+    const onMove = (e: MouseEvent) => {
+      const svg = svgRef.current
+      const vp = viewportSignal.value
+      if (!svg || !vp) return
+      const s = screenOf(e, svg)
+      setExtendCursor(screenToWorld(vp, s.x, s.y))
+    }
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return
+      if ((e.target as Element | null)?.closest(UI_CHROME)) return // panel/buttons
+      const svg = svgRef.current
+      const vp = viewportSignal.value
+      if (!svg || !vp) return
+      // pointerdown (capture) beats the overlay's React handlers; stopPropagation
+      // keeps the click from the add-band / markers and the surface click-away.
+      e.preventDefault()
+      e.stopPropagation()
+      const s = screenOf(e, svg)
+      const src = (pathEditAnchors.value ?? base.anchors) as Anchor[]
+      if (src.length === 0) return
+      const otherIdx = extendFrom === 'end' ? 0 : src.length - 1
+      const other = src[otherIdx]
+      const os = worldToScreen(vp, other.point.x, other.point.y)
+      if (src.length >= 2 && Math.hypot(s.x - os.x, s.y - os.y) <= CLOSE_HIT_PX) {
+        setExtend(null)
+        setExtendCursor(null)
+        setSelected(null)
+        commit(src, true) // close
+        return
+      }
+      const world = screenToWorld(vp, s.x, s.y)
+      const v: Anchor = { point: { x: world.x, y: world.y } }
+      const next = extendFrom === 'end' ? [...src, v] : [v, ...src]
+      pathEditAnchors.value = next
+      setSelected(null)
+      commit(next, false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'NumpadEnter') {
+        e.preventDefault()
+        e.stopPropagation()
+        setExtend(null)
+        setExtendCursor(null)
+      }
+    }
+    // pointerdown fires before mousedown; the surface's click-away listens on
+    // mousedown, so also block that (capture) to stay in edit mode.
+    const blockSurface = (e: MouseEvent) => {
+      if (e.button !== 0) return
+      if ((e.target as Element | null)?.closest(UI_CHROME)) return
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('mousedown', blockSurface, true)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('mousedown', blockSurface, true)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [extendFrom, shapeId, base, commit])
+
   if (
     !isPathEditing ||
     !shapeId ||
@@ -357,11 +456,24 @@ export function PathEditorOverlay() {
   }))
   const hitPathD = segmentsToSvgPath(anchorsToSegments(screenAnchors, closed))
 
-  // Hover ghost: the point on the outline a click would split (hidden mid-drag).
+  // Hover ghost: the point on the outline a click would split (hidden mid-drag
+  // and while extending).
   let ghost: { x: number; y: number } | null = null
-  if (liveAnchors == null && pointer) {
+  if (liveAnchors == null && pointer && !extendFrom) {
     const hit = nearestPointOnPath(anchors, closed, screenToWorld(viewport, pointer.x, pointer.y))
     if (hit && hit.dist * (viewport.zoom ?? 1) <= ADD_HIT_PX) ghost = toScreen(hit.point)
+  }
+
+  // Open-end / extend roles for the markers.
+  const nVerts = anchors.length
+  const openEnds = closed || nVerts === 0 ? [] : nVerts === 1 ? [0] : [0, nVerts - 1]
+  const activeEndIdx = extendFrom === 'end' ? nVerts - 1 : extendFrom === 'start' ? 0 : -1
+  let closeTargetIdx = -1
+  if (extendFrom && extendCursor && nVerts >= 2) {
+    const otherIdx = extendFrom === 'end' ? 0 : nVerts - 1
+    const o = toScreen(anchors[otherIdx].point)
+    const c = toScreen(extendCursor)
+    if (Math.hypot(c.x - o.x, c.y - o.y) <= CLOSE_HIT_PX) closeTargetIdx = otherIdx
   }
 
   return (
@@ -378,7 +490,30 @@ export function PathEditorOverlay() {
         onPointerMove={onHitMove}
         onPointerDown={onAddAnchor}
       />
+      {extendFrom && extendCursor && activeEndIdx >= 0 && (() => {
+        const a = toScreen(anchors[activeEndIdx].point)
+        const c = toScreen(extendCursor)
+        return (
+          <g>
+            <line
+              x1={a.x}
+              y1={a.y}
+              x2={c.x}
+              y2={c.y}
+              stroke={SELECTION_STROKE}
+              strokeWidth={1.5}
+              strokeDasharray="4 3"
+            />
+            {closeTargetIdx < 0 && (
+              <circle cx={c.x} cy={c.y} r={4} fill={HANDLE_FILL} stroke={SELECTION_STROKE} strokeWidth={1.25} />
+            )}
+          </g>
+        )
+      })()}
       {anchors.map((a, i) => {
+        const isOpenEnd = openEnds.includes(i)
+        const isActiveEnd = i === activeEndIdx
+        const isCloseTarget = i === closeTargetIdx
         const ps = toScreen(a.point)
         return (
           <g key={i}>
@@ -417,11 +552,13 @@ export function PathEditorOverlay() {
             <circle
               cx={ps.x}
               cy={ps.y}
-              r={i === selectedAnchor ? 6 : 5}
-              fill={i === selectedAnchor ? SELECTION_STROKE : HANDLE_FILL}
+              r={isCloseTarget ? 7 : i === selectedAnchor || isActiveEnd ? 6 : 5}
+              // Active end / close target / selection fill in; open ends get a
+              // thicker ring (continue-from-here cue).
+              fill={isCloseTarget || isActiveEnd || i === selectedAnchor ? SELECTION_STROKE : HANDLE_FILL}
               stroke={SELECTION_STROKE}
-              strokeWidth={1.5}
-              style={{ pointerEvents: 'auto', cursor: 'move' }}
+              strokeWidth={isOpenEnd ? 2.25 : 1.5}
+              style={{ pointerEvents: 'auto', cursor: isOpenEnd ? 'crosshair' : 'move' }}
               onPointerDown={beginDrag('anchor', i)}
               onDoubleClick={onToggleSmooth(i)}
             />
