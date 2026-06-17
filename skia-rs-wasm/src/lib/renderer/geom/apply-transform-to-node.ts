@@ -92,18 +92,29 @@ export function applyTransformToNode(
   // doesn't double-apply.
   type XY = { x: number; y: number }
   type VertexLike = { point: XY; handleIn?: XY; handleOut?: XY }
-  const content = (node as { content?: { segments?: PathSegment[]; vertices?: VertexLike[] } }).content
+  type SubpathLike = { vertices: VertexLike[]; closed: boolean }
+  const bakeVerts = (vs: VertexLike[]): VertexLike[] =>
+    vs.map((v) => ({
+      point: applyM(v.point),
+      ...(v.handleIn ? { handleIn: applyM(v.handleIn) } : {}),
+      ...(v.handleOut ? { handleOut: applyM(v.handleOut) } : {}),
+    }))
+  const content = (
+    node as {
+      content?: { segments?: PathSegment[]; vertices?: VertexLike[]; subpaths?: SubpathLike[] }
+    }
+  ).content
   const segs = content?.segments
   if (content && Array.isArray(segs) && segs.length > 0) {
-    // Vertices are the canonical model — bake the matrix into them too, in
-    // lockstep with the segments, so the editable path doesn't go stale.
+    // Vertices / sub-paths are the canonical editable model — bake the matrix into
+    // them too, in lockstep with the segments, so the editable path doesn't go
+    // stale (the editor reads sub-paths first, so this is what kept the overlay
+    // sitting at the old position after a move/resize).
     const verts = content.vertices
-    const newVertices: VertexLike[] | undefined = Array.isArray(verts)
-      ? verts.map((v) => ({
-          point: applyM(v.point),
-          ...(v.handleIn ? { handleIn: applyM(v.handleIn) } : {}),
-          ...(v.handleOut ? { handleOut: applyM(v.handleOut) } : {}),
-        }))
+    const newVertices: VertexLike[] | undefined = Array.isArray(verts) ? bakeVerts(verts) : undefined
+    const subs = content.subpaths
+    const newSubpaths: SubpathLike[] | undefined = Array.isArray(subs)
+      ? subs.map((sp) => ({ vertices: bakeVerts(sp.vertices), closed: sp.closed }))
       : undefined
     const newSegments: PathSegment[] = segs.map((s) => {
       if (s.type === 'move-to' || s.type === 'line-to') {
@@ -146,6 +157,7 @@ export function applyTransformToNode(
       content: {
         ...content,
         ...(newVertices ? { vertices: newVertices } : {}),
+        ...(newSubpaths ? { subpaths: newSubpaths } : {}),
         segments: newSegments,
       } as PenpotNode['content'],
       selrect: makeSelrect(minX, minY, bw, bh),

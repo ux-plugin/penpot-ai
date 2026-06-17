@@ -55,6 +55,39 @@ describe('applyTransformToNode — path content', () => {
     expect(out!.selrect).toMatchObject({ x: 140, y: 75 })
   })
 
+  it('bakes the matrix into content.vertices and content.subpaths in lockstep', () => {
+    const node = {
+      id: 'c', type: 'path', name: 'Compound 1',
+      x: 100, y: 100, width: 100, height: 100, selrect: sr(100, 100, 100, 100),
+      points: [{ x: 100, y: 100 }],
+      content: {
+        vertices: [{ point: { x: 150, y: 100 } }, { point: { x: 200, y: 200 } }],
+        subpaths: [
+          { vertices: [{ point: { x: 150, y: 100 } }, { point: { x: 200, y: 200 } }], closed: false },
+          { vertices: [{ point: { x: 100, y: 200 }, handleOut: { x: 110, y: 210 } }], closed: true },
+        ],
+        segments: [
+          { type: 'move-to', x: 150, y: 100 },
+          { type: 'line-to', x: 200, y: 200 },
+          { type: 'move-to', x: 100, y: 200 },
+          { type: 'close-path' },
+        ],
+      },
+    } as unknown as PenpotNode
+    const move: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 40, f: -25 }
+    const out = applyTransformToNode(node, move)
+    const content = (out as { content: Record<string, unknown> }).content as {
+      vertices: Array<{ point: { x: number; y: number } }>
+      subpaths: Array<{ vertices: Array<{ point: { x: number; y: number }; handleOut?: { x: number; y: number } }> }>
+    }
+    // vertices moved
+    expect(content.vertices[0].point).toEqual({ x: 190, y: 75 })
+    // both sub-paths moved (points + handles), in lockstep with segments
+    expect(content.subpaths[0].vertices[0].point).toEqual({ x: 190, y: 75 })
+    expect(content.subpaths[1].vertices[0].point).toEqual({ x: 140, y: 175 })
+    expect(content.subpaths[1].vertices[0].handleOut).toEqual({ x: 150, y: 185 })
+  })
+
   it('leaves a rect (no content.segments) on the standard selrect path', () => {
     const rect = {
       id: 'r', type: 'rect', x: 0, y: 0, width: 100, height: 100,
