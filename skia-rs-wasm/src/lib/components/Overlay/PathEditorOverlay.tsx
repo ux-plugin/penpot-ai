@@ -20,7 +20,7 @@ import { useSnapshot } from 'valtio'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
-import { pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
+import { modAlt, pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
 import { pathEditAnchors } from '../../renderer/signals/selection'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { useWorkspaceStore } from '../../renderer/store/workspace-store'
@@ -153,7 +153,10 @@ export function PathEditorOverlay() {
       const baseOut = grabbed.handleOut ? { ...grabbed.handleOut } : null
       // Alt-drag a point pulls a fresh symmetric handle pair out of it instead of
       // moving it (corner → smooth) — the way to bend a segment that has none.
-      const bend = kind === 'anchor' && e.altKey
+      // Decided on the first move (not pointerdown) and from both the event and
+      // the app's tracked Alt state, so pressing the dot then holding Alt works.
+      let bend = false
+      let bendDecided = false
       const pointerId = e.pointerId
       // Capture on the stable svg root (not the marker, which re-renders mid-drag)
       // so pointermove/up land reliably even when the cursor leaves the marker.
@@ -199,6 +202,10 @@ export function PathEditorOverlay() {
 
       function onMove(ev: PointerEvent) {
         if (ev.pointerId !== pointerId) return
+        if (!bendDecided) {
+          bend = kind === 'anchor' && (ev.altKey || modAlt.value)
+          bendDecided = true
+        }
         const next = apply(toWorld(ev), ev.altKey)
         pathEditAnchors.value = next
         renderLive(next)
@@ -312,6 +319,17 @@ export function PathEditorOverlay() {
         const ps = toScreen(a.point)
         return (
           <g key={i}>
+            {/* Invisible larger grab area (kept below the handle caps so short
+                handles stay grabbable) so a near-miss grabs the anchor instead of
+                the add-anchor band that runs along the same outline. */}
+            <circle
+              cx={ps.x}
+              cy={ps.y}
+              r={10}
+              fill="transparent"
+              style={{ pointerEvents: 'auto', cursor: 'move' }}
+              onPointerDown={beginDrag('anchor', i)}
+            />
             {(['handleIn', 'handleOut'] as const).map((side) => {
               const h = a[side]
               if (!h) return null
