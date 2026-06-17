@@ -37,6 +37,7 @@ import {
   reflect,
   segmentsToAnchors,
   segmentsToSvgPath,
+  toggleAnchorSmooth,
   type Anchor,
   type Pt,
 } from '../../renderer/geom/anchors'
@@ -157,6 +158,9 @@ export function PathEditorOverlay() {
       // the app's tracked Alt state, so pressing the dot then holding Alt works.
       let bend = false
       let bendDecided = false
+      // A pure click (e.g. one half of a double-click) produces no move; skip its
+      // commit so it doesn't push a no-op undo frame.
+      let moved = false
       const pointerId = e.pointerId
       // Capture on the stable svg root (not the marker, which re-renders mid-drag)
       // so pointermove/up land reliably even when the cursor leaves the marker.
@@ -206,6 +210,7 @@ export function PathEditorOverlay() {
           bend = kind === 'anchor' && (ev.altKey || modAlt.value)
           bendDecided = true
         }
+        moved = true
         const next = apply(toWorld(ev), ev.altKey)
         pathEditAnchors.value = next
         renderLive(next)
@@ -213,7 +218,8 @@ export function PathEditorOverlay() {
       function onUp(ev: PointerEvent) {
         if (ev.pointerId !== pointerId) return
         cleanup()
-        commit(apply(toWorld(ev), ev.altKey), closed)
+        if (moved) commit(apply(toWorld(ev), ev.altKey), closed)
+        else pathEditAnchors.value = null
       }
       function cleanup() {
         window.removeEventListener('pointermove', onMove)
@@ -268,6 +274,20 @@ export function PathEditorOverlay() {
       commit(nextAnchors, base.closed)
     },
     [shapeId, base, commit],
+  )
+
+  // Double-click a point to toggle corner ↔ smooth — the modifier-free way to
+  // bend a corner (round it) or sharpen a smooth point.
+  const onToggleSmooth = useCallback(
+    (index: number) => (e: React.MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const cur = pathEditAnchors.value ?? base.anchors
+      const next = toggleAnchorSmooth(cur, base.closed, index)
+      pathEditAnchors.value = next
+      commit(next, base.closed)
+    },
+    [base, commit],
   )
 
   if (
@@ -329,6 +349,7 @@ export function PathEditorOverlay() {
               fill="transparent"
               style={{ pointerEvents: 'auto', cursor: 'move' }}
               onPointerDown={beginDrag('anchor', i)}
+              onDoubleClick={onToggleSmooth(i)}
             />
             {(['handleIn', 'handleOut'] as const).map((side) => {
               const h = a[side]
@@ -359,6 +380,7 @@ export function PathEditorOverlay() {
               strokeWidth={1.5}
               style={{ pointerEvents: 'auto', cursor: 'move' }}
               onPointerDown={beginDrag('anchor', i)}
+              onDoubleClick={onToggleSmooth(i)}
             />
           </g>
         )

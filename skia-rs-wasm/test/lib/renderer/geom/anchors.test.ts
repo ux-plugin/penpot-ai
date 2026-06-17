@@ -6,6 +6,7 @@ import {
   segmentsToSvgPath,
   nearestPointOnPath,
   insertAnchorOnEdge,
+  toggleAnchorSmooth,
   reflect,
   type Anchor,
 } from '../../../../src/lib/renderer/geom/anchors'
@@ -184,6 +185,42 @@ describe('insertAnchorOnEdge', () => {
     const out = insertAnchorOnEdge(tri, true, 2, 0.5) // edge from anchor 2 back to anchor 0
     expect(out).toHaveLength(4)
     expect(out[3]).toEqual({ point: { x: 25, y: 40 } })
+  })
+})
+
+describe('toggleAnchorSmooth', () => {
+  it('corner → smooth grows a symmetric handle pair along the neighbour tangent', () => {
+    // Middle of an L: prev (0,0), this (100,0), next (100,100). Chord prev→next
+    // is (100,100) → tangent 45°; shorter edge length 100 → d = 100/3.
+    const anchors = [corner(0, 0), corner(100, 0), corner(100, 100)]
+    const out = toggleAnchorSmooth(anchors, false, 1)
+    const a = out[1]
+    expect(a.handleOut).toBeDefined()
+    expect(a.handleIn).toBeDefined()
+    const d = 100 / 3
+    const u = Math.SQRT1_2
+    expect(a.handleOut!.x).toBeCloseTo(100 + u * d, 4)
+    expect(a.handleOut!.y).toBeCloseTo(0 + u * d, 4)
+    // in-handle is the mirror about the point
+    expect(a.handleIn!.x).toBeCloseTo(2 * 100 - a.handleOut!.x, 6)
+    expect(a.handleIn!.y).toBeCloseTo(2 * 0 - a.handleOut!.y, 6)
+  })
+
+  it('smooth → corner drops both handles', () => {
+    const anchors: Anchor[] = [
+      corner(0, 0),
+      { point: { x: 100, y: 0 }, handleIn: { x: 70, y: 0 }, handleOut: { x: 130, y: 0 } },
+      corner(100, 100),
+    ]
+    const out = toggleAnchorSmooth(anchors, false, 1)
+    expect(out[1]).toEqual({ point: { x: 100, y: 0 } })
+  })
+
+  it('open endpoint smooths along its single edge', () => {
+    const out = toggleAnchorSmooth([corner(0, 0), corner(90, 0)], false, 0)
+    // direction to the only neighbour is +x; d = 90/3 = 30
+    expect(out[0].handleOut).toEqual({ x: 30, y: 0 })
+    expect(out[0].handleIn).toEqual({ x: -30, y: 0 })
   })
 })
 

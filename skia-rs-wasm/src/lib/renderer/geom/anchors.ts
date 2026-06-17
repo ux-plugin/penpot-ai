@@ -250,6 +250,53 @@ const cloneAnchor = (a: Anchor): Anchor => ({
   ...(a.handleOut ? { handleOut: { x: a.handleOut.x, y: a.handleOut.y } } : {}),
 })
 
+/**
+ * Toggle anchor `i` between corner (no handles) and smooth. Smoothing grows a
+ * symmetric handle pair along the neighbour tangent (the chord between the two
+ * adjacent points, or the single edge at an open end), with length a third of
+ * the shorter adjacent edge so the rounding is proportional. Sharpening drops
+ * both handles. Pure — returns a new array. This is the modifier-free way to
+ * bend a corner (double-click), since some setups never deliver Alt to the page.
+ */
+export function toggleAnchorSmooth(anchors: Anchor[], closed: boolean, i: number): Anchor[] {
+  const n = anchors.length
+  const next = anchors.map(cloneAnchor)
+  if (i < 0 || i >= n) return next
+  const a = next[i]
+  if (a.handleIn || a.handleOut) {
+    delete a.handleIn
+    delete a.handleOut
+    return next
+  }
+  const prev = i > 0 ? anchors[i - 1] : closed ? anchors[n - 1] : null
+  const nxt = i < n - 1 ? anchors[i + 1] : closed ? anchors[0] : null
+  const p = a.point
+  let dx: number
+  let dy: number
+  if (prev && nxt) {
+    dx = nxt.point.x - prev.point.x
+    dy = nxt.point.y - prev.point.y
+  } else if (nxt) {
+    dx = nxt.point.x - p.x
+    dy = nxt.point.y - p.y
+  } else if (prev) {
+    dx = p.x - prev.point.x
+    dy = p.y - prev.point.y
+  } else {
+    return next
+  }
+  const len = Math.hypot(dx, dy)
+  if (len < 1e-9) return next
+  const ux = dx / len
+  const uy = dy / len
+  const dPrev = prev ? Math.hypot(p.x - prev.point.x, p.y - prev.point.y) : Infinity
+  const dNext = nxt ? Math.hypot(nxt.point.x - p.x, nxt.point.y - p.y) : Infinity
+  const d = Math.min(dPrev, dNext) / 3
+  a.handleOut = { x: p.x + ux * d, y: p.y + uy * d }
+  a.handleIn = { x: p.x - ux * d, y: p.y - uy * d }
+  return next
+}
+
 /** Render segments to an SVG path `d` (world coords) — shared by the pen preview
  * and the future vector editor. */
 export function segmentsToSvgPath(segments: PathSegment[]): string {

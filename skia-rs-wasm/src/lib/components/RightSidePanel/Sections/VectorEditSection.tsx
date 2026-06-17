@@ -53,9 +53,10 @@ export function VectorEditSection({ nodeId, initialNode, readOnly }: VectorEditS
         {editingThis && (
           <ul className="mt-2 space-y-0.5 text-[11px] leading-tight text-muted-foreground">
             <li>Drag a point to move it</li>
-            <li>Alt-drag a point to curve it</li>
+            <li>Double-click a point to round / sharpen it</li>
+            <li>Or Option/Alt-drag a point to curve it</li>
+            <li>Drag a handle to shape the curve</li>
             <li>Click the outline to add a point</li>
-            <li>Alt-drag a handle to break the curve</li>
           </ul>
         )}
       </div>
