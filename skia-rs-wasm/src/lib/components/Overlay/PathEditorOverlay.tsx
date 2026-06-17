@@ -387,22 +387,74 @@ export function PathEditorOverlay() {
       const s = screenOf(e, svg)
       const src = (pathEditAnchors.value ?? base.anchors) as Anchor[]
       if (src.length === 0) return
-      const otherIdx = extendFrom === 'end' ? 0 : src.length - 1
-      const other = src[otherIdx]
-      const os = worldToScreen(vp, other.point.x, other.point.y)
-      if (src.length >= 2 && Math.hypot(s.x - os.x, s.y - os.y) <= CLOSE_HIT_PX) {
-        setExtend(null)
-        setExtendCursor(null)
-        setSelected(null)
-        commit(src, true) // close
+      const otherI = extendFrom === 'end' ? 0 : src.length - 1
+
+      // If the click lands on an existing vertex, snap to it instead of dropping
+      // a new node on top: the OTHER open end closes the path; any other vertex
+      // (the active end or an interior point) is a no-op.
+      let nearestI = -1
+      let nearestD = Infinity
+      for (let i = 0; i < src.length; i++) {
+        const sp = worldToScreen(vp, src[i].point.x, src[i].point.y)
+        const d = Math.hypot(s.x - sp.x, s.y - sp.y)
+        if (d < nearestD) {
+          nearestD = d
+          nearestI = i
+        }
+      }
+      if (nearestD <= CLOSE_HIT_PX) {
+        if (nearestI === otherI && src.length >= 2) {
+          setExtend(null)
+          setExtendCursor(null)
+          setSelected(null)
+          commit(src, true) // link the two open ends → close
+        }
         return
       }
+
+      // Otherwise place a new vertex at the click; a click-drag pulls a symmetric
+      // bézier handle out of it (the pen-tool gesture), a plain click is a corner.
       const world = screenToWorld(vp, s.x, s.y)
-      const v: Anchor = { point: { x: world.x, y: world.y } }
-      const next = extendFrom === 'end' ? [...src, v] : [v, ...src]
-      pathEditAnchors.value = next
+      const node0 = getCommittedNodeOnActivePage(shapeId)
+      let working: Anchor[] = extendFrom === 'end' ? [...src, { point: { ...world } }] : [{ point: { ...world } }, ...src]
+      const newIdx = extendFrom === 'end' ? working.length - 1 : 0
+      pathEditAnchors.value = working
       setSelected(null)
-      commit(next, false)
+
+      const pid = e.pointerId
+      let dragging = false
+      try {
+        svg.setPointerCapture(pid)
+      } catch {
+        /* best effort */
+      }
+      const dragMove = (me: PointerEvent) => {
+        if (me.pointerId !== pid) return
+        const ms = screenOf(me, svg)
+        if (!dragging && Math.hypot(ms.x - s.x, ms.y - s.y) > 4) dragging = true
+        if (!dragging) return
+        const w = screenToWorld(viewportSignal.value ?? vp, ms.x, ms.y)
+        const pt = working[newIdx].point
+        const nv = working.map(cloneAnchor)
+        nv[newIdx] = { point: { x: pt.x, y: pt.y }, handleOut: { x: w.x, y: w.y }, handleIn: reflect(pt, w) }
+        working = nv
+        pathEditAnchors.value = working
+        const r = useWorkspaceStore.getState().renderer
+        if (r && node0) void r.updateShape(geometryPartial(node0, working, false) as PenpotNode)
+      }
+      const dragUp = (ue: PointerEvent) => {
+        if (ue.pointerId !== pid) return
+        window.removeEventListener('pointermove', dragMove)
+        window.removeEventListener('pointerup', dragUp)
+        try {
+          svg.releasePointerCapture(pid)
+        } catch {
+          /* already released */
+        }
+        commit(working, false)
+      }
+      window.addEventListener('pointermove', dragMove)
+      window.addEventListener('pointerup', dragUp)
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'NumpadEnter') {
@@ -489,6 +541,18 @@ export function PathEditorOverlay() {
         style={{ pointerEvents: 'stroke', cursor: 'copy' }}
         onPointerMove={onHitMove}
         onPointerDown={onAddAnchor}
+      />
+      {/* The editable skeleton: links the vertices (sharp, pre-fillet) so the
+          structure stays visible on top of the rounded rendered shape. */}
+      <path
+        d={hitPathD}
+        fill="none"
+        stroke={SELECTION_STROKE}
+        strokeWidth={1.5}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        opacity={0.85}
+        style={{ pointerEvents: 'none' }}
       />
       {extendFrom && extendCursor && activeEndIdx >= 0 && (() => {
         const a = toScreen(anchors[activeEndIdx].point)
