@@ -73,12 +73,16 @@ export function PathEditorOverlay() {
   const viewport = useSignalCoalesced(viewportSignal)
   const liveAnchors = useSignalCoalesced(pathEditAnchors)
   const svgRef = useRef<SVGSVGElement>(null)
+  // Tear-down for the in-flight drag's window listeners + pointer capture. Held in
+  // a ref so an exit (Esc / click-away → unmount) can release a stuck drag.
+  const dragCleanupRef = useRef<(() => void) | null>(null)
 
   // Live drag anchors belong to one shape+session; clear any leftover when the
   // edited shape changes or the overlay (un)mounts, so a new session starts clean.
   useEffect(() => {
     pathEditAnchors.value = null
     return () => {
+      dragCleanupRef.current?.()
       pathEditAnchors.value = null
     }
   }, [shapeId])
@@ -126,6 +130,8 @@ export function PathEditorOverlay() {
       const svg = svgRef.current
       const vp = viewportSignal.value
       if (!svg || !vp || !shapeId) return
+      // Defensively end any previous drag whose pointer-up we somehow missed.
+      dragCleanupRef.current?.()
       const rect = svg.getBoundingClientRect()
       const node0 = getCommittedNodeOnActivePage(shapeId)
       if (!node0) return
@@ -136,6 +142,14 @@ export function PathEditorOverlay() {
       const basePoint = { ...grabbed.point }
       const baseIn = grabbed.handleIn ? { ...grabbed.handleIn } : null
       const baseOut = grabbed.handleOut ? { ...grabbed.handleOut } : null
+      const pointerId = e.pointerId
+      // Capture on the stable svg root (not the marker, which re-renders mid-drag)
+      // so pointermove/up land reliably even when the cursor leaves the marker.
+      try {
+        svg.setPointerCapture(pointerId)
+      } catch {
+        /* capture is best-effort */
+      }
 
       const toWorld = (ev: { clientX: number; clientY: number }): Pt =>
         screenToWorld(vp, ev.clientX - rect.left, ev.clientY - rect.top)
@@ -165,18 +179,36 @@ export function PathEditorOverlay() {
         void renderer.updateShape(geometryPartial(node0, next, closed) as PenpotNode)
       }
 
-      const onMove = (ev: MouseEvent) => {
+      function onMove(ev: PointerEvent) {
+        if (ev.pointerId !== pointerId) return
         const next = apply(toWorld(ev), ev.altKey)
         pathEditAnchors.value = next
         renderLive(next)
       }
-      const onUp = (ev: MouseEvent) => {
-        window.removeEventListener('mousemove', onMove)
-        window.removeEventListener('mouseup', onUp)
+      function onUp(ev: PointerEvent) {
+        if (ev.pointerId !== pointerId) return
+        cleanup()
         commit(apply(toWorld(ev), ev.altKey), closed)
       }
-      window.addEventListener('mousemove', onMove)
-      window.addEventListener('mouseup', onUp)
+      function cleanup() {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onUp)
+        try {
+          svg.releasePointerCapture(pointerId)
+        } catch {
+          /* already released */
+        }
+        dragCleanupRef.current = null
+      }
+
+      // Pointer (not mouse) events: pointerup fires reliably under capture, and
+      // preventDefault on pointerdown doesn't suppress it the way it does the
+      // compatibility mouseup. cleanup() removes them, so nothing leaks.
+      dragCleanupRef.current = cleanup
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointercancel', onUp)
     },
     [shapeId, base, commit],
   )
@@ -224,11 +256,10 @@ export function PathEditorOverlay() {
                 </g>
               )
             })}
-            <rect
-              x={ps.x - 4}
-              y={ps.y - 4}
-              width={8}
-              height={8}
+            <circle
+              cx={ps.x}
+              cy={ps.y}
+              r={5}
               fill={HANDLE_FILL}
               stroke={SELECTION_STROKE}
               strokeWidth={1.5}
