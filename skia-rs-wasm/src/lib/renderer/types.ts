@@ -61,6 +61,16 @@ export interface PathContent {
   }>
   /** Whether the vertex ring closes. */
   closed?: boolean
+  /** Compound paths (J1): multiple sub-paths in one node. When present this is the
+   * canonical model; a single sub-path also mirrors into `vertices`/`closed`. */
+  subpaths?: Array<{
+    vertices: Array<{
+      point: { x: number; y: number }
+      handleIn?: { x: number; y: number }
+      handleOut?: { x: number; y: number }
+    }>
+    closed: boolean
+  }>
   segments?: PathSegment[]
   /** Single shape-wide corner radius (P4). The stored `segments` stay sharp; the
    * fillet is applied only when serializing to the renderer. */
