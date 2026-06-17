@@ -251,6 +251,25 @@ const cloneAnchor = (a: Anchor): Anchor => ({
 })
 
 /**
+ * Remove anchor `i`, rejoining its neighbours with a straight edge — the handles
+ * that faced the removed point (the previous anchor's out-handle and the next
+ * anchor's in-handle) are dropped, while their far-side handles are kept. Refuses
+ * to drop below a viable path (2 anchors open, 3 closed), returning a clone
+ * unchanged. Pure; the input is not mutated.
+ */
+export function deleteAnchor(anchors: Anchor[], closed: boolean, i: number): Anchor[] {
+  const n = anchors.length
+  const next = anchors.map(cloneAnchor)
+  if (i < 0 || i >= n || n <= 2 || (closed && n <= 3)) return next
+  const prevIdx = i > 0 ? i - 1 : closed ? n - 1 : -1
+  const nextIdx = i < n - 1 ? i + 1 : closed ? 0 : -1
+  if (prevIdx >= 0) delete next[prevIdx].handleOut
+  if (nextIdx >= 0) delete next[nextIdx].handleIn
+  next.splice(i, 1)
+  return next
+}
+
+/**
  * Toggle anchor `i` between corner (no handles) and smooth. Smoothing grows a
  * symmetric handle pair along the neighbour tangent (the chord between the two
  * adjacent points, or the single edge at an open end), with length a third of

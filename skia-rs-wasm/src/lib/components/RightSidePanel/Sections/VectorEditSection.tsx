@@ -57,6 +57,7 @@ export function VectorEditSection({ nodeId, initialNode, readOnly }: VectorEditS
             <li>Or Option/Alt-drag a point to curve it</li>
             <li>Drag a handle to shape the curve</li>
             <li>Click the outline to add a point</li>
+            <li>Select a point + Delete to remove it</li>
           </ul>
         )}
       </div>

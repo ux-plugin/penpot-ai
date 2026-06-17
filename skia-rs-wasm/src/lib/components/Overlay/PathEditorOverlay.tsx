@@ -14,7 +14,7 @@
  * star overlay from the committed geometry automatically — no stored type to sync.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from '@xstate/react'
 import { useSnapshot } from 'valtio'
 import type { PenpotNode } from 'penpot-exporter/types'
@@ -32,6 +32,7 @@ import { screenToWorld, worldToScreen } from '../../renderer/viewport'
 import {
   anchorsBounds,
   anchorsToSegments,
+  deleteAnchor,
   insertAnchorOnEdge,
   nearestPointOnPath,
   reflect,
@@ -86,16 +87,21 @@ export function PathEditorOverlay() {
   // Tear-down for the in-flight drag's window listeners + pointer capture. Held in
   // a ref so an exit (Esc / click-away → unmount) can release a stuck drag.
   const dragCleanupRef = useRef<(() => void) | null>(null)
+  // The anchor selected by a click (the Delete/Backspace target), scoped to its
+  // shape so a stale selection from another path is ignored — no effect reset
+  // needed. `selectedAnchor` is the active index for the current shape.
+  const [selected, setSelected] = useState<{ shapeId: string; index: number } | null>(null)
+  const selectedAnchor = selected && selected.shapeId === shapeId ? selected.index : null
 
   // Live drag anchors belong to one shape+session; clear any leftover when the
-  // edited shape changes or the overlay (un)mounts, so a new session starts clean.
+  // edited shape changes or editing starts/stops.
   useEffect(() => {
     pathEditAnchors.value = null
     return () => {
       dragCleanupRef.current?.()
       pathEditAnchors.value = null
     }
-  }, [shapeId])
+  }, [shapeId, isPathEditing])
 
   const node = shapeId ? getCommittedNodeOnActivePage(shapeId) : null
   const segments =
@@ -137,6 +143,7 @@ export function PathEditorOverlay() {
     (kind: DragKind, index: number) => (e: React.PointerEvent) => {
       e.preventDefault()
       e.stopPropagation()
+      if (kind === 'anchor' && shapeId) setSelected({ shapeId, index })
       const svg = svgRef.current
       const vp = viewportSignal.value
       if (!svg || !vp || !shapeId) return
@@ -271,6 +278,7 @@ export function PathEditorOverlay() {
       // Show the new dot immediately (the outline itself is unchanged by the
       // split); commit clears the live signal once the doc holds the new anchor.
       pathEditAnchors.value = nextAnchors
+      setSelected(null) // indices shifted by the insert
       commit(nextAnchors, base.closed)
     },
     [shapeId, base, commit],
@@ -289,6 +297,36 @@ export function PathEditorOverlay() {
     },
     [base, commit],
   )
+
+  // Delete the selected anchor (rejoining its neighbours). Refused — and thus a
+  // no-op — when it would drop the path below a viable point count.
+  const deleteSelected = useCallback(() => {
+    if (selectedAnchor == null || !shapeId) return
+    const cur = pathEditAnchors.value ?? base.anchors
+    if (selectedAnchor >= cur.length) {
+      setSelected(null)
+      return
+    }
+    const next = deleteAnchor(cur, base.closed, selectedAnchor)
+    setSelected(null)
+    if (next.length === cur.length) return
+    pathEditAnchors.value = next
+    commit(next, base.closed)
+  }, [selectedAnchor, shapeId, base, commit])
+
+  // Delete / Backspace removes the selected anchor while editing.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      if (selectedAnchor == null || !isPathEditing) return
+      const t = e.target as HTMLElement | null
+      if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
+      e.preventDefault()
+      deleteSelected()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectedAnchor, isPathEditing, deleteSelected])
 
   if (
     !isPathEditing ||
@@ -374,8 +412,8 @@ export function PathEditorOverlay() {
             <circle
               cx={ps.x}
               cy={ps.y}
-              r={5}
-              fill={HANDLE_FILL}
+              r={i === selectedAnchor ? 6 : 5}
+              fill={i === selectedAnchor ? SELECTION_STROKE : HANDLE_FILL}
               stroke={SELECTION_STROKE}
               strokeWidth={1.5}
               style={{ pointerEvents: 'auto', cursor: 'move' }}

@@ -7,6 +7,7 @@ import {
   nearestPointOnPath,
   insertAnchorOnEdge,
   toggleAnchorSmooth,
+  deleteAnchor,
   reflect,
   type Anchor,
 } from '../../../../src/lib/renderer/geom/anchors'
@@ -221,6 +222,52 @@ describe('toggleAnchorSmooth', () => {
     // direction to the only neighbour is +x; d = 90/3 = 30
     expect(out[0].handleOut).toEqual({ x: 30, y: 0 })
     expect(out[0].handleIn).toEqual({ x: -30, y: 0 })
+  })
+})
+
+describe('deleteAnchor', () => {
+  it('removes a middle anchor and rejoins its neighbours straight', () => {
+    const out = deleteAnchor([corner(0, 0), corner(50, 0), corner(100, 0)], false, 1)
+    expect(out).toEqual([{ point: { x: 0, y: 0 } }, { point: { x: 100, y: 0 } }])
+  })
+
+  it('drops the handles that faced the removed anchor, keeps the far ones', () => {
+    const anchors: Anchor[] = [
+      { point: { x: 0, y: 0 }, handleIn: { x: -5, y: 0 }, handleOut: { x: 10, y: 0 } },
+      { point: { x: 50, y: 0 }, handleIn: { x: 40, y: 0 }, handleOut: { x: 60, y: 0 } },
+      { point: { x: 100, y: 0 }, handleIn: { x: 90, y: 0 }, handleOut: { x: 110, y: 0 } },
+    ]
+    const out = deleteAnchor(anchors, false, 1)
+    expect(out).toHaveLength(2)
+    // prev keeps its in-handle, loses the out-handle that pointed at the deleted node
+    expect(out[0].handleIn).toEqual({ x: -5, y: 0 })
+    expect(out[0].handleOut).toBeUndefined()
+    // next keeps its out-handle, loses the in-handle that pointed at the deleted node
+    expect(out[1].handleIn).toBeUndefined()
+    expect(out[1].handleOut).toEqual({ x: 110, y: 0 })
+  })
+
+  it('deleting an open endpoint shortens the path', () => {
+    const out = deleteAnchor([corner(0, 0), corner(50, 0), corner(100, 0)], false, 0)
+    expect(out).toEqual([{ point: { x: 50, y: 0 } }, { point: { x: 100, y: 0 } }])
+  })
+
+  it('on a closed path the wrap-around neighbour handles are dropped', () => {
+    const sq: Anchor[] = [
+      { point: { x: 0, y: 0 }, handleIn: { x: -5, y: 0 } },
+      { point: { x: 100, y: 0 } },
+      { point: { x: 100, y: 100 } },
+      { point: { x: 0, y: 100 }, handleOut: { x: -5, y: 100 } },
+    ]
+    const out = deleteAnchor(sq, true, 0) // neighbours are index 3 (prev) and 1 (next)
+    expect(out).toHaveLength(3)
+    // index 3 was prev → its out-handle (faced index 0) is dropped
+    expect(out[2].handleOut).toBeUndefined()
+  })
+
+  it('refuses to drop below a viable path (returns unchanged)', () => {
+    expect(deleteAnchor([corner(0, 0), corner(10, 0)], false, 0)).toHaveLength(2)
+    expect(deleteAnchor([corner(0, 0), corner(10, 0), corner(5, 9)], true, 1)).toHaveLength(3)
   })
 })
 
