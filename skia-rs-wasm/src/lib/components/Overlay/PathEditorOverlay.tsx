@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from '@xstate/react'
 import { useSnapshot } from 'valtio'
+import { Link2, Move, Plus, Spline } from 'lucide-react'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
@@ -35,14 +36,16 @@ import {
   deleteAnchor,
   insertAnchorOnEdge,
   nearestPointOnPath,
-  pathContent,
   reflect,
   segmentsToSvgPath,
   toggleAnchorSmooth,
   type Anchor,
   type Pt,
 } from '../../renderer/geom/anchors'
+import { getSubpaths, compoundContent, type Subpath } from '../../renderer/geom/subpaths'
 import { HANDLE_FILL, SELECTION_STROKE } from './constants'
+import { CursorHintChip, type HintIcon } from '../CursorHint'
+import { PEN_CURSOR } from '../cursors'
 
 type DragKind = 'anchor' | 'in' | 'out'
 
@@ -60,23 +63,54 @@ const cloneAnchor = (a: Anchor): Anchor => ({
   ...(a.handleOut ? { handleOut: { x: a.handleOut.x, y: a.handleOut.y } } : {}),
 })
 
-/** Full node-geometry partial for a set of edited anchors (segments + the AABB
- * that depends on them). Shared by the live render and the final commit. */
-function geometryPartial(node: PenpotNode, anchors: Anchor[], closed: boolean): Partial<PenpotNode> {
-  const b = anchorsBounds(anchors)
-  // Preserve sibling content fields (e.g. cornerRadius); vertices + the derived
-  // segments mirror are rebuilt from the edited anchors.
+/** Node-geometry partial for the full set of sub-paths (compound). The bbox spans
+ * every sub-path; content holds the sub-paths + their derived sharp segments. */
+function recompose(node: PenpotNode, subpaths: Subpath[]): Partial<PenpotNode> {
+  const allVerts = subpaths.flatMap((s) => s.vertices)
+  const b = anchorsBounds(allVerts)
+  // Preserve sibling content fields (e.g. cornerRadius); clear the single-path
+  // mirror so a stale `vertices` can't shadow a multi-sub-path shape.
   const prevContent = (node as { content?: Record<string, unknown> }).content ?? {}
   return {
     ...node,
-    content: { ...prevContent, ...pathContent(anchors, closed) } as PenpotNode['content'],
-    points: anchors.map((a) => ({ x: a.point.x, y: a.point.y })),
+    content: {
+      ...prevContent,
+      vertices: undefined,
+      closed: undefined,
+      ...compoundContent(subpaths),
+    } as PenpotNode['content'],
+    points: allVerts.map((a) => ({ x: a.point.x, y: a.point.y })),
     selrect: { x: b.x, y: b.y, width: b.width, height: b.height, x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height },
     x: b.x,
     y: b.y,
     width: b.width,
     height: b.height,
   }
+}
+
+/** Build the node partial after editing one sub-path: replace sub-path `activeIdx`
+ * with the edited anchors and recompose with the others (read from `node`). */
+function partialForActive(
+  node: PenpotNode,
+  activeAnchors: Anchor[],
+  activeClosed: boolean,
+  activeIdx: number,
+): Partial<PenpotNode> {
+  const subs = getSubpaths((node as { content?: unknown }).content as Parameters<typeof getSubpaths>[0])
+  const edited: Subpath = { vertices: activeAnchors, closed: activeClosed }
+  if (subs.length === 0) subs.push(edited)
+  else subs[Math.min(activeIdx, subs.length - 1)] = edited
+  return recompose(node, subs)
+}
+
+/** Icon for what clicking / dragging will do at the current pointer, shown
+ *  as an icon badge near the cursor (the per-element cursor styles agree). */
+type PathIntent = 'add-vertex' | 'move-vertex' | 'move-handle' | 'close-path'
+const PATH_INTENT_ICONS: Record<PathIntent, HintIcon> = {
+  'add-vertex': Plus,
+  'move-vertex': Move,
+  'move-handle': Spline,
+  'close-path': Link2,
 }
 
 export function PathEditorOverlay() {
@@ -100,6 +134,8 @@ export function PathEditorOverlay() {
   const [selected, setSelected] = useState<{ shapeId: string; index: number } | null>(null)
   const selectedAnchor = selected && selected.shapeId === shapeId ? selected.index : null
 
+  // The active sub-path index (compound paths), scoped to its shape.
+  const [activeSub, setActiveSub] = useState<{ shapeId: string; index: number } | null>(null)
   // Which open end (if any) we're continuing to draw from, scoped to its shape.
   const [extend, setExtend] = useState<{ shapeId: string; end: 'start' | 'end' } | null>(null)
   const extendFrom = isPathEditing && extend && extend.shapeId === shapeId ? extend.end : null
@@ -110,8 +146,10 @@ export function PathEditorOverlay() {
   // extend session) when the edited shape changes or editing starts/stops.
   useEffect(() => {
     pathEditAnchors.value = null
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset on shape/mode change
+    /* eslint-disable react-hooks/set-state-in-effect -- reset on shape/mode change */
     setExtend(null)
+    setActiveSub(null)
+    /* eslint-enable react-hooks/set-state-in-effect */
     return () => {
       dragCleanupRef.current?.()
       pathEditAnchors.value = null
@@ -119,14 +157,23 @@ export function PathEditorOverlay() {
   }, [shapeId, isPathEditing])
 
   const node = shapeId ? getCommittedNodeOnActivePage(shapeId) : null
-  // Vertices are the canonical editable model (read directly, not derived from
-  // segments). `closed` rides alongside them.
-  const content = (node as { content?: { vertices?: Anchor[]; closed?: boolean } } | null)?.content
-  const vertices = content?.vertices ?? null
-  const closedFlag = content?.closed ?? false
+  // Compound paths: read all sub-paths; edit the active one. Most ops keep
+  // working on a single ring (`base`), and commit recomposes with the others.
+  const content = (node as { content?: unknown } | null)?.content
+  const allSubpaths = useMemo(
+    () => getSubpaths(content as Parameters<typeof getSubpaths>[0]),
+    [content],
+  )
+  const activeIdx =
+    allSubpaths.length === 0
+      ? 0
+      : Math.min(activeSub?.shapeId === shapeId ? activeSub.index : 0, allSubpaths.length - 1)
   const base = useMemo(
-    () => ({ anchors: (vertices ?? []) as Anchor[], closed: closedFlag }),
-    [vertices, closedFlag],
+    () => ({
+      anchors: (allSubpaths[activeIdx]?.vertices ?? []) as Anchor[],
+      closed: allSubpaths[activeIdx]?.closed ?? false,
+    }),
+    [allSubpaths, activeIdx],
   )
 
   const commit = useCallback(
@@ -141,7 +188,7 @@ export function PathEditorOverlay() {
         pathEditAnchors.value = null
         return
       }
-      const { content, points, selrect, x, y, width, height } = geometryPartial(before, finalAnchors, closed)
+      const { content, points, selrect, x, y, width, height } = partialForActive(before, finalAnchors, closed, activeIdx)
       // Keep the dragged anchors on screen until the commit lands, then clear the
       // live signal — the re-render then reads the just-committed geometry, which
       // matches, so the markers don't flash back to their pre-drag positions.
@@ -154,7 +201,7 @@ export function PathEditorOverlay() {
         pathEditAnchors.value = null
       })
     },
-    [shapeId],
+    [shapeId, activeIdx],
   )
 
   const beginDrag = useCallback(
@@ -226,7 +273,7 @@ export function PathEditorOverlay() {
       const renderLive = (next: Anchor[]) => {
         const renderer = useWorkspaceStore.getState().renderer
         if (!renderer) return
-        void renderer.updateShape(geometryPartial(node0, next, closed) as PenpotNode)
+        void renderer.updateShape(partialForActive(node0, next, closed, activeIdx) as PenpotNode)
       }
 
       function onMove(ev: PointerEvent) {
@@ -278,7 +325,7 @@ export function PathEditorOverlay() {
       window.addEventListener('pointerup', onUp)
       window.addEventListener('pointercancel', onUp)
     },
-    [shapeId, base, commit],
+    [shapeId, base, commit, activeIdx],
   )
 
   // Keep the cursor signal fresh while over the (pointer-events) hit band so the
@@ -440,7 +487,7 @@ export function PathEditorOverlay() {
         working = nv
         pathEditAnchors.value = working
         const r = useWorkspaceStore.getState().renderer
-        if (r && node0) void r.updateShape(geometryPartial(node0, working, false) as PenpotNode)
+        if (r && node0) void r.updateShape(partialForActive(node0, working, false, activeIdx) as PenpotNode)
       }
       const dragUp = (ue: PointerEvent) => {
         if (ue.pointerId !== pid) return
@@ -482,7 +529,7 @@ export function PathEditorOverlay() {
       window.removeEventListener('mousedown', blockSurface, true)
       window.removeEventListener('keydown', onKey, true)
     }
-  }, [extendFrom, shapeId, base, commit])
+  }, [extendFrom, shapeId, base, commit, activeIdx])
 
   if (
     !isPathEditing ||
@@ -490,7 +537,7 @@ export function PathEditorOverlay() {
     !viewport ||
     !node ||
     (node as { type?: string }).type !== 'path' ||
-    !vertices
+    allSubpaths.length === 0
   ) {
     return null
   }
@@ -528,7 +575,27 @@ export function PathEditorOverlay() {
     if (Math.hypot(c.x - o.x, c.y - o.y) <= CLOSE_HIT_PX) closeTargetIdx = otherIdx
   }
 
+  // Current pointer intention -> hint chip near the cursor.
+  let intent: PathIntent | null = null
+  if (pointer) {
+    if (extendFrom) {
+      intent = closeTargetIdx >= 0 ? 'close-path' : 'add-vertex'
+    } else {
+      let nearHandle = Infinity
+      let nearAnchor = Infinity
+      for (const a of screenAnchors) {
+        nearAnchor = Math.min(nearAnchor, Math.hypot(pointer.x - a.point.x, pointer.y - a.point.y))
+        if (a.handleIn) nearHandle = Math.min(nearHandle, Math.hypot(pointer.x - a.handleIn.x, pointer.y - a.handleIn.y))
+        if (a.handleOut) nearHandle = Math.min(nearHandle, Math.hypot(pointer.x - a.handleOut.x, pointer.y - a.handleOut.y))
+      }
+      if (nearHandle <= 7) intent = 'move-handle'
+      else if (nearAnchor <= 10) intent = 'move-vertex'
+      else if (ghost) intent = 'add-vertex'
+    }
+  }
+
   return (
+    <>
     <svg
       ref={svgRef}
       style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
@@ -538,7 +605,7 @@ export function PathEditorOverlay() {
         fill="none"
         stroke="transparent"
         strokeWidth={ADD_HIT_PX * 2}
-        style={{ pointerEvents: 'stroke', cursor: 'copy' }}
+        style={{ pointerEvents: 'stroke', cursor: PEN_CURSOR }}
         onPointerMove={onHitMove}
         onPointerDown={onAddAnchor}
       />
@@ -554,6 +621,49 @@ export function PathEditorOverlay() {
         opacity={0.85}
         style={{ pointerEvents: 'none' }}
       />
+      {/* Other sub-paths: dimmed skeletons with clickable dots to activate one. */}
+      {allSubpaths.map((sp, si) => {
+        if (si === activeIdx || sp.vertices.length === 0) return null
+        const sa: Anchor[] = sp.vertices.map((a) => ({
+          point: toScreen(a.point),
+          ...(a.handleIn ? { handleIn: toScreen(a.handleIn) } : {}),
+          ...(a.handleOut ? { handleOut: toScreen(a.handleOut) } : {}),
+        }))
+        const d = segmentsToSvgPath(anchorsToSegments(sa, sp.closed))
+        return (
+          <g key={`sub${si}`} opacity={0.45}>
+            <path
+              d={d}
+              fill="none"
+              stroke={SELECTION_STROKE}
+              strokeWidth={1.25}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              style={{ pointerEvents: 'none' }}
+            />
+            {sp.vertices.map((a, vi) => {
+              const ps = toScreen(a.point)
+              return (
+                <circle
+                  key={vi}
+                  cx={ps.x}
+                  cy={ps.y}
+                  r={4}
+                  fill={HANDLE_FILL}
+                  stroke={SELECTION_STROKE}
+                  strokeWidth={1.25}
+                  style={{ pointerEvents: 'auto', cursor: 'pointer' }}
+                  onPointerDown={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    if (shapeId) setActiveSub({ shapeId, index: si })
+                  }}
+                />
+              )
+            })}
+          </g>
+        )
+      })}
       {extendFrom && extendCursor && activeEndIdx >= 0 && (() => {
         const a = toScreen(anchors[activeEndIdx].point)
         const c = toScreen(extendCursor)
@@ -642,5 +752,9 @@ export function PathEditorOverlay() {
         />
       )}
     </svg>
+      {intent && pointer && (
+        <CursorHintChip x={pointer.x} y={pointer.y} icon={PATH_INTENT_ICONS[intent]} />
+      )}
+    </>
   )
 }
