@@ -20,7 +20,7 @@ import { useSnapshot } from 'valtio'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
-import { viewport as viewportSignal } from '../../renderer/signals/pointer'
+import { pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
 import { pathEditAnchors } from '../../renderer/signals/selection'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { useWorkspaceStore } from '../../renderer/store/workspace-store'
@@ -32,8 +32,11 @@ import { screenToWorld, worldToScreen } from '../../renderer/viewport'
 import {
   anchorsBounds,
   anchorsToSegments,
+  insertAnchorOnEdge,
+  nearestPointOnPath,
   reflect,
   segmentsToAnchors,
+  segmentsToSvgPath,
   type Anchor,
   type Pt,
 } from '../../renderer/geom/anchors'
@@ -41,6 +44,9 @@ import type { PathSegment } from '../../renderer/types'
 import { HANDLE_FILL, SELECTION_STROKE } from './constants'
 
 type DragKind = 'anchor' | 'in' | 'out'
+
+/** Screen-px reach for the add-anchor hit band and hover ghost (half the band). */
+const ADD_HIT_PX = 8
 
 const cloneAnchor = (a: Anchor): Anchor => ({
   point: { x: a.point.x, y: a.point.y },
@@ -72,6 +78,9 @@ export function PathEditorOverlay() {
   useSnapshot(docProxy)
   const viewport = useSignalCoalesced(viewportSignal)
   const liveAnchors = useSignalCoalesced(pathEditAnchors)
+  // Cursor (surface-relative px) drives the hover ghost showing where a click
+  // would insert an anchor.
+  const pointer = useSignalCoalesced(pointerPos)
   const svgRef = useRef<SVGSVGElement>(null)
   // Tear-down for the in-flight drag's window listeners + pointer capture. Held in
   // a ref so an exit (Esc / click-away → unmount) can release a stuck drag.
@@ -213,6 +222,38 @@ export function PathEditorOverlay() {
     [shapeId, base, commit],
   )
 
+  // Keep the cursor signal fresh while over the (pointer-events) hit band so the
+  // hover ghost tracks even there — the surface below can't see those moves.
+  const onHitMove = useCallback((e: React.PointerEvent) => {
+    const svg = svgRef.current
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    pointerPos.value = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  }, [])
+
+  // Insert an anchor where the cursor meets the outline (the spot the ghost
+  // previews). stopPropagation keeps the surface from treating this as click-away.
+  const onAddAnchor = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const svg = svgRef.current
+      const vp = viewportSignal.value
+      if (!svg || !vp || !shapeId) return
+      const rect = svg.getBoundingClientRect()
+      const world = screenToWorld(vp, e.clientX - rect.left, e.clientY - rect.top)
+      const cur = pathEditAnchors.value ?? base.anchors
+      const hit = nearestPointOnPath(cur, base.closed, world)
+      if (!hit || hit.dist * (vp.zoom ?? 1) > ADD_HIT_PX) return
+      const nextAnchors = insertAnchorOnEdge(cur, base.closed, hit.edge, hit.t)
+      // Show the new dot immediately (the outline itself is unchanged by the
+      // split); commit clears the live signal once the doc holds the new anchor.
+      pathEditAnchors.value = nextAnchors
+      commit(nextAnchors, base.closed)
+    },
+    [shapeId, base, commit],
+  )
+
   if (
     !isPathEditing ||
     !shapeId ||
@@ -225,13 +266,39 @@ export function PathEditorOverlay() {
   }
 
   const anchors = liveAnchors ?? base.anchors
+  const closed = base.closed
   const toScreen = (p: Pt) => worldToScreen(viewport, p.x, p.y)
+
+  // Screen-space `d` for the invisible hit band along the outline (catches near-
+  // outline clicks to add an anchor; clicks elsewhere fall through to exit).
+  const screenAnchors: Anchor[] = anchors.map((a) => ({
+    point: toScreen(a.point),
+    ...(a.handleIn ? { handleIn: toScreen(a.handleIn) } : {}),
+    ...(a.handleOut ? { handleOut: toScreen(a.handleOut) } : {}),
+  }))
+  const hitPathD = segmentsToSvgPath(anchorsToSegments(screenAnchors, closed))
+
+  // Hover ghost: the point on the outline a click would split (hidden mid-drag).
+  let ghost: { x: number; y: number } | null = null
+  if (liveAnchors == null && pointer) {
+    const hit = nearestPointOnPath(anchors, closed, screenToWorld(viewport, pointer.x, pointer.y))
+    if (hit && hit.dist * (viewport.zoom ?? 1) <= ADD_HIT_PX) ghost = toScreen(hit.point)
+  }
 
   return (
     <svg
       ref={svgRef}
       style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
     >
+      <path
+        d={hitPathD}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={ADD_HIT_PX * 2}
+        style={{ pointerEvents: 'stroke', cursor: 'copy' }}
+        onPointerMove={onHitMove}
+        onPointerDown={onAddAnchor}
+      />
       {anchors.map((a, i) => {
         const ps = toScreen(a.point)
         return (
@@ -269,6 +336,18 @@ export function PathEditorOverlay() {
           </g>
         )
       })}
+      {ghost && (
+        <circle
+          cx={ghost.x}
+          cy={ghost.y}
+          r={5}
+          fill="none"
+          stroke={SELECTION_STROKE}
+          strokeWidth={1.5}
+          strokeDasharray="3 2"
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
     </svg>
   )
 }

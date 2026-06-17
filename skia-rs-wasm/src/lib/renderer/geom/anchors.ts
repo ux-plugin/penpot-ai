@@ -121,6 +121,135 @@ export function anchorsBounds(anchors: Anchor[]): {
   return { x: minX, y: minY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) }
 }
 
+const lerpPt = (a: Pt, b: Pt, t: number): Pt => ({
+  x: a.x + (b.x - a.x) * t,
+  y: a.y + (b.y - a.y) * t,
+})
+const dist2 = (a: Pt, b: Pt): number => (a.x - b.x) ** 2 + (a.y - b.y) ** 2
+
+/** Cubic bézier point at parameter t (Bernstein form). */
+function cubicAt(p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt {
+  const u = 1 - t
+  const a = u * u * u
+  const b = 3 * u * u * t
+  const c = 3 * u * t * t
+  const d = t * t * t
+  return {
+    x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+    y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+  }
+}
+
+/** The control points of the edge from anchor `a` to anchor `b`, treating a
+ * missing handle as a degenerate one at its own point (so lines and curves share
+ * one cubic representation). */
+function edgeControls(a: Anchor, b: Anchor): { p0: Pt; p1: Pt; p2: Pt; p3: Pt; curve: boolean } {
+  const curve = !!(a.handleOut || b.handleIn)
+  return { p0: a.point, p1: a.handleOut ?? a.point, p2: b.handleIn ?? b.point, p3: b.point, curve }
+}
+
+export interface PathHit {
+  /** Index of the anchor that starts the hit edge (its successor closes it). */
+  edge: number
+  /** Parameter along that edge, 0..1. */
+  t: number
+  /** The closest point on the edge (same coord space as the query). */
+  point: Pt
+  /** Distance from the query point to `point`. */
+  dist: number
+}
+
+/**
+ * Closest point on the path outline to `target` (same coord space as the
+ * anchors). Walks every edge — straight edges by perpendicular projection,
+ * curved edges by coarse sampling refined with a ternary search — and returns
+ * the nearest, or null for a path with fewer than two anchors. Used by the
+ * vector editor to preview/insert an anchor under the cursor.
+ */
+export function nearestPointOnPath(anchors: Anchor[], closed: boolean, target: Pt): PathHit | null {
+  const n = anchors.length
+  if (n < 2) return null
+  const edges = closed ? n : n - 1
+  let best: PathHit | null = null
+  const consider = (hit: PathHit) => {
+    if (!best || hit.dist < best.dist) best = hit
+  }
+  for (let i = 0; i < edges; i++) {
+    const a = anchors[i]
+    const b = anchors[(i + 1) % n]
+    const { p0, p1, p2, p3, curve } = edgeControls(a, b)
+    if (!curve) {
+      const dx = p3.x - p0.x
+      const dy = p3.y - p0.y
+      const len2 = dx * dx + dy * dy
+      const t = len2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((target.x - p0.x) * dx + (target.y - p0.y) * dy) / len2))
+      const point = lerpPt(p0, p3, t)
+      consider({ edge: i, t, point, dist: Math.sqrt(dist2(point, target)) })
+      continue
+    }
+    const SAMPLES = 24
+    let bt = 0
+    let bd = Infinity
+    for (let s = 0; s <= SAMPLES; s++) {
+      const t = s / SAMPLES
+      const d = dist2(cubicAt(p0, p1, p2, p3, t), target)
+      if (d < bd) {
+        bd = d
+        bt = t
+      }
+    }
+    let lo = Math.max(0, bt - 1 / SAMPLES)
+    let hi = Math.min(1, bt + 1 / SAMPLES)
+    for (let r = 0; r < 16; r++) {
+      const m1 = lo + (hi - lo) / 3
+      const m2 = hi - (hi - lo) / 3
+      if (dist2(cubicAt(p0, p1, p2, p3, m1), target) < dist2(cubicAt(p0, p1, p2, p3, m2), target)) hi = m2
+      else lo = m1
+    }
+    const t = (lo + hi) / 2
+    const point = cubicAt(p0, p1, p2, p3, t)
+    consider({ edge: i, t, point, dist: Math.sqrt(dist2(point, target)) })
+  }
+  return best
+}
+
+/**
+ * Insert an anchor splitting the edge that starts at anchor `i` at parameter
+ * `t`. A curved edge is split with De Casteljau so the outline is unchanged
+ * (the two new sub-curves trace the original); a straight edge splits linearly.
+ * Returns a new anchor array (the input is not mutated).
+ */
+export function insertAnchorOnEdge(anchors: Anchor[], closed: boolean, i: number, t: number): Anchor[] {
+  const n = anchors.length
+  if (n < 2 || i < 0 || i >= (closed ? n : n - 1)) return anchors.map(cloneAnchor)
+  const j = (i + 1) % n
+  const next = anchors.map(cloneAnchor)
+  const { p0, p1, p2, p3, curve } = edgeControls(anchors[i], anchors[j])
+  let inserted: Anchor
+  if (!curve) {
+    inserted = { point: lerpPt(p0, p3, t) }
+  } else {
+    const q0 = lerpPt(p0, p1, t)
+    const q1 = lerpPt(p1, p2, t)
+    const q2 = lerpPt(p2, p3, t)
+    const r0 = lerpPt(q0, q1, t)
+    const r1 = lerpPt(q1, q2, t)
+    const s = lerpPt(r0, r1, t)
+    next[i].handleOut = q0
+    next[j].handleIn = q2
+    inserted = { point: s, handleIn: r0, handleOut: r1 }
+  }
+  // i+1 lands at the array end for the closing edge (i = n-1) — a plain push.
+  next.splice(i + 1, 0, inserted)
+  return next
+}
+
+const cloneAnchor = (a: Anchor): Anchor => ({
+  point: { x: a.point.x, y: a.point.y },
+  ...(a.handleIn ? { handleIn: { x: a.handleIn.x, y: a.handleIn.y } } : {}),
+  ...(a.handleOut ? { handleOut: { x: a.handleOut.x, y: a.handleOut.y } } : {}),
+})
+
 /** Render segments to an SVG path `d` (world coords) — shared by the pen preview
  * and the future vector editor. */
 export function segmentsToSvgPath(segments: PathSegment[]): string {
