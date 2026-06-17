@@ -51,6 +51,16 @@ export type PathSegment =
   | { type: 'close-path' }
 
 export interface PathContent {
+  /** Canonical editable path model: ordered vertices with optional bézier handles
+   * (absolute world coords). `segments` below is a derived sharp mirror kept in
+   * sync by `pathContent()`; vertices are the source of truth for editing. */
+  vertices?: Array<{
+    point: { x: number; y: number }
+    handleIn?: { x: number; y: number }
+    handleOut?: { x: number; y: number }
+  }>
+  /** Whether the vertex ring closes. */
+  closed?: boolean
   segments?: PathSegment[]
   /** Single shape-wide corner radius (P4). The stored `segments` stay sharp; the
    * fillet is applied only when serializing to the renderer. */

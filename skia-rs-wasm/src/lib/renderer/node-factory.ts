@@ -14,7 +14,12 @@ import {
   outlineWorldPoints,
   type PathShapeKind,
 } from './geom/primitives'
-import { anchorsToSegments, anchorsBounds, type Anchor } from './geom/anchors'
+import {
+  anchorsBounds,
+  pathContent,
+  segmentsToAnchors,
+  type Anchor,
+} from './geom/anchors'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -308,6 +313,8 @@ export function createParametricPath(
     innerRatio: options.innerRatio,
   })
   const segments: PathSegment[] = translateSegments(localSegments, x, y)
+  // Vertices are the canonical model; recover them from the generated outline.
+  const { anchors: verts, closed } = segmentsToAnchors(segments)
 
   const fills: Fill[] = options.fillColor
     ? [{ fillColor: options.fillColor, fillOpacity: options.fillOpacity ?? 1 }]
@@ -338,7 +345,7 @@ export function createParametricPath(
     points: outlineWorldPoints(localSegments, x, y),
     fills,
     strokes,
-    content: { segments },
+    content: pathContent(verts, closed) as PenpotNode['content'],
     opacity: options.opacity ?? 1,
   })
 }
@@ -380,11 +387,6 @@ export function createLine(options: {
       ]
     : []
 
-  const segments: PathSegment[] = [
-    { type: 'move-to', x: x1, y: y1 },
-    { type: 'line-to', x: x2, y: y2 },
-  ]
-
   return applyGeometryDefaults({
     id,
     type: 'path',
@@ -400,7 +402,10 @@ export function createLine(options: {
       { x: x2, y: y2 },
     ],
     strokes,
-    content: { segments } as PenpotNode['content'],
+    content: pathContent(
+      [{ point: { x: x1, y: y1 } }, { point: { x: x2, y: y2 } }],
+      false,
+    ) as PenpotNode['content'],
     opacity: options.opacity ?? 1,
   })
 }
@@ -438,11 +443,6 @@ export function createPolyline(
   const width = Math.max(0, maxX - minX)
   const height = Math.max(0, maxY - minY)
 
-  const segments: PathSegment[] = anchors.map((p, i) =>
-    i === 0 ? { type: 'move-to', x: p.x, y: p.y } : { type: 'line-to', x: p.x, y: p.y },
-  )
-  if (options.closed) segments.push({ type: 'close-path' })
-
   const fills: Fill[] =
     options.closed && options.fillColor
       ? [{ fillColor: options.fillColor, fillOpacity: options.fillOpacity ?? 1 }]
@@ -472,7 +472,10 @@ export function createPolyline(
     points: anchors.map((p) => ({ x: p.x, y: p.y })),
     fills,
     strokes,
-    content: { segments } as PenpotNode['content'],
+    content: pathContent(
+      anchors.map((p) => ({ point: { x: p.x, y: p.y } })),
+      options.closed ?? false,
+    ) as PenpotNode['content'],
     opacity: options.opacity ?? 1,
   })
 }
@@ -500,7 +503,6 @@ export function createBezierPath(
   } = {}
 ): PenpotNode {
   const id = options.id || newShapeId()
-  const segments = anchorsToSegments(anchors, options.closed)
   const { x: minX, y: minY, width, height } = anchorsBounds(anchors)
 
   const fills: Fill[] =
@@ -532,7 +534,7 @@ export function createBezierPath(
     points: anchors.map((a) => ({ x: a.point.x, y: a.point.y })),
     fills,
     strokes,
-    content: { segments } as PenpotNode['content'],
+    content: pathContent(anchors, options.closed ?? false) as PenpotNode['content'],
     opacity: options.opacity ?? 1,
   })
 }

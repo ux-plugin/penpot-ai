@@ -35,14 +35,13 @@ import {
   deleteAnchor,
   insertAnchorOnEdge,
   nearestPointOnPath,
+  pathContent,
   reflect,
-  segmentsToAnchors,
   segmentsToSvgPath,
   toggleAnchorSmooth,
   type Anchor,
   type Pt,
 } from '../../renderer/geom/anchors'
-import type { PathSegment } from '../../renderer/types'
 import { HANDLE_FILL, SELECTION_STROKE } from './constants'
 
 type DragKind = 'anchor' | 'in' | 'out'
@@ -60,11 +59,12 @@ const cloneAnchor = (a: Anchor): Anchor => ({
  * that depends on them). Shared by the live render and the final commit. */
 function geometryPartial(node: PenpotNode, anchors: Anchor[], closed: boolean): Partial<PenpotNode> {
   const b = anchorsBounds(anchors)
-  // Preserve sibling content fields (e.g. cornerRadius) — only the segments change.
+  // Preserve sibling content fields (e.g. cornerRadius); vertices + the derived
+  // segments mirror are rebuilt from the edited anchors.
   const prevContent = (node as { content?: Record<string, unknown> }).content ?? {}
   return {
     ...node,
-    content: { ...prevContent, segments: anchorsToSegments(anchors, closed) } as PenpotNode['content'],
+    content: { ...prevContent, ...pathContent(anchors, closed) } as PenpotNode['content'],
     points: anchors.map((a) => ({ x: a.point.x, y: a.point.y })),
     selrect: { x: b.x, y: b.y, width: b.width, height: b.height, x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height },
     x: b.x,
@@ -106,11 +106,14 @@ export function PathEditorOverlay() {
   }, [shapeId, isPathEditing])
 
   const node = shapeId ? getCommittedNodeOnActivePage(shapeId) : null
-  const segments =
-    (node as { content?: { segments?: PathSegment[] } } | null)?.content?.segments ?? null
+  // Vertices are the canonical editable model (read directly, not derived from
+  // segments). `closed` rides alongside them.
+  const content = (node as { content?: { vertices?: Anchor[]; closed?: boolean } } | null)?.content
+  const vertices = content?.vertices ?? null
+  const closedFlag = content?.closed ?? false
   const base = useMemo(
-    () => (segments ? segmentsToAnchors(segments) : { anchors: [] as Anchor[], closed: false }),
-    [segments],
+    () => ({ anchors: (vertices ?? []) as Anchor[], closed: closedFlag }),
+    [vertices, closedFlag],
   )
 
   const commit = useCallback(
@@ -336,7 +339,7 @@ export function PathEditorOverlay() {
     !viewport ||
     !node ||
     (node as { type?: string }).type !== 'path' ||
-    !segments
+    !vertices
   ) {
     return null
   }

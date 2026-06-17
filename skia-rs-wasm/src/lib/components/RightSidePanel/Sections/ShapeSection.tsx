@@ -20,6 +20,7 @@ import {
   type ParametricShapeKind,
 } from '@/lib/renderer/geom/primitives'
 import { recognizeShape } from '@/lib/renderer/geom/recognize-shape'
+import { pathContent, segmentsToAnchors } from '@/lib/renderer/geom/anchors'
 import {
   commitNodePartialUpdate,
   getCommittedNodeOnActivePage,
@@ -48,10 +49,13 @@ function regenPartial(
   const w = sr?.width ?? 0
   const h = sr?.height ?? 0
   const local = shapeOutline(kind, { width: w, height: h, ...params })
-  // Preserve sibling content fields (e.g. cornerRadius) — only the segments change.
+  const seg = translateSegments(local, x, y)
+  const { anchors, closed } = segmentsToAnchors(seg)
+  // Preserve sibling content fields (e.g. cornerRadius); rebuild vertices + the
+  // derived segments mirror from the regenerated outline.
   const prevContent = (node as { content?: Record<string, unknown> }).content ?? {}
   return {
-    content: { ...prevContent, segments: translateSegments(local, x, y) } as PenpotNode['content'],
+    content: { ...prevContent, ...pathContent(anchors, closed) } as PenpotNode['content'],
     points: outlineWorldPoints(local, x, y),
   }
 }

@@ -62,6 +62,20 @@ export function anchorsToSegments(anchors: Anchor[], closed = false): PathSegmen
   return segs
 }
 
+/**
+ * Build a path node's `content` from the canonical vertices: stores the vertices
+ * (cloned to plain objects) + `closed`, and a derived SHARP `segments` mirror so
+ * every reader that still consumes segments (renderer, recognizer, worker) keeps
+ * working. This is the single place the vertices→segments sync happens.
+ */
+export function pathContent(
+  vertices: Anchor[],
+  closed: boolean,
+): { vertices: Anchor[]; closed: boolean; segments: PathSegment[] } {
+  const v = vertices.map(cloneAnchor)
+  return { vertices: v, closed, segments: anchorsToSegments(v, closed) }
+}
+
 export function segmentsToAnchors(segments: PathSegment[]): { anchors: Anchor[]; closed: boolean } {
   const anchors: Anchor[] = []
   let closed = false

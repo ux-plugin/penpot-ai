@@ -90,9 +90,21 @@ export function applyTransformToNode(
   // moves). Bake the matrix into the segments instead, derive the bbox from
   // them, and keep the transform identity (its creation state) so the renderer
   // doesn't double-apply.
-  const content = (node as { content?: { segments?: PathSegment[] } }).content
+  type XY = { x: number; y: number }
+  type VertexLike = { point: XY; handleIn?: XY; handleOut?: XY }
+  const content = (node as { content?: { segments?: PathSegment[]; vertices?: VertexLike[] } }).content
   const segs = content?.segments
   if (content && Array.isArray(segs) && segs.length > 0) {
+    // Vertices are the canonical model — bake the matrix into them too, in
+    // lockstep with the segments, so the editable path doesn't go stale.
+    const verts = content.vertices
+    const newVertices: VertexLike[] | undefined = Array.isArray(verts)
+      ? verts.map((v) => ({
+          point: applyM(v.point),
+          ...(v.handleIn ? { handleIn: applyM(v.handleIn) } : {}),
+          ...(v.handleOut ? { handleOut: applyM(v.handleOut) } : {}),
+        }))
+      : undefined
     const newSegments: PathSegment[] = segs.map((s) => {
       if (s.type === 'move-to' || s.type === 'line-to') {
         const p = applyM({ x: s.x, y: s.y })
@@ -131,7 +143,11 @@ export function applyTransformToNode(
     const bh = Math.max(0, maxY - minY)
 
     const pathUpdates: Partial<PenpotNode> = {
-      content: { ...content, segments: newSegments } as PenpotNode['content'],
+      content: {
+        ...content,
+        ...(newVertices ? { vertices: newVertices } : {}),
+        segments: newSegments,
+      } as PenpotNode['content'],
       selrect: makeSelrect(minX, minY, bw, bh),
       points: [
         { x: minX, y: minY },

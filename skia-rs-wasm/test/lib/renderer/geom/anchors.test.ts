@@ -8,6 +8,7 @@ import {
   insertAnchorOnEdge,
   toggleAnchorSmooth,
   deleteAnchor,
+  pathContent,
   reflect,
   type Anchor,
 } from '../../../../src/lib/renderer/geom/anchors'
@@ -268,6 +269,27 @@ describe('deleteAnchor', () => {
   it('refuses to drop below a viable path (returns unchanged)', () => {
     expect(deleteAnchor([corner(0, 0), corner(10, 0)], false, 0)).toHaveLength(2)
     expect(deleteAnchor([corner(0, 0), corner(10, 0), corner(5, 9)], true, 1)).toHaveLength(3)
+  })
+})
+
+describe('pathContent', () => {
+  it('stores cloned vertices + closed and a derived sharp segment mirror', () => {
+    const verts: Anchor[] = [corner(0, 0), corner(10, 0), corner(5, 9)]
+    const c = pathContent(verts, true)
+    expect(c.closed).toBe(true)
+    expect(c.vertices).toEqual(verts)
+    expect(c.vertices).not.toBe(verts) // cloned
+    expect(c.segments).toEqual(anchorsToSegments(verts, true))
+  })
+
+  it('round-trips: segmentsToAnchors(pathContent(v).segments) recovers v', () => {
+    const verts: Anchor[] = [
+      { point: { x: 0, y: 0 }, handleOut: { x: 3, y: 5 } },
+      { point: { x: 10, y: 0 }, handleIn: { x: 7, y: 5 } },
+    ]
+    const back = segmentsToAnchors(pathContent(verts, false).segments)
+    expect(back.anchors).toEqual(verts)
+    expect(back.closed).toBe(false)
   })
 })
 
