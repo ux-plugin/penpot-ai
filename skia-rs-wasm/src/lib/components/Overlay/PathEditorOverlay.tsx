@@ -151,6 +151,9 @@ export function PathEditorOverlay() {
       const basePoint = { ...grabbed.point }
       const baseIn = grabbed.handleIn ? { ...grabbed.handleIn } : null
       const baseOut = grabbed.handleOut ? { ...grabbed.handleOut } : null
+      // Alt-drag a point pulls a fresh symmetric handle pair out of it instead of
+      // moving it (corner → smooth) — the way to bend a segment that has none.
+      const bend = kind === 'anchor' && e.altKey
       const pointerId = e.pointerId
       // Capture on the stable svg root (not the marker, which re-renders mid-drag)
       // so pointermove/up land reliably even when the cursor leaves the marker.
@@ -167,11 +170,17 @@ export function PathEditorOverlay() {
         const next = start.map(cloneAnchor)
         const a = next[index]
         if (kind === 'anchor') {
-          const dx = world.x - basePoint.x
-          const dy = world.y - basePoint.y
-          a.point = { x: world.x, y: world.y }
-          if (baseIn) a.handleIn = { x: baseIn.x + dx, y: baseIn.y + dy }
-          if (baseOut) a.handleOut = { x: baseOut.x + dx, y: baseOut.y + dy }
+          if (bend) {
+            // Point stays put; pull a symmetric handle pair toward the cursor.
+            a.handleOut = { x: world.x, y: world.y }
+            a.handleIn = reflect(basePoint, a.handleOut)
+          } else {
+            const dx = world.x - basePoint.x
+            const dy = world.y - basePoint.y
+            a.point = { x: world.x, y: world.y }
+            if (baseIn) a.handleIn = { x: baseIn.x + dx, y: baseIn.y + dy }
+            if (baseOut) a.handleOut = { x: baseOut.x + dx, y: baseOut.y + dy }
+          }
         } else if (kind === 'out') {
           a.handleOut = { x: world.x, y: world.y }
           if (!alt && a.handleIn) a.handleIn = reflect(a.point, a.handleOut)

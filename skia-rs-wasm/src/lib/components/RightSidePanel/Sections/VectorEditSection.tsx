@@ -50,6 +50,14 @@ export function VectorEditSection({ nodeId, initialNode, readOnly }: VectorEditS
           <PenTool className="size-4 shrink-0" />
           {editingThis ? 'Done editing' : 'Edit path'}
         </Button>
+        {editingThis && (
+          <ul className="mt-2 space-y-0.5 text-[11px] leading-tight text-muted-foreground">
+            <li>Drag a point to move it</li>
+            <li>Alt-drag a point to curve it</li>
+            <li>Click the outline to add a point</li>
+            <li>Alt-drag a handle to break the curve</li>
+          </ul>
+        )}
       </div>
     </>
   )
