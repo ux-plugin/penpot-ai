@@ -5,6 +5,8 @@
 import { parseSVG } from 'svg-path-parser'
 import type { WasmModule } from '../wasm-types'
 import type { PathContent, PathSegment } from '../types'
+import { segmentsToAnchors } from '../geom/anchors'
+import { roundedSegments } from '../geom/fillet'
 import { checkContext } from './context'
 import { MAX_BUFFER_CHUNK_SIZE } from './constants'
 import { allocBytes, freeBytes, offset8To32 } from '../utils'
@@ -102,6 +104,14 @@ function parsePathStringToSegments(pathString: string): PathSegment[] {
  */
 function getSegmentsFromContent(content: PathContent): PathSegment[] {
   if (content.segments && Array.isArray(content.segments) && content.segments.length > 0) {
+    // The stored segments are sharp; a shape-wide corner radius (P4) is filleted
+    // here, at the render boundary, so the doc model and recognizer keep working
+    // on the sharp geometry.
+    const r = typeof content.cornerRadius === 'number' ? content.cornerRadius : 0
+    if (r > 0) {
+      const { anchors, closed } = segmentsToAnchors(content.segments)
+      return roundedSegments(anchors, r, closed)
+    }
     return content.segments
   }
   const pathString =

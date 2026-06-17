@@ -52,6 +52,9 @@ export type PathSegment =
 
 export interface PathContent {
   segments?: PathSegment[]
+  /** Single shape-wide corner radius (P4). The stored `segments` stay sharp; the
+   * fillet is applied only when serializing to the renderer. */
+  cornerRadius?: number
   [key: string]: unknown
 }
 

@@ -134,6 +134,14 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
     nodeType === 'instance' ||
     nodeType === 'component'
 
+  // Non-frame path nodes (triangle/polygon/star/pen) get a single shape-wide
+  // corner radius (P4) — a per-vertex fillet applied to every corner. Hidden for
+  // open lines with nothing to round (< 3 points).
+  const pathContent = (initialNode as { content?: { cornerRadius?: number } }).content
+  const pathPointCount = ((initialNode as { points?: unknown[] }).points ?? []).length
+  const showPathRadius = nodeType === 'path' && pathPointCount >= 3
+  const pathCornerRadius = pathContent?.cornerRadius ?? 0
+
   const growType = (initialNode as { growType?: string }).growType
   const mode = (growType as GrowType | undefined) ?? 'fixed'
   const widthComputed = isText && growType === 'auto-width'
@@ -187,6 +195,25 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
     setCorners(next)
     void commitCorners(next)
   }
+
+  // Path corner radius: update the single `content.cornerRadius` overlay, keeping
+  // the sharp `content.segments` intact. The renderer fillets at serialize time.
+  const commitPathCornerRadius = useCallback(
+    async (n: number) => {
+      if (readOnly) return
+      const before = getCommittedNodeOnActivePage(nodeId)
+      const pid = getActiveOrSinglePageId()
+      if (!before || !pid) return
+      const prevContent = (before as { content?: Record<string, unknown> }).content ?? {}
+      await commitNodePartialUpdate(
+        nodeId,
+        before,
+        { content: { ...prevContent, cornerRadius: Math.max(0, n) } } as Partial<PenpotNode>,
+        pid,
+      )
+    },
+    [readOnly, nodeId],
+  )
   const commitCornerSide = (key: keyof Corners, n: number) => {
     const next: Corners = { ...corners, [key]: n }
     setCorners(next)
@@ -409,6 +436,20 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   />
                 )}
               </SectionWithMultiToggle>
+            )}
+
+            {showPathRadius && (
+              <div className="space-y-1">
+                <Label htmlFor="rsp-corner-radius">Corner radius</Label>
+                <NumericField
+                  id="rsp-corner-radius"
+                  value={pathCornerRadius}
+                  min={0}
+                  suffix="px"
+                  disabled={readOnly}
+                  onCommit={(n) => void commitPathCornerRadius(n)}
+                />
+              </div>
             )}
 
             {showMargin && (
