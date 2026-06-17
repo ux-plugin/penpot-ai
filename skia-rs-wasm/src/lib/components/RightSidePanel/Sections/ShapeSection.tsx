@@ -48,8 +48,10 @@ function regenPartial(
   const w = sr?.width ?? 0
   const h = sr?.height ?? 0
   const local = shapeOutline(kind, { width: w, height: h, ...params })
+  // Preserve sibling content fields (e.g. cornerRadius) — only the segments change.
+  const prevContent = (node as { content?: Record<string, unknown> }).content ?? {}
   return {
-    content: { segments: translateSegments(local, x, y) } as PenpotNode['content'],
+    content: { ...prevContent, segments: translateSegments(local, x, y) } as PenpotNode['content'],
     points: outlineWorldPoints(local, x, y),
   }
 }

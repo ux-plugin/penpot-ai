@@ -60,9 +60,11 @@ const cloneAnchor = (a: Anchor): Anchor => ({
  * that depends on them). Shared by the live render and the final commit. */
 function geometryPartial(node: PenpotNode, anchors: Anchor[], closed: boolean): Partial<PenpotNode> {
   const b = anchorsBounds(anchors)
+  // Preserve sibling content fields (e.g. cornerRadius) — only the segments change.
+  const prevContent = (node as { content?: Record<string, unknown> }).content ?? {}
   return {
     ...node,
-    content: { segments: anchorsToSegments(anchors, closed) } as PenpotNode['content'],
+    content: { ...prevContent, segments: anchorsToSegments(anchors, closed) } as PenpotNode['content'],
     points: anchors.map((a) => ({ x: a.point.x, y: a.point.y })),
     selrect: { x: b.x, y: b.y, width: b.width, height: b.height, x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height },
     x: b.x,
