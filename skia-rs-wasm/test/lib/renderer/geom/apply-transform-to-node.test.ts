@@ -88,6 +88,32 @@ describe('applyTransformToNode — path content', () => {
     expect(content.subpaths[1].vertices[0].handleOut).toEqual({ x: 150, y: 185 })
   })
 
+  it('bakes the matrix into content.network nodes and edge handles', () => {
+    const node = {
+      id: 'n', type: 'path', name: 'Net 1',
+      x: 100, y: 100, width: 100, height: 100, selrect: sr(100, 100, 100, 100),
+      points: [{ x: 100, y: 100 }],
+      content: {
+        network: {
+          nodes: [{ x: 150, y: 100 }, { x: 200, y: 200 }],
+          edges: [{ a: 0, b: 1, ha: { x: 160, y: 110 } }],
+        },
+        segments: [
+          { type: 'move-to', x: 150, y: 100 },
+          { type: 'line-to', x: 200, y: 200 },
+        ],
+      },
+    } as unknown as PenpotNode
+    const move: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 40, f: -25 }
+    const out = applyTransformToNode(node, move)
+    const content = (out as { content: Record<string, unknown> }).content as {
+      network: { nodes: Array<{ x: number; y: number }>; edges: Array<{ ha?: { x: number; y: number } }> }
+    }
+    expect(content.network.nodes[0]).toEqual({ x: 190, y: 75 })
+    expect(content.network.nodes[1]).toEqual({ x: 240, y: 175 })
+    expect(content.network.edges[0].ha).toEqual({ x: 200, y: 85 })
+  })
+
   it('leaves a rect (no content.segments) on the standard selrect path', () => {
     const rect = {
       id: 'r', type: 'rect', x: 0, y: 0, width: 100, height: 100,

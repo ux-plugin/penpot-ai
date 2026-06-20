@@ -85,6 +85,95 @@ export function getSubpaths(content: PathContentLike | null | undefined): Subpat
   return []
 }
 
+/** Reverse a sub-path's direction: vertices back-to-front, with each anchor's
+ * `handleIn`/`handleOut` swapped (the tangents flip with the travel direction). */
+export function reverseSubpath(sp: Subpath): Subpath {
+  return {
+    closed: sp.closed,
+    vertices: sp.vertices
+      .slice()
+      .reverse()
+      .map((a) => ({
+        point: { x: a.point.x, y: a.point.y },
+        ...(a.handleOut ? { handleIn: { x: a.handleOut.x, y: a.handleOut.y } } : {}),
+        ...(a.handleIn ? { handleOut: { x: a.handleIn.x, y: a.handleIn.y } } : {}),
+      })),
+  }
+}
+
+/**
+ * Join two open ends. With `aIdx === bIdx` this closes that one sub-path. With
+ * two different sub-paths it merges them into a single OPEN ring: each is oriented
+ * so the chosen ends become adjacent (A's joining end last, B's first), then their
+ * vertices are concatenated — the connecting edge spans A's last and B's first
+ * vertex. The merged ring takes the lower of the two slots; the other is removed.
+ * Returns a new sub-path list (inputs untouched); a no-op clone if an index is bad.
+ */
+export function joinOpenEnds(
+  subpaths: Subpath[],
+  aIdx: number,
+  aEnd: 'start' | 'end',
+  bIdx: number,
+  bEnd: 'start' | 'end',
+): Subpath[] {
+  const a = subpaths[aIdx]
+  const b = subpaths[bIdx]
+  if (!a || !b) return subpaths.map(cloneSubpath)
+
+  if (aIdx === bIdx) {
+    const out = subpaths.map(cloneSubpath)
+    out[aIdx] = { vertices: a.vertices.map(cloneAnchor), closed: true }
+    return out
+  }
+
+  const aOriented = aEnd === 'end' ? cloneSubpath(a) : reverseSubpath(a)
+  const bOriented = bEnd === 'start' ? cloneSubpath(b) : reverseSubpath(b)
+  const merged: Subpath = {
+    vertices: [...aOriented.vertices, ...bOriented.vertices],
+    closed: false,
+  }
+
+  const lo = Math.min(aIdx, bIdx)
+  const out: Subpath[] = []
+  for (let i = 0; i < subpaths.length; i++) {
+    if (i === aIdx || i === bIdx) {
+      if (i === lo) out.push(merged)
+      continue
+    }
+    out.push(cloneSubpath(subpaths[i]))
+  }
+  return out
+}
+
+/**
+ * Move every vertex coincident with `target` (within `eps` world units) by `delta`,
+ * carrying its bézier handles. A node shared across sub-paths — a junction, e.g. a
+ * line branching off a closed shape's corner — is exactly a set of coincident
+ * vertices, so moving them together keeps the branch attached and the shape closed.
+ * A non-shared vertex is a cluster of one, so an ordinary drag is unchanged.
+ */
+export function moveCoincidentPoint(
+  subpaths: Subpath[],
+  target: { x: number; y: number },
+  delta: { x: number; y: number },
+  eps = 1e-3,
+): Subpath[] {
+  const hit = (p: { x: number; y: number }) =>
+    Math.abs(p.x - target.x) <= eps && Math.abs(p.y - target.y) <= eps
+  const shift = (p: { x: number; y: number }) => ({ x: p.x + delta.x, y: p.y + delta.y })
+  return subpaths.map((sp) => ({
+    closed: sp.closed,
+    vertices: sp.vertices.map((v) => {
+      if (!hit(v.point)) return cloneAnchor(v)
+      return {
+        point: shift(v.point),
+        ...(v.handleIn ? { handleIn: shift(v.handleIn) } : {}),
+        ...(v.handleOut ? { handleOut: shift(v.handleOut) } : {}),
+      }
+    }),
+  }))
+}
+
 /**
  * Build path content from sub-paths: stores the (cloned) sub-paths and a derived
  * SHARP `segments` mirror. A lone open/closed sub-path also exposes the single

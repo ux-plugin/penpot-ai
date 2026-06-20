@@ -93,4 +93,18 @@ describe('recognizeShape — rejects non-primitives', () => {
   it('returns null for an empty path', () => {
     expect(recognizeShape([], { x: 0, y: 0, width: 10, height: 10 })).toBeNull()
   })
+
+  it('returns null for a compound / networked path (more than one sub-path)', () => {
+    // A clean rect plus a spur — two move-tos — must not read as a rect/primitive.
+    const segments: PathSegment[] = [
+      { type: 'move-to', x: 0, y: 0 },
+      { type: 'line-to', x: 100, y: 0 },
+      { type: 'line-to', x: 100, y: 100 },
+      { type: 'line-to', x: 0, y: 100 },
+      { type: 'close-path' },
+      { type: 'move-to', x: 0, y: 0 },
+      { type: 'line-to', x: -20, y: -20 },
+    ]
+    expect(recognizeShape(segments, { x: -20, y: -20, width: 120, height: 120 })).toBeNull()
+  })
 })

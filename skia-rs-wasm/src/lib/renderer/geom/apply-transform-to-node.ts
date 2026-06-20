@@ -93,6 +93,8 @@ export function applyTransformToNode(
   type XY = { x: number; y: number }
   type VertexLike = { point: XY; handleIn?: XY; handleOut?: XY }
   type SubpathLike = { vertices: VertexLike[]; closed: boolean }
+  type EdgeLike = { a: number; b: number; ha?: XY; hb?: XY }
+  type NetworkLike = { nodes: XY[]; edges: EdgeLike[] }
   const bakeVerts = (vs: VertexLike[]): VertexLike[] =>
     vs.map((v) => ({
       point: applyM(v.point),
@@ -101,7 +103,12 @@ export function applyTransformToNode(
     }))
   const content = (
     node as {
-      content?: { segments?: PathSegment[]; vertices?: VertexLike[]; subpaths?: SubpathLike[] }
+      content?: {
+        segments?: PathSegment[]
+        vertices?: VertexLike[]
+        subpaths?: SubpathLike[]
+        network?: NetworkLike
+      }
     }
   ).content
   const segs = content?.segments
@@ -116,6 +123,21 @@ export function applyTransformToNode(
     const newSubpaths: SubpathLike[] | undefined = Array.isArray(subs)
       ? subs.map((sp) => ({ vertices: bakeVerts(sp.vertices), closed: sp.closed }))
       : undefined
+    // The vector network is canonical for editing junctions — bake its node points
+    // and edge handles too, so a moved/resized junction shape stays consistent.
+    const net = content.network
+    const newNetwork: NetworkLike | undefined =
+      net && Array.isArray(net.nodes)
+        ? {
+            nodes: net.nodes.map((n) => applyM(n)),
+            edges: net.edges.map((e) => ({
+              a: e.a,
+              b: e.b,
+              ...(e.ha ? { ha: applyM(e.ha) } : {}),
+              ...(e.hb ? { hb: applyM(e.hb) } : {}),
+            })),
+          }
+        : undefined
     const newSegments: PathSegment[] = segs.map((s) => {
       if (s.type === 'move-to' || s.type === 'line-to') {
         const p = applyM({ x: s.x, y: s.y })
@@ -158,6 +180,7 @@ export function applyTransformToNode(
         ...content,
         ...(newVertices ? { vertices: newVertices } : {}),
         ...(newSubpaths ? { subpaths: newSubpaths } : {}),
+        ...(newNetwork ? { network: newNetwork } : {}),
         segments: newSegments,
       } as PenpotNode['content'],
       selrect: makeSelrect(minX, minY, bw, bh),

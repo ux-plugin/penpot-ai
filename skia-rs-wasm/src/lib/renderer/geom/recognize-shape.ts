@@ -122,6 +122,10 @@ export function recognizeShape(
 ): RecognizedShape | null {
   if (!Array.isArray(segments) || segments.length === 0) return null
 
+  // More than one sub-path (move-to) → a compound path or vector network, never a
+  // single primitive. Bail so a junction/compound shape stays a plain path.
+  if (segments.filter((s) => s.type === 'move-to').length > 1) return null
+
   const closed = segments.some((s) => s.type === 'close-path')
   const curveCount = segments.filter((s) => s.type === 'curve-to').length
   const ox = selrect.x ?? 0

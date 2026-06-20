@@ -72,6 +72,19 @@ export interface PathContent {
     closed: boolean
   }>
   segments?: PathSegment[]
+  /** Vector network (N): the connectivity graph behind junctions — nodes shared by
+   * multiple edges, so a line can branch off a closed shape's corner. When present
+   * it's canonical for editing; `subpaths`/`segments` are its derived render mirror
+   * (kept in sync by `networkContent()`). Legacy nodes have no network. */
+  network?: {
+    nodes: Array<{ x: number; y: number }>
+    edges: Array<{
+      a: number
+      b: number
+      ha?: { x: number; y: number }
+      hb?: { x: number; y: number }
+    }>
+  }
   /** Single shape-wide corner radius (P4). The stored `segments` stay sharp; the
    * fillet is applied only when serializing to the renderer. */
   cornerRadius?: number
