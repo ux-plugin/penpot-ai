@@ -106,6 +106,24 @@ function aiChatPlugin(): Plugin {
   }
 }
 
+/**
+ * Dev fs allow-list: the project dir plus every ancestor that holds a
+ * `node_modules`. Running from a git worktree, deps resolve to the MAIN repo's
+ * pnpm store (above the project root), which Vite otherwise blocks as "outside
+ * the serving allow list" — breaking fonts and any dep served from there.
+ */
+function fsAllowList(): string[] {
+  const roots = new Set<string>([__dirname])
+  let dir = __dirname
+  for (let i = 0; i < 8; i++) {
+    if (fs.existsSync(join(dir, 'node_modules'))) roots.add(dir)
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return [...roots]
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ command }) => ({
   // The font backend/proxy origin comes from VITE_FONT_BACKEND_URL via Vite's
@@ -169,6 +187,7 @@ export default defineConfig(({ command }) => ({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    fs: { allow: fsAllowList() },
     sourcemapIgnoreList: false,
   },
   esbuild: {
