@@ -90,10 +90,11 @@ function App() {
           overlays={
             <>
               <ActivityBar />
+              {/* The inspector rail floats over both modes (z-50 > Build's z-40). */}
+              <RightSidePanel />
               {mode === 'design' ? (
                 <>
                   <LayersPanel />
-                  <RightSidePanel />
                   <ShapeToolbar />
                   <div
                     className="pointer-events-auto absolute top-3 z-10 flex gap-0.5 rounded-lg border border-border/80 bg-white p-1 shadow-md"

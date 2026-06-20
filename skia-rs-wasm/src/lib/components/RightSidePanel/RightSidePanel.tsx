@@ -217,7 +217,7 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
       <FloatingEffectEditorPanel />
       <FloatingEditorRail
         side="right"
-        title="Design"
+        title="Inspector"
         collapsed={collapsed}
         onCollapsedChange={handleCollapsedChange}
         data-right-side-panel
