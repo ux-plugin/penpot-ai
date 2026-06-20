@@ -177,6 +177,13 @@ export function clearRepeater(ir: PageInteractions, node: string): PageInteracti
   return { ...ir, repeaters: ir.repeaters.filter((r) => r.node !== node) }
 }
 
+/** Move a node's repeater to a different template node, preserving over/as/key. */
+export function moveRepeater(ir: PageInteractions, from: string, to: string): PageInteractions {
+  const rep = ir.repeaters.find((r) => r.node === from)
+  if (!rep || from === to) return ir
+  return setRepeater(clearRepeater(ir, from), to, { over: rep.over, as: rep.as, key: rep.key })
+}
+
 // ---- bindings (wire a node prop to an expression) ----
 //
 // A node can hold several bindings, so they're addressed by `(node, occurrence)`

@@ -20,6 +20,7 @@ import {
   toVariableId,
   setRepeater,
   clearRepeater,
+  moveRepeater,
   addBinding,
   setBindingProp,
   setBindingFrom,
@@ -201,6 +202,14 @@ describe('repeater reducers', () => {
     ir = setRepeater(ir, 'card', { over: 'cards' })
     ir = clearRepeater(ir, 'row')
     expect(ir.repeaters).toEqual([{ node: 'card', over: 'cards' }])
+  })
+
+  it('moveRepeater retargets the template node, preserving over/as/key', () => {
+    let ir = setRepeater(emptyPageInteractions(), 'rowA', { over: 'items', as: 'todo', key: 'todo.id' })
+    ir = moveRepeater(ir, 'rowA', 'rowB') // container picks a different template child
+    expect(ir.repeaters).toEqual([{ node: 'rowB', over: 'items', as: 'todo', key: 'todo.id' }])
+    expect(moveRepeater(ir, 'rowB', 'rowB')).toBe(ir) // no-op when same
+    expect(moveRepeater(ir, 'ghost', 'rowC')).toBe(ir) // no-op when source has no repeater
   })
 })
 

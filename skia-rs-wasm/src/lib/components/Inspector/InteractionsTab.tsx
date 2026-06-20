@@ -44,6 +44,7 @@ import {
   setVariableType,
   setRepeater,
   clearRepeater,
+  moveRepeater,
   addBinding,
   setBindingProp,
   setBindingFrom,
@@ -268,48 +269,65 @@ function InteractionCard({
   )
 }
 
-function RepeatSection({
-  nodeId,
+/**
+ * List authoring on a CONTAINER: a frame "shows" a list, and one of its children
+ * is the per-item template. The repeater is stored on the template child
+ * (Repeater.node = child id), so the IR/runtime/emitter are unchanged — only the
+ * authoring surface moves from the leaf to the parent frame.
+ */
+function ListSection({
+  node,
+  objects,
   ir,
   collections,
   commit,
   liveIR,
 }: {
-  nodeId: string
+  node: IndexedShape
+  objects: Record<string, IndexedShape>
   ir: PageInteractions
   collections: readonly Variable[]
   commit: Commit
   liveIR: LiveIR
 }) {
-  const rep = ir.repeaters.find((r) => r.node === nodeId)
-  const on = Boolean(rep)
+  const children = (node.shapes ?? []).map((id) => objects[id]).filter((c): c is IndexedShape => Boolean(c))
+  const template = children.find((c) => ir.repeaters.some((r) => r.node === c.id))
+  const rep = template ? ir.repeaters.find((r) => r.node === template.id) : undefined
+  const on = Boolean(rep && template)
   const hasCollections = collections.length > 0
   const over = rep?.over ?? ''
   const overMissing = on && over !== '' && !collections.some((v) => v.id === over)
   const keyErr = exprError(rep?.key)
+  const childName = (c: IndexedShape) => c.name ?? c.id.slice(0, 8)
 
   const toggle = () => {
-    if (on) commit(clearRepeater(liveIR(), nodeId))
-    else if (hasCollections) commit(setRepeater(liveIR(), nodeId, { over: collections[0].id, as: 'item' }))
+    if (on && template) commit(clearRepeater(liveIR(), template.id))
+    else if (hasCollections && children[0]) commit(setRepeater(liveIR(), children[0].id, { over: collections[0].id, as: 'item' }))
   }
 
   return (
     <section className="border-b border-border p-3">
-      <h3 className={sectionHeadCls}>Repeat</h3>
+      <h3 className={sectionHeadCls}>List</h3>
       <label className="flex items-center gap-2 text-xs text-foreground">
-        <input type="checkbox" checked={on} disabled={!on && !hasCollections} onChange={toggle} aria-label="Repeat over a list" />
-        <span>Repeat this over a list</span>
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={!on && !hasCollections}
+          onChange={toggle}
+          aria-label="Show a list inside this frame"
+        />
+        <span>Show a list inside this frame</span>
       </label>
       {!hasCollections && !on && <p className="mt-1.5 text-[11px] text-muted-foreground/70">Add a list in State first.</p>}
-      {on && (
+      {on && rep && template && (
         <div className="mt-2 flex flex-col gap-1.5">
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-            <span>over</span>
+            <span>shows list</span>
             <select
               className={selectCls}
               value={over}
-              onChange={(e) => commit(setRepeater(liveIR(), nodeId, { over: e.target.value }))}
-              aria-label="Repeat over list"
+              onChange={(e) => commit(setRepeater(liveIR(), template.id, { over: e.target.value }))}
+              aria-label="Shows list"
             >
               <option value="">choose…</option>
               {collections.map((v) => (
@@ -320,31 +338,56 @@ function RepeatSection({
             </select>
             <span>as</span>
             <input
-              key={`${nodeId}-as-${rep?.as ?? ''}`}
+              key={`${template.id}-as-${rep.as ?? ''}`}
               className="h-7 w-20 rounded-md border border-border bg-background px-2 font-mono text-[11px] text-foreground outline-none focus:border-ring"
-              defaultValue={rep?.as ?? 'item'}
-              onBlur={(e) => commit(setRepeater(liveIR(), nodeId, { as: e.target.value }))}
+              defaultValue={rep.as ?? 'item'}
+              onBlur={(e) => commit(setRepeater(liveIR(), template.id, { as: e.target.value }))}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
               }}
               aria-label="Item name"
             />
           </div>
-          {overMissing && (
-            <p className="text-[10px] text-destructive">List “{over}” was removed — pick another.</p>
+
+          {children.length > 1 && (
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span>item template</span>
+              <select
+                className={selectCls}
+                value={template.id}
+                onChange={(e) => commit(moveRepeater(liveIR(), template.id, e.target.value))}
+                aria-label="Item template"
+              >
+                {children.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {childName(c)}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
+
+          {overMissing && <p className="text-[10px] text-destructive">List “{over}” was removed — pick another.</p>}
+
           <input
-            key={`${nodeId}-key-${rep?.key ?? ''}`}
+            key={`${template.id}-key-${rep.key ?? ''}`}
             className={cn(inputCls, keyErr && 'border-destructive')}
-            defaultValue={rep?.key ?? ''}
+            defaultValue={rep.key ?? ''}
             placeholder="key (optional), e.g. item.id"
-            onBlur={(e) => commit(setRepeater(liveIR(), nodeId, { key: e.target.value }))}
+            onBlur={(e) => commit(setRepeater(liveIR(), template.id, { key: e.target.value }))}
             onKeyDown={(e) => {
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
             }}
             aria-label="Item key expression"
           />
           {keyErr && <p className="text-[10px] text-destructive">{keyErr}</p>}
+
+          <div className="mt-0.5 flex items-center gap-1.5 rounded bg-muted/60 px-2 py-1 text-[10px] text-muted-foreground">
+            <span aria-hidden>⟳</span>
+            <span>
+              shows {over || '…'} · template: {childName(template)}
+            </span>
+          </div>
         </div>
       )}
     </section>
@@ -355,12 +398,14 @@ function BindRow({
   nodeId,
   occ,
   binding,
+  forEachItem,
   commit,
   liveIR,
 }: {
   nodeId: string
   occ: number
   binding: Binding
+  forEachItem: boolean
   commit: Commit
   liveIR: LiveIR
 }) {
@@ -397,7 +442,7 @@ function BindRow({
           key={`${nodeId}-${occ}-${binding.prop}-from`}
           className={cn(inputCls, err && 'border-destructive')}
           defaultValue={binding.from}
-          placeholder="expression, e.g. item.label"
+          placeholder={forEachItem ? 'expression, e.g. item.label' : 'expression, e.g. count'}
           onBlur={(e) => commit(setBindingFrom(liveIR(), nodeId, occ, e.target.value))}
           onKeyDown={(e) => {
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
@@ -413,22 +458,24 @@ function BindRow({
 function BindSection({
   nodeId,
   ir,
+  forEachItem,
   commit,
   liveIR,
 }: {
   nodeId: string
   ir: PageInteractions
+  forEachItem: boolean
   commit: Commit
   liveIR: LiveIR
 }) {
   const bindings = ir.bindings.filter((b) => b.node === nodeId)
   return (
     <section className="border-b border-border p-3">
-      <h3 className={sectionHeadCls}>Bind</h3>
+      <h3 className={sectionHeadCls}>{forEachItem ? 'Bind · for each item' : 'Bind'}</h3>
       {bindings.length === 0 && <p className="mb-1.5 text-[11px] text-muted-foreground/70">No bindings yet.</p>}
       <div className="mb-2 flex flex-col gap-1.5">
         {bindings.map((b, i) => (
-          <BindRow key={i} nodeId={nodeId} occ={i} binding={b} commit={commit} liveIR={liveIR} />
+          <BindRow key={i} nodeId={nodeId} occ={i} binding={b} forEachItem={forEachItem} commit={commit} liveIR={liveIR} />
         ))}
       </div>
       <button
@@ -621,8 +668,11 @@ export function InteractionsTab() {
     setNewDerived('')
   }
 
-  const node = singleId ? (page?.objects[singleId] as IndexedShape | undefined) : undefined
+  const objects = (page?.objects ?? {}) as Record<string, IndexedShape>
+  const node = singleId ? objects[singleId] : undefined
   const nodeInteractions = singleId ? ir.interactions.filter((it) => it.on.node === singleId) : []
+  const isContainer = (node?.shapes?.length ?? 0) > 0
+  const isTemplate = node ? ir.repeaters.some((r) => r.node === node.id) : false
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-auto">
@@ -706,11 +756,13 @@ export function InteractionsTab() {
         </section>
       ) : (
         <>
-          {/* Repeat the selected node over a list (list-template authoring) */}
-          <RepeatSection nodeId={node.id} ir={ir} collections={collections} commit={commit} liveIR={liveIR} />
+          {/* A container frame can SHOW a list — author it here; the repeater lands on the template child */}
+          {isContainer && (
+            <ListSection node={node} objects={objects} ir={ir} collections={collections} commit={commit} liveIR={liveIR} />
+          )}
 
-          {/* Bind the selected node's props to expressions */}
-          <BindSection nodeId={node.id} ir={ir} commit={commit} liveIR={liveIR} />
+          {/* Bind the selected node's props to expressions (per-item when it's a list template) */}
+          <BindSection nodeId={node.id} ir={ir} forEachItem={isTemplate} commit={commit} liveIR={liveIR} />
 
           {/* Interactions for the selected node */}
           <section className="flex flex-col gap-2 p-3">
