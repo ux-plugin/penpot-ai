@@ -20,12 +20,9 @@ import {
   selectionRectOutlineVisible,
   selectionRect as selectionRectSignal,
   shapeDrawPreview as shapeDrawPreviewSignal,
-  penDrawPreview as penDrawPreviewSignal,
   wasmSelectionRect as wasmSelectionRectSignal,
 } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
-import { anchorsToSegments, segmentsToSvgPath } from '../../renderer/geom/anchors'
-import type { PenDrawPreview } from '../../renderer/signals/selection'
 import {
   HANDLE_FILL,
   HANDLE_SIZE_WORLD,
@@ -80,7 +77,7 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const wasmSelectionRect = useSignalCoalesced(wasmSelectionRectSignal)
   const viewport = useSignalCoalesced(viewportSignal)
   const selectionRect = useSignalCoalesced(selectionRectSignal)
-  const isSelecting = useSelector(canvasActor, (s) => s.matches('selecting'))
+  const isSelecting = useSelector(canvasActor, (s) => s.matches('marqueeSelect'))
   const isMoving = useSelector(canvasActor, (s) => s.matches('moving'))
   const isResizing = useSelector(canvasActor, (s) => s.matches('resizing'))
   const resizeHandle = useSelector(canvasActor, (s) => s.context.resizeHandle)
@@ -115,11 +112,7 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     usePointerDownFactory(canvasRef, canvasActor)
 
   const shapeDrawPreview = useSignalCoalesced(shapeDrawPreviewSignal)
-  const penDrawPreview = useSignalCoalesced(penDrawPreviewSignal)
   const isDrawingShape = useSelector(canvasActor, (s) => s.matches('drawingShape'))
-  const isDrawingPath = useSelector(canvasActor, (s) => s.matches('drawingPath'))
-  // Pen preview is already in world coordinates (rendered in the world-space SVG).
-  const penDrawWorld = isDrawingPath && penDrawPreview != null ? penDrawPreview : null
   const shapeDrawWorld =
     isDrawingShape &&
       shapeDrawPreview != null &&
@@ -331,105 +324,8 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
         </>
       )}
       {shapeDrawWorld && <AreaMarquee world={shapeDrawWorld} zoom={safeZoom} />}
-      {penDrawWorld && <PenDrawPreviewOverlay preview={penDrawWorld} zoom={safeZoom} />}
       {areaMarqueeWorld && <AreaMarquee world={areaMarqueeWorld} zoom={safeZoom} />}
     </svg>
   )
 }
 
-/**
- * Pen-tool preview in world space: the committed (+ pending) bézier path drawn
- * solid, a dashed trailing edge to the free cursor, bézier handle arms with
- * round caps, and square anchor markers (the first highlighted when it's the
- * close target). Rendered inside the world-transformed overlay `<svg>`, so all
- * coords are world coords and strokes use non-scaling-stroke; marker sizes are
- * divided by `zoom` to stay constant on screen.
- */
-function PenDrawPreviewOverlay({ preview, zoom }: { preview: PenDrawPreview; zoom: number }) {
-  const all = preview.pending ? [...preview.anchors, preview.pending] : preview.anchors
-  if (all.length === 0) return null
-  const committedD = segmentsToSvgPath(anchorsToSegments(all, false))
-  const last = all[all.length - 1]
-  // Trailing edge previews the next segment toward the free cursor (only when not
-  // mid-drag); it honors the last anchor's out-handle so a curve preview shows.
-  const trailingD =
-    !preview.pending && preview.cursor && last
-      ? segmentsToSvgPath(anchorsToSegments([last, { point: preview.cursor }], false))
-      : null
-  const handleR = 3 / zoom
-  const anchorR = 3.5 / zoom
-
-  return (
-    <g>
-      {committedD && (
-        <path
-          d={committedD}
-          fill="none"
-          stroke={SELECTION_STROKE}
-          strokeWidth={1.5}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-          vectorEffect="non-scaling-stroke"
-        />
-      )}
-      {trailingD && (
-        <path
-          d={trailingD}
-          fill="none"
-          stroke={SELECTION_STROKE}
-          strokeWidth={1.5}
-          strokeDasharray="4 3"
-          strokeLinecap="round"
-          vectorEffect="non-scaling-stroke"
-        />
-      )}
-      {all.map((a, i) =>
-        a.handleIn || a.handleOut ? (
-          <g key={`h${i}`}>
-            {(['handleIn', 'handleOut'] as const).map((side) => {
-              const h = a[side]
-              if (!h) return null
-              return (
-                <g key={side}>
-                  <line
-                    x1={a.point.x}
-                    y1={a.point.y}
-                    x2={h.x}
-                    y2={h.y}
-                    stroke={SELECTION_STROKE}
-                    strokeWidth={1}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <circle
-                    cx={h.x}
-                    cy={h.y}
-                    r={handleR}
-                    fill={HANDLE_FILL}
-                    stroke={SELECTION_STROKE}
-                    strokeWidth={1}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                </g>
-              )
-            })}
-          </g>
-        ) : null,
-      )}
-      {all.map((a, i) => {
-        const closeTarget = i === 0 && preview.willClose
-        return (
-          <circle
-            key={`a${i}`}
-            cx={a.point.x}
-            cy={a.point.y}
-            r={closeTarget ? 6 / zoom : anchorR}
-            fill={closeTarget ? SELECTION_STROKE : HANDLE_FILL}
-            stroke={SELECTION_STROKE}
-            strokeWidth={1.25}
-            vectorEffect="non-scaling-stroke"
-          />
-        )
-      })}
-    </g>
-  )
-}

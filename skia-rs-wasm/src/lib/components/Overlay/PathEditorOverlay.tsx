@@ -1,29 +1,40 @@
 /**
- * Vector-edit overlay (C). Active while the canvas machine is in `pathEditing`
- * (entered by double-clicking a path node). Draws the editable anchors and their
- * bézier handles in screen space over the live WASM shape and lets you drag them:
+ * Vector-edit overlay (R4). Active while the canvas machine is in `pathEditing`.
+ * A THIN VIEW over the editable VECTOR NETWORK (`content.network`): it draws the
+ * network's nodes + edges and translates pointer gestures into network ops (R1)
+ * and machine events (R3). Nodes have a stable identity, so "branch", "close" and
+ * "join" are all the same op — `vnConnectNodes(a, b)` — and a shared node is one
+ * node, never a coincident duplicate.
  *
- *   - drag an anchor square → moves the point, carrying its handles rigidly;
- *   - drag a handle cap → reshapes the curve (the opposite handle mirrors, unless
- *     Alt is held for an asymmetric corner).
+ *   selecting mode (the default):
+ *     - drag a node      → vnMoveNode (its incident edges follow rigidly)
+ *     - drag a handle cap → reshapes that one edge (handles are independent)
+ *     - click an edge     → vnSplitEdge (adds a point)
+ *     - double-click node → vnToggleSmoothNode (round / sharpen)
+ *     - select node + Del → vnDeleteNode (+ prune isolated)
+ *   pen mode (toolbar Pen):
+ *     - click empty   → vnAddNode (+ connect from the draft node); drag pulls a handle
+ *     - click a node  → vnConnectNodes(draft, node) — branch / close / join, no dup
+ *     - Esc           → cancel the pen draft
  *
- * During a drag the working anchors live in the `pathEditAnchors` signal and the
- * shape is repainted live via `renderer.updateShape` (no history frame); on
- * release a single `commitNodePartialUpdate` records one undoable edit. The shape
- * keeps its `path` type, so `recognizeShape` re-derives (or drops) the polygon/
- * star overlay from the committed geometry automatically — no stored type to sync.
+ * During a drag the working network lives in `pathEditNetwork` and the shape is
+ * repainted live via `renderer.updateShape`; on release one `commitNodePartialUpdate`
+ * records an undoable edit (`networkContent` writes the network + its sharp mirror).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from '@xstate/react'
 import { useSnapshot } from 'valtio'
-import { Link2, Move, Plus, Spline } from 'lucide-react'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
-import { modAlt, pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
-import { pathEditAnchors } from '../../renderer/signals/selection'
+import { modAlt, modCtrl, modMeta, modShift, pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
+import { useViewportShortcutsStore } from '../../renderer/store/shortcuts-store'
+import { pathEditNetwork } from '../../renderer/signals/selection'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
+import { getSelectedIdsSet, setSelectedIds } from '../../renderer/store/document-selection'
+import { applyChanges } from '../../page-crud'
+import type { Change } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../renderer/store/workspace-store'
 import {
   commitNodePartialUpdate,
@@ -31,55 +42,76 @@ import {
 } from '../../renderer/properties/commit-node-properties'
 import { screenToWorld, worldToScreen } from '../../renderer/viewport'
 import {
-  anchorsBounds,
   anchorsToSegments,
-  deleteAnchor,
-  insertAnchorOnEdge,
   nearestPointOnPath,
-  reflect,
   segmentsToSvgPath,
-  toggleAnchorSmooth,
   type Anchor,
   type Pt,
 } from '../../renderer/geom/anchors'
-import { getSubpaths, compoundContent, type Subpath } from '../../renderer/geom/subpaths'
+import { getSubpaths } from '../../renderer/geom/subpaths'
+import {
+  networkContent,
+  subpathsToVN,
+  vnAddNode,
+  vnBounds,
+  vnConnectNodes,
+  vnDeleteNode,
+  vnMoveNode,
+  vnPruneIsolatedNodes,
+  vnPullHandles,
+  vnSplitEdge,
+  vnToggleSmoothNode,
+  type VectorNetwork,
+} from '../../renderer/geom/vector-network'
 import { HANDLE_FILL, SELECTION_STROKE } from './constants'
-import { CursorHintChip, type HintIcon } from '../CursorHint'
-import { PEN_CURSOR } from '../cursors'
+import { CursorHintChip } from '../CursorHint'
+import { resolvePathInteraction, type PathHover } from './path-interaction'
 
-type DragKind = 'anchor' | 'in' | 'out'
-
-/** Screen-px reach for the add-anchor hit band and hover ghost (half the band). */
+/** Screen-px reach for the add-point hit band / hover ghost. */
 const ADD_HIT_PX = 8
-/** Screen-px radius around the opposite open end that closes the path. */
-const CLOSE_HIT_PX = 12
-/** UI chrome whose clicks must not be treated as canvas extend clicks. */
-const UI_CHROME =
-  'aside, button, input, textarea, select, [contenteditable], [role="dialog"], [role="menu"], [role="toolbar"]'
+/** Screen-px radius to snap onto an existing node (close / connect / grab). */
+const NODE_HIT_PX = 12
 
-const cloneAnchor = (a: Anchor): Anchor => ({
-  point: { x: a.point.x, y: a.point.y },
-  ...(a.handleIn ? { handleIn: { x: a.handleIn.x, y: a.handleIn.y } } : {}),
-  ...(a.handleOut ? { handleOut: { x: a.handleOut.x, y: a.handleOut.y } } : {}),
+type XY = { x: number; y: number }
+
+const cloneNet = (vn: VectorNetwork): VectorNetwork => ({
+  nodes: vn.nodes.map((n) => ({ x: n.x, y: n.y })),
+  edges: vn.edges.map((e) => ({
+    a: e.a,
+    b: e.b,
+    ...(e.ha ? { ha: { x: e.ha.x, y: e.ha.y } } : {}),
+    ...(e.hb ? { hb: { x: e.hb.x, y: e.hb.y } } : {}),
+  })),
 })
 
-/** Node-geometry partial for the full set of sub-paths (compound). The bbox spans
- * every sub-path; content holds the sub-paths + their derived sharp segments. */
-function recompose(node: PenpotNode, subpaths: Subpath[]): Partial<PenpotNode> {
-  const allVerts = subpaths.flatMap((s) => s.vertices)
-  const b = anchorsBounds(allVerts)
-  // Preserve sibling content fields (e.g. cornerRadius); clear the single-path
-  // mirror so a stale `vertices` can't shadow a multi-sub-path shape.
-  const prevContent = (node as { content?: Record<string, unknown> }).content ?? {}
+/** The network a node carries: explicit `content.network`, else built (with merge,
+ *  so coincident endpoints heal into shared nodes) from its sub-paths. */
+function vnFromContent(content: unknown): VectorNetwork {
+  const net = (content as { network?: VectorNetwork } | null | undefined)?.network
+  if (net && Array.isArray(net.nodes) && net.nodes.length > 0) return cloneNet(net)
+  return subpathsToVN(getSubpaths(content as Parameters<typeof getSubpaths>[0]), true)
+}
+
+/** Node-geometry partial from a network: content (network + sharp mirror) and a
+ *  bbox spanning every node and handle. */
+function networkPartial(node: PenpotNode, vn: VectorNetwork): Partial<PenpotNode> {
+  const b = vnBounds(vn)
+  const prev = (node as { content?: Record<string, unknown> }).content ?? {}
+  const nc = networkContent(vn)
   return {
     ...node,
     content: {
-      ...prevContent,
+      ...prev,
       vertices: undefined,
       closed: undefined,
-      ...compoundContent(subpaths),
+      ...nc,
     } as PenpotNode['content'],
-    points: allVerts.map((a) => ({ x: a.point.x, y: a.point.y })),
+    points: [
+      { x: b.x, y: b.y },
+      { x: b.x + b.width, y: b.y },
+      { x: b.x + b.width, y: b.y + b.height },
+      { x: b.x, y: b.y + b.height },
+    ],
     selrect: { x: b.x, y: b.y, width: b.width, height: b.height, x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height },
     x: b.x,
     y: b.y,
@@ -88,448 +120,410 @@ function recompose(node: PenpotNode, subpaths: Subpath[]): Partial<PenpotNode> {
   }
 }
 
-/** Build the node partial after editing one sub-path: replace sub-path `activeIdx`
- * with the edited anchors and recompose with the others (read from `node`). */
-function partialForActive(
-  node: PenpotNode,
-  activeAnchors: Anchor[],
-  activeClosed: boolean,
-  activeIdx: number,
-): Partial<PenpotNode> {
-  const subs = getSubpaths((node as { content?: unknown }).content as Parameters<typeof getSubpaths>[0])
-  const edited: Subpath = { vertices: activeAnchors, closed: activeClosed }
-  if (subs.length === 0) subs.push(edited)
-  else subs[Math.min(activeIdx, subs.length - 1)] = edited
-  return recompose(node, subs)
-}
-
-/** Icon for what clicking / dragging will do at the current pointer, shown
- *  as an icon badge near the cursor (the per-element cursor styles agree). */
-type PathIntent = 'add-vertex' | 'move-vertex' | 'move-handle' | 'close-path'
-const PATH_INTENT_ICONS: Record<PathIntent, HintIcon> = {
-  'add-vertex': Plus,
-  'move-vertex': Move,
-  'move-handle': Spline,
-  'close-path': Link2,
+/** A single edge as a 2-anchor path (for nearest-point / SVG rendering). */
+function edgeAnchors(vn: VectorNetwork, ei: number): Anchor[] {
+  const e = vn.edges[ei]
+  const A = vn.nodes[e.a]
+  const B = vn.nodes[e.b]
+  return [
+    { point: { x: A.x, y: A.y }, ...(e.ha ? { handleOut: { x: e.ha.x, y: e.ha.y } } : {}) },
+    { point: { x: B.x, y: B.y }, ...(e.hb ? { handleIn: { x: e.hb.x, y: e.hb.y } } : {}) },
+  ]
 }
 
 export function PathEditorOverlay() {
   const canvasActor = useCanvasActor()
   const isPathEditing = useSelector(canvasActor, (s) => s.matches('pathEditing'))
+  // The sub-tool is a context value now (one flat activity tree). Add pulls handles
+  // out via the pen; Bend pulls them out on a plain node drag.
+  const subTool = useSelector(canvasActor, (s) => s.context.pathSubTool)
+  const inPen = subTool === 'add'
+  const inBend = subTool === 'bend'
+  const draftFrom = useSelector(canvasActor, (s) => s.context.pathDraftFromNode)
   const shapeId = useSelector(canvasActor, (s) => s.context.pathEditingShapeId)
   // Re-render whenever the document changes so committed edits refresh the markers.
   useSnapshot(docProxy)
   const viewport = useSignalCoalesced(viewportSignal)
-  const liveAnchors = useSignalCoalesced(pathEditAnchors)
-  // Cursor (surface-relative px) drives the hover ghost showing where a click
-  // would insert an anchor.
+  const liveNet = useSignalCoalesced(pathEditNetwork)
   const pointer = useSignalCoalesced(pointerPos)
+  // Reactive Alt state so the hint flips to "bend" the moment Option is held.
+  const altDown = useSignalCoalesced(modAlt)
+  // Effective Add: Alt transiently flips the pen into the Bend quasimode, so EVERY
+  // add-only affordance gates on this, never raw `inPen` (cursor/hint/ghost/skeleton/
+  // hit-test/handle-caps/dbl-click all honor Alt through this one derived flag).
+  const effAdd = inPen && !altDown
+  // While the pan modifier is held, the Add tool's full-canvas capture must go
+  // transparent so a (default: Shift) drag reaches the surface below and pans
+  // instead of dropping a point.
+  const shiftDown = useSignalCoalesced(modShift)
+  const ctrlDown = useSignalCoalesced(modCtrl)
+  const metaDown = useSignalCoalesced(modMeta)
+  const panMod = useViewportShortcutsStore((s) => s.viewportShortcuts.panWithModifier)
+  const panHeld =
+    panMod === 'shift'
+      ? !!shiftDown
+      : panMod === 'alt'
+        ? !!altDown
+        : panMod === 'ctrl'
+          ? !!ctrlDown
+          : panMod === 'meta'
+            ? !!metaDown
+            : false
   const svgRef = useRef<SVGSVGElement>(null)
-  // Tear-down for the in-flight drag's window listeners + pointer capture. Held in
-  // a ref so an exit (Esc / click-away → unmount) can release a stuck drag.
   const dragCleanupRef = useRef<(() => void) | null>(null)
-  // The anchor selected by a click (the Delete/Backspace target), scoped to its
-  // shape so a stale selection from another path is ignored — no effect reset
-  // needed. `selectedAnchor` is the active index for the current shape.
+  // Add sub-tool: the out-handle a dragged node leaves behind, applied as the next
+  // segment's start handle on the following click (gives a smooth curve OUT of the
+  // node — the network stores handles per edge, so it can't be set until the next
+  // edge exists). Null between clicks / after a corner click.
+  const pendingOutRef = useRef<{ node: number; handle: XY } | null>(null)
+  // The node selected by a click (the Delete target), scoped to its shape.
   const [selected, setSelected] = useState<{ shapeId: string; index: number } | null>(null)
-  const selectedAnchor = selected && selected.shapeId === shapeId ? selected.index : null
+  const selectedNode = selected && selected.shapeId === shapeId ? selected.index : null
 
-  // The active sub-path index (compound paths), scoped to its shape.
-  const [activeSub, setActiveSub] = useState<{ shapeId: string; index: number } | null>(null)
-  // Which open end (if any) we're continuing to draw from, scoped to its shape.
-  const [extend, setExtend] = useState<{ shapeId: string; end: 'start' | 'end' } | null>(null)
-  const extendFrom = isPathEditing && extend && extend.shapeId === shapeId ? extend.end : null
-  // Cursor world point while extending (drives the trailing preview segment).
-  const [extendCursor, setExtendCursor] = useState<Pt | null>(null)
-
-  // Live drag anchors belong to one shape+session; clear any leftover (and any
-  // extend session) when the edited shape changes or editing starts/stops.
+  // Clear live state when the edited shape changes or editing stops.
   useEffect(() => {
-    pathEditAnchors.value = null
-    /* eslint-disable react-hooks/set-state-in-effect -- reset on shape/mode change */
-    setExtend(null)
-    setActiveSub(null)
-    /* eslint-enable react-hooks/set-state-in-effect */
+    pathEditNetwork.value = null
     return () => {
       dragCleanupRef.current?.()
-      pathEditAnchors.value = null
+      pathEditNetwork.value = null
     }
   }, [shapeId, isPathEditing])
 
   const node = shapeId ? getCommittedNodeOnActivePage(shapeId) : null
-  // Compound paths: read all sub-paths; edit the active one. Most ops keep
-  // working on a single ring (`base`), and commit recomposes with the others.
   const content = (node as { content?: unknown } | null)?.content
-  const allSubpaths = useMemo(
-    () => getSubpaths(content as Parameters<typeof getSubpaths>[0]),
-    [content],
-  )
-  const activeIdx =
-    allSubpaths.length === 0
-      ? 0
-      : Math.min(activeSub?.shapeId === shapeId ? activeSub.index : 0, allSubpaths.length - 1)
-  const base = useMemo(
-    () => ({
-      anchors: (allSubpaths[activeIdx]?.vertices ?? []) as Anchor[],
-      closed: allSubpaths[activeIdx]?.closed ?? false,
-    }),
-    [allSubpaths, activeIdx],
-  )
+  const committedVN = useMemo(() => vnFromContent(content), [content])
+  const vn = (liveNet as VectorNetwork | null) ?? committedVN
 
-  const commit = useCallback(
-    (finalAnchors: Anchor[], closed: boolean) => {
-      if (!shapeId || finalAnchors.length === 0) {
-        pathEditAnchors.value = null
+  // Remove the shape entirely and leave edit mode — a network with no edges
+  // renders nothing, so a degenerate single/isolated-node shape must not persist
+  // (matches Penpot/Figma deleting an empty text box). Mirrors text-edit cleanup.
+  const deleteSelfShape = useCallback(() => {
+    if (!shapeId) return
+    const pid = getActiveOrSinglePageId()
+    if (!pid) return
+    pathEditNetwork.value = null
+    canvasActor.send({ type: 'STOP_PATH_EDIT' })
+    const sel = getSelectedIdsSet()
+    if (sel.has(shapeId)) {
+      const next = new Set(sel)
+      next.delete(shapeId)
+      setSelectedIds(next)
+    }
+    void applyChanges([{ type: 'del-obj', id: shapeId, pageId: pid } as unknown as Change])
+  }, [shapeId, canvasActor])
+
+  // Commit the whole network as one undoable edit.
+  const commitVN = useCallback(
+    (next: VectorNetwork) => {
+      if (!shapeId) return
+      // No edges ⇒ no renderable geometry ⇒ delete the shape rather than keep a
+      // stray single/isolated-node shape. This is the one choke point all edits
+      // flow through, so it eliminates the possibility everywhere at once.
+      if (next.edges.length === 0) {
+        deleteSelfShape()
         return
       }
       const before = getCommittedNodeOnActivePage(shapeId)
       const pid = getActiveOrSinglePageId()
       if (!before || !pid) {
-        pathEditAnchors.value = null
+        pathEditNetwork.value = null
         return
       }
-      const { content, points, selrect, x, y, width, height } = partialForActive(before, finalAnchors, closed, activeIdx)
-      // Keep the dragged anchors on screen until the commit lands, then clear the
-      // live signal — the re-render then reads the just-committed geometry, which
-      // matches, so the markers don't flash back to their pre-drag positions.
-      void commitNodePartialUpdate(
-        shapeId,
-        before,
-        { content, points, selrect, x, y, width, height },
-        pid,
-      ).then(() => {
-        pathEditAnchors.value = null
-      })
+      const { content: c, points, selrect, x, y, width, height } = networkPartial(before, next)
+      void commitNodePartialUpdate(shapeId, before, { content: c, points, selrect, x, y, width, height }, pid).then(
+        () => {
+          pathEditNetwork.value = null
+        },
+      )
     },
-    [shapeId, activeIdx],
+    [shapeId, deleteSelfShape],
   )
 
-  const beginDrag = useCallback(
-    (kind: DragKind, index: number) => (e: React.PointerEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      if (kind === 'anchor' && shapeId) setSelected({ shapeId, index })
-      const svg = svgRef.current
-      const vp = viewportSignal.value
-      if (!svg || !vp || !shapeId) return
-      // Defensively end any previous drag whose pointer-up we somehow missed.
-      dragCleanupRef.current?.()
-      const rect = svg.getBoundingClientRect()
-      const node0 = getCommittedNodeOnActivePage(shapeId)
-      if (!node0) return
-      const closed = base.closed
-      const start = (pathEditAnchors.value ?? base.anchors).map(cloneAnchor)
-      const grabbed = start[index]
-      if (!grabbed) return
-      const basePoint = { ...grabbed.point }
-      const baseIn = grabbed.handleIn ? { ...grabbed.handleIn } : null
-      const baseOut = grabbed.handleOut ? { ...grabbed.handleOut } : null
-      // Alt-drag a point pulls a fresh symmetric handle pair out of it instead of
-      // moving it (corner → smooth) — the way to bend a segment that has none.
-      // Decided on the first move (not pointerdown) and from both the event and
-      // the app's tracked Alt state, so pressing the dot then holding Alt works.
-      let bend = false
-      let bendDecided = false
-      // A pure click (e.g. one half of a double-click) produces no move; skip its
-      // commit so it doesn't push a no-op undo frame.
-      let moved = false
-      const pointerId = e.pointerId
-      // Capture on the stable svg root (not the marker, which re-renders mid-drag)
-      // so pointermove/up land reliably even when the cursor leaves the marker.
-      try {
-        svg.setPointerCapture(pointerId)
-      } catch {
-        /* capture is best-effort */
-      }
-
-      const toWorld = (ev: { clientX: number; clientY: number }): Pt =>
-        screenToWorld(vp, ev.clientX - rect.left, ev.clientY - rect.top)
-
-      const apply = (world: Pt, alt: boolean): Anchor[] => {
-        const next = start.map(cloneAnchor)
-        const a = next[index]
-        if (kind === 'anchor') {
-          if (bend) {
-            // Point stays put; pull a symmetric handle pair toward the cursor.
-            a.handleOut = { x: world.x, y: world.y }
-            a.handleIn = reflect(basePoint, a.handleOut)
-          } else {
-            const dx = world.x - basePoint.x
-            const dy = world.y - basePoint.y
-            a.point = { x: world.x, y: world.y }
-            if (baseIn) a.handleIn = { x: baseIn.x + dx, y: baseIn.y + dy }
-            if (baseOut) a.handleOut = { x: baseOut.x + dx, y: baseOut.y + dy }
-          }
-        } else if (kind === 'out') {
-          a.handleOut = { x: world.x, y: world.y }
-          if (!alt && a.handleIn) a.handleIn = reflect(a.point, a.handleOut)
-        } else {
-          a.handleIn = { x: world.x, y: world.y }
-          if (!alt && a.handleOut) a.handleOut = reflect(a.point, a.handleIn)
-        }
-        return next
-      }
-
-      const renderLive = (next: Anchor[]) => {
-        const renderer = useWorkspaceStore.getState().renderer
-        if (!renderer) return
-        void renderer.updateShape(partialForActive(node0, next, closed, activeIdx) as PenpotNode)
-      }
-
-      function onMove(ev: PointerEvent) {
-        if (ev.pointerId !== pointerId) return
-        if (!bendDecided) {
-          bend = kind === 'anchor' && (ev.altKey || modAlt.value)
-          bendDecided = true
-        }
-        moved = true
-        const next = apply(toWorld(ev), ev.altKey)
-        pathEditAnchors.value = next
-        renderLive(next)
-      }
-      function onUp(ev: PointerEvent) {
-        if (ev.pointerId !== pointerId) return
-        cleanup()
-        if (moved) {
-          commit(apply(toWorld(ev), ev.altKey), closed)
-          return
-        }
-        pathEditAnchors.value = null
-        // A plain click on an OPEN end starts (or toggles off) continuing the
-        // path from it — the pen-style "click an open end to keep drawing".
-        if (kind === 'anchor' && !closed && shapeId && (index === 0 || index === start.length - 1)) {
-          const end: 'start' | 'end' = index === 0 ? 'start' : 'end'
-          setExtend((prev) =>
-            prev && prev.end === end && prev.shapeId === shapeId ? null : { shapeId, end },
-          )
-          setExtendCursor(null)
-        }
-      }
-      function cleanup() {
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-        window.removeEventListener('pointercancel', onUp)
-        try {
-          svg.releasePointerCapture(pointerId)
-        } catch {
-          /* already released */
-        }
-        dragCleanupRef.current = null
-      }
-
-      // Pointer (not mouse) events: pointerup fires reliably under capture, and
-      // preventDefault on pointerdown doesn't suppress it the way it does the
-      // compatibility mouseup. cleanup() removes them, so nothing leaks.
-      dragCleanupRef.current = cleanup
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp)
-      window.addEventListener('pointercancel', onUp)
-    },
-    [shapeId, base, commit, activeIdx],
-  )
-
-  // Keep the cursor signal fresh while over the (pointer-events) hit band so the
-  // hover ghost tracks even there — the surface below can't see those moves.
-  const onHitMove = useCallback((e: React.PointerEvent) => {
-    const svg = svgRef.current
-    if (!svg) return
-    const rect = svg.getBoundingClientRect()
-    pointerPos.value = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  const renderLiveVN = useCallback((node0: PenpotNode, next: VectorNetwork) => {
+    const renderer = useWorkspaceStore.getState().renderer
+    if (renderer) void renderer.updateShape(networkPartial(node0, next) as PenpotNode)
   }, [])
 
-  // Insert an anchor where the cursor meets the outline (the spot the ghost
-  // previews). stopPropagation keeps the surface from treating this as click-away.
-  const onAddAnchor = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
+  // Generic pointer-capture drag. `onMove`/`onUp` receive the world point; `moved`
+  // is true once the pointer has travelled past a small threshold.
+  const runDrag = useCallback(
+    (
+      e: React.PointerEvent,
+      handlers: { onMove: (world: Pt) => void; onUp: (moved: boolean, world: Pt) => void },
+    ) => {
       const svg = svgRef.current
       const vp = viewportSignal.value
-      if (!svg || !vp || !shapeId) return
+      if (!svg || !vp) return
+      dragCleanupRef.current?.()
       const rect = svg.getBoundingClientRect()
-      const world = screenToWorld(vp, e.clientX - rect.left, e.clientY - rect.top)
-      const cur = pathEditAnchors.value ?? base.anchors
-      const hit = nearestPointOnPath(cur, base.closed, world)
-      if (!hit || hit.dist * (vp.zoom ?? 1) > ADD_HIT_PX) return
-      const nextAnchors = insertAnchorOnEdge(cur, base.closed, hit.edge, hit.t)
-      // Show the new dot immediately (the outline itself is unchanged by the
-      // split); commit clears the live signal once the doc holds the new anchor.
-      pathEditAnchors.value = nextAnchors
-      setSelected(null) // indices shifted by the insert
-      commit(nextAnchors, base.closed)
-    },
-    [shapeId, base, commit],
-  )
-
-  // Double-click a point to toggle corner ↔ smooth — the modifier-free way to
-  // bend a corner (round it) or sharpen a smooth point.
-  const onToggleSmooth = useCallback(
-    (index: number) => (e: React.MouseEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const cur = pathEditAnchors.value ?? base.anchors
-      const next = toggleAnchorSmooth(cur, base.closed, index)
-      pathEditAnchors.value = next
-      commit(next, base.closed)
-    },
-    [base, commit],
-  )
-
-  // Delete the selected anchor (rejoining its neighbours). Refused — and thus a
-  // no-op — when it would drop the path below a viable point count.
-  const deleteSelected = useCallback(() => {
-    if (selectedAnchor == null || !shapeId) return
-    const cur = pathEditAnchors.value ?? base.anchors
-    if (selectedAnchor >= cur.length) {
-      setSelected(null)
-      return
-    }
-    const next = deleteAnchor(cur, base.closed, selectedAnchor)
-    setSelected(null)
-    if (next.length === cur.length) return
-    pathEditAnchors.value = next
-    commit(next, base.closed)
-  }, [selectedAnchor, shapeId, base, commit])
-
-  // Delete / Backspace removes the selected anchor while editing.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Delete' && e.key !== 'Backspace') return
-      if (selectedAnchor == null || !isPathEditing) return
-      const t = e.target as HTMLElement | null
-      if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
-      e.preventDefault()
-      deleteSelected()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [selectedAnchor, isPathEditing, deleteSelected])
-
-  // Extend mode: continue the open path from one end. A canvas click appends a
-  // vertex to that end; clicking the OTHER open end closes the path; Esc/Enter
-  // stops extending (without leaving edit mode).
-  useEffect(() => {
-    if (!extendFrom || !shapeId) return
-    const screenOf = (e: MouseEvent, svg: SVGSVGElement) => {
-      const r = svg.getBoundingClientRect()
-      return { x: e.clientX - r.left, y: e.clientY - r.top }
-    }
-    const onMove = (e: MouseEvent) => {
-      const svg = svgRef.current
-      const vp = viewportSignal.value
-      if (!svg || !vp) return
-      const s = screenOf(e, svg)
-      setExtendCursor(screenToWorld(vp, s.x, s.y))
-    }
-    const onDown = (e: PointerEvent) => {
-      if (e.button !== 0) return
-      if ((e.target as Element | null)?.closest(UI_CHROME)) return // panel/buttons
-      const svg = svgRef.current
-      const vp = viewportSignal.value
-      if (!svg || !vp) return
-      // pointerdown (capture) beats the overlay's React handlers; stopPropagation
-      // keeps the click from the add-band / markers and the surface click-away.
-      e.preventDefault()
-      e.stopPropagation()
-      const s = screenOf(e, svg)
-      const src = (pathEditAnchors.value ?? base.anchors) as Anchor[]
-      if (src.length === 0) return
-      const otherI = extendFrom === 'end' ? 0 : src.length - 1
-
-      // If the click lands on an existing vertex, snap to it instead of dropping
-      // a new node on top: the OTHER open end closes the path; any other vertex
-      // (the active end or an interior point) is a no-op.
-      let nearestI = -1
-      let nearestD = Infinity
-      for (let i = 0; i < src.length; i++) {
-        const sp = worldToScreen(vp, src[i].point.x, src[i].point.y)
-        const d = Math.hypot(s.x - sp.x, s.y - sp.y)
-        if (d < nearestD) {
-          nearestD = d
-          nearestI = i
-        }
-      }
-      if (nearestD <= CLOSE_HIT_PX) {
-        if (nearestI === otherI && src.length >= 2) {
-          setExtend(null)
-          setExtendCursor(null)
-          setSelected(null)
-          commit(src, true) // link the two open ends → close
-        }
-        return
-      }
-
-      // Otherwise place a new vertex at the click; a click-drag pulls a symmetric
-      // bézier handle out of it (the pen-tool gesture), a plain click is a corner.
-      const world = screenToWorld(vp, s.x, s.y)
-      const node0 = getCommittedNodeOnActivePage(shapeId)
-      let working: Anchor[] = extendFrom === 'end' ? [...src, { point: { ...world } }] : [{ point: { ...world } }, ...src]
-      const newIdx = extendFrom === 'end' ? working.length - 1 : 0
-      pathEditAnchors.value = working
-      setSelected(null)
-
       const pid = e.pointerId
-      let dragging = false
+      const startX = e.clientX
+      const startY = e.clientY
+      let moved = false
       try {
         svg.setPointerCapture(pid)
       } catch {
         /* best effort */
       }
-      const dragMove = (me: PointerEvent) => {
-        if (me.pointerId !== pid) return
-        const ms = screenOf(me, svg)
-        if (!dragging && Math.hypot(ms.x - s.x, ms.y - s.y) > 4) dragging = true
-        if (!dragging) return
-        const w = screenToWorld(viewportSignal.value ?? vp, ms.x, ms.y)
-        const pt = working[newIdx].point
-        const nv = working.map(cloneAnchor)
-        nv[newIdx] = { point: { x: pt.x, y: pt.y }, handleOut: { x: w.x, y: w.y }, handleIn: reflect(pt, w) }
-        working = nv
-        pathEditAnchors.value = working
-        const r = useWorkspaceStore.getState().renderer
-        if (r && node0) void r.updateShape(partialForActive(node0, working, false, activeIdx) as PenpotNode)
+      const toWorld = (ev: { clientX: number; clientY: number }) =>
+        screenToWorld(vp, ev.clientX - rect.left, ev.clientY - rect.top)
+      const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pid) return
+        if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 3) moved = true
+        if (moved) handlers.onMove(toWorld(ev))
       }
-      const dragUp = (ue: PointerEvent) => {
-        if (ue.pointerId !== pid) return
-        window.removeEventListener('pointermove', dragMove)
-        window.removeEventListener('pointerup', dragUp)
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== pid) return
+        cleanup()
+        handlers.onUp(moved, toWorld(ev))
+      }
+      const cleanup = () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onUp)
         try {
           svg.releasePointerCapture(pid)
         } catch {
           /* already released */
         }
-        commit(working, false)
+        dragCleanupRef.current = null
       }
-      window.addEventListener('pointermove', dragMove)
-      window.addEventListener('pointerup', dragUp)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'NumpadEnter') {
-        e.preventDefault()
-        e.stopPropagation()
-        setExtend(null)
-        setExtendCursor(null)
-      }
-    }
-    // pointerdown fires before mousedown; the surface's click-away listens on
-    // mousedown, so also block that (capture) to stay in edit mode.
-    const blockSurface = (e: MouseEvent) => {
-      if (e.button !== 0) return
-      if ((e.target as Element | null)?.closest(UI_CHROME)) return
+      dragCleanupRef.current = cleanup
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointercancel', onUp)
+    },
+    [],
+  )
+
+  // ── Select mode: drag a node (rigid — incident edges follow). ───────────────
+  const beginNodeDrag = useCallback(
+    (i: number) => (e: React.PointerEvent) => {
       e.preventDefault()
       e.stopPropagation()
+      if (!shapeId) return
+      const node0 = getCommittedNodeOnActivePage(shapeId)
+      if (!node0) return
+      canvasActor.send({ type: 'PATH_GRAB_NODE', node: i })
+      setSelected({ shapeId, index: i })
+      const startVN = cloneNet(vn)
+      const P = { x: startVN.nodes[i].x, y: startVN.nodes[i].y }
+      // Alt-drag pulls a symmetric handle pair out of the node (corner → smooth)
+      // instead of moving it. Decided on the first move from the tracked Alt state
+      // (so pressing the dot, then holding Alt, then dragging works).
+      const altStart = e.altKey
+      let bend = false
+      let bendDecided = false
+      const at = (w: Pt) =>
+        bend ? vnPullHandles(startVN, i, w) : vnMoveNode(startVN, i, { x: w.x - P.x, y: w.y - P.y })
+      runDrag(e, {
+        onMove: (w) => {
+          if (!bendDecided) {
+            // The Bend sub-tool makes every node drag a bend; Alt is the same
+            // thing as a one-off modifier while in Move.
+            bend = inBend || altStart || modAlt.value
+            bendDecided = true
+          }
+          const next = at(w)
+          pathEditNetwork.value = next
+          renderLiveVN(node0, next)
+        },
+        onUp: (moved, w) => {
+          canvasActor.send({ type: 'PATH_POINTER_UP' })
+          if (moved) commitVN(at(w))
+          else pathEditNetwork.value = null
+        },
+      })
+    },
+    [shapeId, vn, canvasActor, runDrag, renderLiveVN, commitVN, inBend],
+  )
+
+  // ── Select mode: drag a handle cap (reshapes one edge; independent). ────────
+  const beginHandleDrag = useCallback(
+    (edgeIdx: number, end: 'a' | 'b') => (e: React.PointerEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!shapeId) return
+      const node0 = getCommittedNodeOnActivePage(shapeId)
+      if (!node0) return
+      const edge = vn.edges[edgeIdx]
+      canvasActor.send({ type: 'PATH_GRAB_HANDLE', node: end === 'a' ? edge.a : edge.b, side: end === 'a' ? 'out' : 'in' })
+      const startVN = cloneNet(vn)
+      const key = end === 'a' ? 'ha' : 'hb'
+      const at = (w: Pt) => {
+        const next = cloneNet(startVN)
+        next.edges[edgeIdx][key] = { x: w.x, y: w.y }
+        return next
+      }
+      runDrag(e, {
+        onMove: (w) => {
+          const next = at(w)
+          pathEditNetwork.value = next
+          renderLiveVN(node0, next)
+        },
+        onUp: (moved, w) => {
+          canvasActor.send({ type: 'PATH_POINTER_UP' })
+          if (moved) commitVN(at(w))
+          else pathEditNetwork.value = null
+        },
+      })
+    },
+    [shapeId, vn, canvasActor, runDrag, renderLiveVN, commitVN],
+  )
+
+  // ── Select mode: double-click a node → round / sharpen. ─────────────────────
+  const onToggleSmooth = useCallback(
+    (i: number) => (e: React.MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      commitVN(vnToggleSmoothNode(vn, i))
+    },
+    [vn, commitVN],
+  )
+
+  // ── Select mode: click an edge → add a point (split). ───────────────────────
+  const onAddPoint = useCallback(
+    (edgeIdx: number) => (e: React.PointerEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const vp = viewportSignal.value
+      const svg = svgRef.current
+      if (!vp || !svg) return
+      const rect = svg.getBoundingClientRect()
+      const world = screenToWorld(vp, e.clientX - rect.left, e.clientY - rect.top)
+      const hit = nearestPointOnPath(edgeAnchors(vn, edgeIdx), false, world)
+      if (!hit) return
+      const { network: next } = vnSplitEdge(vn, edgeIdx, hit.t)
+      setSelected(null)
+      commitVN(next)
+    },
+    [vn, commitVN],
+  )
+
+  // ── Pen mode: click a node → connect from the draft (branch / close / join). ─
+  const onPenNode = useCallback(
+    (i: number) => (e: React.PointerEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (draftFrom == null) {
+        canvasActor.send({ type: 'PATH_SET_DRAFT_FROM', node: i })
+        return
+      }
+      if (draftFrom !== i) commitVN(vnConnectNodes(vn, draftFrom, i))
+      canvasActor.send({ type: 'PATH_SET_DRAFT_FROM', node: i })
+    },
+    [draftFrom, vn, canvasActor, commitVN],
+  )
+
+  // ── Pen mode: click empty canvas → add a node (+ connect); drag pulls a handle.
+  const onPenCanvas = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (!shapeId) return
+      const node0 = getCommittedNodeOnActivePage(shapeId)
+      const vp = viewportSignal.value
+      const svg = svgRef.current
+      if (!node0 || !vp || !svg) return
+      const rect = svg.getBoundingClientRect()
+      const world = screenToWorld(vp, e.clientX - rect.left, e.clientY - rect.top)
+      const added = vnAddNode(vn, world)
+      let base = added.network
+      const newIdx = added.node
+      let edgeIdx = -1
+      if (draftFrom != null && draftFrom < vn.nodes.length) {
+        base = vnConnectNodes(base, draftFrom, newIdx)
+        edgeIdx = base.edges.length - 1 // the connecting edge a=draft, b=new
+        // If the previous node was dragged out, its out-handle starts this segment
+        // smoothly (ha = handle at the a=draft end).
+        if (pendingOutRef.current && pendingOutRef.current.node === draftFrom) {
+          base.edges[edgeIdx].ha = { ...pendingOutRef.current.handle }
+        }
+      }
+      pendingOutRef.current = null
+      canvasActor.send({ type: 'PATH_PEN_DOWN' })
+      pathEditNetwork.value = base
+      renderLiveVN(node0, base)
+      // Drag pulls the new node's OUT handle toward the cursor; for a smooth node
+      // the IN handle (hb of the arriving edge) mirrors it. Alt breaks the mirror →
+      // a corner with only an out-handle (asymmetric), matching the pen tool.
+      const altStart = e.altKey
+      const at = (w: Pt) => {
+        if (edgeIdx < 0) return base
+        const next = cloneNet(base)
+        if (!(altStart || modAlt.value)) {
+          next.edges[edgeIdx].hb = { x: 2 * world.x - w.x, y: 2 * world.y - w.y }
+        }
+        return next
+      }
+      runDrag(e, {
+        onMove: (w) => {
+          pendingOutRef.current = { node: newIdx, handle: { x: w.x, y: w.y } }
+          const next = at(w)
+          pathEditNetwork.value = next
+          renderLiveVN(node0, next)
+        },
+        onUp: (moved, w) => {
+          canvasActor.send({ type: 'PATH_POINTER_UP' })
+          canvasActor.send({ type: 'PATH_SET_DRAFT_FROM', node: newIdx })
+          pendingOutRef.current = moved ? { node: newIdx, handle: { x: w.x, y: w.y } } : null
+          commitVN(moved ? at(w) : base)
+        },
+      })
+    },
+    [shapeId, vn, draftFrom, canvasActor, runDrag, renderLiveVN, commitVN],
+  )
+
+  // Delete the selected node (and any node it strands); Esc cancels the pen draft.
+  const deleteSelected = useCallback(() => {
+    if (selectedNode == null) return
+    if (selectedNode >= vn.nodes.length) {
+      setSelected(null)
+      return
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('pointerdown', onDown, true)
-    window.addEventListener('mousedown', blockSurface, true)
+    const next = vnPruneIsolatedNodes(vnDeleteNode(vn, selectedNode))
+    setSelected(null)
+    commitVN(next) // deletes the shape if this empties it (no edges left)
+  }, [selectedNode, vn, commitVN])
+
+  useEffect(() => {
+    if (!isPathEditing) return
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedNode == null) return
+        e.preventDefault()
+        deleteSelected()
+      } else if (e.key === 'Escape' && inPen) {
+        // Cancel the pen draft but stay in edit mode (beat the surface's exit).
+        e.preventDefault()
+        e.stopPropagation()
+        canvasActor.send({ type: 'PATH_CANCEL' })
+      }
+    }
     window.addEventListener('keydown', onKey, true)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('pointerdown', onDown, true)
-      window.removeEventListener('mousedown', blockSurface, true)
-      window.removeEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [isPathEditing, inPen, selectedNode, deleteSelected, canvasActor])
+
+  // Drop stray isolated nodes (a pen point placed but never connected) once we're
+  // no longer drawing — so an abandoned draft can't leave a "non-connected" dot.
+  useEffect(() => {
+    if (!isPathEditing || inPen || !shapeId) return
+    const pruned = vnPruneIsolatedNodes(committedVN)
+    // No edges (all isolated) ⇒ commitVN deletes the shape; otherwise drop strays.
+    if (pruned.edges.length === 0 || pruned.nodes.length < committedVN.nodes.length) {
+      commitVN(pruned)
     }
-  }, [extendFrom, shapeId, base, commit, activeIdx])
+  }, [isPathEditing, inPen, shapeId, committedVN, commitVN])
+
+  const onTrackMove = useCallback((e: React.PointerEvent) => {
+    const svg = svgRef.current
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    pointerPos.value = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  }, [])
 
   if (
     !isPathEditing ||
@@ -537,224 +531,214 @@ export function PathEditorOverlay() {
     !viewport ||
     !node ||
     (node as { type?: string }).type !== 'path' ||
-    allSubpaths.length === 0
+    vn.nodes.length === 0
   ) {
     return null
   }
 
-  const anchors = liveAnchors ?? base.anchors
-  const closed = base.closed
-  const toScreen = (p: Pt) => worldToScreen(viewport, p.x, p.y)
+  const toScreen = (p: XY) => worldToScreen(viewport, p.x, p.y)
+  const zoom = viewport.zoom ?? 1
+  const cursorWorld = pointer ? screenToWorld(viewport, pointer.x, pointer.y) : null
 
-  // Screen-space `d` for the invisible hit band along the outline (catches near-
-  // outline clicks to add an anchor; clicks elsewhere fall through to exit).
-  const screenAnchors: Anchor[] = anchors.map((a) => ({
-    point: toScreen(a.point),
-    ...(a.handleIn ? { handleIn: toScreen(a.handleIn) } : {}),
-    ...(a.handleOut ? { handleOut: toScreen(a.handleOut) } : {}),
-  }))
-  const hitPathD = segmentsToSvgPath(anchorsToSegments(screenAnchors, closed))
-
-  // Hover ghost: the point on the outline a click would split (hidden mid-drag
-  // and while extending).
-  let ghost: { x: number; y: number } | null = null
-  if (liveAnchors == null && pointer && !extendFrom) {
-    const hit = nearestPointOnPath(anchors, closed, screenToWorld(viewport, pointer.x, pointer.y))
-    if (hit && hit.dist * (viewport.zoom ?? 1) <= ADD_HIT_PX) ghost = toScreen(hit.point)
-  }
-
-  // Open-end / extend roles for the markers.
-  const nVerts = anchors.length
-  const openEnds = closed || nVerts === 0 ? [] : nVerts === 1 ? [0] : [0, nVerts - 1]
-  const activeEndIdx = extendFrom === 'end' ? nVerts - 1 : extendFrom === 'start' ? 0 : -1
-  let closeTargetIdx = -1
-  if (extendFrom && extendCursor && nVerts >= 2) {
-    const otherIdx = extendFrom === 'end' ? 0 : nVerts - 1
-    const o = toScreen(anchors[otherIdx].point)
-    const c = toScreen(extendCursor)
-    if (Math.hypot(c.x - o.x, c.y - o.y) <= CLOSE_HIT_PX) closeTargetIdx = otherIdx
-  }
-
-  // Current pointer intention -> hint chip near the cursor.
-  let intent: PathIntent | null = null
-  if (pointer) {
-    if (extendFrom) {
-      intent = closeTargetIdx >= 0 ? 'close-path' : 'add-vertex'
-    } else {
-      let nearHandle = Infinity
-      let nearAnchor = Infinity
-      for (const a of screenAnchors) {
-        nearAnchor = Math.min(nearAnchor, Math.hypot(pointer.x - a.point.x, pointer.y - a.point.y))
-        if (a.handleIn) nearHandle = Math.min(nearHandle, Math.hypot(pointer.x - a.handleIn.x, pointer.y - a.handleIn.y))
-        if (a.handleOut) nearHandle = Math.min(nearHandle, Math.hypot(pointer.x - a.handleOut.x, pointer.y - a.handleOut.y))
-      }
-      if (nearHandle <= 7) intent = 'move-handle'
-      else if (nearAnchor <= 10) intent = 'move-vertex'
-      else if (ghost) intent = 'add-vertex'
+  const degree = vn.nodes.map(() => 0)
+  for (const e of vn.edges) {
+    if (e.a !== e.b) {
+      degree[e.a]++
+      degree[e.b]++
     }
   }
 
+  // Node under the cursor (snap target for pen close / connect, or grab).
+  let hoverNode = -1
+  if (cursorWorld) {
+    let best = NODE_HIT_PX
+    vn.nodes.forEach((n, i) => {
+      const s = toScreen(n)
+      const d = Math.hypot((pointer?.x ?? 0) - s.x, (pointer?.y ?? 0) - s.y)
+      if (d <= best) {
+        best = d
+        hoverNode = i
+      }
+    })
+  }
+
+  // Nearest edge point (Add only). It's also the ghost dot's position: snap onto
+  // the edge when close, else float at the cursor (a new free node).
+  let ghostPos: XY | null = null
+  let nearEdge = false
+  if (effAdd && !liveNet && cursorWorld && hoverNode < 0) {
+    let bestD = Infinity
+    let bestPt: XY | null = null
+    vn.edges.forEach((_, ei) => {
+      const hit = nearestPointOnPath(edgeAnchors(vn, ei), false, cursorWorld)
+      if (hit && hit.dist < bestD) {
+        bestD = hit.dist
+        bestPt = hit.point
+      }
+    })
+    nearEdge = bestPt != null && bestD * zoom <= ADD_HIT_PX
+    ghostPos = toScreen(nearEdge && bestPt ? bestPt : cursorWorld)
+  }
+
+  // Pen connect target: a node (other than the draft) under the cursor.
+  const penTarget = effAdd && hoverNode >= 0 && hoverNode !== draftFrom ? hoverNode : -1
+
+  // One resolved interaction drives cursor / hint / ghost / capture (see
+  // path-interaction.ts), so they can never disagree — pan suppresses all of them.
+  // `subTool` is the machine context value read at the top.
+  const hover: PathHover = effAdd
+    ? penTarget >= 0
+      ? 'node-target'
+      : nearEdge
+        ? 'edge'
+        : 'empty'
+    : hoverNode >= 0
+      ? 'node'
+      : 'empty'
+  const it = resolvePathInteraction({ subTool, panHeld, altHeld: !!altDown, hover, dragging: !!liveNet })
+  const nodeCursor = it.cursor
+
   return (
     <>
-    <svg
-      ref={svgRef}
-      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
-    >
-      <path
-        d={hitPathD}
-        fill="none"
-        stroke="transparent"
-        strokeWidth={ADD_HIT_PX * 2}
-        style={{ pointerEvents: 'stroke', cursor: PEN_CURSOR }}
-        onPointerMove={onHitMove}
-        onPointerDown={onAddAnchor}
-      />
-      {/* The editable skeleton: links the vertices (sharp, pre-fillet) so the
-          structure stays visible on top of the rounded rendered shape. */}
-      <path
-        d={hitPathD}
-        fill="none"
-        stroke={SELECTION_STROKE}
-        strokeWidth={1.5}
-        strokeLinejoin="round"
-        strokeLinecap="round"
-        opacity={0.85}
-        style={{ pointerEvents: 'none' }}
-      />
-      {/* Other sub-paths: dimmed skeletons with clickable dots to activate one. */}
-      {allSubpaths.map((sp, si) => {
-        if (si === activeIdx || sp.vertices.length === 0) return null
-        const sa: Anchor[] = sp.vertices.map((a) => ({
-          point: toScreen(a.point),
-          ...(a.handleIn ? { handleIn: toScreen(a.handleIn) } : {}),
-          ...(a.handleOut ? { handleOut: toScreen(a.handleOut) } : {}),
-        }))
-        const d = segmentsToSvgPath(anchorsToSegments(sa, sp.closed))
-        return (
-          <g key={`sub${si}`} opacity={0.45}>
-            <path
-              d={d}
-              fill="none"
-              stroke={SELECTION_STROKE}
-              strokeWidth={1.25}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              style={{ pointerEvents: 'none' }}
-            />
-            {sp.vertices.map((a, vi) => {
-              const ps = toScreen(a.point)
-              return (
+      <svg
+        ref={svgRef}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
+      >
+        {/* Pen mode: full-area capture for placing a new node on empty canvas. */}
+        {inPen && (
+          <rect
+            x={0}
+            y={0}
+            width="100%"
+            height="100%"
+            fill="transparent"
+            style={{ pointerEvents: it.capture ? 'auto' : 'none', cursor: it.cursor }}
+            onPointerMove={onTrackMove}
+            onPointerDown={onPenCanvas}
+          />
+        )}
+
+        {/* Edges: visible skeleton + (Add sub-tool) invisible add-point hit band. */}
+        {vn.edges.map((_, ei) => {
+          const sa = edgeAnchors(vn, ei).map((a) => ({
+            point: toScreen(a.point),
+            ...(a.handleIn ? { handleIn: toScreen(a.handleIn) } : {}),
+            ...(a.handleOut ? { handleOut: toScreen(a.handleOut) } : {}),
+          }))
+          const d = segmentsToSvgPath(anchorsToSegments(sa, false))
+          return (
+            <g key={`e${ei}`}>
+              {inPen && (
+                <path
+                  d={d}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={ADD_HIT_PX * 2}
+                  style={{ pointerEvents: it.capture ? 'stroke' : 'none', cursor: it.cursor }}
+                  onPointerMove={onTrackMove}
+                  onPointerDown={onAddPoint(ei)}
+                />
+              )}
+              <path
+                d={d}
+                fill="none"
+                stroke={SELECTION_STROKE}
+                strokeWidth={1.5}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                opacity={0.9}
+                style={{ pointerEvents: 'none' }}
+              />
+            </g>
+          )
+        })}
+
+        {/* Pen preview: from the draft node to the cursor (snaps to a target node). */}
+        {effAdd && draftFrom != null && draftFrom < vn.nodes.length && cursorWorld && (() => {
+          const a = toScreen(vn.nodes[draftFrom])
+          const c = penTarget >= 0 ? toScreen(vn.nodes[penTarget]) : toScreen(cursorWorld)
+          return (
+            <line x1={a.x} y1={a.y} x2={c.x} y2={c.y} stroke={SELECTION_STROKE} strokeWidth={1.5} strokeDasharray="4 3" />
+          )
+        })()}
+
+        {/* Handles: one cap + leader per edge end that has one. Shown in both modes
+            (so a curve pulled out while drawing is visible); draggable only in
+            select mode — in pen mode the caps don't capture clicks. */}
+        {vn.edges.map((e, ei) =>
+          (['a', 'b'] as const).map((end) => {
+            const h = end === 'a' ? e.ha : e.hb
+            if (!h) return null
+            const np = toScreen(vn.nodes[end === 'a' ? e.a : e.b])
+            const hs = toScreen(h)
+            return (
+              <g key={`h${ei}${end}`}>
+                <line x1={np.x} y1={np.y} x2={hs.x} y2={hs.y} stroke={SELECTION_STROKE} strokeWidth={1} />
                 <circle
-                  key={vi}
-                  cx={ps.x}
-                  cy={ps.y}
+                  cx={hs.x}
+                  cy={hs.y}
                   r={4}
                   fill={HANDLE_FILL}
                   stroke={SELECTION_STROKE}
-                  strokeWidth={1.25}
-                  style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-                  onPointerDown={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    if (shapeId) setActiveSub({ shapeId, index: si })
-                  }}
+                  strokeWidth={1.5}
+                  style={{ pointerEvents: effAdd ? 'none' : 'auto', cursor: 'grab' }}
+                  onPointerDown={effAdd ? undefined : beginHandleDrag(ei, end)}
                 />
-              )
-            })}
-          </g>
-        )
-      })}
-      {extendFrom && extendCursor && activeEndIdx >= 0 && (() => {
-        const a = toScreen(anchors[activeEndIdx].point)
-        const c = toScreen(extendCursor)
-        return (
-          <g>
-            <line
-              x1={a.x}
-              y1={a.y}
-              x2={c.x}
-              y2={c.y}
-              stroke={SELECTION_STROKE}
-              strokeWidth={1.5}
-              strokeDasharray="4 3"
-            />
-            {closeTargetIdx < 0 && (
-              <circle cx={c.x} cy={c.y} r={4} fill={HANDLE_FILL} stroke={SELECTION_STROKE} strokeWidth={1.25} />
-            )}
-          </g>
-        )
-      })()}
-      {anchors.map((a, i) => {
-        const isOpenEnd = openEnds.includes(i)
-        const isActiveEnd = i === activeEndIdx
-        const isCloseTarget = i === closeTargetIdx
-        const ps = toScreen(a.point)
-        return (
-          <g key={i}>
-            {/* Invisible larger grab area (kept below the handle caps so short
-                handles stay grabbable) so a near-miss grabs the anchor instead of
-                the add-anchor band that runs along the same outline. */}
-            <circle
-              cx={ps.x}
-              cy={ps.y}
-              r={10}
-              fill="transparent"
-              style={{ pointerEvents: 'auto', cursor: 'move' }}
-              onPointerDown={beginDrag('anchor', i)}
-              onDoubleClick={onToggleSmooth(i)}
-            />
-            {(['handleIn', 'handleOut'] as const).map((side) => {
-              const h = a[side]
-              if (!h) return null
-              const hs = toScreen(h)
-              return (
-                <g key={side}>
-                  <line x1={ps.x} y1={ps.y} x2={hs.x} y2={hs.y} stroke={SELECTION_STROKE} strokeWidth={1} />
-                  <circle
-                    cx={hs.x}
-                    cy={hs.y}
-                    r={4}
-                    fill={HANDLE_FILL}
-                    stroke={SELECTION_STROKE}
-                    strokeWidth={1.5}
-                    style={{ pointerEvents: 'auto', cursor: 'grab' }}
-                    onPointerDown={beginDrag(side === 'handleIn' ? 'in' : 'out', i)}
-                  />
-                </g>
-              )
-            })}
-            <circle
-              cx={ps.x}
-              cy={ps.y}
-              r={isCloseTarget ? 7 : i === selectedAnchor || isActiveEnd ? 6 : 5}
-              // Active end / close target / selection fill in; open ends get a
-              // thicker ring (continue-from-here cue).
-              fill={isCloseTarget || isActiveEnd || i === selectedAnchor ? SELECTION_STROKE : HANDLE_FILL}
-              stroke={SELECTION_STROKE}
-              strokeWidth={isOpenEnd ? 2.25 : 1.5}
-              style={{ pointerEvents: 'auto', cursor: isOpenEnd ? 'crosshair' : 'move' }}
-              onPointerDown={beginDrag('anchor', i)}
-              onDoubleClick={onToggleSmooth(i)}
-            />
-          </g>
-        )
-      })}
-      {ghost && (
-        <circle
-          cx={ghost.x}
-          cy={ghost.y}
-          r={5}
-          fill="none"
-          stroke={SELECTION_STROKE}
-          strokeWidth={1.5}
-          strokeDasharray="3 2"
-          style={{ pointerEvents: 'none' }}
-        />
-      )}
-    </svg>
-      {intent && pointer && (
-        <CursorHintChip x={pointer.x} y={pointer.y} icon={PATH_INTENT_ICONS[intent]} />
-      )}
+              </g>
+            )
+          }),
+        )}
+
+        {/* Nodes. Junctions (degree ≥3) are larger; open ends (degree 1) ringed;
+            selection / draft / pen-target filled. */}
+        {vn.nodes.map((n, i) => {
+          const ps = toScreen(n)
+          const isJunction = degree[i] >= 3
+          const isOpenEnd = degree[i] === 1
+          const isSelected = !inPen && i === selectedNode // no lingering selected-anchor fill while placing/connecting (Add)
+          const isDraft = inPen && i === draftFrom
+          const isTarget = i === penTarget
+          const filled = isSelected || isDraft || isTarget
+          return (
+            <g key={`n${i}`}>
+              <circle
+                cx={ps.x}
+                cy={ps.y}
+                r={10}
+                fill="transparent"
+                style={{ pointerEvents: 'auto', cursor: nodeCursor }}
+                onPointerDown={effAdd ? onPenNode(i) : beginNodeDrag(i)}
+                onDoubleClick={effAdd ? undefined : onToggleSmooth(i)}
+              />
+              <circle
+                cx={ps.x}
+                cy={ps.y}
+                r={isTarget ? 7 : isJunction ? 6 : filled ? 6 : 5}
+                fill={filled ? SELECTION_STROKE : HANDLE_FILL}
+                stroke={SELECTION_STROKE}
+                strokeWidth={isOpenEnd || isJunction ? 2.25 : 1.5}
+                style={{ pointerEvents: 'auto', cursor: nodeCursor }}
+                onPointerDown={effAdd ? onPenNode(i) : beginNodeDrag(i)}
+                onDoubleClick={effAdd ? undefined : onToggleSmooth(i)}
+              />
+            </g>
+          )
+        })}
+
+        {it.ghost && ghostPos && (
+          <circle
+            cx={ghostPos.x}
+            cy={ghostPos.y}
+            r={5}
+            fill="none"
+            stroke={SELECTION_STROKE}
+            strokeWidth={1.5}
+            strokeDasharray="3 2"
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
+      </svg>
+      {it.hint && pointer && <CursorHintChip x={pointer.x} y={pointer.y} icon={it.hint} />}
     </>
   )
 }
