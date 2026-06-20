@@ -47,18 +47,27 @@ function renderNode(node: PNode, env: Env, ir: PageInteractions, fire: (it: Inte
     return coll.map((item, i) => {
       const itemEnv: Env = { ...env, [as]: item }
       const k = rep.key ? safeEval(rep.key, itemEnv) : isRecord(item) && 'id' in item ? (item.id as string) : i
-      return renderElement(node, itemEnv, ir, fire, k ?? i)
+      return renderElement(node, itemEnv, ir, fire, true, k ?? i)
     })
   }
-  return renderElement(node, env, ir, fire, key)
+  return renderElement(node, env, ir, fire, false, key)
 }
 
-function renderElement(node: PNode, env: Env, ir: PageInteractions, fire: (it: Interaction) => void, key?: number | string): ReactNode {
+function renderElement(
+  node: PNode,
+  env: Env,
+  ir: PageInteractions,
+  fire: (it: Interaction) => void,
+  instance: boolean,
+  key?: number | string,
+): ReactNode {
   const props: Record<string, unknown> = { 'data-node-id': node.nodeId }
   const style: Record<string, unknown> = { ...(node.style ?? {}) }
   if (key !== undefined) {
     props.key = key
-    props['data-instance-key'] = key
+    // Only true repeater instances carry data-instance-key (anchor contract);
+    // plain keyed children get a React key but no instance anchor.
+    if (instance) props['data-instance-key'] = key
   }
 
   let textChild: unknown
