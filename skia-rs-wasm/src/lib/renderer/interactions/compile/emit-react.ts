@@ -50,6 +50,13 @@ const EVENT_PROP: Record<string, string> = {
   'mouse-leave': 'onMouseLeave',
 }
 
+/**
+ * Binding props that are CSS, so they merge into the element's inline `style`
+ * (overriding the static fill) instead of becoming raw element props. Shared with
+ * the preview runtime so both render a wired fill/colour identically.
+ */
+export const STYLE_PROPS = new Set(['background', 'backgroundColor', 'color', 'opacity', 'visibility', 'display', 'borderColor'])
+
 function tsType(vt: ValueType): string {
   if (typeof vt === 'object') return `${tsType(vt.collection)}[]`
   switch (vt) {
@@ -149,11 +156,16 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
     props.push(`key={${keyExpr}}`, instanceKeyAttr(keyExpr))
   }
 
+  // style starts from the static fill; CSS-prop bindings override it (as expressions).
+  const styleMap = new Map<string, string>()
+  if (node.style) for (const [k, v] of Object.entries(node.style)) styleMap.set(k, JSON.stringify(v))
+
   let textChild: string | undefined
   for (const b of ir.bindings) {
     if (b.node !== node.nodeId) continue
     const expr = toJs(parse(b.from))
     if (b.prop === 'text' || b.prop === 'children') textChild = expr
+    else if (STYLE_PROPS.has(b.prop)) styleMap.set(b.prop, expr)
     else props.push(`${b.prop}={${expr}}`)
   }
 
@@ -163,10 +175,8 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
     if (ev) props.push(`${ev}={${handlerName(it.on.node, it.on.trigger.type)}}`)
   }
 
-  if (node.style && Object.keys(node.style).length) {
-    const entries = Object.entries(node.style)
-      .map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`)
-      .join(', ')
+  if (styleMap.size) {
+    const entries = [...styleMap].map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')
     props.push(`style={{ ${entries} }}`)
   }
 

@@ -8,7 +8,7 @@
 
 import { useMemo, useState, createElement, type ReactNode } from 'react'
 import type { PageInteractions, Interaction } from '../ir'
-import type { PNode } from '../compile/emit-react'
+import { STYLE_PROPS, type PNode } from '../compile/emit-react'
 import { parse, evaluate } from '../expression'
 import { initRuntime, buildEnv, runInteraction, type RuntimeState } from './runtime'
 
@@ -55,7 +55,7 @@ function renderNode(node: PNode, env: Env, ir: PageInteractions, fire: (it: Inte
 
 function renderElement(node: PNode, env: Env, ir: PageInteractions, fire: (it: Interaction) => void, key?: number | string): ReactNode {
   const props: Record<string, unknown> = { 'data-node-id': node.nodeId }
-  if (node.style) props.style = node.style
+  const style: Record<string, unknown> = { ...(node.style ?? {}) }
   if (key !== undefined) {
     props.key = key
     props['data-instance-key'] = key
@@ -66,8 +66,10 @@ function renderElement(node: PNode, env: Env, ir: PageInteractions, fire: (it: I
     if (b.node !== node.nodeId) continue
     const val = safeEval(b.from, env)
     if (b.prop === 'text' || b.prop === 'children') textChild = val
+    else if (STYLE_PROPS.has(b.prop)) style[b.prop] = val
     else props[b.prop] = val
   }
+  if (Object.keys(style).length) props.style = style
 
   for (const it of ir.interactions) {
     if (it.on.node !== node.nodeId) continue

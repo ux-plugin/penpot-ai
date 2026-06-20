@@ -68,3 +68,24 @@ describe('emit-react — style prop', () => {
     expect(code).not.toContain('style=')
   })
 })
+
+describe('emit-react — style-prop bindings (wire fill to state)', () => {
+  it('routes a background binding into inline style, overriding the static fill', () => {
+    const ir = emptyPageInteractions()
+    ir.variables.push({ id: 'accent', type: 'string', scope: 'page', initial: '#e11d48', source: 'local' })
+    ir.bindings.push({ node: 'btn', prop: 'background', from: 'accent' })
+    const root: PNode = { nodeId: 'btn', tag: 'button', text: 'Buy', style: { background: '#999999' } }
+    const code = emitReactComponent(ir, root, { componentName: 'Screen' })
+    expect(code).toContain('"background": accent') // dynamic expression
+    expect(code).not.toContain('"background": "#999999"') // static fill overridden, not duplicated
+  })
+
+  it('a non-CSS binding stays a raw element prop', () => {
+    const ir = emptyPageInteractions()
+    ir.bindings.push({ node: 'inp', prop: 'value', from: 'query' })
+    const root: PNode = { nodeId: 'inp', tag: 'input' }
+    const code = emitReactComponent(ir, root, { componentName: 'Screen' })
+    expect(code).toContain('value={query}')
+    expect(code).not.toContain('style=')
+  })
+})

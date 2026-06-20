@@ -25,6 +25,9 @@ import {
   setBindingProp,
   setBindingFrom,
   removeBinding,
+  getBinding,
+  setBindingExpr,
+  removeBindingProp,
   addDerived,
   setDerivedExpr,
   removeDerived,
@@ -235,6 +238,19 @@ describe('binding reducers', () => {
     ir = setBindingFrom(ir, 'a', 1, 'zz') // occurrence 1 of node 'a' = the visible binding
     expect(ir.bindings.find((b) => b.node === 'a' && b.prop === 'visible')!.from).toBe('zz')
     expect(ir.bindings.find((b) => b.node === 'b')!.from).toBe('y') // untouched
+  })
+
+  it('prop-keyed helpers upsert / read / drop the single (node, prop) binding', () => {
+    let ir = setBindingExpr(emptyPageInteractions(), 'btn', 'background', 'accent')
+    expect(getBinding(ir, 'btn', 'background')).toEqual({ node: 'btn', prop: 'background', from: 'accent' })
+    ir = setBindingExpr(ir, 'btn', 'background', 'theme.bg') // updates, no duplicate
+    expect(ir.bindings).toHaveLength(1)
+    expect(getBinding(ir, 'btn', 'background')!.from).toBe('theme.bg')
+    ir = setBindingExpr(ir, 'btn', 'color', 'fg') // different prop coexists
+    expect(ir.bindings).toHaveLength(2)
+    ir = removeBindingProp(ir, 'btn', 'background')
+    expect(getBinding(ir, 'btn', 'background')).toBeUndefined()
+    expect(ir.bindings).toHaveLength(1)
   })
 })
 

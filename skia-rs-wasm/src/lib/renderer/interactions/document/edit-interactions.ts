@@ -227,3 +227,22 @@ export function removeBinding(ir: PageInteractions, node: string, occurrence: nu
   if (gi < 0) return ir
   return { ...ir, bindings: ir.bindings.filter((_, i) => i !== gi) }
 }
+
+// Prop-keyed binding helpers — for property-anchored UIs (a fill row wires the
+// single `(node, 'background')` binding) rather than the generic indexed list.
+
+export function getBinding(ir: PageInteractions, node: string, prop: string): Binding | undefined {
+  return ir.bindings.find((b) => b.node === node && b.prop === prop)
+}
+
+/** Upsert the single `(node, prop)` binding to `from`. */
+export function setBindingExpr(ir: PageInteractions, node: string, prop: string, from: string): PageInteractions {
+  if (ir.bindings.some((b) => b.node === node && b.prop === prop)) {
+    return { ...ir, bindings: ir.bindings.map((b) => (b.node === node && b.prop === prop ? { ...b, from } : b)) }
+  }
+  return { ...ir, bindings: [...ir.bindings, { node, prop, from }] }
+}
+
+export function removeBindingProp(ir: PageInteractions, node: string, prop: string): PageInteractions {
+  return { ...ir, bindings: ir.bindings.filter((b) => !(b.node === node && b.prop === prop)) }
+}
