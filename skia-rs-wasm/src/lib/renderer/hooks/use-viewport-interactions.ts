@@ -328,6 +328,24 @@ export function useViewportInteractions({
         // path analogue of double-clicking a text shape to edit its content.
         setSelectedIds(new Set([topId]))
         canvasActor.send({ type: 'START_PATH_EDIT', shapeId: topId })
+      } else {
+        // Stroke-miss fallback: open paths only register a hit on the stroke
+        // (query-selection uses precise geometry, not the bbox), so a double-click
+        // in the *fill area* of an already-selected path returns no node. If a
+        // single path is selected and the point is within its bounds, edit it
+        // anyway — mirrors the mousedown bounds-fallback and Figma/Illustrator.
+        const sel = getSelectedIdsSet()
+        const selId = sel.size === 1 ? [...sel][0] : null
+        const selObj = selId ? (page.objects[selId] as { type?: string } | undefined) : undefined
+        const wasmRect = wasmSelectionRect.peek()
+        if (
+          selId &&
+          selObj?.type === 'path' &&
+          wasmRect &&
+          isPointInSelectionBounds(screenToWorld(vp, screenX, screenY), wasmRect)
+        ) {
+          canvasActor.send({ type: 'START_PATH_EDIT', shapeId: selId })
+        }
       }
     })
   }, [surfaceRef, canvasActor])
