@@ -32,7 +32,7 @@ export function FloatingEditorRail({
       className={cn(
         'pointer-events-auto fixed top-3 bottom-3 z-50 flex flex-col overflow-hidden rounded-2xl border border-border/80 bg-white text-card-foreground shadow-md',
         side === 'left'
-          ? 'left-3 w-(--layers-panel-width,280px)'
+          ? 'left-[calc(0.75rem+var(--activity-bar-width,0px))] w-(--layers-panel-width,280px)'
           : 'right-3 w-(--properties-panel-width,280px)',
         collapsed && 'w-auto min-w-11 max-w-11',
         className,

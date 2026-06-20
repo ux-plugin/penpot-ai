@@ -7,6 +7,10 @@ import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { createNewDocument, setDocument, undo, redo } from './lib/page-crud'
 import { Button } from '@/components/ui/button'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
+import { ActivityBar } from './lib/components/ActivityBar'
+import { BuildWorkspace } from './lib/components/BuildWorkspace'
+import { editorMode } from './lib/renderer/signals/editor-mode'
+import { useSignalCoalesced } from './lib/renderer/signals/use-signal-coalesced'
 
 /**
  * Read the initial value of the render-wasm cache PiP debug overlay
@@ -22,6 +26,7 @@ function readDebugPipFromUrl(): boolean {
 }
 
 function App() {
+  const mode = useSignalCoalesced(editorMode)
   const [error, setError] = useState<string | null>(null)
   // PiP cache overlay is a dev-only feature. In production, `DEV` is
   // statically false → esbuild folds the state, options field and the
@@ -74,7 +79,7 @@ function App() {
 
   return (
     <div
-      className="canvas-container relative font-sans"
+      className="canvas-container relative font-sans [--activity-bar-width:3rem]"
       style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: 'var(--editor-canvas-chrome)' }}
     >
       <div style={{ position: 'absolute', inset: 0 }}>
@@ -84,49 +89,56 @@ function App() {
           containerStyle={{ cursor: 'crosshair', width: '100%', height: '100%' }}
           overlays={
             <>
-              <LayersPanel />
-              <RightSidePanel />
-              <ShapeToolbar />
-              <div
-                className="pointer-events-auto absolute top-3 z-10 flex gap-0.5 rounded-lg border border-border/80 bg-white p-1 shadow-md"
-                style={{ right: 'calc(0.75rem + var(--properties-panel-width, 280px) + 0.75rem)' }}
-                role="toolbar"
-                aria-label="Document actions"
-              >
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="New document"
-                  title="New document"
-                  onClick={() => void setDocument(createNewDocument())}
-                >
-                  <FilePlus className="size-4" />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="Undo"
-                  title="Undo"
-                  onClick={() => void undo()}
-                >
-                  <Undo2 className="size-4" />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="Redo"
-                  title="Redo"
-                  onClick={() => void redo()}
-                >
-                  <Redo2 className="size-4" />
-                </Button>
-              </div>
+              <ActivityBar />
+              {mode === 'design' ? (
+                <>
+                  <LayersPanel />
+                  <RightSidePanel />
+                  <ShapeToolbar />
+                  <div
+                    className="pointer-events-auto absolute top-3 z-10 flex gap-0.5 rounded-lg border border-border/80 bg-white p-1 shadow-md"
+                    style={{ right: 'calc(0.75rem + var(--properties-panel-width, 280px) + 0.75rem)' }}
+                    role="toolbar"
+                    aria-label="Document actions"
+                  >
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9"
+                      aria-label="New document"
+                      title="New document"
+                      onClick={() => void setDocument(createNewDocument())}
+                    >
+                      <FilePlus className="size-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9"
+                      aria-label="Undo"
+                      title="Undo"
+                      onClick={() => void undo()}
+                    >
+                      <Undo2 className="size-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9"
+                      aria-label="Redo"
+                      title="Redo"
+                      onClick={() => void redo()}
+                    >
+                      <Redo2 className="size-4" />
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <BuildWorkspace />
+              )}
               {error && (
                 <div
                   className="pointer-events-auto fixed bottom-24 left-1/2 z-70 max-w-lg -translate-x-1/2 rounded-lg border border-destructive/40 bg-destructive/15 px-4 py-2 text-sm text-destructive shadow-lg backdrop-blur-sm"

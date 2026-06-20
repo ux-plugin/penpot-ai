@@ -6,6 +6,7 @@
 import type { PenpotNode, PenpotPage } from 'penpot-exporter/types'
 import { ZERO_UUID } from '@skia-rs-wasm/common/conversions'
 import type { IndexedPage, IndexedShape } from './types'
+import type { PageInteractions } from '../renderer/interactions/ir'
 
 /**
  * Truncate a UUID-like string to the standard 36-char format when it has extra garbage
@@ -54,6 +55,7 @@ function flattenChildrenRec(
 
 export function flattenPageToIndexed(page: PenpotPage): IndexedPage {
   const children = page.children ?? []
+  const interactions = (page as { interactions?: PageInteractions }).interactions
   const rootFrame = children[0]
   if (!rootFrame) {
     return {
@@ -61,6 +63,7 @@ export function flattenPageToIndexed(page: PenpotPage): IndexedPage {
       name: page.name,
       background: page.background,
       objects: {},
+      interactions,
     }
   }
   // Real Penpot pages have children[0].id === ZERO_UUID (the nil-UUID root frame).
@@ -117,6 +120,7 @@ export function flattenPageToIndexed(page: PenpotPage): IndexedPage {
     name: page.name,
     background: page.background,
     objects,
+    interactions,
   }
 }
 
@@ -133,7 +137,8 @@ export function unflattenIndexedPageToPage(indexed: IndexedPage): PenpotPage {
       name: indexed.name ?? 'Page',
       background: indexed.background,
       children: [],
-    }
+      interactions: indexed.interactions,
+    } as PenpotPage
   }
 
   function toNode(shape: IndexedShape): PenpotNode {
@@ -154,5 +159,6 @@ export function unflattenIndexedPageToPage(indexed: IndexedPage): PenpotPage {
     name: indexed.name ?? 'Page',
     background: indexed.background,
     children: [rootNode, ...siblingNodes],
-  }
+    interactions: indexed.interactions,
+  } as PenpotPage
 }
