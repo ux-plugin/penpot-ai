@@ -5,7 +5,6 @@
 
 import { signal } from '@preact/signals-core'
 import type { Fill, Gradient, Selrect } from 'penpot-exporter/types'
-import type { Anchor } from '../geom/anchors'
 import type { Renderer } from '../renderer'
 import type { SelectionRectResult } from '../types'
 
@@ -27,38 +26,16 @@ export const activeEditorTarget = signal<ActiveEditorTarget | null>(null)
 export const selectionRect = signal<Selrect | null>(null)
 export const shapeDrawPreview = signal<Selrect | null>(null)
 
-/** A pen anchor as seen by the overlay: a point plus optional bézier handles
- * (absolute world coords), mirroring the editable `Anchor` model. */
-export interface PenAnchorView {
-  point: { x: number; y: number }
-  handleIn?: { x: number; y: number }
-  handleOut?: { x: number; y: number }
-}
-
 /**
- * Live preview for the pen tool, in WORLD coordinates. `anchors` are the placed
- * points (with handles); `pending` is the anchor under the mouse button, whose
- * handles are being dragged out (null between clicks); `cursor` is the in-flight
- * free point trailing the mouse (null when off-canvas or while dragging a
- * handle); `willClose` is true when the cursor hovers the first anchor (so the
- * overlay can highlight the close target). Drives a bézier path + handle lines
- * rather than a rubber-band rect.
+ * Live working vector network during a path-edit drag (R4), or null when no drag
+ * is in flight (the overlay then reads the committed `content.network`). Written at
+ * pointer rate so the node/edge markers track the cursor without a history commit
+ * per frame. Typed loosely to avoid a geom import cycle here.
  */
-export interface PenDrawPreview {
-  anchors: PenAnchorView[]
-  pending: PenAnchorView | null
-  cursor: { x: number; y: number } | null
-  willClose: boolean
-}
-export const penDrawPreview = signal<PenDrawPreview | null>(null)
-
-/**
- * Live working anchors during a vector-edit drag (world coords), or null when no
- * drag is in flight (the PathEditorOverlay then reads the committed segments).
- * Written at pointer rate by the overlay's drag handler so the markers track the
- * cursor without a history commit per frame.
- */
-export const pathEditAnchors = signal<Anchor[] | null>(null)
+export const pathEditNetwork = signal<{
+  nodes: Array<{ x: number; y: number }>
+  edges: Array<{ a: number; b: number; ha?: { x: number; y: number }; hb?: { x: number; y: number } }>
+} | null>(null)
 
 /** Synced from React: showHandles && showCornerHandles. Drives imperative corner-square `effect()`. */
 export const selectionCornerHandlesVisible = signal(false)
