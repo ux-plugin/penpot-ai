@@ -1,8 +1,10 @@
 /**
  * Bottom pill tool strip for creation tools (reference editor UI).
  * Closed shapes (rect/ellipse/triangle/polygon/star) collapse into one menu
- * whose face shows the last-used shape; Line is kept as its own button.
- * Extend `DrawTool` in canvas-machine when adding new shape icons.
+ * whose face shows the last-used shape; the pen tool collapses into its own menu
+ * of pen sub-tools. Each collapsible tool shows a small caret ABOVE its icon that
+ * opens a flyout growing upward. Extend `DrawTool` in canvas-machine when adding
+ * new shape icons.
  */
 
 import { useCallback, useState, type ComponentType, type ReactNode } from 'react'
@@ -14,6 +16,7 @@ import {
   Hexagon,
   Image,
   MessageCircle,
+  MousePointer2,
   PenTool,
   Pencil,
   Star,
@@ -25,7 +28,8 @@ import { useCanvasActor } from '../renderer/machine/canvas-actor-context'
 import type { DrawTool } from '../renderer/machine/canvas-machine'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { IconFrame, IconRect, IconSelect } from './shape-icons'
+import { IconFrame, IconRect } from './shape-icons'
+import { PenEditFlyout } from './PenEditFlyout'
 
 const placeholderTitle = 'Coming soon'
 
@@ -40,35 +44,125 @@ const SHAPE_TOOLS: { tool: DrawTool; label: string; Icon: IconComponent }[] = [
   { tool: 'star', label: 'Star', Icon: Star },
 ]
 
+/**
+ * A tool whose icon carries a small caret ABOVE it; the caret opens a flyout that
+ * grows upward. The face button still activates the tool directly (one click); the
+ * caret is a separate, smaller hit-target for the sub-tool menu.
+ */
+function CollapsibleTool({
+  FaceIcon,
+  facePressed,
+  onFace,
+  faceTitle,
+  flyoutTitle,
+  open,
+  onOpenChange,
+  children,
+  dim = false,
+  flyout,
+}: {
+  FaceIcon: IconComponent
+  facePressed: boolean
+  onFace: () => void
+  faceTitle: string
+  flyoutTitle: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  children: ReactNode
+  /** Greyed + inert (used to recede the other tools while a path is being edited). */
+  dim?: boolean
+  /** When set, replaces the caret sub-menu with this node (e.g. the Pen's
+   *  liquid-glass edit flyout). The face stays as the anchor it grows from. */
+  flyout?: ReactNode
+}) {
+  return (
+    <li>
+      <div className="relative">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className={cn(
+            'h-10 w-10 rounded-full text-muted-foreground hover:bg-transparent',
+            dim && 'pointer-events-none opacity-40 grayscale',
+          )}
+          title={faceTitle}
+          aria-label={faceTitle}
+          aria-pressed={facePressed}
+          onClick={onFace}
+        >
+          {/* Highlight only the icon (a circle), not the whole button — so the
+              caret above stays on the neutral pill and never looks selected. */}
+          <span
+            className={cn(
+              'flex size-8 items-center justify-center rounded-full',
+              facePressed
+                ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200'
+                : 'hover:bg-muted',
+            )}
+          >
+            <FaceIcon className="size-5 shrink-0 stroke-[1.5]" />
+          </span>
+        </Button>
+        {/* The caret sub-menu is suppressed whenever a flyout takes its place. */}
+        {!flyout && (
+          <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
+            <PopoverPrimitive.Trigger asChild>
+              <button
+                type="button"
+                title={flyoutTitle}
+                aria-label={flyoutTitle}
+                className={cn(
+                  'absolute left-1/2 top-0 flex h-3.5 w-6 -translate-x-1/2 items-center justify-center rounded-full text-muted-foreground/60 hover:text-foreground',
+                  dim && 'pointer-events-none opacity-40',
+                )}
+              >
+                <ChevronUp className="size-3 shrink-0" />
+              </button>
+            </PopoverPrimitive.Trigger>
+            <PopoverPrimitive.Portal>
+              <PopoverPrimitive.Content
+                side="top"
+                sideOffset={12}
+                align="center"
+                className="z-[70] min-w-[176px] rounded-xl border border-border/80 bg-white p-1 shadow-md"
+              >
+                {children}
+              </PopoverPrimitive.Content>
+            </PopoverPrimitive.Portal>
+          </PopoverPrimitive.Root>
+        )}
+        {flyout}
+      </div>
+    </li>
+  )
+}
+
 export function ShapeToolbar() {
   const canvasActor = useCanvasActor()
   const drawTool = useSelector(canvasActor, (s) => s.context.drawTool)
+  // While a path node is being edited the strip collapses to a single context:
+  // every tool but the Pen greys out, and the Pen grows its liquid-glass submenu.
+  const editing = useSelector(canvasActor, (s) => s.matches('pathEditing'))
   // The shape the menu face currently shows (the last shape the user picked).
   const [lastShapeTool, setLastShapeTool] = useState<DrawTool>('rect')
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false)
-
-  const syncCanvasCursor = useCallback((tool: DrawTool | null) => {
-    const canvas = document.querySelector('.canvas-container canvas') as HTMLCanvasElement | null
-    if (canvas) canvas.style.cursor = tool != null ? 'crosshair' : 'default'
-  }, [])
+  const [penMenuOpen, setPenMenuOpen] = useState(false)
 
   const onSelect = useCallback(() => {
     canvasActor.send({ type: 'DRAW_TOOL_DEACTIVATE' })
-    syncCanvasCursor(null)
-  }, [canvasActor, syncCanvasCursor])
+  }, [canvasActor])
 
   const toggleDrawTool = useCallback(
     (tool: DrawTool) => {
       const active = canvasActor.getSnapshot().context.drawTool === tool
       if (active) {
         canvasActor.send({ type: 'DRAW_TOOL_DEACTIVATE' })
-        syncCanvasCursor(null)
       } else {
         canvasActor.send({ type: 'DRAW_TOOL_ACTIVATE', tool })
-        syncCanvasCursor(tool)
       }
     },
-    [canvasActor, syncCanvasCursor],
+    [canvasActor],
   )
 
   const onFrame = useCallback(() => toggleDrawTool('frame'), [toggleDrawTool])
@@ -81,11 +175,19 @@ export function ShapeToolbar() {
     (tool: DrawTool) => {
       setLastShapeTool(tool)
       canvasActor.send({ type: 'DRAW_TOOL_ACTIVATE', tool })
-      syncCanvasCursor(tool)
       setShapeMenuOpen(false)
     },
-    [canvasActor, syncCanvasCursor],
+    [canvasActor],
   )
+
+  const selectPen = useCallback(() => {
+    canvasActor.send({ type: 'DRAW_TOOL_ACTIVATE', tool: 'pen' })
+    setPenMenuOpen(false)
+  }, [canvasActor])
+
+  // While editing a path, every tool but the Pen recedes (greyed + inert) so the
+  // single active context is unmistakable.
+  const dimEdit = editing && 'pointer-events-none opacity-40 grayscale'
 
   const toolBtn = (
     pressed: boolean,
@@ -101,6 +203,7 @@ export function ShapeToolbar() {
         className={cn(
           'h-10 w-10 rounded-full text-muted-foreground',
           pressed && 'bg-blue-100 text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-200',
+          dimEdit,
         )}
         title={label}
         aria-label={label}
@@ -118,7 +221,7 @@ export function ShapeToolbar() {
         type="button"
         variant="ghost"
         size="icon"
-        className="h-10 w-10 rounded-full text-muted-foreground/50"
+        className={cn('h-10 w-10 rounded-full text-muted-foreground/50', dimEdit)}
         disabled
         title={placeholderTitle}
         aria-label={label}
@@ -139,77 +242,74 @@ export function ShapeToolbar() {
       aria-label="Shape tools"
     >
       <ul className="flex list-none flex-row items-center gap-0.5 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md">
-        {toolBtn(drawTool == null, onSelect, 'Select and move', <IconSelect className="shrink-0" />)}
+        {toolBtn(drawTool == null, onSelect, 'Select and move', <MousePointer2 className="size-5 shrink-0 stroke-[1.5]" />)}
         {toolBtn(drawTool === 'frame', onFrame, 'Draw frame (F)', <IconFrame className="shrink-0" />)}
 
         {/* Collapsible shape menu: the face activates the last-used shape; the
-            chevron opens the list of all closed shapes. */}
-        <li>
-          <div className="flex items-center">
-            <Button
+            caret above it opens the list of all closed shapes. */}
+        <CollapsibleTool
+          FaceIcon={FaceIcon}
+          facePressed={shapeActive}
+          onFace={() => toggleDrawTool(lastShapeTool)}
+          faceTitle={`Draw ${faceLabel}`}
+          flyoutTitle="More shapes"
+          open={shapeMenuOpen && !editing}
+          onOpenChange={setShapeMenuOpen}
+          dim={editing}
+        >
+          {SHAPE_TOOLS.map(({ tool, label, Icon }) => (
+            <button
+              key={tool}
               type="button"
-              variant="ghost"
-              size="icon"
+              onClick={() => selectShape(tool)}
               className={cn(
-                'h-10 w-10 rounded-full text-muted-foreground',
-                shapeActive &&
-                  'bg-blue-100 text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-200',
+                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted',
+                drawTool === tool && 'text-blue-700',
               )}
-              title={`Draw ${faceLabel}`}
-              aria-label={`Draw ${faceLabel}`}
-              aria-pressed={shapeActive}
-              onClick={() => toggleDrawTool(lastShapeTool)}
             >
-              <FaceIcon className="size-5 shrink-0 stroke-[1.5]" />
-            </Button>
-            <PopoverPrimitive.Root open={shapeMenuOpen} onOpenChange={setShapeMenuOpen}>
-              <PopoverPrimitive.Trigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-10 w-5 rounded-full px-0 text-muted-foreground"
-                  title="More shapes"
-                  aria-label="More shapes"
-                >
-                  <ChevronUp className="size-3 shrink-0" />
-                </Button>
-              </PopoverPrimitive.Trigger>
-              <PopoverPrimitive.Portal>
-                <PopoverPrimitive.Content
-                  side="top"
-                  sideOffset={10}
-                  align="center"
-                  className="z-[70] min-w-[176px] rounded-xl border border-border/80 bg-white p-1 shadow-md"
-                >
-                  {SHAPE_TOOLS.map(({ tool, label, Icon }) => (
-                    <button
-                      key={tool}
-                      type="button"
-                      onClick={() => selectShape(tool)}
-                      className={cn(
-                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted',
-                        drawTool === tool && 'text-blue-700',
-                      )}
-                    >
-                      <Icon className="size-4 shrink-0 stroke-[1.5]" />
-                      <span className="flex-1 text-left">{label}</span>
-                      {tool === lastShapeTool && <Check className="size-3.5 shrink-0" />}
-                    </button>
-                  ))}
-                </PopoverPrimitive.Content>
-              </PopoverPrimitive.Portal>
-            </PopoverPrimitive.Root>
-          </div>
-        </li>
+              <Icon className="size-4 shrink-0 stroke-[1.5]" />
+              <span className="flex-1 text-left">{label}</span>
+              {tool === lastShapeTool && <Check className="size-3.5 shrink-0" />}
+            </button>
+          ))}
+        </CollapsibleTool>
 
-        {toolBtn(
-          drawTool === 'pen',
-          onPen,
-          'Pen — click for corners, drag for curves; Esc/Enter to finish (P)',
-          <PenTool className="size-5 shrink-0 stroke-[1.5]" />,
-        )}
-        {disabledTool('Draw', Pencil)}
+        {/* Collapsible pen menu: the face activates the pen; the caret above it
+            opens the pen sub-tools, growing upward. */}
+        <CollapsibleTool
+          FaceIcon={PenTool}
+          facePressed={!editing && drawTool === 'pen'}
+          onFace={editing ? () => {} : onPen}
+          faceTitle="Pen — click for corners, drag for curves; Esc/Enter to finish (P)"
+          flyoutTitle="Pen tools"
+          open={penMenuOpen && !editing}
+          onOpenChange={setPenMenuOpen}
+          flyout={editing ? <PenEditFlyout /> : undefined}
+        >
+          <button
+            type="button"
+            onClick={selectPen}
+            className={cn(
+              'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted',
+              drawTool === 'pen' && 'text-blue-700',
+            )}
+          >
+            <PenTool className="size-4 shrink-0 stroke-[1.5]" />
+            <span className="flex-1 text-left">Pen</span>
+            {drawTool === 'pen' && <Check className="size-3.5 shrink-0" />}
+          </button>
+          <button
+            type="button"
+            disabled
+            title={placeholderTitle}
+            className="flex w-full cursor-not-allowed items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground/50"
+          >
+            <Pencil className="size-4 shrink-0 stroke-[1.5]" />
+            <span className="flex-1 text-left">Pencil</span>
+            <span className="text-[10px] uppercase tracking-wide">Soon</span>
+          </button>
+        </CollapsibleTool>
+
         {toolBtn(
           drawTool === 'text',
           onText,

@@ -1,7 +1,8 @@
-import { useState, useCallback, useMemo, useEffect } from 'react'
-import { Undo2, Redo2, FilePlus } from 'lucide-react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
+import { Undo2, Redo2 } from 'lucide-react'
 import { CanvasWrapper } from './lib/renderer/canvas-wrapper'
 import { ShapeToolbar } from './lib/components/ShapeToolbar'
+import { CursorHint } from './lib/components/CursorHint'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { createNewDocument, setDocument, undo, redo } from './lib/page-crud'
@@ -37,9 +38,19 @@ function App() {
     console.error('Error:', err)
   }, [])
 
+  // Auto-create a blank document on first load. We can't do this on plain
+  // mount because the WASM renderer is initialised asynchronously inside
+  // CanvasWorkspace — `loadDocument` only calls `renderer.initPage` once
+  // `state.renderer` exists, so loading too early populates the model but
+  // never paints (the canvas stays blank until you click "New document").
+  // Wait for the renderer to come up, then load exactly once.
+  const renderer = useWorkspaceStore((s) => s.renderer)
+  const didLoadInitialDocument = useRef(false)
   useEffect(() => {
+    if (!renderer || didLoadInitialDocument.current) return
+    didLoadInitialDocument.current = true
     void setDocument(createNewDocument())
-  }, [])
+  }, [renderer])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -81,29 +92,19 @@ function App() {
         <CanvasWrapper
           rendererOptions={rendererOptions}
           onError={handleError}
-          containerStyle={{ cursor: 'crosshair', width: '100%', height: '100%' }}
+          containerStyle={{ width: '100%', height: '100%' }}
           overlays={
             <>
               <LayersPanel />
               <RightSidePanel />
               <ShapeToolbar />
+              <CursorHint />
               <div
                 className="pointer-events-auto absolute top-3 z-10 flex gap-0.5 rounded-lg border border-border/80 bg-white p-1 shadow-md"
                 style={{ right: 'calc(0.75rem + var(--properties-panel-width, 280px) + 0.75rem)' }}
                 role="toolbar"
                 aria-label="Document actions"
               >
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="New document"
-                  title="New document"
-                  onClick={() => void setDocument(createNewDocument())}
-                >
-                  <FilePlus className="size-4" />
-                </Button>
                 <Button
                   type="button"
                   variant="ghost"

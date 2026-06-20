@@ -60,6 +60,7 @@ export function VectorEditSection({ nodeId, initialNode, readOnly }: VectorEditS
             <li>Select a point + Delete to remove it</li>
             <li>Click an open end, then click to extend it</li>
             <li>Click the other end to close the path</li>
+            <li>Pen tool → new sub-path, then click another end to join</li>
           </ul>
         )}
       </div>
