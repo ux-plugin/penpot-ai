@@ -15,7 +15,8 @@ import { Sparkles, ArrowUp, MessageSquare } from 'lucide-react'
 import type { IndexedShape } from '../../worker/types'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { emptyPageInteractions } from '../../renderer/interactions/ir'
-import { interpret, type InterpretContext } from '../../renderer/interactions/nl/interpret'
+import { interpret } from '../../renderer/interactions/nl/interpret'
+import { aiChat } from '../../renderer/interactions/nl/ai-cli'
 import { commitInteractions, currentInteractions } from '../../renderer/interactions/document/commit-interactions'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -29,37 +30,50 @@ export function ChatPanel() {
   const doc = useSnapshot(docProxy)
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   const pid = doc.currentPageId ?? getActiveOrSinglePageId()
   const page = pid ? doc.pageMap.get(pid) : undefined
 
-  const submit = () => {
-    const text = input.trim()
-    if (!text || !pid) return
-    setInput('')
-
-    const nodes = page
-      ? (Object.values(page.objects) as IndexedShape[])
-          .filter((o) => o.id !== ROOT_UUID)
-          .map((o) => ({ id: o.id, name: o.name }))
-      : []
-    const sel = Array.from(doc.selectedIds)
-    const ctx: InterpretContext = {
-      nodes,
-      ir: currentInteractions(pid) ?? emptyPageInteractions(),
-      selectedId: sel.length === 1 ? sel[0] : null,
-    }
-
-    const result = interpret(text, ctx)
-    setMessages((m) => [...m, { role: 'user', text }, { role: 'assistant', text: result.reply }])
-    if (result.ok) {
-      void commitInteractions(pid, result.apply(currentInteractions(pid) ?? emptyPageInteractions()))
-    }
+  const scrollToBottom = () =>
     requestAnimationFrame(() => {
       const el = scrollRef.current
       if (el) el.scrollTop = el.scrollHeight
     })
+
+  const submit = async () => {
+    const text = input.trim()
+    if (!text || !pid || busy) return
+    setInput('')
+    const history = messages
+    setMessages((m) => [...m, { role: 'user', text }])
+    setBusy(true)
+    scrollToBottom()
+
+    const nodes = page
+      ? (Object.values(page.objects) as IndexedShape[])
+          .filter((o) => o.id !== ROOT_UUID)
+          .map((o) => ({ id: o.id, name: o.name, type: (o as { type?: string }).type }))
+      : []
+    const sel = Array.from(doc.selectedIds)
+    const selectedId = sel.length === 1 ? sel[0] : null
+    const ir = currentInteractions(pid) ?? emptyPageInteractions()
+
+    try {
+      // Real AI session via the local `claude` CLI (dev-server bridge).
+      const result = await aiChat({ request: text, history, nodes, ir, selectedId })
+      setMessages((m) => [...m, { role: 'assistant', text: result.reply }])
+      if (result.ir) void commitInteractions(pid, result.ir)
+    } catch {
+      // Endpoint down / CLI missing — fall back to the rule-based interpreter.
+      const r = interpret(text, { nodes: nodes.map((n) => ({ id: n.id, name: n.name })), ir, selectedId })
+      setMessages((m) => [...m, { role: 'assistant', text: `${r.reply}  (offline — basic interpreter)` }])
+      if (r.ok) void commitInteractions(pid, r.apply(currentInteractions(pid) ?? emptyPageInteractions()))
+    } finally {
+      setBusy(false)
+      scrollToBottom()
+    }
   }
 
   return (
@@ -90,6 +104,12 @@ export function ChatPanel() {
             </div>
           ),
         )}
+        {busy && (
+          <div className="flex max-w-[92%] gap-1.5 self-start">
+            <Sparkles className="mt-0.5 size-3.5 shrink-0 animate-pulse text-muted-foreground" aria-hidden />
+            <span className="text-xs leading-snug text-muted-foreground">thinking…</span>
+          </div>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5 border-t border-border p-2">
@@ -99,7 +119,7 @@ export function ChatPanel() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') submit()
+            if (e.key === 'Enter') void submit()
           }}
           aria-label="Chat message"
         />
@@ -109,8 +129,8 @@ export function ChatPanel() {
             'flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40',
           )}
           aria-label="Send"
-          disabled={!input.trim()}
-          onClick={submit}
+          disabled={!input.trim() || busy}
+          onClick={() => void submit()}
         >
           <ArrowUp className="size-4" />
         </button>

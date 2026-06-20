@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react-swc'
 import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
+import { spawn } from 'node:child_process'
 import { rollup } from 'rollup'
 import dts from 'rollup-plugin-dts'
 
@@ -29,6 +30,78 @@ function dtsBundlePlugin(): Plugin {
         format: 'es',
       })
       await bundle.close()
+    },
+  }
+}
+
+/**
+ * Dev-only bridge: POST /__ai-chat { prompt } -> spawns the local `claude` CLI
+ * (one-shot print mode) and returns { ok, text }. Lets the Build-mode chat talk
+ * to a real AI session using the CLI's own auth, with no API key in the browser.
+ * Serve-only; the CLI must be on PATH. NOTE: the dev server binds 0.0.0.0, so
+ * this endpoint is LAN-reachable — fine for local dev, not for shared networks.
+ */
+function aiChatPlugin(): Plugin {
+  return {
+    name: 'ai-chat-bridge',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/__ai-chat', (req, res, next) => {
+        if (req.method !== 'POST') return next()
+        let body = ''
+        req.setEncoding('utf8')
+        req.on('data', (c) => (body += c))
+        req.on('end', () => {
+          const reply = (payload: object) => {
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify(payload))
+          }
+          let prompt = ''
+          try {
+            prompt = String((JSON.parse(body) as { prompt?: unknown }).prompt ?? '')
+          } catch {
+            res.statusCode = 400
+            return reply({ ok: false, error: 'invalid JSON body' })
+          }
+          if (!prompt.trim()) {
+            res.statusCode = 400
+            return reply({ ok: false, error: 'missing prompt' })
+          }
+
+          const child = spawn('claude', ['-p', '--output-format', 'json'], { stdio: ['pipe', 'pipe', 'pipe'] })
+          let out = ''
+          let err = ''
+          let done = false
+          const finish = (payload: object) => {
+            if (done) return
+            done = true
+            clearTimeout(timer)
+            reply(payload)
+          }
+          const timer = setTimeout(() => {
+            child.kill('SIGKILL')
+            finish({ ok: false, error: 'claude timed out' })
+          }, 120_000)
+          child.on('error', (e: NodeJS.ErrnoException) =>
+            finish({ ok: false, error: e.code === 'ENOENT' ? 'claude CLI not found on PATH' : String(e) }),
+          )
+          child.stdout.on('data', (d) => (out += d))
+          child.stderr.on('data', (d) => (err += d))
+          child.on('close', (code) => {
+            if (code !== 0) return finish({ ok: false, error: err.trim() || `claude exited with code ${code}` })
+            let text = out
+            try {
+              const env = JSON.parse(out) as { result?: unknown }
+              if (typeof env.result === 'string') text = env.result
+            } catch {
+              // not the JSON envelope — fall back to raw stdout
+            }
+            finish({ ok: true, text })
+          })
+          child.stdin.write(prompt)
+          child.stdin.end()
+        })
+      })
     },
   }
 }
@@ -72,6 +145,7 @@ export default defineConfig(({ command }) => ({
     react(),
     tailwindcss(),
     dtsBundlePlugin(),
+    aiChatPlugin(),
     {
       name: 'wasm-content-type-plugin',
       configureServer(server) {
