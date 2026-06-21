@@ -29,3 +29,21 @@ describe('shortcutRows', () => {
     expect(rows.some((r) => r.category === 'View' && r.keys.includes('←'))).toBe(true)
   })
 })
+
+import { toolKeyConflict } from '@/lib/components/Settings/shortcut-display'
+
+describe('toolKeyConflict', () => {
+  it('flags a code already used by another tool key', () => {
+    // Default penKey is KeyP; binding selectKey to KeyP collides with Pen.
+    expect(toolKeyConflict(DEFAULT_SHORTCUTS, 'selectKey', 'KeyP')).toBe('Pen tool')
+  })
+  it('flags reserved view codes', () => {
+    expect(toolKeyConflict(DEFAULT_SHORTCUTS, 'penKey', 'ArrowLeft')).toBe('Pan left')
+  })
+  it('allows a free code', () => {
+    expect(toolKeyConflict(DEFAULT_SHORTCUTS, 'penKey', 'KeyQ')).toBeNull()
+  })
+  it('does not conflict with its own current code', () => {
+    expect(toolKeyConflict(DEFAULT_SHORTCUTS, 'penKey', 'KeyP')).toBeNull()
+  })
+})

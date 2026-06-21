@@ -1,8 +1,8 @@
 /**
  * The keyboard binding table — the single registry of "key → command" for the
- * canvas. Built from the (rebindable) ShortcutsConfig plus the fixed tool letters,
- * so the whole keyboard surface is data, not a hand-written if/else ladder. A new
- * shortcut is one row here; the dispatcher (`dispatchKey`) does the matching.
+ * canvas. Built entirely from the (rebindable) ShortcutsConfig — tool/sub-tool
+ * letters (TOOL_BINDINGS) and pan/zoom keys — with only Esc/Enter fixed. The whole
+ * keyboard surface is data, not an if/else ladder; the dispatcher does the matching.
  *
  * Order matters: the first binding whose `codes` include the event and whose
  * `when` guard passes wins. Esc-cancels-draw-tool is listed before
@@ -33,9 +33,42 @@ export interface KeyBinding {
 const hasDrawTool = (s: Snapshot) => s.context.drawTool != null
 const inPathEditing = (s: Snapshot) => s.matches('pathEditing')
 
-/** Build the binding list for the active shortcut config. Tool letters (V/P/R/F/T
- *  and the M/A/B path sub-tools) are defaults here until a settings page lets the
- *  user rebind them — at which point they move into ShortcutsConfig too. */
+export type ToolKeyField =
+  | 'selectKey'
+  | 'penKey'
+  | 'rectKey'
+  | 'frameKey'
+  | 'textKey'
+  | 'pathMoveKey'
+  | 'pathAddKey'
+  | 'pathBendKey'
+
+export interface ToolBindingDesc {
+  /** ShortcutsConfig field holding this binding's key code. */
+  field: ToolKeyField
+  command: Command
+  label: string
+  category: 'Tools' | 'Path editing'
+  /** Only active while editing a path. */
+  pathOnly?: boolean
+}
+
+/** The rebindable tool / sub-tool keys — the single source for both the binding
+ *  table (above) and the Settings rebind UI (label/category live here). */
+export const TOOL_BINDINGS: ToolBindingDesc[] = [
+  { field: 'selectKey', command: { type: 'TOOL_SELECT' }, label: 'Select tool', category: 'Tools' },
+  { field: 'penKey', command: { type: 'TOOL_TOGGLE', tool: 'pen' }, label: 'Pen tool', category: 'Tools' },
+  { field: 'rectKey', command: { type: 'TOOL_TOGGLE', tool: 'rect' }, label: 'Rectangle tool', category: 'Tools' },
+  { field: 'frameKey', command: { type: 'TOOL_TOGGLE', tool: 'frame' }, label: 'Frame tool', category: 'Tools' },
+  { field: 'textKey', command: { type: 'TOOL_TOGGLE', tool: 'text' }, label: 'Text tool', category: 'Tools' },
+  { field: 'pathMoveKey', command: { type: 'PATH_SUBTOOL', sub: 'move' }, label: 'Move points', category: 'Path editing', pathOnly: true },
+  { field: 'pathAddKey', command: { type: 'PATH_SUBTOOL', sub: 'add' }, label: 'Add points', category: 'Path editing', pathOnly: true },
+  { field: 'pathBendKey', command: { type: 'PATH_SUBTOOL', sub: 'bend' }, label: 'Bend points', category: 'Path editing', pathOnly: true },
+]
+
+/** Build the binding list for the active shortcut config. The tool / sub-tool
+ *  letters come from TOOL_BINDINGS (rebindable via ShortcutsConfig); pan/zoom keys
+ *  from the config directly; Esc/Enter stay fixed. */
 export function buildKeyBindings(s: ShortcutsConfig): KeyBinding[] {
   return [
     // Esc cancels an armed draw tool first (matches prior handler order), then
@@ -43,17 +76,14 @@ export function buildKeyBindings(s: ShortcutsConfig): KeyBinding[] {
     { codes: ['Escape'], when: hasDrawTool, command: { type: 'DRAW_CANCEL' } },
     { codes: ['Escape', 'Enter', 'NumpadEnter'], when: inPathEditing, command: { type: 'PATH_FINISH' } },
 
-    // Tool letters (bare, not while typing).
-    { codes: ['KeyV'], bareOnly: true, notInInput: true, command: { type: 'TOOL_SELECT' } },
-    { codes: ['KeyP'], bareOnly: true, notInInput: true, command: { type: 'TOOL_TOGGLE', tool: 'pen' } },
-    { codes: ['KeyR'], bareOnly: true, notInInput: true, command: { type: 'TOOL_TOGGLE', tool: 'rect' } },
-    { codes: ['KeyF'], bareOnly: true, notInInput: true, command: { type: 'TOOL_TOGGLE', tool: 'frame' } },
-    { codes: ['KeyT'], bareOnly: true, notInInput: true, command: { type: 'TOOL_TOGGLE', tool: 'text' } },
-
-    // Path sub-tools — only while editing a path.
-    { codes: ['KeyM'], bareOnly: true, notInInput: true, when: inPathEditing, command: { type: 'PATH_SUBTOOL', sub: 'move' } },
-    { codes: ['KeyA'], bareOnly: true, notInInput: true, when: inPathEditing, command: { type: 'PATH_SUBTOOL', sub: 'add' } },
-    { codes: ['KeyB'], bareOnly: true, notInInput: true, when: inPathEditing, command: { type: 'PATH_SUBTOOL', sub: 'bend' } },
+    // Tool + path sub-tool letters, from the rebindable config (see TOOL_BINDINGS).
+    ...TOOL_BINDINGS.map((tb): KeyBinding => ({
+      codes: [s[tb.field]],
+      bareOnly: true,
+      notInInput: true,
+      ...(tb.pathOnly ? { when: inPathEditing } : {}),
+      command: tb.command,
+    })),
 
     // Viewport pan / zoom / reset (rebindable via ShortcutsConfig).
     { codes: [s.panLeft], command: { type: 'PAN', dx: 1, dy: 0 } },

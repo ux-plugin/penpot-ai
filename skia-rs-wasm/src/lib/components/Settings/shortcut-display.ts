@@ -5,7 +5,7 @@
  */
 
 import type { Command } from '../../renderer/input/commands'
-import { buildKeyBindings } from '../../renderer/input/key-bindings'
+import { buildKeyBindings, TOOL_BINDINGS, type ToolKeyField } from '../../renderer/input/key-bindings'
 import type { ShortcutsConfig } from '../../renderer/types'
 
 const KEY_LABEL: Record<string, string> = {
@@ -72,4 +72,25 @@ export function shortcutRows(cfg: ShortcutsConfig): ShortcutRow[] {
     const info = commandInfo(b.command)
     return { label: info.label, keys: b.codes.map(formatKeyCode), category: info.category }
   })
+}
+
+
+/** If `code` is already bound to something other than `field`, return that
+ *  binding's human label (so the rebind UI can warn); else null. Checks the other
+ *  tool keys plus the reserved pan/zoom/finish codes. */
+export function toolKeyConflict(cfg: ShortcutsConfig, field: ToolKeyField, code: string): string | null {
+  for (const tb of TOOL_BINDINGS) {
+    if (tb.field !== field && cfg[tb.field] === code) return tb.label
+  }
+  const reserved: Record<string, string> = {
+    [cfg.panLeft]: 'Pan left',
+    [cfg.panRight]: 'Pan right',
+    [cfg.panUp]: 'Pan up',
+    [cfg.panDown]: 'Pan down',
+    Escape: 'Cancel / Finish',
+    Enter: 'Finish editing',
+    NumpadEnter: 'Finish editing',
+  }
+  for (const c of [...cfg.zoomInKeys, ...cfg.zoomOutKeys, ...cfg.resetKeys]) reserved[c] = 'View (zoom)'
+  return reserved[code] ?? null
 }

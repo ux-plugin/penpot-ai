@@ -79,3 +79,15 @@ describe('dispatchKey', () => {
     expect(dispatchKey(key('KeyZ'), bindings, ctxFor(a))).toBe(false)
   })
 })
+
+describe('rebindable tool keys (config-driven)', () => {
+  it('uses the configured key code for a tool, not a hardcoded one', () => {
+    const a = createActor(canvasMachine).start()
+    const custom = buildKeyBindings({ ...DEFAULT_SHORTCUTS, penKey: 'KeyQ' })
+    // Old key no longer triggers pen…
+    expect(dispatchKey(key('KeyP'), custom, ctxFor(a))).toBe(false)
+    // …the rebound one does.
+    expect(dispatchKey(key('KeyQ'), custom, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.drawTool).toBe('pen')
+  })
+})

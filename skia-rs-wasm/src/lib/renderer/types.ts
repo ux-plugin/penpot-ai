@@ -198,6 +198,15 @@ export interface ShortcutsConfig {
   resetKeys: string[]
   panMouseButton: number
   panWithModifier: ViewportPanModifier
+  /** Rebindable tool / path sub-tool shortcut keys (KeyboardEvent.code). */
+  selectKey: string
+  penKey: string
+  rectKey: string
+  frameKey: string
+  textKey: string
+  pathMoveKey: string
+  pathAddKey: string
+  pathBendKey: string
   wheelZoomEnabled: boolean
   wheelScalePerPixel: number
 }
