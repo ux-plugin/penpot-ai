@@ -5,6 +5,7 @@ import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 import { spawn } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { rollup } from 'rollup'
 import dts from 'rollup-plugin-dts'
 
@@ -68,7 +69,13 @@ function aiChatPlugin(): Plugin {
             return reply({ ok: false, error: 'missing prompt' })
           }
 
-          const child = spawn('claude', ['-p', '--output-format', 'json'], { stdio: ['pipe', 'pipe', 'pipe'] })
+          // Neutral cwd + stdin ignored: don't load THIS repo's .claude (hooks,
+          // MCP servers, CLAUDE.md) into the nested session — we want a clean
+          // one-shot responder, not an agent running in the project.
+          const child = spawn('claude', ['-p', prompt, '--output-format', 'json'], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            cwd: tmpdir(),
+          })
           let out = ''
           let err = ''
           let done = false
@@ -80,7 +87,7 @@ function aiChatPlugin(): Plugin {
           }
           const timer = setTimeout(() => {
             child.kill('SIGKILL')
-            finish({ ok: false, error: 'claude timed out' })
+            finish({ ok: false, error: 'claude timed out (120s)' })
           }, 120_000)
           child.on('error', (e: NodeJS.ErrnoException) =>
             finish({ ok: false, error: e.code === 'ENOENT' ? 'claude CLI not found on PATH' : String(e) }),
@@ -88,18 +95,30 @@ function aiChatPlugin(): Plugin {
           child.stdout.on('data', (d) => (out += d))
           child.stderr.on('data', (d) => (err += d))
           child.on('close', (code) => {
-            if (code !== 0) return finish({ ok: false, error: err.trim() || `claude exited with code ${code}` })
-            let text = out
+            // The CLI writes a JSON envelope to stdout even on failure (is_error).
+            let envelope: { is_error?: boolean; result?: unknown } | undefined
             try {
-              const env = JSON.parse(out) as { result?: unknown }
-              if (typeof env.result === 'string') text = env.result
+              envelope = JSON.parse(out) as { is_error?: boolean; result?: unknown }
             } catch {
-              // not the JSON envelope — fall back to raw stdout
+              envelope = undefined
             }
-            finish({ ok: true, text })
+            if (envelope) {
+              if (envelope.is_error) {
+                return finish({ ok: false, error: String(envelope.result ?? 'claude reported an error'), code })
+              }
+              if (code === 0 && typeof envelope.result === 'string') {
+                return finish({ ok: true, text: envelope.result })
+              }
+            }
+            if (code === 0) return finish({ ok: true, text: out })
+            finish({
+              ok: false,
+              error: `claude exited with code ${code}`,
+              code,
+              stderr: err.trim() || undefined,
+              stdout: out.trim() || undefined,
+            })
           })
-          child.stdin.write(prompt)
-          child.stdin.end()
         })
       })
     },

@@ -103,13 +103,28 @@ function parseResult(text: string): AiChatResult {
 }
 
 export async function aiChat(ctx: AiChatContext): Promise<AiChatResult> {
+  // A network/transport failure (or a missing endpoint) throws → the caller falls
+  // back to the offline stub.
   const res = await fetch('/__ai-chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ prompt: buildPrompt(ctx) }),
   })
-  if (!res.ok) throw new Error(`ai endpoint ${res.status}`)
-  const data = (await res.json()) as { ok: boolean; text?: string; error?: string }
-  if (!data.ok) throw new Error(data.error || 'ai bridge failed')
+  if (!res.ok) throw new Error(`AI bridge HTTP ${res.status}`)
+
+  const data = (await res.json()) as {
+    ok: boolean
+    text?: string
+    error?: string
+    code?: number
+    stderr?: string
+    stdout?: string
+  }
+  // The bridge ran but the CLI failed (auth, bad invocation, …). Surface the real
+  // error in the chat — the AI *did* run, so don't silently fall back to the stub.
+  if (!data.ok) {
+    const bits = [data.error, data.code != null ? `exit ${data.code}` : '', data.stderr, data.stdout].filter(Boolean)
+    return { reply: `⚠️ AI bridge error — ${bits.join(' · ') || 'unknown error'}` }
+  }
   return parseResult(data.text ?? '')
 }
