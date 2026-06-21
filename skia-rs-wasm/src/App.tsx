@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
-import { Undo2, Redo2 } from 'lucide-react'
+import { Undo2, Redo2, FilePlus2, Settings } from 'lucide-react'
 import { CanvasWrapper } from './lib/renderer/canvas-wrapper'
 import { ShapeToolbar } from './lib/components/ShapeToolbar'
 import { CursorHint } from './lib/components/CursorHint'
@@ -8,6 +8,7 @@ import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { createNewDocument, setDocument, undo, redo } from './lib/page-crud'
 import { Button } from '@/components/ui/button'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
+import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
 
 /**
  * Read the initial value of the render-wasm cache PiP debug overlay
@@ -24,6 +25,7 @@ function readDebugPipFromUrl(): boolean {
 
 function App() {
   const [error, setError] = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   // PiP cache overlay is a dev-only feature. In production, `DEV` is
   // statically false → esbuild folds the state, options field and the
   // keyboard handler / pill below out of the bundle.
@@ -110,6 +112,22 @@ function App() {
                   variant="ghost"
                   size="icon"
                   className="h-9 w-9"
+                  aria-label="New document"
+                  title="New document"
+                  onClick={() => {
+                    if (window.confirm('Start a new document? The current one will be discarded.')) {
+                      void setDocument(createNewDocument())
+                    }
+                  }}
+                >
+                  <FilePlus2 className="size-4" />
+                </Button>
+                <div className="mx-0.5 h-6 w-px self-center bg-border/70" aria-hidden />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9"
                   aria-label="Undo"
                   title="Undo"
                   onClick={() => void undo()}
@@ -127,7 +145,20 @@ function App() {
                 >
                   <Redo2 className="size-4" />
                 </Button>
+                <div className="mx-0.5 h-6 w-px self-center bg-border/70" aria-hidden />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9"
+                  aria-label="Settings"
+                  title="Settings"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  <Settings className="size-4" />
+                </Button>
               </div>
+              <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
               {error && (
                 <div
                   className="pointer-events-auto fixed bottom-24 left-1/2 z-70 max-w-lg -translate-x-1/2 rounded-lg border border-destructive/40 bg-destructive/15 px-4 py-2 text-sm text-destructive shadow-lg backdrop-blur-sm"
