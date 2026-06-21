@@ -69,21 +69,15 @@ function aiChatPlugin(): Plugin {
             return reply({ ok: false, error: 'missing prompt' })
           }
 
-          // Prefer the user's `claude login` (OAuth/keychain). A stale or
-          // session-scoped ANTHROPIC_API_KEY exported in the dev server's env
-          // would shadow it and 401 — strip the API-key vars so the CLI falls
-          // back to the stored login.
-          const env = { ...process.env }
-          delete env.ANTHROPIC_API_KEY
-          delete env.ANTHROPIC_AUTH_TOKEN
-
           // Neutral cwd + stdin ignored: don't load THIS repo's .claude (hooks,
           // MCP servers, CLAUDE.md) into the nested session — we want a clean
-          // one-shot responder, not an agent running in the project.
+          // one-shot responder, not an agent running in the project. The full env
+          // is inherited so the headless credential (`claude setup-token` or an
+          // ANTHROPIC_API_KEY) reaches the CLI; `claude -p` needs one — the
+          // interactive subscription session does NOT carry over.
           const child = spawn('claude', ['-p', prompt, '--output-format', 'json'], {
             stdio: ['ignore', 'pipe', 'pipe'],
             cwd: tmpdir(),
-            env,
           })
           let out = ''
           let err = ''
