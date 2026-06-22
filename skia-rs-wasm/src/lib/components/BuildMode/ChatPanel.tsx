@@ -1,40 +1,33 @@
 /**
  * Build-mode chat panel — author interactions in plain language.
  *
- * On submit it calls the NL interpreter with grounded context (the page's nodes,
- * current IR, selection), then commits the resulting IR edit via the same
- * commitInteractions path the inspector uses — so a chat-authored interaction
- * shows up in the inspector and the preview reacts. The interpreter is a stub
- * today; swapping in Claude changes nothing here.
+ * The panel talks only to a ConversationSession (the backend-neutral port); it no
+ * longer knows the transport. Today that's an ApiSession (live `claude` bridge with
+ * an offline interpreter fallback); a TerminalSession can slot in behind the same
+ * port later. On each turn it sends grounded context (nodes, selection, current IR)
+ * and commits any returned IR via the same commitInteractions path the inspector
+ * uses — so a chat-authored interaction shows up in the inspector and the preview.
  */
 
 import { useRef, useState } from 'react'
 import { useSnapshot } from 'valtio'
 import { cn } from '@/lib/utils'
 import { Sparkles, ArrowUp, MessageSquare } from 'lucide-react'
-import type { IndexedShape } from '../../worker/types'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
-import { emptyPageInteractions } from '../../renderer/interactions/ir'
-import { interpret } from '../../renderer/interactions/nl/interpret'
-import { aiChat } from '../../renderer/interactions/nl/ai-cli'
-import { commitInteractions, currentInteractions } from '../../renderer/interactions/document/commit-interactions'
-
-const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
-
-interface Msg {
-  role: 'user' | 'assistant'
-  text: string
-}
+import { ApiSession } from '../../renderer/interactions/session/api-session'
+import { commitInteractions, getInteractions, getNodes, getSelection } from '../../renderer/interactions/capabilities'
 
 export function ChatPanel() {
   const doc = useSnapshot(docProxy)
-  const [messages, setMessages] = useState<Msg[]>([])
+  const [session] = useState(() => new ApiSession())
+  const [, bump] = useState(0)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [lastOffline, setLastOffline] = useState<boolean | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   const pid = doc.currentPageId ?? getActiveOrSinglePageId()
-  const page = pid ? doc.pageMap.get(pid) : undefined
+  const messages = session.history()
 
   const scrollToBottom = () =>
     requestAnimationFrame(() => {
@@ -46,32 +39,23 @@ export function ChatPanel() {
     const text = input.trim()
     if (!text || !pid || busy) return
     setInput('')
-    const history = messages
-    setMessages((m) => [...m, { role: 'user', text }])
     setBusy(true)
+
+    const nodes = getNodes(pid)
+    const selection = getSelection(pid)
+    const ir = getInteractions(pid)
+
+    // send() records the user turn synchronously, so this bump shows it at once.
+    const pending = session.send({ text, nodes, selection, ir })
+    bump((v) => v + 1)
     scrollToBottom()
-
-    const nodes = page
-      ? (Object.values(page.objects) as IndexedShape[])
-          .filter((o) => o.id !== ROOT_UUID)
-          .map((o) => ({ id: o.id, name: o.name, type: (o as { type?: string }).type }))
-      : []
-    const sel = Array.from(doc.selectedIds)
-    const selectedId = sel.length === 1 ? sel[0] : null
-    const ir = currentInteractions(pid) ?? emptyPageInteractions()
-
     try {
-      // Real AI session via the local `claude` CLI (dev-server bridge).
-      const result = await aiChat({ request: text, history, nodes, ir, selectedId })
-      setMessages((m) => [...m, { role: 'assistant', text: result.reply }])
-      if (result.ir) void commitInteractions(pid, result.ir)
-    } catch {
-      // Endpoint down / CLI missing — fall back to the rule-based interpreter.
-      const r = interpret(text, { nodes: nodes.map((n) => ({ id: n.id, name: n.name })), ir, selectedId })
-      setMessages((m) => [...m, { role: 'assistant', text: `${r.reply}  (offline — basic interpreter)` }])
-      if (r.ok) void commitInteractions(pid, r.apply(currentInteractions(pid) ?? emptyPageInteractions()))
+      const result = await pending
+      setLastOffline(result.offline ?? false)
+      if (result.ir) commitInteractions(pid, result.ir)
     } finally {
       setBusy(false)
+      bump((v) => v + 1)
       scrollToBottom()
     }
   }
@@ -81,6 +65,20 @@ export function ChatPanel() {
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         <MessageSquare className="size-3.5 text-muted-foreground" aria-hidden />
         <span className="text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">Chat</span>
+        <span
+          className="ml-auto flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[0.6rem] font-medium uppercase tracking-wide text-muted-foreground"
+          title={`backend: ${session.backend} · structured output: ${session.caps.structuredOutput ? 'yes' : 'no'} · streaming: ${session.caps.streaming ? 'yes' : 'no'} · history: ${session.caps.history ? 'yes' : 'no'}`}
+        >
+          <span
+            className={cn(
+              'size-1.5 rounded-full',
+              lastOffline === null ? 'bg-muted-foreground/40' : lastOffline ? 'bg-amber-500' : 'bg-emerald-500',
+            )}
+            aria-hidden
+          />
+          {session.backend}
+          {lastOffline !== null && <span className="normal-case">{lastOffline ? '· offline' : '· live'}</span>}
+        </span>
       </div>
 
       <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto px-3 pb-2">
