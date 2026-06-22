@@ -124,3 +124,17 @@ describe('applyTransformToNode — path content', () => {
     expect(out!.width).toBe(200)
   })
 })
+
+describe('applyTransformToNode — path rotation: baked geometry + oriented box metadata', () => {
+  it('bakes the rotated segments AND keeps rotation/transform (oriented box)', () => {
+    const rot90: Matrix = { a: 0, b: 1, c: -1, d: 0, e: 0, f: 0 }
+    const out = applyTransformToNode(trianglePath(), rot90)
+    expect(out).not.toBeNull()
+    const segs = (out as { content: { segments: Array<Record<string, number>> } }).content.segments
+    // segments ARE baked (rotated): (150,100) -> (-100,150) under (x,y)->(-y,x)
+    expect(segs[0]).toMatchObject({ type: 'move-to', x: -100, y: 150 })
+    // ...but the box is oriented, not flattened
+    expect(out!.rotation).toBeCloseTo(90, 3)
+    expect(out!.transform).toMatchObject({ a: 0, b: 1, c: -1, d: 0 })
+  })
+})

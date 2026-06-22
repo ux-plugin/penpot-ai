@@ -112,6 +112,16 @@ export function applyTransformToNode(
     }
   ).content
   const segs = content?.segments
+  // A pure rotation has an orthonormal, non-identity linear part (move = identity
+  // linear; resize/scale = non-orthonormal). Used to keep an oriented box on rotation.
+  const linOrtho =
+    Math.abs(ma * ma + mb * mb - 1) < 1e-4 &&
+    Math.abs(mc * mc + md * md - 1) < 1e-4 &&
+    Math.abs(ma * mc + mb * md) < 1e-4
+  const isPureRotation =
+    linOrtho &&
+    ma * md - mb * mc > 0 &&
+    !(Math.abs(ma - 1) < 1e-6 && Math.abs(mb) < 1e-6 && Math.abs(mc) < 1e-6 && Math.abs(md - 1) < 1e-6)
   if (content && Array.isArray(segs) && segs.length > 0) {
     // Vertices / sub-paths are the canonical editable model — bake the matrix into
     // them too, in lockstep with the segments, so the editable path doesn't go
@@ -175,14 +185,26 @@ export function applyTransformToNode(
     const bw = Math.max(0, maxX - minX)
     const bh = Math.max(0, maxY - minY)
 
+    const bakedContent = {
+      ...content,
+      ...(newVertices ? { vertices: newVertices } : {}),
+      ...(newSubpaths ? { subpaths: newSubpaths } : {}),
+      ...(newNetwork ? { network: newNetwork } : {}),
+      segments: newSegments,
+    } as PenpotNode['content']
+
+    // PROBE / Tier-1: a pure rotation keeps the baked (rotated) geometry but describes
+    // the box with ORIENTED metadata (local selrect + rotation transform), like a rect,
+    // so the selection box stays oriented instead of snapping to the AABB. render-wasm
+    // ignores transform/rotation for paths, so it still draws the baked geometry once
+    // (no double-rotate). If the box still snaps, getSelectionRect recomputes the AABB
+    // from geometry → the real fix would need render-wasm. Move/resize keep the AABB.
+    if (isPureRotation) {
+      return { ...updates, content: bakedContent }
+    }
+
     const pathUpdates: Partial<PenpotNode> = {
-      content: {
-        ...content,
-        ...(newVertices ? { vertices: newVertices } : {}),
-        ...(newSubpaths ? { subpaths: newSubpaths } : {}),
-        ...(newNetwork ? { network: newNetwork } : {}),
-        segments: newSegments,
-      } as PenpotNode['content'],
+      content: bakedContent,
       selrect: makeSelrect(minX, minY, bw, bh),
       points: [
         { x: minX, y: minY },
