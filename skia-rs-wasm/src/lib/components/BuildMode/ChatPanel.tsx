@@ -12,7 +12,7 @@
 import { useRef, useState } from 'react'
 import { useSnapshot } from 'valtio'
 import { cn } from '@/lib/utils'
-import { Sparkles, ArrowUp, MessageSquare } from 'lucide-react'
+import { Sparkles, ArrowUp, MessageSquare, MousePointerClick, X } from 'lucide-react'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { ApiSession } from '../../renderer/interactions/session/api-session'
 import { commitInteractions, getInteractions, getNodes, getSelection } from '../../renderer/interactions/capabilities'
@@ -24,10 +24,27 @@ export function ChatPanel() {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [lastOffline, setLastOffline] = useState<boolean | null>(null)
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   const pid = doc.currentPageId ?? getActiveOrSinglePageId()
   const messages = session.history()
+
+  // Reactive selection summary for the compose chip (snapshot reads, not the
+  // imperative capability layer — the chip must re-render as selection changes).
+  const selectedIds = Array.from(doc.selectedIds)
+  const selectionKey = selectedIds.join(',')
+  const selPage = pid ? doc.pageMap.get(pid) : undefined
+  const firstSelName =
+    selectedIds[0] && selPage ? (selPage.objects[selectedIds[0]] as { name?: string } | undefined)?.name : undefined
+  const selectionLabel =
+    selectedIds.length === 0
+      ? null
+      : selectedIds.length === 1
+        ? firstSelName || '1 selected'
+        : `${firstSelName || 'node'} +${selectedIds.length - 1}`
+  // Dismissal is keyed to the exact selection, so changing selection re-attaches.
+  const showSelectionChip = selectionLabel !== null && dismissedKey !== selectionKey
 
   const scrollToBottom = () =>
     requestAnimationFrame(() => {
@@ -42,7 +59,7 @@ export function ChatPanel() {
     setBusy(true)
 
     const nodes = getNodes(pid)
-    const selection = getSelection(pid)
+    const selection = showSelectionChip ? getSelection(pid) : []
     const ir = getInteractions(pid)
 
     // send() records the user turn synchronously, so this bump shows it at once.
@@ -55,6 +72,7 @@ export function ChatPanel() {
       if (result.ir) commitInteractions(pid, result.ir)
     } finally {
       setBusy(false)
+      setDismissedKey(null)
       bump((v) => v + 1)
       scrollToBottom()
     }
@@ -110,28 +128,48 @@ export function ChatPanel() {
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1.5 border-t border-border p-2">
-        <input
-          className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus:border-ring"
-          placeholder="Describe an interaction…"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void submit()
-          }}
-          aria-label="Chat message"
-        />
-        <button
-          type="button"
-          className={cn(
-            'flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40',
-          )}
-          aria-label="Send"
-          disabled={!input.trim() || busy}
-          onClick={() => void submit()}
-        >
-          <ArrowUp className="size-4" />
-        </button>
+      <div className="flex shrink-0 flex-col gap-1.5 border-t border-border p-2">
+        {showSelectionChip && (
+          <div className="flex flex-wrap gap-1">
+            <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/50 px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+              <MousePointerClick className="size-3 shrink-0" aria-hidden />
+              <span className="truncate text-foreground" title={`${selectionLabel} — sent with this message`}>
+                {selectionLabel}
+              </span>
+              <button
+                type="button"
+                aria-label="Don't send the selection with this message"
+                className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                onClick={() => setDismissedKey(selectionKey)}
+              >
+                <X className="size-3" />
+              </button>
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-1.5">
+          <input
+            className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus:border-ring"
+            placeholder="Describe an interaction…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void submit()
+            }}
+            aria-label="Chat message"
+          />
+          <button
+            type="button"
+            className={cn(
+              'flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40',
+            )}
+            aria-label="Send"
+            disabled={!input.trim() || busy}
+            onClick={() => void submit()}
+          >
+            <ArrowUp className="size-4" />
+          </button>
+        </div>
       </div>
     </div>
   )
