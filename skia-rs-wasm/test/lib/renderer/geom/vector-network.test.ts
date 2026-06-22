@@ -13,6 +13,7 @@ import {
   vnPruneIsolatedNodes,
   vnPullHandles,
   vnSplitEdge,
+  vnTightBounds,
   vnToSubpaths,
   vnToggleSmoothNode,
   type VectorNetwork,
@@ -362,5 +363,24 @@ describe('vnPullHandles at a junction (3+ edges)', () => {
     const out = vnPullHandles(vn, 0, { x: 1, y: 8 }) // toward +y → edge 1
     expect(out.edges[1].ha).toEqual({ x: 1, y: 8 })
     expect(out.edges[0].ha).toBeUndefined()
+  })
+})
+
+
+describe('vnTightBounds', () => {
+  it('hugs the curve where vnBounds spans the handle hull', () => {
+    const vn: VectorNetwork = {
+      nodes: [
+        { x: 0, y: 0 },
+        { x: 100, y: 0 },
+      ],
+      edges: [{ a: 0, b: 1, ha: { x: 0, y: -40 }, hb: { x: 100, y: -40 } }],
+    }
+    expect(vnBounds(vn)).toEqual({ x: 0, y: -40, width: 100, height: 40 })
+    const t = vnTightBounds(vn)
+    expect(t.x).toBeCloseTo(0, 6)
+    expect(t.y).toBeCloseTo(-30, 6)
+    expect(t.width).toBeCloseTo(100, 6)
+    expect(t.height).toBeCloseTo(30, 6)
   })
 })

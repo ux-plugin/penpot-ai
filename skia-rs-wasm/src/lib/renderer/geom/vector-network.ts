@@ -16,6 +16,7 @@
 
 import type { PathSegment } from '../types'
 import type { Anchor } from './anchors'
+import { cubicBounds } from './anchors'
 import { compoundContent, subpathsToSegments, type Subpath } from './subpaths'
 import { vnToFaces } from './vector-network-faces'
 
@@ -382,6 +383,37 @@ export function vnBounds(vn: VectorNetwork): { x: number; y: number; width: numb
   for (const e of vn.edges) {
     acc(e.ha)
     acc(e.hb)
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, width: 0, height: 0 }
+  return { x: minX, y: minY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) }
+}
+
+/** Tight curve bounds of the network — the selection-box version. Unlike
+ * {@link vnBounds} (which spans the handle control points and so leaves slack
+ * between box and curve), this unions each edge's exact {@link cubicBounds}, so
+ * the box hugs the rendered path. Isolated nodes still count (they're curve
+ * points). Use this for selrect; keep `vnBounds` only where the handle hull is
+ * actually wanted. */
+export function vnTightBounds(vn: VectorNetwork): { x: number; y: number; width: number; height: number } {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  const accPt = (p?: { x: number; y: number }) => {
+    if (!p) return
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
+  }
+  for (const n of vn.nodes) accPt(n) // endpoints / isolated nodes are on the curve
+  for (const e of vn.edges) {
+    const a = vn.nodes[e.a]
+    const b = vn.nodes[e.b]
+    if (!a || !b) continue
+    const cb = cubicBounds(a, e.ha ?? a, e.hb ?? b, b)
+    accPt({ x: cb.minX, y: cb.minY })
+    accPt({ x: cb.maxX, y: cb.maxY })
   }
   if (!Number.isFinite(minX)) return { x: 0, y: 0, width: 0, height: 0 }
   return { x: minX, y: minY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) }

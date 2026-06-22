@@ -138,3 +138,32 @@ describe('applyTransformToNode — path rotation: baked geometry + oriented box 
     expect(out!.transform).toMatchObject({ a: 0, b: 1, c: -1, d: 0 })
   })
 })
+
+describe('applyTransformToNode — move/resize of an already-rotated path keeps rotation', () => {
+  // A path already rotated 90° (transform R90, local selrect kept), like Tier-1 leaves it.
+  const rotatedPath = (): PenpotNode =>
+    ({
+      ...trianglePath(),
+      rotation: 90,
+      transform: { a: 0, b: 1, c: -1, d: 0, e: 0, f: 0 },
+      transformInverse: { a: 0, b: -1, c: 1, d: 0, e: 0, f: 0 },
+    }) as unknown as PenpotNode
+
+  it('a move keeps rotation/transform (no flatten to AABB)', () => {
+    const move: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 40, f: -25 }
+    const out = applyTransformToNode(rotatedPath(), move)
+    expect(out!.rotation).toBeCloseTo(90, 3)
+    expect(out!.transform).toMatchObject({ a: 0, b: 1, c: -1, d: 0 })
+    // geometry still baked + translated
+    const segs = (out as { content: { segments: Array<Record<string, number>> } }).content.segments
+    expect(segs[0]).toMatchObject({ type: 'move-to', x: 190, y: 75 })
+  })
+
+  it('a uniform resize keeps rotation and scales the box', () => {
+    const scale2: Matrix = { a: 2, b: 0, c: 0, d: 2, e: 0, f: 0 }
+    const out = applyTransformToNode(rotatedPath(), scale2)
+    expect(out!.rotation).toBeCloseTo(90, 3)
+    expect(out!.width).toBeCloseTo(200, 3)
+    expect(out!.height).toBeCloseTo(200, 3)
+  })
+})
