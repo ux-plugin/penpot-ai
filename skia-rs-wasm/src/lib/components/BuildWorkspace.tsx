@@ -21,8 +21,8 @@ const RIGHT_RAIL = 'calc(0.75rem + var(--properties-panel-width, 280px) + 0.75re
 export function BuildWorkspace() {
   return (
     <div
-      className="pointer-events-auto fixed inset-y-0 right-0 z-40"
-      style={{ left: 'var(--activity-bar-width, 3rem)', background: 'var(--editor-canvas-chrome)' }}
+      className="pointer-events-auto fixed inset-x-0 bottom-0 z-40"
+      style={{ top: 'var(--top-bar-height)', background: 'var(--editor-canvas-chrome)' }}
     >
       {/* Center: live preview + code, on the backdrop, clearing both floating rails */}
       <div className="absolute inset-0 flex" style={{ paddingLeft: LEFT_RAIL, paddingRight: RIGHT_RAIL }}>

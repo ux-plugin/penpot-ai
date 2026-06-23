@@ -90,15 +90,17 @@ export function PreviewStage() {
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-transparent">
       <div className="flex shrink-0 items-center gap-1 px-3 py-3">
-        <div className="flex items-center gap-0.5 rounded-lg border border-border/80 bg-white p-1 shadow-sm">
+        <div className="flex items-center gap-0.5 rounded-lg bg-muted p-0.5" role="tablist" aria-label="Build view">
           {(['preview', 'code'] as const).map((t) => (
             <button
               key={t}
               type="button"
+              role="tab"
+              aria-selected={tab === t}
               onClick={() => setTab(t)}
               className={cn(
                 'rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors',
-                tab === t ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
+                tab === t ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
               )}
             >
               {t}

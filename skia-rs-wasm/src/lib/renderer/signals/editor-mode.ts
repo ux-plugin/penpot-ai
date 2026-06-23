@@ -11,7 +11,7 @@ import { signal } from '@preact/signals-core'
 
 export type EditorMode = 'design' | 'build'
 
-/** Active editor mode. Written by ActivityBar; read by App (overlay switch) + renderer modules. */
+/** Active editor mode. Written by TopBar tabs; read by App (overlay switch) + renderer modules. */
 export const editorMode = signal<EditorMode>('design')
 
 export function setEditorMode(mode: EditorMode): void {
