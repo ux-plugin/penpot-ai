@@ -8,6 +8,7 @@
  */
 
 import type { Change, ModObjChange, PenpotNode } from 'penpot-exporter/types'
+import type { DocMetaChange } from './doc-meta-change'
 
 const GEOMETRY_UNDO_KEYS = [
   'selrect',
@@ -23,6 +24,9 @@ const GEOMETRY_UNDO_KEYS = [
 export interface ChangesBuilder {
   redoChanges: Change[]
   undoChanges: Change[]
+  /** Optional doc-meta arm — populated by appendDocMetaPair for library CRUD. */
+  docMetaRedoChanges?: DocMetaChange[]
+  docMetaUndoChanges?: DocMetaChange[]
   pageId?: string
   origin?: string
 }
@@ -33,6 +37,26 @@ export function emptyChangesBuilder(options?: { pageId?: string; origin?: string
     undoChanges: [],
     pageId: options?.pageId,
     origin: options?.origin,
+  }
+}
+
+/**
+ * Append a paired doc-meta redo/undo. Follows the same prepend-undo invariant
+ * as {@link appendModObjPair}: redos go to the end, undos to the front, so
+ * undo replays in array order match "reverse order of operations".
+ *
+ * The undo of `add-*` is `del-*`; `del-*` is `add-*` (carrying the prior style
+ * value); `mod-*` is `mod-*` (carrying the prior style value). Construction is
+ * the caller's job — this just appends.
+ */
+export function appendDocMetaPair(
+  builder: ChangesBuilder,
+  pair: { redo: DocMetaChange; undo: DocMetaChange }
+): ChangesBuilder {
+  return {
+    ...builder,
+    docMetaRedoChanges: [...(builder.docMetaRedoChanges ?? []), pair.redo],
+    docMetaUndoChanges: [pair.undo, ...(builder.docMetaUndoChanges ?? [])],
   }
 }
 
@@ -91,9 +115,19 @@ export function buildTransformModObjPair(
 }
 
 export function mergeBundle(a: ChangesBuilder, b: ChangesBuilder): ChangesBuilder {
+  const aDocRedo = a.docMetaRedoChanges ?? []
+  const bDocRedo = b.docMetaRedoChanges ?? []
+  const aDocUndo = a.docMetaUndoChanges ?? []
+  const bDocUndo = b.docMetaUndoChanges ?? []
   return {
     redoChanges: [...a.redoChanges, ...b.redoChanges],
     undoChanges: [...b.undoChanges, ...a.undoChanges],
+    docMetaRedoChanges: aDocRedo.length + bDocRedo.length > 0
+      ? [...aDocRedo, ...bDocRedo]
+      : undefined,
+    docMetaUndoChanges: aDocUndo.length + bDocUndo.length > 0
+      ? [...bDocUndo, ...aDocUndo]
+      : undefined,
     pageId: a.pageId ?? b.pageId,
     origin: a.origin ?? b.origin,
   }
@@ -102,11 +136,15 @@ export function mergeBundle(a: ChangesBuilder, b: ChangesBuilder): ChangesBuilde
 export function toCommitBundle(builder: ChangesBuilder): {
   redoChanges: Change[]
   undoChanges: Change[]
+  docMetaRedoChanges?: DocMetaChange[]
+  docMetaUndoChanges?: DocMetaChange[]
   pageId?: string
 } {
   return {
     redoChanges: builder.redoChanges,
     undoChanges: builder.undoChanges,
+    docMetaRedoChanges: builder.docMetaRedoChanges,
+    docMetaUndoChanges: builder.docMetaUndoChanges,
     pageId: builder.pageId,
   }
 }

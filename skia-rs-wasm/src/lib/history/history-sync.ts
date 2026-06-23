@@ -14,19 +14,28 @@
  */
 
 import type { Change } from 'penpot-exporter/types'
+import type { DocMetaChange } from '../changes/doc-meta-change'
 import { useHistoryStore } from './history-store'
 
 export function recordHistoryFrame(params: {
   redoChanges: Change[]
   undoChanges: Change[]
+  docMetaRedoChanges?: readonly DocMetaChange[]
+  docMetaUndoChanges?: readonly DocMetaChange[]
   fromHistory: boolean
   saveUndo: boolean
 }): void {
   if (params.fromHistory) return
   if (!params.saveUndo) return
-  if (params.undoChanges.length === 0) return
+  const docUndo = params.docMetaUndoChanges ?? []
+  // A doc-meta-only commit (e.g. user added a paint style with no shapes yet)
+  // still needs an undo frame: the user expects Cmd+Z to revert it.
+  if (params.undoChanges.length === 0 && docUndo.length === 0) return
+  const docRedo = params.docMetaRedoChanges ?? []
   useHistoryStore.getState().pushCommitFrame({
     redoChanges: params.redoChanges,
     undoChanges: params.undoChanges,
+    docMetaRedoChanges: docRedo.length > 0 ? [...docRedo] : undefined,
+    docMetaUndoChanges: docUndo.length > 0 ? [...docUndo] : undefined,
   })
 }

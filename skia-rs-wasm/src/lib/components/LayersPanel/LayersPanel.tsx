@@ -1,5 +1,7 @@
 /**
- * Left rail: page / layer tree, page metadata, layer selection.
+ * Left rail: tabbed surface with Design (pages + layers) and Assets (color +
+ * typography styles) panes. The rail title follows the active tab so the user
+ * never sees "Design" while looking at the Assets pane.
  */
 
 import { useCallback, useMemo, useState } from 'react'
@@ -13,12 +15,21 @@ import { FloatingEditorRail } from '../EditorShell/floating-editor-rail'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ChevronDown, ChevronRight, FileText, Plus } from 'lucide-react'
 import { commitPageMetadataUpdate } from '../../renderer/properties/commit-page-properties'
 import { setActivePage, addPage } from '../../page-crud'
 import { commitChanges } from '../../renderer/store/commit'
 import { buildReparentChanges, resolveDropTarget, type DropSide } from './reparent'
 import { LayerRow, type DragOverState } from './layer-row'
+import { AssetsSections } from '../AssetsPanel/AssetsPanel'
+
+type LeftRailTab = 'design' | 'assets'
+
+const TAB_TITLES: Record<LeftRailTab, string> = {
+  design: 'Design',
+  assets: 'Assets',
+}
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -34,6 +45,7 @@ export function LayersPanel({ className }: LayersPanelProps) {
   const [pagesOpen, setPagesOpen] = useState(true)
   const [layersOpen, setLayersOpen] = useState(true)
   const [dragOver, setDragOver] = useState<DragOverState | null>(null)
+  const [activeTab, setActiveTab] = useState<LeftRailTab>('design')
 
   const [editingPageId, setEditingPageId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState('')
@@ -182,21 +194,42 @@ export function LayersPanel({ className }: LayersPanelProps) {
     await commitChanges({ redoChanges, undoChanges, pageId: activePageId })
   }, [])
 
-  const footer = layerCount === 1 ? '1 layer' : `${layerCount} layers`
+  const paintStylesCount = doc.meta?.paintStyles ? Object.keys(doc.meta.paintStyles).length : 0
+  const textStylesCount = doc.meta?.textStyles ? Object.keys(doc.meta.textStyles).length : 0
+  const assetsCount = paintStylesCount + textStylesCount
+
+  const designFooter = layerCount === 1 ? '1 layer' : `${layerCount} layers`
+  const assetsFooter = assetsCount === 1 ? '1 style' : `${assetsCount} styles`
+  const footer = activeTab === 'design' ? designFooter : assetsFooter
 
   return (
     <FloatingEditorRail
       side="left"
-      title="Design"
+      title={TAB_TITLES[activeTab]}
       collapsed={collapsed}
       onCollapsedChange={setCollapsed}
       footer={footer}
       data-layers-panel
       className={cn('min-h-0', className)}
     >
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-2 p-2">
-          {/* PAGES Section */}
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => setActiveTab(v as LeftRailTab)}
+        className="flex min-h-0 min-w-0 flex-1 flex-col gap-0"
+      >
+        <TabsList variant="line" className="mx-2 mt-1 mb-0 h-8 shrink-0 justify-stretch">
+          <TabsTrigger value="design" className="flex-1">
+            Design
+          </TabsTrigger>
+          <TabsTrigger value="assets" className="flex-1">
+            Assets
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="design" className="min-h-0 flex-1">
+          <ScrollArea className="h-full min-h-0">
+            <div className="space-y-2 p-2">
+              {/* PAGES Section */}
           <section>
             <div className="flex items-center gap-0.5 pl-1 pr-0.5">
               <button
@@ -399,8 +432,19 @@ export function LayersPanel({ className }: LayersPanelProps) {
               </div>
             )}
           </section>
-        </div>
-      </ScrollArea>
+
+            </div>
+          </ScrollArea>
+        </TabsContent>
+
+        <TabsContent value="assets" className="min-h-0 flex-1">
+          <ScrollArea className="h-full min-h-0">
+            <div className="space-y-2 p-2">
+              <AssetsSections />
+            </div>
+          </ScrollArea>
+        </TabsContent>
+      </Tabs>
     </FloatingEditorRail>
   )
 }

@@ -29,6 +29,12 @@ function clearAllTransactionTimers(): void {
   for (const id of [...transactionTimers.keys()]) clearTransactionTimer(id)
 }
 
+/** A frame is empty when neither arm carries an undo vector — nothing to record. */
+function isCommitFrameEmpty(frame: CommitFrame): boolean {
+  const docUndo = frame.docMetaUndoChanges ?? []
+  return frame.undoChanges.length === 0 && docUndo.length === 0
+}
+
 export interface HistoryState {
   undoStack: CommitFrame[]
   redoStack: CommitFrame[]
@@ -79,15 +85,25 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
   transactionHolders: new Set<string>(),
 
   pushCommitFrame: (frame) => {
-    if (frame.undoChanges.length === 0) return
+    const docMetaUndo = frame.docMetaUndoChanges ?? []
+    if (frame.undoChanges.length === 0 && docMetaUndo.length === 0) return
     set((s) => {
       if (s.transaction) {
+        const txDocRedo = s.transaction.docMetaRedoChanges ?? []
+        const txDocUndo = s.transaction.docMetaUndoChanges ?? []
+        const frDocRedo = frame.docMetaRedoChanges ?? []
+        const mergedDocRedo = [...txDocRedo, ...frDocRedo]
+        // Prepend incoming undos so undo replays in array order — same
+        // invariant as the page arm above (and changes-builder.ts).
+        const mergedDocUndo = [...docMetaUndo, ...txDocUndo]
         return {
           transaction: {
             redoChanges: [...s.transaction.redoChanges, ...frame.redoChanges],
             // Prepend: undo replays in array order, newest-first — same
             // invariant as changes-builder.ts:77 and undo.cljs accumulate.
             undoChanges: [...frame.undoChanges, ...s.transaction.undoChanges],
+            docMetaRedoChanges: mergedDocRedo.length > 0 ? mergedDocRedo : undefined,
+            docMetaUndoChanges: mergedDocUndo.length > 0 ? mergedDocUndo : undefined,
           },
           redoStack: [],
         }
@@ -151,7 +167,7 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
       holders.delete(id)
       if (holders.size > 0) return { transactionHolders: holders }
       const tx = s.transaction
-      if (!tx || tx.undoChanges.length === 0) {
+      if (!tx || isCommitFrameEmpty(tx)) {
         return { transactionHolders: holders, transaction: null }
       }
       return {
@@ -166,7 +182,7 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
     clearAllTransactionTimers()
     set((s) => {
       const tx = s.transaction
-      if (!tx || tx.undoChanges.length === 0) {
+      if (!tx || isCommitFrameEmpty(tx)) {
         return { transaction: null, transactionHolders: new Set<string>() }
       }
       return {
