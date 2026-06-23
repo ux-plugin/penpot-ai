@@ -15,7 +15,7 @@ import {
   type PathShapeKind,
 } from './geom/primitives'
 import {
-  anchorsBounds,
+  anchorsTightBounds,
   pathContent,
   segmentsToAnchors,
   type Anchor,
@@ -485,8 +485,9 @@ export function createPolyline(
  * are involved). Segments are world-space; an all-corner anchor list yields the
  * same line-to segments as `createPolyline`. `closed` appends a close-path (and
  * an explicit closing curve when the closing edge is curved) and lets the shape
- * carry a fill. The selrect bounds the anchors *and* their handles so curves
- * bulging past the vertices stay inside the box; `points` stays the vertex hull.
+ * carry a fill. The selrect is the TIGHT curve bounds (exact bézier extrema), so
+ * the box hugs the path instead of the looser handle hull; `points` stays the
+ * vertex hull.
  */
 export function createBezierPath(
   anchors: Anchor[],
@@ -503,7 +504,7 @@ export function createBezierPath(
   } = {}
 ): PenpotNode {
   const id = options.id || newShapeId()
-  const { x: minX, y: minY, width, height } = anchorsBounds(anchors)
+  const { x: minX, y: minY, width, height } = anchorsTightBounds(anchors, options.closed ?? false)
 
   const fills: Fill[] =
     options.closed && options.fillColor

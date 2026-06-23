@@ -2,7 +2,7 @@
  * Right rail: page + node properties driven by document selection (Valtio).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useSnapshot } from 'valtio'
 import type { Fill } from 'penpot-exporter/types'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
@@ -23,6 +23,11 @@ import {
 } from './color-editor-context'
 import { FloatingColorEditorPanel } from './FloatingColorEditorPanel'
 import { FloatingEffectEditorPanel } from './FloatingEffectEditorPanel'
+import { InspectorTabBar } from '../Inspector/InspectorTabBar'
+import { InteractionsTab } from '../Inspector/InteractionsTab'
+import { CodeTab } from '../Inspector/CodeTab'
+import { inspectorTab } from '../../renderer/signals/inspector-tab'
+import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
 
 export interface RightSidePanelProps {
   className?: string
@@ -33,6 +38,7 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
   const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
 
   const [collapsed, setCollapsed] = useState(false)
+  const tab = useSignalCoalesced(inspectorTab)
 
   // Unified color editor state (fill or stroke)
   const [activeTarget, setActiveTarget] = useState<ColorEditorTarget | null>(null)
@@ -117,6 +123,14 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [selectedIds, closeEditor])
 
+  // Close the floating color editor when leaving the Parameters tab
+  useEffect(() => {
+    if (tab !== 'parameters') {
+      /* eslint-disable-next-line react-hooks/set-state-in-effect -- close floating editor when switching inspector tab */
+      closeEditor()
+    }
+  }, [tab, closeEditor])
+
   // Close editor when right panel collapses
   const handleCollapsedChange = useCallback(
     (next: boolean) => {
@@ -150,65 +164,52 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
 
   const resolvePageId = useCallback((): string | null => getActiveOrSinglePageId(), [])
 
+  // The Parameters tab body — the existing selection-driven property editor.
+  let parametersBody: ReactNode = null
   if (count === 0) {
     const pid = resolvePageId()
     const page = pid ? doc.pageMap.get(pid) : undefined
-
-    return (
-      <ColorEditorContext.Provider value={colorEditorCtx}>
-        <FloatingColorEditorPanel />
-        <FloatingEffectEditorPanel />
-        <FloatingEditorRail
-          side="right"
-          title="Design"
-          collapsed={collapsed}
-          onCollapsedChange={handleCollapsedChange}
-          data-right-side-panel
-          className={cn('min-h-0', className)}
-        >
-          <div className="flex min-h-0 flex-1 flex-col">
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="space-y-4 p-3">
-                {pid && page && <PagePropertyPanel key={pid} pageId={pid} initialPage={page} />}
-                <Separator />
-                <p className="text-sm text-muted-foreground">Select a layer to view shape properties.</p>
-              </div>
-            </ScrollArea>
+    parametersBody = (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="space-y-4 p-3">
+            {pid && page && <PagePropertyPanel key={pid} pageId={pid} initialPage={page} />}
+            <Separator />
+            <p className="text-sm text-muted-foreground">Select a layer to view shape properties.</p>
           </div>
-        </FloatingEditorRail>
-      </ColorEditorContext.Provider>
+        </ScrollArea>
+      </div>
+    )
+  } else if (count > 1) {
+    parametersBody = (
+      <div className="p-3 text-sm">
+        <span className="font-medium">{count} items selected</span>
+        <p className="mt-2 text-muted-foreground">Edit one shape at a time.</p>
+      </div>
+    )
+  } else if (singleId) {
+    const currentPage = doc.currentPageId ? doc.pageMap.get(doc.currentPageId) : undefined
+    const node = currentPage?.objects[singleId] as RectLikeNode | undefined
+    parametersBody = (
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {!isRoot && (
+          <p
+            className="shrink-0 truncate border-b border-border px-3 py-1.5 text-xs text-muted-foreground"
+            title={singleId}
+          >
+            {singleId.slice(0, 8)}…
+          </p>
+        )}
+        <ScrollArea className="min-h-0 min-w-0 flex-1">
+          <div className="min-w-0 space-y-4 p-3">
+            {node ? (
+              <NodePropertyPanel key={singleId} nodeId={singleId} initialNode={node} readOnly={isRoot} />
+            ) : null}
+          </div>
+        </ScrollArea>
+      </div>
     )
   }
-
-  if (count > 1) {
-    return (
-      <ColorEditorContext.Provider value={colorEditorCtx}>
-        <FloatingColorEditorPanel />
-        <FloatingEffectEditorPanel />
-        <FloatingEditorRail
-          side="right"
-          title="Design"
-          collapsed={collapsed}
-          onCollapsedChange={handleCollapsedChange}
-          data-right-side-panel
-          className={cn('min-h-0', className)}
-        >
-          <div className="p-3 text-sm">
-            <span className="font-medium">{count} items selected</span>
-            <p className="mt-2 text-muted-foreground">Edit one shape at a time.</p>
-          </div>
-        </FloatingEditorRail>
-      </ColorEditorContext.Provider>
-    )
-  }
-
-  if (!singleId) {
-    return null
-  }
-
-  const readOnly = isRoot
-  const currentPage = doc.currentPageId ? doc.pageMap.get(doc.currentPageId) : undefined
-  const node = currentPage?.objects[singleId] as RectLikeNode | undefined
 
   return (
     <ColorEditorContext.Provider value={colorEditorCtx}>
@@ -216,28 +217,17 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
       <FloatingEffectEditorPanel />
       <FloatingEditorRail
         side="right"
-        title="Design"
+        title="Inspector"
         collapsed={collapsed}
         onCollapsedChange={handleCollapsedChange}
         data-right-side-panel
         className={cn('min-h-0', className)}
       >
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {singleId && !isRoot && (
-            <p
-              className="shrink-0 truncate border-b border-border px-3 py-1.5 text-xs text-muted-foreground"
-              title={singleId}
-            >
-              {singleId.slice(0, 8)}…
-            </p>
-          )}
-          <ScrollArea className="min-h-0 min-w-0 flex-1">
-            <div className="min-w-0 space-y-4 p-3">
-              {node ? (
-                <NodePropertyPanel key={singleId} nodeId={singleId} initialNode={node} readOnly={readOnly} />
-              ) : null}
-            </div>
-          </ScrollArea>
+          <InspectorTabBar />
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {tab === 'parameters' ? parametersBody : tab === 'interactions' ? <InteractionsTab /> : <CodeTab />}
+          </div>
         </div>
       </FloatingEditorRail>
     </ColorEditorContext.Provider>

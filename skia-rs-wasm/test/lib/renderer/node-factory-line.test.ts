@@ -75,7 +75,7 @@ describe('createBezierPath', () => {
     expect(node.selrect).toMatchObject({ x: 10, y: 10, width: 100, height: 120 })
   })
 
-  it('emits curve-to segments and selrect bounds the handles', () => {
+  it('emits curve-to segments and selrect bounds the tight curve, not the handles', () => {
     const anchors: Anchor[] = [
       { point: { x: 0, y: 0 }, handleOut: { x: 10, y: -40 } },
       { point: { x: 100, y: 0 }, handleIn: { x: 90, y: -40 } },
@@ -83,8 +83,9 @@ describe('createBezierPath', () => {
     const node = createBezierPath(anchors, { strokeColor: '#1E40AF' })
     const segs = (node as { content: { segments: Array<Record<string, number>> } }).content.segments
     expect(segs[1]).toMatchObject({ type: 'curve-to', x: 100, y: 0, c1x: 10, c1y: -40, c2x: 90, c2y: -40 })
-    // The handles reach up to y = -40, so the box extends above the anchors.
-    expect(node.selrect).toMatchObject({ x: 0, y: -40, width: 100, height: 40 })
+    // Handles reach y = -40, but the symmetric cubic only peaks at y = -30 (¾ of
+    // the handle), so the TIGHT box stops there instead of at the control hull.
+    expect(node.selrect).toMatchObject({ x: 0, y: -30, width: 100, height: 30 })
     // points stays the vertex hull (handles excluded).
     expect(node.points).toEqual([
       { x: 0, y: 0 },

@@ -7,8 +7,7 @@ import type { Matrix, PenpotNode } from 'penpot-exporter/types'
 import type { PathSegment } from '../types'
 import { makeSelrect } from '../types'
 import { invertMatrix } from './matrix'
-
-const IDENTITY: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
+import { cubicBounds } from './anchors'
 
 export function applyTransformToNode(
   node: PenpotNode,
@@ -152,54 +151,111 @@ export function applyTransformToNode(
       return s
     })
 
-    let minX = Infinity
-    let minY = Infinity
-    let maxX = -Infinity
-    let maxY = -Infinity
-    const acc = (px: number, py: number) => {
-      if (px < minX) minX = px
-      if (py < minY) minY = py
-      if (px > maxX) maxX = px
-      if (py > maxY) maxY = py
-    }
-    for (const s of newSegments) {
-      if (s.type === 'move-to' || s.type === 'line-to') acc(s.x, s.y)
-      else if (s.type === 'curve-to') {
-        acc(s.x, s.y)
-        acc(s.c1x, s.c1y)
-        acc(s.c2x, s.c2y)
+    const bakedContent = {
+      ...content,
+      ...(newVertices ? { vertices: newVertices } : {}),
+      ...(newSubpaths ? { subpaths: newSubpaths } : {}),
+      ...(newNetwork ? { network: newNetwork } : {}),
+      segments: newSegments,
+    } as PenpotNode['content']
+
+    // The BOX is recomputed as the TIGHT bounds of the baked CURVE, expressed in the
+    // box's own (possibly rotated) orientation — not carried from the old selrect.
+    // Carrying it forward let two errors persist: a control-hull-loose original box
+    // stayed loose forever (visible slack between box and path), and the box centre
+    // tracked the old selrect centre rather than the curve's. Re-measuring the actual
+    // cubics here (exact extrema, in the oriented frame) makes the box hug the curve
+    // AND keeps an existing rotation tight through later move/resize — Penpot's selrect
+    // is likewise always the tight geometry bounds. render-wasm honors the stored
+    // selrect/transform for the box and draws the baked geometry directly (no
+    // double-transform). Falls back to `updates` if the orientation isn't invertible.
+    const tight = newTransformInverse
+      ? tightOrientedBox(newSegments, newCx, newCy, newTransform, newTransformInverse)
+      : null
+    if (tight) {
+      const boxed: Partial<PenpotNode> = {
+        ...updates,
+        selrect: makeSelrect(tight.x, tight.y, tight.width, tight.height),
+        points: tight.points,
       }
+      if (typeof node.x === 'number') boxed.x = tight.x
+      if (typeof node.y === 'number') boxed.y = tight.y
+      if (typeof node.width === 'number') boxed.width = tight.width
+      if (typeof node.height === 'number') boxed.height = tight.height
+      return { ...boxed, content: bakedContent }
     }
-    if (!Number.isFinite(minX)) return updates
-
-    const bw = Math.max(0, maxX - minX)
-    const bh = Math.max(0, maxY - minY)
-
-    const pathUpdates: Partial<PenpotNode> = {
-      content: {
-        ...content,
-        ...(newVertices ? { vertices: newVertices } : {}),
-        ...(newSubpaths ? { subpaths: newSubpaths } : {}),
-        ...(newNetwork ? { network: newNetwork } : {}),
-        segments: newSegments,
-      } as PenpotNode['content'],
-      selrect: makeSelrect(minX, minY, bw, bh),
-      points: [
-        { x: minX, y: minY },
-        { x: maxX, y: minY },
-        { x: maxX, y: maxY },
-        { x: minX, y: maxY },
-      ],
-      transform: IDENTITY,
-      transformInverse: IDENTITY,
-      rotation: 0,
-    }
-    if (typeof node.x === 'number') pathUpdates.x = minX
-    if (typeof node.y === 'number') pathUpdates.y = minY
-    if (typeof node.width === 'number') pathUpdates.width = bw
-    if (typeof node.height === 'number') pathUpdates.height = bh
-    return pathUpdates
+    return { ...updates, content: bakedContent }
   }
 
   return updates
+}
+
+type XYp = { x: number; y: number }
+
+/** Walk path segments into cubic control quads (a line becomes a degenerate cubic
+ *  with handles at its endpoints). `close-path` is a straight join between points
+ *  already covered by other segments, so it contributes nothing new. */
+function cubicsFromSegments(segs: PathSegment[]): [XYp, XYp, XYp, XYp][] {
+  const out: [XYp, XYp, XYp, XYp][] = []
+  let cur: XYp | null = null
+  for (const s of segs) {
+    if (s.type === 'move-to') {
+      cur = { x: s.x, y: s.y }
+    } else if (s.type === 'line-to') {
+      if (cur) out.push([cur, cur, { x: s.x, y: s.y }, { x: s.x, y: s.y }])
+      cur = { x: s.x, y: s.y }
+    } else if (s.type === 'curve-to') {
+      const end = { x: s.x, y: s.y }
+      if (cur) out.push([cur, { x: s.c1x, y: s.c1y }, { x: s.c2x, y: s.c2y }, end])
+      cur = end
+    }
+  }
+  return out
+}
+
+/** Tight bounds of the baked curve in the box's oriented frame: project each cubic
+ *  into local coords (via the inverse transform), take its exact extent, then map
+ *  the local AABB's centre + corners back to world. Returns the centred selrect
+ *  (x/y/width/height) plus the four rotated corner `points`. */
+function tightOrientedBox(
+  segs: PathSegment[],
+  cx: number,
+  cy: number,
+  transform: Matrix,
+  inverse: Matrix
+): { x: number; y: number; width: number; height: number; points: XYp[] } | null {
+  const toLocal = (p: XYp): XYp => {
+    const dx = p.x - cx
+    const dy = p.y - cy
+    return { x: inverse.a * dx + inverse.c * dy, y: inverse.b * dx + inverse.d * dy }
+  }
+  let lminX = Infinity
+  let lminY = Infinity
+  let lmaxX = -Infinity
+  let lmaxY = -Infinity
+  for (const [c0, c1, c2, c3] of cubicsFromSegments(segs)) {
+    const lb = cubicBounds(toLocal(c0), toLocal(c1), toLocal(c2), toLocal(c3))
+    if (lb.minX < lminX) lminX = lb.minX
+    if (lb.minY < lminY) lminY = lb.minY
+    if (lb.maxX > lmaxX) lmaxX = lb.maxX
+    if (lb.maxY > lmaxY) lmaxY = lb.maxY
+  }
+  if (!Number.isFinite(lminX) || lmaxX <= lminX || lmaxY <= lminY) return null
+  const tW = lmaxX - lminX
+  const tH = lmaxY - lminY
+  const lcx = (lminX + lmaxX) / 2
+  const lcy = (lminY + lmaxY) / 2
+  const toWorld = (lx: number, ly: number): XYp => ({
+    x: cx + transform.a * lx + transform.c * ly,
+    y: cy + transform.b * lx + transform.d * ly,
+  })
+  const wc = toWorld(lcx, lcy)
+  const corner = (sx: number, sy: number): XYp => toWorld(lcx + sx * (tW / 2), lcy + sy * (tH / 2))
+  return {
+    x: wc.x - tW / 2,
+    y: wc.y - tH / 2,
+    width: tW,
+    height: tH,
+    points: [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)],
+  }
 }

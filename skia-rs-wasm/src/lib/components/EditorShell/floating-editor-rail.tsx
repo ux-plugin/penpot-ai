@@ -30,7 +30,8 @@ export function FloatingEditorRail({
   return (
     <aside
       className={cn(
-        'pointer-events-auto fixed top-3 bottom-3 z-50 flex flex-col overflow-hidden rounded-2xl border border-border/80 bg-white text-card-foreground shadow-md',
+        'pointer-events-auto fixed bottom-3 z-50 flex flex-col overflow-hidden rounded-2xl border border-border/80 bg-white text-card-foreground shadow-md',
+        'top-[calc(0.75rem+var(--top-bar-height,0px))]',
         side === 'left'
           ? 'left-3 w-(--layers-panel-width,280px)'
           : 'right-3 w-(--properties-panel-width,280px)',

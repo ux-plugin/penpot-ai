@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   anchorsToSegments,
   anchorsBounds,
+  anchorsTightBounds,
+  cubicBounds,
   segmentsToAnchors,
   segmentsToSvgPath,
   nearestPointOnPath,
@@ -302,5 +304,30 @@ describe('segmentsToSvgPath', () => {
       { type: 'close-path' },
     ])
     expect(d).toBe('M0 0L10 0C14 0 20 4 20 10Z')
+  })
+})
+
+
+describe('cubicBounds / anchorsTightBounds (tight curve, not control hull)', () => {
+  it('a symmetric cubic peaks at 3/4 of the handle, not the handle itself', () => {
+    const b = cubicBounds({ x: 0, y: 0 }, { x: 0, y: -40 }, { x: 100, y: -40 }, { x: 100, y: 0 })
+    expect(b.minY).toBeCloseTo(-30, 6)
+    expect(b.maxY).toBeCloseTo(0, 6)
+    expect(b.minX).toBeCloseTo(0, 6)
+    expect(b.maxX).toBeCloseTo(100, 6)
+  })
+
+  it('a straight edge (no handles) bounds its endpoints', () => {
+    const b = cubicBounds({ x: 2, y: 5 }, { x: 2, y: 5 }, { x: 8, y: 1 }, { x: 8, y: 1 })
+    expect(b).toEqual({ minX: 2, minY: 1, maxX: 8, maxY: 5 })
+  })
+
+  it('anchorsTightBounds hugs the curve where anchorsBounds spans the handles', () => {
+    const anchors: Anchor[] = [
+      { point: { x: 0, y: 0 }, handleOut: { x: 0, y: -40 } },
+      { point: { x: 100, y: 0 }, handleIn: { x: 100, y: -40 } },
+    ]
+    expect(anchorsBounds(anchors)).toMatchObject({ y: -40, height: 40 })
+    expect(anchorsTightBounds(anchors)).toMatchObject({ x: 0, y: -30, width: 100, height: 30 })
   })
 })

@@ -9,6 +9,7 @@ import { isTextNode } from './Sections/text-typography'
 import { NodeLayoutSection } from './Sections/NodeLayoutSection'
 import { supportsLayout } from './Sections/layout-mode'
 import { FillsSection } from './Sections/FillsSection'
+import { FillBindingSection } from './Sections/FillBindingSection'
 import { StrokesSection } from './Sections/StrokesSection'
 import { EffectsSection } from './Sections/EffectsSection'
 
@@ -46,6 +47,8 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
       )}
 
       <FillsSection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
+
+      <FillBindingSection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
 
       <StrokesSection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
 

@@ -53,8 +53,8 @@ import {
   networkContent,
   subpathsToVN,
   vnAddNode,
-  vnBounds,
   vnConnectNodes,
+  vnTightBounds,
   vnDeleteNode,
   vnMoveNode,
   vnPruneIsolatedNodes,
@@ -93,9 +93,9 @@ function vnFromContent(content: unknown): VectorNetwork {
 }
 
 /** Node-geometry partial from a network: content (network + sharp mirror) and a
- *  bbox spanning every node and handle. */
+ *  tight curve bbox (hugs the path, not the handle hull — see vnTightBounds). */
 function networkPartial(node: PenpotNode, vn: VectorNetwork): Partial<PenpotNode> {
-  const b = vnBounds(vn)
+  const b = vnTightBounds(vn)
   const prev = (node as { content?: Record<string, unknown> }).content ?? {}
   const nc = networkContent(vn)
   return {

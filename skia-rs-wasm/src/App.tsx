@@ -1,14 +1,16 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
-import { Undo2, Redo2, FilePlus2, Settings } from 'lucide-react'
 import { CanvasWrapper } from './lib/renderer/canvas-wrapper'
 import { ShapeToolbar } from './lib/components/ShapeToolbar'
 import { CursorHint } from './lib/components/CursorHint'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { createNewDocument, setDocument, undo, redo } from './lib/page-crud'
-import { Button } from '@/components/ui/button'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
+import { TopBar } from './lib/components/TopBar'
+import { BuildWorkspace } from './lib/components/BuildWorkspace'
+import { editorMode } from './lib/renderer/signals/editor-mode'
+import { useSignalCoalesced } from './lib/renderer/signals/use-signal-coalesced'
 
 /**
  * Read the initial value of the render-wasm cache PiP debug overlay
@@ -24,6 +26,7 @@ function readDebugPipFromUrl(): boolean {
 }
 
 function App() {
+  const mode = useSignalCoalesced(editorMode)
   const [error, setError] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // PiP cache overlay is a dev-only feature. In production, `DEV` is
@@ -87,77 +90,28 @@ function App() {
 
   return (
     <div
-      className="canvas-container relative font-sans"
+      className="canvas-container relative font-sans [--top-bar-height:2.75rem]"
       style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: 'var(--editor-canvas-chrome)' }}
     >
-      <div style={{ position: 'absolute', inset: 0 }}>
+      <TopBar onOpenSettings={() => setSettingsOpen(true)} />
+      <div style={{ position: 'absolute', top: 'var(--top-bar-height)', left: 0, right: 0, bottom: 0 }}>
         <CanvasWrapper
           rendererOptions={rendererOptions}
           onError={handleError}
           containerStyle={{ width: '100%', height: '100%' }}
           overlays={
             <>
-              <LayersPanel />
+              {/* The inspector rail floats over both modes (z-50 > Build's z-40). */}
               <RightSidePanel />
-              <ShapeToolbar />
-              <CursorHint />
-              <div
-                className="pointer-events-auto absolute top-3 z-10 flex gap-0.5 rounded-lg border border-border/80 bg-white p-1 shadow-md"
-                style={{ right: 'calc(0.75rem + var(--properties-panel-width, 280px) + 0.75rem)' }}
-                role="toolbar"
-                aria-label="Document actions"
-              >
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="New document"
-                  title="New document"
-                  onClick={() => {
-                    if (window.confirm('Start a new document? The current one will be discarded.')) {
-                      void setDocument(createNewDocument())
-                    }
-                  }}
-                >
-                  <FilePlus2 className="size-4" />
-                </Button>
-                <div className="mx-0.5 h-6 w-px self-center bg-border/70" aria-hidden />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="Undo"
-                  title="Undo"
-                  onClick={() => void undo()}
-                >
-                  <Undo2 className="size-4" />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="Redo"
-                  title="Redo"
-                  onClick={() => void redo()}
-                >
-                  <Redo2 className="size-4" />
-                </Button>
-                <div className="mx-0.5 h-6 w-px self-center bg-border/70" aria-hidden />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="Settings"
-                  title="Settings"
-                  onClick={() => setSettingsOpen(true)}
-                >
-                  <Settings className="size-4" />
-                </Button>
-              </div>
+{mode === 'design' ? (
+                <>
+                  <LayersPanel />
+                  <ShapeToolbar />
+                  <CursorHint />
+                </>
+              ) : (
+                <BuildWorkspace />
+              )}
               <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
               {error && (
                 <div

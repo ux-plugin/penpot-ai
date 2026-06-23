@@ -135,6 +135,84 @@ export function anchorsBounds(anchors: Anchor[]): {
   return { x: minX, y: minY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) }
 }
 
+/** Tight axis-aligned bounds of ONE cubic bézier — the exact curve extent, found
+ * by solving the per-axis derivative for its in-(0,1) extrema, NOT the looser
+ * control-point hull. A curve always lives strictly inside its handles, so using
+ * the hull (anchorsBounds / vnBounds) leaves visible slack between box and shape;
+ * this hugs the curve the way Penpot's selrect does. Degenerate handles (a line)
+ * fall out to the endpoints. */
+export function cubicBounds(p0: Pt, p1: Pt, p2: Pt, p3: Pt): {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+} {
+  const axisExtent = (v0: number, v1: number, v2: number, v3: number): [number, number] => {
+    let lo = Math.min(v0, v3)
+    let hi = Math.max(v0, v3)
+    const consider = (t: number) => {
+      if (!(t > 0 && t < 1)) return
+      const u = 1 - t
+      const val = u * u * u * v0 + 3 * u * u * t * v1 + 3 * u * t * t * v2 + t * t * t * v3
+      if (val < lo) lo = val
+      if (val > hi) hi = val
+    }
+    // B'(t) = 0  ⇒  A t² + B t + C = 0  (Bernstein derivative, factored by 3).
+    const A = -v0 + 3 * v1 - 3 * v2 + v3
+    const B = 2 * (v0 - 2 * v1 + v2)
+    const C = v1 - v0
+    if (Math.abs(A) < 1e-12) {
+      if (Math.abs(B) > 1e-12) consider(-C / B)
+    } else {
+      const disc = B * B - 4 * A * C
+      if (disc >= 0) {
+        const s = Math.sqrt(disc)
+        consider((-B + s) / (2 * A))
+        consider((-B - s) / (2 * A))
+      }
+    }
+    return [lo, hi]
+  }
+  const [minX, maxX] = axisExtent(p0.x, p1.x, p2.x, p3.x)
+  const [minY, maxY] = axisExtent(p0.y, p1.y, p2.y, p3.y)
+  return { minX, minY, maxX, maxY }
+}
+
+/** Tight curve bounds over an anchor chain (creation-time selrect). Unions each
+ * edge's exact {@link cubicBounds}; `closed` adds the wrap-around edge. Mirrors
+ * `anchorsBounds`'s shape but hugs the curve instead of the handles. */
+export function anchorsTightBounds(
+  anchors: Anchor[],
+  closed = false
+): { x: number; y: number; width: number; height: number } {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  const acc = (b: { minX: number; minY: number; maxX: number; maxY: number }) => {
+    if (b.minX < minX) minX = b.minX
+    if (b.minY < minY) minY = b.minY
+    if (b.maxX > maxX) maxX = b.maxX
+    if (b.maxY > maxY) maxY = b.maxY
+  }
+  for (let i = 0; i + 1 < anchors.length; i++) {
+    const { p0, p1, p2, p3 } = edgeControls(anchors[i], anchors[i + 1])
+    acc(cubicBounds(p0, p1, p2, p3))
+  }
+  if (closed && anchors.length > 1) {
+    const { p0, p1, p2, p3 } = edgeControls(anchors[anchors.length - 1], anchors[0])
+    acc(cubicBounds(p0, p1, p2, p3))
+  }
+  if (!Number.isFinite(minX)) {
+    if (anchors.length === 1) {
+      const p = anchors[0].point
+      return { x: p.x, y: p.y, width: 0, height: 0 }
+    }
+    return { x: 0, y: 0, width: 0, height: 0 }
+  }
+  return { x: minX, y: minY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) }
+}
+
 const lerpPt = (a: Pt, b: Pt, t: number): Pt => ({
   x: a.x + (b.x - a.x) * t,
   y: a.y + (b.y - a.y) * t,
