@@ -21,7 +21,7 @@ import {
   createRect,
   createText,
 } from '../node-factory'
-import type { AddObjChange, PenpotNode } from 'penpot-exporter/types'
+import type { AddObjChange, DelObjChange, PenpotNode } from 'penpot-exporter/types'
 import type { DrawTool } from '../machine/canvas-machine'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -184,7 +184,9 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
             // Await so the shape is in the WASM scene before we enter edit mode —
             // `text_editor_focus` needs it present, otherwise the caret never
             // shows on the first click that creates the box (the sync is async).
-            await applyChanges([addChange])
+            // Pair with the inverse del-obj so creation is undoable (Cmd+Z removes it).
+            const undoChange: DelObjChange = { type: 'del-obj', id: newNode.id, pageId: effectivePageId }
+            await applyChanges([addChange], { undoChanges: [undoChange] })
             setSelectedIds(new Set([newNode.id]))
             // A freshly created text shape opens straight into edit mode.
             if (tool === 'text') pendingTextEdit.id = newNode.id
