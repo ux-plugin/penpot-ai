@@ -1,26 +1,27 @@
 /**
  * Persist a page's interactions IR.
  *
- * Writes the updated PageInteractions onto the page via `commitPageUpdate` — the
- * same page-replacement path the page-metadata editors use. That updates
- * `docProxy`, so the PreviewStage (which reads the snapshot) re-renders and the
- * runtime weaves the new behavior immediately.
+ * Routes the edit through the same `commitChanges` pipeline as shape edits, as a
+ * `set-page-interactions` change (see ../../../changes/page-interactions-change).
+ * That applies the new IR to `docProxy` (so the PreviewStage re-renders and the
+ * runtime weaves the new behavior immediately) AND records an undo frame, so the
+ * edit joins the global Cmd+Z / Cmd+Shift+Z history alongside Design edits.
  *
- * Note: like the page-metadata path, this does not enter the Change[]/history
- * pipeline, so it isn't on the global Cmd+Z stack — edits are reversed in the
- * panel. Wiring it to undo needs a page-level Change kind the pipeline lacks.
+ * The redo carries the new IR; the undo carries the page's previous IR (which may
+ * be `undefined` for a first-ever edit), so undo restores the exact prior state.
  */
 
 import { docProxy } from '../../store/doc-proxy'
-import { commitPageUpdate } from '../../store/commit'
+import { commitChanges } from '../../store/commit'
+import { buildSetPageInteractions } from '../../../changes/page-interactions-change'
 import type { IndexedPage } from '../../../worker/types'
 import type { PageInteractions } from '../ir'
 
 export async function commitInteractions(pageId: string, next: PageInteractions): Promise<void> {
   const page = docProxy.pageMap.get(pageId) as IndexedPage | undefined
   if (!page) return
-  const updatedPage: IndexedPage = { ...page, interactions: next }
-  await commitPageUpdate({ pageId, updatedPage })
+  const { redo, undo } = buildSetPageInteractions(pageId, page.interactions, next)
+  await commitChanges({ redoChanges: [redo], undoChanges: [undo], pageId, saveUndo: true })
 }
 
 /** Read the page's current interactions, or an empty block if none. */
