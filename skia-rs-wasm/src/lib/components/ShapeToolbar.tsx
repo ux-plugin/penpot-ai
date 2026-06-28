@@ -6,6 +6,7 @@
 import { useCallback, type ReactNode } from 'react'
 import { useSelector } from '@xstate/react'
 import {
+  Box,
   Circle,
   Hexagon,
   Image,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react'
 import { useCanvasActor } from '../renderer/machine/canvas-actor-context'
 import type { DrawTool } from '../renderer/machine/canvas-machine'
+import { create3DObject } from '../renderer/three/create-3d-object'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { IconFrame, IconRect, IconSelect } from './shape-icons'
@@ -55,6 +57,9 @@ export function ShapeToolbar() {
   const onRect = useCallback(() => toggleDrawTool('rect'), [toggleDrawTool])
   const onFrame = useCallback(() => toggleDrawTool('frame'), [toggleDrawTool])
   const onText = useCallback(() => toggleDrawTool('text'), [toggleDrawTool])
+  const onAdd3D = useCallback(() => {
+    void create3DObject()
+  }, [])
 
   const toolBtn = (
     pressed: boolean,
@@ -118,6 +123,7 @@ export function ShapeToolbar() {
           'Draw text (T)',
           <Type className="size-5 shrink-0 stroke-[1.5]" />,
         )}
+        {toolBtn(false, onAdd3D, 'Add 3D object', <Box className="size-5 shrink-0 stroke-[1.5]" />)}
         {disabledTool('Image', Image)}
         {disabledTool('Comment', MessageCircle)}
       </ul>

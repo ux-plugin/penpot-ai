@@ -9,6 +9,8 @@ import { supportsLayout } from './Sections/layout-mode'
 import { FillsSection } from './Sections/FillsSection'
 import { StrokesSection } from './Sections/StrokesSection'
 import { EffectsSection } from './Sections/EffectsSection'
+import { ThreeDObjectSection } from './Sections/ThreeDObjectSection'
+import { is3DObject } from '../../renderer/three/scene3d-store'
 
 export interface NodePropertyPanelProps {
   nodeId: string
@@ -28,6 +30,8 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
       <NodeIdentitySection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
 
       <PositionSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+
+      {is3DObject(nodeId) && <ThreeDObjectSection nodeId={nodeId} />}
 
       <AppearanceSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
