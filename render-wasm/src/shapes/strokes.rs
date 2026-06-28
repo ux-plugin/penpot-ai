@@ -41,6 +41,16 @@ pub struct Stroke {
     pub cap_end: Option<StrokeCap>,
     pub cap_start: Option<StrokeCap>,
     pub kind: StrokeKind,
+    /// Custom dash pattern `[dash, gap, …]` in user units. Empty = derive the
+    /// pattern from `style` (legacy behaviour).
+    pub dashes: Vec<f32>,
+    /// Cap applied to dash/line ends (butt/round/square). `None` falls back to
+    /// the shape's SVG attrs / Skia default.
+    pub dash_cap: Option<StrokeLineCap>,
+    /// Join override (miter/round/bevel). `None` falls back to SVG attrs.
+    pub line_join: Option<StrokeLineJoin>,
+    /// Miter limit ratio. `None` = Skia default (4).
+    pub miter_limit: Option<f32>,
 }
 
 impl Stroke {
@@ -80,6 +90,10 @@ impl Stroke {
             cap_end,
             cap_start,
             kind: StrokeKind::Center,
+            dashes: Vec::new(),
+            dash_cap: None,
+            line_join: None,
+            miter_limit: None,
         }
     }
 
@@ -96,6 +110,10 @@ impl Stroke {
             cap_end,
             cap_start,
             kind: StrokeKind::Inner,
+            dashes: Vec::new(),
+            dash_cap: None,
+            line_join: None,
+            miter_limit: None,
         }
     }
 
@@ -112,6 +130,38 @@ impl Stroke {
             cap_end,
             cap_start,
             kind: StrokeKind::Outer,
+            dashes: Vec::new(),
+            dash_cap: None,
+            line_join: None,
+            miter_limit: None,
+        }
+    }
+
+    /// Set a custom dash pattern. A non-empty pattern forces `Dashed` style so
+    /// the dash-aware geometry (corner offsets, clipping) stays consistent.
+    pub fn set_dashes(&mut self, dashes: Vec<f32>) {
+        if !dashes.is_empty() {
+            self.style = StrokeStyle::Dashed;
+        }
+        self.dashes = dashes;
+    }
+
+    /// Override join / dash-cap / miter limit. A `None` argument leaves the
+    /// corresponding value untouched.
+    pub fn set_props(
+        &mut self,
+        join: Option<StrokeLineJoin>,
+        cap: Option<StrokeLineCap>,
+        miter: Option<f32>,
+    ) {
+        if join.is_some() {
+            self.line_join = join;
+        }
+        if cap.is_some() {
+            self.dash_cap = cap;
+        }
+        if miter.is_some() {
+            self.miter_limit = miter;
         }
     }
 
@@ -212,26 +262,32 @@ impl Stroke {
         paint.set_stroke_width(width);
         paint.set_anti_alias(antialias);
 
-        if let Some(svg_attrs) = svg_attrs {
-            match svg_attrs.stroke_linecap {
-                StrokeLineCap::Round => {
-                    paint.set_stroke_cap(skia::paint::Cap::Round);
-                }
-                StrokeLineCap::Square => {
-                    paint.set_stroke_cap(skia::paint::Cap::Square);
-                }
-                StrokeLineCap::Butt => {} // Skia default
+        // Stroke-level overrides take precedence; otherwise fall back to the
+        // shape's SVG attrs. `Butt`/`Miter` map to the Skia defaults.
+        let effective_cap = self.dash_cap.or_else(|| svg_attrs.map(|a| a.stroke_linecap));
+        match effective_cap {
+            Some(StrokeLineCap::Round) => {
+                paint.set_stroke_cap(skia::paint::Cap::Round);
             }
+            Some(StrokeLineCap::Square) => {
+                paint.set_stroke_cap(skia::paint::Cap::Square);
+            }
+            _ => {} // Butt / None → Skia default
+        }
 
-            match svg_attrs.stroke_linejoin {
-                StrokeLineJoin::Round => {
-                    paint.set_stroke_join(skia::paint::Join::Round);
-                }
-                StrokeLineJoin::Bevel => {
-                    paint.set_stroke_join(skia::paint::Join::Bevel);
-                }
-                StrokeLineJoin::Miter => {} // Skia default
+        let effective_join = self.line_join.or_else(|| svg_attrs.map(|a| a.stroke_linejoin));
+        match effective_join {
+            Some(StrokeLineJoin::Round) => {
+                paint.set_stroke_join(skia::paint::Join::Round);
             }
+            Some(StrokeLineJoin::Bevel) => {
+                paint.set_stroke_join(skia::paint::Join::Bevel);
+            }
+            _ => {} // Miter / None → Skia default
+        }
+
+        if let Some(miter) = self.miter_limit {
+            paint.set_stroke_miter(miter);
         }
 
         if self.style != StrokeStyle::Solid {
@@ -256,7 +312,11 @@ impl Stroke {
                     )
                 }
                 StrokeStyle::Dashed => {
-                    skia::PathEffect::dash(&[self.width + 10., self.width + 10.], 0.)
+                    if self.dashes.is_empty() {
+                        skia::PathEffect::dash(&[self.width + 10., self.width + 10.], 0.)
+                    } else {
+                        skia::PathEffect::dash(&self.dashes, 0.)
+                    }
                 }
                 StrokeStyle::Mixed => skia::PathEffect::dash(
                     &[

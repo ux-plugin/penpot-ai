@@ -1,6 +1,7 @@
 import { createContext, type RefObject } from 'react'
 import type { Fill } from 'penpot-exporter/types'
 import type { EffectItem } from '../../renderer/properties/panel-utils'
+import type { StrokeWithSettings } from '../../renderer/stroke-settings'
 
 export type ColorEditorKind = 'fill' | 'stroke' | 'drop-shadow' | 'inner-shadow' | 'layer-blur' | 'background-blur' | 'glass' | 'noise'
 
@@ -36,6 +37,18 @@ export interface ColorEditorContextValue {
     title: string,
     onChange: (effect: EffectItem) => void,
   ) => void
+
+  // Stroke-settings editor (Basic tab: dashes / dash-cap / join / miter)
+  activeStrokeSettings: StrokeWithSettings | null
+  onStrokeSettingsChangeRef: RefObject<((stroke: StrokeWithSettings) => void) | null>
+  openStrokeSettings: (
+    kind: ColorEditorKind,
+    index: number,
+    stroke: StrokeWithSettings,
+    anchorY: number,
+    title: string,
+    onChange: (stroke: StrokeWithSettings) => void,
+  ) => void
 }
 
 export const ColorEditorContext = createContext<ColorEditorContextValue>({
@@ -49,4 +62,7 @@ export const ColorEditorContext = createContext<ColorEditorContextValue>({
   activeEffect: null,
   onEffectChangeRef: { current: null },
   openEffectEditor: () => {},
+  activeStrokeSettings: null,
+  onStrokeSettingsChangeRef: { current: null },
+  openStrokeSettings: () => {},
 })

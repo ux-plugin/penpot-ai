@@ -3,13 +3,17 @@
  */
 
 import type { WasmModule } from '../wasm-types'
-import type { ImageColor, Stroke } from 'penpot-exporter/types'
+import type { ImageColor } from 'penpot-exporter/types'
 import type { PendingImageCallback } from '../types'
+import type { StrokeWithSettings } from '../stroke-settings'
+import { normalizeDashes } from '../stroke-settings'
 import { uuidToU32Tuple } from '../types'
 import { allocBytes, freeBytes } from '../utils'
 import {
   translateStrokeStyle,
   translateStrokeCap,
+  translateStrokeLinecap,
+  translateStrokeLinejoin,
 } from './serializers'
 import { checkContext } from './context'
 import { FILL_U8_SIZE } from './constants'
@@ -29,7 +33,7 @@ import {
 export function setShapeStrokes(
   module: WasmModule,
   shapeId: string,
-  strokes: Stroke[],
+  strokes: StrokeWithSettings[],
   thumbnail: boolean = false,
   resolveImageUrl?: (imageId: string, thumbnail: boolean) => string
 ): PendingImageCallback[] {
@@ -59,6 +63,29 @@ export function setShapeStrokes(
         break
       default:
         module._add_shape_center_stroke(width, style, capStart, capEnd)
+    }
+
+    // Basic stroke settings: join / dash-cap / miter (−1 / negative = unset),
+    // applied to the stroke just added above.
+    const join = stroke.strokeJoin !== undefined ? translateStrokeLinejoin(stroke.strokeJoin) : -1
+    const dashCap =
+      stroke.strokeDashCap !== undefined ? translateStrokeLinecap(stroke.strokeDashCap) : -1
+    const miter = stroke.strokeMiterLimit ?? -1
+    if (join !== -1 || dashCap !== -1 || miter >= 0) {
+      module._set_shape_stroke_props(join, dashCap, miter)
+    }
+
+    // Custom dash pattern (variable-length f32 buffer, same shared-mem
+    // convention as stroke fills).
+    const dashes = stroke.strokeDashes ? normalizeDashes(stroke.strokeDashes) : []
+    if (dashes.length > 0) {
+      const dashOffset = allocBytes(module, dashes.length * 4)
+      const dashView = new DataView(module.HEAPU8.buffer, module.HEAPU8.byteOffset)
+      for (let i = 0; i < dashes.length; i++) {
+        dashView.setFloat32(dashOffset + i * 4, dashes[i], true)
+      }
+      module._set_shape_stroke_dashes()
+      freeBytes(module)
     }
 
     // Write fill data

@@ -1,6 +1,7 @@
 import { useCallback, useContext } from 'react'
 import type { Fill } from 'penpot-exporter/types'
 import type { EffectItem } from '../../renderer/properties/panel-utils'
+import type { StrokeWithSettings } from '../../renderer/stroke-settings'
 import {
   ColorEditorContext,
   type ColorEditorContextValue,
@@ -55,4 +56,31 @@ export function useEffectEditorFor(kind: ColorEditorKind, index: number) {
   )
 
   return { isActive, openEffectEditor, closeEditor: ctx.closeEditor }
+}
+
+/**
+ * Convenience hook for opening the stroke-settings panel (Basic tab: dashes /
+ * dash-cap / join / miter). Mirrors `useEffectEditorFor`.
+ */
+export function useStrokeSettingsFor(kind: ColorEditorKind, index: number) {
+  const ctx = useContext(ColorEditorContext)
+
+  const isActive =
+    ctx.activeTarget !== null &&
+    ctx.activeTarget.kind === kind &&
+    ctx.activeTarget.index === index
+
+  const openStrokeSettings = useCallback(
+    (
+      stroke: StrokeWithSettings,
+      anchorY: number,
+      title: string,
+      onChange: (stroke: StrokeWithSettings) => void,
+    ) => {
+      ctx.openStrokeSettings(kind, index, stroke, anchorY, title, onChange)
+    },
+    [ctx, kind, index],
+  )
+
+  return { isActive, openStrokeSettings, closeEditor: ctx.closeEditor }
 }
