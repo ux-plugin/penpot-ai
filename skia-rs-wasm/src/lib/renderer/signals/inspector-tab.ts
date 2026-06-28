@@ -6,7 +6,7 @@
 
 import { signal } from '@preact/signals-core'
 
-export type InspectorTab = 'parameters' | 'interactions' | 'code'
+export type InspectorTab = 'parameters' | 'interactions' | 'motion' | 'code'
 
 export const inspectorTab = signal<InspectorTab>('parameters')
 

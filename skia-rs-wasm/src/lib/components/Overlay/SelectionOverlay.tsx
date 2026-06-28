@@ -23,6 +23,7 @@ import {
   wasmSelectionRect as wasmSelectionRectSignal,
 } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
+import { motionPreviewActive } from '../../renderer/motion/motion-store'
 import {
   HANDLE_FILL,
   HANDLE_SIZE_WORLD,
@@ -94,6 +95,7 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   // reads these instead of the stale doc content.
   const editorIsEmpty = useSignalCoalesced(textEditorIsEmpty)
   const editingId = useSignalCoalesced(textEditorShapeId)
+  const isMotionPreview = useSignalCoalesced(motionPreviewActive)
 
   const rawZoom = viewport?.zoom ?? 1
   const safeZoom = Number.isFinite(rawZoom) && rawZoom > 0 ? rawZoom : 1
@@ -104,7 +106,8 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     viewport != null &&
     !isMoving &&
     !isTextEditing &&
-    !isPathEditing
+    !isPathEditing &&
+    !isMotionPreview
 
   const hitSize = HANDLE_SIZE_WORLD / safeZoom
 
@@ -213,8 +216,8 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   useLayoutEffect(() => {
     // Hide the box outline while vector-editing too — the PathEditorOverlay's
     // anchor/handle markers stand in for the selection box.
-    selectionRectOutlineVisible.value = !isMoving && !selectedTextEmpty && !isPathEditing
-  }, [isMoving, selectedTextEmpty, isPathEditing])
+    selectionRectOutlineVisible.value = !isMoving && !selectedTextEmpty && !isPathEditing && !isMotionPreview
+  }, [isMoving, selectedTextEmpty, isPathEditing, isMotionPreview])
 
   const gradientForOverlay = useGradientFill()
 

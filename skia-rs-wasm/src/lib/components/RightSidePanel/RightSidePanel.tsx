@@ -25,6 +25,7 @@ import { FloatingColorEditorPanel } from './FloatingColorEditorPanel'
 import { FloatingEffectEditorPanel } from './FloatingEffectEditorPanel'
 import { InspectorTabBar } from '../Inspector/InspectorTabBar'
 import { InteractionsTab } from '../Inspector/InteractionsTab'
+import { MotionTab } from '../Inspector/MotionTab'
 import { CodeTab } from '../Inspector/CodeTab'
 import { inspectorTab } from '../../renderer/signals/inspector-tab'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
@@ -226,7 +227,7 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <InspectorTabBar />
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {tab === 'parameters' ? parametersBody : tab === 'interactions' ? <InteractionsTab /> : <CodeTab />}
+            {tab === 'parameters' ? parametersBody : tab === 'interactions' ? <InteractionsTab /> : tab === 'motion' ? <MotionTab /> : <CodeTab />}
           </div>
         </div>
       </FloatingEditorRail>

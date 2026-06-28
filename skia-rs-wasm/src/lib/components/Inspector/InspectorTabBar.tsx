@@ -11,6 +11,7 @@ import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
 const TABS: { id: InspectorTab; label: string }[] = [
   { id: 'parameters', label: 'Parameters' },
   { id: 'interactions', label: 'Interactions' },
+  { id: 'motion', label: 'Motion' },
   { id: 'code', label: 'Code' },
 ]
 
