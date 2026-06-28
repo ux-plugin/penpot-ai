@@ -33,6 +33,7 @@ import {
   type Scene3DEntry,
 } from './scene3d-store'
 import { buildInstance, applyEntryToInstance, readTransformFromInstance } from './three-scene'
+import { commitTransform3d } from './scene3d-commit'
 
 type GizmoMode = 'translate' | 'rotate' | 'scale'
 interface ScreenRect {
@@ -87,8 +88,8 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   // --- redraw on 2D viewport (pan/zoom) and on model changes ---
   useEffect(() => {
     const disposeVp = effect(() => {
-      viewport.value // pan/zoom
-      movePreviewWorldDelta.value // live move-drag translation (and reset on commit)
+      void viewport.value // pan/zoom
+      void movePreviewWorldDelta.value // live move-drag translation (and reset on commit)
       scheduleDraw()
     })
     const unsub = subscribe(scene3dProxy, scheduleDraw)
@@ -132,7 +133,12 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     tc.attach(inst.root)
     tc.addEventListener('change', scheduleDraw)
     tc.addEventListener('dragging-changed', (e) => {
-      orbit.enabled = !(e as unknown as { value: boolean }).value
+      const dragging = (e as unknown as { value: boolean }).value
+      orbit.enabled = !dragging
+      // Live edits run through setTransform3d (local preview, smooth). On drag
+      // end, persist the final transform as ONE undoable mod-obj on the node;
+      // scene3d-sync then re-seeds the proxy from the document.
+      if (!dragging) void commitTransform3d(id, readTransformFromInstance(inst))
     })
     tc.addEventListener('objectChange', () => {
       setTransform3d(id, readTransformFromInstance(inst))

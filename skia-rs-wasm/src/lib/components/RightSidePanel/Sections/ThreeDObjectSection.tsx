@@ -1,39 +1,38 @@
 /**
  * ThreeDObjectSection — inspector for an embedded 3D object.
  *
- * Reads/writes the in-memory 3D model (`scene3dProxy`), not the document.
- * Edits apply immediately (the overlay redraws via its valtio subscription).
- * Phase 1: 3D-property edits are not yet in the undo history (see plan).
+ * Reads the in-memory 3D read-cache (`scene3dProxy`, kept in sync with the
+ * document by scene3d-sync). Writes go through the document via the commit
+ * helpers (`commitTransform3d`/`commitMaterial`/…), so every edit is one
+ * undoable `mod-obj` on the node — Cmd-Z restores the prior 3D state. Numeric
+ * fields use NumericField (commit on Enter/blur/step, focus-scoped to one undo
+ * frame); the colour swatch previews live via the store action and persists on
+ * blur.
  */
 
 import { useSnapshot } from 'valtio'
 import { Separator } from '@/components/ui/separator'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
-import { round2 } from '@/lib/common/conversions'
+import { scene3dProxy, setMaterial, type Vec3 } from '@/lib/renderer/three/scene3d-store'
 import {
-  scene3dProxy,
-  setCamera,
-  setEnv,
-  setMaterial,
-  setTransform3d,
-  type Vec3,
-} from '@/lib/renderer/three/scene3d-store'
+  commitCamera,
+  commitEnv,
+  commitMaterial,
+  commitTransform3d,
+} from '@/lib/renderer/three/scene3d-commit'
+import { NumericField } from '../NumericField'
 
 const AXES = ['X', 'Y', 'Z'] as const
-
-function num(e: React.ChangeEvent<HTMLInputElement>): number {
-  return parseFloat(e.target.value) || 0
-}
 
 function Vec3Row({
   label,
   value,
-  onChange,
+  onCommit,
 }: {
   label: string
   value: readonly [number, number, number]
-  onChange: (axis: number, v: number) => void
+  onCommit: (axis: number, v: number) => void
 }) {
   return (
     <div className="space-y-1">
@@ -42,10 +41,10 @@ function Vec3Row({
         {AXES.map((ax, i) => (
           <div key={ax} className="flex items-center gap-1">
             <span className="text-[10px] text-muted-foreground">{ax}</span>
-            <Input
-              type="number"
-              value={Number.isFinite(value[i]) ? round2(value[i]) : 0}
-              onChange={(e) => onChange(i, num(e))}
+            <NumericField
+              aria-label={`${label} ${ax}`}
+              value={Number.isFinite(value[i]) ? value[i] : 0}
+              onCommit={(v) => onCommit(i, v)}
             />
           </div>
         ))}
@@ -65,14 +64,14 @@ export function ThreeDObjectSection({ nodeId }: { nodeId: string }) {
   const setPos = (axis: number, v: number) => {
     const next = [...t.position] as Vec3
     next[axis] = v
-    setTransform3d(nodeId, { position: next })
+    void commitTransform3d(nodeId, { position: next })
   }
   const setRot = (axis: number, v: number) => {
     const next = [...t.rotationEuler] as Vec3
     next[axis] = v
-    setTransform3d(nodeId, { rotationEuler: next })
+    void commitTransform3d(nodeId, { rotationEuler: next })
   }
-  const setScaleUniform = (v: number) => setTransform3d(nodeId, { scale: [v, v, v] })
+  const setScaleUniform = (v: number) => void commitTransform3d(nodeId, { scale: [v, v, v] })
 
   return (
     <>
@@ -80,17 +79,17 @@ export function ThreeDObjectSection({ nodeId }: { nodeId: string }) {
       <div className="min-w-0 space-y-3">
         <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">3D object</p>
 
-        <Vec3Row label="Position" value={t.position} onChange={setPos} />
-        <Vec3Row label="Rotation (°)" value={t.rotationEuler} onChange={setRot} />
+        <Vec3Row label="Position" value={t.position} onCommit={setPos} />
+        <Vec3Row label="Rotation (°)" value={t.rotationEuler} onCommit={setRot} />
 
         <div className="space-y-1">
           <Label htmlFor="td-scale">Scale</Label>
-          <Input
+          <NumericField
             id="td-scale"
-            type="number"
+            min={0.01}
             step={0.05}
-            value={round2(t.scale[0])}
-            onChange={(e) => setScaleUniform(num(e))}
+            value={t.scale[0]}
+            onCommit={setScaleUniform}
           />
         </div>
 
@@ -101,50 +100,50 @@ export function ThreeDObjectSection({ nodeId }: { nodeId: string }) {
             type="color"
             aria-label="Base color"
             value={m.color}
+            // Live local preview while dragging the picker; persist on blur.
             onChange={(e) => setMaterial(nodeId, { color: e.target.value })}
+            onBlur={(e) => void commitMaterial(nodeId, { color: e.target.value })}
             className="h-8 w-8 cursor-pointer rounded-md border border-border bg-transparent p-0"
           />
           <Input
             type="text"
             value={m.color}
             onChange={(e) => setMaterial(nodeId, { color: e.target.value })}
+            onBlur={(e) => void commitMaterial(nodeId, { color: e.target.value })}
           />
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <Label htmlFor="td-metal">Metalness</Label>
-            <Input
+            <NumericField
               id="td-metal"
-              type="number"
               min={0}
               max={1}
               step={0.05}
-              value={round2(m.metalness)}
-              onChange={(e) => setMaterial(nodeId, { metalness: num(e) })}
+              value={m.metalness}
+              onCommit={(v) => void commitMaterial(nodeId, { metalness: v })}
             />
           </div>
           <div className="space-y-1">
             <Label htmlFor="td-rough">Roughness</Label>
-            <Input
+            <NumericField
               id="td-rough"
-              type="number"
               min={0}
               max={1}
               step={0.05}
-              value={round2(m.roughness)}
-              onChange={(e) => setMaterial(nodeId, { roughness: num(e) })}
+              value={m.roughness}
+              onCommit={(v) => void commitMaterial(nodeId, { roughness: v })}
             />
           </div>
           <div className="space-y-1">
             <Label htmlFor="td-opacity">Opacity</Label>
-            <Input
+            <NumericField
               id="td-opacity"
-              type="number"
               min={0}
               max={1}
               step={0.05}
-              value={round2(m.opacity)}
-              onChange={(e) => setMaterial(nodeId, { opacity: num(e) })}
+              value={m.opacity}
+              onCommit={(v) => void commitMaterial(nodeId, { opacity: v })}
             />
           </div>
         </div>
@@ -153,25 +152,24 @@ export function ThreeDObjectSection({ nodeId }: { nodeId: string }) {
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <Label htmlFor="td-fov">Camera FOV</Label>
-            <Input
+            <NumericField
               id="td-fov"
-              type="number"
               min={10}
               max={120}
-              value={round2(entry.camera.fov)}
-              onChange={(e) => setCamera(nodeId, { fov: num(e) })}
+              precision={0}
+              value={entry.camera.fov}
+              onCommit={(v) => void commitCamera(nodeId, { fov: v })}
             />
           </div>
           <div className="space-y-1">
             <Label htmlFor="td-env">Light intensity</Label>
-            <Input
+            <NumericField
               id="td-env"
-              type="number"
               min={0}
               max={4}
               step={0.1}
-              value={round2(entry.env.intensity)}
-              onChange={(e) => setEnv(nodeId, { intensity: num(e) })}
+              value={entry.env.intensity}
+              onCommit={(v) => void commitEnv(nodeId, { intensity: v })}
             />
           </div>
         </div>

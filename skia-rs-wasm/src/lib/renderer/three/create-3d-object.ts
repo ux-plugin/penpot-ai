@@ -15,7 +15,7 @@ import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { viewport } from '../signals/pointer'
 import { screenToWorld } from '../viewport'
 import type { AddObjChange } from 'penpot-exporter/types'
-import { add3DObject, defaultEntry, setSelected3D, type Source3D } from './scene3d-store'
+import { defaultEntry, setSelected3D, type Source3D } from './scene3d-store'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 const DEFAULT_SIZE = 240
@@ -63,10 +63,15 @@ export async function create3DObject(
     fillOpacity: 0,
   })
 
+  // The serializable 3D spec rides on the rect as `node.scene3d`, so 3D state
+  // lives in the document from creation onward (durable, undoable on edit, and
+  // carried by flatten/unflatten). The scene3d-sync subscriber upserts it into
+  // `scene3dProxy` when this add-obj commits — no direct proxy write here.
+  const entry = defaultEntry(rect.id, source)
   const addChange: AddObjChange = {
     type: 'add-obj',
     id: rect.id,
-    obj: rect,
+    obj: { ...rect, scene3d: entry } as AddObjChange['obj'],
     frameId: rootId,
     parentId: rootId,
     index: root?.shapes?.length ?? 0,
@@ -74,7 +79,6 @@ export async function create3DObject(
   }
   await applyChanges([addChange])
 
-  add3DObject(defaultEntry(rect.id, source))
   setSelectedIds(new Set([rect.id]))
   setSelected3D(rect.id)
   return rect.id
