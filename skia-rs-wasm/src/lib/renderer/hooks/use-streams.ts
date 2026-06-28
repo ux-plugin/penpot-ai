@@ -10,8 +10,13 @@ import {
   modCtrl,
   modMeta,
   modShift,
+  pointerOverChrome,
   pointerPos,
 } from '../signals/pointer'
+
+/** Floating UI that sits over the canvas (panels + toolbars are `<aside>`,
+ *  popovers/menus carry these roles). Canvas-only hints hide over it. */
+const UI_CHROME_SELECTOR = 'aside, [role="dialog"], [role="menu"], [role="tooltip"]'
 
 export function useStreams(canvasRef: RefObject<HTMLCanvasElement | null>) {
   useEffect(() => {
@@ -28,6 +33,7 @@ export function useStreams(canvasRef: RefObject<HTMLCanvasElement | null>) {
     }
     const handlePointerMove = (e: PointerEvent) => {
       pushPosition(e.clientX, e.clientY, e.shiftKey, e.altKey, e.ctrlKey, e.metaKey)
+      pointerOverChrome.value = (e.target as Element | null)?.closest(UI_CHROME_SELECTOR) != null
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {

@@ -77,6 +77,27 @@ useViewportShortcutsStore (zustand)
 `getModifierKeys()` in [`shortcuts-store.ts`](../src/lib/renderer/store/shortcuts-store.ts)
 reads those signals.
 
+### Input layer (`src/lib/renderer/input/`) — keyboard + cursor (B.5)
+
+One place each for "key → action" and "state → cursor", so a new shortcut is a
+table row and the cursor can't disagree with the overlay:
+
+- [`commands.ts`](../src/lib/renderer/input/commands.ts) — the `Command` union
+  (discrete intents) + `runCommand(cmd, ctx)`, the only mapping from intent to
+  machine events / viewport ops. Cursor is **not** a command side effect.
+- [`key-bindings.ts`](../src/lib/renderer/input/key-bindings.ts) — `buildKeyBindings(shortcuts)`
+  returns the declarative table (rebindable `ShortcutsConfig` keys + fixed tool
+  letters `V`/`P`/`R`/`F`/`T` and path sub-tools `M`/`A`/`B`); `dispatchKey` runs the
+  first match whose `when` guard passes. `use-viewport-interactions`'s `handleKeyDown`
+  is now just `dispatchKey(e, …)`.
+- [`cursor.ts`](../src/lib/renderer/input/cursor.ts) — `resolveCanvasCursor(snap, mods, wasmRect)`
+  for every mode (resize/draw/pen/text/select/path); the path case delegates to
+  `resolvePathInteraction` (one source of truth for "Alt = transient Bend"). A single
+  reactive `effect()` in the hook is the **sole** writer of `surface.style.cursor`,
+  re-running on machine transitions and on modifier / `pointerPanning` / `wasmSelectionRect`
+  signal changes — so Alt/Shift flip the cursor with no mouse-move. (The pen-draft Esc
+  stays in `PathEditorOverlay`'s capture-phase handler.)
+
 ---
 
 ## 3. Per-frame pointer/modifier signals — Done

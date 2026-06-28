@@ -19,17 +19,6 @@ interface IconProps {
   className?: string
 }
 
-export function IconSelect({ className }: IconProps) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 20 20" aria-hidden>
-      <path
-        fill="currentColor"
-        d="M4.5 3.5L15 11h-4.25L12 16.5 4.5 9.25H8.75L4.5 3.5z"
-      />
-    </svg>
-  )
-}
-
 export function IconRect({ className }: IconProps) {
   return (
     <svg className={className} width="20" height="20" viewBox="0 0 20 20" aria-hidden>

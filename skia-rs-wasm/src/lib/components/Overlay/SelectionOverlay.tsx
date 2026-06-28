@@ -77,7 +77,7 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const wasmSelectionRect = useSignalCoalesced(wasmSelectionRectSignal)
   const viewport = useSignalCoalesced(viewportSignal)
   const selectionRect = useSignalCoalesced(selectionRectSignal)
-  const isSelecting = useSelector(canvasActor, (s) => s.matches('selecting'))
+  const isSelecting = useSelector(canvasActor, (s) => s.matches('marqueeSelect'))
   const isMoving = useSelector(canvasActor, (s) => s.matches('moving'))
   const isResizing = useSelector(canvasActor, (s) => s.matches('resizing'))
   const resizeHandle = useSelector(canvasActor, (s) => s.context.resizeHandle)
@@ -86,6 +86,9 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   // While text-editing, suppress selection handles so the MoveHitArea (pointerEvents
   // 'auto') doesn't intercept clicks meant for caret placement / drag-selection.
   const isTextEditing = useSelector(canvasActor, (s) => s.matches('textEditing'))
+  // While vector-editing, hide the selection box/handles so they don't sit on top
+  // of the anchor/handle markers the PathEditorOverlay draws.
+  const isPathEditing = useSelector(canvasActor, (s) => s.matches('pathEditing'))
   // Live editor emptiness + which shape is being edited: while editing, the typed
   // text lives in the WASM editor (not `node.content`), so the outline gate below
   // reads these instead of the stale doc content.
@@ -96,7 +99,12 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const safeZoom = Number.isFinite(rawZoom) && rawZoom > 0 ? rawZoom : 1
   const hasFiniteSelectionRect = finiteSelectionOverlayRect(wasmSelectionRect)
   const showHandles =
-    selectedIds.size >= 1 && hasFiniteSelectionRect && viewport != null && !isMoving && !isTextEditing
+    selectedIds.size >= 1 &&
+    hasFiniteSelectionRect &&
+    viewport != null &&
+    !isMoving &&
+    !isTextEditing &&
+    !isPathEditing
 
   const hitSize = HANDLE_SIZE_WORLD / safeZoom
 
@@ -203,8 +211,10 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   })()
 
   useLayoutEffect(() => {
-    selectionRectOutlineVisible.value = !isMoving && !selectedTextEmpty
-  }, [isMoving, selectedTextEmpty])
+    // Hide the box outline while vector-editing too — the PathEditorOverlay's
+    // anchor/handle markers stand in for the selection box.
+    selectionRectOutlineVisible.value = !isMoving && !selectedTextEmpty && !isPathEditing
+  }, [isMoving, selectedTextEmpty, isPathEditing])
 
   const gradientForOverlay = useGradientFill()
 
@@ -318,3 +328,4 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     </svg>
   )
 }
+

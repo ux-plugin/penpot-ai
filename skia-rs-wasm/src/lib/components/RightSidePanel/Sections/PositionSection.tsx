@@ -14,7 +14,6 @@ import {
   Pin,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { applyTransformToNode } from '@/lib/renderer/geom/apply-transform-to-node'
@@ -22,8 +21,8 @@ import { rotationMatrixAroundPoint } from '@/lib/renderer/geom/matrix'
 import { useCanvasActor } from '@/lib/renderer/machine/canvas-actor-context'
 import {
   commitNodePartialUpdate,
+  commitNodeGeometry,
   getCommittedNodeOnActivePage,
-  rectLayoutPartial,
 } from '@/lib/renderer/properties/commit-node-properties'
 import { docProxy, getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
@@ -31,9 +30,8 @@ import { rotatePreviewDeltaDeg as rotatePreviewDeltaDegSignal } from '@/lib/rend
 import { useSignalCoalesced } from '@/lib/renderer/signals/use-signal-coalesced'
 import { getLayoutMode, type LayoutMode } from './layout-mode'
 import { GridPlacementPicker, type Placement } from './GridPlacementPicker'
-import { round2 } from '@/lib/common/conversions'
+import { NumericField } from '../NumericField'
 
-type GeomDraft = { x: number; y: number; rotation: number }
 type Axis3 = 'start' | 'center' | 'end'
 
 const VERTICAL_OPTIONS: ReadonlyArray<{
@@ -82,16 +80,14 @@ function generateCellId(): string {
 
 export function PositionSection({ nodeId, initialNode, readOnly }: PositionSectionProps) {
   const [collapsed, setCollapsed] = useState(false)
-  const [draft, setDraft] = useState<GeomDraft | null>(null)
 
   const node = initialNode as RectLikeNode & { x?: number; y?: number }
 
-  const committed: GeomDraft = {
-    x: node.x ?? 0,
-    y: node.y ?? 0,
-    rotation: initialNode.rotation ?? 0,
-  }
-  const { x, y, rotation } = draft ?? committed
+  // NumericField owns each field's editing draft; we feed it committed values
+  // and commit one axis at a time (commitGeomAxis) on Enter/blur/step.
+  const x = node.x ?? 0
+  const y = node.y ?? 0
+  const rotation = initialNode.rotation ?? 0
 
   const canvasActor = useCanvasActor()
   const isMoving = useSelector(canvasActor, (s) => s.matches('moving'))
@@ -120,61 +116,21 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
 
   const fieldsDisabled = readOnly || isMoving || isRotating
 
-  const commitGeom = useCallback(async () => {
-    if (readOnly || !draft) return
-    const before = getCommittedNodeOnActivePage(nodeId)
-    const pid = getActiveOrSinglePageId()
-    if (!before || !pid) return
-    const n = before as PenpotNode
-    const sr = n.selrect as
-      | { x?: number; y?: number; width?: number; height?: number }
-      | undefined
-    const w = (before as { width?: number }).width ?? initialNode.width ?? 0
-    const h = (before as { height?: number }).height ?? initialNode.height ?? 0
-
-    // Commit position/rotation the SAME way the live preview and the rotate
-    // handle do: as a world-space transform applied to the node, so `transform`
-    // + rotated `points` + `rotation` are emitted together. `rectLayoutPartial`
-    // only emits a bare rotation scalar with axis-aligned points and NO
-    // transform; the WASM sync then calls `setShapeRotation` *without*
-    // `setShapeTransform`, so the shape body (rendered from `self.transform`)
-    // never rotates and, while editing, the caret (drawn from the rotation
-    // scalar via `get_matrix`) diverges from the unrotated body and disappears.
-    // Same delta-on-committed-node math as `liveRotationPartial` above; this
-    // also preserves rotation when only moving a rotated shape.
-    if (sr && (sr.width ?? 0) > 0 && (sr.height ?? 0) > 0) {
-      const curX = (before as { x?: number }).x ?? sr.x ?? 0
-      const curY = (before as { y?: number }).y ?? sr.y ?? 0
-      const curRot = before.rotation ?? 0
-      const dRot = draft.rotation - curRot
-      const dx = draft.x - curX
-      const dy = draft.y - curY
-      const cx = (sr.x ?? 0) + (sr.width ?? 0) / 2
-      const cy = (sr.y ?? 0) + (sr.height ?? 0) / 2
-      // M = translate(dx,dy) ∘ rotateAround(center, dRot): translation only adds
-      // to the (e,f) components of the rotation matrix.
-      const rot = rotationMatrixAroundPoint(cx, cy, dRot)
-      const M = { ...rot, e: rot.e + dx, f: rot.f + dy }
-      const partial = applyTransformToNode(n, M)
-      if (partial) {
-        await commitNodePartialUpdate(nodeId, before, partial, pid)
-        setDraft(null)
-        return
-      }
-    }
-
-    // Fallback for nodes without a usable selrect (degenerate / non-rect-like).
-    await commitNodePartialUpdate(
-      nodeId,
-      before,
-      rectLayoutPartial(draft.x, draft.y, w, h, draft.rotation),
-      pid,
-    )
-    setDraft(null)
-  }, [readOnly, nodeId, draft, initialNode])
-
-  const patchDraft = (patch: Partial<GeomDraft>) =>
-    setDraft((d) => ({ ...(d ?? committed), ...patch }))
+  // Commit a single edited axis through the shared geometry pipeline. The other
+  // axes are omitted from the target, so they hold at the committed value and
+  // only the touched axis moves/rotates — emitted as a world-space transform so
+  // a rotated shape's body, points and caret stay consistent (no drift).
+  const commitGeomAxis = useCallback(
+    async (axis: 'x' | 'y' | 'rotation', value: number) => {
+      if (readOnly) return
+      const before = getCommittedNodeOnActivePage(nodeId)
+      const pid = getActiveOrSinglePageId()
+      if (!before || !pid) return
+      const target = axis === 'x' ? { x: value } : axis === 'y' ? { y: value } : { rotation: value }
+      await commitNodeGeometry(nodeId, before, target, pid)
+    },
+    [readOnly, nodeId],
+  )
 
   // Parent layout state — drives optional grid-placement + align-self UI.
   const doc = useSnapshot(docProxy)
@@ -356,36 +312,30 @@ export function PositionSection({ nodeId, initialNode, readOnly }: PositionSecti
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label htmlFor="rsp-x">X</Label>
-                <Input
+                <NumericField
                   id="rsp-x"
-                  type="number"
                   disabled={fieldsDisabled}
-                  value={Number.isFinite(x) ? round2(x) : 0}
-                  onChange={(e) => patchDraft({ x: round2(parseFloat(e.target.value) || 0) })}
-                  onBlur={() => void commitGeom()}
+                  value={Number.isFinite(x) ? x : 0}
+                  onCommit={(n) => void commitGeomAxis('x', n)}
                 />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="rsp-y">Y</Label>
-                <Input
+                <NumericField
                   id="rsp-y"
-                  type="number"
                   disabled={fieldsDisabled}
-                  value={Number.isFinite(y) ? round2(y) : 0}
-                  onChange={(e) => patchDraft({ y: round2(parseFloat(e.target.value) || 0) })}
-                  onBlur={() => void commitGeom()}
+                  value={Number.isFinite(y) ? y : 0}
+                  onCommit={(n) => void commitGeomAxis('y', n)}
                 />
               </div>
             </div>
             <div className="space-y-1">
               <Label htmlFor="rsp-rot">Rotation (°)</Label>
-              <Input
+              <NumericField
                 id="rsp-rot"
-                type="number"
                 disabled={fieldsDisabled}
-                value={Number.isFinite(rotationDisplay) ? round2(rotationDisplay) : 0}
-                onChange={(e) => patchDraft({ rotation: round2(parseFloat(e.target.value) || 0) })}
-                onBlur={() => void commitGeom()}
+                value={Number.isFinite(rotationDisplay) ? rotationDisplay : 0}
+                onCommit={(n) => void commitGeomAxis('rotation', n)}
               />
             </div>
 

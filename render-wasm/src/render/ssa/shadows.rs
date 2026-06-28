@@ -5,7 +5,8 @@
 //!   Frame/group recursive child silhouette draws are TODO.
 //! - Fill inner shadows: ported.
 //! - Stroke inner shadows: TODO (depends on full strokes port).
-//! - Text shadows: TODO (depends on text port).
+//! - Text drop shadows: in `ssa::text::render_drop_shadows`.
+//! - Text inner shadows: `render_text_inner_shadows` below.
 //!
 //! Drop shadow flow:
 //!   1. Snapshot transform values BEFORE borrowing scratch canvas.
@@ -166,13 +167,55 @@ pub fn render_stroke_inner_shadows(
     Ok(())
 }
 
-pub fn render_text_shadows(
-    _ctx: &mut PaintCtx<'_>,
-    _shape: &Shape,
-    _antialias: bool,
-) -> Result<()> {
-    // TODO(ssa-port::shadows::text) — depends on text port.
-    Ok(())
+/// Inner shadows for text shapes. The "silhouette" a text shape feeds the
+/// inner-shadow filter is its glyph coverage: per shadow, open a
+/// `save_layer` whose paint carries `get_inner_shadow_paint` (the
+/// `drop_shadow_only ∘ dilate ∘ blend(SrcIn)` chain — it consumes the
+/// layer's alpha and emits only the shadow clipped inside it) and render
+/// the text into the layer. Same pattern the legacy export path uses in
+/// `render::shadows::render_text_shadows`. Called from `ssa::text::render`
+/// between noise and strokes, mirroring `render_body_direct`'s
+/// fills → noise → inner shadows → strokes order for shapes.
+pub fn render_text_inner_shadows(ctx: &mut PaintCtx<'_>, shape: &Shape) {
+    let Type::Text(text_content_orig) = &shape.shape_type else {
+        return;
+    };
+    if shape.inner_shadows_visible().next().is_none() {
+        return;
+    }
+    let antialias = shape.should_use_antialias(ctx.scale, ctx.options.antialias_threshold);
+    let shadows: Vec<_> = shape.inner_shadows_visible().cloned().collect();
+
+    // Snapshot the transform and build the shadow-source paragraphs BEFORE
+    // borrowing the canvas (mirrors `ssa::text::render`). `Some(true)` is
+    // the legacy shadow-source variant: span fills are opaque-ised so the
+    // filter sees full glyph alpha, but fully-transparent spans keep their
+    // alpha — invisible text casts no shadow.
+    let xform = ctx.tile_and_shape_transform_matrix(shape);
+    let text_content = text_content_orig.new_bounds(shape.selrect());
+    let mut shadow_paragraphs = text_content.paragraph_builder_group_from_text(Some(true));
+
+    let canvas = ctx.surface.canvas();
+    canvas.save();
+    canvas.reset_matrix();
+    canvas.concat(&xform);
+
+    for shadow in &shadows {
+        let paint = shadow.get_inner_shadow_paint(antialias, shape.image_filter(1.).as_ref());
+        canvas.save_layer(&skia::canvas::SaveLayerRec::default().paint(&paint));
+        crate::render::text::render_text_on_canvas(
+            canvas,
+            shape,
+            &mut shadow_paragraphs,
+            None, // shadow
+            None, // blur
+            None, // fill_inset
+            None, // layer_opacity
+        );
+        canvas.restore();
+    }
+
+    canvas.restore();
 }
 
 /// Walk a Frame/Group's children (recursively through flatten-able

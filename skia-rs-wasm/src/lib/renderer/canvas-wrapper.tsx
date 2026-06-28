@@ -13,6 +13,7 @@ import { modAlt, modCtrl, modMeta, modShift, viewport } from './signals/pointer'
 import { initRendererClient, cleanupRendererClient } from './renderer-init'
 import { SelectionOverlay } from '../components/Overlay/SelectionOverlay'
 import { TextEditorOverlay } from '../components/Overlay/TextEditorOverlay'
+import { PathEditorOverlay } from '../components/Overlay/PathEditorOverlay'
 import { Scene3DLayer } from './three/Scene3DLayer'
 import { useViewportInteractions } from './hooks/use-viewport-interactions'
 import { useStreams } from './hooks/use-streams'
@@ -186,6 +187,7 @@ function CanvasWorkspace({
       />
       <SelectionOverlay canvasSize={canvasSize} canvasRef={canvasRef} />
       <TextEditorOverlay />
+      <PathEditorOverlay />
       <Scene3DLayer canvasSize={canvasSize} />
     </div>
   )

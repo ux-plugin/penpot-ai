@@ -2,11 +2,14 @@ import type { RectLikeNode } from '../../renderer/properties/panel-utils'
 import { NodeIdentitySection } from './Sections/NodeIdentitySection'
 import { PositionSection } from './Sections/PositionSection'
 import { AppearanceSection } from './Sections/AppearanceSection'
+import { ShapeSection } from './Sections/ShapeSection'
+import { VectorEditSection } from './Sections/VectorEditSection'
 import { TypographySection } from './Sections/TypographySection'
 import { isTextNode } from './Sections/text-typography'
 import { NodeLayoutSection } from './Sections/NodeLayoutSection'
 import { supportsLayout } from './Sections/layout-mode'
 import { FillsSection } from './Sections/FillsSection'
+import { FillBindingSection } from './Sections/FillBindingSection'
 import { StrokesSection } from './Sections/StrokesSection'
 import { EffectsSection } from './Sections/EffectsSection'
 import { ThreeDObjectSection } from './Sections/ThreeDObjectSection'
@@ -35,6 +38,10 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
 
       <AppearanceSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
+      <ShapeSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+
+      <VectorEditSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+
       {isTextNode(initialNode) && (
         <TypographySection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
       )}
@@ -44,6 +51,8 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
       )}
 
       <FillsSection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
+
+      <FillBindingSection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
 
       <StrokesSection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
 

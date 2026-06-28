@@ -25,7 +25,14 @@ import { cleanModifiers, propagateModifiers } from '../api/modifiers'
 import { clearLayout, setFlexLayout, setGridLayout, setLayoutData } from '../api/layout'
 import { moduleUseShape, setShapeGrowType } from '../api/shape'
 import { getTextDimensions } from '../api/text'
-import { identityMatrix } from '../geom/matrix'
+import {
+  IDENTITY_MATRIX,
+  buildResizeMatrix,
+  composeMatrix,
+  identityMatrix,
+  invertMatrix,
+  rotationMatrixAroundPoint,
+} from '../geom/matrix'
 import { applyTransformToNode } from '../geom/apply-transform-to-node'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { clearModifierOverlay } from '../store/modifier-overlay'
@@ -89,6 +96,68 @@ export function rectLayoutPartial(
     points,
     rotation: rotation !== 0 ? rotation : undefined,
   }
+}
+
+/** Absolute target geometry; only the changed fields are set (others held at committed). */
+export interface GeometryTarget {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  rotation?: number
+}
+
+/**
+ * Single geometry-commit pipeline shared by the Position (X/Y/rotation) and
+ * Appearance (W/H) panels. Builds ONE world matrix — scale around the local
+ * top-left ∘ rotate around center ∘ translate — from the delta between `before`
+ * and `target`, then applyTransformToNode so transform + points + selrect +
+ * rotation are always consistent. This is what keeps a rotated shape from
+ * drifting on resize: the old axis-aligned path emitted a bare rotation scalar
+ * and pivoted around a moving center. Untouched target fields fall back to the
+ * committed value, so a single-axis edit produces a single-axis transform.
+ *
+ * No-ops when there's no usable selrect or the transform collapses the shape —
+ * the panel only enables these fields for shapes with real geometry.
+ */
+export async function commitNodeGeometry(
+  nodeId: string,
+  before: PenpotNode,
+  target: GeometryTarget,
+  pageId: string | null | undefined,
+  extra?: Partial<PenpotNode>,
+): Promise<void> {
+  const sr = before.selrect as
+    | { x?: number; y?: number; width?: number; height?: number }
+    | undefined
+  const w0 = sr?.width ?? 0
+  const h0 = sr?.height ?? 0
+  if (!sr || w0 <= 0 || h0 <= 0) return
+
+  const T = before.transform ?? IDENTITY_MATRIX
+  const Tinv = before.transformInverse ?? invertMatrix(T) ?? IDENTITY_MATRIX
+  const cx = (sr.x ?? 0) + w0 / 2
+  const cy = (sr.y ?? 0) + h0 / 2
+  const curX = (before as { x?: number }).x ?? sr.x ?? 0
+  const curY = (before as { y?: number }).y ?? sr.y ?? 0
+  const curRot = before.rotation ?? 0
+
+  const sx = (target.width ?? w0) / w0
+  const sy = (target.height ?? h0) / h0
+  const dRot = (target.rotation ?? curRot) - curRot
+  const dx = (target.x ?? curX) - curX
+  const dy = (target.y ?? curY) - curY
+
+  // Scale around the local top-left (offset -w0/2,-h0/2 from center), then
+  // rotate around the center, then translate in world space.
+  const S = buildResizeMatrix(T, Tinv, sx, sy, cx, cy, -w0 / 2, -h0 / 2)
+  const R = rotationMatrixAroundPoint(cx, cy, dRot)
+  const RS = composeMatrix(R, S)
+  const M = { ...RS, e: RS.e + dx, f: RS.f + dy }
+
+  const partial = applyTransformToNode(before, M)
+  if (!partial) return
+  await commitNodePartialUpdate(nodeId, before, { ...partial, ...extra }, pageId)
 }
 
 /** Latest committed node on the current page (same page key as `docProxy.currentPageId`). */

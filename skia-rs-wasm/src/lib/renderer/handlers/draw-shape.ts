@@ -14,8 +14,14 @@ import { makeSelrect } from '../../worker/types'
 import { isSnapPixelGridEnabled } from '../store/workspace-settings'
 import { snapDrawRectToGrid, type DrawRect } from './pixel-snap'
 import { applyChanges } from '../../page-crud'
-import { createFrame, createRect, createText } from '../node-factory'
-import type { AddObjChange } from 'penpot-exporter/types'
+import {
+  createEllipse,
+  createFrame,
+  createParametricPath,
+  createRect,
+  createText,
+} from '../node-factory'
+import type { AddObjChange, PenpotNode } from 'penpot-exporter/types'
 import type { DrawTool } from '../machine/canvas-machine'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -121,44 +127,50 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
 
             const root = Object.values(currentPage.objects).find((o) => o.parentId == null)
             const rootId = root?.id ?? ROOT_UUID
-            const newNode =
-              tool === 'frame'
-                ? createFrame({
-                    x: worldOrigin.x,
-                    y: worldOrigin.y,
-                    width: w,
-                    height: h,
-                    parentId: rootId,
-                    fillColor: '#F3F4F6',
-                    fillOpacity: 1,
-                    strokeColor: '#9CA3AF',
-                    strokeWidth: 1,
-                  })
-                : tool === 'text'
-                  ? createText({
-                      x: worldOrigin.x,
-                      y: worldOrigin.y,
-                      width: w,
-                      height: h,
-                      parentId: rootId,
-                      // Empty: the box opens into edit mode with a blinking caret
-                      // (no placeholder text), and the user types into it.
-                      text: '',
-                      // Click → auto-width box that grows with typing; drag → fixed
-                      // box at the drawn size (Penpot's text-tool behaviour).
-                      growType: isClick ? 'auto-width' : 'fixed',
-                    })
-                  : createRect({
-                      x: worldOrigin.x,
-                      y: worldOrigin.y,
-                      width: w,
-                      height: h,
-                      parentId: rootId,
-                      fillColor: '#3B82F6',
-                      fillOpacity: 0.85,
-                      strokeColor: '#1E40AF',
-                      strokeWidth: 2,
-                    })
+
+            // Shared geometry + the default fill/stroke used by the filled shapes.
+            const geom = { x: worldOrigin.x, y: worldOrigin.y, width: w, height: h, parentId: rootId }
+            const filled = {
+              fillColor: '#3B82F6',
+              fillOpacity: 0.85,
+              strokeColor: '#1E40AF',
+              strokeWidth: 2,
+            }
+
+            let newNode: PenpotNode
+            switch (tool) {
+              case 'frame':
+                newNode = createFrame({
+                  ...geom,
+                  fillColor: '#F3F4F6',
+                  fillOpacity: 1,
+                  strokeColor: '#9CA3AF',
+                  strokeWidth: 1,
+                })
+                break
+              case 'text':
+                newNode = createText({
+                  ...geom,
+                  // Empty: the box opens into edit mode with a blinking caret
+                  // (no placeholder text), and the user types into it.
+                  text: '',
+                  // Click → auto-width box that grows with typing; drag → fixed
+                  // box at the drawn size (Penpot's text-tool behaviour).
+                  growType: isClick ? 'auto-width' : 'fixed',
+                })
+                break
+              case 'ellipse':
+                newNode = createEllipse({ ...geom, ...filled })
+                break
+              case 'triangle':
+              case 'polygon':
+              case 'star':
+                newNode = createParametricPath(tool, { ...geom, ...filled })
+                break
+              default:
+                newNode = createRect({ ...geom, ...filled })
+                break
+            }
 
             const addChange: AddObjChange = {
               type: 'add-obj',

@@ -7,7 +7,7 @@ import { fillSwatchBackground } from '../../FillEditor/fill-swatch-background'
 import { isColorFill } from '../../../renderer/api/constants'
 import { normalizeHex } from '../../../renderer/properties/panel-utils'
 import { useColorEditorFor } from '../use-color-editor'
-import { round2 } from '@/lib/common/conversions'
+import { NumericField } from '../NumericField'
 
 const ALIGN_OPTIONS = ['center', 'inner', 'outer'] as const
 const STYLE_OPTIONS = ['solid', 'dotted', 'dashed', 'mixed'] as const
@@ -132,14 +132,14 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove }: Strok
           onChange={(e) => handleHexChange(e.target.value)}
         />
         <span className="shrink-0 text-xs text-muted-foreground">%</span>
-        <Input
-          type="number"
+        <NumericField
           className="h-8 w-12 shrink-0 px-1 text-xs"
+          aria-label="Stroke opacity"
+          value={isSolid ? Math.round(opacity * 100) : 100}
           min={0}
           max={100}
-          value={isSolid ? Math.round(opacity * 100) : 100}
           disabled={!isSolid}
-          onChange={(e) => handleOpacityChange(round2(Number(e.target.value)))}
+          onCommit={handleOpacityChange}
         />
         <Button
           type="button"
@@ -154,16 +154,14 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove }: Strok
       </div>
       {/* Row 2: width + alignment + style */}
       <div className="flex min-h-7 items-center gap-1.5">
-        <Input
-          type="number"
+        <NumericField
           className="h-7 w-14 shrink-0 px-1 text-xs"
+          title="Width"
+          aria-label="Stroke width"
+          value={Number.isFinite(width) ? width : 0}
           min={0}
           step={0.5}
-          value={Number.isFinite(width) ? round2(width) : 0}
-          onChange={(e) =>
-            onChange({ ...stroke, strokeWidth: Math.max(0, round2(parseFloat(e.target.value) || 0)) }, index)
-          }
-          title="Width"
+          onCommit={(n) => onChange({ ...stroke, strokeWidth: n }, index)}
         />
         <select
           className="border-input bg-background h-7 min-w-0 flex-1 rounded-md border px-1.5 text-xs"

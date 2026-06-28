@@ -51,7 +51,43 @@ export type PathSegment =
   | { type: 'close-path' }
 
 export interface PathContent {
+  /** Canonical editable path model: ordered vertices with optional bézier handles
+   * (absolute world coords). `segments` below is a derived sharp mirror kept in
+   * sync by `pathContent()`; vertices are the source of truth for editing. */
+  vertices?: Array<{
+    point: { x: number; y: number }
+    handleIn?: { x: number; y: number }
+    handleOut?: { x: number; y: number }
+  }>
+  /** Whether the vertex ring closes. */
+  closed?: boolean
+  /** Compound paths (J1): multiple sub-paths in one node. When present this is the
+   * canonical model; a single sub-path also mirrors into `vertices`/`closed`. */
+  subpaths?: Array<{
+    vertices: Array<{
+      point: { x: number; y: number }
+      handleIn?: { x: number; y: number }
+      handleOut?: { x: number; y: number }
+    }>
+    closed: boolean
+  }>
   segments?: PathSegment[]
+  /** Vector network (N): the connectivity graph behind junctions — nodes shared by
+   * multiple edges, so a line can branch off a closed shape's corner. When present
+   * it's canonical for editing; `subpaths`/`segments` are its derived render mirror
+   * (kept in sync by `networkContent()`). Legacy nodes have no network. */
+  network?: {
+    nodes: Array<{ x: number; y: number }>
+    edges: Array<{
+      a: number
+      b: number
+      ha?: { x: number; y: number }
+      hb?: { x: number; y: number }
+    }>
+  }
+  /** Single shape-wide corner radius (P4). The stored `segments` stay sharp; the
+   * fillet is applied only when serializing to the renderer. */
+  cornerRadius?: number
   [key: string]: unknown
 }
 
@@ -162,6 +198,15 @@ export interface ShortcutsConfig {
   resetKeys: string[]
   panMouseButton: number
   panWithModifier: ViewportPanModifier
+  /** Rebindable tool / path sub-tool shortcut keys (KeyboardEvent.code). */
+  selectKey: string
+  penKey: string
+  rectKey: string
+  frameKey: string
+  textKey: string
+  pathMoveKey: string
+  pathAddKey: string
+  pathBendKey: string
   wheelZoomEnabled: boolean
   wheelScalePerPixel: number
 }

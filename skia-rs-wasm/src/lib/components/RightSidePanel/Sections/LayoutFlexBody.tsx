@@ -17,14 +17,13 @@ import {
   StretchHorizontal,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   commitNodePartialUpdate,
   getCommittedNodeOnActivePage,
 } from '@/lib/renderer/properties/commit-node-properties'
 import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
-import { round2 } from '@/lib/common/conversions'
+import { NumericField } from '../NumericField'
 
 type FlexDir = 'row' | 'row-reverse' | 'column' | 'column-reverse'
 type WrapType = 'wrap' | 'nowrap'
@@ -99,8 +98,6 @@ export function LayoutFlexBody({ nodeId, initialNode, readOnly }: LayoutFlexBody
   const [align, setAlign] = useState<AlignItems>(initial.layoutAlignItems ?? 'start')
   const [gap, setGap] = useState<number>(initial.layoutGap?.rowGap ?? 0)
   const [padding, setPadding] = useState<number>(initial.layoutPadding?.p1 ?? 0)
-  const [gapDraft, setGapDraft] = useState<string | null>(null)
-  const [paddingDraft, setPaddingDraft] = useState<string | null>(null)
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- mirrors external document updates */
@@ -199,32 +196,24 @@ export function LayoutFlexBody({ nodeId, initialNode, readOnly }: LayoutFlexBody
       </ControlBlock>
 
       <ControlBlock label="Gap">
-        <NumberWithSuffix
+        <NumericField
           id="rsp-flex-gap"
-          value={gapDraft ?? String(round2(gap))}
-          disabled={readOnly}
+          value={gap}
+          min={0}
           suffix="px"
-          onChange={(s) => setGapDraft(s)}
-          onBlur={() => {
-            const n = Math.max(0, round2(parseFloat(gapDraft ?? String(gap)) || 0))
-            setGapDraft(null)
-            commitGap(n)
-          }}
+          disabled={readOnly}
+          onCommit={commitGap}
         />
       </ControlBlock>
 
       <ControlBlock label="Padding">
-        <NumberWithSuffix
+        <NumericField
           id="rsp-flex-padding"
-          value={paddingDraft ?? String(round2(padding))}
-          disabled={readOnly}
+          value={padding}
+          min={0}
           suffix="px"
-          onChange={(s) => setPaddingDraft(s)}
-          onBlur={() => {
-            const n = Math.max(0, round2(parseFloat(paddingDraft ?? String(padding)) || 0))
-            setPaddingDraft(null)
-            commitPadding(n)
-          }}
+          disabled={readOnly}
+          onCommit={commitPadding}
         />
       </ControlBlock>
     </div>
@@ -319,36 +308,3 @@ function WrapButton({
   )
 }
 
-function NumberWithSuffix({
-  id,
-  value,
-  onChange,
-  onBlur,
-  disabled,
-  suffix,
-}: {
-  id: string
-  value: string
-  onChange: (s: string) => void
-  onBlur: () => void
-  disabled?: boolean
-  suffix: string
-}) {
-  return (
-    <div className="relative">
-      <Input
-        id={id}
-        type="number"
-        min={0}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        className="pr-8"
-      />
-      <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-muted-foreground">
-        {suffix}
-      </span>
-    </div>
-  )
-}

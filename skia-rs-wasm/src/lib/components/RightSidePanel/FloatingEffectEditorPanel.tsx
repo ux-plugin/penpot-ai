@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import type { Blur, Fill, Glass, Shadow } from 'penpot-exporter/types'
 import { Eye, EyeOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -10,7 +10,9 @@ import { isColorFill } from '@/lib/renderer/verification'
 import { fillSwatchBackground } from '../FillEditor/fill-swatch-background'
 import { useColorEditor } from './use-color-editor'
 import { FloatingPanelShell } from './FloatingPanelShell'
+import { NumericField } from './NumericField'
 import { round2 } from '@/lib/common/conversions'
+import { markHistoryInteraction } from '@/lib/history/history-store'
 
 const EFFECT_KIND_OPTIONS: { value: EffectKind; label: string }[] = [
   { value: 'drop-shadow', label: 'Drop shadow' },
@@ -82,7 +84,9 @@ function shadowColorToFill(shadow: Shadow): Fill {
   }
 }
 
-/** Labeled number input for effect controls */
+/** Labeled number input for effect controls. Shares NumericField's interaction
+ *  policy: type + Enter/blur to commit, Escape to revert, arrows/wheel to step,
+ *  and step bursts coalesce into one undo frame. */
 function EffectField({
   label,
   title,
@@ -103,21 +107,21 @@ function EffectField({
   return (
     <div className="flex items-center gap-2" title={title}>
       <span className="w-28 shrink-0 text-[11px] font-medium text-muted-foreground">{label}</span>
-      <Input
-        type="number"
+      <NumericField
         className="h-7 min-w-0 flex-1 px-1.5 text-xs"
+        aria-label={label}
+        value={value}
         min={min}
         max={max}
         step={step}
-        value={value % 1 !== 0 ? parseFloat(value.toFixed(2)) : value}
-        onChange={(e) => onChange(Math.min(max, Math.max(min, round2(parseFloat(e.target.value) || 0))))}
+        onCommit={onChange}
       />
     </div>
   )
 }
 
 export function FloatingEffectEditorPanel() {
-  const { activeTarget, activeEffect, anchorY, title, closeEditor, onEffectChangeRef } = useColorEditor()
+  const { activeTarget, activeEffect, anchorY, closeEditor, onEffectChangeRef } = useColorEditor()
 
   const targetKey =
     activeTarget && activeEffect
@@ -130,6 +134,13 @@ export function FloatingEffectEditorPanel() {
     },
     [onEffectChangeRef],
   )
+
+  // Local draft for the hex field: the input is controlled off the committed
+  // color, so without a draft every intermediate keystroke ("#", "#F", …) that
+  // isn't yet a full hex is rejected and the field snaps back — making it
+  // impossible to type. Draft holds the in-progress text; a valid hex commits
+  // live, blur clears the draft back to the committed value.
+  const [hexDraft, setHexDraft] = useState<string | null>(null)
 
   if (!targetKey || !activeEffect) return null
 
@@ -182,11 +193,19 @@ export function FloatingEffectEditorPanel() {
     handleEffectChange({ kind: 'texture', texture: { ...texture, ...partial } })
   }
 
-  const handleHexChange = (raw: string) => {
+  // Solid-only color commit, coalesced into one undo frame per picker burst
+  // (mirrors the fills color editor). Gradients aren't editable inline here.
+  const commitShadowColor = (hex: string) => {
     if (!shadow || !isSolid) return
+    markHistoryInteraction('effect-color')
+    handleShadowUpdate({ color: { ...shadow.color, color: hex } })
+  }
+
+  const handleHexChange = (raw: string) => {
+    setHexDraft(raw)
     const v = raw.trim()
     if (/^#[0-9A-Fa-f]{6}$/.test(v) || /^#[0-9A-Fa-f]{3}$/.test(v)) {
-      handleShadowUpdate({ color: { ...shadow.color, color: normalizeHex(v) } })
+      commitShadowColor(normalizeHex(v))
     }
   }
 
@@ -263,19 +282,30 @@ export function FloatingEffectEditorPanel() {
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <span className="w-28 shrink-0 text-[11px] font-medium text-muted-foreground">Color</span>
-              <div
-                className="size-5 shrink-0 rounded border border-border"
+              <label
+                className="relative size-5 shrink-0 overflow-hidden rounded border border-border"
                 style={{ background: swatchBg }}
-                aria-hidden
-              />
+                title={isSolid ? 'Pick shadow color' : 'Gradient shadow'}
+              >
+                {isSolid && shadow && (
+                  <input
+                    type="color"
+                    aria-label="Shadow color"
+                    value={normalizeHex(shadow.color?.color ?? '#000000')}
+                    onChange={(e) => commitShadowColor(e.target.value)}
+                    className="absolute inset-0 size-full cursor-pointer opacity-0"
+                  />
+                )}
+              </label>
               <Input
                 type="text"
                 className="h-7 min-w-0 flex-1 font-mono text-xs"
-                value={hexDisplay}
+                value={isSolid ? (hexDraft ?? hexDisplay) : hexDisplay}
                 placeholder={isSolid ? '#RRGGBB' : undefined}
                 disabled={!isSolid}
                 readOnly={!isSolid}
                 onChange={(e) => handleHexChange(e.target.value)}
+                onBlur={() => setHexDraft(null)}
               />
               <span className="shrink-0 text-[11px] text-muted-foreground">%</span>
               <Input
@@ -292,10 +322,13 @@ export function FloatingEffectEditorPanel() {
 
           {/* Property fields */}
           <div className="space-y-2">
-            <EffectField label="Horizontal Offset" title="Shadow horizontal offset (px)" value={shadow.offsetX} min={-999} max={999} step={1} onChange={(v) => handleShadowUpdate({ offsetX: v })} />
-            <EffectField label="Vertical Offset" title="Shadow vertical offset (px)" value={shadow.offsetY} min={-999} max={999} step={1} onChange={(v) => handleShadowUpdate({ offsetY: v })} />
-            <EffectField label="Blur Radius" title="Shadow blur radius (px)" value={shadow.blur} min={1} max={999} step={1} onChange={(v) => handleShadowUpdate({ blur: v })} />
-            <EffectField label="Spread Distance" title="Shadow spread distance (px)" value={shadow.spread} min={0} max={999} step={1} onChange={(v) => handleShadowUpdate({ spread: v })} />
+            {/* step 0.1: shadow params are f32 end-to-end (round2 in
+                EffectField keeps 2 decimals); blur 0 = hard offset shadow,
+                a valid look in Skia (drop_shadow_only with sigma 0). */}
+            <EffectField label="Horizontal Offset" title="Shadow horizontal offset (px)" value={shadow.offsetX} min={-999} max={999} step={0.1} onChange={(v) => handleShadowUpdate({ offsetX: v })} />
+            <EffectField label="Vertical Offset" title="Shadow vertical offset (px)" value={shadow.offsetY} min={-999} max={999} step={0.1} onChange={(v) => handleShadowUpdate({ offsetY: v })} />
+            <EffectField label="Blur Radius" title="Shadow blur radius (px)" value={shadow.blur} min={0} max={999} step={0.1} onChange={(v) => handleShadowUpdate({ blur: v })} />
+            <EffectField label="Spread Distance" title="Shadow spread distance (px)" value={shadow.spread} min={0} max={999} step={0.1} onChange={(v) => handleShadowUpdate({ spread: v })} />
           </div>
         </div>
       )}

@@ -76,6 +76,8 @@ export async function commitChangesPublic(params: CommitChangesParams): Promise<
 }
 
 export async function undo(): Promise<void> {
+  // An in-flight gesture (open transaction) becomes the frame this undo pops.
+  useHistoryStore.getState().flushTransactions()
   const frame = useHistoryStore.getState().popUndoFrame()
   if (!frame) return
   await commitChanges({
@@ -87,6 +89,7 @@ export async function undo(): Promise<void> {
 }
 
 export async function redo(): Promise<void> {
+  useHistoryStore.getState().flushTransactions()
   const frame = useHistoryStore.getState().popRedoFrame()
   if (!frame) return
   await commitChanges({

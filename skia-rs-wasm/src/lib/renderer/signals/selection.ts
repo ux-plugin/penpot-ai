@@ -26,6 +26,17 @@ export const activeEditorTarget = signal<ActiveEditorTarget | null>(null)
 export const selectionRect = signal<Selrect | null>(null)
 export const shapeDrawPreview = signal<Selrect | null>(null)
 
+/**
+ * Live working vector network during a path-edit drag (R4), or null when no drag
+ * is in flight (the overlay then reads the committed `content.network`). Written at
+ * pointer rate so the node/edge markers track the cursor without a history commit
+ * per frame. Typed loosely to avoid a geom import cycle here.
+ */
+export const pathEditNetwork = signal<{
+  nodes: Array<{ x: number; y: number }>
+  edges: Array<{ a: number; b: number; ha?: { x: number; y: number }; hb?: { x: number; y: number } }>
+} | null>(null)
+
 /** Synced from React: showHandles && showCornerHandles. Drives imperative corner-square `effect()`. */
 export const selectionCornerHandlesVisible = signal(false)
 

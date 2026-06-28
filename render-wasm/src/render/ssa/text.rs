@@ -1,10 +1,9 @@
 //! SSA-native text renderer.
 //!
-//! MVP port: handles text fills + inner-strokes (via
-//! `text::render_inner_stroke`) + regular strokes. Text-specific drop
-//! shadows and layer blur are TODO (they share the legacy
-//! `render_text_shadows` path which needs `render_with_filter_surface`
-//! support on `PaintCtx`).
+//! Handles text fills, noise, inner shadows, inner-strokes (via
+//! `text::render_inner_stroke`) and regular strokes. Drop shadows render
+//! via `render_drop_shadows` (dispatched as a separate `DropShadows`
+//! effect); layer blur wraps the whole body via `Local(LayerBlur)`.
 //!
 //! The bulk of the rendering pipeline (paragraph layout, glyph
 //! placement, blur layering, decoration drawing) is reused unchanged
@@ -75,6 +74,12 @@ pub fn render(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
     // every other shape: fills → noise → strokes. (Borrows ctx, so it sits
     // between the two canvas blocks.)
     super::noise::render_text_noise(ctx, shape);
+
+    // Inner shadows — glyph coverage run through the inner-shadow filter,
+    // under the strokes (render_body_direct's fills → noise → inner
+    // shadows → strokes order; legacy text kept inner shadows before
+    // stroke fills for the same stacking).
+    super::shadows::render_text_inner_shadows(ctx, shape);
 
     // Strokes (incl. inner strokes for text).
     if !fast_mode {

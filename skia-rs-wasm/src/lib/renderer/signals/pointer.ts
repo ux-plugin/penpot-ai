@@ -12,12 +12,23 @@ import { screenToWorld } from '../viewport'
 
 export const pointerPos = signal<Point | null>(null)
 
+/** True while the pointer is over UI chrome (side panels / toolbars / popovers),
+ *  not the canvas — used to hide canvas-only affordances like the cursor hint chip,
+ *  which otherwise trail over the panels (pointerPos updates globally). */
+export const pointerOverChrome = signal(false)
+
 export const modShift = signal(false)
 export const modAlt = signal(false)
 export const modCtrl = signal(false)
 export const modMeta = signal(false)
 
 export const keyboardSpace = signal(false)
+
+/** True while a viewport pan drag is in flight. The reactive canvas-cursor effect
+ *  (input/cursor.ts) reads this to yield the 'grabbing' cursor to the pan gesture
+ *  instead of overwriting it. Mirrors the hot-path `isPanningRef` in the viewport
+ *  hook, which stays for synchronous reads during the drag. */
+export const pointerPanning = signal(false)
 
 /** Canonical pan/zoom for the canvas; writers set `.value` (see `canvas-wrapper`, `viewport-actions`). */
 export const viewport = signal<ViewportData | null>(null)

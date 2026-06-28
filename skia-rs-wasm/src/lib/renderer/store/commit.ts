@@ -1,9 +1,13 @@
 /**
- * Penpot-shaped commit pipeline: apply Change[] to docProxy and emit a
- * `changes-applied` event. Three subscribers (renderer-sync, worker-sync,
- * history-sync) consume the event independently — see `change-emitter.ts`.
+ * Penpot-shaped commit pipeline: apply Change[] to docProxy, record the undo
+ * frame synchronously, then emit a `changes-applied` event whose subscribers
+ * (renderer-sync, selection-sync, worker-sync) consume it independently — see
+ * `change-emitter.ts`.
  *
- * `commitChanges` itself does no renderer/worker/history work.
+ * History is recorded synchronously here (not as a subscriber) so the undo frame
+ * exists before `commitChanges` yields at its first await — interaction code can
+ * then group edits with plain begin/commit boundaries without racing the async
+ * render. The renderer/worker side-effects stay async.
  */
 
 import type { IndexedPage } from '../../worker/types'
@@ -21,18 +25,17 @@ import {
 import { rendererSyncHandler, syncRendererAfterUpdate } from './renderer-sync'
 import { selectionSyncHandler } from './selection-sync'
 import { workerSyncHandler } from '../../worker/worker-sync'
-import { historySyncHandler } from '../../history/history-sync'
+import { recordHistoryFrame } from '../../history/history-sync'
 
 // Subscriber registration — explicit, ordered, single source of truth.
-// renderer-sync must run first so WASM has the new state before
-// selection-sync queries it; selection-sync runs before worker / history
-// for symmetry with overlay timing; worker is fire-and-forget so its order
-// vs. history doesn't matter; history runs last. Centralizing here also
-// insulates ordering from arbitrary import paths.
+// renderer-sync must run first so WASM has the new state before selection-sync
+// queries it; selection-sync runs before worker for symmetry with overlay
+// timing; worker is fire-and-forget. History is NOT a subscriber — it's recorded
+// synchronously in `commitChanges` (see below). Centralizing here also insulates
+// ordering from arbitrary import paths.
 onChangesApplied(rendererSyncHandler)
 onChangesApplied(selectionSyncHandler)
 onChangesApplied(workerSyncHandler)
-onChangesApplied(historySyncHandler)
 
 function toPlainPage(page: IndexedPage): IndexedPage {
   try {
@@ -134,12 +137,24 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
 
   if (pages.length === 0) return
 
+  const resolvedFromHistory = fromHistory ?? false
+  const resolvedSaveUndo = saveUndo ?? undoChanges.length > 0
+
+  // Record the undo frame SYNCHRONOUSLY, before the async dispatch — so it
+  // exists the instant docProxy is mutated and `commitChanges` yields.
+  recordHistoryFrame({
+    redoChanges,
+    undoChanges,
+    fromHistory: resolvedFromHistory,
+    saveUndo: resolvedSaveUndo,
+  })
+
   await emitChangesApplied({
     redoChanges,
     undoChanges,
     pages,
-    fromHistory: fromHistory ?? false,
-    saveUndo: saveUndo ?? undoChanges.length > 0,
+    fromHistory: resolvedFromHistory,
+    saveUndo: resolvedSaveUndo,
     ignoreRendererSync: ignoreRendererSync ?? false,
   })
 }

@@ -7,7 +7,7 @@ import { fillSwatchBackground } from '../../FillEditor/fill-swatch-background'
 import { isColorFill, isImageFill } from '@/lib/renderer/verification'
 import { normalizeHex } from '@/lib/renderer/properties/panel-utils'
 import { useColorEditorFor } from '../use-color-editor'
-import { round2 } from '@/lib/common/conversions'
+import { NumericField } from '../NumericField'
 
 export interface FillRowProps {
   fill: Fill
@@ -101,14 +101,14 @@ export function FillRow({ fill, index, readOnly, onChange, onRemove }: FillRowPr
           onChange={(e) => handleHexChange(e.target.value)}
         />
         <span className="shrink-0 text-xs text-muted-foreground">%</span>
-        <Input
-          type="number"
+        <NumericField
           className="h-8 w-12 shrink-0 px-1 text-xs"
+          aria-label="Fill opacity"
+          value={isSolid ? Math.round((fill.fillOpacity ?? 1) * 100) : 100}
           min={0}
           max={100}
-          value={isSolid ? Math.round((fill.fillOpacity ?? 1) * 100) : 100}
           disabled={!isSolid}
-          onChange={(e) => handleOpacityChange(round2(Number(e.target.value)))}
+          onCommit={handleOpacityChange}
         />
         <Button
           type="button"

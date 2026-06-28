@@ -1,0 +1,238 @@
+/**
+ * Settings modal (opened from the top-bar gear). Lightweight — there's no Dialog
+ * primitive in the kit, so it's a fixed backdrop + card. Sections: editable
+ * pan/zoom config, rebindable tool / path-edit keys (press-a-key capture), and a
+ * read-only view of the remaining (pan/zoom) shortcuts.
+ */
+
+import { useEffect, useState, useCallback } from 'react'
+import { X, RotateCcw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { useViewportShortcutsStore } from '../../renderer/store/shortcuts-store'
+import type { ShortcutsConfig, ViewportPanModifier } from '../../renderer/types'
+import { TOOL_BINDINGS, type ToolKeyField } from '../../renderer/input/key-bindings'
+import { formatKeyCode, shortcutRows, toolKeyConflict } from './shortcut-display'
+
+const SELECT_CLASS =
+  'h-8 rounded-md border border-border bg-white px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50'
+
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-sm">{label}</span>
+      {children}
+    </div>
+  )
+}
+
+/** One rebindable key: shows the current key; click → "Press a key…", captures the
+ *  next non-modifier code; Esc cancels. Reports conflicts back to the parent. */
+function RebindRow({
+  field,
+  label,
+  value,
+  onRebind,
+}: {
+  field: ToolKeyField
+  label: string
+  value: string
+  onRebind: (field: ToolKeyField, code: string) => string | null
+}) {
+  const [capturing, setCapturing] = useState(false)
+  const [warn, setWarn] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!capturing) return
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.key === 'Escape') {
+        setCapturing(false)
+        return
+      }
+      if (MODIFIER_KEYS.has(e.key)) return // wait for the real key
+      setWarn(onRebind(field, e.code))
+      setCapturing(false)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [capturing, field, onRebind])
+
+  return (
+    <li className="flex items-center justify-between gap-3 px-3 py-1.5 text-sm">
+      <span className="flex flex-col">
+        {label}
+        {warn && <span className="text-xs text-destructive">Already used by {warn}</span>}
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          setWarn(null)
+          setCapturing(true)
+        }}
+        className={`min-w-[4.5rem] rounded-md border px-2 py-1 text-center text-xs transition-colors ${
+          capturing ? 'border-ring text-muted-foreground ring-2 ring-ring/40' : 'border-border hover:bg-muted'
+        }`}
+        aria-label={`Rebind ${label}`}
+      >
+        {capturing ? 'Press a key…' : <kbd className="font-mono">{formatKeyCode(value)}</kbd>}
+      </button>
+    </li>
+  )
+}
+
+export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const cfg = useViewportShortcutsStore((s) => s.viewportShortcuts)
+  const setCfg = useViewportShortcutsStore((s) => s.setViewportShortcuts)
+  const resetCfg = useViewportShortcutsStore((s) => s.resetViewportShortcuts)
+
+  // Esc closes the dialog (capture so it beats canvas/path-edit Esc handlers — but
+  // a rebind row that's capturing handles Esc first via its own capture listener).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [open, onClose])
+
+  // Apply a rebind unless the code collides with another binding; returns the
+  // conflicting label (for the row to show) without applying when it does.
+  const rebind = useCallback(
+    (field: ToolKeyField, code: string): string | null => {
+      const conflict = toolKeyConflict(cfg, field, code)
+      if (conflict) return conflict
+      setCfg({ [field]: code } as Partial<ShortcutsConfig>)
+      return null
+    },
+    [cfg, setCfg]
+  )
+
+  if (!open) return null
+  const viewRows = shortcutRows(cfg).filter((r) => r.category === 'View')
+  const toolDescs = TOOL_BINDINGS.filter((t) => t.category === 'Tools')
+  const pathDescs = TOOL_BINDINGS.filter((t) => t.category === 'Path editing')
+
+  return (
+    <div
+      className="pointer-events-auto fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between border-b border-border px-5 py-3">
+          <h2 className="text-base font-semibold">Settings</h2>
+          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Close settings" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </header>
+
+        <div className="overflow-y-auto px-5 py-4">
+          <section className="mb-5">
+            <h3 className="mb-2 text-sm font-medium text-muted-foreground">Pan &amp; zoom</h3>
+            <div className="space-y-3">
+              <Field label="Pan modifier">
+                <select
+                  className={SELECT_CLASS}
+                  value={cfg.panWithModifier ?? 'none'}
+                  onChange={(e) =>
+                    setCfg({ panWithModifier: e.target.value === 'none' ? null : (e.target.value as ViewportPanModifier) })
+                  }
+                >
+                  <option value="shift">Shift</option>
+                  <option value="alt">Alt</option>
+                  <option value="ctrl">Ctrl</option>
+                  <option value="meta">Meta</option>
+                  <option value="none">None</option>
+                </select>
+              </Field>
+              <Field label="Pan mouse button">
+                <select
+                  className={SELECT_CLASS}
+                  value={cfg.panMouseButton}
+                  onChange={(e) => setCfg({ panMouseButton: Number(e.target.value) })}
+                >
+                  <option value={0}>Left</option>
+                  <option value={1}>Middle</option>
+                  <option value={2}>Right</option>
+                </select>
+              </Field>
+              <Field label="Arrow-key pan step (px)">
+                <input
+                  type="number"
+                  min={1}
+                  className={`${SELECT_CLASS} w-20 text-right`}
+                  value={cfg.panStep}
+                  onChange={(e) => setCfg({ panStep: Math.max(1, Number(e.target.value) || 1) })}
+                />
+              </Field>
+            </div>
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-sm font-medium text-muted-foreground">Keyboard shortcuts</h3>
+
+            <div className="mb-3">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">Tools</div>
+              <ul className="divide-y divide-border/60 rounded-lg border border-border/60">
+                {toolDescs.map((t) => (
+                  <RebindRow key={t.field} field={t.field} label={t.label} value={cfg[t.field]} onRebind={rebind} />
+                ))}
+              </ul>
+            </div>
+
+            <div className="mb-3">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">Path editing</div>
+              <ul className="divide-y divide-border/60 rounded-lg border border-border/60">
+                {pathDescs.map((t) => (
+                  <RebindRow key={t.field} field={t.field} label={t.label} value={cfg[t.field]} onRebind={rebind} />
+                ))}
+              </ul>
+            </div>
+
+            <div className="mb-1">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">View</div>
+              <ul className="divide-y divide-border/60 rounded-lg border border-border/60">
+                {viewRows.map((r, i) => (
+                  <li key={`${r.label}-${i}`} className="flex items-center justify-between gap-3 px-3 py-1.5 text-sm">
+                    <span>{r.label}</span>
+                    <span className="flex flex-wrap justify-end gap-1">
+                      {r.keys.map((k, j) => (
+                        <kbd key={j} className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                          {k}
+                        </kbd>
+                      ))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">Click a key to rebind it. Pan/zoom keys are fixed; configure pan above.</p>
+          </section>
+        </div>
+
+        <footer className="flex items-center justify-between border-t border-border px-5 py-3">
+          <Button variant="outline" size="sm" onClick={resetCfg}>
+            <RotateCcw className="mr-1.5 size-3.5" />
+            Reset defaults
+          </Button>
+          <Button size="sm" onClick={onClose}>
+            Done
+          </Button>
+        </footer>
+      </div>
+    </div>
+  )
+}

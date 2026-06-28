@@ -6,6 +6,7 @@ import type { PenpotNode, Selrect } from 'penpot-exporter/types'
 import type { Change } from 'penpot-exporter/types'
 import type { Point } from '@skia-rs-wasm/common/types'
 import type { Quadtree } from './quadtree'
+import type { PageInteractions } from '../renderer/interactions/ir'
 
 /** Worker configuration (keys logged only; shape extensible). */
 export type WorkerConfig = Record<string, unknown>
@@ -75,6 +76,8 @@ export interface IndexedPage {
   name?: string
   background?: string
   objects: Record<string, IndexedShape>
+  /** Per-page interactions (Build mode). Carried through flatten/unflatten. */
+  interactions?: PageInteractions
 }
 
 export interface QueryParams {

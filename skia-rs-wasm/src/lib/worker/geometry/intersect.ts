@@ -195,16 +195,67 @@ export function overlapsRectPoints(rect: Selrect, points: Point[]): boolean {
   )
 }
 
+/** Structural path segment (absolute coords) — local to avoid coupling the worker
+ *  to the renderer's PathSegment union. */
+type SegLike =
+  | { type: 'move-to'; x: number; y: number }
+  | { type: 'line-to'; x: number; y: number }
+  | { type: 'curve-to'; x: number; y: number; c1x: number; c1y: number; c2x: number; c2y: number }
+  | { type: 'close-path' }
+
+type FlatPoly = { pts: Point[]; closed: boolean }
+
+/** Pull absolute path segments out of a path/bool content (object form `{ segments }`
+ *  or a bare segment array). */
+function pathSegmentsOf(content: unknown): SegLike[] {
+  if (!content) return []
+  if (Array.isArray(content)) return content as SegLike[]
+  const seg = (content as { segments?: unknown }).segments
+  return Array.isArray(seg) ? (seg as SegLike[]) : []
+}
+
+function cubicPoint(p0: Point, c1: Point, c2: Point, p3: Point, t: number): Point {
+  const u = 1 - t
+  const a = u * u * u
+  const b = 3 * u * u * t
+  const c = 3 * u * t * t
+  const d = t * t * t
+  return point(
+    a * p0.x + b * c1.x + c * c2.x + d * p3.x,
+    a * p0.y + b * c1.y + c * c2.y + d * p3.y
+  )
+}
+
+/** Flatten path segments into one polyline per sub-path, sampling curves so the
+ *  hit-test follows the real outline instead of the chord between anchors. */
+function flattenPathSegments(segments: SegLike[], steps = 12): FlatPoly[] {
+  const polys: FlatPoly[] = []
+  let cur: FlatPoly | null = null
+  let pen: Point | null = null
+  for (const s of segments) {
+    if (s.type === 'move-to') {
+      cur = { pts: [point(s.x, s.y)], closed: false }
+      polys.push(cur)
+      pen = point(s.x, s.y)
+    } else if (s.type === 'line-to' && cur) {
+      cur.pts.push(point(s.x, s.y))
+      pen = point(s.x, s.y)
+    } else if (s.type === 'curve-to' && cur && pen) {
+      const p3 = point(s.x, s.y)
+      const c1 = point(s.c1x, s.c1y)
+      const c2 = point(s.c2x, s.c2y)
+      for (let i = 1; i <= steps; i++) cur.pts.push(cubicPoint(pen, c1, c2, p3, i / steps))
+      pen = p3
+    } else if (s.type === 'close-path' && cur) {
+      cur.closed = true
+    }
+  }
+  return polys.filter((poly) => poly.pts.length >= 2)
+}
+
 function overlapsPath(shape: PathShape | BoolShape, rect: Selrect, includeContent: boolean): boolean {
   const content = 'content' in shape ? shape.content : undefined
   if (!content || (Array.isArray(content) && content.length === 0)) {
-    return false
-  }
-
-  // Simplified: use points for path overlap
-  // Full implementation would need path segment parsing
-  const points = shape.points
-  if (!points || points.length === 0) {
     return false
   }
 
@@ -212,21 +263,45 @@ function overlapsPath(shape: PathShape | BoolShape, rect: Selrect, includeConten
   if (!rectPoints) {
     return false
   }
-
   const rectLines = pointsToLines(rectPoints)
-  const pathLines = pointsToLines(points)
 
+  // Prefer the real outline: flatten the path's curve segments into polylines and
+  // test against those, so a click anywhere on the stroke hits — not only where it
+  // runs near the bounding box (the old `shape.points` approximation). Closed
+  // sub-paths also get an inside-test when fills are in play (`includeContent`).
+  const polys = flattenPathSegments(pathSegmentsOf(content))
+  if (polys.length > 0) {
+    for (const poly of polys) {
+      const polyLines = pointsToLines(poly.pts, poly.closed)
+      if (intersectsLines(rectLines, polyLines)) {
+        return true
+      }
+      if (
+        includeContent &&
+        poly.closed &&
+        (isPointInsideNonzero(rectPoints[0], polyLines) || isPointInsideNonzero(poly.pts[0], rectLines))
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  // Legacy fallback: approximate with the shape's bounding points (no segments).
+  const points = shape.points
+  if (!points || points.length === 0) {
+    return false
+  }
+  const pathLines = pointsToLines(points)
   if (intersectsLines(rectLines, pathLines)) {
     return true
   }
-
   if (includeContent) {
     return (
       isPointInsideNonzero(rectPoints[0], pathLines) ||
       (points.length > 0 && isPointInsideNonzero(points[0], rectLines))
     )
   }
-
   return false
 }
 
