@@ -4,7 +4,8 @@ import { ShapeToolbar } from './lib/components/ShapeToolbar'
 import { CursorHint } from './lib/components/CursorHint'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
-import { createNewDocument, setDocument, undo, redo } from './lib/page-crud'
+import { undo, redo } from './lib/page-crud'
+import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } from './lib/persistence'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
 import { TopBar } from './lib/components/TopBar'
@@ -43,18 +44,27 @@ function App() {
     console.error('Error:', err)
   }, [])
 
-  // Auto-create a blank document on first load. We can't do this on plain
-  // mount because the WASM renderer is initialised asynchronously inside
-  // CanvasWorkspace — `loadDocument` only calls `renderer.initPage` once
-  // `state.renderer` exists, so loading too early populates the model but
-  // never paints (the canvas stays blank until you click "New document").
-  // Wait for the renderer to come up, then load exactly once.
+  // Load the initial document on first render. We can't do this on plain mount
+  // because the WASM renderer is initialised asynchronously inside CanvasWorkspace
+  // — `loadDocument` only calls `renderer.initPage` once `state.renderer` exists,
+  // so loading too early populates the model but never paints. Wait for the
+  // renderer to come up, then load exactly once: the persisted document if the
+  // environment can restore one (capability-gated), else a blank document. Once
+  // loaded, start the debounced autosave (a no-op when the provider can't persist).
   const renderer = useWorkspaceStore((s) => s.renderer)
   const didLoadInitialDocument = useRef(false)
+  const autosaveDisposeRef = useRef<(() => void) | null>(null)
   useEffect(() => {
     if (!renderer || didLoadInitialDocument.current) return
     didLoadInitialDocument.current = true
-    void setDocument(createNewDocument())
+    void (async () => {
+      await loadInitialDocument()
+      autosaveDisposeRef.current = startDocumentAutosave(getPersistenceProvider())
+    })()
+    return () => {
+      autosaveDisposeRef.current?.()
+      autosaveDisposeRef.current = null
+    }
   }, [renderer])
 
   useEffect(() => {
