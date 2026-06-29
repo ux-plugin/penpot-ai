@@ -51,15 +51,13 @@ export interface Scene3DDocument {
 
 interface Scene3DState {
   scenes: Map<string, Scene3DDocument>
-  /** The scene currently in 3D-edit mode (null = none). Editor state, not document state. */
-  editingSceneId: string | null
-  /** The object focused within the editing scene (the gizmo target). */
+  /** The object focused within the editing scene (the gizmo target). The edit mode
+   *  itself + which scene is being edited live in the canvasMachine (`scene3dEditing`). */
   focusedObjectId: string | null
 }
 
 export const scene3dProxy = proxy<Scene3DState>({
   scenes: proxyMap<string, Scene3DDocument>(),
-  editingSceneId: null,
   focusedObjectId: null,
 })
 
@@ -148,27 +146,12 @@ export function addScene(doc: Scene3DDocument): void {
 export function removeScene(id: string): void {
   scene3dProxy.scenes.delete(id)
   deleteInstance(id)
-  if (scene3dProxy.editingSceneId === id) {
-    scene3dProxy.editingSceneId = null
-    scene3dProxy.focusedObjectId = null
-  }
+  // Exiting 3D-edit mode if this was the edited scene is reconciled by the overlay
+  // (it owns the canvasMachine actor); here we just drop the model + GPU instance.
 }
 
 export function isScene3D(id: string): boolean {
   return scene3dProxy.scenes.has(id)
-}
-
-/** Enter/exit 3D-edit mode for a scene. Entering defaults focus to the first object. */
-export function setEditingScene(id: string | null): void {
-  scene3dProxy.editingSceneId = id
-  if (id === null) {
-    scene3dProxy.focusedObjectId = null
-    return
-  }
-  const scene = scene3dProxy.scenes.get(id)
-  if (scene && !scene3dProxy.focusedObjectId) {
-    scene3dProxy.focusedObjectId = scene.objects[0]?.id ?? null
-  }
 }
 
 export function setFocusedObject(id: string | null): void {

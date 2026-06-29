@@ -117,7 +117,6 @@ describe('scene3d persistence', () => {
     docProxy.selectedIds.clear()
 
     scene3dProxy.scenes.clear()
-    scene3dProxy.editingSceneId = null
     scene3dProxy.focusedObjectId = null
 
     useWorkspaceStore.setState({

@@ -1,0 +1,120 @@
+/**
+ * Scene3DEditMenu — the contextual 3D menu that sits above the bottom tool strip,
+ * mirroring how the pen's edit flyout appears while `pathEditing`.
+ *
+ * Driven by the `scene3dEditing` canvasMachine state:
+ *  - a 3D scene is selected (not editing) → an "Edit in 3D" entry button
+ *  - editing                              → add primitives, gizmo sub-tools
+ *                                           (once an object is focused), and Done
+ *
+ * Renders nothing when neither applies.
+ */
+
+import { useSnapshot } from 'valtio'
+import { Box } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { docProxy } from '../renderer/store/doc-proxy'
+import {
+  scene3dProxy,
+  defaultObject,
+  setFocusedObject,
+} from '../renderer/three/scene3d-store'
+import { commitAddObject } from '../renderer/three/scene3d-commit'
+import { useScene3dEditing } from '../renderer/three/use-scene3d-editing'
+import type { Scene3DGizmoMode } from '../renderer/machine/canvas-machine'
+
+const ADD_PRIMS = [
+  { ref: 'cube', label: 'Cube' },
+  { ref: 'sphere', label: 'Sphere' },
+  { ref: 'plane', label: 'Plane' },
+] as const
+
+const GIZMOS: { mode: Scene3DGizmoMode; label: string }[] = [
+  { mode: 'translate', label: 'Move' },
+  { mode: 'rotate', label: 'Rotate' },
+  { mode: 'scale', label: 'Scale' },
+]
+
+export function Scene3DEditMenu() {
+  const { editingSceneId, gizmoMode, enter, exit, setGizmo } = useScene3dEditing()
+  const sceneSnap = useSnapshot(scene3dProxy)
+  const docSnap = useSnapshot(docProxy)
+
+  const selId =
+    docSnap.selectedIds.size === 1 ? (docSnap.selectedIds.values().next().value as string) : null
+  const selectedScene = selId && sceneSnap.scenes.has(selId) ? selId : null
+
+  if (!editingSceneId && !selectedScene) return null
+
+  const shell =
+    'pointer-events-auto flex items-center gap-1 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md'
+
+  // Selected (not editing): offer to enter edit, focused on the first object.
+  if (!editingSceneId) {
+    const scene = selectedScene!
+    return (
+      <div className={shell}>
+        <button
+          type="button"
+          onClick={() => enter(scene, sceneSnap.scenes.get(scene)?.objects[0]?.id ?? null)}
+          className="flex items-center gap-1.5 rounded-full bg-indigo-500 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-600"
+        >
+          <Box className="size-3.5" /> Edit in 3D
+        </button>
+      </div>
+    )
+  }
+
+  const focusedId = sceneSnap.focusedObjectId
+  const addObject = (ref: (typeof ADD_PRIMS)[number]['ref']) => {
+    const id = crypto.randomUUID()
+    void commitAddObject(editingSceneId, defaultObject(id, { kind: 'primitive', ref })).then(() =>
+      setFocusedObject(id),
+    )
+  }
+
+  return (
+    <div className={shell}>
+      {ADD_PRIMS.map((p) => (
+        <button
+          key={p.ref}
+          type="button"
+          onClick={() => addObject(p.ref)}
+          className="rounded-full px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted"
+        >
+          + {p.label}
+        </button>
+      ))}
+
+      {focusedId && (
+        <>
+          <span className="mx-0.5 h-4 w-px bg-border" />
+          {GIZMOS.map((g) => (
+            <button
+              key={g.mode}
+              type="button"
+              onClick={() => setGizmo(g.mode)}
+              className={cn(
+                'rounded-full px-2.5 py-1 text-xs',
+                gizmoMode === g.mode
+                  ? 'bg-indigo-500 text-white'
+                  : 'text-muted-foreground hover:bg-muted',
+              )}
+            >
+              {g.label}
+            </button>
+          ))}
+        </>
+      )}
+
+      <span className="mx-0.5 h-4 w-px bg-border" />
+      <button
+        type="button"
+        onClick={exit}
+        className="rounded-full px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+      >
+        Done
+      </button>
+    </div>
+  )
+}

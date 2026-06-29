@@ -16,8 +16,6 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import {
   scene3dProxy,
-  setEditingScene,
-  setFocusedObject,
   patchObjectMaterialLocal,
   type Object3DEntry,
   type Scene3DDocument,
@@ -29,6 +27,7 @@ import {
   commitSceneCamera,
   commitSceneEnv,
 } from '@/lib/renderer/three/scene3d-commit'
+import { useScene3dEditing } from '@/lib/renderer/three/use-scene3d-editing'
 import { NumericField } from '../NumericField'
 
 const AXES = ['X', 'Y', 'Z'] as const
@@ -63,13 +62,13 @@ function Vec3Row({
 
 /** The list of objects in the scene; clicking one focuses it (entering edit mode). */
 function ObjectList({
-  sceneId,
   scene,
   focusedId,
+  onPick,
 }: {
-  sceneId: string
   scene: Scene3DDocument
   focusedId: string | null
+  onPick: (objId: string) => void
 }) {
   return (
     <div className="space-y-0.5">
@@ -83,10 +82,7 @@ function ObjectList({
         <button
           key={o.id}
           type="button"
-          onClick={() => {
-            setEditingScene(sceneId)
-            setFocusedObject(o.id)
-          }}
+          onClick={() => onPick(o.id)}
           className={cn(
             'flex w-full items-center gap-2 rounded-md px-2 py-1 text-sm',
             o.id === focusedId ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950' : 'hover:bg-muted',
@@ -188,10 +184,11 @@ function ObjectProps({ sceneId, object }: { sceneId: string; object: Object3DEnt
 
 export function ThreeDObjectSection({ nodeId }: { nodeId: string }) {
   const snap = useSnapshot(scene3dProxy)
+  const { editingSceneId, enter } = useScene3dEditing()
   const scene = snap.scenes.get(nodeId) as Scene3DDocument | undefined
   if (!scene) return null
 
-  const editingThis = snap.editingSceneId === nodeId
+  const editingThis = editingSceneId === nodeId
   const focused =
     editingThis && snap.focusedObjectId
       ? scene.objects.find((o) => o.id === snap.focusedObjectId)
@@ -203,7 +200,11 @@ export function ThreeDObjectSection({ nodeId }: { nodeId: string }) {
       <div className="min-w-0 space-y-3">
         <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">3D scene</p>
 
-        <ObjectList sceneId={nodeId} scene={scene} focusedId={snap.focusedObjectId} />
+        <ObjectList
+          scene={scene}
+          focusedId={snap.focusedObjectId}
+          onPick={(id) => enter(nodeId, id)}
+        />
 
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">

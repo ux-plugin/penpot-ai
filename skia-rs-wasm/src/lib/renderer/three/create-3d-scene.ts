@@ -16,7 +16,7 @@ import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { viewport } from '../signals/pointer'
 import { screenToWorld } from '../viewport'
 import type { AddObjChange } from 'penpot-exporter/types'
-import { defaultSceneDocument, setEditingScene } from './scene3d-store'
+import { defaultSceneDocument } from './scene3d-store'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 const DEFAULT_WIDTH = 360
@@ -34,8 +34,9 @@ function viewportCenterWorld(): { x: number; y: number } {
 }
 
 /**
- * Create an empty 3D scene frame at the centre of the viewport and enter edit mode.
- * Returns the scene container rect's id, or null if there's no active page.
+ * Create an empty 3D scene frame at the centre of the viewport. Returns the scene
+ * container rect's id (the caller enters edit mode via the canvasMachine), or null
+ * if there's no active page.
  */
 export async function create3DScene(): Promise<string | null> {
   const pageId = getActiveOrSinglePageId()
@@ -79,6 +80,5 @@ export async function create3DScene(): Promise<string | null> {
   await applyChanges([addChange])
 
   setSelectedIds(new Set([rect.id]))
-  setEditingScene(rect.id)
   return rect.id
 }

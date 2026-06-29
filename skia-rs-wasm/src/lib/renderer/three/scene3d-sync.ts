@@ -87,6 +87,7 @@ export function hydrateScene3dFromDocument(): void {
       if (doc) scene3dProxy.scenes.set(node.id, clonePlain(doc))
     }
   }
-  scene3dProxy.editingSceneId = null
+  // The machine's edit mode is reconciled by the overlay (it owns the actor); here
+  // we just reset the focused object for the freshly loaded document.
   scene3dProxy.focusedObjectId = null
 }

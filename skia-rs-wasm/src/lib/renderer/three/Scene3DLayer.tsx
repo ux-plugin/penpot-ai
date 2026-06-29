@@ -4,13 +4,13 @@
  * One WebGLRenderer; each 3D scene is painted into its container node's screen
  * region via a per-scene scissor viewport, with the scene's shared camera. The
  * camera is slaved to the 2D viewport: pan/zoom/move the container and the 3D
- * tracks it. While a scene is in edit mode it renders live and owns the pointer
- * (gizmo on the focused object · orbit · raycast pick); otherwise it's a static
- * render. Redraw is on-demand (viewport/model/selection), with a continuous RAF
- * only during a gizmo/orbit drag.
+ * tracks it. While a scene is in edit mode (the `scene3dEditing` canvasMachine
+ * state) it renders live and owns the pointer (gizmo on the focused object · orbit
+ * · raycast pick); the contextual add/gizmo menu lives in the bottom toolbar
+ * (ShapeToolbar), like the pen flyout. Redraw is on-demand.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useSnapshot, subscribe } from 'valtio'
 import * as THREE from 'three'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
@@ -25,10 +25,8 @@ import {
   getInstance,
   setInstance,
   isScene3D,
-  setEditingScene,
   setFocusedObject,
   patchObjectTransformLocal,
-  defaultObject,
   type Scene3DDocument,
 } from './scene3d-store'
 import {
@@ -37,16 +35,9 @@ import {
   readTransformFromObject,
   pickObject,
 } from './three-scene'
-import { commitAddObject, commitObjectTransform } from './scene3d-commit'
+import { commitObjectTransform } from './scene3d-commit'
+import { useScene3dEditing } from './use-scene3d-editing'
 
-type PrimRef = 'cube' | 'sphere' | 'plane'
-const ADD_PRIMS: { ref: PrimRef; label: string }[] = [
-  { ref: 'cube', label: 'Cube' },
-  { ref: 'sphere', label: 'Sphere' },
-  { ref: 'plane', label: 'Plane' },
-]
-
-type GizmoMode = 'translate' | 'rotate' | 'scale'
 interface ScreenRect {
   x: number
   y: number
@@ -65,19 +56,20 @@ function selectedSceneId(): string | null {
 export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; height: number } }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const editSurfaceRef = useRef<HTMLDivElement>(null)
-  const toolbarRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const gizmoRef = useRef<TransformControls | null>(null)
   const rafRef = useRef(0)
   const selRectRef = useRef<ScreenRect | null>(null)
   // The redraw effect captures a stale draw closure (empty deps), so reading the
-  // canvasSize prop directly in draw() would use the initial default size and
-  // mis-place the Y-flip. Read the live size from this ref instead.
+  // canvasSize prop / edit state directly would use initial values. Read live
+  // values from refs instead.
   const canvasSizeRef = useRef(canvasSize)
   canvasSizeRef.current = canvasSize
 
   const snap = useSnapshot(scene3dProxy)
-  const [mode, setMode] = useState<GizmoMode>('translate')
+  const { editingSceneId, gizmoMode, exit } = useScene3dEditing()
+  const editingIdRef = useRef(editingSceneId)
+  editingIdRef.current = editingSceneId
 
   // --- init renderer once ---
   useEffect(() => {
@@ -121,9 +113,21 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Redraw when edit mode toggles (it gates the edit surface + selRect).
+  useEffect(() => {
+    scheduleDraw()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingSceneId])
+
+  // If the edited scene disappears (e.g. an undo deletes it), exit edit mode
+  // cleanly — the store can't reach the machine actor, so the overlay reconciles.
+  useEffect(() => {
+    if (editingSceneId && !snap.scenes.has(editingSceneId)) exit()
+  }, [editingSceneId, snap.scenes, exit])
+
   // --- attach gizmo + orbit + raycast pick while editing a scene ---
   useEffect(() => {
-    const sceneId = snap.editingSceneId
+    const sceneId = editingSceneId
     if (!sceneId) return
     const renderer = rendererRef.current
     const surface = editSurfaceRef.current
@@ -146,7 +150,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     orbit.addEventListener('change', scheduleDraw)
 
     const tc = new TransformControls(inst.camera, surface)
-    tc.setMode(mode)
+    tc.setMode(gizmoMode)
     tc.addEventListener('change', scheduleDraw)
     tc.addEventListener('dragging-changed', (e) => {
       const dragging = (e as unknown as { value: boolean }).value
@@ -193,7 +197,15 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       scheduleDraw()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snap.editingSceneId, snap.focusedObjectId, mode])
+  }, [editingSceneId, snap.focusedObjectId])
+
+  // Gizmo sub-tool (Move/Rotate/Scale) is machine state — apply it without
+  // tearing down the controls.
+  useEffect(() => {
+    gizmoRef.current?.setMode(gizmoMode)
+    scheduleDraw()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gizmoMode])
 
   function scheduleDraw() {
     if (rafRef.current) return
@@ -233,7 +245,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     const vp = viewport.value ?? { panX: 0, panY: 0, zoom: 1 }
     const cssH = canvasSizeRef.current.height
     const selId = selectedSceneId()
-    const editingId = scene3dProxy.editingSceneId
+    const editingId = editingIdRef.current
     const focusedId = scene3dProxy.focusedObjectId
 
     // Full-canvas clear (scissor stays on for per-scene rendering).
@@ -274,56 +286,32 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     }
 
     selRectRef.current = selRect
-    positionOverlays(selRect, editingId != null)
+    positionEditSurface(selRect, editingId != null)
   }
 
-  function positionOverlays(rect: ScreenRect | null, editing: boolean) {
-    const toolbar = toolbarRef.current
-    if (toolbar) {
-      if (rect) {
-        toolbar.style.display = 'flex'
-        toolbar.style.left = `${rect.x + rect.w / 2}px`
-        toolbar.style.top = `${rect.y - 10}px`
-      } else {
-        toolbar.style.display = 'none'
-      }
-    }
+  function positionEditSurface(rect: ScreenRect | null, editing: boolean) {
     const surface = editSurfaceRef.current
-    if (surface) {
-      if (rect && editing) {
-        surface.style.display = 'block'
-        surface.style.left = `${rect.x}px`
-        surface.style.top = `${rect.y}px`
-        surface.style.width = `${rect.w}px`
-        surface.style.height = `${rect.h}px`
-      } else {
-        surface.style.display = 'none'
-      }
+    if (!surface) return
+    if (rect && editing) {
+      surface.style.display = 'block'
+      surface.style.left = `${rect.x}px`
+      surface.style.top = `${rect.y}px`
+      surface.style.width = `${rect.w}px`
+      surface.style.height = `${rect.h}px`
+    } else {
+      surface.style.display = 'none'
     }
-  }
-
-  /** Add a primitive to the editing scene and focus it (so the gizmo attaches). */
-  function addObject(ref: PrimRef) {
-    const sceneId = scene3dProxy.editingSceneId
-    if (!sceneId) return
-    const id = crypto.randomUUID()
-    void commitAddObject(sceneId, defaultObject(id, { kind: 'primitive', ref })).then(() => {
-      setFocusedObject(id)
-    })
   }
 
   // Esc exits edit mode.
   useEffect(() => {
-    if (!snap.editingSceneId) return
+    if (!editingSceneId) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setEditingScene(null)
+      if (e.key === 'Escape') exit()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [snap.editingSceneId])
-
-  const hasSelectedScene = snap.editingSceneId != null || selectedSceneId() != null
-  const editing = snap.editingSceneId != null
+  }, [editingSceneId, exit])
 
   return (
     <>
@@ -349,78 +337,11 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
           position: 'absolute',
           display: 'none',
           touchAction: 'none',
-          pointerEvents: editing ? 'all' : 'none',
+          pointerEvents: editingSceneId ? 'all' : 'none',
           zIndex: 6,
           cursor: 'grab',
         }}
       />
-
-      {/* Floating contextual toolbar, shown when a 3D scene is selected/edited. */}
-      <div
-        ref={toolbarRef}
-        style={{ position: 'absolute', display: 'none', zIndex: 7, transform: 'translate(-50%,-100%)' }}
-      >
-        {hasSelectedScene && (
-          <div className="flex items-center gap-1 rounded-lg border border-border/70 bg-white p-1 shadow-md dark:bg-neutral-800">
-            {editing ? (
-              <>
-                {/* Add an object to the scene (the contextual "create" menu). */}
-                {ADD_PRIMS.map((p) => (
-                  <button
-                    key={p.ref}
-                    type="button"
-                    onClick={() => addObject(p.ref)}
-                    className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-                  >
-                    + {p.label}
-                  </button>
-                ))}
-                {/* Gizmo modes only matter once an object is focused. */}
-                {snap.focusedObjectId && (
-                  <>
-                    <span className="mx-1 h-4 w-px bg-border" />
-                    {(['translate', 'rotate', 'scale'] as GizmoMode[]).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => {
-                          setMode(m)
-                          gizmoRef.current?.setMode(m)
-                          scheduleDraw()
-                        }}
-                        className={
-                          'rounded-md px-2 py-1 text-xs capitalize ' +
-                          (mode === m
-                            ? 'bg-indigo-500 text-white'
-                            : 'text-muted-foreground hover:bg-muted')
-                        }
-                      >
-                        {m === 'translate' ? 'Move' : m}
-                      </button>
-                    ))}
-                  </>
-                )}
-                <span className="mx-1 h-4 w-px bg-border" />
-                <button
-                  type="button"
-                  onClick={() => setEditingScene(null)}
-                  className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-                >
-                  Done
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setEditingScene(selectedSceneId())}
-                className="rounded-md bg-indigo-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-600"
-              >
-                Edit in 3D
-              </button>
-            )}
-          </div>
-        )}
-      </div>
     </>
   )
 }
