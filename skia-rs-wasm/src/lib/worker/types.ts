@@ -7,7 +7,7 @@ import type { Change } from 'penpot-exporter/types'
 import type { Point } from '@skia-rs-wasm/common/types'
 import type { Quadtree } from './quadtree'
 import type { PageInteractions } from '../renderer/interactions/ir'
-import type { Scene3DEntry } from '../renderer/three/scene3d-store'
+import type { Scene3DDocument } from '../renderer/three/scene3d-store'
 
 /** Worker configuration (keys logged only; shape extensible). */
 export type WorkerConfig = Record<string, unknown>
@@ -60,12 +60,12 @@ export interface WorkerUpdateTextRectPayload {
 export type IndexedShape = PenpotNode & {
   shapes?: string[]
   /**
-   * Embedded 3D object spec (Phase 1.5). Serializable, stored on the placeholder
-   * rect so 3D state lives in the document: undoable via mod-obj and carried by
-   * flatten/unflatten + any future save. Opaque to WASM — `setObject` reads only
-   * known keys, so this field is never forwarded to the renderer.
+   * Embedded 3D scene (camera + environment + objects). Serializable, stored on
+   * the scene container node so 3D state lives in the document: undoable via
+   * mod-obj and carried by flatten/unflatten + any future save. Opaque to WASM —
+   * `setObject` reads only known keys, so this field is never forwarded.
    */
-  scene3d?: Scene3DEntry
+  scene3d?: Scene3DDocument
 }
 
 /** Shape payload stored in selection quadtree (IndexedShape + frame, clipParents, parents). */

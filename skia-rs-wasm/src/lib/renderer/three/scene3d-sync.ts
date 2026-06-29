@@ -1,14 +1,14 @@
 /**
- * scene3d-sync — reconcile `scene3dProxy` from the document.
+ * scene3d-sync — reconcile `scene3dProxy.scenes` from the document.
  *
- * `node.scene3d` is the source of truth (durable, undoable). This handler runs as
- * a `onChangesApplied` subscriber (registered in store/commit.ts) on EVERY commit,
- * including undo/redo — they re-commit through the same pipeline — so the proxy
- * (the overlay/inspector read-cache) always tracks the document in both directions:
+ * `node.scene3d` (a Scene3DDocument on the scene container node) is the source of
+ * truth (durable, undoable). This handler runs as a `onChangesApplied` subscriber
+ * (registered in store/commit.ts) on EVERY commit, including undo/redo, so the
+ * proxy (the overlay/inspector read-cache) tracks the document both ways:
  *
- *   - add-obj carrying `scene3d`     → upsert the entry
- *   - mod-obj assigning `scene3d`    → upsert the new entry (undo/redo of 3D edits)
- *   - del-obj                        → drop the entry + dispose its three instance
+ *   - add-obj carrying `scene3d`     → upsert the scene
+ *   - mod-obj assigning `scene3d`    → upsert the new scene (undo/redo of 3D edits)
+ *   - del-obj                        → drop the scene + dispose its three instance
  *
  * The handler never emits changes, so there's no commit re-entrancy.
  */
@@ -17,16 +17,16 @@ import type { Change } from 'penpot-exporter/types'
 import type { ChangesAppliedEvent } from '../../changes/change-emitter'
 import type { IndexedPage, IndexedShape } from '../../worker/types'
 import { docProxy } from '../store/doc-proxy'
-import { scene3dProxy, remove3DObject, type Scene3DEntry } from './scene3d-store'
+import { scene3dProxy, removeScene, type Scene3DDocument } from './scene3d-store'
 
 /**
- * Detached plain clone of an entry. `node.scene3d` is read from the valtio
- * document proxy, and `structuredClone` throws DataCloneError on a Proxy — but
- * Scene3DEntry is pure JSON, so a JSON round-trip clones it safely whether the
+ * Detached plain clone of a scene document. `node.scene3d` is read from the valtio
+ * document proxy, and `structuredClone` throws DataCloneError on a Proxy — but a
+ * Scene3DDocument is pure JSON, so a JSON round-trip clones it safely whether the
  * source is a proxy or already plain.
  */
-function clonePlain(entry: Scene3DEntry): Scene3DEntry {
-  return JSON.parse(JSON.stringify(entry)) as Scene3DEntry
+function clonePlain(doc: Scene3DDocument): Scene3DDocument {
+  return JSON.parse(JSON.stringify(doc)) as Scene3DDocument
 }
 
 /** Whether a mod-obj's operations write the `scene3d` attribute. */
@@ -54,15 +54,15 @@ function idsToReconcile(change: Change): string[] {
   }
 }
 
-/** Bring `scene3dProxy` into line with `page.objects[id].scene3d`. */
+/** Bring `scene3dProxy.scenes` into line with `page.objects[id].scene3d`. */
 function reconcile(id: string, page: IndexedPage): void {
   const node = page.objects[id] as IndexedShape | undefined
-  const entry = node?.scene3d
-  if (entry) {
-    scene3dProxy.objects.set(id, clonePlain(entry))
-  } else if (scene3dProxy.objects.has(id)) {
-    // Node deleted (or its 3D spec removed) — drop the entry and free the GPU instance.
-    remove3DObject(id)
+  const doc = node?.scene3d
+  if (doc) {
+    scene3dProxy.scenes.set(id, clonePlain(doc))
+  } else if (scene3dProxy.scenes.has(id)) {
+    // Node deleted (or its 3D scene removed) — drop it and free the GPU instance.
+    removeScene(id)
   }
 }
 
@@ -75,19 +75,18 @@ export function scene3dSyncHandler(event: ChangesAppliedEvent): void {
 }
 
 /**
- * Rebuild `scene3dProxy` from the whole document. Called on document load / page
- * switch: disposes any prior three instances, then re-seeds from every `scene3d`
- * found on a node. A no-op on a blank document; lights up once persistence/import
- * brings 3D-bearing nodes back.
+ * Rebuild `scene3dProxy.scenes` from the whole document. Called on document load /
+ * page switch: disposes any prior three instances, then re-seeds from every
+ * `scene3d` found on a node. A no-op on a blank document.
  */
 export function hydrateScene3dFromDocument(): void {
-  for (const id of Array.from(scene3dProxy.objects.keys())) remove3DObject(id)
+  for (const id of Array.from(scene3dProxy.scenes.keys())) removeScene(id)
   for (const page of docProxy.pageMap.values()) {
     for (const node of Object.values(page.objects)) {
-      const entry = (node as IndexedShape).scene3d
-      if (entry) scene3dProxy.objects.set(node.id, clonePlain(entry))
+      const doc = (node as IndexedShape).scene3d
+      if (doc) scene3dProxy.scenes.set(node.id, clonePlain(doc))
     }
   }
-  scene3dProxy.selectedId = null
-  scene3dProxy.editing = false
+  scene3dProxy.editingSceneId = null
+  scene3dProxy.focusedObjectId = null
 }

@@ -13,7 +13,7 @@ import { FillBindingSection } from './Sections/FillBindingSection'
 import { StrokesSection } from './Sections/StrokesSection'
 import { EffectsSection } from './Sections/EffectsSection'
 import { ThreeDObjectSection } from './Sections/ThreeDObjectSection'
-import { is3DObject } from '../../renderer/three/scene3d-store'
+import { isScene3D } from '../../renderer/three/scene3d-store'
 
 export interface NodePropertyPanelProps {
   nodeId: string
@@ -34,7 +34,7 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
 
       <PositionSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
-      {is3DObject(nodeId) && <ThreeDObjectSection nodeId={nodeId} />}
+      {isScene3D(nodeId) && <ThreeDObjectSection nodeId={nodeId} />}
 
       <AppearanceSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 

@@ -1,14 +1,14 @@
 /**
- * scene3d persistence wiring (Phase 1.5).
+ * scene3d persistence wiring (Phase 1.5, scene-container model).
  *
- * Boots the real commit pipeline + stores (renderer stubbed null, worker mocked —
- * the only external boundaries) and asserts that 3D state living on `node.scene3d`
- * stays in sync with `scene3dProxy`, is undoable, and is rebuilt on load:
- *   - add-obj carrying scene3d        → proxy gains the entry (create path)
- *   - mod-obj editing scene3d         → node + proxy update; Cmd-Z reverts both
- *   - non-scene3d mod-obj (geometry)  → proxy entry untouched
- *   - del-obj                         → proxy entry dropped
- *   - hydrateScene3dFromDocument      → proxy reseeded from nodes
+ * Boots the real commit pipeline + stores (renderer stubbed null, worker mocked)
+ * and asserts that a 3D scene living on `node.scene3d` stays in sync with
+ * `scene3dProxy`, is undoable, and is rebuilt on load:
+ *   - add-obj carrying scene3d         → proxy gains the scene (create path)
+ *   - mod-obj editing an object        → node + proxy update; Cmd-Z reverts both
+ *   - non-scene3d mod-obj (geometry)   → scene untouched
+ *   - del-obj                          → scene dropped
+ *   - hydrateScene3dFromDocument       → proxy reseeded from nodes
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -21,24 +21,25 @@ import { commitChanges } from '../../../../src/lib/renderer/store/commit'
 import { undo } from '../../../../src/lib/page-crud'
 import {
   scene3dProxy,
-  defaultEntry,
-  is3DObject,
-  type Scene3DEntry,
+  defaultSceneDocument,
+  isScene3D,
+  type Scene3DDocument,
 } from '../../../../src/lib/renderer/three/scene3d-store'
 import { hydrateScene3dFromDocument } from '../../../../src/lib/renderer/three/scene3d-sync'
-import { commitMaterial } from '../../../../src/lib/renderer/three/scene3d-commit'
+import { commitObjectMaterial } from '../../../../src/lib/renderer/three/scene3d-commit'
 
 const PAGE_ID = 'page1'
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const RECT = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 const NEW = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+const OBJ = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
 
 function squareShape(id: string, size: number, extra: Partial<IndexedShape> = {}): IndexedShape {
   const sel = { x: 0, y: 0, width: size, height: size, x1: 0, y1: 0, x2: size, y2: size }
   return {
     id,
     type: 'rect',
-    name: '3D object',
+    name: '3D scene',
     parentId: ROOT,
     frameId: ROOT,
     x: 0,
@@ -84,15 +85,17 @@ function makePage(): IndexedPage {
   }
 }
 
-/** The current scene3d on a node in docProxy (or undefined). */
-function nodeScene3d(id: string): Scene3DEntry | undefined {
+function nodeScene3d(id: string): Scene3DDocument | undefined {
   return (docProxy.pageMap.get(PAGE_ID)?.objects[id] as IndexedShape | undefined)?.scene3d
 }
 
-/** Mutate the page through the proxy so valtio sees it. */
-function seedScene3d(id: string, entry: Scene3DEntry): void {
+function firstObjectColor(scene: Scene3DDocument | undefined): string | undefined {
+  return scene?.objects[0]?.material.color
+}
+
+function seedScene3d(id: string, doc: Scene3DDocument): void {
   const node = docProxy.pageMap.get(PAGE_ID)!.objects[id] as IndexedShape
-  node.scene3d = entry
+  node.scene3d = doc
 }
 
 describe('scene3d persistence', () => {
@@ -104,9 +107,9 @@ describe('scene3d persistence', () => {
     docProxy.currentPageId = PAGE_ID
     docProxy.selectedIds.clear()
 
-    scene3dProxy.objects.clear()
-    scene3dProxy.selectedId = null
-    scene3dProxy.editing = false
+    scene3dProxy.scenes.clear()
+    scene3dProxy.editingSceneId = null
+    scene3dProxy.focusedObjectId = null
 
     useWorkspaceStore.setState({
       workerClient: {
@@ -118,11 +121,11 @@ describe('scene3d persistence', () => {
   })
 
   it('add-obj carrying scene3d populates scene3dProxy (create path)', async () => {
-    const entry = defaultEntry(NEW, { kind: 'primitive', ref: 'cube' })
+    const doc = defaultSceneDocument(NEW, OBJ)
     const add: AddObjChange = {
       type: 'add-obj',
       id: NEW,
-      obj: { ...squareShape(NEW, 240), scene3d: entry } as AddObjChange['obj'],
+      obj: { ...squareShape(NEW, 240), scene3d: doc } as AddObjChange['obj'],
       parentId: ROOT,
       frameId: ROOT,
       index: 1,
@@ -130,32 +133,31 @@ describe('scene3d persistence', () => {
     }
     await commitChanges({ redoChanges: [add], pageId: PAGE_ID, saveUndo: false })
 
-    expect(is3DObject(NEW)).toBe(true)
-    expect(scene3dProxy.objects.get(NEW)).toEqual(entry)
-    // The serialized spec rides on the document node.
-    expect(nodeScene3d(NEW)).toEqual(entry)
+    expect(isScene3D(NEW)).toBe(true)
+    expect(scene3dProxy.scenes.get(NEW)).toEqual(doc)
+    expect(nodeScene3d(NEW)).toEqual(doc)
   })
 
-  it('editing scene3d via commitMaterial updates node + proxy and is undoable', async () => {
-    const base = defaultEntry(RECT, { kind: 'primitive', ref: 'cube' })
+  it('editing an object via commitObjectMaterial updates node + proxy and is undoable', async () => {
+    const base = defaultSceneDocument(RECT, OBJ)
     seedScene3d(RECT, base)
     hydrateScene3dFromDocument()
-    expect(scene3dProxy.objects.get(RECT)?.material.color).toBe(base.material.color)
+    expect(firstObjectColor(scene3dProxy.scenes.get(RECT))).toBe(base.objects[0].material.color)
 
-    await commitMaterial(RECT, { color: '#ff0000' })
+    await commitObjectMaterial(RECT, OBJ, { color: '#ff0000' })
 
-    expect(nodeScene3d(RECT)?.material.color).toBe('#ff0000')
-    expect(scene3dProxy.objects.get(RECT)?.material.color).toBe('#ff0000')
+    expect(nodeScene3d(RECT)?.objects[0].material.color).toBe('#ff0000')
+    expect(firstObjectColor(scene3dProxy.scenes.get(RECT))).toBe('#ff0000')
     expect(useHistoryStore.getState().undoStack).toHaveLength(1)
 
     await undo()
 
-    expect(nodeScene3d(RECT)?.material.color).toBe(base.material.color)
-    expect(scene3dProxy.objects.get(RECT)?.material.color).toBe(base.material.color)
+    expect(nodeScene3d(RECT)?.objects[0].material.color).toBe(base.objects[0].material.color)
+    expect(firstObjectColor(scene3dProxy.scenes.get(RECT))).toBe(base.objects[0].material.color)
   })
 
-  it('a non-scene3d edit (geometry) leaves the 3D entry intact', async () => {
-    const base = defaultEntry(RECT, { kind: 'primitive', ref: 'cube' })
+  it('a non-scene3d edit (geometry) leaves the scene intact', async () => {
+    const base = defaultSceneDocument(RECT, OBJ)
     seedScene3d(RECT, base)
     hydrateScene3dFromDocument()
 
@@ -166,32 +168,32 @@ describe('scene3d persistence', () => {
     }
     await commitChanges({ redoChanges: [moveX], pageId: PAGE_ID, saveUndo: false })
 
-    expect(is3DObject(RECT)).toBe(true)
-    expect(scene3dProxy.objects.get(RECT)).toEqual(base)
+    expect(isScene3D(RECT)).toBe(true)
+    expect(scene3dProxy.scenes.get(RECT)).toEqual(base)
   })
 
-  it('del-obj drops the proxy entry', async () => {
-    seedScene3d(RECT, defaultEntry(RECT, { kind: 'primitive', ref: 'cube' }))
+  it('del-obj drops the scene', async () => {
+    seedScene3d(RECT, defaultSceneDocument(RECT, OBJ))
     hydrateScene3dFromDocument()
-    expect(is3DObject(RECT)).toBe(true)
+    expect(isScene3D(RECT)).toBe(true)
 
     const del: Change = { type: 'del-obj', id: RECT, pageId: PAGE_ID }
     await commitChanges({ redoChanges: [del], pageId: PAGE_ID, saveUndo: false })
 
-    expect(is3DObject(RECT)).toBe(false)
-    expect(scene3dProxy.objects.has(RECT)).toBe(false)
+    expect(isScene3D(RECT)).toBe(false)
+    expect(scene3dProxy.scenes.has(RECT)).toBe(false)
   })
 
   it('hydrateScene3dFromDocument seeds from nodes and clears when absent', () => {
-    seedScene3d(RECT, defaultEntry(RECT, { kind: 'primitive', ref: 'cube' }))
-    scene3dProxy.objects.clear()
+    seedScene3d(RECT, defaultSceneDocument(RECT, OBJ))
+    scene3dProxy.scenes.clear()
 
     hydrateScene3dFromDocument()
-    expect(scene3dProxy.objects.has(RECT)).toBe(true)
+    expect(scene3dProxy.scenes.has(RECT)).toBe(true)
 
     const node = docProxy.pageMap.get(PAGE_ID)!.objects[RECT] as IndexedShape
     delete node.scene3d
     hydrateScene3dFromDocument()
-    expect(scene3dProxy.objects.size).toBe(0)
+    expect(scene3dProxy.scenes.size).toBe(0)
   })
 })

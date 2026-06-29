@@ -1,19 +1,20 @@
 /**
- * scene3d-store — the model for embedded 3D objects.
+ * scene3d-store — the model for embedded 3D *scenes*.
  *
- * Two layers, deliberately separated (see plan):
- *  - `scene3dProxy` (valtio): SERIALIZABLE model only. Reactive, saveable,
- *    bindable. The right panel reads it via `useSnapshot`; the overlay
- *    subscribes for on-demand redraw.
- *  - `instances` (plain Map): the live three.js objects. three objects are
- *    NEVER put in the valtio proxy — deep-proxying breaks three's identity /
- *    `instanceof` / internal WeakMaps, chokes on the cyclic scene graph, and
- *    would proxy-trap every per-frame matrix write. They're keyed by the same
- *    `shapeId` and are disposable GPU-backed runtime state.
+ * A 3D Scene is an embedded viewport on the 2D canvas: one container node (the
+ * placeholder rect) owns ONE three.js scene with a shared camera + environment,
+ * and a list of 3D objects that live in that world. Objects are NOT 2D document
+ * nodes — they exist only inside the scene, projected through its camera.
  *
- * Each 3D object is backed by a real (invisible) `rect` shape in the document,
- * whose id is `shapeId` here — that rect is the source of truth for world
- * bounds / selection / move-resize / undo.
+ * Two layers, deliberately separated:
+ *  - `scene3dProxy` (valtio): the SERIALIZABLE model only — `Scene3DDocument`s
+ *    keyed by their container-node id, plus the editor's transient edit/focus
+ *    state. Reactive, saveable, bindable. Stored on the scene node as
+ *    `node.scene3d` (durable, undoable; see persistence).
+ *  - `instances` (plain Map): the live three.js objects (one Scene3DInstance per
+ *    scene). three objects are NEVER put in the valtio proxy — deep-proxying
+ *    breaks three's identity / `instanceof` / internal WeakMaps and would
+ *    proxy-trap every per-frame matrix write. Keyed by the same scene id.
  */
 
 import { proxy } from 'valtio'
@@ -27,65 +28,97 @@ export type Source3D =
   | { kind: 'gltf'; ref: string }
   | { kind: 'spline'; ref: string }
 
-/** The serializable spec for one 3D object. Plain JSON only — no three objects. */
-export interface Scene3DEntry {
-  shapeId: string
+/** One 3D object inside a scene. Plain JSON only — no three objects. */
+export interface Object3DEntry {
+  id: string
+  name: string
   source: Source3D
   transform3d: { position: Vec3; rotationEuler: Vec3; scale: Vec3 }
   material: { color: string; metalness: number; roughness: number; opacity: number }
-  camera: { fov: number }
-  env: { preset: 'studio'; intensity: number }
-  /** Phase 1: always 'front' (3D renders above all 2D). 'back' lands with the sandwich. */
-  band: 'front'
-  // --- interaction-ready surface: declared now, wired into the Interactions graph in Phase 2 ---
+  // --- interaction-ready surface: declared per-object, wired into the graph in Phase 2 ---
   bindable: string[]
   emits: string[]
 }
 
+/** A whole 3D scene: shared camera + environment + an ordered list of objects. */
+export interface Scene3DDocument {
+  /** The container (placeholder rect) node id — the scene's id in the document. */
+  sceneId: string
+  camera: { fov: number }
+  env: { preset: 'studio'; intensity: number }
+  objects: Object3DEntry[]
+}
+
 interface Scene3DState {
-  objects: Map<string, Scene3DEntry>
-  /** The 3D object currently being manipulated (mirrors the document selection when it's a 3D object). */
-  selectedId: string | null
-  /** True while the gizmo/orbit are active (overlay captures the pointer). */
-  editing: boolean
+  scenes: Map<string, Scene3DDocument>
+  /** The scene currently in 3D-edit mode (null = none). Editor state, not document state. */
+  editingSceneId: string | null
+  /** The object focused within the editing scene (the gizmo target). */
+  focusedObjectId: string | null
 }
 
 export const scene3dProxy = proxy<Scene3DState>({
-  objects: proxyMap<string, Scene3DEntry>(),
-  selectedId: null,
-  editing: false,
+  scenes: proxyMap<string, Scene3DDocument>(),
+  editingSceneId: null,
+  focusedObjectId: null,
 })
 
-/** Build a default entry for a freshly created object. */
-export function defaultEntry(shapeId: string, source: Source3D): Scene3DEntry {
+const OBJECT_BINDABLE = [
+  'transform3d.position',
+  'transform3d.rotationEuler',
+  'transform3d.scale',
+  'material.color',
+  'visible',
+]
+const OBJECT_EMITS = ['onClick', 'onPointerEnter', 'onPointerLeave']
+
+function labelFor(source: Source3D): string {
+  if (source.kind === 'primitive') return source.ref[0].toUpperCase() + source.ref.slice(1)
+  if (source.kind === 'gltf') return 'Model'
+  return 'Spline'
+}
+
+/** A default object spec (default material/transform). */
+export function defaultObject(id: string, source: Source3D, name?: string): Object3DEntry {
   return {
-    shapeId,
+    id,
+    name: name ?? labelFor(source),
     source,
     transform3d: { position: [0, 0, 0], rotationEuler: [0, 0, 0], scale: [1, 1, 1] },
     material: { color: '#8a8de0', metalness: 0.6, roughness: 0.35, opacity: 1 },
+    bindable: [...OBJECT_BINDABLE],
+    emits: [...OBJECT_EMITS],
+  }
+}
+
+/** A default scene with one starter object. */
+export function defaultSceneDocument(
+  sceneId: string,
+  firstObjectId: string,
+  source: Source3D = { kind: 'primitive', ref: 'cube' },
+): Scene3DDocument {
+  return {
+    sceneId,
     camera: { fov: 45 },
     env: { preset: 'studio', intensity: 1 },
-    band: 'front',
-    bindable: [
-      'transform3d.position',
-      'transform3d.rotationEuler',
-      'transform3d.scale',
-      'material.color',
-      'visible',
-    ],
-    emits: ['onClick', 'onPointerEnter', 'onPointerLeave'],
+    objects: [defaultObject(firstObjectId, source)],
   }
+}
+
+export function findObject(scene: Scene3DDocument, objId: string): Object3DEntry | undefined {
+  return scene.objects.find((o) => o.id === objId)
 }
 
 /* ----------------------------------------------------------------------------
  * Non-reactive runtime instance registry (three.js objects live here, not in
- * the proxy). Keyed by the same shapeId.
+ * the proxy). One Scene3DInstance per scene, keyed by the scene id.
  * ------------------------------------------------------------------------- */
 
 export interface Scene3DInstance {
-  root: THREE.Object3D
   scene: THREE.Scene
   camera: THREE.PerspectiveCamera
+  /** objectId → its root group in the scene. */
+  objects: Map<string, THREE.Object3D>
   /** Free GPU resources (geometries, materials, env map). */
   dispose: () => void
 }
@@ -107,51 +140,61 @@ export function deleteInstance(id: string): void {
 }
 
 /* ----------------------------------------------------------------------------
- * Model actions (mutate the serializable proxy).
+ * Model actions (mutate the serializable proxy). Persisted edits go through the
+ * document (scene3d-commit); these are for registration + transient edit state +
+ * uncommitted live previews (gizmo / colour drag).
  * ------------------------------------------------------------------------- */
 
-export function add3DObject(entry: Scene3DEntry): void {
-  scene3dProxy.objects.set(entry.shapeId, entry)
+export function addScene(doc: Scene3DDocument): void {
+  scene3dProxy.scenes.set(doc.sceneId, doc)
 }
 
-export function remove3DObject(id: string): void {
-  scene3dProxy.objects.delete(id)
+export function removeScene(id: string): void {
+  scene3dProxy.scenes.delete(id)
   deleteInstance(id)
-  if (scene3dProxy.selectedId === id) {
-    scene3dProxy.selectedId = null
-    scene3dProxy.editing = false
+  if (scene3dProxy.editingSceneId === id) {
+    scene3dProxy.editingSceneId = null
+    scene3dProxy.focusedObjectId = null
   }
 }
 
-export function is3DObject(id: string): boolean {
-  return scene3dProxy.objects.has(id)
+export function isScene3D(id: string): boolean {
+  return scene3dProxy.scenes.has(id)
 }
 
-export function setSelected3D(id: string | null): void {
-  scene3dProxy.selectedId = id
-  if (id === null) scene3dProxy.editing = false
+/** Enter/exit 3D-edit mode for a scene. Entering defaults focus to the first object. */
+export function setEditingScene(id: string | null): void {
+  scene3dProxy.editingSceneId = id
+  if (id === null) {
+    scene3dProxy.focusedObjectId = null
+    return
+  }
+  const scene = scene3dProxy.scenes.get(id)
+  if (scene && !scene3dProxy.focusedObjectId) {
+    scene3dProxy.focusedObjectId = scene.objects[0]?.id ?? null
+  }
 }
 
-export function setEditing(v: boolean): void {
-  scene3dProxy.editing = v
+export function setFocusedObject(id: string | null): void {
+  scene3dProxy.focusedObjectId = id
 }
 
-export function setTransform3d(id: string, patch: Partial<Scene3DEntry['transform3d']>): void {
-  const e = scene3dProxy.objects.get(id)
-  if (e) Object.assign(e.transform3d, patch)
+/** Live (uncommitted) transform preview while a gizmo drags; committed on drag end. */
+export function patchObjectTransformLocal(
+  sceneId: string,
+  objId: string,
+  patch: Partial<Object3DEntry['transform3d']>,
+): void {
+  const obj = scene3dProxy.scenes.get(sceneId)?.objects.find((o) => o.id === objId)
+  if (obj) Object.assign(obj.transform3d, patch)
 }
 
-export function setMaterial(id: string, patch: Partial<Scene3DEntry['material']>): void {
-  const e = scene3dProxy.objects.get(id)
-  if (e) Object.assign(e.material, patch)
-}
-
-export function setCamera(id: string, patch: Partial<Scene3DEntry['camera']>): void {
-  const e = scene3dProxy.objects.get(id)
-  if (e) Object.assign(e.camera, patch)
-}
-
-export function setEnv(id: string, patch: Partial<Scene3DEntry['env']>): void {
-  const e = scene3dProxy.objects.get(id)
-  if (e) Object.assign(e.env, patch)
+/** Live (uncommitted) material preview while the colour picker drags; committed on blur. */
+export function patchObjectMaterialLocal(
+  sceneId: string,
+  objId: string,
+  patch: Partial<Object3DEntry['material']>,
+): void {
+  const obj = scene3dProxy.scenes.get(sceneId)?.objects.find((o) => o.id === objId)
+  if (obj) Object.assign(obj.material, patch)
 }

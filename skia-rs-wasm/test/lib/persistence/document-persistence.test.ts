@@ -88,7 +88,7 @@ describe('document persistence', () => {
     await provider.save(sampleDoc())
     expect(await provider.load()).toEqual(sampleDoc())
     // Stored as a versioned, timestamped envelope.
-    expect(JSON.parse(kv.map.get('current')!)).toMatchObject({ version: 1, savedAt: 42 })
+    expect(JSON.parse(kv.map.get('current')!)).toMatchObject({ version: 2, savedAt: 42 })
 
     await provider.clear()
     expect(await provider.load()).toBeNull()

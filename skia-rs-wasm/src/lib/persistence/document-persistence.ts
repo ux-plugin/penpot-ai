@@ -36,7 +36,11 @@ export interface KvStore {
   delete(key: string): Promise<void>
 }
 
-const SCHEMA_VERSION = 1
+// Bump on any breaking change to the persisted document shape — older envelopes
+// then fail to decode and the app falls back to a blank document rather than
+// loading an incompatible doc. v2: 3D moved from per-object entries to the
+// scene-container model (node.scene3d is a Scene3DDocument).
+const SCHEMA_VERSION = 2
 const DOC_KEY = 'current'
 
 interface Envelope {

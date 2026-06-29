@@ -27,7 +27,7 @@ import {
 import { Popover as PopoverPrimitive } from 'radix-ui'
 import { useCanvasActor } from '../renderer/machine/canvas-actor-context'
 import type { DrawTool } from '../renderer/machine/canvas-machine'
-import { create3DObject } from '../renderer/three/create-3d-object'
+import { create3DScene } from '../renderer/three/create-3d-scene'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { IconFrame, IconRect } from './shape-icons'
@@ -171,7 +171,7 @@ export function ShapeToolbar() {
   const onText = useCallback(() => toggleDrawTool('text'), [toggleDrawTool])
   const onPen = useCallback(() => toggleDrawTool('pen'), [toggleDrawTool])
   const onAdd3D = useCallback(() => {
-    void create3DObject()
+    void create3DScene()
   }, [])
 
   // Pick a shape from the menu: always activate it (not toggle), remember it as
@@ -321,7 +321,7 @@ export function ShapeToolbar() {
           'Draw text (T)',
           <Type className="size-5 shrink-0 stroke-[1.5]" />,
         )}
-        {toolBtn(false, onAdd3D, 'Add 3D object', <Box className="size-5 shrink-0 stroke-[1.5]" />)}
+        {toolBtn(false, onAdd3D, 'Add 3D scene', <Box className="size-5 shrink-0 stroke-[1.5]" />)}
         {disabledTool('Image', Image)}
         {disabledTool('Comment', MessageCircle)}
       </ul>

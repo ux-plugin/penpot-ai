@@ -1,11 +1,12 @@
 /**
- * create-3d-object — the creation flow for an embedded 3D object.
+ * create-3d-scene — the creation flow for an embedded 3D scene.
  *
- * Mirrors the rectangle draw path (`handlers/draw-shape.ts`): build a real
- * `rect` node (invisible fill) via the node factory, commit it with
- * `applyChanges`, then register the serializable 3D spec and select it. The
- * rect is the document source of truth for bounds/selection/move/undo; the
- * three.js overlay paints the 3D into the rect's screen region.
+ * Drops a real container `rect` (invisible fill) into the document via the node
+ * factory, with a default Scene3DDocument (one starter cube + a shared camera and
+ * environment) riding on it as `node.scene3d`. The rect is the document source of
+ * truth for the scene's bounds/selection/move/undo; the three.js overlay paints
+ * the whole scene into the rect's screen region. Creation drops you straight into
+ * 3D-edit mode (Spline-style), focused on the starter object.
  */
 
 import { applyChanges } from '../../page-crud'
@@ -15,10 +16,11 @@ import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { viewport } from '../signals/pointer'
 import { screenToWorld } from '../viewport'
 import type { AddObjChange } from 'penpot-exporter/types'
-import { defaultEntry, setSelected3D, type Source3D } from './scene3d-store'
+import { defaultSceneDocument, setEditingScene } from './scene3d-store'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
-const DEFAULT_SIZE = 240
+const DEFAULT_WIDTH = 360
+const DEFAULT_HEIGHT = 260
 
 /** Visible centre of the current viewport in world coords (falls back if no canvas). */
 function viewportCenterWorld(): { x: number; y: number } {
@@ -32,12 +34,10 @@ function viewportCenterWorld(): { x: number; y: number } {
 }
 
 /**
- * Create a 3D object (default: a cube) at the centre of the viewport.
- * Returns the placeholder rect's id, or null if there's no active page.
+ * Create a 3D scene (with a default cube) at the centre of the viewport and enter
+ * edit mode. Returns the scene container rect's id, or null if there's no active page.
  */
-export async function create3DObject(
-  source: Source3D = { kind: 'primitive', ref: 'cube' },
-): Promise<string | null> {
+export async function create3DScene(): Promise<string | null> {
   const pageId = getActiveOrSinglePageId()
   if (!pageId) return null
   const page = getPage(pageId)
@@ -47,31 +47,28 @@ export async function create3DObject(
   const rootId = root?.id ?? ROOT_UUID
 
   const center = viewportCenterWorld()
-  const size = DEFAULT_SIZE
   const rect = createRect({
-    x: center.x - size / 2,
-    y: center.y - size / 2,
-    width: size,
-    height: size,
+    x: center.x - DEFAULT_WIDTH / 2,
+    y: center.y - DEFAULT_HEIGHT / 2,
+    width: DEFAULT_WIDTH,
+    height: DEFAULT_HEIGHT,
     parentId: rootId,
-    name: '3D object',
-    // Invisible fill (alpha 0) — present so the rect still hit-tests for
-    // selection, but the three.js overlay paints over it. If click-selection
-    // turns out not to hit a 0-alpha fill, fall back to overlay-forwarded
-    // selection (see plan).
+    name: '3D scene',
+    // Invisible fill — the three.js overlay paints the scene over this region.
     fillColor: '#000000',
     fillOpacity: 0,
   })
 
-  // The serializable 3D spec rides on the rect as `node.scene3d`, so 3D state
-  // lives in the document from creation onward (durable, undoable on edit, and
-  // carried by flatten/unflatten). The scene3d-sync subscriber upserts it into
-  // `scene3dProxy` when this add-obj commits — no direct proxy write here.
-  const entry = defaultEntry(rect.id, source)
+  // The serializable scene rides on the rect as `node.scene3d`, so 3D state lives
+  // in the document from creation onward. scene3d-sync upserts it into the proxy
+  // when this add-obj commits.
+  const objectId = crypto.randomUUID()
+  const sceneDoc = defaultSceneDocument(rect.id, objectId)
+
   const addChange: AddObjChange = {
     type: 'add-obj',
     id: rect.id,
-    obj: { ...rect, scene3d: entry } as AddObjChange['obj'],
+    obj: { ...rect, scene3d: sceneDoc } as AddObjChange['obj'],
     frameId: rootId,
     parentId: rootId,
     index: root?.shapes?.length ?? 0,
@@ -80,6 +77,6 @@ export async function create3DObject(
   await applyChanges([addChange])
 
   setSelectedIds(new Set([rect.id]))
-  setSelected3D(rect.id)
+  setEditingScene(rect.id)
   return rect.id
 }
