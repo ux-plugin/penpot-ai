@@ -21,7 +21,6 @@ import type { Point } from '../types'
 import type { Matrix } from 'penpot-exporter/types'
 import type { ResizeHandlePosition } from '../types'
 import { invertMatrix, buildResizeMatrix, IDENTITY_MATRIX } from '../geom/matrix'
-import { isScene3D } from '../three/scene3d-store'
 
 const MIN_SIZE = 1
 
@@ -55,30 +54,17 @@ function noZero(v: number, min: number): number {
 }
 
 /**
- * Constrain per-axis resize scales for proportional resizing.
- * - `lockAspect` (3D scenes): always proportional, driven by the handle's ACTIVE
- *   axis — a side handle (one mult is 0) scales BOTH axes, so shrinking works
- *   (the Shift path's `max()` would pin the inactive axis to 1 and block it).
- * - else `shift`: uniform scale = the larger magnitude (existing behaviour).
- * - else: unchanged.
+ * Constrain per-axis resize scales.
+ * - `shift`: uniform scale = the larger magnitude (sign-preserving).
+ * - else: unchanged — a side handle (one mult is 0) resizes a single axis, a
+ *   corner resizes both. (3D scenes used to aspect-lock here; they now use the
+ *   window/crop camera model instead, so they resize per-side like any shape.)
  */
 export function constrainResizeScale(
   sx: number,
   sy: number,
-  mult: { x: number; y: number },
-  opts: { lockAspect: boolean; shift: boolean },
+  opts: { shift: boolean },
 ): { sx: number; sy: number } {
-  if (opts.lockAspect) {
-    const s =
-      mult.x !== 0 && mult.y !== 0
-        ? Math.abs(sx - 1) >= Math.abs(sy - 1)
-          ? sx
-          : sy
-        : mult.x !== 0
-          ? sx
-          : sy
-    return { sx: s, sy: s }
-  }
   if (opts.shift) {
     const s = Math.max(Math.abs(sx), Math.abs(sy))
     return { sx: sx < 0 ? -s : s, sy: sy < 0 ? -s : s }
@@ -131,10 +117,6 @@ export function startResizeSelected(
   }
 
   const selectedId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
-  // A 3D scene is a camera viewport — resizing must keep its aspect ratio so the
-  // 3D content scales proportionally instead of reframing. Lock proportions for
-  // the whole gesture (independent of Shift).
-  const lockAspect = selectedId != null && isScene3D(selectedId)
   const singleNode = selectedId ? getCurrentPage()?.objects[selectedId] ?? null : null
   const nodeSr = singleNode ? singleNode.selrect : null
 
@@ -184,8 +166,7 @@ export function startResizeSelected(
       const rawSx = noZero((localW + dLocalX * mult.x) / localW, 0.001)
       const rawSy = noZero((localH + dLocalY * mult.y) / localH, 0.001)
 
-      let { sx, sy } = constrainResizeScale(rawSx, rawSy, mult, {
-        lockAspect,
+      let { sx, sy } = constrainResizeScale(rawSx, rawSy, {
         shift: getModifierKeys().shift,
       })
       const minScale = MIN_SIZE / Math.min(localW, localH)

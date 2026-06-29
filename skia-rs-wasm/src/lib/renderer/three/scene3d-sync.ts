@@ -17,7 +17,13 @@ import type { Change } from 'penpot-exporter/types'
 import type { ChangesAppliedEvent } from '../../changes/change-emitter'
 import type { IndexedPage, IndexedShape } from '../../worker/types'
 import { docProxy } from '../store/doc-proxy'
-import { scene3dProxy, removeScene, type Scene3DDocument } from './scene3d-store'
+import {
+  scene3dProxy,
+  removeScene,
+  reconcileSceneAnchorOnRect,
+  clearAllSceneAnchors,
+  type Scene3DDocument,
+} from './scene3d-store'
 
 /**
  * Detached plain clone of a scene document. `node.scene3d` is read from the valtio
@@ -66,11 +72,32 @@ function reconcile(id: string, page: IndexedPage): void {
   }
 }
 
+/** The box's world rect (selrect preferred, falling back to x/y/width/height). */
+function rectOf(node: IndexedShape): { x: number; y: number; w: number; h: number } | null {
+  const sr = (node as { selrect?: { x: number; y: number; width: number; height: number } }).selrect
+  if (sr) return { x: sr.x, y: sr.y, w: sr.width, h: sr.height }
+  const n = node as { x?: number; y?: number; width?: number; height?: number }
+  if (typeof n.x === 'number' && typeof n.width === 'number') {
+    return { x: n.x, y: n.y ?? 0, w: n.width, h: n.height ?? n.width }
+  }
+  return null
+}
+
 export function scene3dSyncHandler(event: ChangesAppliedEvent): void {
   for (const page of event.pages) {
     const ids = new Set<string>()
     for (const ch of page.changes) for (const id of idsToReconcile(ch)) ids.add(id)
     for (const id of ids) reconcile(id, page.updatedPage)
+
+    // Anchor upkeep: a scene's box can move or resize via the generic 2D machinery
+    // (which doesn't touch `scene3d`), so track every known scene's rect here. The
+    // reconciler freezes the anchor on resize (scene stays put) and translates it on
+    // move (scene travels) — see reconcileSceneAnchorOnRect.
+    for (const id of scene3dProxy.scenes.keys()) {
+      const node = page.updatedPage.objects[id] as IndexedShape | undefined
+      const r = node ? rectOf(node) : null
+      if (r) reconcileSceneAnchorOnRect(id, r)
+    }
   }
 }
 
@@ -81,6 +108,7 @@ export function scene3dSyncHandler(event: ChangesAppliedEvent): void {
  */
 export function hydrateScene3dFromDocument(): void {
   for (const id of Array.from(scene3dProxy.scenes.keys())) removeScene(id)
+  clearAllSceneAnchors()
   for (const page of docProxy.pageMap.values()) {
     for (const node of Object.values(page.objects)) {
       const doc = (node as IndexedShape).scene3d

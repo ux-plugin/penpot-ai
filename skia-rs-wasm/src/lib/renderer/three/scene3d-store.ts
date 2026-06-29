@@ -49,6 +49,16 @@ export interface Scene3DDocument {
   objects: Object3DEntry[]
 }
 
+/**
+ * The scene's *design viewport* — the fixed world-size the camera renders at.
+ * The container box is a window onto the 3D world: the camera always renders this
+ * much world per on-screen unit (so content never rescales when the box resizes),
+ * and the box just crops or extends that view (via `setViewOffset`). It equals the
+ * creation size so a freshly-dropped scene exactly fills its frame. Shared with
+ * `create-3d-scene` so the two can't drift.
+ */
+export const SCENE3D_BASE_VIEW = { w: 360, h: 260 } as const
+
 interface Scene3DState {
   scenes: Map<string, Scene3DDocument>
   /** The object focused within the editing scene (the gizmo target). The edit mode
@@ -134,6 +144,68 @@ export function deleteInstance(id: string): void {
 }
 
 /* ----------------------------------------------------------------------------
+ * Scene anchor — where the scene's *design frustum* is pinned on the canvas.
+ *
+ * The container box is a PEEPHOLE onto a fixed scene: the camera always renders
+ * the same world at the same scale (SCENE3D_BASE_VIEW), and the box's rect is just
+ * the crop window (setViewOffset). The anchor is the world point the design
+ * frustum's top-left maps to. It is FROZEN while the box resizes — so the scene
+ * stays put and a bigger box reveals more world from any edge — and TRANSLATED when
+ * the whole box moves, so the scene travels with it. Runtime-only editor state
+ * (lazily seeded from the box's top-left); on reload a scene that had been resized
+ * from an edge re-pins to its top-left. Plain (non-reactive) maps: the overlay
+ * redraws on the existing move/commit/viewport triggers, so no proxy churn here.
+ * ------------------------------------------------------------------------- */
+
+const sceneAnchors = new Map<string, { x: number; y: number }>()
+const lastSceneRect = new Map<string, { x: number; y: number; w: number; h: number }>()
+
+/** The anchor for a scene, seeded to the box's top-left (`seedX/seedY`) on first sight. */
+export function ensureSceneAnchor(id: string, seedX: number, seedY: number): { x: number; y: number } {
+  let a = sceneAnchors.get(id)
+  if (!a) {
+    a = { x: seedX, y: seedY }
+    sceneAnchors.set(id, a)
+  }
+  return a
+}
+
+/**
+ * Update a scene's anchor from a committed box rect. A size-preserving position
+ * change is a MOVE → translate the anchor so the scene travels with the box; any
+ * size change is a RESIZE → leave the anchor frozen so the scene stays put. Runs on
+ * every commit (incl. undo/redo, whose inverse move translates the anchor back).
+ */
+export function reconcileSceneAnchorOnRect(
+  id: string,
+  rect: { x: number; y: number; w: number; h: number },
+): void {
+  const last = lastSceneRect.get(id)
+  lastSceneRect.set(id, rect)
+  if (!last) return
+  const moved = rect.x !== last.x || rect.y !== last.y
+  const resized = Math.abs(rect.w - last.w) > 0.5 || Math.abs(rect.h - last.h) > 0.5
+  if (moved && !resized) {
+    const a = sceneAnchors.get(id)
+    if (a) {
+      a.x += rect.x - last.x
+      a.y += rect.y - last.y
+    }
+  }
+}
+
+function clearSceneAnchor(id: string): void {
+  sceneAnchors.delete(id)
+  lastSceneRect.delete(id)
+}
+
+/** Drop all anchors (document load / page switch — they re-seed on next draw). */
+export function clearAllSceneAnchors(): void {
+  sceneAnchors.clear()
+  lastSceneRect.clear()
+}
+
+/* ----------------------------------------------------------------------------
  * Model actions (mutate the serializable proxy). Persisted edits go through the
  * document (scene3d-commit); these are for registration + transient edit state +
  * uncommitted live previews (gizmo / colour drag).
@@ -146,6 +218,7 @@ export function addScene(doc: Scene3DDocument): void {
 export function removeScene(id: string): void {
   scene3dProxy.scenes.delete(id)
   deleteInstance(id)
+  clearSceneAnchor(id)
   // Exiting 3D-edit mode if this was the edited scene is reconciled by the overlay
   // (it owns the canvasMachine actor); here we just drop the model + GPU instance.
 }

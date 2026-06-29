@@ -27,6 +27,8 @@ import {
   isScene3D,
   setFocusedObject,
   patchObjectTransformLocal,
+  ensureSceneAnchor,
+  SCENE3D_BASE_VIEW,
   type Scene3DDocument,
 } from './scene3d-store'
 import {
@@ -260,7 +262,9 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       const world = sceneRectWorld(sceneId, isSel)
       if (!world) continue
 
-      const tl = worldToScreen(vp, world.cx - world.w / 2, world.cy - world.h / 2)
+      const boxLeftWorld = world.cx - world.w / 2
+      const boxTopWorld = world.cy - world.h / 2
+      const tl = worldToScreen(vp, boxLeftWorld, boxTopWorld)
       const sw = world.w * vp.zoom
       const sh = world.h * vp.zoom
       if (sw < 1 || sh < 1) continue
@@ -274,8 +278,27 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // While the gizmo owns the focused object's transform, don't fight it.
       const skipTransformFor = sceneId === editingId ? focusedId : null
       applyDocToInstance(inst, doc, skipTransformFor)
-      inst.camera.aspect = sw / sh
-      inst.camera.updateProjectionMatrix()
+
+      // Window/peephole model: the box is a hole onto a FIXED scene, not a frame the
+      // world is squeezed into. The camera renders at a FIXED scale — the design
+      // frustum (SCENE3D_BASE_VIEW = the creation size) — and the box's rect is just
+      // the crop window (setViewOffset). The crop is taken relative to the scene's
+      // anchor, which scene3d-sync freezes on resize and translates on move: so
+      // resizing from ANY edge keeps every object the same size and place and reveals
+      // more world, while moving the box carries the scene along. The live move delta
+      // is folded in so the scene tracks the pointer before the move commits. Units are
+      // world; setViewOffset works on ratios, so zoom cancels.
+      const md = isSel ? movePreviewWorldDelta.value : { x: 0, y: 0 }
+      const anchor = ensureSceneAnchor(sceneId, boxLeftWorld - md.x, boxTopWorld - md.y)
+      inst.camera.aspect = SCENE3D_BASE_VIEW.w / SCENE3D_BASE_VIEW.h
+      inst.camera.setViewOffset(
+        SCENE3D_BASE_VIEW.w,
+        SCENE3D_BASE_VIEW.h,
+        boxLeftWorld - (anchor.x + md.x),
+        boxTopWorld - (anchor.y + md.y),
+        world.w,
+        world.h,
+      )
 
       // three multiplies these by pixelRatio internally — pass CSS/logical px.
       const glX = tl.x

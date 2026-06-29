@@ -16,11 +16,13 @@ import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { viewport } from '../signals/pointer'
 import { screenToWorld } from '../viewport'
 import type { AddObjChange } from 'penpot-exporter/types'
-import { defaultSceneDocument } from './scene3d-store'
+import { defaultSceneDocument, SCENE3D_BASE_VIEW } from './scene3d-store'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
-const DEFAULT_WIDTH = 360
-const DEFAULT_HEIGHT = 260
+// Creation size = the camera's design viewport, so a fresh scene exactly fills
+// its frame (see SCENE3D_BASE_VIEW).
+const DEFAULT_WIDTH = SCENE3D_BASE_VIEW.w
+const DEFAULT_HEIGHT = SCENE3D_BASE_VIEW.h
 
 /** Visible centre of the current viewport in world coords (falls back if no canvas). */
 function viewportCenterWorld(): { x: number; y: number } {
