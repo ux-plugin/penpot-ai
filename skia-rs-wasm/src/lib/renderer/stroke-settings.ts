@@ -12,6 +12,16 @@ import type { Stroke } from 'penpot-exporter/types'
 export type StrokeDashCap = 'butt' | 'round' | 'square'
 export type StrokeBasicJoin = 'miter' | 'round' | 'bevel'
 
+/** "Dynamic" stroke — procedural hand-drawn perturbation. All fields 0..1. */
+export interface StrokeDynamic {
+  /** Wiggle wavelength (higher = shorter waves / more wiggles). */
+  frequency: number
+  /** Perpendicular displacement amplitude. */
+  wiggle: number
+  /** Corner rounding of the result. */
+  smoothen: number
+}
+
 export interface StrokeBasicSettings {
   /** Custom dash pattern `[dash, gap, …]` in px. Absent/empty = derive from `strokeStyle`. */
   strokeDashes?: number[]
@@ -21,6 +31,8 @@ export interface StrokeBasicSettings {
   strokeJoin?: StrokeBasicJoin
   /** Miter limit ratio (Skia default 4 ≈ 28.96°). */
   strokeMiterLimit?: number
+  /** Procedural "Dynamic" perturbation. Absent = off. */
+  strokeDynamic?: StrokeDynamic
 }
 
 export type StrokeWithSettings = Stroke & StrokeBasicSettings

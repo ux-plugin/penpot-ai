@@ -184,3 +184,18 @@ pub extern "C" fn set_shape_stroke_props(join: i32, cap: i32, miter: f32) {
         }
     });
 }
+
+/// Apply a "Dynamic" perturbation (frequency / wiggle / smoothen, all 0..1) to
+/// the current shape's last stroke.
+#[no_mangle]
+pub extern "C" fn set_shape_stroke_dynamic(frequency: f32, wiggle: f32, smoothen: f32) {
+    with_current_shape_mut!(state, |shape: &mut Shape| {
+        if let Some(stroke) = shape.strokes.last_mut() {
+            stroke.set_dynamic(shapes::DynamicStroke {
+                frequency,
+                wiggle,
+                smoothen,
+            });
+        }
+    });
+}

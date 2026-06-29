@@ -33,6 +33,18 @@ pub enum StrokeKind {
     Center,
 }
 
+/// "Dynamic" stroke — procedurally perturbs the path into a hand-drawn / wavy
+/// line before stroking. All fields are 0..1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DynamicStroke {
+    /// Wiggle wavelength: higher = shorter waves / more wiggles.
+    pub frequency: f32,
+    /// Perpendicular displacement amplitude.
+    pub wiggle: f32,
+    /// Corner rounding of the result.
+    pub smoothen: f32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stroke {
     pub fill: Fill,
@@ -51,6 +63,8 @@ pub struct Stroke {
     pub line_join: Option<StrokeLineJoin>,
     /// Miter limit ratio. `None` = Skia default (4).
     pub miter_limit: Option<f32>,
+    /// Procedural "Dynamic" perturbation applied before stroking. `None` = off.
+    pub dynamic: Option<DynamicStroke>,
 }
 
 impl Stroke {
@@ -94,6 +108,7 @@ impl Stroke {
             dash_cap: None,
             line_join: None,
             miter_limit: None,
+            dynamic: None,
         }
     }
 
@@ -114,6 +129,7 @@ impl Stroke {
             dash_cap: None,
             line_join: None,
             miter_limit: None,
+            dynamic: None,
         }
     }
 
@@ -134,6 +150,7 @@ impl Stroke {
             dash_cap: None,
             line_join: None,
             miter_limit: None,
+            dynamic: None,
         }
     }
 
@@ -163,6 +180,10 @@ impl Stroke {
         if miter.is_some() {
             self.miter_limit = miter;
         }
+    }
+
+    pub fn set_dynamic(&mut self, dynamic: DynamicStroke) {
+        self.dynamic = Some(dynamic);
     }
 
     pub fn scale_content(&mut self, value: f32) {

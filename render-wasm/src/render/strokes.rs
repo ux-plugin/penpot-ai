@@ -232,6 +232,12 @@ pub(crate) fn draw_stroke_on_path(
         canvas.concat(pt);
     }
     let skia_path = path.to_skia_path(svg_attrs);
+    // "Dynamic" strokes perturb the geometry before stroking; everything below
+    // (render + caps) then operates on the wavy path.
+    let skia_path = match &stroke.dynamic {
+        Some(dynamic) => super::dynamic::apply_dynamic(&skia_path, dynamic),
+        None => skia_path,
+    };
 
     match stroke.render_kind(is_open) {
         StrokeKind::Inner => {

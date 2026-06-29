@@ -80,6 +80,7 @@ describe('setShapeStrokes — Basic settings reach the WASM ABI', () => {
         const dv = new DataView(heap.buffer)
         dashesSeen = [dv.getFloat32(0, true), dv.getFloat32(4, true)]
       }),
+      _set_shape_stroke_dynamic: vi.fn(),
     } as unknown as WasmModule
   })
 
@@ -101,10 +102,21 @@ describe('setShapeStrokes — Basic settings reach the WASM ABI', () => {
     expect(module._set_shape_stroke_dashes).not.toHaveBeenCalled()
   })
 
-  it('leaves a plain solid stroke untouched (no dash/props calls)', () => {
+  it('sends a Dynamic perturbation via _set_shape_stroke_dynamic when wiggle > 0', () => {
+    run({ strokeDynamic: { frequency: 0.5, wiggle: 0.3, smoothen: 0.5 } })
+    expect(module._set_shape_stroke_dynamic).toHaveBeenCalledWith(0.5, 0.3, 0.5)
+  })
+
+  it('skips Dynamic when wiggle is 0', () => {
+    run({ strokeDynamic: { frequency: 0.5, wiggle: 0, smoothen: 0.5 } })
+    expect(module._set_shape_stroke_dynamic).not.toHaveBeenCalled()
+  })
+
+  it('leaves a plain solid stroke untouched (no dash/props/dynamic calls)', () => {
     run({})
     expect(module._set_shape_stroke_dashes).not.toHaveBeenCalled()
     expect(module._set_shape_stroke_props).not.toHaveBeenCalled()
+    expect(module._set_shape_stroke_dynamic).not.toHaveBeenCalled()
   })
 
   it('routes alignment to the matching add_* entrypoint', () => {

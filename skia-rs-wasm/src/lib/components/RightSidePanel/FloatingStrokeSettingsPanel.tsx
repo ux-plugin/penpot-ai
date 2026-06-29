@@ -17,6 +17,7 @@ import type {
   StrokeWithSettings,
   StrokeDashCap,
   StrokeBasicJoin,
+  StrokeDynamic,
 } from '../../renderer/stroke-settings'
 import { miterAngleToLimit, miterLimitToAngle } from '../../renderer/stroke-settings'
 import { useColorEditor } from './use-color-editor'
@@ -43,6 +44,21 @@ function CapIcon({ cap }: { cap: StrokeDashCap }) {
  * size: `miter` keeps a sharp corner, `round` rounds it, `bevel` cuts it flat.
  * The original was the right shape but too thin (3px) to read the difference.
  */
+/** Outer-edge contour of the thick corner, per join — this is the highlighted
+ *  line. A thick body (width 14 → join radius 7) makes the round arc / bevel cut
+ *  large enough to read at icon size. */
+const JOIN_OUTER_PATH: Record<StrokeBasicJoin, string> = {
+  miter: 'M 1 24 L 1 1 L 24 1',
+  round: 'M 1 24 L 1 8 Q 1 1 8 1 L 24 1',
+  bevel: 'M 1 24 L 1 8 L 8 1 L 24 1',
+}
+
+/**
+ * A faded thick corner (the body) with its outer edge highlighted at full
+ * strength — the highlighted contour is what encodes the join (sharp point /
+ * arc / flat cut). The theme is grayscale, so the "accent" is a darker shade
+ * (full `currentColor`) over the faded body, adapting to light/dark.
+ */
 function JoinIcon({ join }: { join: StrokeBasicJoin }) {
   return (
     <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden>
@@ -50,9 +66,18 @@ function JoinIcon({ join }: { join: StrokeBasicJoin }) {
         points="8,22 8,8 22,8"
         fill="none"
         stroke="currentColor"
-        strokeWidth="8"
+        strokeOpacity="0.26"
+        strokeWidth="14"
         strokeLinejoin={join}
         strokeLinecap="butt"
+      />
+      <path
+        d={JOIN_OUTER_PATH[join]}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="miter"
+        strokeLinecap="round"
       />
     </svg>
   )
@@ -104,9 +129,42 @@ function Segmented<T extends string>({
   )
 }
 
+/** 0..1 value edited as a percent. `max` caps the percent (use >100 to allow
+ *  exceeding 100%); `step` is the (subtle) increment. */
+function PercentField({
+  value,
+  ariaLabel,
+  onChange,
+  max = 100,
+  step = 0.5,
+}: {
+  value: number
+  ariaLabel: string
+  onChange: (v: number) => void
+  max?: number
+  step?: number
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <NumericField
+        className="h-7 min-w-0 flex-1 px-1.5 text-xs"
+        aria-label={ariaLabel}
+        value={Math.round(value * 1000) / 10}
+        min={0}
+        max={max}
+        step={step}
+        onCommit={(v) => onChange(Math.max(0, Math.min(max, v)) / 100)}
+      />
+      <span className="shrink-0 text-[11px] text-muted-foreground">%</span>
+    </div>
+  )
+}
+
 export function FloatingStrokeSettingsPanel() {
   const { activeTarget, activeStrokeSettings, anchorY, closeEditor, onStrokeSettingsChangeRef } =
     useColorEditor()
+
+  const [tab, setTab] = useState<'basic' | 'dynamic'>('basic')
 
   // Local draft for the dashes text field so intermediate text ("8, ", "8, 6,")
   // isn't clobbered by re-parsing on every keystroke (mirrors the hex drafts).
@@ -140,6 +198,10 @@ export function FloatingStrokeSettingsPanel() {
   const join = stroke.strokeJoin ?? 'miter'
   const miterAngle = round2(miterLimitToAngle(stroke.strokeMiterLimit ?? 4))
 
+  const dyn: StrokeDynamic = stroke.strokeDynamic ?? { frequency: 0.5, wiggle: 0, smoothen: 0.5 }
+  const updateDyn = (partial: Partial<StrokeDynamic>) =>
+    update({ strokeDynamic: { ...dyn, ...partial } })
+
   const onStyle = (value: StyleOption) => {
     if (value === 'custom') {
       update({ strokeStyle: 'dashed', strokeDashes: dashes.length ? dashes : [8, 6] })
@@ -169,22 +231,35 @@ export function FloatingStrokeSettingsPanel() {
       onClose={closeEditor}
     >
       <div className="space-y-2.5">
-        {/* Tabs — only Basic is implemented */}
+        {/* Tabs — Basic + Dynamic active; Brush deferred */}
         <div className="flex gap-0.5 rounded-md bg-muted p-0.5">
-          <div className="flex-1 rounded bg-background py-1 text-center text-xs font-medium">Basic</div>
-          {(['Dynamic', 'Brush'] as const).map((t) => (
-            <div
+          {(['basic', 'dynamic'] as const).map((t) => (
+            <button
               key={t}
-              className="flex flex-1 items-center justify-center gap-1 py-1 text-center text-xs text-muted-foreground/60"
-              title={`${t} strokes are a separate feature — not available yet`}
+              type="button"
+              onClick={() => setTab(t)}
+              className={cn(
+                'flex-1 rounded py-1 text-center text-xs capitalize transition-colors',
+                tab === t
+                  ? 'bg-background font-medium text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
             >
               {t}
-              <span className="rounded bg-background/60 px-1 text-[9px] leading-tight">later</span>
-            </div>
+            </button>
           ))}
+          <div
+            className="flex flex-1 items-center justify-center gap-1 py-1 text-center text-xs text-muted-foreground/60"
+            title="Brush strokes are a separate feature — not available yet"
+          >
+            Brush
+            <span className="rounded bg-background/60 px-1 text-[9px] leading-tight">later</span>
+          </div>
         </div>
 
-        {/* Style */}
+        {tab === 'basic' && (
+          <>
+            {/* Style */}
         <Row label="Style">
           <select
             className="border-input bg-background h-7 min-w-0 flex-1 rounded-md border px-1.5 text-xs"
@@ -279,6 +354,39 @@ export function FloatingStrokeSettingsPanel() {
             <span className="rounded bg-background/60 px-1 text-[9px]">later</span>
           </div>
         </Row>
+          </>
+        )}
+
+        {tab === 'dynamic' && (
+          <>
+            <p className="px-0.5 text-[11px] leading-snug text-muted-foreground">
+              Perturbs the path into a hand-drawn, wavy line.
+            </p>
+            <Row label="Frequency">
+              <PercentField
+                value={dyn.frequency}
+                ariaLabel="Frequency"
+                max={300}
+                onChange={(v) => updateDyn({ frequency: v })}
+              />
+            </Row>
+            <Row label="Wiggle">
+              <PercentField
+                value={dyn.wiggle}
+                ariaLabel="Wiggle"
+                max={300}
+                onChange={(v) => updateDyn({ wiggle: v })}
+              />
+            </Row>
+            <Row label="Smoothen">
+              <PercentField
+                value={dyn.smoothen}
+                ariaLabel="Smoothen"
+                onChange={(v) => updateDyn({ smoothen: v })}
+              />
+            </Row>
+          </>
+        )}
       </div>
     </FloatingPanelShell>
   )

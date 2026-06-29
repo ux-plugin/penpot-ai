@@ -75,6 +75,12 @@ export function setShapeStrokes(
       module._set_shape_stroke_props(join, dashCap, miter)
     }
 
+    // Dynamic (procedural wiggle) perturbation.
+    const dyn = stroke.strokeDynamic
+    if (dyn && dyn.wiggle > 0) {
+      module._set_shape_stroke_dynamic(dyn.frequency, dyn.wiggle, dyn.smoothen)
+    }
+
     // Custom dash pattern (variable-length f32 buffer, same shared-mem
     // convention as stroke fills).
     const dashes = stroke.strokeDashes ? normalizeDashes(stroke.strokeDashes) : []
