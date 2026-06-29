@@ -74,6 +74,11 @@ function ObjectList({
   return (
     <div className="space-y-0.5">
       <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">Objects</p>
+      {scene.objects.length === 0 && (
+        <p className="px-2 py-1 text-xs text-muted-foreground">
+          Empty scene — enter 3D edit and add an object.
+        </p>
+      )}
       {scene.objects.map((o) => (
         <button
           key={o.id}

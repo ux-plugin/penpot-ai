@@ -21,6 +21,7 @@ import { commitChanges } from '../../../../src/lib/renderer/store/commit'
 import { undo } from '../../../../src/lib/page-crud'
 import {
   scene3dProxy,
+  defaultObject,
   defaultSceneDocument,
   isScene3D,
   type Scene3DDocument,
@@ -85,6 +86,14 @@ function makePage(): IndexedPage {
   }
 }
 
+/** A scene document with one cube object (creation now makes an empty scene). */
+function sceneWithObject(sceneId: string, objId: string): Scene3DDocument {
+  return {
+    ...defaultSceneDocument(sceneId),
+    objects: [defaultObject(objId, { kind: 'primitive', ref: 'cube' })],
+  }
+}
+
 function nodeScene3d(id: string): Scene3DDocument | undefined {
   return (docProxy.pageMap.get(PAGE_ID)?.objects[id] as IndexedShape | undefined)?.scene3d
 }
@@ -121,7 +130,7 @@ describe('scene3d persistence', () => {
   })
 
   it('add-obj carrying scene3d populates scene3dProxy (create path)', async () => {
-    const doc = defaultSceneDocument(NEW, OBJ)
+    const doc = sceneWithObject(NEW, OBJ)
     const add: AddObjChange = {
       type: 'add-obj',
       id: NEW,
@@ -139,7 +148,7 @@ describe('scene3d persistence', () => {
   })
 
   it('editing an object via commitObjectMaterial updates node + proxy and is undoable', async () => {
-    const base = defaultSceneDocument(RECT, OBJ)
+    const base = sceneWithObject(RECT, OBJ)
     seedScene3d(RECT, base)
     hydrateScene3dFromDocument()
     expect(firstObjectColor(scene3dProxy.scenes.get(RECT))).toBe(base.objects[0].material.color)
@@ -157,7 +166,7 @@ describe('scene3d persistence', () => {
   })
 
   it('a non-scene3d edit (geometry) leaves the scene intact', async () => {
-    const base = defaultSceneDocument(RECT, OBJ)
+    const base = sceneWithObject(RECT, OBJ)
     seedScene3d(RECT, base)
     hydrateScene3dFromDocument()
 
@@ -173,7 +182,7 @@ describe('scene3d persistence', () => {
   })
 
   it('del-obj drops the scene', async () => {
-    seedScene3d(RECT, defaultSceneDocument(RECT, OBJ))
+    seedScene3d(RECT, sceneWithObject(RECT, OBJ))
     hydrateScene3dFromDocument()
     expect(isScene3D(RECT)).toBe(true)
 
@@ -185,7 +194,7 @@ describe('scene3d persistence', () => {
   })
 
   it('hydrateScene3dFromDocument seeds from nodes and clears when absent', () => {
-    seedScene3d(RECT, defaultSceneDocument(RECT, OBJ))
+    seedScene3d(RECT, sceneWithObject(RECT, OBJ))
     scene3dProxy.scenes.clear()
 
     hydrateScene3dFromDocument()

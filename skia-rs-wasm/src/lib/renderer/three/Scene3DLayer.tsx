@@ -28,6 +28,7 @@ import {
   setEditingScene,
   setFocusedObject,
   patchObjectTransformLocal,
+  defaultObject,
   type Scene3DDocument,
 } from './scene3d-store'
 import {
@@ -36,7 +37,14 @@ import {
   readTransformFromObject,
   pickObject,
 } from './three-scene'
-import { commitObjectTransform } from './scene3d-commit'
+import { commitAddObject, commitObjectTransform } from './scene3d-commit'
+
+type PrimRef = 'cube' | 'sphere' | 'plane'
+const ADD_PRIMS: { ref: PrimRef; label: string }[] = [
+  { ref: 'cube', label: 'Cube' },
+  { ref: 'sphere', label: 'Sphere' },
+  { ref: 'plane', label: 'Plane' },
+]
 
 type GizmoMode = 'translate' | 'rotate' | 'scale'
 interface ScreenRect {
@@ -117,9 +125,20 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   useEffect(() => {
     const sceneId = snap.editingSceneId
     if (!sceneId) return
-    const inst = getInstance(sceneId)
+    const renderer = rendererRef.current
     const surface = editSurfaceRef.current
-    if (!inst || !surface) return
+    const doc = scene3dProxy.scenes.get(sceneId) as Scene3DDocument | undefined
+    if (!renderer || !surface || !doc) return
+
+    // draw() builds instances lazily on RAF, but entering edit / adding an object
+    // must not wait a frame — build the instance and its objects eagerly so the
+    // gizmo can attach to a just-added object this tick.
+    let inst = getInstance(sceneId)
+    if (!inst) {
+      inst = buildSceneInstance(renderer, doc)
+      setInstance(sceneId, inst)
+    }
+    applyDocToInstance(inst, doc)
 
     const orbit = new OrbitControls(inst.camera, surface)
     orbit.enableDamping = false
@@ -283,6 +302,16 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     }
   }
 
+  /** Add a primitive to the editing scene and focus it (so the gizmo attaches). */
+  function addObject(ref: PrimRef) {
+    const sceneId = scene3dProxy.editingSceneId
+    if (!sceneId) return
+    const id = crypto.randomUUID()
+    void commitAddObject(sceneId, defaultObject(id, { kind: 'primitive', ref })).then(() => {
+      setFocusedObject(id)
+    })
+  }
+
   // Esc exits edit mode.
   useEffect(() => {
     if (!snap.editingSceneId) return
@@ -335,25 +364,42 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
           <div className="flex items-center gap-1 rounded-lg border border-border/70 bg-white p-1 shadow-md dark:bg-neutral-800">
             {editing ? (
               <>
-                {(['translate', 'rotate', 'scale'] as GizmoMode[]).map((m) => (
+                {/* Add an object to the scene (the contextual "create" menu). */}
+                {ADD_PRIMS.map((p) => (
                   <button
-                    key={m}
+                    key={p.ref}
                     type="button"
-                    onClick={() => {
-                      setMode(m)
-                      gizmoRef.current?.setMode(m)
-                      scheduleDraw()
-                    }}
-                    className={
-                      'rounded-md px-2 py-1 text-xs capitalize ' +
-                      (mode === m
-                        ? 'bg-indigo-500 text-white'
-                        : 'text-muted-foreground hover:bg-muted')
-                    }
+                    onClick={() => addObject(p.ref)}
+                    className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
                   >
-                    {m === 'translate' ? 'Move' : m}
+                    + {p.label}
                   </button>
                 ))}
+                {/* Gizmo modes only matter once an object is focused. */}
+                {snap.focusedObjectId && (
+                  <>
+                    <span className="mx-1 h-4 w-px bg-border" />
+                    {(['translate', 'rotate', 'scale'] as GizmoMode[]).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          setMode(m)
+                          gizmoRef.current?.setMode(m)
+                          scheduleDraw()
+                        }}
+                        className={
+                          'rounded-md px-2 py-1 text-xs capitalize ' +
+                          (mode === m
+                            ? 'bg-indigo-500 text-white'
+                            : 'text-muted-foreground hover:bg-muted')
+                        }
+                      >
+                        {m === 'translate' ? 'Move' : m}
+                      </button>
+                    ))}
+                  </>
+                )}
                 <span className="mx-1 h-4 w-px bg-border" />
                 <button
                   type="button"

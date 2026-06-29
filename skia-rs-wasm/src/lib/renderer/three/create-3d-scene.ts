@@ -1,12 +1,12 @@
 /**
  * create-3d-scene — the creation flow for an embedded 3D scene.
  *
- * Drops a real container `rect` (invisible fill) into the document via the node
- * factory, with a default Scene3DDocument (one starter cube + a shared camera and
- * environment) riding on it as `node.scene3d`. The rect is the document source of
- * truth for the scene's bounds/selection/move/undo; the three.js overlay paints
- * the whole scene into the rect's screen region. Creation drops you straight into
- * 3D-edit mode (Spline-style), focused on the starter object.
+ * Drops an EMPTY container `rect` (a 3D frame: transparent fill, subtle border)
+ * into the document via the node factory, with an empty Scene3DDocument (shared
+ * camera + environment, no objects yet) riding on it as `node.scene3d`. The rect
+ * is the document source of truth for the scene's bounds/selection/move/undo; the
+ * three.js overlay paints the scene into its region. Creation drops you straight
+ * into 3D-edit mode — objects are added from the contextual menu there.
  */
 
 import { applyChanges } from '../../page-crud'
@@ -34,8 +34,8 @@ function viewportCenterWorld(): { x: number; y: number } {
 }
 
 /**
- * Create a 3D scene (with a default cube) at the centre of the viewport and enter
- * edit mode. Returns the scene container rect's id, or null if there's no active page.
+ * Create an empty 3D scene frame at the centre of the viewport and enter edit mode.
+ * Returns the scene container rect's id, or null if there's no active page.
  */
 export async function create3DScene(): Promise<string | null> {
   const pageId = getActiveOrSinglePageId()
@@ -54,16 +54,18 @@ export async function create3DScene(): Promise<string | null> {
     height: DEFAULT_HEIGHT,
     parentId: rootId,
     name: '3D scene',
-    // Invisible fill — the three.js overlay paints the scene over this region.
+    // A frame: transparent fill (the three.js overlay paints the scene over this
+    // region) with a subtle border so the empty frame is visible.
     fillColor: '#000000',
     fillOpacity: 0,
+    strokeColor: '#c3c6d4',
+    strokeWidth: 1,
   })
 
   // The serializable scene rides on the rect as `node.scene3d`, so 3D state lives
   // in the document from creation onward. scene3d-sync upserts it into the proxy
   // when this add-obj commits.
-  const objectId = crypto.randomUUID()
-  const sceneDoc = defaultSceneDocument(rect.id, objectId)
+  const sceneDoc = defaultSceneDocument(rect.id)
 
   const addChange: AddObjChange = {
     type: 'add-obj',

@@ -91,17 +91,13 @@ export function defaultObject(id: string, source: Source3D, name?: string): Obje
   }
 }
 
-/** A default scene with one starter object. */
-export function defaultSceneDocument(
-  sceneId: string,
-  firstObjectId: string,
-  source: Source3D = { kind: 'primitive', ref: 'cube' },
-): Scene3DDocument {
+/** A default empty scene. Objects are added from the contextual menu in 3D-edit mode. */
+export function defaultSceneDocument(sceneId: string): Scene3DDocument {
   return {
     sceneId,
     camera: { fov: 45 },
     env: { preset: 'studio', intensity: 1 },
-    objects: [defaultObject(firstObjectId, source)],
+    objects: [],
   }
 }
 
