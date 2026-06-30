@@ -52,6 +52,17 @@ export async function commitSceneEnv(
   await commitScene3d(sceneId, doc)
 }
 
+/** Set the edit-mode backdrop colour (`null` = default studio backdrop). */
+export async function commitSceneBackground(
+  sceneId: string,
+  background: string | null,
+): Promise<void> {
+  const doc = currentScene(sceneId)
+  if (!doc) return
+  doc.background = background
+  await commitScene3d(sceneId, doc)
+}
+
 export async function commitObjectTransform(
   sceneId: string,
   objId: string,

@@ -17,6 +17,8 @@ import { cn } from '@/lib/utils'
 import {
   scene3dProxy,
   patchObjectMaterialLocal,
+  patchSceneBackgroundLocal,
+  SCENE3D_EDIT_BACKDROP,
   type Object3DEntry,
   type Scene3DDocument,
   type Vec3,
@@ -24,6 +26,7 @@ import {
 import {
   commitObjectMaterial,
   commitObjectTransform,
+  commitSceneBackground,
   commitSceneCamera,
   commitSceneEnv,
 } from '@/lib/renderer/three/scene3d-commit'
@@ -230,6 +233,36 @@ export function ThreeDObjectSection({ nodeId }: { nodeId: string }) {
             />
           </div>
         </div>
+
+        {editingThis && (
+          <div className="space-y-1">
+            <Label>Edit background</Label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                aria-label="Edit background color"
+                value={scene.background ?? SCENE3D_EDIT_BACKDROP}
+                onChange={(e) => patchSceneBackgroundLocal(nodeId, e.target.value)}
+                onBlur={(e) => void commitSceneBackground(nodeId, e.target.value)}
+                className="h-8 w-8 cursor-pointer rounded-md border border-border bg-transparent p-0"
+              />
+              <Input
+                type="text"
+                value={scene.background ?? SCENE3D_EDIT_BACKDROP}
+                onChange={(e) => patchSceneBackgroundLocal(nodeId, e.target.value)}
+                onBlur={(e) => void commitSceneBackground(nodeId, e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => void commitSceneBackground(nodeId, null)}
+                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+              >
+                Default
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">Backdrop shown only while editing.</p>
+          </div>
+        )}
       </div>
 
       {focused && <ObjectProps sceneId={nodeId} object={focused} />}

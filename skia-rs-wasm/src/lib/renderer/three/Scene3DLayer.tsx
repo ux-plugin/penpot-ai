@@ -28,7 +28,9 @@ import {
   setFocusedObject,
   patchObjectTransformLocal,
   ensureSceneAnchor,
+  dollyBounds,
   SCENE3D_BASE_VIEW,
+  SCENE3D_EDIT_BACKDROP,
   type Scene3DDocument,
 } from './scene3d-store'
 import {
@@ -38,6 +40,7 @@ import {
   pickObject,
 } from './three-scene'
 import { commitObjectTransform } from './scene3d-commit'
+import { resolveScene3dPointerDown } from './scene3d-pointer'
 import { useScene3dEditing } from './use-scene3d-editing'
 
 interface ScreenRect {
@@ -69,7 +72,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   canvasSizeRef.current = canvasSize
 
   const snap = useSnapshot(scene3dProxy)
-  const { editingSceneId, gizmoMode, exit } = useScene3dEditing()
+  const { actor, editingSceneId, gizmoMode, exit } = useScene3dEditing()
   const editingIdRef = useRef(editingSceneId)
   editingIdRef.current = editingSceneId
 
@@ -127,6 +130,13 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     if (editingSceneId && !snap.scenes.has(editingSceneId)) exit()
   }, [editingSceneId, snap.scenes, exit])
 
+  // Focus is meaningful only inside edit mode; clear it whenever 3D-edit ends so
+  // keyboard/command exits (Esc / V, via runCommand) match the menu's exit(), which
+  // also clears focus. Keeps the "no focus outside edit" invariant in one place.
+  useEffect(() => {
+    if (!editingSceneId) setFocusedObject(null)
+  }, [editingSceneId])
+
   // --- attach gizmo + orbit + raycast pick while editing a scene ---
   useEffect(() => {
     const sceneId = editingSceneId
@@ -146,9 +156,28 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     }
     applyDocToInstance(inst, doc)
 
+    // Left-drag orbits; right-drag pans (slides the whole scene within the peephole);
+    // scroll / pinch / middle-drag dollies — the 3D "zoom": it moves the camera toward
+    // or away from the scene (the render scale itself is fixed by the peephole, so
+    // content keeps its size; dolly changes the camera distance / parallax).
+    // screenSpacePanning keeps the pan parallel to the screen. View pose is
+    // per-session; durable persistence is a follow-up alongside the persisted anchor.
     const orbit = new OrbitControls(inst.camera, surface)
     orbit.enableDamping = false
-    orbit.enablePan = false
+    orbit.enablePan = true
+    orbit.screenSpacePanning = true
+    orbit.enableZoom = true
+    // zoomToCursor off: each scene renders into a scissor sub-rect with a
+    // setViewOffset crop, so cursor-anchored zoom would unproject to the wrong world
+    // point; plain dolly-toward-target is position-independent and correct here.
+    orbit.zoomToCursor = false
+    // Clamp the dolly to the scene's home distance (captured once on the camera, so
+    // it survives dolly + edit-exit/re-enter without ratcheting the bounds inward).
+    const camUserData = inst.camera.userData as { homeDistance?: number }
+    if (camUserData.homeDistance == null) camUserData.homeDistance = orbit.getDistance()
+    const bounds = dollyBounds(camUserData.homeDistance)
+    orbit.minDistance = bounds.min
+    orbit.maxDistance = bounds.max
     orbit.addEventListener('change', scheduleDraw)
 
     const tc = new TransformControls(inst.camera, surface)
@@ -175,22 +204,38 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     const focusObj = snap.focusedObjectId ? inst.objects.get(snap.focusedObjectId) : undefined
     if (focusObj) tc.attach(focusObj)
 
-    // Raycast pick: clicking an object's body focuses it; empty space orbits and
-    // leaves focus untouched. Skip when the pointer is on a gizmo handle.
+    // Pointer-down resolution runs through the mode-guarded resolver (the click
+    // analogue of dispatchKey): gizmo handle → TransformControls; object → focus;
+    // empty → orbit. Centralised + guarded so it can't drift from the machine mode.
     const onPick = (e: PointerEvent) => {
-      if (tc.axis) return
+      if (e.button !== 0) return // left button only; right/middle drive pan/dolly
       const r = surface.getBoundingClientRect()
       if (r.width < 1 || r.height < 1) return
       const ndcX = ((e.clientX - r.left) / r.width) * 2 - 1
       const ndcY = -(((e.clientY - r.top) / r.height) * 2 - 1)
-      const hit = pickObject(inst, ndcX, ndcY)
-      if (hit) setFocusedObject(hit)
+      resolveScene3dPointerDown(ndcX, ndcY, {
+        actor,
+        instance: inst,
+        gizmoActive: tc.axis != null,
+        pick: pickObject,
+      })
     }
     surface.addEventListener('pointerdown', onPick)
+
+    // In edit mode the overlay (sized to the scene box) OWNS the wheel: OrbitControls
+    // dollies, and stopping propagation keeps the event from bubbling to the 2D
+    // canvas — so scrolling over the box zooms the scene, not the document. Outside
+    // the box the overlay isn't hit, so the document keeps its normal wheel-zoom.
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    surface.addEventListener('wheel', onWheel, { passive: false })
     scheduleDraw()
 
     return () => {
       surface.removeEventListener('pointerdown', onPick)
+      surface.removeEventListener('wheel', onWheel)
       inst.scene.remove(tc.getHelper())
       tc.detach()
       tc.dispose()
@@ -279,6 +324,19 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       const skipTransformFor = sceneId === editingId ? focusedId : null
       applyDocToInstance(inst, doc, skipTransformFor)
 
+      // Edit-only backdrop: fill the peephole with a solid colour while editing so
+      // the scene region reads apart from the document canvas (which otherwise shows
+      // through the transparent container). Outside edit mode the scene stays
+      // transparent so it composites over the document. (Lighting is unaffected —
+      // `scene.background` is purely the visual backdrop, not the IBL environment.)
+      if (sceneId === editingId) {
+        const hex = doc.background ?? SCENE3D_EDIT_BACKDROP
+        if (inst.scene.background instanceof THREE.Color) inst.scene.background.set(hex)
+        else inst.scene.background = new THREE.Color(hex)
+      } else if (inst.scene.background) {
+        inst.scene.background = null
+      }
+
       // Window/peephole model: the box is a hole onto a FIXED scene, not a frame the
       // world is squeezed into. The camera renders at a FIXED scale — the design
       // frustum (SCENE3D_BASE_VIEW = the creation size) — and the box's rect is just
@@ -325,16 +383,6 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       surface.style.display = 'none'
     }
   }
-
-  // Esc exits edit mode.
-  useEffect(() => {
-    if (!editingSceneId) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') exit()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [editingSceneId, exit])
 
   return (
     <>

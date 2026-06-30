@@ -47,6 +47,10 @@ export interface Scene3DDocument {
   camera: { fov: number }
   env: { preset: 'studio'; intensity: number }
   objects: Object3DEntry[]
+  /** Backdrop shown ONLY while editing this scene (`null` ⇒ the default studio
+   *  backdrop). Outside edit mode the scene composites transparently over the
+   *  document, so this never affects the final/preview render. */
+  background?: string | null
 }
 
 /**
@@ -58,6 +62,14 @@ export interface Scene3DDocument {
  * `create-3d-scene` so the two can't drift.
  */
 export const SCENE3D_BASE_VIEW = { w: 360, h: 260 } as const
+
+/**
+ * Default editor backdrop for a scene's peephole — a neutral dark "studio" fill
+ * shown ONLY in edit mode, so the scene region reads apart from the document
+ * canvas (which otherwise shows through the transparent container). Overridable
+ * per-scene via `Scene3DDocument.background`.
+ */
+export const SCENE3D_EDIT_BACKDROP = '#262a35'
 
 interface Scene3DState {
   scenes: Map<string, Scene3DDocument>
@@ -106,6 +118,7 @@ export function defaultSceneDocument(sceneId: string): Scene3DDocument {
     camera: { fov: 45 },
     env: { preset: 'studio', intensity: 1 },
     objects: [],
+    background: null,
   }
 }
 
@@ -205,6 +218,18 @@ export function clearAllSceneAnchors(): void {
   lastSceneRect.clear()
 }
 
+/**
+ * Min/max dolly distance for a scene's camera, derived from its *home* (design)
+ * distance so scroll-zoom can't fly through the content or escape to nothing. The
+ * bounds are proportional, so they auto-scale to whatever distance the scene was
+ * framed at; base them on the stable home distance (captured once) — not the live
+ * one — or repeated zoom-in/exit/re-enter would ratchet the camera ever closer.
+ */
+export function dollyBounds(homeDistance: number): { min: number; max: number } {
+  const d = homeDistance > 0 ? homeDistance : 1
+  return { min: d * 0.2, max: d * 5 }
+}
+
 /* ----------------------------------------------------------------------------
  * Model actions (mutate the serializable proxy). Persisted edits go through the
  * document (scene3d-commit); these are for registration + transient edit state +
@@ -239,6 +264,12 @@ export function patchObjectTransformLocal(
 ): void {
   const obj = scene3dProxy.scenes.get(sceneId)?.objects.find((o) => o.id === objId)
   if (obj) Object.assign(obj.transform3d, patch)
+}
+
+/** Live (uncommitted) edit-backdrop preview while the colour picker drags; committed on blur. */
+export function patchSceneBackgroundLocal(sceneId: string, background: string | null): void {
+  const scene = scene3dProxy.scenes.get(sceneId)
+  if (scene) scene.background = background
 }
 
 /** Live (uncommitted) material preview while the colour picker drags; committed on blur. */
