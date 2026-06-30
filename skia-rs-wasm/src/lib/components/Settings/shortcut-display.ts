@@ -5,7 +5,7 @@
  */
 
 import type { Command } from '../../renderer/input/commands'
-import { buildKeyBindings, TOOL_BINDINGS, type ToolKeyField } from '../../renderer/input/key-bindings'
+import { buildKeyBindings, TOOL_BINDINGS, type ToolBindingDesc, type ToolKeyField } from '../../renderer/input/key-bindings'
 import type { ShortcutsConfig } from '../../renderer/types'
 
 const KEY_LABEL: Record<string, string> = {
@@ -32,7 +32,7 @@ export function formatKeyCode(code: string): string {
   return code
 }
 
-export type ShortcutCategory = 'Tools' | 'Path editing' | 'View'
+export type ShortcutCategory = 'Tools' | 'Path editing' | '3D editing' | 'View'
 
 const TOOL_NAMES: Record<string, string> = {
   pen: 'Pen', rect: 'Rectangle', frame: 'Frame', text: 'Text',
@@ -50,6 +50,11 @@ export function commandInfo(cmd: Command): { label: string; category: ShortcutCa
       return { label: `${n[cmd.sub] ?? cmd.sub} points`, category: 'Path editing' }
     }
     case 'PATH_FINISH': return { label: 'Finish editing', category: 'Path editing' }
+    case 'SCENE3D_GIZMO': {
+      const n: Record<string, string> = { translate: 'Move', rotate: 'Rotate', scale: 'Scale' }
+      return { label: `${n[cmd.mode] ?? cmd.mode} gizmo`, category: '3D editing' }
+    }
+    case 'SCENE3D_EXIT': return { label: 'Exit 3D edit', category: '3D editing' }
     case 'PAN': {
       const dir = cmd.dx > 0 ? 'left' : cmd.dx < 0 ? 'right' : cmd.dy > 0 ? 'up' : 'down'
       return { label: `Pan ${dir}`, category: 'View' }
@@ -75,12 +80,22 @@ export function shortcutRows(cfg: ShortcutsConfig): ShortcutRow[] {
 }
 
 
+/** Which editing mode a binding is scoped to. Keys reused across mutually-exclusive
+ *  modes (e.g. R = Rectangle in Select, Rotate while editing a 3D scene) don't clash. */
+function scopeOf(tb: ToolBindingDesc): 'path' | 'scene3d' | 'global' {
+  return tb.pathOnly ? 'path' : tb.scene3dOnly ? 'scene3d' : 'global'
+}
+
 /** If `code` is already bound to something other than `field`, return that
  *  binding's human label (so the rebind UI can warn); else null. Checks the other
- *  tool keys plus the reserved pan/zoom/finish codes. */
+ *  tool keys in the SAME mode scope, plus the reserved pan/zoom/finish codes. */
 export function toolKeyConflict(cfg: ShortcutsConfig, field: ToolKeyField, code: string): string | null {
+  const me = TOOL_BINDINGS.find((t) => t.field === field)
+  const myScope = me ? scopeOf(me) : 'global'
   for (const tb of TOOL_BINDINGS) {
-    if (tb.field !== field && cfg[tb.field] === code) return tb.label
+    if (tb.field === field || cfg[tb.field] !== code) continue
+    if (scopeOf(tb) !== myScope) continue // different mode → no real clash
+    return tb.label
   }
   const reserved: Record<string, string> = {
     [cfg.panLeft]: 'Pan left',

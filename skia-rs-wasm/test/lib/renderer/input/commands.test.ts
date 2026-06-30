@@ -63,4 +63,21 @@ describe('runCommand', () => {
       runCommand({ type: 'ZOOM_RESET' }, ctx)
     }).not.toThrow()
   })
+
+  it('SCENE3D_GIZMO switches the gizmo sub-tool', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    runCommand({ type: 'SCENE3D_GIZMO', mode: 'scale' }, ctxFor(a))
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('scale')
+  })
+
+  it('SCENE3D_EXIT and TOOL_SELECT both leave 3D-scene editing', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    runCommand({ type: 'SCENE3D_EXIT' }, ctxFor(a))
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's2' })
+    runCommand({ type: 'TOOL_SELECT' }, ctxFor(a))
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+  })
 })

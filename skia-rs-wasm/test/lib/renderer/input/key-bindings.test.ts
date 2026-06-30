@@ -91,3 +91,39 @@ describe('rebindable tool keys (config-driven)', () => {
     expect(a.getSnapshot().context.drawTool).toBe('pen')
   })
 })
+
+describe('scene3d edit bindings', () => {
+  it('KeyG/KeyR/KeyS switch the gizmo only while editing a 3D scene', () => {
+    const a = createActor(canvasMachine).start()
+    // Not editing: a gizmo-only key (G) is unhandled.
+    expect(dispatchKey(key('KeyG'), bindings, ctxFor(a))).toBe(false)
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('KeyG'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('translate')
+    expect(dispatchKey(key('KeyR'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('rotate')
+    expect(dispatchKey(key('KeyS'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('scale')
+  })
+
+  it('KeyR is Rectangle in select mode but Rotate while editing a 3D scene', () => {
+    const a = createActor(canvasMachine).start()
+    // Select mode: R toggles the rectangle tool.
+    expect(dispatchKey(key('KeyR'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.drawTool).toBe('rect')
+    // Drop the tool, enter 3D edit: the SAME key now rotates, not draws.
+    a.send({ type: 'DRAW_TOOL_DEACTIVATE' })
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('KeyR'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('rotate')
+    expect(a.getSnapshot().context.drawTool).toBeNull()
+  })
+
+  it('Escape exits 3D-scene editing', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(true)
+    dispatchKey(key('Escape'), bindings, ctxFor(a))
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+  })
+})

@@ -119,6 +119,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const viewRows = shortcutRows(cfg).filter((r) => r.category === 'View')
   const toolDescs = TOOL_BINDINGS.filter((t) => t.category === 'Tools')
   const pathDescs = TOOL_BINDINGS.filter((t) => t.category === 'Path editing')
+  const scene3dDescs = TOOL_BINDINGS.filter((t) => t.category === '3D editing')
 
   return (
     <div
@@ -197,6 +198,15 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">Path editing</div>
               <ul className="divide-y divide-border/60 rounded-lg border border-border/60">
                 {pathDescs.map((t) => (
+                  <RebindRow key={t.field} field={t.field} label={t.label} value={cfg[t.field]} onRebind={rebind} />
+                ))}
+              </ul>
+            </div>
+
+            <div className="mb-3">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">3D editing</div>
+              <ul className="divide-y divide-border/60 rounded-lg border border-border/60">
+                {scene3dDescs.map((t) => (
                   <RebindRow key={t.field} field={t.field} label={t.label} value={cfg[t.field]} onRebind={rebind} />
                 ))}
               </ul>

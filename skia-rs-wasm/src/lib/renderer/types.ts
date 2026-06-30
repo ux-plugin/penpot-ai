@@ -207,6 +207,10 @@ export interface ShortcutsConfig {
   pathMoveKey: string
   pathAddKey: string
   pathBendKey: string
+  /** 3D-scene gizmo sub-tool keys (active only while editing a 3D scene). */
+  scene3dMoveKey: string
+  scene3dRotateKey: string
+  scene3dScaleKey: string
   wheelZoomEnabled: boolean
   wheelScalePerPixel: number
 }

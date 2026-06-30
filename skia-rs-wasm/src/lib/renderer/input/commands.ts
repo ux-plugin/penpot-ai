@@ -13,7 +13,7 @@
 import { Viewport, type ViewportData } from '../viewport'
 import type { Renderer } from '../renderer'
 import type { CanvasActorRef } from '../machine/canvas-actor-types'
-import type { DrawTool, PathSubTool } from '../machine/canvas-machine'
+import type { DrawTool, PathSubTool, Scene3DGizmoMode } from '../machine/canvas-machine'
 import type { ShortcutsConfig } from '../types'
 
 export type Command =
@@ -32,6 +32,9 @@ export type Command =
   | { type: 'ZOOM_IN' }
   | { type: 'ZOOM_OUT' }
   | { type: 'ZOOM_RESET' }
+  // 3D-scene editing: switch the gizmo sub-tool, or leave edit mode.
+  | { type: 'SCENE3D_GIZMO'; mode: Scene3DGizmoMode }
+  | { type: 'SCENE3D_EXIT' }
 
 export interface CommandCtx {
   actor: CanvasActorRef
@@ -66,6 +69,7 @@ export function runCommand(cmd: Command, ctx: CommandCtx): void {
     case 'TOOL_SELECT': {
       const snap = actor.getSnapshot()
       if (snap.matches('pathEditing')) actor.send({ type: 'STOP_PATH_EDIT' })
+      else if (snap.matches('scene3dEditing')) actor.send({ type: 'SCENE3D_EDIT_EXIT' })
       else if (snap.context.drawTool != null) actor.send({ type: 'DRAW_TOOL_DEACTIVATE' })
       return
     }
@@ -93,6 +97,12 @@ export function runCommand(cmd: Command, ctx: CommandCtx): void {
     }
     case 'ZOOM_RESET':
       applyViewport(ctx, (v) => v.reset())
+      return
+    case 'SCENE3D_GIZMO':
+      actor.send({ type: 'SCENE3D_SET_GIZMO', mode: cmd.mode })
+      return
+    case 'SCENE3D_EXIT':
+      actor.send({ type: 'SCENE3D_EDIT_EXIT' })
       return
   }
 }
