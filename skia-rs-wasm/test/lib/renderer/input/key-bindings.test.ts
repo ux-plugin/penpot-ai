@@ -4,6 +4,7 @@ import { canvasMachine } from '@/lib/renderer/machine/canvas-machine'
 import { buildKeyBindings, dispatchKey } from '@/lib/renderer/input/key-bindings'
 import type { CommandCtx } from '@/lib/renderer/input/commands'
 import { DEFAULT_SHORTCUTS } from '@/lib/renderer/store/shortcuts-store'
+import { setFocusedObject, scene3dProxy } from '@/lib/renderer/three/scene3d-store'
 
 function ctxFor(actor: ReturnType<typeof createActor<typeof canvasMachine>>): CommandCtx {
   return {
@@ -78,6 +79,18 @@ describe('dispatchKey', () => {
     const a = createActor(canvasMachine).start()
     expect(dispatchKey(key('KeyZ'), bindings, ctxFor(a))).toBe(false)
   })
+
+  it('Backspace/Delete delete the selection in idle, but not while typing or path editing', () => {
+    const a = createActor(canvasMachine).start()
+    expect(dispatchKey(key('Backspace'), bindings, ctxFor(a))).toBe(true)
+    expect(dispatchKey(key('Delete'), bindings, ctxFor(a))).toBe(true)
+    // typing in an input / contentEditable → skipped (notInInput)
+    const typing = { closest: (sel: string) => (sel.includes('input') || sel.includes('contenteditable') ? {} : null) }
+    expect(dispatchKey(key('Backspace', { target: typing }), bindings, ctxFor(a))).toBe(false)
+    // path editing → central dispatch defers to the path overlay's own handler
+    a.send({ type: 'START_PATH_EDIT', shapeId: 's1' })
+    expect(dispatchKey(key('Backspace'), bindings, ctxFor(a))).toBe(false)
+  })
 })
 
 describe('rebindable tool keys (config-driven)', () => {
@@ -125,6 +138,14 @@ describe('scene3d edit bindings', () => {
     expect(a.getSnapshot().matches('scene3dEditing')).toBe(true)
     dispatchKey(key('Escape'), bindings, ctxFor(a))
     expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+  })
+
+  it('Backspace deletes the focused object while editing a 3D scene (clears focus)', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    setFocusedObject('cube-1')
+    expect(dispatchKey(key('Backspace'), bindings, ctxFor(a))).toBe(true)
+    expect(scene3dProxy.focusedObjectId).toBeNull()
   })
 
   it('KeyF frames/resets the view while editing, but is the Frame tool otherwise', () => {

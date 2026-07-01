@@ -101,6 +101,12 @@ export function buildKeyBindings(s: ShortcutsConfig): KeyBinding[] {
     { codes: ['Escape', 'Enter', 'NumpadEnter'], when: inPathEditing, command: { type: 'PATH_FINISH' } },
     { codes: ['Escape'], when: inScene3dEditing, command: { type: 'SCENE3D_EXIT' } },
 
+    // Delete / Backspace: remove the focused object while editing a 3D scene; otherwise
+    // remove the current selection (idle). Path/text editing handle their own deletion,
+    // and `notInInput` skips typing.
+    { codes: ['Backspace', 'Delete'], notInInput: true, when: inScene3dEditing, command: { type: 'SCENE3D_DELETE' } },
+    { codes: ['Backspace', 'Delete'], notInInput: true, when: (s) => s.matches('idle'), command: { type: 'DELETE_SELECTION' } },
+
     // Tool + sub-tool letters, from the rebindable config (see TOOL_BINDINGS).
     ...guardedTools.map(toolRow),
     ...plainTools.map(toolRow),

@@ -45,6 +45,7 @@ export function commandInfo(cmd: Command): { label: string; category: ShortcutCa
     case 'TOOL_SELECT': return { label: 'Select tool', category: 'Tools' }
     case 'TOOL_TOGGLE': return { label: `${TOOL_NAMES[cmd.tool] ?? cmd.tool} tool`, category: 'Tools' }
     case 'DRAW_CANCEL': return { label: 'Cancel tool', category: 'Tools' }
+    case 'DELETE_SELECTION': return { label: 'Delete selection', category: 'Tools' }
     case 'PATH_SUBTOOL': {
       const n: Record<string, string> = { move: 'Move', add: 'Add', bend: 'Bend' }
       return { label: `${n[cmd.sub] ?? cmd.sub} points`, category: 'Path editing' }
@@ -55,6 +56,7 @@ export function commandInfo(cmd: Command): { label: string; category: ShortcutCa
       return { label: `${n[cmd.mode] ?? cmd.mode} gizmo`, category: '3D editing' }
     }
     case 'SCENE3D_FRAME_VIEW': return { label: 'Frame / reset view', category: '3D editing' }
+    case 'SCENE3D_DELETE': return { label: 'Delete object', category: '3D editing' }
     case 'SCENE3D_EXIT': return { label: 'Exit 3D edit', category: '3D editing' }
     case 'PAN': {
       const dir = cmd.dx > 0 ? 'left' : cmd.dx < 0 ? 'right' : cmd.dy > 0 ? 'up' : 'down'

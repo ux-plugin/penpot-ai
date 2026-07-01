@@ -15,7 +15,9 @@ import type { Renderer } from '../renderer'
 import type { CanvasActorRef } from '../machine/canvas-actor-types'
 import type { DrawTool, PathSubTool, Scene3DGizmoMode } from '../machine/canvas-machine'
 import type { ShortcutsConfig } from '../types'
-import { requestSceneFrameView } from '../three/scene3d-store'
+import { requestSceneFrameView, setFocusedObject, scene3dProxy } from '../three/scene3d-store'
+import { commitRemoveObject } from '../three/scene3d-commit'
+import { deleteSelectedNodes } from '../handlers/delete-selection'
 
 export type Command =
   // Toolbar tools (toggle: pressing the active tool's key turns it off).
@@ -33,9 +35,13 @@ export type Command =
   | { type: 'ZOOM_IN' }
   | { type: 'ZOOM_OUT' }
   | { type: 'ZOOM_RESET' }
-  // 3D-scene editing: switch the gizmo sub-tool, frame/reset the view, or leave.
+  // Delete the current selection (Backspace / Delete).
+  | { type: 'DELETE_SELECTION' }
+  // 3D-scene editing: switch the gizmo sub-tool, frame/reset the view, delete the
+  // focused object, or leave.
   | { type: 'SCENE3D_GIZMO'; mode: Scene3DGizmoMode }
   | { type: 'SCENE3D_FRAME_VIEW' }
+  | { type: 'SCENE3D_DELETE' }
   | { type: 'SCENE3D_EXIT' }
 
 export interface CommandCtx {
@@ -100,6 +106,9 @@ export function runCommand(cmd: Command, ctx: CommandCtx): void {
     case 'ZOOM_RESET':
       applyViewport(ctx, (v) => v.reset())
       return
+    case 'DELETE_SELECTION':
+      void deleteSelectedNodes()
+      return
     case 'SCENE3D_GIZMO':
       actor.send({ type: 'SCENE3D_SET_GIZMO', mode: cmd.mode })
       return
@@ -107,6 +116,15 @@ export function runCommand(cmd: Command, ctx: CommandCtx): void {
       // View pose isn't machine state (like dolly/pan); nudge the overlay to refit.
       requestSceneFrameView()
       return
+    case 'SCENE3D_DELETE': {
+      const objId = scene3dProxy.focusedObjectId
+      const sceneId = actor.getSnapshot().context.scene3dEditingId
+      if (objId && sceneId) {
+        setFocusedObject(null)
+        void commitRemoveObject(sceneId, objId)
+      }
+      return
+    }
     case 'SCENE3D_EXIT':
       actor.send({ type: 'SCENE3D_EDIT_EXIT' })
       return

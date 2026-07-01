@@ -3,7 +3,7 @@ import { createActor } from 'xstate'
 import { canvasMachine } from '@/lib/renderer/machine/canvas-machine'
 import { runCommand, type CommandCtx } from '@/lib/renderer/input/commands'
 import { DEFAULT_SHORTCUTS } from '@/lib/renderer/store/shortcuts-store'
-import { sceneFrameViewRequest } from '@/lib/renderer/three/scene3d-store'
+import { sceneFrameViewRequest, setFocusedObject, scene3dProxy } from '@/lib/renderer/three/scene3d-store'
 
 /** A ctx whose viewport ops are no-ops (renderer null) — enough for tool/path commands. */
 function ctxFor(actor: ReturnType<typeof createActor<typeof canvasMachine>>): CommandCtx {
@@ -86,5 +86,18 @@ describe('runCommand', () => {
     const before = sceneFrameViewRequest.value
     runCommand({ type: 'SCENE3D_FRAME_VIEW' }, ctxFor(createActor(canvasMachine).start()))
     expect(sceneFrameViewRequest.value).toBe(before + 1)
+  })
+
+  it('DELETE_SELECTION is a safe no-op with no active page', () => {
+    const a = createActor(canvasMachine).start()
+    expect(() => runCommand({ type: 'DELETE_SELECTION' }, ctxFor(a))).not.toThrow()
+  })
+
+  it('SCENE3D_DELETE clears the focused object (safe no-op without a doc)', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    setFocusedObject('cube-1')
+    expect(() => runCommand({ type: 'SCENE3D_DELETE' }, ctxFor(a))).not.toThrow()
+    expect(scene3dProxy.focusedObjectId).toBeNull()
   })
 })
