@@ -9,7 +9,9 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   ensureSceneAnchor,
   reconcileSceneAnchorOnRect,
+  centerSceneAnchorOnBox,
   clearAllSceneAnchors,
+  SCENE3D_BASE_VIEW,
 } from '../../../../src/lib/renderer/three/scene3d-store'
 
 const R = (x: number, y: number, w: number, h: number) => ({ x, y, w, h })
@@ -55,5 +57,21 @@ describe('scene anchor reconcile', () => {
     reconcileSceneAnchorOnRect('a', R(10, 0, 360, 260)) // move only 'a'
     expect(a).toEqual({ x: 10, y: 0 })
     expect(b).toEqual({ x: 200, y: 200 })
+  })
+})
+
+describe('centerSceneAnchorOnBox (Frame-view recenter)', () => {
+  beforeEach(() => clearAllSceneAnchors())
+  const half = { x: SCENE3D_BASE_VIEW.w / 2, y: SCENE3D_BASE_VIEW.h / 2 }
+
+  it('pins the anchor so the box centre maps to the frustum centre', () => {
+    centerSceneAnchorOnBox('s', 500, 400)
+    expect(ensureSceneAnchor('s', 0, 0)).toEqual({ x: 500 - half.x, y: 400 - half.y })
+  })
+
+  it('overwrites an existing (edge-resized) anchor', () => {
+    ensureSceneAnchor('s', 100, 50)
+    centerSceneAnchorOnBox('s', 280, 180)
+    expect(ensureSceneAnchor('s', 0, 0)).toEqual({ x: 280 - half.x, y: 180 - half.y })
   })
 })

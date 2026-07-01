@@ -38,6 +38,7 @@ export const DEFAULT_SHORTCUTS: ShortcutsConfig = {
   scene3dMoveKey: 'KeyG',
   scene3dRotateKey: 'KeyR',
   scene3dScaleKey: 'KeyS',
+  scene3dFrameKey: 'KeyF',
   wheelZoomEnabled: true,
   wheelScalePerPixel: 0.002,
 }

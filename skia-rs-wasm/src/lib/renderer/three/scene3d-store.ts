@@ -19,6 +19,7 @@
 
 import { proxy } from 'valtio'
 import { proxyMap } from 'valtio/utils'
+import { signal } from '@preact/signals-core'
 import type * as THREE from 'three'
 
 export type Vec3 = [number, number, number]
@@ -219,6 +220,20 @@ export function clearAllSceneAnchors(): void {
 }
 
 /**
+ * Recenter the peephole crop so the box is symmetric on the design frustum: the box
+ * center then maps to the frustum center (where the camera looks). Used by Frame-view
+ * so that aiming the camera at an object also lands it in the middle of what's
+ * *visible*, not just the middle of the (possibly off-screen) design frustum.
+ */
+export function centerSceneAnchorOnBox(id: string, boxCenterX: number, boxCenterY: number): void {
+  const ax = boxCenterX - SCENE3D_BASE_VIEW.w / 2
+  const ay = boxCenterY - SCENE3D_BASE_VIEW.h / 2
+  const a = ensureSceneAnchor(id, ax, ay)
+  a.x = ax
+  a.y = ay
+}
+
+/**
  * Min/max dolly distance for a scene's camera, derived from its *home* (design)
  * distance so scroll-zoom can't fly through the content or escape to nothing. The
  * bounds are proportional, so they auto-scale to whatever distance the scene was
@@ -228,6 +243,27 @@ export function clearAllSceneAnchors(): void {
 export function dollyBounds(homeDistance: number): { min: number; max: number } {
   const d = homeDistance > 0 ? homeDistance : 1
   return { min: d * 0.2, max: d * 5 }
+}
+
+/**
+ * Camera distance at which a bounding sphere of `radius` just fits a vertical
+ * `fovDeg` field of view, with a little padding. Used by Frame-view to dolly so the
+ * focused object fills the peephole without clipping.
+ */
+export function frameDistanceForRadius(radius: number, fovDeg: number, padding = 1.25): number {
+  const half = ((Math.max(1, fovDeg) * Math.PI) / 180) / 2
+  return (Math.max(radius, 1e-4) / Math.sin(half)) * padding
+}
+
+/**
+ * Frame-view request — a runtime nudge (NOT machine state, like dolly/pan) that the
+ * overlay watches to recenter + refit the camera on the focused object (or reset to
+ * the home pose). Bumped by the SCENE3D_FRAME_VIEW command; edge-triggered, so only
+ * the change matters, not the value.
+ */
+export const sceneFrameViewRequest = signal(0)
+export function requestSceneFrameView(): void {
+  sceneFrameViewRequest.value += 1
 }
 
 /* ----------------------------------------------------------------------------

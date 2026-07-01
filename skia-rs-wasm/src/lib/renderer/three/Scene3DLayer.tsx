@@ -27,9 +27,9 @@ import {
   isScene3D,
   setFocusedObject,
   patchObjectTransformLocal,
-  ensureSceneAnchor,
   dollyBounds,
-  SCENE3D_BASE_VIEW,
+  frameDistanceForRadius,
+  sceneFrameViewRequest,
   SCENE3D_EDIT_BACKDROP,
   type Scene3DDocument,
 } from './scene3d-store'
@@ -63,6 +63,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   const editSurfaceRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const gizmoRef = useRef<TransformControls | null>(null)
+  const orbitRef = useRef<OrbitControls | null>(null)
   const rafRef = useRef(0)
   const selRectRef = useRef<ScreenRect | null>(null)
   // The redraw effect captures a stale draw closure (empty deps), so reading the
@@ -137,6 +138,14 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     if (!editingSceneId) setFocusedObject(null)
   }, [editingSceneId])
 
+  // Frame / reset view (F) — driven by the store's request signal, outside the
+  // redraw path. frameView() guards on edit state, so the immediate subscribe call
+  // (and any request fired while not editing) is a no-op.
+  useEffect(() => {
+    return sceneFrameViewRequest.subscribe(() => frameView())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // --- attach gizmo + orbit + raycast pick while editing a scene ---
   useEffect(() => {
     const sceneId = editingSceneId
@@ -173,12 +182,23 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     orbit.zoomToCursor = false
     // Clamp the dolly to the scene's home distance (captured once on the camera, so
     // it survives dolly + edit-exit/re-enter without ratcheting the bounds inward).
-    const camUserData = inst.camera.userData as { homeDistance?: number }
-    if (camUserData.homeDistance == null) camUserData.homeDistance = orbit.getDistance()
+    const camUserData = inst.camera.userData as {
+      homeDistance?: number
+      homePos?: THREE.Vector3
+      homeTarget?: THREE.Vector3
+    }
+    if (camUserData.homeDistance == null) {
+      // Capture the home pose once — before any orbit/dolly — so Frame-view's
+      // "reset to home" and the dolly clamp stay stable across exit/re-enter.
+      camUserData.homeDistance = orbit.getDistance()
+      camUserData.homePos = inst.camera.position.clone()
+      camUserData.homeTarget = orbit.target.clone()
+    }
     const bounds = dollyBounds(camUserData.homeDistance)
     orbit.minDistance = bounds.min
     orbit.maxDistance = bounds.max
     orbit.addEventListener('change', scheduleDraw)
+    orbitRef.current = orbit
 
     const tc = new TransformControls(inst.camera, surface)
     tc.setMode(gizmoMode)
@@ -241,6 +261,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       tc.dispose()
       orbit.dispose()
       gizmoRef.current = null
+      orbitRef.current = null
       scheduleDraw()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -253,6 +274,39 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     scheduleDraw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gizmoMode])
+
+  /** Frame the focused object (recenter the pivot + dolly to fit, keeping the view
+   *  angle), or reset to the scene's home pose when nothing is focused. */
+  function frameView() {
+    const orbit = orbitRef.current
+    const editingId = editingIdRef.current
+    if (!orbit || !editingId) return
+    const inst = getInstance(editingId)
+    if (!inst) return
+    const cam = inst.camera
+    const focusedId = scene3dProxy.focusedObjectId
+    const obj = focusedId ? inst.objects.get(focusedId) : null
+    if (obj) {
+      const sphere = new THREE.Box3().setFromObject(obj).getBoundingSphere(new THREE.Sphere())
+      const fit = frameDistanceForRadius(sphere.radius, cam.fov)
+      const dist = Math.min(Math.max(fit, orbit.minDistance), orbit.maxDistance)
+      const dir = cam.position.clone().sub(orbit.target)
+      if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1)
+      dir.normalize()
+      orbit.target.copy(sphere.center)
+      cam.position.copy(sphere.center).addScaledVector(dir, dist)
+    } else {
+      const ud = cam.userData as { homePos?: THREE.Vector3; homeTarget?: THREE.Vector3 }
+      if (ud.homePos && ud.homeTarget) {
+        cam.position.copy(ud.homePos)
+        orbit.target.copy(ud.homeTarget)
+      }
+    }
+    // The camera is centered (no peephole crop), so aiming orbit.target at the object
+    // already lands it in the middle of the visible box.
+    orbit.update()
+    scheduleDraw()
+  }
 
   function scheduleDraw() {
     if (rafRef.current) return
@@ -337,26 +391,14 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
         inst.scene.background = null
       }
 
-      // Window/peephole model: the box is a hole onto a FIXED scene, not a frame the
-      // world is squeezed into. The camera renders at a FIXED scale — the design
-      // frustum (SCENE3D_BASE_VIEW = the creation size) — and the box's rect is just
-      // the crop window (setViewOffset). The crop is taken relative to the scene's
-      // anchor, which scene3d-sync freezes on resize and translates on move: so
-      // resizing from ANY edge keeps every object the same size and place and reveals
-      // more world, while moving the box carries the scene along. The live move delta
-      // is folded in so the scene tracks the pointer before the move commits. Units are
-      // world; setViewOffset works on ratios, so zoom cancels.
-      const md = isSel ? movePreviewWorldDelta.value : { x: 0, y: 0 }
-      const anchor = ensureSceneAnchor(sceneId, boxLeftWorld - md.x, boxTopWorld - md.y)
-      inst.camera.aspect = SCENE3D_BASE_VIEW.w / SCENE3D_BASE_VIEW.h
-      inst.camera.setViewOffset(
-        SCENE3D_BASE_VIEW.w,
-        SCENE3D_BASE_VIEW.h,
-        boxLeftWorld - (anchor.x + md.x),
-        boxTopWorld - (anchor.y + md.y),
-        world.w,
-        world.h,
-      )
+      // Plain centered perspective viewport: the box's full frame IS the camera (not a
+      // frustum-extending peephole). The optical axis runs through the box centre and
+      // the vertical FOV is fixed, so the effective FOV depends only on the aspect —
+      // never on the box's absolute size. Shapes therefore grow naturally toward you on
+      // dolly (no shear) and there's no wide-angle edge stretch; resizing reframes like
+      // a normal 3D window. Aspect = the box's on-screen aspect (sw/sh); zoom cancels.
+      inst.camera.aspect = sw / sh
+      inst.camera.clearViewOffset() // also recomputes the projection with the new aspect
 
       // three multiplies these by pixelRatio internally — pass CSS/logical px.
       const glX = tl.x

@@ -126,4 +126,16 @@ describe('scene3d edit bindings', () => {
     dispatchKey(key('Escape'), bindings, ctxFor(a))
     expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
   })
+
+  it('KeyF frames/resets the view while editing, but is the Frame tool otherwise', () => {
+    const a = createActor(canvasMachine).start()
+    // Select mode: F arms the frame tool.
+    expect(dispatchKey(key('KeyF'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.drawTool).toBe('frame')
+    // Editing: F is consumed by the frame-view command and does NOT arm the tool.
+    a.send({ type: 'DRAW_TOOL_DEACTIVATE' })
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('KeyF'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.drawTool).toBeNull()
+  })
 })
