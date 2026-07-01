@@ -41,6 +41,20 @@ export interface Object3DEntry {
   emits: string[]
 }
 
+export type CameraProjection = 'perspective' | 'orthographic'
+
+/** A camera placed in a scene — perspective or orthographic, positioned like an
+ *  object (aim = rotationEuler, place = position; no material/scale). The scene
+ *  renders through its ACTIVE camera. */
+export interface Camera3DEntry {
+  id: string
+  name: string
+  projection: CameraProjection
+  /** Vertical field of view in degrees (perspective only; ignored for ortho). */
+  fov: number
+  transform3d: { position: Vec3; rotationEuler: Vec3 }
+}
+
 /** A whole 3D scene: shared camera + environment + an ordered list of objects. */
 export interface Scene3DDocument {
   /** The container (placeholder rect) node id — the scene's id in the document. */
@@ -48,6 +62,11 @@ export interface Scene3DDocument {
   camera: { fov: number }
   env: { preset: 'studio'; intensity: number }
   objects: Object3DEntry[]
+  /** Cameras placed in the scene; the scene renders through `activeCameraId`. Optional
+   *  for back-compat — legacy scenes (only `camera.fov`) synthesise a default via
+   *  `sceneCameras`/`activeCamera`. */
+  cameras?: Camera3DEntry[]
+  activeCameraId?: string
   /** Backdrop shown ONLY while editing this scene (`null` ⇒ the default studio
    *  backdrop). Outside edit mode the scene composites transparently over the
    *  document, so this never affects the final/preview render. */
@@ -112,13 +131,41 @@ export function defaultObject(id: string, source: Source3D, name?: string): Obje
   }
 }
 
+/** The scene's default camera — a perspective camera matching the initial view. */
+export function defaultCamera(sceneId: string): Camera3DEntry {
+  return {
+    id: `${sceneId}:cam0`,
+    name: 'Camera',
+    projection: 'perspective',
+    fov: 45,
+    transform3d: { position: [0, 0, 6], rotationEuler: [0, 0, 0] },
+  }
+}
+
+/** The scene's cameras, synthesising a default for legacy scenes that predate the
+ *  `cameras[]` field (only `camera.fov`). Never empty. */
+export function sceneCameras(scene: Scene3DDocument): Camera3DEntry[] {
+  if (scene.cameras && scene.cameras.length > 0) return scene.cameras
+  const cam = defaultCamera(scene.sceneId)
+  return [{ ...cam, fov: scene.camera?.fov ?? cam.fov }]
+}
+
+/** The active camera the scene renders through (falls back to the first). */
+export function activeCamera(scene: Scene3DDocument): Camera3DEntry {
+  const cams = sceneCameras(scene)
+  return cams.find((c) => c.id === scene.activeCameraId) ?? cams[0]
+}
+
 /** A default empty scene. Objects are added from the contextual menu in 3D-edit mode. */
 export function defaultSceneDocument(sceneId: string): Scene3DDocument {
+  const cam = defaultCamera(sceneId)
   return {
     sceneId,
-    camera: { fov: 45 },
+    camera: { fov: cam.fov },
     env: { preset: 'studio', intensity: 1 },
     objects: [],
+    cameras: [cam],
+    activeCameraId: cam.id,
     background: null,
   }
 }
