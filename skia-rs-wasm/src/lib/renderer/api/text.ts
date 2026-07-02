@@ -7,7 +7,9 @@ import type { PenpotNode, Fill, TextContent, Paragraph, TextNode } from 'penpot-
 import type { PendingImageCallback, ResolveFontUrlCallback, FontInfo, FontData } from '../types'
 import { uuidToU32Tuple, uuidToU32 } from '../types'
 import { googleFontUrl } from './google-fonts'
+import { cachedFontFetch } from './font-cache'
 import { fontSlugToUuid } from './font-id-map'
+import { useFontAvailabilityStore, faceKey } from '../store/font-availability'
 import {
   freeBytes,
   offset8To32,
@@ -177,7 +179,8 @@ function normalizeFontVariantId(variantId?: string): string {
  * Retrieves a font file from a URL and returns as ArrayBuffer
  */
 async function retrieveFont(url: string): Promise<ArrayBuffer> {
-  const response = await fetch(url)
+  // Cache-first: a font fetched once is served from disk (offline) next time.
+  const response = await cachedFontFetch(url)
   if (!response.ok) {
     throw new Error(`Failed to fetch font: ${response.statusText}`)
   }
@@ -227,13 +230,22 @@ function fetchFont(
         )
         
         freeBytes(module)
+        useFontAvailabilityStore
+          .getState()
+          .markAvailable(faceKey(fontData.fontId, fontData.weight, fontData.styleName === 'italic'))
         return true
       } catch (error) {
+        // Offline with no cached copy, or the fetch failed: WASM renders this face
+        // with the bundled default — flag this exact face (family+weight+italic) so
+        // the UI can surface it on the weight control.
         console.error('Could not fetch font', {
           fontId: fontData.fontId,
           fontUrl,
           error,
         })
+        useFontAvailabilityStore
+          .getState()
+          .markSubstituted(faceKey(fontData.fontId, fontData.weight, fontData.styleName === 'italic'))
         return false
       }
     },

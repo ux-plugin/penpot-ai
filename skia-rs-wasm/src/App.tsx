@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
+import { useFontReconnect } from '@/lib/renderer/api/font-reconnect'
 import { CanvasWrapper } from './lib/renderer/canvas-wrapper'
 import { ShapeToolbar } from './lib/components/ShapeToolbar'
 import { CursorHint } from './lib/components/CursorHint'
@@ -56,6 +57,9 @@ function App() {
     didLoadInitialDocument.current = true
     void setDocument(createNewDocument())
   }, [renderer])
+
+  // Once back online, retry any fonts that fell back to the default while offline.
+  useFontReconnect()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

@@ -24,6 +24,7 @@ import {
   CaseUpper,
   ChevronDown,
   ChevronRight,
+  Info,
   Italic,
   Strikethrough,
   Underline,
@@ -58,11 +59,13 @@ import {
   type VAlign,
 } from './text-typography'
 import { familyMeta } from '@/lib/renderer/api/google-fonts'
+import { useFontAvailabilityStore, faceKey, familyStatuses } from '@/lib/renderer/store/font-availability'
 import { useSignalCoalesced } from '@/lib/renderer/signals/use-signal-coalesced'
 import {
   textEditorActive,
   textEditorShapeId,
   currentStyles,
+  refocusTextEditor,
 } from '@/lib/renderer/signals/text-editor'
 import { MULTIPLE, textEditorApplyStyles, type ApplyStylePatch } from '@/lib/renderer/api/text-editor'
 import { ensureFontLoaded, setShapeTextContent } from '@/lib/renderer/api/text'
@@ -188,6 +191,19 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
   const docValues = docDisplay.values
   const live = editing && editingId === nodeId && liveStyles != null
   const { values, mixed } = live ? displayFromCurrentStyles(liveStyles, docValues) : docDisplay
+
+  // Font-availability indicators, split by scope:
+  //  - family "i" when the WHOLE family is unavailable (no face loaded);
+  //  - weight "i" when the family is present but the selected weight isn't.
+  // Mutually exclusive — a present family always has ≥1 loaded face.
+  const byFace = useFontAvailabilityStore((s) => s.byFace)
+  const statuses = useMemo(() => familyStatuses(byFace), [byFace])
+  const familyMissing = !mixed.family && statuses.get(values.fontId) === 'missing'
+  const weightUnavailable =
+    !mixed.family &&
+    !mixed.weight &&
+    statuses.get(values.fontId) === 'available' &&
+    byFace[faceKey(values.fontId, Number(values.weight), values.italic)] === 'substituted'
 
   // Number fields are edited as drafts and committed on blur (matches
   // AppearanceSection), so intermediate keystrokes don't each round-trip.
@@ -362,8 +378,18 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                 pickerOpen && 'ring-2 ring-ring',
               )}
             >
-              <span className="min-w-0 truncate">
-                {mixed.family ? 'Mixed' : (familyMeta(values.fontId)?.family ?? values.family)}
+              <span className="flex min-w-0 items-center gap-1.5">
+                {familyMissing && (
+                  <span
+                    title="This font isn't available offline — showing the default font"
+                    className="flex shrink-0"
+                  >
+                    <Info className="size-3.5 text-destructive" aria-hidden />
+                  </span>
+                )}
+                <span className="min-w-0 truncate">
+                  {mixed.family ? 'Mixed' : (familyMeta(values.fontId)?.family ?? values.family)}
+                </span>
               </span>
               <ChevronDown className="size-4 shrink-0 opacity-50" aria-hidden />
             </button>
@@ -373,10 +399,23 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
             <div className="flex gap-2">
               <Select
                 value={mixed.weight ? '' : values.weight}
-                onValueChange={(w) => void commit({ span: { fontWeight: w } })}
+                onValueChange={(w) => {
+                  void commit({ span: { fontWeight: w } })
+                  // Keep editing alive: hand keyboard focus back from the (portaled)
+                  // Select so the selection stays usable and typing continues.
+                  if (textEditorActive.value) requestAnimationFrame(() => refocusTextEditor())
+                }}
                 disabled={readOnly}
               >
                 <SelectTrigger size="sm" className="min-w-0 flex-1" aria-label="Font weight">
+                  {weightUnavailable && (
+                    <span
+                      title="This weight isn't available offline — showing the default font"
+                      className="flex shrink-0"
+                    >
+                      <Info className="size-3.5 text-destructive" aria-hidden />
+                    </span>
+                  )}
                   <SelectValue placeholder={mixed.weight ? 'Mixed' : 'Weight'} />
                 </SelectTrigger>
                 <SelectContent>
