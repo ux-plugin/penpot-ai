@@ -1,0 +1,26 @@
+{
+  "name": "zoetrope-desktop-app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Electron desktop shell for Zoetrope — hosts the skia-rs-wasm renderer.",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "concurrently -k -n skia,shell -c cyan,green \"pnpm --filter skia-rs-wasm dev\" \"electron-vite dev\"",
+    "dev:shell": "electron-vite dev",
+    "preview": "electron-vite preview",
+    "build": "pnpm --filter skia-rs-wasm build:app && electron-vite build && node scripts/bundle-renderer.mjs",
+    "typecheck": "tsc --noEmit",
+    "package": "pnpm run build && electron-builder",
+    "package:mac": "pnpm run build && electron-builder --mac",
+    "package:win": "pnpm run build && electron-builder --win",
+    "package:linux": "pnpm run build && electron-builder --linux"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

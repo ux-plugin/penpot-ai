@@ -1,0 +1,85 @@
+:root {
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: radial-gradient(120% 120% at 50% 0%, #15151c 0%, #0b0b0e 60%);
+  color: #e7e7ee;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+.boot {
+  text-align: center;
+  padding: 2rem;
+  max-width: 520px;
+}
+.logo {
+  font-size: 56px;
+  line-height: 1;
+  animation: spin 8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+h1 {
+  font-weight: 650;
+  font-size: 28px;
+  margin: 14px 0 2px;
+}
+h1 span {
+  color: #8b8bff;
+  font-weight: 400;
+}
+.tag {
+  color: #9a9aae;
+  margin: 0 0 22px;
+  font-size: 13px;
+}
+.diag {
+  display: grid;
+  gap: 8px;
+  text-align: left;
+  background: #ffffff08;
+  border: 1px solid #ffffff14;
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.diag > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+}
+.diag dt {
+  color: #9a9aae;
+}
+.diag dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.diag dd.ok {
+  color: #6ee7a8;
+}
+.diag dd.warn {
+  color: #f5c451;
+}
+.diag dd.bad {
+  color: #ff7a90;
+}
+.next {
+  margin-top: 20px;
+  color: #6b6b80;
+  font-size: 12px;
+}
