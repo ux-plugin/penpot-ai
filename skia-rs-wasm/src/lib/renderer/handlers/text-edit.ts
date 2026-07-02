@@ -19,6 +19,9 @@ import {
   textEditorExportContent,
   textEditorExportStyled,
   textEditorSelectAll,
+  textEditorPointerDown,
+  textEditorPointerMove,
+  textEditorPointerUp,
   textEditorGetCurrentStyles,
 } from '../api/text-editor'
 import type { StyledContent, StyledSpan, StyledFill } from '../api/text-editor'
@@ -37,6 +40,7 @@ import {
 } from '../signals/text-editor'
 import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { getSelectedIdsSet, setSelectedIds } from '../store/document-selection'
+import { viewport as viewportSignal } from '../signals/pointer'
 import { applyChanges } from '../../page-crud'
 
 /** Packed ARGB u32 (Skia `Color::new` order): a translucent blue selection and a
@@ -63,15 +67,21 @@ export function refreshEditorStyles(module: WasmModule): void {
 }
 
 /**
- * Enter edit mode for `shapeId`: focus the WASM editor, flip the render-loop
- * gate on, apply the caret/selection theme, and schedule a frame.
+ * Enter edit mode for `shapeId`: focus the WASM editor, select all (so the caret
+ * is visible immediately), flip the render-loop gate on, apply the caret/selection
+ * theme, and schedule a frame.
  *
  * Returns whether focus succeeded. A just-created shape may not be in the WASM
  * scene yet, so `_text_editor_focus` can return false on the first try; the
  * caller retries on the next frame (otherwise the caret never shows on the very
  * first click that creates the box).
+ *
+ * No-ops (returns true) if a session is already active for this shape — e.g. the
+ * viewport hook called `beginTextEdit` to own a click-or-drag gesture, so the
+ * overlay's mount-time start must not clobber the live caret/selection.
  */
 export function startTextEdit(module: WasmModule, shapeId: string): boolean {
+  if (textEditorActive.peek() && textEditorShapeId.peek() === shapeId) return true
   const focused = textEditorFocus(module, shapeId)
   if (!focused) return false
   // Select all on entry so the caret/selection is visible immediately (without
@@ -85,6 +95,99 @@ export function startTextEdit(module: WasmModule, shapeId: string): boolean {
   textEditorApplyTheme(module, SELECTION_COLOR, CURSOR_COLOR)
   requestRender(module, 'text-edit-start')
   return true
+}
+
+/** Read a shape's selrect (world coords) + rotation from the document model. */
+function getShapeGeom(shapeId: string): { selrect: Selrect; rotation: number } | null {
+  const pageId = getActiveOrSinglePageId()
+  if (!pageId) return null
+  const node = getPage(pageId)?.objects[shapeId] as
+    | { selrect?: Selrect; rotation?: number }
+    | undefined
+  if (!node?.selrect) return null
+  return { selrect: node.selrect, rotation: node.rotation ?? 0 }
+}
+
+/**
+ * Convert a surface-relative SCREEN point to the shape's intrinsic (shape-local)
+ * coordinates the WASM text-editor pointer APIs expect — the inverse of the
+ * overlay's positioning transform, so it's rotation-aware. Lets the viewport hook
+ * drive a text gesture (whose press lands on the canvas) in the same coordinate
+ * space the overlay's `offsetX/offsetY` resolve to once it mounts. Null when the
+ * shape geometry or viewport is missing.
+ */
+export function screenToShapeLocal(
+  shapeId: string,
+  screenX: number,
+  screenY: number,
+): { x: number; y: number } | null {
+  const g = getShapeGeom(shapeId)
+  const v = viewportSignal.peek()
+  if (!g || !v) return null
+  const cw = g.selrect.width
+  const ch = g.selrect.height
+  const cx = (g.selrect.x + cw / 2 - v.panX) * v.zoom
+  const cy = (g.selrect.y + ch / 2 - v.panY) * v.zoom
+  const t = g.rotation * (Math.PI / 180)
+  const sx = (screenX - cx) / v.zoom
+  const sy = (screenY - cy) / v.zoom
+  return {
+    x: sx * Math.cos(t) + sy * Math.sin(t) + cw / 2,
+    y: -sx * Math.sin(t) + sy * Math.cos(t) + ch / 2,
+  }
+}
+
+/**
+ * Enter edit mode for an EXISTING shape and anchor a pointer-down at `local`
+ * (shape-local) — the start of a click-or-drag gesture the viewport hook drives,
+ * because the initiating press lands on the canvas surface a frame before the
+ * `TextEditorOverlay` mounts to own it. Unlike `startTextEdit` it neither
+ * select-alls nor settles a caret: the caller forwards pointer-move/up
+ * (`dragTextEdit`/`endTextEdit`) so a plain click settles the caret and a drag
+ * selects a range. The shape is already in the WASM scene, so focus succeeds
+ * synchronously; returns false if it somehow doesn't (caller falls back to the
+ * overlay's select-all entry via the `START_TEXT_EDIT` it still sends).
+ */
+export function beginTextEdit(
+  module: WasmModule,
+  shapeId: string,
+  local: { x: number; y: number },
+): boolean {
+  // The WASM editor is a single global instance. Switching straight from another
+  // live session (text-tool press on a different shape, before that session's
+  // deferred unmount-commit runs) means we must commit it NOW, while the editor
+  // still holds it — otherwise focusing `shapeId` below would leave the old
+  // session's commit to export THIS shape's text back into the old shape.
+  const prev = textEditorShapeId.peek()
+  if (textEditorActive.peek() && prev && prev !== shapeId) {
+    commitTextEdit(module, prev)
+  }
+  const focused = textEditorFocus(module, shapeId)
+  if (!focused) return false
+  textEditorPointerDown(module, local.x, local.y)
+  textEditorShapeId.value = shapeId
+  textEditorActive.value = true
+  textIsComposing.value = false
+  refreshEditorStyles(module)
+  textEditorApplyTheme(module, SELECTION_COLOR, CURSOR_COLOR)
+  requestRender(module, 'text-edit-start')
+  return true
+}
+
+/** Extend a gesture begun with `beginTextEdit`: forward a pointer-move at `local`
+ *  (shape-local) — drags the selection — then refresh panel styles + repaint. */
+export function dragTextEdit(module: WasmModule, local: { x: number; y: number }): void {
+  textEditorPointerMove(module, local.x, local.y)
+  refreshEditorStyles(module)
+  requestRender(module, 'text-edit-input')
+}
+
+/** End a gesture begun with `beginTextEdit`: a pointer-up at `local`. No drag →
+ *  the caret settles at the press; a drag → the range stays selected. */
+export function endTextEdit(module: WasmModule, local: { x: number; y: number }): void {
+  textEditorPointerUp(module, local.x, local.y)
+  refreshEditorStyles(module)
+  requestRender(module, 'text-edit-input')
 }
 
 interface Selrect {
@@ -336,6 +439,12 @@ function buildContentFromStyled(styled: StyledContent, original: unknown): unkno
  * WASM editor and clear all edit-mode signals. Safe to call once per session.
  */
 export function commitTextEdit(module: WasmModule, shapeId: string): void {
+  // Only the session that currently owns the single global editor may commit. If
+  // another shape has since taken focus (e.g. `beginTextEdit` switched shapes and
+  // already committed this one), this stale deferred unmount-commit would export
+  // the NEW shape's content into the old one — so skip it. Guards the single
+  // editor against cross-shape corruption.
+  if (textEditorShapeId.peek() !== shapeId) return
   const exported = textEditorExportContent(module)
   const pageId = getActiveOrSinglePageId()
 

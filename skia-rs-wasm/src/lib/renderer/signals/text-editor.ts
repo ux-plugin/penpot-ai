@@ -45,6 +45,12 @@ export const currentStyles = signal<CurrentStyles | null>(null)
  * canvas click. */
 export const textEditorDomNode = signal<HTMLElement | null>(null)
 
+/** When the TEXT TOOL is armed (not yet editing), the topmost text shape under the
+ * pointer, or null. Drives the I-beam hover cursor via `resolveCanvasCursor` and is
+ * the shape the text tool edits on click. Updated on pointermove by the viewport
+ * hook; ignored while a non-text tool is active (the resolver gates on the tool). */
+export const textToolHoverTarget = signal<string | null>(null)
+
 /** Return keyboard focus to the text-editor overlay, if a session is active.
  * Does not touch the WASM caret/selection — only DOM focus. */
 export function refocusTextEditor(): void {

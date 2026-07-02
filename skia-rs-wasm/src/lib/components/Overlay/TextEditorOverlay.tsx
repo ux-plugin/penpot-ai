@@ -93,6 +93,9 @@ export function TextEditorOverlay() {
     if (!module) return
     // A just-created shape may not be in the WASM scene yet, so the first focus
     // can fail (caret never shows). Retry on the next frame(s) until it takes.
+    // A text-tool click/drag into existing text is already started by the viewport
+    // hook's `beginTextEdit` (which owns the initiating gesture), so `startTextEdit`
+    // no-ops here and leaves that caret/selection in place.
     let raf = 0
     let tries = 0
     const tryStart = () => {
@@ -127,7 +130,7 @@ export function TextEditorOverlay() {
       const from = e.target
       const to = e.relatedTarget
       if (!(from instanceof HTMLElement)) return
-      if (!from.closest('[data-right-side-panel],[data-floating-panel]')) return
+      if (!from.closest('[data-right-side-panel],[data-floating-panel],[data-slot="select-content"]')) return
       if (to instanceof HTMLElement) return // deliberate move — don't steal
       requestAnimationFrame(() => textEditorDomNode.value?.focus())
     }
@@ -363,7 +366,7 @@ export function TextEditorOverlay() {
         // per-range apply, which needs the live selection to stay alive. Only a
         // blur to the canvas / elsewhere ends editing.
         const next = e.relatedTarget
-        if (next instanceof HTMLElement && next.closest('[data-right-side-panel],[data-floating-panel]')) {
+        if (next instanceof HTMLElement && next.closest('[data-right-side-panel],[data-floating-panel],[data-slot="select-content"]')) {
           return
         }
         actor.send({ type: 'STOP_TEXT_EDIT' })

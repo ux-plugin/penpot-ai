@@ -27,8 +27,10 @@ import type { ViewportPanModifier, SelectionRectResult } from '../types'
 import { effect } from '@preact/signals-core'
 import { modAlt, modCtrl, modMeta, modShift, pointerPanning, pointerPos, viewport } from '../signals/pointer'
 import { wasmSelectionRect } from '../signals/selection'
+import { textToolHoverTarget } from '../signals/text-editor'
 import { queryNodesAtPoint, pickTopmostNode } from '../selection/query-at-point'
 import { createPenStartPath } from '../handlers/draw-path'
+import { beginTextEdit, dragTextEdit, endTextEdit, screenToShapeLocal } from '../handlers/text-edit'
 import { buildKeyBindings, dispatchKey } from '../input/key-bindings'
 import type { CommandCtx } from '../input/commands'
 import { resolveCanvasCursor } from '../input/cursor'
@@ -95,6 +97,10 @@ export function useViewportInteractions({
   const pendingPanUpdateRef = useRef<boolean>(false)
   /** Accumulates pan while the viewport signal + WASM apply are limited to one commit per animation frame. */
   const pendingPanViewportRef = useRef<Viewport | null>(null)
+  /** Active while the text tool's initiating press into existing text is driving a
+   *  click-or-drag gesture from here (the overlay isn't mounted to own it yet).
+   *  Set on mousedown by `beginTextEdit`, forwarded by mousemove, cleared on mouseup. */
+  const textDragRef = useRef<{ shapeId: string } | null>(null)
 
   // Handle mouse wheel for zooming
   const handleWheel = useCallback((e: WheelEvent) => {
@@ -180,6 +186,34 @@ export function useViewportInteractions({
         }
         return
       }
+      // Text tool over an existing text shape → edit it at the press (caret on a
+      // click, range on a drag), not a new box. Reuses the hover hit-test the cursor
+      // already ran, so the press does exactly what the I-beam predicted.
+      if (activeDrawTool === 'text') {
+        const hoveredId = textToolHoverTarget.peek()
+        const tPageId = getActiveOrSinglePageId()
+        const tPage = tPageId ? getPage(tPageId) : undefined
+        const node =
+          hoveredId && tPage
+            ? (tPage.objects[hoveredId] as { type?: string } | undefined)
+            : undefined
+        if (hoveredId && node?.type === 'text') {
+          setSelectedIds(new Set([hoveredId]))
+          // Drive this first gesture into the WASM editor from here: the press lands
+          // on the canvas surface, a frame before the overlay mounts to own it.
+          // Anchor a pointer-down now; mousemove/up forward pointer-move/up — no drag
+          // settles the caret at the press, a drag selects the range.
+          const module = useWorkspaceStore.getState().wasmModule
+          const local = screenToShapeLocal(hoveredId, screenX, screenY)
+          if (module && local && beginTextEdit(module, hoveredId, local)) {
+            textDragRef.current = { shapeId: hoveredId }
+          }
+          // Mount the overlay (keyboard/IME/render + later gestures + panels). Its
+          // own `startTextEdit` no-ops because `beginTextEdit` already started us.
+          canvasActor.send({ type: 'START_TEXT_EDIT', shapeId: hoveredId })
+          return
+        }
+      }
       if (activeDrawTool != null) {
         pointerPos.value = { x: screenX, y: screenY }
         canvasActor.send({ type: 'POINTER_DOWN_DRAW' })
@@ -244,11 +278,56 @@ export function useViewportInteractions({
     }
   }, [surfaceRef, canvasActor, shortcuts.panMouseButton, shortcuts.panWithModifier])
 
+  // Throttled hover hit-test for the text tool's I-beam cursor (one query in flight;
+  // coalesce to the latest move). Uses the same precise hit-test as a click, so the
+  // cursor and the eventual click-to-edit target always agree.
+  const hoverInFlightRef = useRef(false)
+  const hoverLatestRef = useRef<{ x: number; y: number } | null>(null)
+  const queryTextHover = useCallback(function run(screenX: number, screenY: number) {
+    hoverLatestRef.current = { x: screenX, y: screenY }
+    if (hoverInFlightRef.current) return
+    const { workerClient } = useWorkspaceStore.getState()
+    const pageId = getActiveOrSinglePageId()
+    const page = pageId ? getPage(pageId) : undefined
+    const vp = viewport.value
+    if (!workerClient || !pageId || !page || !vp) {
+      textToolHoverTarget.value = null
+      return
+    }
+    hoverInFlightRef.current = true
+    const at = hoverLatestRef.current
+    void queryNodesAtPoint(workerClient, pageId, vp, at.x, at.y)
+      .then((ids) => {
+        const topId = pickTopmostNode(page, ids)
+        const node = topId ? (page.objects[topId] as { type?: string } | undefined) : undefined
+        textToolHoverTarget.value = topId && node?.type === 'text' ? topId : null
+      })
+      .catch(() => {
+        textToolHoverTarget.value = null
+      })
+      .finally(() => {
+        hoverInFlightRef.current = false
+        const latest = hoverLatestRef.current
+        if (latest && (latest.x !== at.x || latest.y !== at.y)) run(latest.x, latest.y)
+      })
+  }, [])
+
   // Handle mouse move for panning. The cursor is owned by the reactive effect
   // below (input/cursor.ts), not set here — so it stays correct without a move.
   const handleMouseMove = useCallback((e: MouseEvent) => {
     const surface = surfaceRef.current
     if (!surface) return
+
+    // Text-tool first-gesture drag-select (see handleMouseDown): the overlay isn't
+    // mounted to own this gesture yet, so forward the drag straight to the WASM
+    // editor. Extends the selection from the press anchor to the pointer.
+    if (textDragRef.current) {
+      const rect = surface.getBoundingClientRect()
+      const local = screenToShapeLocal(textDragRef.current.shapeId, e.clientX - rect.left, e.clientY - rect.top)
+      const module = useWorkspaceStore.getState().wasmModule
+      if (module && local) dragTextEdit(module, local)
+      return
+    }
 
     if (isPanningRef.current && lastPanPosRef.current) {
       e.preventDefault()
@@ -277,10 +356,35 @@ export function useViewportInteractions({
         })
       }
     }
-  }, [surfaceRef, renderer, onViewportUpdate])
+
+    // Text-tool I-beam: update the hovered text target on move (skip while panning).
+    if (!isPanningRef.current) {
+      if (canvasActor.getSnapshot().context.drawTool === 'text') {
+        const rect = surface.getBoundingClientRect()
+        queryTextHover(e.clientX - rect.left, e.clientY - rect.top)
+      } else if (textToolHoverTarget.peek() != null) {
+        textToolHoverTarget.value = null
+      }
+    }
+  }, [surfaceRef, renderer, onViewportUpdate, canvasActor, queryTextHover])
 
   // Handle mouse up
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: MouseEvent) => {
+    // End the text-tool first gesture: pointer-up settles the caret (no drag) or
+    // finalises the selection (drag). The mounted overlay owns gestures from here.
+    if (textDragRef.current) {
+      const surface = surfaceRef.current
+      const shapeId = textDragRef.current.shapeId
+      textDragRef.current = null
+      const module = useWorkspaceStore.getState().wasmModule
+      if (surface && module) {
+        const rect = surface.getBoundingClientRect()
+        const local = screenToShapeLocal(shapeId, e.clientX - rect.left, e.clientY - rect.top)
+        if (local) endTextEdit(module, local)
+      }
+      return
+    }
+
     if (isPanningRef.current) {
       canvasActor.send({ type: 'PAN_END' })
       isPanningRef.current = false
@@ -293,7 +397,7 @@ export function useViewportInteractions({
         onViewportUpdate?.(Viewport.from(vp))
       }
     }
-  }, [canvasActor, renderer, onViewportUpdate])
+  }, [surfaceRef, canvasActor, renderer, onViewportUpdate])
 
   // Double-click to ENTER text editing. Mirrors Penpot's viewport on-double-click
   // (native `dblclick`, then act on the hovered/hit shape). Reliable because the
@@ -365,6 +469,7 @@ export function useViewportInteractions({
         snap,
         { alt: modAlt.peek(), panHeld: panModifierHeld(panMod) },
         wasmSelectionRect.peek(),
+        textToolHoverTarget.peek() != null,
       )
     }
     const sub = canvasActor.subscribe(apply)
@@ -373,6 +478,7 @@ export function useViewportInteractions({
       const deps = [
         modShift.value, modAlt.value, modCtrl.value, modMeta.value,
         pointerPanning.value, wasmSelectionRect.value,
+        textToolHoverTarget.value,
       ]
       void deps
       apply()
