@@ -39,6 +39,7 @@ pub mod gather;
 pub mod glass;
 pub mod local;
 pub mod mask;
+pub mod material;
 pub mod noise;
 pub mod shadows;
 pub mod scatter;

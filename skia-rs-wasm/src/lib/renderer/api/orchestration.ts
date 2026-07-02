@@ -35,6 +35,7 @@ import { setShapeStrokes } from './strokes'
 import { setShapeShadows } from './shadows'
 import { setShapeNoise } from './noise'
 import { setShapeGlass } from './glass'
+import { setShapeMaterial, type Material } from './material'
 import { setShapeSvgAttrs } from './svg'
 import { setShapePathContent } from './path'
 import {
@@ -184,6 +185,9 @@ export function setObject(
   }
   if (wantsKey('noise')) {
     setShapeNoise(module, (shape as Record<string, unknown>).noise as Noise | null | undefined)
+  }
+  if (wantsKey('material')) {
+    setShapeMaterial(module, (shape as Record<string, unknown>).material as Material | null | undefined)
   }
   if (type === 'text' && wantsKey('growType')) {
     setShapeGrowType(module, shape.growType)

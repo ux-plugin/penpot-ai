@@ -199,6 +199,13 @@ export interface WasmModule {
   _set_shape_glass(surface_type: number, bezel_width: number, glass_thickness: number, refractive_index: number, specular_angle: number, specular_opacity: number, specular_saturation: number, chromatic_aberration: number, splay: number, tilt_angle: number, edge_boost: number, zoom: number, blur: number, frost: number, hidden: number): void
   _clear_shape_glass(): void
 
+  // Material (custom SkSL shader fill) — payload staged via allocBytes
+  _set_shape_material(): void
+  _clear_shape_material(): void
+  // Compile + reflect a material's SkSL source (staged via allocBytes);
+  // returns a pointer to a result buffer the caller reads then frees.
+  _compile_material(): number
+
   // Corners
   _set_shape_corners(r1: number, r2: number, r3: number, r4: number): void
 

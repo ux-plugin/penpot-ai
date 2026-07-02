@@ -4,6 +4,7 @@ pub mod fills;
 pub mod fonts;
 pub mod glass;
 pub mod layouts;
+pub mod material;
 pub mod mem;
 pub mod noise;
 pub mod paths;

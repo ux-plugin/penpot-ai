@@ -11,7 +11,7 @@
 use crate::error::Result;
 use crate::shapes::{Shape, Type};
 
-use super::{fills, noise, shadows, strokes, PaintCtx};
+use super::{fills, material, noise, shadows, strokes, PaintCtx};
 
 /// Mirror of `RenderState::render_shape_into_target`'s body-paint
 /// path. Routes text/svg to (currently stubbed) helpers, everything
@@ -59,6 +59,15 @@ fn render_body_direct(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> {
         for stroke in &stroke_refs {
             shadows::render_stroke_inner_shadows(ctx, shape, stroke, antialias)?;
         }
+    }
+
+    // 5. Custom SkSL material — a post-body modifier effect. Drawn over the
+    //    finished body and composited SrcOver, so it's non-destructive: the
+    //    fill/strokes stay underneath and show through wherever the shader
+    //    outputs alpha < 1. (Reading the body as a `content` input — turning
+    //    this into a true modifier — is the next increment.)
+    if let Some(mat) = shape.material.as_ref().filter(|m| !m.hidden) {
+        material::render(ctx, shape, mat)?;
     }
 
     Ok(())

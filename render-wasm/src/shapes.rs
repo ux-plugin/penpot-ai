@@ -18,6 +18,7 @@ mod frames;
 mod glass;
 mod groups;
 mod layouts;
+mod material;
 pub mod modifiers;
 pub mod noise;
 mod paths;
@@ -43,6 +44,7 @@ pub use frames::*;
 pub use glass::{GlassEffect, GLASS_DISPLACEMENT_SKSL, GLASS_REFRACTION_SKSL, GLASS_SKSL};
 pub use groups::*;
 pub use layouts::*;
+pub use material::{Material, UniformSlot, UniformValue};
 pub use modifiers::*;
 pub use noise::{NoiseEffect, SlotKind, MAX_NOISE_SLOTS, NOISE_SKSL};
 pub use paths::*;
@@ -196,6 +198,7 @@ pub struct Shape {
     pub background_blur: Option<Blur>,
     pub texture: Option<TextureEffect>,
     pub glass: Option<GlassEffect>,
+    pub material: Option<Material>,
     pub opacity: f32,
     pub hidden: bool,
     pub svg: Option<skia::svg::Dom>,
@@ -303,6 +306,7 @@ impl Shape {
             background_blur: None,
             texture: None,
             glass: None,
+            material: None,
             svg: None,
             svg_attrs: None,
             shadows: Vec::with_capacity(1),
@@ -673,6 +677,10 @@ impl Shape {
 
     pub fn set_glass(&mut self, glass: Option<GlassEffect>) {
         self.glass = glass;
+    }
+
+    pub fn set_material(&mut self, material: Option<Material>) {
+        self.material = material;
     }
 
     pub fn add_child(&mut self, id: Uuid) {
