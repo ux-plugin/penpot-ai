@@ -40,7 +40,7 @@ pub fn render(
 
     let has_image_fills = strokes.iter().any(|s| matches!(s.fill, Fill::Image(_)));
     let can_merge =
-        !has_image_fills && strokes.len() > 1 && strokes_share_geometry(strokes);
+        !has_image_fills && strokes.len() > 1 && legacy::strokes_share_geometry(strokes);
 
     if can_merge {
         render_merged(ctx, shape, strokes, antialias, outset)
@@ -86,76 +86,25 @@ pub fn render_single(
     canvas.reset_matrix();
     canvas.concat(&xform);
 
-    match &shape.shape_type {
-        shape_type @ (Type::Rect(_) | Type::Frame(_)) => {
-            let paint = stroke.to_paint(&selrect, svg_attrs, antialias);
-            legacy::draw_stroke_on_rect(
-                canvas,
-                stroke,
-                &selrect,
-                &shape_type.corners(),
-                &paint,
-                scale,
-                shadow,
-                blur.as_ref(),
-                antialias,
-            );
-        }
-        Type::Circle => {
-            let paint = stroke.to_paint(&selrect, svg_attrs, antialias);
-            legacy::draw_stroke_on_circle(
-                canvas,
-                stroke,
-                &selrect,
-                &paint,
-                scale,
-                shadow,
-                blur.as_ref(),
-                antialias,
-            );
-        }
-        Type::Text(_) => {}
-        shape_type @ (Type::Path(_) | Type::Bool(_)) => {
-            if let Some(path) = shape_type.path() {
-                let is_open = path.is_open();
-                let mut paint =
-                    stroke.to_stroked_paint(is_open, &selrect, svg_attrs, antialias);
-                if let Some(s) = outset.filter(|&s| s > 0.0) {
-                    let current_width = paint.stroke_width();
-                    let outset_growth = match stroke.render_kind(is_open) {
-                        StrokeKind::Center => s * 2.0,
-                        StrokeKind::Inner | StrokeKind::Outer => s * 4.0,
-                    };
-                    paint.set_stroke_width(current_width + outset_growth);
-                }
-                legacy::draw_stroke_on_path(
-                    canvas,
-                    stroke,
-                    path,
-                    &paint,
-                    path_transform.as_ref(),
-                    shadow,
-                    blur.as_ref(),
-                    svg_attrs,
-                    antialias,
-                );
-            }
-        }
-        _ => {}
-    }
+    let seed = crate::render::dynamic::seed_from_bytes(shape.id.as_bytes());
+    legacy::draw_body_stroke(
+        canvas,
+        &shape.shape_type,
+        stroke,
+        &selrect,
+        svg_attrs,
+        path_transform.as_ref(),
+        scale,
+        shadow,
+        blur.as_ref(),
+        None,
+        outset,
+        seed,
+        antialias,
+    );
 
     canvas.restore();
     Ok(())
-}
-
-fn strokes_share_geometry(strokes: &[&Stroke]) -> bool {
-    strokes.windows(2).all(|pair| {
-        pair[0].kind == pair[1].kind
-            && pair[0].width == pair[1].width
-            && pair[0].style == pair[1].style
-            && pair[0].cap_start == pair[1].cap_start
-            && pair[0].cap_end == pair[1].cap_end
-    })
 }
 
 /// Merged-strokes path: all strokes share geometry, so we draw once with
@@ -193,58 +142,22 @@ fn render_merged(
     canvas.reset_matrix();
     canvas.concat(&xform);
 
-    match &shape.shape_type {
-        shape_type @ (Type::Rect(_) | Type::Frame(_)) => {
-            let mut paint = representative.to_paint(&selrect, svg_attrs, antialias);
-            paint.set_shader(merged.shader());
-            legacy::draw_stroke_on_rect(
-                canvas,
-                representative,
-                &selrect,
-                &shape_type.corners(),
-                &paint,
-                scale,
-                None,
-                blur.as_ref(),
-                antialias,
-            );
-        }
-        Type::Circle => {
-            let mut paint = representative.to_paint(&selrect, svg_attrs, antialias);
-            paint.set_shader(merged.shader());
-            legacy::draw_stroke_on_circle(
-                canvas,
-                representative,
-                &selrect,
-                &paint,
-                scale,
-                None,
-                blur.as_ref(),
-                antialias,
-            );
-        }
-        Type::Text(_) => {}
-        shape_type @ (Type::Path(_) | Type::Bool(_)) => {
-            if let Some(path) = shape_type.path() {
-                let is_open = path.is_open();
-                let mut paint =
-                    representative.to_stroked_paint(is_open, &selrect, svg_attrs, antialias);
-                paint.set_shader(merged.shader());
-                legacy::draw_stroke_on_path(
-                    canvas,
-                    representative,
-                    path,
-                    &paint,
-                    path_transform.as_ref(),
-                    None,
-                    blur.as_ref(),
-                    svg_attrs,
-                    antialias,
-                );
-            }
-        }
-        _ => {}
-    }
+    let seed = crate::render::dynamic::seed_from_bytes(shape.id.as_bytes());
+    legacy::draw_body_stroke(
+        canvas,
+        &shape.shape_type,
+        representative,
+        &selrect,
+        svg_attrs,
+        path_transform.as_ref(),
+        scale,
+        None,
+        blur.as_ref(),
+        Some(merged.shader()),
+        None,
+        seed,
+        antialias,
+    );
 
     canvas.restore();
     Ok(())

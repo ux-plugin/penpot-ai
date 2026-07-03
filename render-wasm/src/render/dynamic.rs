@@ -1,14 +1,24 @@
 //! Procedural "Dynamic" stroke — perturbs a path into a hand-drawn / wavy line
 //! *before* it is stroked, so the existing stroker draws the result. Controls
-//! (all 0..1):
+//! (all 0..1; frequency/wiggle may exceed 1.0):
 //!   - `frequency`: wiggle wavelength (higher → shorter waves / more wiggles),
 //!   - `wiggle`:    perpendicular displacement amplitude,
 //!   - `smoothen`:  corner rounding of the result (Chaikin iterations).
 //!
-//! Displacement is deterministic per path (seeded from the geometry) so the
-//! line is stable across frames instead of re-randomising every paint.
-
-use std::f32::consts::PI;
+//! The perturbation is **anchored to the contour's start point** and sampled by
+//! *absolute* arc-length against a **fixed** wavelength — like a pen drawing
+//! from that point. Consequences:
+//!   - moving / rotating the shape carries the exact same wiggle along rigidly
+//!     (arc-length and the id-derived seed are both unchanged);
+//!   - resizing reveals more of the same fixed noise field from the anchored
+//!     start rather than re-randomising the whole line (the near-start stays
+//!     put, the far end extends);
+//!   - the offset tapers to 0 within one wavelength of each end, so the line
+//!     passes through the start/end point — the hand-drawn "starts and returns
+//!     to a point" look.
+//!
+//! The seed comes from the shape id (`seed_from_bytes`), so it is identical
+//! every frame, unique per shape, and unaffected by any gesture.
 
 use crate::shapes::DynamicStroke;
 use skia_safe::{self as skia, Path, Point};
@@ -18,7 +28,19 @@ const MIN_WAVELENGTH: f32 = 28.0; // px between wiggles at frequency = 1
 const SAMPLES_PER_WAVE: f32 = 8.0; // resampling resolution
 const MAX_AMPLITUDE: f32 = 26.0; // px perpendicular offset at wiggle = 1
 
-pub fn apply_dynamic(path: &Path, params: &DynamicStroke) -> Path {
+/// FNV-1a hash of arbitrary bytes → u32. Used to turn a shape id into a stable
+/// per-shape wiggle seed: identical every frame, unique per shape, and unchanged
+/// by moving / rotating / resizing (only the *revealed* arc-length changes).
+pub fn seed_from_bytes(bytes: &[u8]) -> u32 {
+    let mut h: u32 = 0x811C_9DC5;
+    for &b in bytes {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
+pub fn apply_dynamic(path: &Path, params: &DynamicStroke, seed: u32) -> Path {
     // Frequency and wiggle may exceed 1.0 (the UI allows >100% for stronger
     // effects); only smoothen is capped. The wavelength is floored so a high
     // frequency can't collapse it to zero.
@@ -33,7 +55,6 @@ pub fn apply_dynamic(path: &Path, params: &DynamicStroke) -> Path {
     let wavelength = (MAX_WAVELENGTH + (MIN_WAVELENGTH - MAX_WAVELENGTH) * frequency).max(4.0);
     let amplitude = MAX_AMPLITUDE * wiggle;
     let iterations = (smoothen * 4.0).round() as u32;
-    let base_seed = seed_from_path(path);
 
     let mut builder = skia::PathBuilder::new();
     let mut measure = skia::PathMeasure::new(path, false, None);
@@ -43,8 +64,8 @@ pub fn apply_dynamic(path: &Path, params: &DynamicStroke) -> Path {
         let length = measure.length();
         let closed = measure.is_closed();
         if length > 1.0 {
-            let seed = base_seed ^ contour.wrapping_mul(0x9E37_79B9);
-            let pts = displace(&mut measure, length, closed, wavelength, amplitude, seed);
+            let contour_seed = seed ^ contour.wrapping_mul(0x9E37_79B9);
+            let pts = displace(&mut measure, length, wavelength, amplitude, contour_seed);
             let pts = if iterations > 0 {
                 chaikin(&pts, iterations, closed)
             } else {
@@ -61,37 +82,33 @@ pub fn apply_dynamic(path: &Path, params: &DynamicStroke) -> Path {
     builder.detach()
 }
 
-/// Resample the current contour and offset each sample along its normal by
-/// seamless value-noise. For open contours the offset tapers to 0 at both ends
-/// so the endpoints stay anchored.
+/// Resample the current contour at a **fixed** arc-length step and offset each
+/// sample along its normal by non-periodic value-noise evaluated at the sample's
+/// *absolute* arc-length. The offset tapers to 0 within one wavelength of both
+/// ends, so the deformed line passes through the contour's start/end point —
+/// this anchors the pattern under resize (start stays put, far end extends) and
+/// gives the "starts and returns to a point" look.
 fn displace(
     measure: &mut skia::PathMeasure,
     length: f32,
-    closed: bool,
     wavelength: f32,
     amplitude: f32,
     seed: u32,
 ) -> Vec<Point> {
-    // Snap the lattice so the noise wraps seamlessly across a closed contour.
-    let waves = (length / wavelength).round().max(1.0);
-    let eff_wavelength = length / waves;
-    let period = waves as u32;
+    let ds = (wavelength / SAMPLES_PER_WAVE).max(1.0);
+    let steps = (length / ds).ceil().max(1.0) as usize;
+    // Ramp the offset up over ~one wavelength at each end (clamped so it never
+    // exceeds half the contour) → the endpoints stay pinned to the base path.
+    let ramp = wavelength.min(length * 0.5).max(1.0);
 
-    let steps = (waves * SAMPLES_PER_WAVE).round().max(2.0) as usize;
-    let n_points = if closed { steps } else { steps + 1 };
-    let mut pts = Vec::with_capacity(n_points);
-
-    for i in 0..n_points {
-        let t = i as f32 / steps as f32; // 0..1 along the contour
-        let distance = (t * length).min(length);
-        if let Some((pos, tan)) = measure.pos_tan(distance) {
+    let mut pts = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let s = (i as f32 * ds).min(length); // absolute arc-length from the start
+        if let Some((pos, tan)) = measure.pos_tan(s) {
             // `tan` is unit length from PathMeasure; rotate 90° for the normal.
             let normal = Point::new(-tan.y, tan.x);
-            let mut offset = value_noise(distance / eff_wavelength, period, seed) * amplitude;
-            if !closed {
-                // Sine window → 0 at both ends so the line stays attached.
-                offset *= (t * PI).sin();
-            }
+            let taper = smoothstep(ramp, s) * smoothstep(ramp, length - s);
+            let offset = value_noise(s / wavelength, seed) * amplitude * taper;
             pts.push(Point::new(
                 pos.x + normal.x * offset,
                 pos.y + normal.y * offset,
@@ -142,19 +159,13 @@ fn append(builder: &mut skia::PathBuilder, pts: &[Point], closed: bool) {
     }
 }
 
-/// Hash a sample of the path points so the wiggle is stable per geometry yet
-/// differs between shapes.
-fn seed_from_path(path: &Path) -> u32 {
-    let mut h: u32 = 0x811C_9DC5;
-    let mut count: u32 = 0;
-    for p in path.points().iter().take(64) {
-        h ^= p.x.to_bits().rotate_left(13);
-        h = h.wrapping_mul(0x0100_0193);
-        h ^= p.y.to_bits();
-        h = h.wrapping_mul(0x0100_0193);
-        count = count.wrapping_add(1);
+/// Smoothstep ramp: 0 at x = 0, 1 at x >= edge (clamped in between).
+fn smoothstep(edge: f32, x: f32) -> f32 {
+    if edge <= 0.0 {
+        return 1.0;
     }
-    h ^ count
+    let t = (x / edge).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn hash01(n: u32) -> f32 {
@@ -165,22 +176,17 @@ fn hash01(n: u32) -> f32 {
     (x & 0x00FF_FFFF) as f32 / 16_777_216.0
 }
 
-fn lattice(i: i64, period: u32, seed: u32) -> f32 {
-    let idx = if period > 0 {
-        i.rem_euclid(period as i64) as u32
-    } else {
-        i as u32
-    };
-    hash01(idx.wrapping_add(seed))
+fn lattice(i: i64, seed: u32) -> f32 {
+    hash01((i as u32).wrapping_add(seed))
 }
 
-/// Smooth value noise in [-1, 1] at continuous coordinate `t`, periodic over
-/// `period` lattice cells so a closed contour wraps without a seam.
-fn value_noise(t: f32, period: u32, seed: u32) -> f32 {
+/// Smooth value noise in [-1, 1] at continuous coordinate `t`, sampled from a
+/// non-periodic lattice anchored at t = 0.
+fn value_noise(t: f32, seed: u32) -> f32 {
     let i0 = t.floor() as i64;
     let f = t - i0 as f32;
     let u = f * f * (3.0 - 2.0 * f); // smoothstep
-    let a = lattice(i0, period, seed);
-    let b = lattice(i0 + 1, period, seed);
+    let a = lattice(i0, seed);
+    let b = lattice(i0 + 1, seed);
     (a + (b - a) * u) * 2.0 - 1.0
 }
