@@ -89,6 +89,9 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   // While vector-editing, hide the selection box/handles so they don't sit on top
   // of the anchor/handle markers the PathEditorOverlay draws.
   const isPathEditing = useSelector(canvasActor, (s) => s.matches('pathEditing'))
+  // Editing a 3D scene draws its own violet grips + backdrop; hide the 2D selection
+  // chrome (corner/rotation handles + outline) so the two don't double up.
+  const isScene3dEditing = useSelector(canvasActor, (s) => s.matches('scene3dEditing'))
   // Live editor emptiness + which shape is being edited: while editing, the typed
   // text lives in the WASM editor (not `node.content`), so the outline gate below
   // reads these instead of the stale doc content.
@@ -104,7 +107,8 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     viewport != null &&
     !isMoving &&
     !isTextEditing &&
-    !isPathEditing
+    !isPathEditing &&
+    !isScene3dEditing
 
   const hitSize = HANDLE_SIZE_WORLD / safeZoom
 
@@ -213,8 +217,9 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   useLayoutEffect(() => {
     // Hide the box outline while vector-editing too — the PathEditorOverlay's
     // anchor/handle markers stand in for the selection box.
-    selectionRectOutlineVisible.value = !isMoving && !selectedTextEmpty && !isPathEditing
-  }, [isMoving, selectedTextEmpty, isPathEditing])
+    selectionRectOutlineVisible.value =
+      !isMoving && !selectedTextEmpty && !isPathEditing && !isScene3dEditing
+  }, [isMoving, selectedTextEmpty, isPathEditing, isScene3dEditing])
 
   const gradientForOverlay = useGradientFill()
 

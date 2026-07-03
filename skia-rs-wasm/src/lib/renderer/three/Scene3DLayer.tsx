@@ -10,14 +10,14 @@
  * (ShapeToolbar), like the pen flyout. Redraw is on-demand.
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { useSnapshot, subscribe } from 'valtio'
 import * as THREE from 'three'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { effect } from '@preact/signals-core'
 import { viewport, movePreviewWorldDelta } from '../signals/pointer'
-import { worldToScreen } from '../viewport'
+import { worldToScreen, screenToWorld } from '../viewport'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { docProxy, getNode } from '../store/doc-proxy'
 import {
@@ -44,6 +44,13 @@ import {
 } from './three-scene'
 import { isOrtho, isPersp, orthoFrustum } from './camera3d'
 import { recenterOnScene } from './scene3d-recenter'
+import {
+  scene3dResizePreview,
+  applyResize,
+  commitSceneBounds,
+  type ResizeHandle,
+  type Bounds,
+} from './scene3d-resize'
 import { commitObjectTransform } from './scene3d-commit'
 import { resolveScene3dPointerDown } from './scene3d-pointer'
 import { useScene3dEditing } from './use-scene3d-editing'
@@ -54,6 +61,18 @@ interface ScreenRect {
   w: number
   h: number
 }
+
+/** The 8 edit-mode resize handles: corner/edge, CSS offset within the box, and cursor. */
+const RESIZE_HANDLES: { h: ResizeHandle; pos: CSSProperties; cursor: string }[] = [
+  { h: 'nw', pos: { top: -5, left: -5 }, cursor: 'nwse-resize' },
+  { h: 'n', pos: { top: -5, left: 'calc(50% - 5px)' }, cursor: 'ns-resize' },
+  { h: 'ne', pos: { top: -5, right: -5 }, cursor: 'nesw-resize' },
+  { h: 'e', pos: { top: 'calc(50% - 5px)', right: -5 }, cursor: 'ew-resize' },
+  { h: 'se', pos: { bottom: -5, right: -5 }, cursor: 'nwse-resize' },
+  { h: 's', pos: { bottom: -5, left: 'calc(50% - 5px)' }, cursor: 'ns-resize' },
+  { h: 'sw', pos: { bottom: -5, left: -5 }, cursor: 'nesw-resize' },
+  { h: 'w', pos: { top: 'calc(50% - 5px)', left: -5 }, cursor: 'ew-resize' },
+]
 
 /**
  * The scene's live instance, rebuilt if its camera type no longer matches the active
@@ -136,6 +155,8 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const editSurfaceRef = useRef<HTMLDivElement>(null)
   const locatorRef = useRef<HTMLButtonElement>(null)
+  const resizeBoxRef = useRef<HTMLDivElement>(null)
+  const resizeStateRef = useRef<{ handle: ResizeHandle; sceneId: string; startWorld: { x: number; y: number }; startBounds: Bounds } | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const gizmoRef = useRef<TransformControls | null>(null)
   const orbitRef = useRef<OrbitControls | null>(null)
@@ -189,6 +210,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     const disposeVp = effect(() => {
       void viewport.value // pan/zoom
       void movePreviewWorldDelta.value // live move-drag translation (and reset on commit)
+      void scene3dResizePreview.value // live resize-drag bounds
       scheduleDraw()
     })
     const unsubModel = subscribe(scene3dProxy, scheduleDraw)
@@ -449,6 +471,13 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     sceneId: string,
     isSel: boolean,
   ): { cx: number; cy: number; w: number; h: number } | null {
+    // While a resize handle is being dragged, the live preview bounds win so the 3D
+    // reframes with the box in real time (document bounds only update on commit).
+    const rp = scene3dResizePreview.value
+    if (rp && rp.sceneId === sceneId) {
+      const b = rp.bounds
+      return { cx: b.x + b.w / 2, cy: b.y + b.h / 2, w: b.w, h: b.h }
+    }
     const wsRenderer = useWorkspaceStore.getState().renderer
     const rect = isSel ? (wsRenderer?.getSelectionRect([sceneId]) ?? null) : null
     if (rect && rect.width > 0 && rect.height > 0) {
@@ -521,6 +550,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     selRectRef.current = selRect
     positionEditSurface(selRect, editingId != null)
     positionOffscreenLocator(selRect, editingId != null)
+    positionResizeBox(selRect, editingId != null)
   }
 
   function positionEditSurface(rect: ScreenRect | null, editing: boolean) {
@@ -560,6 +590,70 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     btn.style.left = `${px - 14}px`
     btn.style.top = `${py - 14}px`
     btn.style.transform = `rotate(${angle}deg)`
+  }
+
+  function positionResizeBox(rect: ScreenRect | null, editing: boolean) {
+    const box = resizeBoxRef.current
+    if (!box) return
+    if (rect && editing) {
+      box.style.display = 'block'
+      box.style.left = `${rect.x}px`
+      box.style.top = `${rect.y}px`
+      box.style.width = `${rect.w}px`
+      box.style.height = `${rect.h}px`
+    } else {
+      box.style.display = 'none'
+    }
+  }
+
+  /** Pointer client coords → world, via the overlay canvas origin + current viewport. */
+  function pointerToWorld(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
+    const vp = viewport.value
+    const canvas = canvasRef.current
+    if (!vp || !canvas) return null
+    const r = canvas.getBoundingClientRect()
+    return screenToWorld(vp, e.clientX - r.left, e.clientY - r.top)
+  }
+
+  function onResizeMove(e: PointerEvent) {
+    const st = resizeStateRef.current
+    const world = pointerToWorld(e)
+    if (!st || !world) return
+    const dx = world.x - st.startWorld.x
+    const dy = world.y - st.startWorld.y
+    scene3dResizePreview.value = {
+      sceneId: st.sceneId,
+      bounds: applyResize(st.handle, st.startBounds, dx, dy),
+    }
+  }
+
+  function onResizeUp() {
+    const st = resizeStateRef.current
+    const preview = scene3dResizePreview.value
+    window.removeEventListener('pointermove', onResizeMove)
+    window.removeEventListener('pointerup', onResizeUp)
+    resizeStateRef.current = null
+    scene3dResizePreview.value = null
+    // Persist the final bounds as one undoable mod-obj; the overlay then reads them
+    // back from the document (preview cleared above).
+    if (st && preview) void commitSceneBounds(st.sceneId, preview.bounds)
+  }
+
+  function startResize(e: ReactPointerEvent, handle: ResizeHandle) {
+    e.preventDefault()
+    e.stopPropagation()
+    const sceneId = editingIdRef.current
+    const start = pointerToWorld(e)
+    const box = sceneId ? sceneRectWorld(sceneId, true) : null
+    if (!sceneId || !start || !box) return
+    resizeStateRef.current = {
+      handle,
+      sceneId,
+      startWorld: start,
+      startBounds: { x: box.cx - box.w / 2, y: box.cy - box.h / 2, w: box.w, h: box.h },
+    }
+    window.addEventListener('pointermove', onResizeMove)
+    window.addEventListener('pointerup', onResizeUp)
   }
 
   return (
@@ -607,6 +701,32 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
           cursor: 'grab',
         }}
       />
+
+      {/* Resize handles — 8 grips on the edited scene's box (positioned imperatively in
+          draw()). The box is pointer-transparent so orbit/gizmo still work inside; only
+          the grips capture, dragging the underlying rect (live preview + commit). */}
+      <div
+        ref={resizeBoxRef}
+        style={{ position: 'absolute', display: 'none', pointerEvents: 'none', zIndex: 7 }}
+      >
+        {RESIZE_HANDLES.map((hd) => (
+          <div
+            key={hd.h}
+            onPointerDown={(e) => startResize(e, hd.h)}
+            style={{
+              position: 'absolute',
+              width: 10,
+              height: 10,
+              borderRadius: 2,
+              background: '#fff',
+              border: '1.5px solid rgba(139, 92, 246, 0.95)',
+              pointerEvents: 'auto',
+              cursor: hd.cursor,
+              ...hd.pos,
+            }}
+          />
+        ))}
+      </div>
 
       {/* Off-screen locator — a violet edge chip pointing at the edited scene when it's
           panned out of view; click recenters. Positioned/rotated imperatively in draw(). */}
