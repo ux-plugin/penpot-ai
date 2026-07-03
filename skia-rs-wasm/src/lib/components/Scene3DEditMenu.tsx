@@ -18,8 +18,11 @@ import {
   scene3dProxy,
   defaultObject,
   setFocusedObject,
+  activeCamera,
+  type CameraProjection,
+  type Scene3DDocument,
 } from '../renderer/three/scene3d-store'
-import { commitAddObject } from '../renderer/three/scene3d-commit'
+import { commitActiveCameraPatch, commitAddObject } from '../renderer/three/scene3d-commit'
 import { useScene3dEditing } from '../renderer/three/use-scene3d-editing'
 import type { Scene3DGizmoMode } from '../renderer/machine/canvas-machine'
 
@@ -33,6 +36,11 @@ const GIZMOS: { mode: Scene3DGizmoMode; label: string }[] = [
   { mode: 'translate', label: 'Move' },
   { mode: 'rotate', label: 'Rotate' },
   { mode: 'scale', label: 'Scale' },
+]
+
+const PROJECTIONS: { key: CameraProjection; label: string }[] = [
+  { key: 'perspective', label: 'Persp' },
+  { key: 'orthographic', label: 'Ortho' },
 ]
 
 export function Scene3DEditMenu() {
@@ -66,6 +74,8 @@ export function Scene3DEditMenu() {
   }
 
   const focusedId = sceneSnap.focusedObjectId
+  const editingDoc = sceneSnap.scenes.get(editingSceneId) as Scene3DDocument | undefined
+  const projection = editingDoc ? activeCamera(editingDoc).projection : 'perspective'
   const addObject = (ref: (typeof ADD_PRIMS)[number]['ref']) => {
     const id = crypto.randomUUID()
     void commitAddObject(editingSceneId, defaultObject(id, { kind: 'primitive', ref })).then(() =>
@@ -106,6 +116,23 @@ export function Scene3DEditMenu() {
           ))}
         </>
       )}
+
+      <span className="mx-0.5 h-4 w-px bg-border" />
+      {PROJECTIONS.map((p) => (
+        <button
+          key={p.key}
+          type="button"
+          onClick={() => void commitActiveCameraPatch(editingSceneId, { projection: p.key })}
+          className={cn(
+            'rounded-full px-2.5 py-1 text-xs',
+            projection === p.key
+              ? 'bg-indigo-500 text-white'
+              : 'text-muted-foreground hover:bg-muted',
+          )}
+        >
+          {p.label}
+        </button>
+      ))}
 
       <span className="mx-0.5 h-4 w-px bg-border" />
       <button

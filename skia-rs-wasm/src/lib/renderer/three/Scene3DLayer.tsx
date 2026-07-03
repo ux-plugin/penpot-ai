@@ -24,7 +24,9 @@ import {
   scene3dProxy,
   getInstance,
   setInstance,
+  deleteInstance,
   isScene3D,
+  activeCamera,
   setFocusedObject,
   patchObjectTransformLocal,
   dollyBounds,
@@ -32,6 +34,7 @@ import {
   sceneFrameViewRequest,
   SCENE3D_EDIT_BACKDROP,
   type Scene3DDocument,
+  type Scene3DInstance,
 } from './scene3d-store'
 import {
   buildSceneInstance,
@@ -39,6 +42,7 @@ import {
   readTransformFromObject,
   pickObject,
 } from './three-scene'
+import { isOrtho, isPersp, orthoFrustum } from './camera3d'
 import { commitObjectTransform } from './scene3d-commit'
 import { resolveScene3dPointerDown } from './scene3d-pointer'
 import { useScene3dEditing } from './use-scene3d-editing'
@@ -48,6 +52,75 @@ interface ScreenRect {
   y: number
   w: number
   h: number
+}
+
+/**
+ * The scene's live instance, rebuilt if its camera type no longer matches the active
+ * projection (a persp⇄ortho swap). Rebuilding resets the view pose — acceptable until
+ * persisted camera pose lands (Phase 1b-ii); everything else reconciles from the doc.
+ */
+function syncedInstance(
+  sceneId: string,
+  doc: Scene3DDocument,
+  renderer: THREE.WebGLRenderer,
+): Scene3DInstance {
+  const wantOrtho = activeCamera(doc).projection === 'orthographic'
+  let inst = getInstance(sceneId)
+  if (inst && isOrtho(inst.camera) !== wantOrtho) {
+    deleteInstance(sceneId)
+    inst = undefined
+  }
+  if (!inst) {
+    inst = buildSceneInstance(renderer, doc)
+    setInstance(sceneId, inst)
+  }
+  return inst
+}
+
+/**
+ * Render one scene into its scissored screen box with FULLY-EXPLICIT GL state, so no
+ * state leaks in or out — the single choke point for touching the renderer per scene.
+ * `backdrop` is the edit-mode fill colour (null = transparent, composites over the 2D
+ * canvas). We deliberately do NOT use `scene.background`: a Color background makes three
+ * mutate the renderer's *shared* clear colour behind our back (that side effect is what
+ * leaked the backdrop to the whole overlay). Instead the backdrop is a plain clear,
+ * scoped to the scissor box, with the clear colour set explicitly every render.
+ */
+function renderSceneIntoBox(
+  renderer: THREE.WebGLRenderer,
+  inst: Scene3DInstance,
+  glX: number,
+  glY: number,
+  sw: number,
+  sh: number,
+  backdrop: string | null,
+): void {
+  const aspect = sw / sh
+  if (isPersp(inst.camera)) {
+    // Plain centered camera: the box's full frame IS the camera. Vertical FOV is fixed,
+    // so the effective FOV depends only on aspect (never the box's absolute size), and
+    // shapes grow naturally on dolly with no shear; resize reframes like a 3D window.
+    inst.camera.aspect = aspect
+    inst.camera.clearViewOffset()
+  } else {
+    // Orthographic: rebuild the frustum from the stored world half-height + aspect each
+    // frame (zoom is applied separately by OrbitControls via camera.zoom).
+    const halfH = (inst.camera.userData.orthoHalfHeight as number | undefined) ?? 1
+    const f = orthoFrustum(halfH, aspect)
+    inst.camera.left = f.left
+    inst.camera.right = f.right
+    inst.camera.top = f.top
+    inst.camera.bottom = f.bottom
+    inst.camera.updateProjectionMatrix()
+  }
+
+  inst.scene.background = null // never rely on three's background (it mutates clearColor)
+  renderer.setViewport(glX, glY, sw, sh)
+  renderer.setScissor(glX, glY, sw, sh)
+  renderer.setScissorTest(true)
+  renderer.setClearColor(backdrop ? new THREE.Color(backdrop) : 0x000000, backdrop ? 1 : 0)
+  renderer.clear(true, true, false) // colour + depth, scoped to the scissor box
+  renderer.render(inst.scene, inst.camera)
 }
 
 /** The single selected scene id (when exactly one 3D scene is selected), else null. */
@@ -76,6 +149,13 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   const { actor, editingSceneId, gizmoMode, exit } = useScene3dEditing()
   const editingIdRef = useRef(editingSceneId)
   editingIdRef.current = editingSceneId
+
+  // Active projection of the scene being edited — a persp⇄ortho toggle flips it. The
+  // controls effect re-runs on this so orbit/gizmo rebind to the rebuilt camera.
+  const editingDoc = editingSceneId
+    ? (snap.scenes.get(editingSceneId) as Scene3DDocument | undefined)
+    : undefined
+  const editingProjection = editingDoc ? activeCamera(editingDoc).projection : null
 
   // --- init renderer once ---
   useEffect(() => {
@@ -131,6 +211,26 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     if (editingSceneId && !snap.scenes.has(editingSceneId)) exit()
   }, [editingSceneId, snap.scenes, exit])
 
+  // 3D-edit follows the selection. Entering edit always sets the selection to exactly
+  // the scene ({sceneId}) first (every enter site does this), so if the selection
+  // later stops being that one scene — another Layers-panel row, a different node
+  // clicked on the canvas, a cleared or multi-selection — 3D-edit is stale and we
+  // exit. Making exit a function of *selection state* (not of which widget got the
+  // click) is the one rule that covers every path uniformly, so it can't be bypassed
+  // by selecting through the Layers panel the way a canvas-only click-away was.
+  // Reads the editing scene fresh from the actor (not a captured value) so a
+  // scene→scene switch — exit A + enter B in the same tick — never races on a stale
+  // id: by the time valtio flushes this microtask, editingSceneId is already B.
+  useEffect(() => {
+    return subscribe(docProxy.selectedIds, () => {
+      const editId = actor.getSnapshot().context.scene3dEditingId
+      if (!editId) return
+      const sel = docProxy.selectedIds
+      if (sel.size === 1 && sel.has(editId)) return // still editing the selected scene
+      exit()
+    })
+  }, [actor, exit])
+
   // Focus is meaningful only inside edit mode; clear it whenever 3D-edit ends so
   // keyboard/command exits (Esc / V, via runCommand) match the menu's exit(), which
   // also clears focus. Keeps the "no focus outside edit" invariant in one place.
@@ -156,13 +256,11 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     if (!renderer || !surface || !doc) return
 
     // draw() builds instances lazily on RAF, but entering edit / adding an object
-    // must not wait a frame — build the instance and its objects eagerly so the
-    // gizmo can attach to a just-added object this tick.
-    let inst = getInstance(sceneId)
-    if (!inst) {
-      inst = buildSceneInstance(renderer, doc)
-      setInstance(sceneId, inst)
-    }
+    // must not wait a frame — build the instance and its objects eagerly so the gizmo
+    // can attach to a just-added object this tick. syncedInstance also rebuilds it when
+    // the active projection was toggled (persp⇄ortho), so the controls below bind the
+    // correct camera type.
+    const inst = syncedInstance(sceneId, doc, renderer)
     applyDocToInstance(inst, doc)
 
     // Left-drag orbits; right-drag pans (slides the whole scene within the peephole);
@@ -186,6 +284,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       homeDistance?: number
       homePos?: THREE.Vector3
       homeTarget?: THREE.Vector3
+      homeOrthoHalfHeight?: number
     }
     if (camUserData.homeDistance == null) {
       // Capture the home pose once — before any orbit/dolly — so Frame-view's
@@ -193,10 +292,19 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       camUserData.homeDistance = orbit.getDistance()
       camUserData.homePos = inst.camera.position.clone()
       camUserData.homeTarget = orbit.target.clone()
+      if (isOrtho(inst.camera)) {
+        camUserData.homeOrthoHalfHeight = inst.camera.userData.orthoHalfHeight as number
+      }
     }
     const bounds = dollyBounds(camUserData.homeDistance)
     orbit.minDistance = bounds.min
     orbit.maxDistance = bounds.max
+    // Orthographic "dolly" is a zoom (OrbitControls scales camera.zoom, not distance),
+    // so clamp zoom rather than distance for an ortho camera.
+    if (isOrtho(inst.camera)) {
+      orbit.minZoom = 0.2
+      orbit.maxZoom = 5
+    }
     orbit.addEventListener('change', scheduleDraw)
     orbitRef.current = orbit
 
@@ -265,7 +373,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       scheduleDraw()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingSceneId, snap.focusedObjectId])
+  }, [editingSceneId, snap.focusedObjectId, editingProjection])
 
   // Gizmo sub-tool (Move/Rotate/Scale) is machine state — apply it without
   // tearing down the controls.
@@ -288,18 +396,36 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     const obj = focusedId ? inst.objects.get(focusedId) : null
     if (obj) {
       const sphere = new THREE.Box3().setFromObject(obj).getBoundingSphere(new THREE.Sphere())
-      const fit = frameDistanceForRadius(sphere.radius, cam.fov)
-      const dist = Math.min(Math.max(fit, orbit.minDistance), orbit.maxDistance)
-      const dir = cam.position.clone().sub(orbit.target)
-      if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1)
-      dir.normalize()
-      orbit.target.copy(sphere.center)
-      cam.position.copy(sphere.center).addScaledVector(dir, dist)
+      if (isPersp(cam)) {
+        const fit = frameDistanceForRadius(sphere.radius, cam.fov)
+        const dist = Math.min(Math.max(fit, orbit.minDistance), orbit.maxDistance)
+        const dir = cam.position.clone().sub(orbit.target)
+        if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1)
+        dir.normalize()
+        orbit.target.copy(sphere.center)
+        cam.position.copy(sphere.center).addScaledVector(dir, dist)
+      } else {
+        // Ortho: distance doesn't change apparent size — fit via the frustum
+        // half-height (draw() rebuilds left/right/top/bottom from it) and reset zoom.
+        orbit.target.copy(sphere.center)
+        cam.userData.orthoHalfHeight = Math.max(sphere.radius * 1.25, 1e-3)
+        cam.zoom = 1
+      }
     } else {
-      const ud = cam.userData as { homePos?: THREE.Vector3; homeTarget?: THREE.Vector3 }
+      const ud = cam.userData as {
+        homePos?: THREE.Vector3
+        homeTarget?: THREE.Vector3
+        homeOrthoHalfHeight?: number
+      }
       if (ud.homePos && ud.homeTarget) {
         cam.position.copy(ud.homePos)
         orbit.target.copy(ud.homeTarget)
+      }
+      if (isOrtho(cam)) {
+        cam.zoom = 1
+        if (typeof ud.homeOrthoHalfHeight === 'number') {
+          cam.userData.orthoHalfHeight = ud.homeOrthoHalfHeight
+        }
       }
     }
     // The camera is centered (no peephole crop), so aiming orbit.target at the object
@@ -349,8 +475,13 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     const editingId = editingIdRef.current
     const focusedId = scene3dProxy.focusedObjectId
 
-    // Full-canvas clear (scissor stays on for per-scene rendering).
+    // Full-canvas clear to transparent (scissor off so it covers the whole buffer).
+    // Re-assert the clear colour every frame: rendering a scene whose `scene.background`
+    // is a Color (the edit backdrop) leaves three's GL clear colour set to that colour,
+    // so without this reset the next full-canvas clear would repaint the ENTIRE overlay
+    // with the backdrop — the edit backdrop "leaking" past its box to the whole screen.
     renderer.setScissorTest(false)
+    renderer.setClearColor(0x000000, 0)
     renderer.clear()
     renderer.setScissorTest(true)
     let selRect: ScreenRect | null = null
@@ -369,43 +500,20 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       if (sw < 1 || sh < 1) continue
       if (isSel || sceneId === editingId) selRect = { x: tl.x, y: tl.y, w: sw, h: sh }
 
-      let inst = getInstance(sceneId)
-      if (!inst) {
-        inst = buildSceneInstance(renderer, doc)
-        setInstance(sceneId, inst)
-      }
+      const inst = syncedInstance(sceneId, doc, renderer)
       // While the gizmo owns the focused object's transform, don't fight it.
       const skipTransformFor = sceneId === editingId ? focusedId : null
       applyDocToInstance(inst, doc, skipTransformFor)
 
-      // Edit-only backdrop: fill the peephole with a solid colour while editing so
-      // the scene region reads apart from the document canvas (which otherwise shows
-      // through the transparent container). Outside edit mode the scene stays
-      // transparent so it composites over the document. (Lighting is unaffected —
-      // `scene.background` is purely the visual backdrop, not the IBL environment.)
-      if (sceneId === editingId) {
-        const hex = doc.background ?? SCENE3D_EDIT_BACKDROP
-        if (inst.scene.background instanceof THREE.Color) inst.scene.background.set(hex)
-        else inst.scene.background = new THREE.Color(hex)
-      } else if (inst.scene.background) {
-        inst.scene.background = null
-      }
+      // Edit-only backdrop fills the box while editing so the scene reads apart from the
+      // document; every other scene stays transparent and composites over it. Drawn as an
+      // explicit scissored clear in renderSceneIntoBox (never scene.background).
+      const backdrop = sceneId === editingId ? (doc.background ?? SCENE3D_EDIT_BACKDROP) : null
 
-      // Plain centered perspective viewport: the box's full frame IS the camera (not a
-      // frustum-extending peephole). The optical axis runs through the box centre and
-      // the vertical FOV is fixed, so the effective FOV depends only on the aspect —
-      // never on the box's absolute size. Shapes therefore grow naturally toward you on
-      // dolly (no shear) and there's no wide-angle edge stretch; resizing reframes like
-      // a normal 3D window. Aspect = the box's on-screen aspect (sw/sh); zoom cancels.
-      inst.camera.aspect = sw / sh
-      inst.camera.clearViewOffset() // also recomputes the projection with the new aspect
-
-      // three multiplies these by pixelRatio internally — pass CSS/logical px.
+      // three multiplies viewport/scissor by pixelRatio internally — pass CSS/logical px.
       const glX = tl.x
       const glY = cssH - (tl.y + sh)
-      renderer.setViewport(glX, glY, sw, sh)
-      renderer.setScissor(glX, glY, sw, sh)
-      renderer.render(inst.scene, inst.camera)
+      renderSceneIntoBox(renderer, inst, glX, glY, sw, sh, backdrop)
     }
 
     selRectRef.current = selRect

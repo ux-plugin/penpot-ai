@@ -11,8 +11,39 @@ import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import type { Object3DEntry, Scene3DDocument, Scene3DInstance } from './scene3d-store'
+import { activeCamera, type Camera3DEntry } from './scene3d-store'
+import { CAM_FAR, CAM_NEAR, isPersp, orthoFrustum, perspHalfHeightAtDistance } from './camera3d'
 
 const DEG = Math.PI / 180
+
+/** The default camera placement (a 3/4 view) both projections start from. */
+const CAM_HOME_POS: readonly [number, number, number] = [2.4, 1.8, 2.8]
+
+/**
+ * Build the scene's active camera. Perspective is framed by FOV; orthographic by a
+ * world half-height chosen to match the perspective framing at the home distance
+ * (so a fresh ortho scene reads at the same scale). `orthoHalfHeight` is stashed on
+ * `userData` so draw() can rebuild the frustum when the viewport aspect changes.
+ */
+export function buildCamera(
+  cam: Camera3DEntry,
+  aspect = 1,
+): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+  const [px, py, pz] = CAM_HOME_POS
+  if (cam.projection === 'orthographic') {
+    const halfH = perspHalfHeightAtDistance(cam.fov, Math.hypot(px, py, pz))
+    const f = orthoFrustum(halfH, aspect)
+    const ortho = new THREE.OrthographicCamera(f.left, f.right, f.top, f.bottom, CAM_NEAR, CAM_FAR)
+    ortho.userData.orthoHalfHeight = halfH
+    ortho.position.set(px, py, pz)
+    ortho.lookAt(0, 0, 0)
+    return ortho
+  }
+  const persp = new THREE.PerspectiveCamera(cam.fov, aspect, CAM_NEAR, CAM_FAR)
+  persp.position.set(px, py, pz)
+  persp.lookAt(0, 0, 0)
+  return persp
+}
 
 function makePrimitiveGeometry(ref: 'cube' | 'sphere' | 'plane'): THREE.BufferGeometry {
   switch (ref) {
@@ -67,9 +98,7 @@ export function buildSceneInstance(
   dir.position.set(3, 5, 4)
   scene.add(ambient, dir)
 
-  const camera = new THREE.PerspectiveCamera(doc.camera.fov, 1, 0.01, 100)
-  camera.position.set(2.4, 1.8, 2.8)
-  camera.lookAt(0, 0, 0)
+  const camera = buildCamera(activeCamera(doc), 1)
 
   const objects = new Map<string, THREE.Object3D>()
   for (const entry of doc.objects ?? []) {
@@ -162,9 +191,12 @@ export function applyDocToInstance(
     applyMaterial(obj, entry)
   }
 
-  // Scene-level: shared camera + environment.
-  if (inst.camera.fov !== doc.camera.fov) {
-    inst.camera.fov = doc.camera.fov
+  // Scene-level: perspective FOV + environment. A projection swap (persp⇄ortho)
+  // rebuilds the instance elsewhere, so here inst.camera's type already matches the
+  // active camera; only the perspective FOV can drift within the same instance.
+  const activeCam = activeCamera(doc)
+  if (isPersp(inst.camera) && inst.camera.fov !== activeCam.fov) {
+    inst.camera.fov = activeCam.fov
     inst.camera.updateProjectionMatrix()
   }
   inst.scene.traverse((o) => {

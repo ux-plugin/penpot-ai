@@ -181,7 +181,8 @@ export function findObject(scene: Scene3DDocument, objId: string): Object3DEntry
 
 export interface Scene3DInstance {
   scene: THREE.Scene
-  camera: THREE.PerspectiveCamera
+  /** The scene's active camera — perspective (FOV) or orthographic (parallel). */
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera
   /** objectId → its root group in the scene. */
   objects: Map<string, THREE.Object3D>
   /** Free GPU resources (geometries, materials, env map). */

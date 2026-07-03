@@ -15,7 +15,8 @@ import {
   getCommittedNodeOnActivePage,
 } from '../properties/commit-node-properties'
 import { getActiveOrSinglePageId } from '../store/doc-proxy'
-import type { Object3DEntry, Scene3DDocument } from './scene3d-store'
+import { sceneCameras } from './scene3d-store'
+import type { Camera3DEntry, Object3DEntry, Scene3DDocument } from './scene3d-store'
 
 /** The committed scene document on the node (plain clone, detached from the proxy). */
 function currentScene(sceneId: string): Scene3DDocument | null {
@@ -39,6 +40,31 @@ export async function commitSceneCamera(
   const doc = currentScene(sceneId)
   if (!doc) return
   Object.assign(doc.camera, patch)
+  await commitScene3d(sceneId, doc)
+}
+
+/**
+ * Patch the scene's ACTIVE camera entry (e.g. `projection`, `fov`). Materialises the
+ * `cameras[]` array for legacy scenes (synthesised from the old single `camera.fov`)
+ * and mirrors FOV back onto the legacy `camera` field so both representations stay
+ * consistent. One undoable `mod-obj`.
+ */
+export async function commitActiveCameraPatch(
+  sceneId: string,
+  patch: Partial<Camera3DEntry>,
+): Promise<void> {
+  const doc = currentScene(sceneId)
+  if (!doc) return
+  const cams = doc.cameras && doc.cameras.length > 0 ? doc.cameras : sceneCameras(doc)
+  const activeId = doc.activeCameraId ?? cams[0].id
+  const idx = Math.max(
+    0,
+    cams.findIndex((c) => c.id === activeId),
+  )
+  cams[idx] = { ...cams[idx], ...patch }
+  doc.cameras = cams
+  doc.activeCameraId = cams[idx].id
+  if (typeof patch.fov === 'number') doc.camera.fov = patch.fov // legacy mirror
   await commitScene3d(sceneId, doc)
 }
 
