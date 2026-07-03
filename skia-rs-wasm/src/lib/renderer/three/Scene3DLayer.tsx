@@ -45,6 +45,7 @@ import {
 import { isOrtho, isPersp, orthoFrustum } from './camera3d'
 import { recenterOnScene } from './scene3d-recenter'
 import { editPlacement, effectiveDim, exitFocus, focusRegion, focusDim, reveal } from './scene3d-focus'
+import { beginEditSession, endEditSession, markEditDirty } from './edit-history'
 import {
   scene3dResizePreview,
   applyResize,
@@ -272,6 +273,23 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   useEffect(() => {
     exitFocus()
   }, [editingSceneId])
+
+  // Edit-history: open a session while editing; on exit (cleanup) record it if it was
+  // substantial (dwelled or did work) so it can be resumed without the layers tree.
+  useEffect(() => {
+    const sceneId = editingSceneId
+    if (!sceneId) return
+    beginEditSession(sceneId)
+    return () => {
+      const name = (getNode(sceneId) as { name?: string } | undefined)?.name ?? '3D scene'
+      endEditSession({ kind: 'scene3d', targetId: sceneId, name })
+    }
+  }, [editingSceneId])
+
+  // "Did real work" once an object is focused/manipulated (dwell covers pure looking).
+  useEffect(() => {
+    if (snap.focusedObjectId) markEditDirty()
+  }, [snap.focusedObjectId])
 
   // Frame / reset view (F) — driven by the store's request signal, outside the
   // redraw path. frameView() guards on edit state, so the immediate subscribe call

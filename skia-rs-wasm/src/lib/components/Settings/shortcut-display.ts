@@ -58,6 +58,7 @@ export function commandInfo(cmd: Command): { label: string; category: ShortcutCa
     case 'SCENE3D_FRAME_VIEW': return { label: 'Frame / reset view', category: '3D editing' }
     case 'SCENE3D_RECENTER': return { label: 'Recenter scene', category: '3D editing' }
     case 'SCENE3D_TOGGLE_FOCUS': return { label: 'Focus (maximize)', category: '3D editing' }
+    case 'SCENE3D_EDIT_CYCLE': return { label: 'Cycle recent edits', category: '3D editing' }
     case 'SCENE3D_DELETE': return { label: 'Delete object', category: '3D editing' }
     case 'SCENE3D_EXIT': return { label: 'Exit 3D edit', category: '3D editing' }
     case 'PAN': {

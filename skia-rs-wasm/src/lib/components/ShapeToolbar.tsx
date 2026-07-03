@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils'
 import { IconFrame, IconRect } from './shape-icons'
 import { PenEditFlyout } from './PenEditFlyout'
 import { Scene3DEditMenu } from './Scene3DEditMenu'
+import { EditResumeChip } from './EditResumeChip'
 
 const placeholderTitle = 'Coming soon'
 
@@ -255,6 +256,12 @@ export function ShapeToolbar() {
       className="pointer-events-auto fixed bottom-6 left-1/2 z-60 flex -translate-x-1/2 flex-col items-center gap-2"
       aria-label="Shape tools"
     >
+      {/* Transient "resume last edit" — floated to the right of the pill (absolute, so
+          the main toolbar stays centred), aligned with the bottom tool row. */}
+      <div className="absolute bottom-0 left-full ml-3 flex items-center">
+        <EditResumeChip />
+      </div>
+
       {/* Contextual 3D menu, above the strip — like the pen's edit flyout. */}
       <Scene3DEditMenu />
       <ul className="flex list-none flex-row items-center gap-0.5 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md">

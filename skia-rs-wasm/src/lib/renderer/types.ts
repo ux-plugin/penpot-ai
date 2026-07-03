@@ -217,6 +217,8 @@ export interface ShortcutsConfig {
   scene3dRecenterKey: string
   /** Toggle focus (maximize) mode (active only while editing a 3D scene). */
   scene3dFocusKey: string
+  /** Cycle to the next recent edit (active only while editing a 3D scene). */
+  scene3dCycleKey: string
   wheelZoomEnabled: boolean
   wheelScalePerPixel: number
 }

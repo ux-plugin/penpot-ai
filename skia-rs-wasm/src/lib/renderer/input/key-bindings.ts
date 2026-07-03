@@ -49,6 +49,7 @@ export type ToolKeyField =
   | 'scene3dFrameKey'
   | 'scene3dRecenterKey'
   | 'scene3dFocusKey'
+  | 'scene3dCycleKey'
 
 export interface ToolBindingDesc {
   /** ShortcutsConfig field holding this binding's key code. */
@@ -79,6 +80,7 @@ export const TOOL_BINDINGS: ToolBindingDesc[] = [
   { field: 'scene3dFrameKey', command: { type: 'SCENE3D_FRAME_VIEW' }, label: 'Frame / reset view', category: '3D editing', scene3dOnly: true },
   { field: 'scene3dRecenterKey', command: { type: 'SCENE3D_RECENTER' }, label: 'Recenter scene', category: '3D editing', scene3dOnly: true },
   { field: 'scene3dFocusKey', command: { type: 'SCENE3D_TOGGLE_FOCUS' }, label: 'Focus (maximize)', category: '3D editing', scene3dOnly: true },
+  { field: 'scene3dCycleKey', command: { type: 'SCENE3D_EDIT_CYCLE', dir: 1 }, label: 'Cycle recent edits', category: '3D editing', scene3dOnly: true },
 ]
 
 /** Build the binding list for the active shortcut config. The tool / sub-tool

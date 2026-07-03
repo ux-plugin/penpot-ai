@@ -6,6 +6,7 @@ import type { CommandCtx } from '@/lib/renderer/input/commands'
 import { DEFAULT_SHORTCUTS } from '@/lib/renderer/store/shortcuts-store'
 import { setFocusedObject, scene3dProxy } from '@/lib/renderer/three/scene3d-store'
 import { editPlacement } from '@/lib/renderer/three/scene3d-focus'
+import { recentEdits } from '@/lib/renderer/three/edit-history'
 
 function ctxFor(actor: ReturnType<typeof createActor<typeof canvasMachine>>): CommandCtx {
   return {
@@ -177,5 +178,14 @@ describe('scene3d edit bindings', () => {
     expect(dispatchKey(key('KeyM'), bindings, ctxFor(a))).toBe(true)
     expect(editPlacement.value).toBe('focus')
     editPlacement.value = 'in-place' // restore shared signal for other tests
+  })
+
+  it('Tab cycles recent edits only while editing a 3D scene', () => {
+    recentEdits.value = [{ kind: 'scene3d', targetId: 's2', name: 's2' }]
+    const a = createActor(canvasMachine).start()
+    expect(dispatchKey(key('Tab'), bindings, ctxFor(a))).toBe(false) // not editing
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('Tab'), bindings, ctxFor(a))).toBe(true)
+    recentEdits.value = []
   })
 })

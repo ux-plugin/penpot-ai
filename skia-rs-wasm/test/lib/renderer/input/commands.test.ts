@@ -5,6 +5,7 @@ import { runCommand, type CommandCtx } from '@/lib/renderer/input/commands'
 import { DEFAULT_SHORTCUTS } from '@/lib/renderer/store/shortcuts-store'
 import { sceneFrameViewRequest, setFocusedObject, scene3dProxy } from '@/lib/renderer/three/scene3d-store'
 import { editPlacement } from '@/lib/renderer/three/scene3d-focus'
+import { recentEdits } from '@/lib/renderer/three/edit-history'
 
 /** A ctx whose viewport ops are no-ops (renderer null) — enough for tool/path commands. */
 function ctxFor(actor: ReturnType<typeof createActor<typeof canvasMachine>>): CommandCtx {
@@ -23,6 +24,7 @@ describe('runCommand', () => {
   // "pop focus first" branch doesn't bleed between cases.
   beforeEach(() => {
     editPlacement.value = 'in-place'
+    recentEdits.value = []
   })
 
   it('TOOL_TOGGLE activates an inactive tool, then deactivates the active one', () => {
@@ -131,5 +133,13 @@ describe('runCommand', () => {
     expect(a.getSnapshot().matches('scene3dEditing')).toBe(true) // still editing
     runCommand({ type: 'SCENE3D_EXIT' }, ctxFor(a))
     expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+  })
+
+  it('SCENE3D_EDIT_CYCLE enters the next recent edit', () => {
+    recentEdits.value = [{ kind: 'scene3d', targetId: 's2', name: 's2' }]
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    runCommand({ type: 'SCENE3D_EDIT_CYCLE', dir: 1 }, ctxFor(a))
+    expect(a.getSnapshot().context.scene3dEditingId).toBe('s2')
   })
 })

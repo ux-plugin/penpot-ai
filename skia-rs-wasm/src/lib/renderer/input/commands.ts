@@ -19,6 +19,8 @@ import { requestSceneFrameView, setFocusedObject, scene3dProxy } from '../three/
 import { commitRemoveObject } from '../three/scene3d-commit'
 import { recenterOnScene } from '../three/scene3d-recenter'
 import { toggleFocus, exitFocus, editPlacement } from '../three/scene3d-focus'
+import { cycleEdit, recentEdits } from '../three/edit-history'
+import { setSelectedIds } from '../store/document-selection'
 import { deleteSelectedNodes } from '../handlers/delete-selection'
 
 export type Command =
@@ -45,6 +47,7 @@ export type Command =
   | { type: 'SCENE3D_FRAME_VIEW' }
   | { type: 'SCENE3D_RECENTER' }
   | { type: 'SCENE3D_TOGGLE_FOCUS' }
+  | { type: 'SCENE3D_EDIT_CYCLE'; dir: 1 | -1 }
   | { type: 'SCENE3D_DELETE' }
   | { type: 'SCENE3D_EXIT' }
 
@@ -139,6 +142,20 @@ export function runCommand(cmd: Command, ctx: CommandCtx): void {
     case 'SCENE3D_TOGGLE_FOCUS':
       toggleFocus()
       return
+    case 'SCENE3D_EDIT_CYCLE': {
+      // Jump to the next recent edit (Tab). Re-enter like any other enter site:
+      // select the scene first (upholds the "edit follows selection" invariant),
+      // then focus its first object and drop into edit.
+      const current = actor.getSnapshot().context.scene3dEditingId
+      const next = cycleEdit(recentEdits.value, current, cmd.dir)
+      if (next && next.targetId !== current) {
+        const first = scene3dProxy.scenes.get(next.targetId)?.objects[0]?.id ?? null
+        setSelectedIds(new Set([next.targetId]))
+        setFocusedObject(first)
+        actor.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: next.targetId })
+      }
+      return
+    }
     case 'SCENE3D_EXIT':
       // Esc pops one level: leave focus first (back to in-place), then leave 3D-edit.
       if (editPlacement.value === 'focus') exitFocus()
