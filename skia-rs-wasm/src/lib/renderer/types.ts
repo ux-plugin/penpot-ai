@@ -213,6 +213,8 @@ export interface ShortcutsConfig {
   scene3dScaleKey: string
   /** Frame the focused object / reset the view (active only while editing a 3D scene). */
   scene3dFrameKey: string
+  /** Recenter the 2D viewport on the edited scene (active only while editing a 3D scene). */
+  scene3dRecenterKey: string
   wheelZoomEnabled: boolean
   wheelScalePerPixel: number
 }

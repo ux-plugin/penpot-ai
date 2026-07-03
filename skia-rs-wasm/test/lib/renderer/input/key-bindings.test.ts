@@ -159,4 +159,12 @@ describe('scene3d edit bindings', () => {
     expect(dispatchKey(key('KeyF'), bindings, ctxFor(a))).toBe(true)
     expect(a.getSnapshot().context.drawTool).toBeNull()
   })
+
+  it('Home recenters the scene only while editing a 3D scene', () => {
+    const a = createActor(canvasMachine).start()
+    // Not editing: Home is unhandled.
+    expect(dispatchKey(key('Home'), bindings, ctxFor(a))).toBe(false)
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('Home'), bindings, ctxFor(a))).toBe(true)
+  })
 })

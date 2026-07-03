@@ -17,6 +17,7 @@ import type { DrawTool, PathSubTool, Scene3DGizmoMode } from '../machine/canvas-
 import type { ShortcutsConfig } from '../types'
 import { requestSceneFrameView, setFocusedObject, scene3dProxy } from '../three/scene3d-store'
 import { commitRemoveObject } from '../three/scene3d-commit'
+import { recenterOnScene } from '../three/scene3d-recenter'
 import { deleteSelectedNodes } from '../handlers/delete-selection'
 
 export type Command =
@@ -41,6 +42,7 @@ export type Command =
   // focused object, or leave.
   | { type: 'SCENE3D_GIZMO'; mode: Scene3DGizmoMode }
   | { type: 'SCENE3D_FRAME_VIEW' }
+  | { type: 'SCENE3D_RECENTER' }
   | { type: 'SCENE3D_DELETE' }
   | { type: 'SCENE3D_EXIT' }
 
@@ -116,6 +118,13 @@ export function runCommand(cmd: Command, ctx: CommandCtx): void {
       // View pose isn't machine state (like dolly/pan); nudge the overlay to refit.
       requestSceneFrameView()
       return
+    case 'SCENE3D_RECENTER': {
+      // Move the 2D document viewport so the edited scene box returns to centre
+      // (distinct from Frame-view, which reframes the 3D camera inside the box).
+      const sceneId = actor.getSnapshot().context.scene3dEditingId
+      if (sceneId) recenterOnScene(sceneId)
+      return
+    }
     case 'SCENE3D_DELETE': {
       const objId = scene3dProxy.focusedObjectId
       const sceneId = actor.getSnapshot().context.scene3dEditingId

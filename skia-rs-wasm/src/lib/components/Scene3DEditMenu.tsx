@@ -11,7 +11,7 @@
  */
 
 import { useSnapshot } from 'valtio'
-import { Box } from 'lucide-react'
+import { Box, Crosshair } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { docProxy, getNode } from '../renderer/store/doc-proxy'
 import {
@@ -23,6 +23,7 @@ import {
   type Scene3DDocument,
 } from '../renderer/three/scene3d-store'
 import { commitActiveCameraPatch, commitAddObject } from '../renderer/three/scene3d-commit'
+import { recenterOnScene } from '../renderer/three/scene3d-recenter'
 import { useScene3dEditing } from '../renderer/three/use-scene3d-editing'
 import type { Scene3DGizmoMode } from '../renderer/machine/canvas-machine'
 
@@ -95,9 +96,18 @@ export function Scene3DEditMenu() {
       {/* Mode zone — a solid-purple, NON-interactive status cluster (Figma-style grouped
           zones), so "you are editing" reads as a mode, not as one of the action buttons.
           On the fixed strip, so it stays visible when the scene box is panned off-screen. */}
-      <div className="flex items-center gap-2.5 bg-violet-500 px-3.5 py-2.5 text-xs font-medium text-white">
+      <div className="flex items-center gap-2 bg-violet-500 px-3.5 py-2.5 text-xs font-medium text-white">
         <span className="size-1.5 rounded-full bg-white" aria-hidden />
         Editing · {sceneName}
+        <button
+          type="button"
+          title="Recenter scene"
+          aria-label="Recenter scene"
+          onClick={() => recenterOnScene(editingSceneId)}
+          className="-mr-1 ml-0.5 rounded-md p-1 text-white/80 hover:bg-white/15 hover:text-white"
+        >
+          <Crosshair className="size-3.5" />
+        </button>
       </div>
 
       {/* Tools zone — the actions. Full-height separators between groups; Done at the end. */}

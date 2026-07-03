@@ -43,6 +43,7 @@ import {
   pickObject,
 } from './three-scene'
 import { isOrtho, isPersp, orthoFrustum } from './camera3d'
+import { recenterOnScene } from './scene3d-recenter'
 import { commitObjectTransform } from './scene3d-commit'
 import { resolveScene3dPointerDown } from './scene3d-pointer'
 import { useScene3dEditing } from './use-scene3d-editing'
@@ -134,6 +135,7 @@ function selectedSceneId(): string | null {
 export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; height: number } }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const editSurfaceRef = useRef<HTMLDivElement>(null)
+  const locatorRef = useRef<HTMLButtonElement>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const gizmoRef = useRef<TransformControls | null>(null)
   const orbitRef = useRef<OrbitControls | null>(null)
@@ -518,6 +520,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
 
     selRectRef.current = selRect
     positionEditSurface(selRect, editingId != null)
+    positionOffscreenLocator(selRect, editingId != null)
   }
 
   function positionEditSurface(rect: ScreenRect | null, editing: boolean) {
@@ -532,6 +535,31 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     } else {
       surface.style.display = 'none'
     }
+  }
+
+  /** Show a violet edge chip pointing at the edited scene when its box is fully
+   *  off-screen (panned away). Positioned/rotated imperatively; click = recenter. */
+  function positionOffscreenLocator(rect: ScreenRect | null, editing: boolean) {
+    const btn = locatorRef.current
+    if (!btn) return
+    const cw = canvasSizeRef.current.width
+    const ch = canvasSizeRef.current.height
+    const onScreen =
+      rect != null && rect.x + rect.w > 0 && rect.x < cw && rect.y + rect.h > 0 && rect.y < ch
+    if (!editing || !rect || onScreen) {
+      btn.style.display = 'none'
+      return
+    }
+    const scx = rect.x + rect.w / 2
+    const scy = rect.y + rect.h / 2
+    const pad = 20
+    const px = Math.max(pad, Math.min(cw - pad, scx))
+    const py = Math.max(pad, Math.min(ch - pad, scy))
+    const angle = (Math.atan2(scy - py, scx - px) * 180) / Math.PI
+    btn.style.display = 'flex'
+    btn.style.left = `${px - 14}px`
+    btn.style.top = `${py - 14}px`
+    btn.style.transform = `rotate(${angle}deg)`
   }
 
   return (
@@ -579,6 +607,39 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
           cursor: 'grab',
         }}
       />
+
+      {/* Off-screen locator — a violet edge chip pointing at the edited scene when it's
+          panned out of view; click recenters. Positioned/rotated imperatively in draw(). */}
+      <button
+        ref={locatorRef}
+        type="button"
+        title="Recenter scene"
+        aria-label="Recenter scene (off-screen)"
+        onClick={() => {
+          const id = editingIdRef.current
+          if (id) recenterOnScene(id)
+        }}
+        style={{
+          position: 'absolute',
+          display: 'none',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 28,
+          height: 28,
+          borderRadius: '50%',
+          border: 'none',
+          background: 'rgba(139, 92, 246, 0.95)',
+          color: '#fff',
+          cursor: 'pointer',
+          boxShadow: '0 1px 4px rgba(0,0,0,.25)',
+          pointerEvents: 'auto',
+          zIndex: 7,
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5 12h14M13 6l6 6-6 6" />
+        </svg>
+      </button>
     </>
   )
 }

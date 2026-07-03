@@ -100,4 +100,10 @@ describe('runCommand', () => {
     expect(() => runCommand({ type: 'SCENE3D_DELETE' }, ctxFor(a))).not.toThrow()
     expect(scene3dProxy.focusedObjectId).toBeNull()
   })
+
+  it('SCENE3D_RECENTER is a safe no-op without a renderer/canvas', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(() => runCommand({ type: 'SCENE3D_RECENTER' }, ctxFor(a))).not.toThrow()
+  })
 })
