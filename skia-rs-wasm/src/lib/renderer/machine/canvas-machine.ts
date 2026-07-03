@@ -382,6 +382,19 @@ export const canvasMachine = canvasMachineSetup.createMachine({
         SCENE3D_SET_GIZMO: {
           actions: assign({ scene3dGizmoMode: ({ event }) => event.mode }),
         },
+        // A mousedown on empty canvas (outside the edited scene's box; clicks inside
+        // it are captured by the 3D edit surface and never reach the 2D handler) leaves
+        // 3D-edit and behaves like a normal empty-canvas click: run the marquee/deselect.
+        // Clearing the selection there also satisfies the overlay's selection-driven
+        // exit; setting scene3dEditingId null here makes the exit immediate on press.
+        POINTER_DOWN_ON_CANVAS: {
+          target: 'marqueeSelect',
+          actions: assign({
+            scene3dEditingId: () => null,
+            areaSelectionAppend: ({ event }) => event.append,
+            areaSelectionRemove: ({ event }) => event.remove,
+          }),
+        },
       },
     },
   },

@@ -162,6 +162,13 @@ export function useViewportInteractions({
         canvasActor.send({ type: 'STOP_PATH_EDIT' })
       }
 
+      // NOTE: 3D-scene editing has no click-away hook here on purpose. Exit is driven
+      // by *selection* (Scene3DLayer's "3D-edit follows the selection" rule), so it
+      // fires no matter how the selection changed — a canvas click that hits another
+      // node (setSelectedIds below), a Layers-panel click, or a keyboard/programmatic
+      // change. Empty-canvas clicks are handled by the machine's `scene3dEditing`
+      // POINTER_DOWN_ON_CANVAS transition (they don't mutate selection until pointer-up).
+
       const activeDrawTool = canvasActor.getSnapshot().context.drawTool
       if (activeDrawTool === 'pen') {
         // Pen creation flows through the unified path editor (Phase C — one pen):
