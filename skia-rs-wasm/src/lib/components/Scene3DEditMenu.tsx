@@ -13,7 +13,7 @@
 import { useSnapshot } from 'valtio'
 import { Box } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { docProxy } from '../renderer/store/doc-proxy'
+import { docProxy, getNode } from '../renderer/store/doc-proxy'
 import {
   scene3dProxy,
   defaultObject,
@@ -76,6 +76,7 @@ export function Scene3DEditMenu() {
   const focusedId = sceneSnap.focusedObjectId
   const editingDoc = sceneSnap.scenes.get(editingSceneId) as Scene3DDocument | undefined
   const projection = editingDoc ? activeCamera(editingDoc).projection : 'perspective'
+  const sceneName = (getNode(editingSceneId) as { name?: string } | undefined)?.name ?? '3D scene'
   const addObject = (ref: (typeof ADD_PRIMS)[number]['ref']) => {
     const id = crypto.randomUUID()
     void commitAddObject(editingSceneId, defaultObject(id, { kind: 'primitive', ref })).then(() =>
@@ -83,65 +84,82 @@ export function Scene3DEditMenu() {
     )
   }
 
+  // Buttons in a group sit tight (adjacent, hover-bg distinguishes each); action groups
+  // are split by a light half-height inset divider (the strong full-height split is the
+  // purple↔white zone boundary), so the rhythm reads as chunks.
+  const toolBtn = 'my-1.5 flex items-center rounded-md px-2 text-xs'
+  const sep = 'mx-1.5 h-4 w-px self-center bg-border'
+
   return (
-    <div className={shell}>
-      {ADD_PRIMS.map((p) => (
+    <div className="pointer-events-auto inline-flex items-stretch overflow-hidden rounded-xl border border-border/80 shadow-md">
+      {/* Mode zone — a solid-purple, NON-interactive status cluster (Figma-style grouped
+          zones), so "you are editing" reads as a mode, not as one of the action buttons.
+          On the fixed strip, so it stays visible when the scene box is panned off-screen. */}
+      <div className="flex items-center gap-2.5 bg-violet-500 px-3.5 py-2.5 text-xs font-medium text-white">
+        <span className="size-1.5 rounded-full bg-white" aria-hidden />
+        Editing · {sceneName}
+      </div>
+
+      {/* Tools zone — the actions. Full-height separators between groups; Done at the end. */}
+      <div className="flex items-stretch bg-white px-1.5">
+        {ADD_PRIMS.map((p) => (
+          <button
+            key={p.ref}
+            type="button"
+            onClick={() => addObject(p.ref)}
+            className={cn(toolBtn, 'text-muted-foreground hover:bg-muted')}
+          >
+            + {p.label}
+          </button>
+        ))}
+
+        {focusedId && (
+          <>
+            <span className={sep} />
+            {GIZMOS.map((g) => (
+              <button
+                key={g.mode}
+                type="button"
+                onClick={() => setGizmo(g.mode)}
+                className={cn(
+                  toolBtn,
+                  gizmoMode === g.mode
+                    ? 'bg-violet-500/15 text-violet-700'
+                    : 'text-muted-foreground hover:bg-muted',
+                )}
+              >
+                {g.label}
+              </button>
+            ))}
+          </>
+        )}
+
+        <span className={sep} />
+        {PROJECTIONS.map((p) => (
+          <button
+            key={p.key}
+            type="button"
+            onClick={() => void commitActiveCameraPatch(editingSceneId, { projection: p.key })}
+            className={cn(
+              toolBtn,
+              projection === p.key
+                ? 'bg-violet-500/15 text-violet-700'
+                : 'text-muted-foreground hover:bg-muted',
+            )}
+          >
+            {p.label}
+          </button>
+        ))}
+
+        <span className={sep} />
         <button
-          key={p.ref}
           type="button"
-          onClick={() => addObject(p.ref)}
-          className="rounded-full px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted"
+          onClick={exit}
+          className={cn(toolBtn, 'font-medium text-muted-foreground hover:bg-muted')}
         >
-          + {p.label}
+          Done
         </button>
-      ))}
-
-      {focusedId && (
-        <>
-          <span className="mx-0.5 h-4 w-px bg-border" />
-          {GIZMOS.map((g) => (
-            <button
-              key={g.mode}
-              type="button"
-              onClick={() => setGizmo(g.mode)}
-              className={cn(
-                'rounded-full px-2.5 py-1 text-xs',
-                gizmoMode === g.mode
-                  ? 'bg-indigo-500 text-white'
-                  : 'text-muted-foreground hover:bg-muted',
-              )}
-            >
-              {g.label}
-            </button>
-          ))}
-        </>
-      )}
-
-      <span className="mx-0.5 h-4 w-px bg-border" />
-      {PROJECTIONS.map((p) => (
-        <button
-          key={p.key}
-          type="button"
-          onClick={() => void commitActiveCameraPatch(editingSceneId, { projection: p.key })}
-          className={cn(
-            'rounded-full px-2.5 py-1 text-xs',
-            projection === p.key
-              ? 'bg-indigo-500 text-white'
-              : 'text-muted-foreground hover:bg-muted',
-          )}
-        >
-          {p.label}
-        </button>
-      ))}
-
-      <span className="mx-0.5 h-4 w-px bg-border" />
-      <button
-        type="button"
-        onClick={exit}
-        className="rounded-full px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
-      >
-        Done
-      </button>
+      </div>
     </div>
   )
 }

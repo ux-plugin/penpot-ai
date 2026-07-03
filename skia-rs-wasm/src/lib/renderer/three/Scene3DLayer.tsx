@@ -550,6 +550,22 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
         }}
       />
 
+      {/* Full-viewport edit frame — a viewport-anchored accent border shown while any
+          3D scene is being edited. Independent of the scene box's position, so it stays
+          a clear "you are in 3D-edit" signal even when the box is panned off-screen. */}
+      {editingSceneId && (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            zIndex: 6,
+            boxShadow: 'inset 0 0 0 2px rgba(139, 92, 246, 0.9)',
+          }}
+        />
+      )}
+
       {/* Pointer-capture surface for the gizmo/orbit/raycast, sized to the editing
           scene's viewport (positioned imperatively in draw()). */}
       <div
