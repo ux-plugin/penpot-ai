@@ -5,6 +5,7 @@ import { buildKeyBindings, dispatchKey } from '@/lib/renderer/input/key-bindings
 import type { CommandCtx } from '@/lib/renderer/input/commands'
 import { DEFAULT_SHORTCUTS } from '@/lib/renderer/store/shortcuts-store'
 import { setFocusedObject, scene3dProxy } from '@/lib/renderer/three/scene3d-store'
+import { editPlacement } from '@/lib/renderer/three/scene3d-focus'
 
 function ctxFor(actor: ReturnType<typeof createActor<typeof canvasMachine>>): CommandCtx {
   return {
@@ -166,5 +167,15 @@ describe('scene3d edit bindings', () => {
     expect(dispatchKey(key('Home'), bindings, ctxFor(a))).toBe(false)
     a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
     expect(dispatchKey(key('Home'), bindings, ctxFor(a))).toBe(true)
+  })
+
+  it('KeyM toggles focus only while editing a 3D scene', () => {
+    editPlacement.value = 'in-place'
+    const a = createActor(canvasMachine).start()
+    expect(dispatchKey(key('KeyM'), bindings, ctxFor(a))).toBe(false) // not editing
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('KeyM'), bindings, ctxFor(a))).toBe(true)
+    expect(editPlacement.value).toBe('focus')
+    editPlacement.value = 'in-place' // restore shared signal for other tests
   })
 })

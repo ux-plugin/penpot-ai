@@ -11,9 +11,11 @@
  */
 
 import { useSnapshot } from 'valtio'
-import { Box, Crosshair } from 'lucide-react'
+import { Box, Crosshair, Maximize2, Minimize2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { docProxy, getNode } from '../renderer/store/doc-proxy'
+import { useSignalCoalesced } from '../renderer/signals/use-signal-coalesced'
+import { editPlacement, toggleFocus } from '../renderer/three/scene3d-focus'
 import {
   scene3dProxy,
   defaultObject,
@@ -48,6 +50,7 @@ export function Scene3DEditMenu() {
   const { editingSceneId, gizmoMode, enter, exit, setGizmo } = useScene3dEditing()
   const sceneSnap = useSnapshot(scene3dProxy)
   const docSnap = useSnapshot(docProxy)
+  const placement = useSignalCoalesced(editPlacement)
 
   const selId =
     docSnap.selectedIds.size === 1 ? (docSnap.selectedIds.values().next().value as string) : null
@@ -104,9 +107,25 @@ export function Scene3DEditMenu() {
           title="Recenter scene"
           aria-label="Recenter scene"
           onClick={() => recenterOnScene(editingSceneId)}
-          className="-mr-1 ml-0.5 rounded-md p-1 text-white/80 hover:bg-white/15 hover:text-white"
+          className="ml-0.5 rounded-md p-1 text-white/80 hover:bg-white/15 hover:text-white"
         >
           <Crosshair className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          title={placement === 'focus' ? 'Exit focus' : 'Focus (maximize)'}
+          aria-label={placement === 'focus' ? 'Exit focus' : 'Focus (maximize)'}
+          onClick={toggleFocus}
+          className={cn(
+            '-mr-1 rounded-md p-1 hover:bg-white/15 hover:text-white',
+            placement === 'focus' ? 'bg-white/20 text-white' : 'text-white/80',
+          )}
+        >
+          {placement === 'focus' ? (
+            <Minimize2 className="size-3.5" />
+          ) : (
+            <Maximize2 className="size-3.5" />
+          )}
         </button>
       </div>
 

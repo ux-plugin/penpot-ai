@@ -215,6 +215,8 @@ export interface ShortcutsConfig {
   scene3dFrameKey: string
   /** Recenter the 2D viewport on the edited scene (active only while editing a 3D scene). */
   scene3dRecenterKey: string
+  /** Toggle focus (maximize) mode (active only while editing a 3D scene). */
+  scene3dFocusKey: string
   wheelZoomEnabled: boolean
   wheelScalePerPixel: number
 }

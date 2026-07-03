@@ -18,6 +18,7 @@ import type { ShortcutsConfig } from '../types'
 import { requestSceneFrameView, setFocusedObject, scene3dProxy } from '../three/scene3d-store'
 import { commitRemoveObject } from '../three/scene3d-commit'
 import { recenterOnScene } from '../three/scene3d-recenter'
+import { toggleFocus, exitFocus, editPlacement } from '../three/scene3d-focus'
 import { deleteSelectedNodes } from '../handlers/delete-selection'
 
 export type Command =
@@ -43,6 +44,7 @@ export type Command =
   | { type: 'SCENE3D_GIZMO'; mode: Scene3DGizmoMode }
   | { type: 'SCENE3D_FRAME_VIEW' }
   | { type: 'SCENE3D_RECENTER' }
+  | { type: 'SCENE3D_TOGGLE_FOCUS' }
   | { type: 'SCENE3D_DELETE' }
   | { type: 'SCENE3D_EXIT' }
 
@@ -134,8 +136,13 @@ export function runCommand(cmd: Command, ctx: CommandCtx): void {
       }
       return
     }
+    case 'SCENE3D_TOGGLE_FOCUS':
+      toggleFocus()
+      return
     case 'SCENE3D_EXIT':
-      actor.send({ type: 'SCENE3D_EDIT_EXIT' })
+      // Esc pops one level: leave focus first (back to in-place), then leave 3D-edit.
+      if (editPlacement.value === 'focus') exitFocus()
+      else actor.send({ type: 'SCENE3D_EDIT_EXIT' })
       return
   }
 }

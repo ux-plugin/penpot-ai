@@ -44,6 +44,7 @@ import {
 } from './three-scene'
 import { isOrtho, isPersp, orthoFrustum } from './camera3d'
 import { recenterOnScene } from './scene3d-recenter'
+import { editPlacement, effectiveDim, exitFocus, focusRegion, focusDim, reveal } from './scene3d-focus'
 import {
   scene3dResizePreview,
   applyResize,
@@ -156,6 +157,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   const editSurfaceRef = useRef<HTMLDivElement>(null)
   const locatorRef = useRef<HTMLButtonElement>(null)
   const resizeBoxRef = useRef<HTMLDivElement>(null)
+  const focusScrimRef = useRef<HTMLDivElement>(null)
   const resizeStateRef = useRef<{ handle: ResizeHandle; sceneId: string; startWorld: { x: number; y: number }; startBounds: Bounds } | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const gizmoRef = useRef<TransformControls | null>(null)
@@ -211,6 +213,9 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       void viewport.value // pan/zoom
       void movePreviewWorldDelta.value // live move-drag translation (and reset on commit)
       void scene3dResizePreview.value // live resize-drag bounds
+      void editPlacement.value // in-place ⇄ focus
+      void focusDim.value // scrim strength
+      void reveal.value // sampling-worktree reveal
       scheduleDraw()
     })
     const unsubModel = subscribe(scene3dProxy, scheduleDraw)
@@ -260,6 +265,12 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   // also clears focus. Keeps the "no focus outside edit" invariant in one place.
   useEffect(() => {
     if (!editingSceneId) setFocusedObject(null)
+  }, [editingSceneId])
+
+  // Focus mode is opt-in per edit session: entering (or switching) a scene always
+  // starts in-place, so a stale "focus" from a previous session can't carry over.
+  useEffect(() => {
+    exitFocus()
   }, [editingSceneId])
 
   // Frame / reset view (F) — driven by the store's request signal, outside the
@@ -515,42 +526,55 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     renderer.setClearColor(0x000000, 0)
     renderer.clear()
     renderer.setScissorTest(true)
+    const cssW = canvasSizeRef.current.width
+    const focused = editingId != null && editPlacement.value === 'focus'
     let selRect: ScreenRect | null = null
 
     for (const [sceneId, sceneSnap] of scene3dProxy.scenes) {
       const doc = sceneSnap as Scene3DDocument
       const isSel = sceneId === selId
-      const world = sceneRectWorld(sceneId, isSel)
-      if (!world) continue
+      const isEditing = sceneId === editingId
 
-      const boxLeftWorld = world.cx - world.w / 2
-      const boxTopWorld = world.cy - world.h / 2
-      const tl = worldToScreen(vp, boxLeftWorld, boxTopWorld)
-      const sw = world.w * vp.zoom
-      const sh = world.h * vp.zoom
-      if (sw < 1 || sh < 1) continue
-      if (isSel || sceneId === editingId) selRect = { x: tl.x, y: tl.y, w: sw, h: sh }
+      // The edited scene in focus mode renders into a fixed centred region (decoupled
+      // from its placed box); everything else uses the box's on-screen rect.
+      let screen: ScreenRect | null = null
+      if (isEditing && focused) {
+        screen = focusRegion(cssW, cssH)
+      } else {
+        const world = sceneRectWorld(sceneId, isSel)
+        if (world) {
+          const tl = worldToScreen(vp, world.cx - world.w / 2, world.cy - world.h / 2)
+          const sw = world.w * vp.zoom
+          const sh = world.h * vp.zoom
+          if (sw >= 1 && sh >= 1) screen = { x: tl.x, y: tl.y, w: sw, h: sh }
+        }
+      }
+      if (!screen) continue
+      if (isSel || isEditing) selRect = screen
 
       const inst = syncedInstance(sceneId, doc, renderer)
       // While the gizmo owns the focused object's transform, don't fight it.
-      const skipTransformFor = sceneId === editingId ? focusedId : null
+      const skipTransformFor = isEditing ? focusedId : null
       applyDocToInstance(inst, doc, skipTransformFor)
 
       // Edit-only backdrop fills the box while editing so the scene reads apart from the
       // document; every other scene stays transparent and composites over it. Drawn as an
       // explicit scissored clear in renderSceneIntoBox (never scene.background).
-      const backdrop = sceneId === editingId ? (doc.background ?? SCENE3D_EDIT_BACKDROP) : null
+      const backdrop = isEditing ? (doc.background ?? SCENE3D_EDIT_BACKDROP) : null
 
       // three multiplies viewport/scissor by pixelRatio internally — pass CSS/logical px.
-      const glX = tl.x
-      const glY = cssH - (tl.y + sh)
-      renderSceneIntoBox(renderer, inst, glX, glY, sw, sh, backdrop)
+      const glX = screen.x
+      const glY = cssH - (screen.y + screen.h)
+      renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, backdrop)
     }
 
     selRectRef.current = selRect
     positionEditSurface(selRect, editingId != null)
-    positionOffscreenLocator(selRect, editingId != null)
-    positionResizeBox(selRect, editingId != null)
+    // Locator + resize are in-place affordances: focus centres the scene (no off-screen)
+    // and resizes the render region, not the placed box — so hide them while focused.
+    positionOffscreenLocator(selRect, editingId != null && !focused)
+    positionResizeBox(selRect, editingId != null && !focused)
+    positionFocusScrim(selRect, focused)
   }
 
   function positionEditSurface(rect: ScreenRect | null, editing: boolean) {
@@ -606,6 +630,23 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     }
   }
 
+  /** Dim everything outside the focus region via a huge box-shadow spread from a
+   *  transparent rect over the region (the "hole"). Opacity tracks the focus dim. */
+  function positionFocusScrim(rect: ScreenRect | null, focused: boolean) {
+    const scrim = focusScrimRef.current
+    if (!scrim) return
+    if (focused && rect) {
+      scrim.style.display = 'block'
+      scrim.style.left = `${rect.x}px`
+      scrim.style.top = `${rect.y}px`
+      scrim.style.width = `${rect.w}px`
+      scrim.style.height = `${rect.h}px`
+      scrim.style.boxShadow = `0 0 0 9999px rgba(15, 17, 23, ${effectiveDim()})`
+    } else {
+      scrim.style.display = 'none'
+    }
+  }
+
   /** Pointer client coords → world, via the overlay canvas origin + current viewport. */
   function pointerToWorld(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
     const vp = viewport.value
@@ -658,6 +699,14 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
 
   return (
     <>
+      {/* Focus-mode scrim — dims everything outside the focus region (below the 3D
+          canvas so the region itself stays clear). Positioned imperatively in draw(). */}
+      <div
+        ref={focusScrimRef}
+        aria-hidden
+        style={{ position: 'absolute', display: 'none', pointerEvents: 'none', zIndex: 4, borderRadius: 8 }}
+      />
+
       <canvas
         ref={canvasRef}
         width={canvasSize.width}
