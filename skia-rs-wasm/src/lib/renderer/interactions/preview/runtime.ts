@@ -18,6 +18,13 @@ export interface RuntimeState {
   store: Record<string, unknown>
   /** node id -> active self-managed variant state */
   nodeStates: Record<string, string>
+  /**
+   * slot id -> active view-frame id, set by `show-in-slot`. A runtime *override*:
+   * empty until a swap fires, at which point the renderer prefers this over the
+   * slot's own `activeView` design default. (Slot defaults live on the document
+   * objects, not the IR, so they can't be seeded here.)
+   */
+  slotViews: Record<string, string>
 }
 
 const safeEval = (src: string, env: Record<string, unknown>): unknown => {
@@ -39,7 +46,7 @@ export function initRuntime(ir: PageInteractions): RuntimeState {
   for (const v of ir.variables) store[v.id] = clone(v.initial)
   const nodeStates: Record<string, string> = {}
   for (const s of ir.states) if ('from' in s.active) nodeStates[s.node] = s.active.initial ?? s.states[0] ?? ''
-  return { store, nodeStates }
+  return { store, nodeStates, slotViews: {} }
 }
 
 /** Build the evaluation environment: variables + derived values + node states. */
@@ -67,6 +74,11 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
       return { ...rt, store: { ...rt.store, [root]: value } }
     case 'node.setState':
       return { ...rt, nodeStates: { ...rt.nodeStates, [root]: String(value) } }
+    case 'show-in-slot':
+      // target = slot id (root); value = a *literal* view-frame id, not an
+      // expression (a raw UUID wouldn't evaluate). Default in-place swap, no
+      // history — back-button/routing is a lowering concern, not a runtime one.
+      return { ...rt, slotViews: { ...rt.slotViews, [root]: a.value ?? '' } }
     case 'open-url':
       if (typeof value === 'string' && typeof window !== 'undefined') window.open(value)
       return rt

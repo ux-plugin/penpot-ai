@@ -24,6 +24,8 @@ import {
   type Json,
 } from '../../renderer/interactions/ir'
 import { listTriggers, listActions, getAction } from '../../renderer/interactions/catalog'
+import { isSlotShape, isFrameShape } from '../../worker/geometry/shapes'
+import { addViewToSlot } from '../../renderer/slot/slot-edit'
 import { parse } from '../../renderer/interactions/expression'
 import {
   addInteraction,
@@ -108,6 +110,12 @@ function ActionRow({
   const collections = variables.filter((v) => isCollection(v.type))
   const targetVars = expectsTarget === 'collection' ? collections : variables
 
+  // Slot swap ("Show here"): target picks the slot, value picks the view frame.
+  // Both are plain node pickers — no routing/history vocabulary (derived at lowering).
+  const slots = expectsTarget === 'slot' ? nodes.filter(isSlotShape) : []
+  const isShowInSlot = action.type === 'show-in-slot'
+  const viewFrames = isShowInSlot ? nodes.filter(isFrameShape) : []
+
   return (
     <div className="rounded-md border border-border/70 p-2">
       <div className="flex items-center gap-1.5">
@@ -156,6 +164,22 @@ function ActionRow({
           </select>
         )}
 
+        {expectsTarget === 'slot' && (
+          <select
+            className={selectCls}
+            value={action.target ?? ''}
+            onChange={(e) => commit(setActionTarget(liveIR(), id, index, e.target.value))}
+            aria-label="Target slot"
+          >
+            <option value="">{slots.length ? 'choose slot…' : 'add a slot first'}</option>
+            {slots.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name ?? s.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+        )}
+
         {(expectsTarget === 'screen' || expectsTarget === 'overlay') && (
           <span className="text-[11px] text-muted-foreground">needs another page</span>
         )}
@@ -171,21 +195,46 @@ function ActionRow({
         </button>
       </div>
 
-      {expectsValue && (
-        <div className="mt-1.5">
-          <input
-            key={`${id}-${index}-${action.type}`}
-            className={cn(inputCls, err && 'border-destructive')}
-            defaultValue={action.value ?? ''}
-            placeholder='value, e.g. { label: "Item " + (items.length + 1) }'
-            onBlur={(e) => commit(setActionValue(liveIR(), id, index, e.target.value))}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+      {isShowInSlot ? (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span>show</span>
+          <select
+            className={selectCls}
+            value={action.value ?? ''}
+            onChange={(e) => {
+              const viewId = e.target.value
+              commit(setActionValue(liveIR(), id, index, viewId))
+              // Register the chosen view on the target slot so it has a candidate
+              // to mirror (defaults the slot's active view if it had none yet).
+              if (viewId && action.target) void addViewToSlot(action.target, viewId)
             }}
-            aria-label="Action value"
-          />
-          {err && <p className="mt-0.5 text-[10px] text-destructive">{err}</p>}
+            aria-label="View to show"
+          >
+            <option value="">{viewFrames.length ? 'choose view…' : 'add a frame first'}</option>
+            {viewFrames.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name ?? f.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
         </div>
+      ) : (
+        expectsValue && (
+          <div className="mt-1.5">
+            <input
+              key={`${id}-${index}-${action.type}`}
+              className={cn(inputCls, err && 'border-destructive')}
+              defaultValue={action.value ?? ''}
+              placeholder='value, e.g. { label: "Item " + (items.length + 1) }'
+              onBlur={(e) => commit(setActionValue(liveIR(), id, index, e.target.value))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+              }}
+              aria-label="Action value"
+            />
+            {err && <p className="mt-0.5 text-[10px] text-destructive">{err}</p>}
+          </div>
+        )
       )}
     </div>
   )
