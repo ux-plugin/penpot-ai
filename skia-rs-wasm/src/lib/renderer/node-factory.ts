@@ -6,6 +6,7 @@
 import type { ShapeType, PathSegment } from './types'
 import type { PenpotNode, Selrect } from 'penpot-exporter/types'
 import type { Fill, Stroke } from 'penpot-exporter/types'
+import type { SlotShape } from '../common/slot-shape'
 import { newShapeId } from '../common/shape-id'
 import { applyGeometryDefaults } from '../common/shape-defaults'
 import {
@@ -679,6 +680,67 @@ export function createFrame(
     // tile-scheduler's clipped-frame path clears them before stroke rendering.
     showContent: options.showContent ?? true,
   })
+}
+
+/**
+ * Creates a slot node — a Build-mode SPA router outlet (see common/slot-shape.ts).
+ *
+ * Geometry mirrors `createFrame` so the slot lays out like a frame, but it owns no
+ * children: instead of `shapes` it carries `views` (candidate view-frame ids) and
+ * `activeView` (the one rendered at edit time). Clips its content by default so the
+ * referenced view is masked to the outlet region.
+ */
+export function createSlot(
+  options: {
+    id?: string
+    name?: string
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    parentId?: string
+    fillColor?: string
+    fillOpacity?: number
+    views?: string[]
+    activeView?: string
+    opacity?: number
+  } = {}
+): SlotShape {
+  const id = options.id || newShapeId()
+  const x = options.x ?? 0
+  const y = options.y ?? 0
+  const width = options.width ?? 400
+  const height = options.height ?? 300
+
+  const fills: Fill[] = options.fillColor
+    ? [
+        {
+          fillColor: options.fillColor,
+          fillOpacity: options.fillOpacity ?? 0.1,
+        },
+      ]
+    : []
+
+  const views = options.views ?? []
+
+  return applyGeometryDefaults<SlotShape>({
+    id,
+    type: 'slot',
+    name: options.name ?? defaultName('slot'),
+    x,
+    y,
+    width,
+    height,
+    parentId: options.parentId,
+    views,
+    // Default the rendered view to the first candidate when not specified.
+    activeView: options.activeView ?? views[0],
+    selrect: createSelRect(x, y, width, height),
+    fills,
+    opacity: options.opacity ?? 1,
+    // Clip so the referenced view is masked to the outlet bounds.
+    showContent: false,
+  } as SlotShape)
 }
 
 /**
