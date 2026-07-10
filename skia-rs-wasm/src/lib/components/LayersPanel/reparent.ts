@@ -12,6 +12,7 @@ import {
   isComponentShape,
   isFrameShape,
   isGroupShape,
+  isSlotShape,
 } from '../../worker/geometry/shapes'
 import { containsPoint } from '../../worker/geometry/rect'
 
@@ -37,7 +38,14 @@ export function computeDropSide(
   return offsetY < rowHeight / 2 ? 'top' : 'bot'
 }
 
-/** True for shape types that can hold children (frame, group, bool, component). */
+/**
+ * True for shape types that can hold children (frame, group, bool, component).
+ *
+ * Slots are intentionally excluded: a slot *references* views, it does not own
+ * children. Because of this, a center-drop onto a slot resolves to `null` in
+ * `resolveDropTarget` (never a reparent), preserving the one-geometric-parent
+ * invariant. Slot drops are instead surfaced by `resolveSlotDrop`.
+ */
 export function isContainer(node: IndexedShape | null | undefined): boolean {
   return isFrameShape(node) || isGroupShape(node) || isBoolShape(node) || isComponentShape(node)
 }
@@ -111,6 +119,40 @@ export function resolveDropTarget(
   if (isNoOpDrop(draggedIds, objects, parentId, index)) return null
 
   return { parentId, index }
+}
+
+export interface ResolvedSlotDrop {
+  slotId: string
+  /** Dragged view-frame ids to register as candidate views of the slot. */
+  viewIds: string[]
+}
+
+/**
+ * Resolve a center-drop *onto a slot* to a view-assignment intent (add the dragged
+ * frames to the slot's `views`). This is the slot counterpart to
+ * `resolveDropTarget`: the two are mutually exclusive — a slot is never a reparent
+ * target — so a caller checks this first and falls back to `resolveDropTarget`.
+ *
+ * Only frames are valid views; non-frame drags (and the slot itself) are ignored.
+ * Returns null when the gesture is not a frame-onto-slot center-drop.
+ *
+ * NOTE: this is the pure intent only. Committing the assignment (mod-obj on the
+ * slot's `views`/`activeView`, with undo) is handled by the shared slot write-path
+ * in Phase C, so drop and `show-in-slot` authoring stay DRY.
+ */
+export function resolveSlotDrop(
+  params: ResolveDropTargetParams,
+): ResolvedSlotDrop | null {
+  const { targetId, side, draggedIds, objects } = params
+  if (side !== 'center') return null
+  if (!isSlotShape(objects[targetId])) return null
+
+  const viewIds = draggedIds.filter(
+    (id) => id !== targetId && isFrameShape(objects[id]),
+  )
+  if (viewIds.length === 0) return null
+
+  return { slotId: targetId, viewIds }
 }
 
 function isNoOpDrop(
@@ -217,6 +259,33 @@ export function findContainerAtPoint(
     if (excluded.has(id)) continue
     const node = objects[id]
     if (!isContainer(node)) continue
+    if (!node.selrect) continue
+    if (!containsPoint(node.selrect, point)) continue
+    const area = (node.selrect.width ?? 0) * (node.selrect.height ?? 0)
+    if (area < bestArea) {
+      bestId = id
+      bestArea = area
+    }
+  }
+  return bestId
+}
+
+/**
+ * Innermost slot whose selrect contains `point`, excluding `excludeIds`. Slots are
+ * not containers (`findContainerAtPoint` skips them), so this is the parallel lookup
+ * used to detect a "drop a view frame onto a slot" gesture on the canvas.
+ */
+export function findSlotAtPoint(
+  objects: Record<string, IndexedShape>,
+  point: Point,
+  excludeIds: readonly string[],
+): string | null {
+  let bestId: string | null = null
+  let bestArea = Infinity
+  for (const id of Object.keys(objects)) {
+    if (excludeIds.includes(id)) continue
+    const node = objects[id]
+    if (!isSlotShape(node)) continue
     if (!node.selrect) continue
     if (!containsPoint(node.selrect, point)) continue
     const area = (node.selrect.width ?? 0) * (node.selrect.height ?? 0)

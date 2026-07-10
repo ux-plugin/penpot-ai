@@ -19,9 +19,11 @@ import {
   createFrame,
   createParametricPath,
   createRect,
+  createSlot,
   createText,
 } from '../node-factory'
 import type { AddObjChange, PenpotNode } from 'penpot-exporter/types'
+import type { LocalNode } from '../../common/slot-shape'
 import type { DrawTool } from '../machine/canvas-machine'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -137,7 +139,9 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
               strokeWidth: 2,
             }
 
-            let newNode: PenpotNode
+            // LocalNode: slots aren't in the upstream PenpotNode union (defined
+            // locally), so widen here and cast at the change boundary below.
+            let newNode: LocalNode
             switch (tool) {
               case 'frame':
                 newNode = createFrame({
@@ -146,6 +150,16 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
                   fillOpacity: 1,
                   strokeColor: '#9CA3AF',
                   strokeWidth: 1,
+                })
+                break
+              case 'slot':
+                // An empty outlet box: light fill, dashed-looking subtle stroke.
+                // Renders as a clipped frame (translateShapeType maps slot→frame)
+                // until a view is shown in it.
+                newNode = createSlot({
+                  ...geom,
+                  fillColor: '#F5F3FF',
+                  fillOpacity: 1,
                 })
                 break
               case 'text':
@@ -175,7 +189,9 @@ export function handleDrawShape(tool: DrawTool): Observable<void> {
             const addChange: AddObjChange = {
               type: 'add-obj',
               id: newNode.id,
-              obj: newNode,
+              // Slot is a local extension of the node union; the commit pipeline
+              // treats objects structurally (by `type` string), so cast is safe.
+              obj: newNode as PenpotNode,
               frameId: rootId,
               parentId: rootId,
               index: root?.shapes?.length ?? 0,

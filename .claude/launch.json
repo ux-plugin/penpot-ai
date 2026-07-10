@@ -4,25 +4,46 @@
     {
       "name": "skia-rs-wasm",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "skia-rs-wasm", "run", "dev"],
-      "port": 5173
+      "runtimeArgs": [
+        "--dir",
+        "skia-rs-wasm",
+        "run",
+        "dev"
+      ],
+      "port": 5173,
+      "autoPort": true
     },
     {
       "name": "figma_plugin_fe",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "figma_plugin_fe", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "figma_plugin_fe",
+        "run",
+        "dev"
+      ],
       "port": 5174
     },
     {
       "name": "demo-app",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "demo-app", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "demo-app",
+        "run",
+        "dev"
+      ],
       "port": 5180
     },
     {
       "name": "zoetrope-frontend",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "zoetrope-frontend", "run", "dev"],
+      "runtimeArgs": [
+        "--dir",
+        "zoetrope-frontend",
+        "run",
+        "dev"
+      ],
       "port": 5181
     }
   ]

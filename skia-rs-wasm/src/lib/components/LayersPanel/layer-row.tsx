@@ -8,6 +8,7 @@ import {
   isContainer,
   type DropSide,
 } from './reparent'
+import { isSlotShape } from '../../worker/geometry/shapes'
 
 export const DRAG_MIME = 'application/x-skia-layer-ids'
 
@@ -68,7 +69,9 @@ export function LayerRow({
   onDrop,
 }: LayerRowProps) {
   const rowRef = useRef<HTMLDivElement | null>(null)
-  const container = isContainer(node)
+  // A center-drop zone is offered by real containers (reparent) and by slots
+  // (assign the dragged frame as a view — handled in LayersPanel.onLayerDrop).
+  const container = isContainer(node) || isSlotShape(node)
 
   const handleDragStart = useCallback(
     (e: React.DragEvent) => {

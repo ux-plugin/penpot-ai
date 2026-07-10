@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import { useSelector } from '@xstate/react'
-import { Circle, Hexagon, Plus, Star, Triangle, Type } from 'lucide-react'
+import { Circle, Hexagon, Plus, SquareDashedBottom, Star, Triangle, Type } from 'lucide-react'
 import { useCanvasActor } from '../renderer/machine/canvas-actor-context'
 import type { DrawTool } from '../renderer/machine/canvas-machine'
 import { pointerOverChrome, pointerPos } from '../renderer/signals/pointer'
@@ -45,6 +45,7 @@ const TOOL_ICONS: Record<DrawTool, HintIcon> = {
   polygon: Hexagon,
   star: Star,
   frame: IconFrame,
+  slot: SquareDashedBottom,
   text: Type,
   pen: Plus,
 }
