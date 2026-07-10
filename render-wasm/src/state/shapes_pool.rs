@@ -38,6 +38,35 @@ const SHAPES_POOL_ALLOC_MULTIPLIER: f32 = 1.3;
 ///
 /// The `uuid_to_idx` HashMap maps `Uuid` (owned) to indices, avoiding lifetime issues.
 ///
+/// Transient, per-shape overrides layered onto the base shape by `get()` for the
+/// duration of a gesture (move / resize / reparent drag). Replaces the former
+/// parallel `modifiers` / `structure` / `scale_content` / `absolute` maps with a
+/// single per-index record.
+///
+/// Fields are applied by `get()` in a FIXED order — transform, structure,
+/// (bool rebuild), scale-content, (fills), absolute — matching the original
+/// hand-ordered sequence. The order is deliberate, not the call order: e.g.
+/// resize-with-scale-content sets the transform and the scale in separate WASM
+/// calls, but the transform must apply first. Don't reorder without checking that
+/// gesture. Fill overrides stay in their own `fill_modifiers` map (UUID-keyed,
+/// separate lifecycle) but are still applied at their original point below.
+#[derive(Default, Clone)]
+struct ShapeOverrides {
+    transform: Option<skia::Matrix>,
+    structure: Option<Vec<StructureEntry>>,
+    scale_content: Option<f32>,
+    absolute: bool,
+}
+
+impl ShapeOverrides {
+    fn is_active(&self) -> bool {
+        self.transform.is_some()
+            || self.structure.is_some()
+            || self.scale_content.is_some()
+            || self.absolute
+    }
+}
+
 pub struct ShapesPoolImpl {
     shapes: Vec<Shape>,
     counter: usize,
@@ -47,13 +76,13 @@ pub struct ShapesPoolImpl {
 
     /// Cache for modified shapes, keyed by index
     modified_shape_cache: HashMap<usize, OnceCell<Shape>>,
-    /// Transform modifiers, keyed by index
-    modifiers: HashMap<usize, skia::Matrix>,
-    /// Structure entries, keyed by index
-    structure: HashMap<usize, Vec<StructureEntry>>,
-    /// Scale content values, keyed by index
-    scale_content: HashMap<usize, f32>,
+    /// Transient per-shape overrides (transform / structure / scale-content /
+    /// absolute), keyed by index. Applied by `get()` in a fixed order; cleared on
+    /// `clean_all`. See `ShapeOverrides`.
+    overrides: HashMap<usize, ShapeOverrides>,
     /// Temporary fill overrides for live preview (gradient drag). Keyed by UUID.
+    /// Kept separate from `overrides`: it has its own `clean_fill_modifiers`
+    /// lifecycle that reports touched shapes to the render state.
     fill_modifiers: HashMap<Uuid, Vec<shapes::Fill>>,
 }
 
@@ -70,9 +99,7 @@ impl ShapesPoolImpl {
             uuid_to_idx: HashMap::default(),
 
             modified_shape_cache: HashMap::default(),
-            modifiers: HashMap::default(),
-            structure: HashMap::default(),
-            scale_content: HashMap::default(),
+            overrides: HashMap::default(),
             fill_modifiers: HashMap::default(),
         }
     }
@@ -150,39 +177,52 @@ impl ShapesPoolImpl {
 
         let shape = &self.shapes[idx];
 
-        // Check if this shape needs modification (has modifiers, structure changes, or is a bool)
+        let ovr = self.overrides.get(&idx);
         let needs_modification = shape.is_bool()
-            || self.modifiers.contains_key(&idx)
-            || self.structure.contains_key(&idx)
-            || self.scale_content.contains_key(&idx)
-            || self.fill_modifiers.contains_key(id);
+            || self.fill_modifiers.contains_key(id)
+            || ovr.is_some_and(ShapeOverrides::is_active);
 
-        if needs_modification {
-            // Check if we have a cached modified version
-            if let Some(cell) = self.modified_shape_cache.get(&idx) {
-                Some(cell.get_or_init(|| {
-                    let mut modified_shape =
-                        shape.transformed(self.modifiers.get(&idx), self.structure.get(&idx));
-
-                    if self.to_update_bool(&modified_shape) {
-                        math_bools::update_bool_to_path(&mut modified_shape, self);
-                    }
-
-                    if let Some(scale) = self.scale_content.get(&idx) {
-                        modified_shape.scale_content(*scale);
-                    }
-
-                    if let Some(fill_mod) = self.fill_modifiers.get(id) {
-                        modified_shape.fills = fill_mod.clone();
-                    }
-                    modified_shape
-                }))
-            } else {
-                Some(shape)
-            }
-        } else {
-            Some(shape)
+        if !needs_modification {
+            return Some(shape);
         }
+
+        // Without a cache cell there's nothing to memoize the modified shape in,
+        // so fall back to the untouched base (matches the previous behavior).
+        let Some(cell) = self.modified_shape_cache.get(&idx) else {
+            return Some(shape);
+        };
+
+        Some(cell.get_or_init(|| {
+            let mut modified_shape = shape.clone();
+
+            // Geometry first — equivalent to the old `transformed(modifiers, structure)`.
+            if let Some(o) = ovr {
+                if let Some(transform) = &o.transform {
+                    modified_shape.apply_transform(transform);
+                }
+                if let Some(structure) = &o.structure {
+                    modified_shape.apply_structure(structure);
+                }
+            }
+
+            // Bool paths are rebuilt right after transform + structure, as before.
+            if self.to_update_bool(&modified_shape) {
+                math_bools::update_bool_to_path(&mut modified_shape, self);
+            }
+
+            // Appearance / layout overlays, in the original order.
+            if let Some(scale) = ovr.and_then(|o| o.scale_content) {
+                modified_shape.scale_content(scale);
+            }
+            if let Some(fill_mod) = self.fill_modifiers.get(id) {
+                modified_shape.fills = fill_mod.clone();
+            }
+            if ovr.is_some_and(|o| o.absolute) {
+                modified_shape.set_layout_absolute(true);
+            }
+
+            modified_shape
+        }))
     }
 
     // Given an id, returns the depth in the tree-shaped structure
@@ -220,19 +260,19 @@ impl ShapesPoolImpl {
     }
 
     pub fn set_modifiers(&mut self, modifiers: HashMap<Uuid, skia::Matrix>) {
-        // Convert HashMap<Uuid, V> to HashMap<usize, V> using indices
-        // Initialize the cache cells for affected shapes
+        // Wholesale replace of the transform layer: clear it everywhere, then set
+        // the new values. Other override layers on the same shape are untouched.
+        for ov in self.overrides.values_mut() {
+            ov.transform = None;
+        }
 
         let mut ids = Vec::<Uuid>::new();
-        let mut modifiers_with_idx = HashMap::with_capacity(modifiers.len());
-
         for (uuid, matrix) in modifiers {
             if let Some(idx) = self.uuid_to_idx.get(&uuid).copied() {
-                modifiers_with_idx.insert(idx, matrix);
+                self.overrides.entry(idx).or_default().transform = Some(matrix);
                 ids.push(uuid);
             }
         }
-        self.modifiers = modifiers_with_idx;
 
         let all_ids = shapes::all_with_ancestors(&ids, self, true);
         for uuid in all_ids {
@@ -248,18 +288,18 @@ impl ShapesPoolImpl {
     }
 
     pub fn set_structure(&mut self, structure: HashMap<Uuid, Vec<StructureEntry>>) {
-        // Convert HashMap<Uuid, V> to HashMap<usize, V> using indices
-        // Initialize the cache cells for affected shapes
-        let mut structure_with_idx = HashMap::with_capacity(structure.len());
-        let mut ids = Vec::<Uuid>::new();
+        // Wholesale replace of the structure layer.
+        for ov in self.overrides.values_mut() {
+            ov.structure = None;
+        }
 
+        let mut ids = Vec::<Uuid>::new();
         for (uuid, entries) in structure {
             if let Some(idx) = self.uuid_to_idx.get(&uuid).copied() {
-                structure_with_idx.insert(idx, entries);
+                self.overrides.entry(idx).or_default().structure = Some(entries);
                 ids.push(uuid);
             }
         }
-        self.structure = structure_with_idx;
 
         let all_ids = shapes::all_with_ancestors(&ids, self, true);
         for uuid in all_ids {
@@ -269,19 +309,44 @@ impl ShapesPoolImpl {
         }
     }
 
-    pub fn set_scale_content(&mut self, scale_content: HashMap<Uuid, f32>) {
-        // Convert HashMap<Uuid, V> to HashMap<usize, V> using indices
-        // Initialize the cache cells for affected shapes
-        let mut scale_content_with_idx = HashMap::with_capacity(scale_content.len());
-        let mut ids = Vec::<Uuid>::new();
+    /// Set the transient "force layout-absolute" overrides (see the `absolute`
+    /// field). Replaces the previous set and refreshes the modified-shape cache
+    /// for the affected shapes and their ancestors so the flag takes effect.
+    pub fn set_absolute(&mut self, ids: Vec<Uuid>) {
+        // Wholesale replace of the absolute layer.
+        for ov in self.overrides.values_mut() {
+            ov.absolute = false;
+        }
 
+        let mut valid_ids = Vec::<Uuid>::new();
+        for uuid in ids {
+            if let Some(idx) = self.uuid_to_idx.get(&uuid).copied() {
+                self.overrides.entry(idx).or_default().absolute = true;
+                valid_ids.push(uuid);
+            }
+        }
+
+        let all_ids = shapes::all_with_ancestors(&valid_ids, self, true);
+        for uuid in all_ids {
+            if let Some(idx) = self.uuid_to_idx.get(&uuid).copied() {
+                self.modified_shape_cache.insert(idx, OnceCell::new());
+            }
+        }
+    }
+
+    pub fn set_scale_content(&mut self, scale_content: HashMap<Uuid, f32>) {
+        // Wholesale replace of the scale-content layer.
+        for ov in self.overrides.values_mut() {
+            ov.scale_content = None;
+        }
+
+        let mut ids = Vec::<Uuid>::new();
         for (uuid, value) in scale_content {
             if let Some(idx) = self.uuid_to_idx.get(&uuid).copied() {
-                scale_content_with_idx.insert(idx, value);
+                self.overrides.entry(idx).or_default().scale_content = Some(value);
                 ids.push(uuid);
             }
         }
-        self.scale_content = scale_content_with_idx;
 
         let all_ids = shapes::all_with_ancestors(&ids, self, true);
         for uuid in all_ids {
@@ -318,10 +383,8 @@ impl ShapesPoolImpl {
 
     pub fn clean_all(&mut self) {
         self.clean_shape_cache();
-        self.modifiers = HashMap::default();
-        self.structure = HashMap::default();
-        self.scale_content = HashMap::default();
-        self.fill_modifiers = HashMap::default();
+        self.overrides.clear();
+        self.fill_modifiers.clear();
     }
 
     pub fn subtree(&self, id: &Uuid) -> ShapesPoolImpl {
@@ -347,9 +410,7 @@ impl ShapesPoolImpl {
             counter: new_idx,
             uuid_to_idx,
             modified_shape_cache: HashMap::default(),
-            modifiers: HashMap::default(),
-            structure: HashMap::default(),
-            scale_content: HashMap::default(),
+            overrides: HashMap::default(),
             fill_modifiers: HashMap::default(),
         }
     }
@@ -364,7 +425,7 @@ impl ShapesPoolImpl {
         // Get parent modifier by index
         let parent_idx = self.uuid_to_idx.get(&shape.id);
         let parent_modifier = parent_idx
-            .and_then(|idx| self.modifiers.get(idx))
+            .and_then(|idx| self.overrides.get(idx).and_then(|o| o.transform.as_ref()))
             .unwrap_or(default);
 
         // Returns true if the transform of any child is different to the parent's
@@ -372,7 +433,7 @@ impl ShapesPoolImpl {
             let child_modifier = self
                 .uuid_to_idx
                 .get(&child_id)
-                .and_then(|idx| self.modifiers.get(idx))
+                .and_then(|idx| self.overrides.get(idx).and_then(|o| o.transform.as_ref()))
                 .unwrap_or(default);
             !math::is_close_matrix(parent_modifier, child_modifier)
         })

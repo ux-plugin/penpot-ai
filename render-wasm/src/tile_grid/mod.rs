@@ -1093,6 +1093,15 @@ impl RenderState {
             if shape.is_recursive() {
                 self.render_shape_enter(shape, target, false);
 
+                // Draw the container's own body (fill) before its children. The
+                // tiled render paints this via a separate `Paint(ShapeBody)`
+                // scheduler step, but this non-tile export recursion only did
+                // enter → children → exit, so a frame/group's own fill was never
+                // painted — an empty frame exported blank. `render_shape_into_target`
+                // no-ops for containers with no fill/stroke and skips strokes on
+                // clipped frames (drawn on top in `render_shape_exit`).
+                self.render_shape_into_target(shape, target)?;
+
                 let children = shape.children_ids(false);
                 for child_id in &children {
                     self.render_export_subtree(*child_id, tree, target, scale)?;
