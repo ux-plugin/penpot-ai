@@ -148,6 +148,12 @@ export interface SetWasmModifiersOptions {
   }>
   /** Pixel-precision flag forwarded to `propagateModifiers`. */
   pixelPrecision?: number
+  /**
+   * Shape ids to force layout-absolute for this gesture (skipped by their
+   * container's flex/grid flow). Applied before propagate so the reflow sees it;
+   * reverted by the next `cleanModifiers`.
+   */
+  absoluteModifiers?: readonly string[]
 }
 
 /**
@@ -175,6 +181,9 @@ export function setWasmModifiers(
       index?: number
       value: number
     }>)
+  }
+  if (options?.absoluteModifiers && options.absoluteModifiers.length > 0) {
+    setAbsoluteModifiers(module, options.absoluteModifiers)
   }
   const entriesMutable: Array<[string, Matrix]> = entries.map(([id, m]) => [id, m])
   const propagated = propagateModifiers(module, entriesMutable, options?.pixelPrecision ?? 0, 'child')
@@ -218,6 +227,27 @@ export function setStructureModifiers(
   }
 
   module._set_structure_modifiers()
+  freeBytes(module)
+}
+
+/**
+ * Set the transient "force layout-absolute" overrides from a list of shape ids
+ * (16 bytes each). While set, those shapes are skipped by their container's
+ * flex/grid layout. Cleared by `cleanModifiers`.
+ */
+export function setAbsoluteModifiers(module: WasmModule, ids: readonly string[]): void {
+  checkContext()
+  if (ids.length === 0) {
+    return
+  }
+  const size = getAllocSize(ids.length, 16) // 16 bytes per UUID
+  const offset = offset8To32(allocBytes(module, size))
+  const heapU32 = module.HEAPU32
+  let currentOffset = offset
+  for (const id of ids) {
+    currentOffset = writeUUIDToHeap(currentOffset, heapU32, id)
+  }
+  module._set_absolute_modifiers()
   freeBytes(module)
 }
 

@@ -279,7 +279,6 @@ export class Renderer {
     requestRender(this.module, 'updateParentChildren')
   }
 
-
   /**
    * Unified gesture-time modifier set: clean + setStructureModifiers + propagate('child') +
    * setModifiers + mirror inputs/result into the JS-side `modifierOverlay` store.
