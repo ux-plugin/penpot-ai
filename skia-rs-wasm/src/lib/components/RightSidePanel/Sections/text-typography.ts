@@ -242,9 +242,9 @@ export function readTypography(node: NodeWithText): TypographyValues {
 }
 
 /**
- * Span-level typography attributes the panel can set. Also used by the
- * library-typography apply path (`src/lib/library/apply.ts`), which stamps the
- * referenced typography's font properties + ref fields onto every span.
+ * Span-level typography attributes the panel can set. Also used by the token
+ * apply path (`src/lib/tokens/materialize.ts`), which stamps a typography
+ * token's resolved font properties onto every span.
  */
 export type SpanPatch = Partial<
   Pick<
