@@ -13,6 +13,7 @@
  * preventDefault, so any authored interaction still fires on the element.
  */
 
+import { CodeBlock } from '../CodeBlock'
 import { useMemo, useState } from 'react'
 import { useSnapshot } from 'valtio'
 import { cn } from '@/lib/utils'
@@ -126,12 +127,9 @@ export function PreviewStage() {
             </div>
           </div>
         ) : (
-          <pre
-            className="m-0 overflow-auto p-4 text-[11px] leading-relaxed text-foreground"
-            style={{ fontFamily: 'ui-monospace, monospace' }}
-          >
-            {code}
-          </pre>
+          <div className="h-full p-4">
+            <CodeBlock code={code} className="h-full" />
+          </div>
         )}
       </div>
     </div>
