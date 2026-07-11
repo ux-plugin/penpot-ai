@@ -14,6 +14,7 @@ import {
 } from '../../../renderer/properties/panel-utils'
 import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
 import { StrokeRow } from './StrokeRow'
+import { TokenBinding } from '../tokens/TokenBinding'
 import { useColorEditor } from '../use-color-editor'
 
 export interface StrokesSectionProps {
@@ -83,6 +84,11 @@ export function StrokesSection({ nodeId, readOnly, initialNode }: StrokesSection
   const hasStrokes = strokes.length > 0
   const canAdd = !readOnly && strokes.length < MAX_STROKES
 
+  // Token bindings materialize onto the first stroke (see materialize.ts).
+  const applied = (initialNode as { appliedTokens?: Record<string, string> }).appliedTokens
+  const strokeColorToken = applied?.strokeColor
+  const strokeWidthToken = applied?.strokeWidth
+
   return (
     <>
       <Separator />
@@ -118,16 +124,43 @@ export function StrokesSection({ nodeId, readOnly, initialNode }: StrokesSection
 
         {!collapsed && hasStrokes && (
           <div className="space-y-2 pl-0.5">
-            {strokes.map((stroke, i) => (
-              <StrokeRow
-                key={i}
-                stroke={stroke}
-                index={i}
-                readOnly={readOnly}
-                onChange={onStrokeChange}
-                onRemove={removeStroke}
-              />
-            ))}
+            {strokes.map((stroke, i) => {
+              const colorToken = i === 0 ? strokeColorToken : undefined
+              const widthToken = i === 0 ? strokeWidthToken : undefined
+              return (
+                <div key={i} className="space-y-1">
+                  <StrokeRow
+                    stroke={stroke}
+                    index={i}
+                    readOnly={readOnly}
+                    onChange={onStrokeChange}
+                    onRemove={removeStroke}
+                    colorLocked={Boolean(colorToken)}
+                    widthLocked={Boolean(widthToken)}
+                  />
+                  {i === 0 && (colorToken || !readOnly) && (
+                    <TokenBinding
+                      nodeId={nodeId}
+                      attr="strokeColor"
+                      tokenType="color"
+                      label="color"
+                      boundName={colorToken}
+                      currentValue={stroke.strokeColor}
+                    />
+                  )}
+                  {i === 0 && (widthToken || !readOnly) && (
+                    <TokenBinding
+                      nodeId={nodeId}
+                      attr="strokeWidth"
+                      tokenType="dimension"
+                      label="width"
+                      boundName={widthToken}
+                      currentValue={stroke.strokeWidth}
+                    />
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
 

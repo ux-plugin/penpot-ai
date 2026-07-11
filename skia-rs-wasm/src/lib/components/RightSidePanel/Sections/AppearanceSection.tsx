@@ -25,6 +25,8 @@ import { docProxy, getActiveOrSinglePageId } from '@/lib/renderer/store/doc-prox
 import { getLayoutMode, type LayoutMode } from './layout-mode'
 import { isTextNode, pinGrowAxis } from './text-typography'
 import { NumericField } from '../NumericField'
+import { TokenBinding } from '../tokens/TokenBinding'
+import type { TokenProperties } from '@/lib/tokens/types'
 
 type GrowType = 'fixed' | 'auto-width' | 'auto-height'
 
@@ -36,6 +38,9 @@ const GROW_MODES: ReadonlyArray<{ value: GrowType; label: string }> = [
 
 type Corners = { r1: number; r2: number; r3: number; r4: number }
 type Margin = { m1: number; m2: number; m3: number; m4: number }
+
+/** All four corner radii bind together as one borderRadius token. */
+const RADIUS_ATTRS: TokenProperties[] = ['r1', 'r2', 'r3', 'r4']
 
 export interface AppearanceSectionProps {
   nodeId: string
@@ -129,6 +134,9 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
   // per-vertex fillet (P4) rather than via the `r1–r4` parameter; `image` and
   // the rect path both drop the dedicated control.
   const nodeType = (initialNode as { type?: string }).type
+  const applied = (initialNode as { appliedTokens?: Record<string, string> }).appliedTokens
+  const opacityToken = applied?.opacity
+  const radiusToken = applied?.r1
   const showRadius =
     nodeType === 'frame' ||
     nodeType === 'instance' ||
@@ -371,18 +379,53 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
 
             <div className="space-y-1">
               <Label htmlFor="rsp-opacity">Opacity</Label>
-              <NumericField
-                id="rsp-opacity"
-                value={committedOpacityPct}
-                min={0}
-                max={100}
-                suffix="%"
-                disabled={readOnly}
-                onCommit={(n) => void commitOpacity(n)}
-              />
+              {opacityToken ? (
+                <TokenBinding
+                  nodeId={nodeId}
+                  attr="opacity"
+                  tokenType="opacity"
+                  label="opacity"
+                  boundName={opacityToken}
+                />
+              ) : (
+                <>
+                  <NumericField
+                    id="rsp-opacity"
+                    value={committedOpacityPct}
+                    min={0}
+                    max={100}
+                    suffix="%"
+                    disabled={readOnly}
+                    onCommit={(n) => void commitOpacity(n)}
+                  />
+                  {!readOnly && (
+                    <TokenBinding
+                      nodeId={nodeId}
+                      attr="opacity"
+                      tokenType="opacity"
+                      label="opacity"
+                      currentValue={(initialNode as { opacity?: number }).opacity ?? 1}
+                    />
+                  )}
+                </>
+              )}
             </div>
 
-            {showRadius && (
+            {showRadius && radiusToken && (
+              <div className="space-y-1">
+                <Label htmlFor="rsp-radius-bound">Radius</Label>
+                <TokenBinding
+                  nodeId={nodeId}
+                  attr={RADIUS_ATTRS}
+                  tokenType="borderRadius"
+                  label="radius"
+                  boundName={radiusToken}
+                />
+              </div>
+            )}
+
+            {showRadius && !radiusToken && (
+              <>
               <SectionWithMultiToggle
                 label="Radius"
                 multi={cornersMulti}
@@ -436,6 +479,16 @@ export function AppearanceSection({ nodeId, initialNode, readOnly }: AppearanceS
                   />
                 )}
               </SectionWithMultiToggle>
+              {!readOnly && (
+                <TokenBinding
+                  nodeId={nodeId}
+                  attr={RADIUS_ATTRS}
+                  tokenType="borderRadius"
+                  label="radius"
+                  currentValue={corners.r1}
+                />
+              )}
+              </>
             )}
 
             {showPathRadius && (

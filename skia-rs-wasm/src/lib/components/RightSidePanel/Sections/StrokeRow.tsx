@@ -40,9 +40,13 @@ export interface StrokeRowProps {
   readOnly: boolean
   onChange: (stroke: Stroke, index: number) => void
   onRemove: (index: number) => void
+  /** The color is token-bound: lock the swatch + hex (edit via Unlink). */
+  colorLocked?: boolean
+  /** The width is token-bound: lock the width field (edit via Unlink). */
+  widthLocked?: boolean
 }
 
-export function StrokeRow({ stroke, index, readOnly, onChange, onRemove }: StrokeRowProps) {
+export function StrokeRow({ stroke, index, readOnly, onChange, onRemove, colorLocked, widthLocked }: StrokeRowProps) {
   const { isActive: expanded, openEditor, closeEditor } = useColorEditorFor('stroke', index)
 
   const fill = strokeToFill(stroke)
@@ -112,13 +116,21 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove }: Strok
         <button
           type="button"
           onClick={toggleExpand}
+          disabled={colorLocked}
           className={cn(
             'size-5 shrink-0 rounded border border-border',
             'focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
             expanded && 'ring-2 ring-ring',
+            colorLocked && 'opacity-60',
           )}
           style={{ background: swatchBg }}
-          title={expanded ? 'Close stroke color editor' : 'Open stroke color editor'}
+          title={
+            colorLocked
+              ? 'Bound to a token — unlink to edit'
+              : expanded
+                ? 'Close stroke color editor'
+                : 'Open stroke color editor'
+          }
           aria-expanded={expanded}
           aria-label="Toggle stroke color editor"
         />
@@ -127,7 +139,7 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove }: Strok
           className="h-8 min-w-0 flex-1 font-mono text-xs"
           value={hexDisplay}
           placeholder={isSolid ? '#RRGGBB' : undefined}
-          disabled={!isSolid}
+          disabled={!isSolid || colorLocked}
           readOnly={!isSolid}
           onChange={(e) => handleHexChange(e.target.value)}
         />
@@ -161,6 +173,7 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove }: Strok
           value={Number.isFinite(width) ? width : 0}
           min={0}
           step={0.5}
+          disabled={widthLocked}
           onCommit={(n) => onChange({ ...stroke, strokeWidth: n }, index)}
         />
         <select

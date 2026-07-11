@@ -21,6 +21,7 @@ import { refreshEditorStyles, syncTextEditGeometry } from '@/lib/renderer/handle
 import { requestRender } from '@/lib/renderer/api/rendering'
 import { useWorkspaceStore } from '@/lib/renderer/store/workspace-store'
 import { FillRow } from './FillRow'
+import { TokenBinding } from '../tokens/TokenBinding'
 import {
   isTextNode,
   patchContent,
@@ -179,6 +180,8 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
     textContentFillsAreMixed((initialNode as { content?: TextContent }).content)
 
   const hasFills = fills.length > 0
+  const fillTokenName = (initialNode as { appliedTokens?: Record<string, string> }).appliedTokens
+    ?.fill
   const canAdd = !readOnly && fills.length < MAX_FILLS
 
   return (
@@ -298,16 +301,34 @@ export function FillsSection({ nodeId, readOnly, initialNode }: FillsSectionProp
         {/* Not editing: the editable shape fills. */}
         {!collapsed && !isEditingThis && !docFillsMixed && hasFills && (
           <div className="space-y-2 pl-0.5">
-            {fills.map((fill, i) => (
-              <FillRow
-                key={i}
-                fill={fill}
-                index={i}
-                readOnly={readOnly}
-                onChange={onFillChange}
-                onRemove={removeFill}
-              />
-            ))}
+            {fills.map((fill, i) => {
+              const bound = i === 0 ? fillTokenName : undefined
+              return (
+                <div key={i} className="space-y-1">
+                  {bound ? (
+                    <TokenBinding nodeId={nodeId} attr="fill" tokenType="color" boundName={bound} />
+                  ) : (
+                    <>
+                      <FillRow
+                        fill={fill}
+                        index={i}
+                        readOnly={readOnly}
+                        onChange={onFillChange}
+                        onRemove={removeFill}
+                      />
+                      {i === 0 && !readOnly && (
+                        <TokenBinding
+                          nodeId={nodeId}
+                          attr="fill"
+                          tokenType="color"
+                          currentValue={fill.fillColor}
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
 
