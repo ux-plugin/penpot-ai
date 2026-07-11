@@ -19,6 +19,7 @@ name = "render_wasm"
 path = "src/main.rs"
 
 [dependencies]
+anim-runtime = { path = "../skia-rs-wasm/anim-runtime" }
 base64 = "0.22.1"
 bezier-rs = "0.4.0"
 gl = "0.14.0"
