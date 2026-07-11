@@ -15,8 +15,10 @@ spring:
       enabled: true                    # Enable automatic restart
       poll-interval: 1000ms           # Check for changes every second
       quiet-period: 400ms             # Wait 400ms before restarting
-      exclude: static/**,public/**    # Don't restart for static resources
-      additional-exclude: "*.log"     # Also exclude log files
+      # Use additional-exclude (ADDS to Spring Boot's defaults) — NOT exclude (which
+      # REPLACES them and would drop META-INF/build-info.properties, whose build.time
+      # is rewritten every build → endless DevTools restart loop).
+      additional-exclude: "*.log,static/**,public/**"
     livereload:
       enabled: true                    # Enable LiveReload server
       port: 35729                      # Default LiveReload port
@@ -69,7 +71,7 @@ apikey:
 # deploy/iac/opentofu/ allows only `s3:PutObject raw/*`. Falls back to
 # minioadmin in dev.
 objectstore:
-  endpoint: http://localhost:9000
+  endpoint: http://localhost:9300
   region: us-east-1
   access-key: ${INGEST_API_S3_ACCESS_KEY:minioadmin}
   secret-key: ${INGEST_API_S3_SECRET_KEY:minioadmin}
@@ -199,3 +201,15 @@ management:
   endpoint:
     health:
       show-details: always  # Show detailed health information
+
+# DEV identity: use the in-process Auth0 mock (DevAuth0Mock) as the JWT issuer so the editor can
+# authenticate with a long-lived local token — no real Auth0 or login flow needed. Mint one at
+# GET /dev/token and paste `access_token` into skia-rs-wasm's VITE_AI_BACKEND_KEY.
+# The real auth0JwtDecoder still validates it (signature via JWKS + issuer + audience + expiry);
+# in prod auth0.issuer points at real Auth0, so these dev tokens are rejected — no bypass ships.
+# jwk-set-uri is explicit because the base application.yaml sets it to "" (empty), which would
+# otherwise short-circuit resolvedJwkSetUri()'s issuer-based derivation.
+auth0:
+  issuer: http://localhost:8080/dev
+  audience: penpot-ai-dev
+  jwk-set-uri: http://localhost:8080/dev/.well-known/jwks.json
