@@ -186,13 +186,25 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         // target so the engine reflows the siblings to open a gap. The layout
         // engine owns the placeholder's position, so we query it back for the
         // ghost footprint. Guarded so a failure just falls back to the provisional.
-        if (intent?.hasLayout) {
+        // The lift and the gap preview are two independent concerns:
+        //  - Lift on top: runs for ANY reparent target (a `firstTarget`).
+        //  - Gap placeholder: layout targets only (they reflow siblings to open
+        //    a gap; a non-layout parent has nothing to reflow).
+        if (firstTarget) {
           try {
-            if (firstTarget) {
+            if (intent?.hasLayout) {
               const objsAll = page.objects as Record<string, { shapes?: string[] }>
-              const targetDocKids = objsAll[firstTarget.parentId]?.shapes ?? []
-              // Wrap-aware drop index, computed by computeDropIndex on the resting
-              // document positions (placeholder-free, so it's stable).
+              // Normalize to sibling-space: exclude the dragged shapes so the
+              // placeholder splices among clean siblings — identical to a drag from
+              // outside. A dragged shape that IS a child here (same-parent reorder)
+              // is appended so WASM keeps it (dropping it from set_children would
+              // delete it); the lift then moves it to the front, out of flow.
+              const rawKids = objsAll[firstTarget.parentId]?.shapes ?? []
+              const siblings = rawKids.filter((id) => !selectedIds.has(id))
+              const draggedHere = rawKids.filter((id) => selectedIds.has(id))
+              const targetDocKids = draggedHere.length > 0 ? [...siblings, ...draggedHere] : siblings
+              // Sibling-space drop index (0..siblings.length), from computeDropIndex
+              // on the resting document positions (placeholder-free, so it's stable).
               const dropIndex = firstTarget.index
               lastPreview = { targetId: firstTarget.parentId, index: dropIndex }
               // Ensure the placeholder exists, lives in the current target, and sits
@@ -220,9 +232,9 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
                   dropIndex,
                 )
               } else if (placeholder.targetId !== firstTarget.parentId) {
-                const oldDocKids = (objsAll[placeholder.targetId]?.shapes ?? []).filter(
-                  (id) => !selectedIds.has(id),
-                )
+                // Restore the old target to its full document list (keep the dragged
+                // shape referenced so WASM doesn't delete it while it's lifted).
+                const oldDocKids = objsAll[placeholder.targetId]?.shapes ?? []
                 placeholder = reattachDropPlaceholder(
                   renderer,
                   placeholder,
@@ -234,49 +246,48 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
               } else {
                 placeholder = positionDropPlaceholder(renderer, placeholder, targetDocKids, dropIndex)
               }
-
-              // Reparent preview: pull the dragged shapes out of their source and
-              // add them to the target as its top (last) children, so the tiled
-              // renderer paints them ON TOP of the target's content — real shapes,
-              // crisp at any size. Mark them layout-absolute so a flex/grid target
-              // skips them in its flow; they stay under the cursor via the translate
-              // below. Reflow the target (identity) so the placeholder child opens
-              // the gap. All transient — `cleanModifiers` reverts it on release, and
-              // the real reparent commits at the calculated index.
-              const previewStructure = buildReparentPreviewEntries(selectedIds, page, firstTarget.parentId)
-              const probeReflow = collectReflowParents(selectedIds, page, probeTargets)
-              const probeEntries: Array<[string, Matrix]> = [
-                ...Array.from(selectedIds, (id) => [id, translateMatrix(worldDelta.x, worldDelta.y)] as [string, Matrix]),
-                ...Array.from(probeReflow, (id) => [id, identityMatrix()] as [string, Matrix]),
-              ]
-              renderer.setWasmModifiers(probeEntries, {
-                structureModifiers: previewStructure,
-                absoluteModifiers: Array.from(selectedIds),
-              })
-              layoutProbeActive = true
-
-              // Ghost = where the placeholder landed (the opened gap).
-              const gap = placeholder ? querySelectionRect(renderer, [placeholder.id]) : null
-              if (gap) {
-                intent.footprint = {
-                  x: gap.center.x - gap.width / 2,
-                  y: gap.center.y - gap.height / 2,
-                  width: gap.width,
-                  height: gap.height,
-                }
-              }
             } else {
-              // Over the frame but no target resolved this frame (e.g. a dead zone
-              // near a child's border) — drop the stale placeholder so the preview
-              // never shows a gap where nothing will land.
+              // Non-layout target: nothing reflows, so no placeholder gap — but the
+              // drop still lands at the resolved (append) index.
               destroyPlaceholder()
-              lastPreview = null
+              lastPreview = { targetId: firstTarget.parentId, index: firstTarget.index }
+            }
+
+            // Lift on top: pull the dragged shapes out of their source and add them
+            // to the target at index 0, so the tiled renderer paints them ON TOP of
+            // the target's content — real shapes, crisp at any size. Mark them
+            // layout-absolute (a no-op on a non-layout parent) so a flex/grid target
+            // skips them in its flow; they track the cursor via the translate below.
+            // Reflow the target (identity) so a layout placeholder opens its gap.
+            // All transient — `cleanModifiers` reverts it on release, and the real
+            // reparent commits at the calculated index.
+            const previewStructure = buildReparentPreviewEntries(selectedIds, page, firstTarget.parentId)
+            const probeReflow = collectReflowParents(selectedIds, page, probeTargets)
+            const probeEntries: Array<[string, Matrix]> = [
+              ...Array.from(selectedIds, (id) => [id, translateMatrix(worldDelta.x, worldDelta.y)] as [string, Matrix]),
+              ...Array.from(probeReflow, (id) => [id, identityMatrix()] as [string, Matrix]),
+            ]
+            renderer.setWasmModifiers(probeEntries, {
+              structureModifiers: previewStructure,
+              absoluteModifiers: Array.from(selectedIds),
+            })
+            layoutProbeActive = true
+
+            // Ghost = where the placeholder landed (the opened gap); layout only.
+            const gap = placeholder ? querySelectionRect(renderer, [placeholder.id]) : null
+            if (gap && intent) {
+              intent.footprint = {
+                x: gap.center.x - gap.width / 2,
+                y: gap.center.y - gap.height / 2,
+                width: gap.width,
+                height: gap.height,
+              }
             }
           } catch {
             // keep the provisional footprint
           }
         } else {
-          // Not over any flex target — no gap to show.
+          // Not over any reparent target — no lift, no gap.
           destroyPlaceholder()
           lastPreview = null
         }

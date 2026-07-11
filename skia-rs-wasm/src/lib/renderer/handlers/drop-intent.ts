@@ -26,7 +26,7 @@ function flexAxis(node: IndexedShape): FlexInfo | null {
 }
 
 /** Any layout (flex OR grid) — used for the target highlight even when we don't draw a line. */
-function hasAnyLayout(node: IndexedShape): boolean {
+export function hasAnyLayout(node: IndexedShape): boolean {
   const n = node as { layoutFlexDir?: unknown; layoutGridDir?: unknown }
   return Boolean(n.layoutFlexDir || n.layoutGridDir)
 }
@@ -44,10 +44,12 @@ interface ChildRect {
 function orderedChildRects(
   target: IndexedShape,
   objects: Record<string, IndexedShape>,
+  excludeIds?: ReadonlySet<string>,
 ): ChildRect[] {
   const ids = (target as { shapes?: string[] }).shapes ?? []
   const out: ChildRect[] = []
   for (const id of ids) {
+    if (excludeIds?.has(id)) continue
     const sr = objects[id]?.selrect
     if (!sr) continue
     const width = sr.width ?? 0
@@ -59,7 +61,7 @@ function orderedChildRects(
 
 /** One child's laid-out geometry along the container's main and cross axes. */
 interface DropItem {
-  /** Index in the container's `shapes` array — the value returned for insertion. */
+  /** Index within the sibling list (dragged excluded) — the sibling-space value returned for insertion. */
   docIndex: number
   mainLo: number
   mainHi: number
@@ -90,18 +92,25 @@ export function computeDropIndex(
   target: IndexedShape,
   objects: Record<string, IndexedShape>,
   point: Point,
+  excludeIds?: ReadonlySet<string>,
 ): number {
   const flex = flexAxis(target)
-  const shapeIds = (target as { shapes?: string[] }).shapes ?? []
-  if (!flex) return shapeIds.length
+  const rawIds = (target as { shapes?: string[] }).shapes ?? []
+  // Normalize to sibling-space: drop the dragged shapes from the child list so
+  // the index is measured AND returned against the remaining siblings only
+  // (slots 0..siblings.length). For a drag from outside nothing is excluded, so
+  // this equals the raw list. The placeholder splice and the reorder commit both
+  // consume this same sibling-space index — no phantom slot for the dragged shape.
+  const siblings = excludeIds ? rawIds.filter((id) => !excludeIds.has(id)) : rawIds
+  if (!flex) return siblings.length
 
   const main: 'x' | 'y' = flex.axis
   const cross: 'x' | 'y' = main === 'x' ? 'y' : 'x'
 
-  // Resting geometry per child, keyed by its real position in `shapes`.
+  // Resting geometry per sibling, keyed by its position in the sibling list.
   const items: DropItem[] = []
-  for (let i = 0; i < shapeIds.length; i++) {
-    const sr = objects[shapeIds[i]]?.selrect
+  for (let i = 0; i < siblings.length; i++) {
+    const sr = objects[siblings[i]]?.selrect
     if (!sr) continue
     const w = sr.width ?? 0
     const h = sr.height ?? 0
@@ -170,7 +179,7 @@ export function computeDropIndex(
   // layout, "insert before the child at visual position p" means insert AFTER it in
   // the array (index+1), and the visual end maps to array index 0. Reverse layouts
   // lay out in array order, so the mapping is the natural forward one.
-  if (p >= vis.length) return flex.reverse ? shapeIds.length : 0
+  if (p >= vis.length) return flex.reverse ? siblings.length : 0
   const doc = vis[p].docIndex
   return flex.reverse ? doc : doc + 1
 }
@@ -186,6 +195,7 @@ export function insertionLineWorld(
   target: IndexedShape,
   objects: Record<string, IndexedShape>,
   index: number,
+  excludeIds?: ReadonlySet<string>,
 ): { x1: number; y1: number; x2: number; y2: number } | null {
   const flex = flexAxis(target)
   const sr = target.selrect
@@ -195,7 +205,9 @@ export function insertionLineWorld(
   const sw = sr.width ?? 0
   const sh = sr.height ?? 0
   const pad = 4
-  const kids = orderedChildRects(target, objects)
+  // The line sits at sibling boundary `index` — measure the same sibling list the
+  // index was computed against (dragged excluded), so `kids[index]` lines up.
+  const kids = orderedChildRects(target, objects, excludeIds)
 
   if (flex.axis === 'x') {
     let x: number
@@ -290,10 +302,9 @@ export function resolveDropIntent(
   // (root is the node with no parent.)
   if (target.parentId == null) return null
 
-  // Intra-parent moves don't reparent, and in-place reorder isn't wired yet, so a
-  // drop over the shapes' own current parent wouldn't change anything — suppress
-  // the indicator there to keep it honest (matches detectReparentTargets skipping
-  // same-parent). Cross-container drops still show.
+  // A drop over the shapes' own current parent is an in-place reorder — supported
+  // only when that parent has a layout (flex/grid); a non-layout parent has no
+  // meaningful index, so suppress the indicator there. Cross-container drops show.
   let allSameParent = true
   for (const id of selectedIds) {
     if (objects[id]?.parentId !== targetId) {
@@ -301,9 +312,12 @@ export function resolveDropIntent(
       break
     }
   }
-  if (allSameParent) return null
-  const index = computeDropIndex(target, objects, point)
-  const line = flexAxis(target) ? insertionLineWorld(target, objects, index) : null
+  if (allSameParent && !hasAnyLayout(target)) return null
+  // Same-parent reorder: measure the drop index against the siblings only (the
+  // dragged shapes are lifted out of the flow during the drag).
+  const excludeIds = allSameParent ? selectedIds : undefined
+  const index = computeDropIndex(target, objects, point, excludeIds)
+  const line = flexAxis(target) ? insertionLineWorld(target, objects, index, excludeIds) : null
   const size = primarySize(selectedIds, objects)
   const footprint = line && size ? provisionalFootprint(target, line, size) : null
   return {

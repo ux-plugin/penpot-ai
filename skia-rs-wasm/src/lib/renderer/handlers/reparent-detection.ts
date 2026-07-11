@@ -18,7 +18,7 @@ import { findContainerAtPoint, findSlotAtPoint } from '../../components/LayersPa
 import { isFrameShape } from '../../worker/geometry/shapes'
 import { rectToCenter } from '../../worker/geometry/rect'
 import { ZERO_UUID } from '@skia-rs-wasm/common/conversions'
-import { computeDropIndex } from './drop-intent'
+import { computeDropIndex, hasAnyLayout } from './drop-intent'
 
 /** Per-shape reparent intent. Only present when the new parent differs from the current one. */
 export interface PerShapeReparent {
@@ -116,12 +116,18 @@ export function detectReparentTargets(
     // behavior at handlers/move.ts:189.
     const newParent = hit ?? (excludeIds.includes(ZERO_UUID) ? null : ZERO_UUID)
     if (!newParent) continue
-    if (newParent === shape.parentId) continue
     const parent = objects[newParent]
+    // Same-parent drop is an in-place reorder — only meaningful when the parent
+    // has a layout (flex/grid). For a non-layout parent it's a free move, so skip.
+    const sameParent = newParent === shape.parentId
+    if (sameParent && !(parent && hasAnyLayout(parent))) continue
     // Insert at the cursor position (matches the drop-preview) rather than always
     // appending. computeDropIndex handles flex (row/col); non-layout and grid
-    // parents append, preserving prior behavior.
-    const index = parent ? computeDropIndex(parent, objects, indexPoint ?? projected) : 0
+    // parents append. For a same-parent reorder, exclude the dragged shapes from
+    // the index math (they're lifted out of the flow during the drag).
+    const index = parent
+      ? computeDropIndex(parent, objects, indexPoint ?? projected, sameParent ? selectedIds : undefined)
+      : 0
     result.set(id, { parentId: newParent, index })
   }
   return result
