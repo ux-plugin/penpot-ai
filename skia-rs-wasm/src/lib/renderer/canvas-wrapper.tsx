@@ -6,12 +6,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { useActorRef } from '@xstate/react'
 import { cn } from '@/lib/utils'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import type { CanvasWrapperProps } from './types'
 import { useWorkspaceStore } from './store/workspace-store'
 import { useViewportShortcutsStore } from './store/shortcuts-store'
 import { modAlt, modCtrl, modMeta, modShift, viewport } from './signals/pointer'
 import { initRendererClient, cleanupRendererClient } from './renderer-init'
 import { SelectionOverlay } from '../components/Overlay/SelectionOverlay'
+import { MotionPathOverlay } from '../components/Overlay/MotionPathOverlay'
+import { MotionBadge } from '../components/Overlay/MotionBadge'
 import { TextEditorOverlay } from '../components/Overlay/TextEditorOverlay'
 import { PathEditorOverlay } from '../components/Overlay/PathEditorOverlay'
 import { useViewportInteractions } from './hooks/use-viewport-interactions'
@@ -30,6 +33,8 @@ function CanvasWorkspace({
   containerClassName,
   startSlot,
   endSlot,
+  bottomSlot,
+  centerOverlay,
   workspaceClassName,
   rendererOptions,
   shortcuts: initialViewportShortcuts,
@@ -40,6 +45,8 @@ function CanvasWorkspace({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
   const [canvasSize, setCanvasSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
+  const [timelineHeight, setTimelineHeight] = useState(260)
+  const timelineResizeRef = useRef<{ startY: number; startH: number } | null>(null)
   const setViewportShortcuts = useViewportShortcutsStore((state) => state.setViewportShortcuts)
 
   // Apply initial shortcuts when provided (e.g. on mount or when prop changes)
@@ -155,7 +162,7 @@ function CanvasWorkspace({
     },
   })
 
-  const hasSlots = startSlot != null || endSlot != null
+  const hasSlots = startSlot != null || endSlot != null || bottomSlot != null
 
   const canvasColumn = (
     <div
@@ -184,7 +191,10 @@ function CanvasWorkspace({
         ref={surfaceRef}
         style={{ position: 'absolute', inset: 0, pointerEvents: 'all', touchAction: 'none' }}
       />
+      {/* Motion path/ghosts draw BELOW the selection chrome; the badge sits ON TOP. */}
+      <MotionPathOverlay canvasSize={canvasSize} />
       <SelectionOverlay canvasSize={canvasSize} canvasRef={canvasRef} />
+      <MotionBadge canvasSize={canvasSize} />
       <TextEditorOverlay />
       <PathEditorOverlay />
     </div>
@@ -194,13 +204,107 @@ function CanvasWorkspace({
     return canvasColumn
   }
 
+  // Layered shell. BACK layer: the canvas (+ its overlays), full-bleed -- it
+  // never reflows when panels resize, only when the window does (the canvas
+  // lives outside the panel tree). FRONT layer: a flex column on top,
+  // transparent + pointer-events-none except where the rails / timeline /
+  // handles opt back in, so the canvas shows through the gaps and still
+  // receives pointer events.
+  //
+  // Top: a SINGLE flat horizontal resizable group (left rail | transparent
+  // centre hole | right rail). It is intentionally NOT nested inside another
+  // Panel -- a ResizablePanelGroup wrapped in a Panel mis-sizes its children
+  // (renders them as slivers). Every panel gets an explicit defaultSize summing
+  // to 100. Bottom: a full-width timeline strip docked across the whole width.
+  // The hole is `relative` so the shape toolbar can float at its bottom edge.
   return (
-    <div
-      className={cn('flex h-full min-h-0 min-w-0 w-full flex-row', workspaceClassName)}
-    >
-      {startSlot}
-      {canvasColumn}
-      {endSlot}
+    <div className={cn('relative h-full min-h-0 min-w-0 w-full', workspaceClassName)}>
+      <div className="absolute inset-0">{canvasColumn}</div>
+
+      <div className="pointer-events-none absolute inset-0 flex flex-col">
+        <div className="min-h-0 w-full flex-1">
+          <ResizablePanelGroup orientation="horizontal" className="pointer-events-none h-full w-full">
+            {startSlot != null && (
+              <>
+                <ResizablePanel
+                  id="left-rail"
+                  minSize={12}
+                  defaultSize={18}
+                  collapsible
+                  collapsedSize={0}
+                  className="pointer-events-auto min-h-0 min-w-0"
+                >
+                  {startSlot}
+                </ResizablePanel>
+                <ResizableHandle withHandle className="pointer-events-auto" />
+              </>
+            )}
+            <ResizablePanel
+              id="canvas-hole"
+              minSize={30}
+              defaultSize={62}
+              className="relative min-h-0 min-w-0"
+            >
+              {centerOverlay}
+            </ResizablePanel>
+            {endSlot != null && (
+              <>
+                <ResizableHandle withHandle className="pointer-events-auto" />
+                <ResizablePanel
+                  id="right-rail"
+                  minSize={12}
+                  defaultSize={20}
+                  collapsible
+                  collapsedSize={0}
+                  className="pointer-events-auto min-h-0 min-w-0"
+                >
+                  {endSlot}
+                </ResizablePanel>
+              </>
+            )}
+          </ResizablePanelGroup>
+        </div>
+
+        {bottomSlot != null && (
+          <div
+            className="pointer-events-auto relative w-full shrink-0 border-t border-border bg-background"
+            style={{ height: timelineHeight }}
+          >
+            {/* Manual top-edge resize handle. We can't use a ResizablePanel here
+                (nesting a panel group inside a panel mis-sizes the rails), so the
+                timeline height is a plain state dragged from this strip. Drag up
+                to grow. */}
+            <div
+              className="group/tl-resize absolute inset-x-0 top-0 z-10 flex h-2 -translate-y-1/2 cursor-row-resize items-center justify-center"
+              onPointerDown={(e) => {
+                timelineResizeRef.current = { startY: e.clientY, startH: timelineHeight }
+                e.currentTarget.setPointerCapture(e.pointerId)
+              }}
+              onPointerMove={(e) => {
+                const drag = timelineResizeRef.current
+                if (!drag) return
+                const next = drag.startH + (drag.startY - e.clientY)
+                const max = Math.max(160, window.innerHeight - 200)
+                setTimelineHeight(Math.min(max, Math.max(120, next)))
+              }}
+              onPointerUp={(e) => {
+                timelineResizeRef.current = null
+                try {
+                  e.currentTarget.releasePointerCapture(e.pointerId)
+                } catch {
+                  /* ignore */
+                }
+              }}
+              onLostPointerCapture={() => {
+                timelineResizeRef.current = null
+              }}
+            >
+              <div className="h-1 w-8 rounded-full bg-border transition-colors group-hover/tl-resize:bg-primary/50" />
+            </div>
+            {bottomSlot}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
