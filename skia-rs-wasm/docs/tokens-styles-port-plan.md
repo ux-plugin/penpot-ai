@@ -1,255 +1,198 @@
-# Porting Plan — Library Styles & Design Tokens (Variables)
+# Porting Plan — Design Tokens (with Library Styles as a view)
 
-Status: **plan / not started**. Target: `skia-rs-wasm` only. `render-wasm` requires **no changes**.
+Status: **Phase 1 shipped** (commit `97fd7a039e`, merged to `develop`). **Phase 2 (tokens) — planned, tokens-only.** Target: `skia-rs-wasm` only. `render-wasm` requires **no changes**.
+
+> **Architecture update — supersedes the original two-systems framing.**
+> After validating against Penpot's schemas and the exporter, we collapsed "styles" and
+> "tokens" into **one system: tokens.** A *color token* is what we called a paint style; a
+> *composite typography token* is what we called a text style. "Styles" survive only as a
+> **named / grouped VIEW** (the Assets panel) over color + typography tokens — not a separate
+> data type. A token is a strict superset of a style for every style type that exists. The one
+> genuine style-only case — multi-paint / effect *stacks* — has no token type and is out of
+> scope for v1. Round-trip provenance is a deferred 1-bit concern: no export exists yet.
 
 ## 0. Context & principles
 
-Figma's design-system layer is two distinct systems; Penpot mirrors them, and our codebase
-already reserves the schema slots for both (currently empty/dormant):
-
-| Figma term | Penpot term | Our schema slot (already declared) |
-|---|---|---|
-| **Styles** (paint/text) | Library assets `:colors` / `:typographies` | `DocumentMeta.paintStyles`, `DocumentMeta.textStyles` |
-| **Variables** | Design tokens (`tokens-lib`) | `DocumentMeta.tokens?` + shape `appliedTokens` |
-
 `DocumentMeta = Omit<PenpotDocument,'children'>` lives in `docProxy.meta` (Valtio proxy,
-`src/lib/renderer/store/doc-proxy.ts:6`). It is reactive — any panel can read it via
-`useSnapshot(docProxy)`.
+`src/lib/renderer/store/doc-proxy.ts`). It is reactive — any panel reads it via `useSnapshot`.
 
 ### Three load-bearing facts (validated against the code)
 
 1. **The WASM renderer only ever sees resolved concrete values.** `writeSolidFill(color, opacity)`
-   (`src/lib/renderer/api/fills.ts:145`) and `writeSpans(...)` (`src/lib/renderer/api/text.ts:409`)
-   take hex strings / numbers, not refs or token names. ⇒ **All style/token resolution happens in
-   the TS layer; render-wasm is untouched.**
-2. **Styles store a ref + a cached value on the shape** (Penpot model). A fill keeps its concrete
-   `fillColor`/`fillOpacity` *and* `fillColorRefId`/`fillColorRefFile`. The renderer reads the
-   cached value; the ref is metadata for sync/detach. ⇒ no resolver needed for styles.
-3. **Tokens store only the token *name* on the shape** (`appliedTokens: { fill: "color.primary" }`),
-   resolved through sets/themes/aliasing into concrete values that get written into the normal
-   shape props on every token change. ⇒ tokens need a resolver + a propagation pass.
-
-### Reuse
-
-- Lift the Penpot schema TS types the bundled exporter already defines
-  (`packages/penpot-exporter/ui-src/lib/types/shapes/tokens.ts`, `.../utils/fill.ts`,
-  `.../shapes/textShape.ts`, `.../types/penpotDocument.ts`) so `.penpot` import/export round-trips.
-- Reuse the existing commit path (`commitNodePartialUpdate`) for *applying* a style/token to a
-  shape — it's just a fill/content edit that additionally carries ref fields.
+   and `writeSpans(...)` take hex strings / numbers, never refs or token names.
+   ⇒ **All token resolution happens in the TS layer; render-wasm is untouched.**
+2. **A token stores only its *name* on the shape** (`appliedTokens: { fill: "color.brand.primary" }`),
+   resolved through active sets + aliasing into concrete values that get written into the normal
+   shape props on every token change / theme switch. ⇒ tokens need a resolver + a propagation pass.
+3. **Drift is computable without a separate ref field.** A shape is "in sync" when its concrete prop
+   equals the resolved value of its `appliedTokens` entry; "drifted" otherwise (Figma model A —
+   edit-while-linked allowed, amber dot). Detach = drop the `appliedTokens` entry, keep the value.
 
 ---
 
-## Phase 1 — Library styles (colors + typographies)
+## Phase 1 — Library styles (colors + typographies) — ✅ SHIPPED
 
-Smaller, no resolver, slots already exist. Delivers shared colors + text styles.
+Committed `97fd7a039e`, merged to `develop`. Delivered colors + typographies end-to-end:
 
-### 1.1 Data model
+- **`src/lib/library/types.ts`** — `LibraryColor = FillStyle`, `LibraryTypography = TypographyStyle`;
+  factories, fill/textStyle conversions, drift helpers (`isFillInSync` / `isStrokeInSync` /
+  `isTextStyleInSync`).
+- **`src/lib/changes/doc-meta-change.ts`** — `DocMetaChange` union (Add/Mod/Del × Paint/Text style)
+  + pure reducers; carried alongside page `Change[]` in one `CommitFrame` for unified undo.
+- **`src/lib/library/apply.ts`** — CRUD via the doc-meta arm; apply/detach via `commitNodePartialUpdate`;
+  `modify*` folds the sync cascade into the same frame (atomic undo).
+- **`src/lib/library/sync.ts`** — `collectPaintStyleSync` / `collectTextStyleSync` per-page fan-out.
+- **`src/lib/components/AssetsPanel/`** + applied-style chips (drift dot + detach) in the right rail.
+- 48 library tests / 424 total green.
 
-Library asset shapes (store on `DocumentMeta`, keyed by uuid). Define in
-`src/lib/renderer/types.ts` (or a new `src/lib/common/library-types.ts`):
-
-```ts
-export interface ColorStyle {        // ≈ Penpot library-color / Figma paint style
-  id: string
-  name: string
-  path?: string                      // "Brand/Primary" grouping
-  color?: string                     // hex; OR
-  gradient?: Gradient                // OR
-  opacity?: number
-  modifiedAt: number
-}
-export interface TypographyStyle {   // ≈ Penpot typography / Figma text style
-  id: string
-  name: string
-  path?: string
-  fontId: string; fontFamily: string; fontVariantId: string
-  fontSize: string; fontWeight: string; fontStyle: string
-  lineHeight: string; letterSpacing: string; textTransform: string
-  modifiedAt: number
-}
-```
-
-Ref fields added to fills/strokes/text spans. To avoid editing the vendored
-`packages/penpot-exporter` types (separate git), define **editor-local extended types** and cast at
-the boundary (WASM ignores the extra optional fields):
-
-```ts
-export type RefFill = Fill & { fillColorRefId?: string; fillColorRefFile?: string }
-export type RefStroke = Stroke & { strokeColorRefId?: string; strokeColorRefFile?: string }
-// text spans/paragraphs: typographyRefId?, typographyRefFile?
-```
-
-> Decision D1: editor-local extended types vs. editing the vendored exporter package. Recommend
-> editor-local — keeps the exporter submodule clean; the fields are optional JSON that survive
-> serialization untouched.
-
-### 1.2 Document-level CRUD (the one real gap)
-
-The Change system (`src/lib/changes/`) is **page-scoped** (`ModObjChange { pageId, operations }`).
-Library CRUD edits `DocumentMeta`, not a page. Add doc-meta change variants handled with paired
-undo so library edits join the unified undo stack:
-
-- New change types: `AddColorStyle | ModColorStyle | DelColorStyle | AddTypographyStyle |
-  ModTypographyStyle | DelTypographyStyle` (mirror Penpot's `add-color` / `mod-typography`).
-- Handle them in `processChanges` (`src/lib/worker/process-changes`) and in
-  `applyChangesLocally` (`src/lib/renderer/store/commit.ts:84`) so they mutate `docProxy.meta`
-  instead of `docProxy.pageMap`.
-- Add builder helpers in `src/lib/changes/changes-builder.ts` (e.g. `appendDocMetaPair`) producing
-  redo/undo pairs.
-
-> Decision D2: unified undo (doc-meta change variants) vs. a separate metadata commit path.
-> Recommend unified — one undo stack, consistent with everything else.
-
-### 1.3 Apply / detach (reuses existing commit path)
-
-- **Apply color style → fill**: build `next` fills with the style's concrete `color/opacity/gradient`
-  copied in **plus** `fillColorRefId = style.id`, then
-  `commitNodePartialUpdate(nodeId, before, { fills: next }, pid)`
-  (`src/lib/renderer/properties/commit-node-properties.ts:192`). Same for strokes.
-- **Apply typography → text**: patch every span/paragraph with the typography's concrete props +
-  `typographyRefId`, via existing `patchContent(...)` + `commitNodePartialUpdate({ content })`
-  (`src/lib/components/RightSidePanel/Sections/text-typography.ts`).
-- **Detach**: drop the `*RefId/*RefFile` fields, keep the concrete value. Single
-  `commitNodePartialUpdate`.
-
-### 1.4 Sync on style edit (fan-out across pages)
-
-When a `ColorStyle`/`TypographyStyle` value changes: scan every page's shapes for fills/strokes/spans
-whose `*RefId` matches, rewrite the cached concrete value, emit a batched `ModObjChange` **per page**
-(changes are page-scoped). Implement as `syncColorStyle(styleId)` / `syncTypographyStyle(styleId)`
-in a new `src/lib/library/sync.ts`, invoked from the ModColorStyle/ModTypographyStyle handler.
-Build one `ChangesBuilder` per affected page, commit each.
-
-### 1.5 UI
-
-- **Assets panel** (the library browser): new collapsible "Assets" section in the **left rail**,
-  alongside `LayersPanel` (`src/lib/components/LayersPanel/`) — locked (D4). Reads
-  `useSnapshot(docProxy).meta.paintStyles/textStyles`. Supports create/rename/group/edit/delete
-  (→ the 1.2 change ops) and drag-or-click to apply to selection.
-- **Applied-style affordance** in `FillsSection.tsx` / `StrokesSection.tsx` / `TypographySection.tsx`:
-  when a fill/stroke/text carries a `*RefId`, show the style name + a detach button + an
-  "out of sync" indicator (cached value ≠ library value).
-- **"Create style from selection"**: button in the fill/typography editor that lifts the current
-  concrete value into a new library asset and immediately applies it (sets the ref).
-
-### 1.6 Round-trip
-
-Populate `paintStyles`/`textStyles` on `.penpot` import; emit on export. The exporter package's
-`buildAssets.ts` / `processAssets.ts` already document the shape — mirror it.
-
-### 1.7 Tests
-
-- Unit: apply→detach keeps value; sync rewrites only matching refs; undo/redo of CRUD + apply.
-- Visual (existing harness under `test/visual/`): a frame whose rects reference one color style;
-  edit the style → all update.
+> **These become the substrate for Phase 2.** The doc-meta change arm, the per-page fan-out shape,
+> the Assets panel shell, and the chip component all survive. Phase 2 re-points the *storage* (token
+> sets instead of `paintStyles`/`textStyles`) and the *applied link* (`appliedTokens` instead of
+> inline `*RefId` fields). See §2.6.
 
 ---
 
-## Phase 2 — Design tokens (variables)
+## Phase 2 — Design tokens (tokens-only)
 
-Builds on Phase 1's apply/commit/sync plumbing; adds a resolver + themes/modes + aliasing.
+One source of truth — `docProxy.meta.tokens`. Decisions locked: resolver = **style-dictionary +
+@tokens-studio/sd-transforms** (eager-bundled, browser programmatic API, no fs); **modes ship in v1**
+with a working theme switcher.
 
-### 2.1 Runtime model
+### Data flow
 
-Port the Penpot `TokensLib` shape (reuse exporter `tokens.ts` types):
+```
+                    meta.tokens  (sets / themes / activeThemes)
+                          │
+      ┌────────────────────┼─────────────────────┐
+ token CRUD           theme switch            apply token to shape
+ (doc-meta arm)      (SetActiveThemes)     (appliedTokens[attr]=name)
+      └────────────────────┴─────────────────────┘
+                          ▼
+                  resolve()  ── active-set merge + {alias} graph + composite decomposition
+                          ▼   Map<name → {value, type, errors}>
+                  propagate() ── for each shape's appliedTokens, write resolved
+                          ▼        concrete value into the normal prop (per-page ModObjChange)
+                  docProxy.pageMap (fillColor, r1, fontSize, … = concrete)
+                          ▼
+                  render-wasm   ← UNCHANGED
+```
+
+### Dependency graph
+
+```
+P2.1 token types ──┬──► P2.2 resolver ──┬──► P2.4 apply/detach ──┬──► P2.6 migrate styles→view
+                   │                     │                        ├──► P2.8 inline row pickers
+                   ├──► P2.3 doc-meta ───┼──► P2.5 propagation ───┘
+                   │    token CRUD       │         │
+                   │                     └─────────┴──► P2.6 migrate
+                   └──► P2.7 Tokens panel (needs 2.3 + 2.4)
+   P2.9 tests run alongside every task
+```
+
+### 2.1 Token model — `src/lib/tokens/types.ts`
+
+Port the Penpot `TokensLib` shape (reuse exporter `tokens.ts` types where they exist):
 
 ```ts
-type TokenType = 'color'|'dimension'|'sizing'|'spacing'|'borderRadius'|'opacity'
-  |'fontSize'|'fontFamily'|'fontWeight'|'letterSpacing'|'textCase'|'textDecoration'
-  |'typography'|'number'|'boolean'|'rotation'|'strokeWidth'|'string'  // ~20
-interface Token { name: string; type: TokenType; value: string|string[]; description?: string }
-interface TokenSet { name: string; tokens: Record<string, Token> }   // "brand/colors/light"
+type TokenType =
+  | 'color' | 'typography'                                   // the "styles" view
+  | 'dimension' | 'spacing' | 'sizing' | 'borderRadius' | 'opacity'  // tokens > styles
+// (~12 more — fontFamily/fontWeight/letterSpacing/boxShadow/number/… — DEFERRED)
+
+interface Token { id: string; name: string; type: TokenType; value: string | string[]; description?: string }
+interface TokenSet { id: string; name: string; tokens: Record<string, Token> }   // "brand/light"
 interface TokenTheme { id: string; name: string; group: string; sets: string[] } // modes = active sets
 interface TokensLib { sets: TokenSet[]; themes: TokenTheme[]; activeThemes: string[] }
 ```
 
-Store as `docProxy.meta.tokens`. Shapes carry `appliedTokens: Partial<Record<TokenProperty, string>>`
-(already typed in the exporter), keyed by attr (`fill`, `strokeColor`, `r1`, `fontSize`, …) → token
-*name*.
+Plus the **attr→token-type table** (which shape props accept which token type: `fill`/`strokeColor` ←
+`color`; `r1..r4` ← `borderRadius`/`dimension`; gaps/padding ← `spacing`; `fontSize` ← `dimension`;
+text node ← `typography`). Shapes carry `appliedTokens: Partial<Record<attr, tokenName>>` (already
+typed in the exporter), keyed by attr → token **name** (never the resolved value).
 
-### 2.2 Apply a token
+### 2.2 Resolver — `src/lib/tokens/resolve.ts`
 
-Set `appliedTokens[attr] = tokenName` on the shape (a `ModObjChange` assign) **and** write the
-currently-resolved concrete value into the normal prop — reuse the Phase 1 apply path. Never store
-the resolved value in `appliedTokens`.
+`style-dictionary` v4 + `@tokens-studio/sd-transforms`, **programmatic in-browser** (feed token sets
+as an in-memory source object; read the resolved dictionary — no file writes). Responsibilities:
 
-### 2.3 Resolver
+- **Active-set merge** — fold `activeThemes → sets` in order; later set overrides earlier (= modes).
+- **Aliasing** — `{color.blue.500}` resolved via SD's reference engine; cycle + missing-ref → errors.
+- **Composite decomposition** — typography token → font-* props; (shadow deferred).
+- Output: `Map<tokenName, { value, type, errors }>`.
 
-Aliasing (`{color.blue.500}`) + modes (active sets per theme). Two options:
+> Browser integration note: SD is Node-oriented. Use the transform/format API directly on an
+> in-memory dictionary; do **not** touch `fs`/`platforms` file output. Register sd-transforms once.
 
-- **Reuse the JS libs Penpot uses**: `style-dictionary` + `@tokens-studio/sd-transforms`. Fastest to
-  parity; matches DTCG semantics; handles composite (typography/shadow) decomposition.
-- **Minimal in-house resolver**: a dependency graph over the active sets, topological resolve,
-  cycle + missing-ref detection. Less surface area, more code to own.
+### 2.3 Token CRUD — extend `src/lib/changes/doc-meta-change.ts`
 
-> Decision D3: recommend `style-dictionary` + `sd-transforms` for Phase 2 v1 (parity + DTCG
-> round-trip for free); revisit if bundle size matters.
+New doc-meta variants, same paired-undo arm as Phase 1: `Add/Mod/DelToken`,
+`Add/Mod/DelTokenSet`, `Add/Mod/DelTheme`, `SetActiveThemes`. Reducer mutates `meta.tokens`.
 
-Output: `Map<tokenName, { value, errors }>`. Implement in `src/lib/tokens/resolve.ts`.
+### 2.4 Apply / detach token — `src/lib/tokens/apply.ts`
 
-### 2.4 Propagation
+Mirrors Phase 1 `apply.ts`. `applyToken(nodeId, attr, tokenName)`: set `appliedTokens[attr] = name`
+**and** write the currently-resolved concrete value into the normal prop via `commitNodePartialUpdate`
+(color → fill/stroke, typography → spans, dimension → radius/spacing/fontSize). `detachToken(nodeId,
+attr)`: remove the `appliedTokens` entry, keep the concrete value.
 
-On any token edit / theme switch: resolve the whole graph, then for every shape scan
-`appliedTokens`, map each `(attr → tokenName)` to its resolved value, and write concrete values into
-shape props via batched per-page `ModObjChange`s (same fan-out shape as 1.4). Implement
-`propagateTokens()` in `src/lib/tokens/propagation.ts`. Renderer path is unchanged.
+### 2.5 Propagation — `src/lib/tokens/propagation.ts`
 
-### 2.5 UI
+On `ModToken` / `SetActiveThemes`: re-resolve the graph, scan every shape's `appliedTokens`, write
+resolved concrete values into props via batched **per-page `ModObjChange`** — reusing Phase 1
+`sync.ts`'s fan-out shape — folded into the **same commit frame** as the CRUD edit so Cmd+Z reverts
+the token edit and every shape it touched atomically (exactly as `modifyPaintStyle` does today).
 
-Tokens panel: token tree (sets → tokens), theme/mode switcher, create/edit token (with type +
-value + reference picker), apply-to-selection per attribute. New section near the Assets panel.
+### 2.6 Migrate styles → view (the "Phase 1 isn't wasted" task)
 
-### 2.6 Import / export
+- Convert `meta.paintStyles` / `meta.textStyles` into a default color / typography **token set**.
+- Re-point the Assets panel Colors / Typographies tabs to read `meta.tokens` filtered by type.
+- Re-point the chips: read `appliedTokens[attr]` instead of inline `*RefId`; drift = concrete ≠
+  resolved. Detach = remove the `appliedTokens` entry.
+- Retire the inline-ref apply/sync (`fillColorRefId` etc.). The fields stay tolerated in the schema
+  (harmless optional JSON) but are no longer authored — revisit only when DTCG export needs the
+  provenance bit.
 
-DTCG JSON (the multi-set + `$themes` + `$metadata` format the exporter already documents). Implement
-`importDtcg()` / `exportDtcg()` in `src/lib/tokens/dtcg.ts`.
+### 2.7 Tokens panel — `src/lib/components/TokensPanel/` (3rd left-rail tab)
 
-### 2.7 Tests
+Token tree grouped by name-path (`color.brand.primary`); create/edit token (type + value + alias
+picker with live-resolved preview + error surfacing); **theme/mode switcher** (toggles
+`activeThemes` → triggers propagation); apply-to-selection per attribute. Tab styled like the
+existing `Design` / `Assets` pill tabs.
 
-- Resolver: aliasing, cycle detection, missing ref, mode switch picks the right set.
-- Propagation: token edit updates only shapes with that `appliedToken`; undo restores.
-- DTCG round-trip equality.
+### 2.8 Inline token pickers on right-panel rows
+
+Fill, stroke, radius, and spacing rows get an inline "apply token" affordance — the UX win over
+Penpot, which buries styles behind a library dropdown defaulting to "Recent" and never puts them on
+the fill row.
+
+### 2.9 Tests
+
+- **Resolver** — aliasing, cycle detection, missing ref, active-set override / mode switch picks the
+  right set, composite typography decomposition.
+- **Apply / detach** — writes `appliedTokens` + resolved value; detach keeps value, drops entry.
+- **Propagation** — only shapes with the edited token update; undo restores token + shapes in one
+  frame.
+- **Migration** — Phase 1 library tests adapted to token storage; Assets view renders tokens.
 
 ---
 
-## Cross-cutting decisions
+## Deferred (explicitly out of v1 scope)
 
-- **D1** ref fields: editor-local extended types *(recommended)* vs. edit vendored exporter package.
-- **D2** library CRUD undo: unified doc-meta change variants *(recommended)* vs. separate path.
-- **D3** token resolver: `style-dictionary` + `sd-transforms` *(recommended)* vs. in-house. Bundle-size is not a constraint — load eagerly, no dynamic `import()`.
-- **D4** assets/tokens panel home: **LOCKED → left rail**, alongside Layers (industry-standard).
-- **D5** Phase 1 scope: **LOCKED → colors + typographies together** (full Phase 1, no thin slice).
+DTCG JSON import / export + the round-trip provenance bit; sd-transforms math / color-modifier
+fidelity beyond aliasing; the ~12 long-tail token types; multi-paint / effect **stacks**;
+cross-file shared libraries.
 
-## Sequencing (locked: full Phase 1, then full Phase 2)
+## Locked decisions
 
-**Phase 1 — library styles (colors + typographies together, D5)**
+- **D1** One source of truth: **tokens**. Styles are a filtered view; no separate style data type.
+- **D2** Unified undo via the doc-meta change arm (carried over from Phase 1).
+- **D3** Resolver: **`style-dictionary` + `@tokens-studio/sd-transforms`**, eager-bundled, browser
+  programmatic API (no fs). *(Chosen over an in-house resolver to keep DTCG semantics for the
+  eventual round-trip.)*
+- **D4** Assets + Tokens panels live in the **left rail** alongside Layers (Design / Assets / Tokens
+  pill tabs).
+- **D5** Modes/themes **ship in v1** (data model + working theme switcher; full theme-management UI
+  stays modest).
 
-1. **Types** — `ColorStyle`, `TypographyStyle`; editor-local `RefFill`/`RefStroke` + span `typographyRefId`/`typographyRefFile`. (`src/lib/renderer/types.ts`, new `src/lib/common/library-types.ts`)
-2. **DocMeta change ops** — `AddColorStyle | ModColorStyle | DelColorStyle | AddTypographyStyle | ModTypographyStyle | DelTypographyStyle` with paired undo. Handled in `processChanges` + `applyChangesLocally` (`src/lib/renderer/store/commit.ts`); builder helper `appendDocMetaPair` in `src/lib/changes/changes-builder.ts`.
-3. **Apply / detach** — reuse `commitNodePartialUpdate`. For fills: write next fills with cached value **+** `fillColorRefId`. For text: `patchContent` + `typographyRefId` on every span/paragraph. Detach = drop the ref fields, keep value.
-4. **Sync fan-out** — new `src/lib/library/sync.ts`: `syncColorStyle(id)` / `syncTypographyStyle(id)` scan every page, build one `ChangesBuilder` per affected page, commit each via the existing path.
-5. **UI — left rail (D4)** — new `src/lib/components/AssetsPanel/AssetsPanel.tsx` alongside `LayersPanel`. Reads `useSnapshot(docProxy).meta.paintStyles/textStyles`. Sections: Colors, Typographies. Per asset: rename, group (path), edit, delete, drag-to-apply, "create from selection". Wire `EditorShell` to add it under Layers.
-6. **Applied-style chips** — in `FillsSection.tsx` / `StrokesSection.tsx` / `TypographySection.tsx`: when a fill/stroke/span carries a `*RefId`, render the style name + detach icon + out-of-sync indicator (cached ≠ library).
-7. **Round-trip** — populate `paintStyles`/`textStyles` on `.penpot` import; emit on export. Mirror the exporter package's `buildAssets.ts`/`processAssets.ts` shapes.
-8. **Tests** — unit (apply / detach / sync / undo); visual (one frame referencing one color style, edit propagates).
-
-**Phase 2 — design tokens (variables)**
-
-9. **Model** — port `TokensLib` (sets, themes, activeThemes) + `appliedTokens` map onto `docProxy.meta.tokens`. (`src/lib/common/tokens-types.ts`)
-10. **CRUD change ops** — `AddTokenSet | ModTokenSet | DelTokenSet | AddToken | ModToken | DelToken | AddTheme | ModTheme | DelTheme | SetActiveThemes`, same paired-undo pattern as Phase 1.2.
-11. **Resolver** — `src/lib/tokens/resolve.ts` using `style-dictionary` + `@tokens-studio/sd-transforms` (D3). Output: `Map<tokenName, { value, errors }>`. Handles aliasing, modes (= active sets), composite types (typography, shadow), cycle / missing-ref detection.
-12. **Apply token** — set `appliedTokens[attr] = tokenName` **and** write current resolved value into the normal prop via the Phase 1 apply path.
-13. **Propagation** — `src/lib/tokens/propagation.ts`: on token edit / theme switch → resolve full graph → for each shape's `appliedTokens` → write concrete values via batched per-page `ModObjChange`s.
-14. **UI — left rail (D4)** — new `src/lib/components/TokensPanel/TokensPanel.tsx` next to `AssetsPanel`: token tree (set → token), theme/mode switcher, create/edit (type + value + ref picker), apply-to-selection per attribute.
-15. **DTCG round-trip** — `src/lib/tokens/dtcg.ts`: import / export multi-set + `$themes` + `$metadata`.
-16. **Tests** — resolver (aliasing, cycles, missing, mode switch); propagation (only matching `appliedTokens` updated; undo restores); DTCG round-trip equality.
-
-**Boundary discipline:** every layer above stays in `skia-rs-wasm/src/lib`. `render-wasm` and the Penpot frontend are not touched.
-
-## Locked decisions (recap)
-
-- **D1** editor-local extended types (keep `packages/penpot-exporter` clean).
-- **D2** unified undo via doc-meta change variants.
-- **D3** resolver: `style-dictionary` + `@tokens-studio/sd-transforms`, eagerly bundled (bundle size not a constraint).
-- **D4** assets + tokens panels live in the **left rail** alongside Layers.
-- **D5** Phase 1 ships colors **and** typographies together; then Phase 2 ships tokens.
+**Boundary discipline:** every layer stays in `skia-rs-wasm/src/lib`. `render-wasm` and the Penpot
+frontend are not touched.
