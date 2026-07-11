@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useInspectorAnchorRight } from './use-inspector-anchor'
 
 export interface FloatingPanelShellProps {
   /** Unique key for the current target; null hides the panel. */
@@ -30,6 +31,7 @@ export function FloatingPanelShell({
 
   // Reset position when a new editor opens
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset drag position when the editor target changes
     setPos(null)
   }, [targetKey])
 
@@ -77,6 +79,8 @@ export function FloatingPanelShell({
     e.currentTarget.releasePointerCapture(e.pointerId)
   }, [])
 
+  const anchorRight = useInspectorAnchorRight(targetKey != null)
+
   if (!targetKey) return null
 
   const defaultTop = Math.max(12, Math.min(anchorY, window.innerHeight - 400))
@@ -84,7 +88,7 @@ export function FloatingPanelShell({
   const positionStyle: React.CSSProperties = pos
     ? { left: pos.x, top: pos.y }
     : {
-        right: 'calc(0.75rem + var(--properties-panel-width, 280px) + 0.5rem)',
+        right: anchorRight ?? 'calc(var(--properties-panel-width, 280px) + 0.5rem)',
         top: defaultTop,
       }
 

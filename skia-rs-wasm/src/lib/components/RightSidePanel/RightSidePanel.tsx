@@ -217,6 +217,7 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
       <FloatingColorEditorPanel />
       <FloatingEffectEditorPanel />
       <FloatingEditorRail
+        docked
         side="right"
         title="Inspector"
         collapsed={collapsed}

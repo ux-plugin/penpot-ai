@@ -1,6 +1,7 @@
 import type { RectLikeNode } from '../../renderer/properties/panel-utils'
 import { NodeIdentitySection } from './Sections/NodeIdentitySection'
 import { PositionSection } from './Sections/PositionSection'
+import { MotionRestSection } from './Sections/MotionRestSection'
 import { AppearanceSection } from './Sections/AppearanceSection'
 import { ShapeSection } from './Sections/ShapeSection'
 import { VectorEditSection } from './Sections/VectorEditSection'
@@ -31,6 +32,8 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
       <NodeIdentitySection nodeId={nodeId} readOnly={readOnly} initialNode={initialNode} />
 
       <PositionSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
+
+      <MotionRestSection nodeId={nodeId} />
 
       <AppearanceSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
