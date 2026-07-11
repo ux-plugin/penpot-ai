@@ -14,6 +14,7 @@
 import { emptyPageInteractions } from '../ir'
 import { aiChat } from '../nl/ai-cli'
 import { interpret } from '../nl/interpret'
+import { hasSecureKeyStore } from '../../platform'
 import type { Backend, ConversationSession, SendInput, SendResult, SessionCaps, Turn } from './types'
 
 const API_CAPS: SessionCaps = {
@@ -23,6 +24,7 @@ const API_CAPS: SessionCaps = {
   switchContext: false,
   structuredOutput: true,
   toolUse: false,
+  canBYOK: hasSecureKeyStore(),
 }
 
 function selectionToId(selection?: { id: string }[]): string | null {

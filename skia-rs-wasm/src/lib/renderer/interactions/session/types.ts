@@ -25,6 +25,8 @@ export interface SessionCaps {
   structuredOutput: boolean
   /** The model can call tools (MCP). */
   toolUse: boolean
+  /** BYOK available — running on a surface with secure key storage (desktop/terminal). */
+  canBYOK: boolean
 }
 
 export interface Turn {

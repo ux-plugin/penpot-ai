@@ -1,17 +1,19 @@
 /**
- * AI-CLI chat bridge (client side).
+ * AI chat client (Build mode).
  *
- * Talks to the dev-server `/__ai-chat` endpoint (see vite.config `aiChatPlugin`),
- * which spawns the local `claude` CLI. We build the full prompt here — where the
- * domain knowledge lives (nodes, current IR, the trigger/action catalog, the IR
- * schema) — send it as a plain string, and parse the model's `{ reply, ir }` JSON
- * back. The server stays a dumb subprocess bridge.
+ * We build the full prompt here — where the domain knowledge lives (nodes, current
+ * IR, the trigger/action catalog, the IR schema) — stream it to the backend LLM
+ * *provider* facade via the Vercel AI SDK, accumulate the reply, and parse the
+ * model's `{ reply, ir }` JSON envelope back.
  *
- * This is the real implementation of the `interpret` seam: same idea, but a live
- * Claude session instead of the rule-based stub. Callers should fall back to the
- * stub when this throws (endpoint down / CLI missing).
+ * The backend (`/api/llm/v1/chat/completions`, OpenAI-compatible) holds the
+ * platform provider key server-side; the browser only carries our backend
+ * credential. Callers (ApiSession) fall back to the offline `interpret` stub when
+ * this throws (backend down / unauthorized).
  */
 
+import { streamText } from 'ai'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { listTriggers, listActions } from '../catalog'
 import type { PageInteractions } from '../ir'
 
@@ -102,29 +104,31 @@ function parseResult(text: string): AiChatResult {
   }
 }
 
-export async function aiChat(ctx: AiChatContext): Promise<AiChatResult> {
-  // A network/transport failure (or a missing endpoint) throws → the caller falls
-  // back to the offline stub.
-  const res = await fetch('/__ai-chat', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt: buildPrompt(ctx) }),
-  })
-  if (!res.ok) throw new Error(`AI bridge HTTP ${res.status}`)
+const BACKEND_URL =
+  (import.meta.env.VITE_AI_BACKEND_URL as string | undefined)?.trim() || 'http://localhost:8003/api/llm/v1'
+const BACKEND_KEY = (import.meta.env.VITE_AI_BACKEND_KEY as string | undefined)?.trim() || ''
 
-  const data = (await res.json()) as {
-    ok: boolean
-    text?: string
-    error?: string
-    code?: number
-    stderr?: string
-    stdout?: string
-  }
-  // The bridge ran but the CLI failed (auth, bad invocation, …). Surface the real
-  // error in the chat — the AI *did* run, so don't silently fall back to the stub.
-  if (!data.ok) {
-    const bits = [data.error, data.code != null ? `exit ${data.code}` : '', data.stderr, data.stdout].filter(Boolean)
-    return { reply: `⚠️ AI bridge error — ${bits.join(' · ') || 'unknown error'}` }
-  }
-  return parseResult(data.text ?? '')
+/**
+ * Resolve the chat model. Web/platform path → the backend LLM-provider facade
+ * (provider key held server-side; the browser carries only our backend credential).
+ *
+ * Seam: on a surface with secure key storage (desktop/terminal, `SessionCaps.canBYOK`),
+ * return a direct/IPC provider here instead — added in the desktop BYOK slice.
+ */
+function resolveModel() {
+  const provider = createOpenAICompatible({
+    name: 'penpot-ai',
+    baseURL: BACKEND_URL,
+    apiKey: BACKEND_KEY || undefined,
+  })
+  return provider.chatModel('platform')
+}
+
+export async function aiChat(ctx: AiChatContext): Promise<AiChatResult> {
+  const prompt = buildPrompt(ctx)
+  // Stream from the backend facade and accumulate the full reply, then parse the
+  // `{ reply, ir }` envelope. A transport failure (backend down, 401) rejects the
+  // text promise → ApiSession falls back to the offline interpreter.
+  const result = streamText({ model: resolveModel(), prompt })
+  return parseResult(await result.text)
 }

@@ -4,8 +4,6 @@ import react from '@vitejs/plugin-react-swc'
 import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
-import { spawn } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { rollup } from 'rollup'
 import dts from 'rollup-plugin-dts'
 
@@ -31,99 +29,6 @@ function dtsBundlePlugin(): Plugin {
         format: 'es',
       })
       await bundle.close()
-    },
-  }
-}
-
-/**
- * Dev-only bridge: POST /__ai-chat { prompt } -> spawns the local `claude` CLI
- * (one-shot print mode) and returns { ok, text }. Lets the Build-mode chat talk
- * to a real AI session using the CLI's own auth, with no API key in the browser.
- * Serve-only; the CLI must be on PATH. NOTE: the dev server binds 0.0.0.0, so
- * this endpoint is LAN-reachable — fine for local dev, not for shared networks.
- */
-function aiChatPlugin(): Plugin {
-  return {
-    name: 'ai-chat-bridge',
-    apply: 'serve',
-    configureServer(server) {
-      server.middlewares.use('/__ai-chat', (req, res, next) => {
-        if (req.method !== 'POST') return next()
-        let body = ''
-        req.setEncoding('utf8')
-        req.on('data', (c) => (body += c))
-        req.on('end', () => {
-          const reply = (payload: object) => {
-            res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify(payload))
-          }
-          let prompt = ''
-          try {
-            prompt = String((JSON.parse(body) as { prompt?: unknown }).prompt ?? '')
-          } catch {
-            res.statusCode = 400
-            return reply({ ok: false, error: 'invalid JSON body' })
-          }
-          if (!prompt.trim()) {
-            res.statusCode = 400
-            return reply({ ok: false, error: 'missing prompt' })
-          }
-
-          // Neutral cwd + stdin ignored: don't load THIS repo's .claude (hooks,
-          // MCP servers, CLAUDE.md) into the nested session — we want a clean
-          // one-shot responder, not an agent running in the project. The full env
-          // is inherited so the headless credential (`claude setup-token` or an
-          // ANTHROPIC_API_KEY) reaches the CLI; `claude -p` needs one — the
-          // interactive subscription session does NOT carry over.
-          const child = spawn('claude', ['-p', prompt, '--output-format', 'json'], {
-            stdio: ['ignore', 'pipe', 'pipe'],
-            cwd: tmpdir(),
-          })
-          let out = ''
-          let err = ''
-          let done = false
-          const finish = (payload: object) => {
-            if (done) return
-            done = true
-            clearTimeout(timer)
-            reply(payload)
-          }
-          const timer = setTimeout(() => {
-            child.kill('SIGKILL')
-            finish({ ok: false, error: 'claude timed out (120s)' })
-          }, 120_000)
-          child.on('error', (e: NodeJS.ErrnoException) =>
-            finish({ ok: false, error: e.code === 'ENOENT' ? 'claude CLI not found on PATH' : String(e) }),
-          )
-          child.stdout.on('data', (d) => (out += d))
-          child.stderr.on('data', (d) => (err += d))
-          child.on('close', (code) => {
-            // The CLI writes a JSON envelope to stdout even on failure (is_error).
-            let envelope: { is_error?: boolean; result?: unknown } | undefined
-            try {
-              envelope = JSON.parse(out) as { is_error?: boolean; result?: unknown }
-            } catch {
-              envelope = undefined
-            }
-            if (envelope) {
-              if (envelope.is_error) {
-                return finish({ ok: false, error: String(envelope.result ?? 'claude reported an error'), code })
-              }
-              if (code === 0 && typeof envelope.result === 'string') {
-                return finish({ ok: true, text: envelope.result })
-              }
-            }
-            if (code === 0) return finish({ ok: true, text: out })
-            finish({
-              ok: false,
-              error: `claude exited with code ${code}`,
-              code,
-              stderr: err.trim() || undefined,
-              stdout: out.trim() || undefined,
-            })
-          })
-        })
-      })
     },
   }
 }
@@ -185,7 +90,6 @@ export default defineConfig(({ command }) => ({
     react(),
     tailwindcss(),
     dtsBundlePlugin(),
-    aiChatPlugin(),
     {
       name: 'wasm-content-type-plugin',
       configureServer(server) {
