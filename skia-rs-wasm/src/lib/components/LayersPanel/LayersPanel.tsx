@@ -1,7 +1,7 @@
 /**
- * Left rail: tabbed surface with Design (pages + layers) and Assets (color +
- * typography styles) panes. The rail title follows the active tab so the user
- * never sees "Design" while looking at the Assets pane.
+ * Left rail: tabbed surface with Design (pages + layers) and Tokens (design
+ * tokens — color/typography + the full token system). The rail title follows
+ * the active tab so the user never sees "Design" while looking at the Tokens pane.
  */
 
 import { useCallback, useMemo, useState } from 'react'
@@ -15,20 +15,24 @@ import { FloatingEditorRail } from '../EditorShell/floating-editor-rail'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ChevronDown, ChevronRight, FileText, Plus } from 'lucide-react'
 import { commitPageMetadataUpdate } from '../../renderer/properties/commit-page-properties'
 import { setActivePage, addPage } from '../../page-crud'
 import { commitChanges } from '../../renderer/store/commit'
 import { buildReparentChanges, resolveDropTarget, type DropSide } from './reparent'
 import { LayerRow, type DragOverState } from './layer-row'
-import { AssetsSections } from '../AssetsPanel/AssetsPanel'
+import { TokensSections } from '../TokensPanel/TokensPanel'
 
-type LeftRailTab = 'design' | 'assets'
+type LeftRailTab = 'design' | 'tokens'
+
+const TABS: { id: LeftRailTab; label: string }[] = [
+  { id: 'design', label: 'Design' },
+  { id: 'tokens', label: 'Tokens' },
+]
 
 const TAB_TITLES: Record<LeftRailTab, string> = {
   design: 'Design',
-  assets: 'Assets',
+  tokens: 'Tokens',
 }
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -194,13 +198,13 @@ export function LayersPanel({ className }: LayersPanelProps) {
     await commitChanges({ redoChanges, undoChanges, pageId: activePageId })
   }, [])
 
-  const paintStylesCount = doc.meta?.paintStyles ? Object.keys(doc.meta.paintStyles).length : 0
-  const textStylesCount = doc.meta?.textStyles ? Object.keys(doc.meta.textStyles).length : 0
-  const assetsCount = paintStylesCount + textStylesCount
-
   const designFooter = layerCount === 1 ? '1 layer' : `${layerCount} layers`
-  const assetsFooter = assetsCount === 1 ? '1 style' : `${assetsCount} styles`
-  const footer = activeTab === 'design' ? designFooter : assetsFooter
+  const tokensCount = useMemo(() => {
+    const sets = doc.meta?.tokens?.sets ?? []
+    return sets.reduce((n, s) => n + s.tokens.length, 0)
+  }, [doc.meta?.tokens])
+  const tokensFooter = tokensCount === 1 ? '1 token' : `${tokensCount} tokens`
+  const footer = activeTab === 'design' ? designFooter : tokensFooter
 
   return (
     <FloatingEditorRail
@@ -212,22 +216,34 @@ export function LayersPanel({ className }: LayersPanelProps) {
       data-layers-panel
       className={cn('min-h-0', className)}
     >
-      <Tabs
-        value={activeTab}
-        onValueChange={(v) => setActiveTab(v as LeftRailTab)}
-        className="flex min-h-0 min-w-0 flex-1 flex-col gap-0"
-      >
-        <TabsList variant="line" className="mx-2 mt-1 mb-0 h-8 shrink-0 justify-stretch">
-          <TabsTrigger value="design" className="flex-1">
-            Design
-          </TabsTrigger>
-          <TabsTrigger value="assets" className="flex-1">
-            Assets
-          </TabsTrigger>
-        </TabsList>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* Tab bar — same pill style as InspectorTabBar in the right rail. */}
+        <div
+          role="tablist"
+          aria-label="Left rail"
+          className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5"
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={cn(
+                'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                activeTab === t.id
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
 
-        <TabsContent value="design" className="min-h-0 flex-1">
-          <ScrollArea className="h-full min-h-0">
+        {activeTab === 'design' && (
+          <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-2 p-2">
               {/* PAGES Section */}
           <section>
@@ -435,16 +451,16 @@ export function LayersPanel({ className }: LayersPanelProps) {
 
             </div>
           </ScrollArea>
-        </TabsContent>
+        )}
 
-        <TabsContent value="assets" className="min-h-0 flex-1">
-          <ScrollArea className="h-full min-h-0">
+        {activeTab === 'tokens' && (
+          <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-2 p-2">
-              <AssetsSections />
+              <TokensSections />
             </div>
           </ScrollArea>
-        </TabsContent>
-      </Tabs>
+        )}
+      </div>
     </FloatingEditorRail>
   )
 }
