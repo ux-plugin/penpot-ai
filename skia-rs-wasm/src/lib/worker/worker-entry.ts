@@ -26,6 +26,7 @@ const state: WorkerState = {
   pagesIndex: {},
   selection: {},
   textRect: {},
+  hitIds: {},
 }
 
 // Helper: Create identity transform matrix
@@ -219,6 +220,56 @@ registerHandler('index/update-text-rect', (message: WorkerMessage) => {
     console.error('Error updating text rect:', error)
     return null
   }
+})
+
+registerHandler('index/hit-transforms', (message: WorkerMessage) => {
+  const payload = message.payload as { pageId?: string; transforms?: Array<[string, Matrix]> } | undefined
+  const pageId = payload?.pageId
+  const transforms = payload?.transforms
+  if (!pageId || !transforms) return null
+
+  const page = state.pagesIndex[pageId]
+  let pageSel = state.selection[pageId]
+  if (!page || !pageSel) return null
+  const objects = page.objects
+
+  const prev = state.hitIds?.[pageId] ?? new Set<string>()
+  const nextIds = new Set<string>(transforms.map(([id]) => id).filter((id) => objects[id]))
+
+  // Restore any shape that dropped out of the overlay to its rest geometry.
+  for (const id of prev) {
+    if (!nextIds.has(id) && objects[id]) {
+      pageSel = selection.updateIndexSingle(pageSel, objects, objects[id])
+    }
+  }
+  // Apply / refresh the overlay: re-insert each shape with its animated bounds + hitTransform.
+  for (const [id, matrix] of transforms) {
+    const base = objects[id]
+    if (!base) continue
+    const withHit = { ...base, hitTransform: matrix }
+    pageSel = selection.updateIndexSingle(pageSel, objects, withHit)
+  }
+
+  state.selection[pageId] = pageSel
+  if (!state.hitIds) state.hitIds = {}
+  state.hitIds[pageId] = nextIds
+  return null
+})
+
+registerHandler('index/clear-hit-transforms', (message: WorkerMessage) => {
+  const pageId = (message.payload as { pageId?: string } | undefined)?.pageId
+  if (!pageId) return null
+  const prev = state.hitIds?.[pageId]
+  const page = state.pagesIndex[pageId]
+  let pageSel = state.selection[pageId]
+  if (prev && page && pageSel) {
+    for (const id of prev) {
+      if (page.objects[id]) pageSel = selection.updateIndexSingle(pageSel, page.objects, page.objects[id])
+    }
+    state.selection[pageId] = pageSel
+  }
+  if (state.hitIds) state.hitIds[pageId] = new Set()
+  return null
 })
 
 // Main worker message handler

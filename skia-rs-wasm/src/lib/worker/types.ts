@@ -2,7 +2,7 @@
  * Worker-specific types. Shared types (Point, Line, Change) come from common.
  */
 
-import type { PenpotNode, Selrect } from 'penpot-exporter/types'
+import type { PenpotNode, Selrect, Matrix } from 'penpot-exporter/types'
 import type { Change } from 'penpot-exporter/types'
 import type { Point } from '@skia-rs-wasm/common/types'
 import type { Quadtree } from './quadtree'
@@ -55,6 +55,17 @@ export interface WorkerUpdateTextRectPayload {
   dimensions: WorkerTextRectDimensions
 }
 
+/** Payload for index/hit-transforms: per-shape rest->animated matrices overlaid on the index (paused motion). */
+export interface WorkerHitTransformsPayload {
+  pageId: string
+  transforms: Array<[string, Matrix]>
+}
+
+/** Payload for index/clear-hit-transforms: drop the hit-transform overlay for a page. */
+export interface WorkerClearHitTransformsPayload {
+  pageId: string
+}
+
 /** Indexed shape: PenpotNode with optional child-id list (flat structure). Uses camelCase parentId/frameId from ShapeBaseAttributes. */
 export type IndexedShape = PenpotNode & {
   shapes?: string[]
@@ -65,6 +76,8 @@ export type SelectionIndexShape = IndexedShape & {
   frame?: PenpotNode
   clipParents: PenpotNode[]
   parents: string[]
+  /** Modifier-aware hit-test overlay: rest -> animated affine, set while a paused motion preview displaces the shape. */
+  hitTransform?: Matrix
 }
 
 /** Alias for IndexedShape; canonical node type in indexed page model. */
@@ -102,6 +115,8 @@ export interface WorkerState {
   pagesIndex: Record<string, IndexedPage>
   selection: Record<string, SelectionIndex>
   textRect?: Record<string, Record<string, WorkerTextRectCacheValue>>
+  /** Per-page set of ids currently carrying a hit-transform overlay (to restore on clear/update). */
+  hitIds?: Record<string, Set<string>>
 }
 
 /** Request/response correlation ID. Client generates unique values: client_${Date.now()}_${counter} */
@@ -129,6 +144,8 @@ export type WorkerSendPayload =
   | WorkerIndexUpdateWithChangesPayload
   | QueryParams
   | WorkerUpdateTextRectPayload
+  | WorkerHitTransformsPayload
+  | WorkerClearHitTransformsPayload
   | undefined
 
 /** Response from worker handlers (null or array of node ids for query-selection). */

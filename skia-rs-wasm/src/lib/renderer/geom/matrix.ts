@@ -88,3 +88,34 @@ export function invertMatrix(T: Matrix): Matrix | null {
     f: (T.b * T.e - T.a * T.f) / det,
   }
 }
+
+/** Apply an affine matrix to a point. */
+export function transformPoint(m: Matrix, x: number, y: number): { x: number; y: number } {
+  return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f }
+}
+
+/**
+ * Axis-aligned bounding box of a rect after an affine transform: maps the four
+ * corners by `m` and takes their extent. Exact for translation/scale; a
+ * conservative (rotation-tight) AABB for rotated transforms.
+ */
+export function transformRectAABB(
+  rect: { x: number; y: number; width: number; height: number },
+  m: Matrix,
+): { x: number; y: number; width: number; height: number } {
+  const xs: number[] = []
+  const ys: number[] = []
+  for (const [cx, cy] of [
+    [rect.x, rect.y],
+    [rect.x + rect.width, rect.y],
+    [rect.x + rect.width, rect.y + rect.height],
+    [rect.x, rect.y + rect.height],
+  ] as const) {
+    const p = transformPoint(m, cx, cy)
+    xs.push(p.x)
+    ys.push(p.y)
+  }
+  const minX = Math.min(...xs)
+  const minY = Math.min(...ys)
+  return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY }
+}
