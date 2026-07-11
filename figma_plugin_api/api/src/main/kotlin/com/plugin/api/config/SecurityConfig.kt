@@ -65,6 +65,13 @@ class SecurityConfig(private val auth0Properties: Auth0Properties) {
                     // Replay read endpoints — same model as ingest: SDK/demo-app only.
                     .pathMatchers("/api/replay/**")
                     .hasAuthority("ROLE_API_KEY")
+                    // Build-mode LLM relay — backed by the platform provider key, so callers
+                    // must be authenticated, but EITHER a user JWT or an API key is accepted
+                    // (unlike ingest/replay, which are API-key only). Per-user request-rate
+                    // limiting is a follow-up (P4); single-completion length is already bounded
+                    // by the model bean's configured maxTokens.
+                    .pathMatchers("/api/llm/**")
+                    .authenticated()
                     .anyExchange()
                     .authenticated()
             }
