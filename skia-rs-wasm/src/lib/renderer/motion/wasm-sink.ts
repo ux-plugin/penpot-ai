@@ -15,6 +15,8 @@ import type { Modifier } from './modifier'
 
 export class WasmModifierSink implements ModifierSink {
   private entries: Array<readonly [string, Matrix]> = []
+  /** Last frame's per-shape matrices (what was drawn) — the zero-drift source for the hit-test channel. */
+  private appliedMap: Map<string, Matrix> = new Map()
 
   apply(targetId: string, modifier: Modifier): void {
     this.entries.push([targetId, modifier.matrix])
@@ -22,6 +24,9 @@ export class WasmModifierSink implements ModifierSink {
   }
 
   flush(): void {
+    // Retain this frame's matrices (zero-drift source for the modifier-aware
+    // hit-test channel) before draining, so consumers read exactly what drew.
+    this.appliedMap = new Map(this.entries)
     const renderer = useWorkspaceStore.getState().renderer
     if (!renderer) {
       this.entries = []
@@ -34,9 +39,15 @@ export class WasmModifierSink implements ModifierSink {
     this.entries = []
   }
 
+  /** The last frame's per-shape matrices (id -> matrix). Empty after reset(). */
+  get lastApplied(): ReadonlyMap<string, Matrix> {
+    return this.appliedMap
+  }
+
   /** Clear the preview transforms and repaint the base scene. */
   reset(): void {
     this.entries = []
+    this.appliedMap = new Map()
     const renderer = useWorkspaceStore.getState().renderer
     if (!renderer) return
     renderer.cleanModifiers()

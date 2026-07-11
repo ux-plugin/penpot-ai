@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PlaybackController, type ModifierSink, type PlaybackOptions } from '../../../../src/lib/renderer/motion/playback-controller'
 import type { Modifier } from '../../../../src/lib/renderer/motion/modifier'
-import type { Clip } from '../../../../src/lib/renderer/motion/types'
+import type { Timeline } from '../../../../src/lib/renderer/anim/types'
 
 /** Manual clock + frame pump so playback is deterministic without a browser. */
 function harness() {
@@ -44,18 +44,22 @@ function recordingSink() {
   return { sink, calls, flushes: () => flushes }
 }
 
-const clipX: Clip = {
-  id: 'c',
-  targetId: 's1',
+const timelineX: Timeline = {
+  id: 'tl-s1',
   duration: 1000,
-  tracks: [{ property: 'x', keyframes: [{ time: 0, value: 0 }, { time: 1000, value: 200 }] }],
+  bindings: [
+    {
+      target: { object: { kind: 'node', id: 's1' }, prop: 'x' },
+      curve: { domain: { kind: 'time' }, keys: [{ at: 0, value: 0 }, { at: 1000, value: 200 }] },
+    },
+  ],
 }
 
-function setup(clips: Clip[] = [clipX], extra: Partial<PlaybackOptions> = {}) {
+function setup(timelines: Timeline[] = [timelineX], extra: Partial<PlaybackOptions> = {}) {
   const h = harness()
   const r = recordingSink()
   const ctrl = new PlaybackController(r.sink, { ...h.opts, ...extra })
-  ctrl.setClips(clips)
+  ctrl.setTimelines(timelines)
   return { h, r, ctrl }
 }
 
@@ -125,13 +129,17 @@ describe('PlaybackController', () => {
   })
 
   it('applies a modifier for every clip target each frame', () => {
-    const clipO: Clip = {
-      id: 'cO',
-      targetId: 's2',
+    const timelineO: Timeline = {
+      id: 'tl-s2',
       duration: 1000,
-      tracks: [{ property: 'opacity', keyframes: [{ time: 0, value: 0 }, { time: 1000, value: 1 }] }],
+      bindings: [
+        {
+          target: { object: { kind: 'node', id: 's2' }, prop: 'opacity' },
+          curve: { domain: { kind: 'time' }, keys: [{ at: 0, value: 0 }, { at: 1000, value: 1 }] },
+        },
+      ],
     }
-    const { h, r, ctrl } = setup([clipX, clipO])
+    const { h, r, ctrl } = setup([timelineX, timelineO])
     ctrl.play()
     h.frame(500)
     const ids = r.calls.slice(-2).map((c) => c.id).sort()
@@ -141,7 +149,7 @@ describe('PlaybackController', () => {
 
   it('reports the playhead time via onFrame after each rendered frame', () => {
     const times: number[] = []
-    const { h, ctrl } = setup([clipX], { onFrame: (t) => times.push(t) })
+    const { h, ctrl } = setup([timelineX], { onFrame: (t) => times.push(t) })
     ctrl.play()
     h.frame(0)
     h.frame(300)
@@ -150,7 +158,7 @@ describe('PlaybackController', () => {
 
   it('calls onStop when a non-looping timeline reaches its end', () => {
     let stops = 0
-    const { h, ctrl } = setup([clipX], {
+    const { h, ctrl } = setup([timelineX], {
       onStop: () => {
         stops++
       },

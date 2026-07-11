@@ -9,7 +9,7 @@
 
 import type { Matrix } from 'penpot-exporter/types'
 import { IDENTITY_MATRIX, composeMatrix, rotationMatrixAroundPoint, translateMatrix } from '../geom/matrix'
-import type { SampledProperties } from './types'
+import type { SampledProperties } from './props'
 
 export interface Pivot {
   cx: number

@@ -40,3 +40,4 @@ describe('propsToModifier', () => {
     expect(m.matrix.e).toBeCloseTo(-10, 6)
   })
 })
+
