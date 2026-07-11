@@ -238,7 +238,7 @@ export function ShapeToolbar() {
 
   return (
     <aside
-      className="pointer-events-auto fixed bottom-6 left-1/2 z-60 -translate-x-1/2"
+      className="pointer-events-auto absolute bottom-6 left-1/2 z-60 -translate-x-1/2"
       aria-label="Shape tools"
     >
       <ul className="flex list-none flex-row items-center gap-0.5 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md">

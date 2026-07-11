@@ -186,6 +186,7 @@ export function LayersPanel({ className }: LayersPanelProps) {
 
   return (
     <FloatingEditorRail
+      docked
       side="left"
       title="Design"
       collapsed={collapsed}
