@@ -1,0 +1,23 @@
+appId: app.zoetrope.desktop
+productName: Zoetrope
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**
+  - "!**/*.map"
+# Landmine #5 — keep the wasm payload uncompressed/unpacked so it streams cleanly.
+asarUnpack:
+  - "**/*.wasm"
+mac:
+  category: public.app-category.graphics-design
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage
+  category: Graphics

@@ -8,9 +8,11 @@
  */
 
 import { useMemo, useState } from 'react'
+import { Info } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { FONT_FAMILIES } from '@/lib/renderer/api/google-fonts'
+import { useFontAvailabilityStore, familyStatuses } from '@/lib/renderer/store/font-availability'
 import { FloatingPanelShell } from './FloatingPanelShell'
 
 /** Max rows rendered at once; refine the search to reach the rest. */
@@ -40,6 +42,12 @@ export function FontPickerPanel({
   onClose,
 }: FontPickerPanelProps) {
   const [query, setQuery] = useState('')
+  const byFace = useFontAvailabilityStore((s) => s.byFace)
+  const missingFamilies = useMemo(() => {
+    const set = new Set<string>()
+    for (const [id, status] of familyStatuses(byFace)) if (status === 'missing') set.add(id)
+    return set
+  }, [byFace])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -85,7 +93,17 @@ export function FontPickerPanel({
                       f.fontId === currentFontId && 'bg-accent font-medium',
                     )}
                   >
-                    <span className="min-w-0 truncate">{f.family}</span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {missingFamilies.has(f.fontId) && (
+                        <span
+                          title="This font isn't available offline"
+                          className="flex shrink-0"
+                        >
+                          <Info className="size-3.5 text-destructive" aria-hidden />
+                        </span>
+                      )}
+                      <span className="min-w-0 truncate">{f.family}</span>
+                    </span>
                     <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">
                       {CATEGORY_LABEL[f.category] ?? ''}
                     </span>

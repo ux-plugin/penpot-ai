@@ -5,3 +5,4 @@ packages:
   - "sdk/wrappers/*/*"
   - "demo-app"
   - "zoetrope-frontend"
+  - "zoetrope-desktop-app"

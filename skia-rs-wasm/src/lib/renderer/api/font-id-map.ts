@@ -62,7 +62,12 @@ for (const slug of Object.keys(FONT_CATALOG_DATA)) {
  * slugs map to uuid/zero (the renderer's default font).
  */
 export function fontSlugToUuid(slug: string | undefined | null): string {
-  if (!slug) return ZERO_UUID
+  // The default family is render-wasm's bundled face, keyed by the zero UUID
+  // (`default_font_uuid() = Uuid::nil()`, registered at nil/400/Normal). Alias the
+  // default slug to it so picking "Source Sans Pro" — and untyped default text that
+  // resolves to this slug — uses the bundled font: no gstatic fetch, no offline
+  // "unavailable" flag, exactly like a span with no font set.
+  if (!slug || slug === DEFAULT_SLUG) return ZERO_UUID
   const hit = slugToUuidMap.get(slug)
   if (hit) return hit
   const uuid = deriveUuid(slug)

@@ -15,6 +15,11 @@
     "check-fmt": "./scripts/check-fmt",
     "fmt": "./scripts/fmt"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
+  },
   "devDependencies": {
     "@github/copilot": "^1.0.12",
     "@types/node": "^20.12.7",

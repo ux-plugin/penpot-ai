@@ -38,6 +38,8 @@ export function resolveCanvasCursor(
   snap: Snapshot,
   mods: CursorMods,
   wasmRect: SelectionRectResult | null,
+  /** Text tool armed AND the pointer is over a text shape → show the I-beam. */
+  overText: boolean,
 ): string {
   if (snap.matches('resizing') && snap.context.resizeHandle) {
     const rotation = wasmRect != null ? matrixToRotationDeg(wasmRect.transform) : undefined
@@ -52,6 +54,9 @@ export function resolveCanvasCursor(
       hover: 'empty',
     }).cursor
   }
+  // Text tool armed over an existing text shape: I-beam (a click places a caret),
+  // not the create crosshair. Must precede the generic draw-tool branch below.
+  if (snap.context.drawTool === 'text' && overText) return 'text'
   if (snap.context.drawTool != null) return toolCursor(snap.context.drawTool)
   if (snap.matches('textEditing')) return 'text'
   return mods.panHeld ? 'grab' : SELECT_CURSOR
