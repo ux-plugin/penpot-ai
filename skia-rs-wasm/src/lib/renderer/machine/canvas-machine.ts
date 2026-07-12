@@ -17,6 +17,7 @@ import type { Point, ResizeHandlePosition } from '../types'
 export type DrawTool =
   | 'rect'
   | 'frame'
+  | 'slot'
   | 'text'
   | 'ellipse'
   | 'pen'

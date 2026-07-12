@@ -52,6 +52,7 @@ import {
 } from './useImperativeCornerHandles'
 import { usePointerDownFactory } from './usePointerDownFactory'
 import { useGradientFill } from './useGradientFill'
+import { useImperativeDropIntent } from './useImperativeDropIntent'
 
 export interface SelectionOverlayProps {
   canvasSize: { width: number; height: number }
@@ -66,10 +67,15 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const cornerRectRefs = useRef<CornerRectRefsTuple>([null, null, null, null])
   const cornerOverrideCursorRef = useRef<string | null>(null)
   const cornerPointerRef = useRef<CornerPointerRef | null>(null)
+  const dropIntentGRef = useRef<SVGGElement>(null)
+  const dropRectRef = useRef<SVGRectElement>(null)
+  const dropLineRef = useRef<SVGLineElement>(null)
+  const dropGhostRef = useRef<SVGRectElement>(null)
 
   useViewBoxSync(svgRef, canvasSize)
   useImperativeSelectionRect(hotGRef, selRectRef)
   useImperativeCornerHandles(cornerHandlesGRef, cornerRectRefs, cornerOverrideCursorRef, cornerPointerRef)
+  useImperativeDropIntent(dropIntentGRef, dropRectRef, dropLineRef, dropGhostRef)
 
   const canvasActor = useCanvasActor()
   const doc = useSnapshot(docProxy)
@@ -248,6 +254,11 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
           </feMerge>
         </filter>
       </defs>
+      <g ref={dropIntentGRef} style={{ display: 'none', pointerEvents: 'none' }}>
+        <rect ref={dropRectRef} fill="none" stroke="#378ADD" rx={6} style={{ pointerEvents: 'none' }} />
+        <rect ref={dropGhostRef} fill="rgba(55,138,221,0.10)" stroke="#378ADD" rx={4} style={{ pointerEvents: 'none' }} />
+        <line ref={dropLineRef} stroke="#E24B4A" strokeLinecap="round" style={{ pointerEvents: 'none' }} />
+      </g>
       <g ref={hotGRef} style={{ display: 'none' }}>
         <rect
           ref={selRectRef}

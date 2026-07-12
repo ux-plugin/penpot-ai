@@ -251,6 +251,10 @@ export interface WasmModule {
   _store_image_from_texture(): void
   _is_image_cached(a: number, b: number, c: number, d: number, is_thumbnail: boolean): number
 
+  // Set transient "force layout-absolute" overrides from a heap list of 16-byte
+  // shape UUIDs (written via _alloc_bytes). Cleared by _clean_modifiers.
+  _set_absolute_modifiers(): void
+
   // Fonts
   _store_font(
     font_a: number,

@@ -12,6 +12,7 @@ import {
   Layers,
   Pencil,
   Square,
+  SquareDashedBottom,
   Type,
 } from 'lucide-react'
 
@@ -68,6 +69,8 @@ export function ShapeIcon({ type, className }: { type: string; className?: strin
       return <Hexagon className={className} />
     case 'group':
       return <Layers className={className} />
+    case 'slot':
+      return <SquareDashedBottom className={className} />
     case 'component':
     case 'instance':
       return <Component className={className} />

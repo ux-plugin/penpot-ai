@@ -20,6 +20,7 @@ import {
   MousePointer2,
   PenTool,
   Pencil,
+  SquareDashedBottom,
   Star,
   Triangle,
   Type,
@@ -47,6 +48,12 @@ const SHAPE_TOOLS: { tool: DrawTool; label: string; Icon: IconComponent }[] = [
   { tool: 'triangle', label: 'Triangle', Icon: Triangle },
   { tool: 'polygon', label: 'Polygon', Icon: Hexagon },
   { tool: 'star', label: 'Star', Icon: Star },
+]
+
+/** Frame family: a plain Frame and a Slot (SPA router outlet), sharing one menu. */
+const FRAME_TOOLS: { tool: DrawTool; label: string; Icon: IconComponent }[] = [
+  { tool: 'frame', label: 'Frame', Icon: IconFrame },
+  { tool: 'slot', label: 'Slot', Icon: SquareDashedBottom },
 ]
 
 /**
@@ -156,6 +163,9 @@ export function ShapeToolbar() {
   const [lastShapeTool, setLastShapeTool] = useState<DrawTool>('rect')
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false)
   const [penMenuOpen, setPenMenuOpen] = useState(false)
+  // The frame-family tool the face currently shows (Frame or Slot).
+  const [lastFrameTool, setLastFrameTool] = useState<DrawTool>('frame')
+  const [frameMenuOpen, setFrameMenuOpen] = useState(false)
 
   const onSelect = useCallback(() => {
     canvasActor.send({ type: 'DRAW_TOOL_DEACTIVATE' })
@@ -173,7 +183,6 @@ export function ShapeToolbar() {
     [canvasActor],
   )
 
-  const onFrame = useCallback(() => toggleDrawTool('frame'), [toggleDrawTool])
   const onText = useCallback(() => toggleDrawTool('text'), [toggleDrawTool])
   const onPen = useCallback(() => toggleDrawTool('pen'), [toggleDrawTool])
   const onAdd3D = useCallback(() => {
@@ -191,6 +200,16 @@ export function ShapeToolbar() {
       setLastShapeTool(tool)
       canvasActor.send({ type: 'DRAW_TOOL_ACTIVATE', tool })
       setShapeMenuOpen(false)
+    },
+    [canvasActor],
+  )
+
+  // Same as selectShape, for the Frame/Slot family menu.
+  const selectFrame = useCallback(
+    (tool: DrawTool) => {
+      setLastFrameTool(tool)
+      canvasActor.send({ type: 'DRAW_TOOL_ACTIVATE', tool })
+      setFrameMenuOpen(false)
     },
     [canvasActor],
   )
@@ -251,6 +270,11 @@ export function ShapeToolbar() {
   const FaceIcon = faceEntry.Icon
   const faceLabel = faceEntry.label.toLowerCase()
 
+  const frameActive = drawTool === lastFrameTool
+  const frameFaceEntry = FRAME_TOOLS.find((f) => f.tool === lastFrameTool) ?? FRAME_TOOLS[0]
+  const FrameFaceIcon = frameFaceEntry.Icon
+  const frameFaceLabel = frameFaceEntry.label.toLowerCase()
+
   return (
     <aside
       className="pointer-events-auto fixed bottom-6 left-1/2 z-60 flex -translate-x-1/2 flex-col items-center gap-2"
@@ -266,7 +290,35 @@ export function ShapeToolbar() {
       <Scene3DEditMenu />
       <ul className="flex list-none flex-row items-center gap-0.5 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md">
         {toolBtn(drawTool == null, onSelect, 'Select and move', <MousePointer2 className="size-5 shrink-0 stroke-[1.5]" />)}
-        {toolBtn(drawTool === 'frame', onFrame, 'Draw frame (F)', <IconFrame className="shrink-0" />)}
+
+        {/* Collapsible frame menu: the face activates the last-used frame tool
+            (Frame or Slot); the caret above it opens both. */}
+        <CollapsibleTool
+          FaceIcon={FrameFaceIcon}
+          facePressed={frameActive}
+          onFace={() => toggleDrawTool(lastFrameTool)}
+          faceTitle={`Draw ${frameFaceLabel}`}
+          flyoutTitle="Frame & slot"
+          open={frameMenuOpen && !editing}
+          onOpenChange={setFrameMenuOpen}
+          dim={editing}
+        >
+          {FRAME_TOOLS.map(({ tool, label, Icon }) => (
+            <button
+              key={tool}
+              type="button"
+              onClick={() => selectFrame(tool)}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted',
+                drawTool === tool && 'text-blue-700',
+              )}
+            >
+              <Icon className="size-4 shrink-0 stroke-[1.5]" />
+              <span className="flex-1 text-left">{label}</span>
+              {tool === lastFrameTool && <Check className="size-3.5 shrink-0" />}
+            </button>
+          ))}
+        </CollapsibleTool>
 
         {/* Collapsible shape menu: the face activates the last-used shape; the
             caret above it opens the list of all closed shapes. */}

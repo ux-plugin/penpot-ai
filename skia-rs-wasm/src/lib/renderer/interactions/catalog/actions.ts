@@ -11,6 +11,10 @@ export const PHASE0_ACTIONS: ActionCatalogEntry[] = [
   { key: 'navigate', label: 'Navigate to', platforms: ['web', 'native'], lowers: 'switch', expects: { target: 'screen' } },
   { key: 'open-overlay', label: 'Open overlay', platforms: ['web', 'native'], lowers: 'switch', expects: { target: 'overlay' } },
   { key: 'close-overlay', label: 'Close overlay', platforms: ['web', 'native'], lowers: 'switch', expects: { target: 'overlay' } },
+  // slot swap (SPA router outlet) -> switch. target = the slot node, value = the view id.
+  // Single designer-facing verb; routing (Outlet/Route, push/replace) is derived at
+  // lowering, never authored here. See common/slot-shape.ts + project_slots_spa_outlets.
+  { key: 'show-in-slot', label: 'Show here', platforms: ['web', 'native'], lowers: 'switch', expects: { target: 'slot', value: true } },
 
   // side effects -> effect
   { key: 'open-url', label: 'Open URL', platforms: ['web', 'native'], lowers: 'effect', expects: { value: true } },

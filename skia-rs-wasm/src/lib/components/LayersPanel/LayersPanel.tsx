@@ -22,7 +22,8 @@ import { ChevronDown, ChevronRight, FileText, Plus } from 'lucide-react'
 import { commitPageMetadataUpdate } from '../../renderer/properties/commit-page-properties'
 import { setActivePage, addPage } from '../../page-crud'
 import { commitChanges } from '../../renderer/store/commit'
-import { buildReparentChanges, resolveDropTarget, type DropSide } from './reparent'
+import { buildReparentChanges, resolveDropTarget, resolveSlotDrop, type DropSide } from './reparent'
+import { addViewsToSlot } from '../../renderer/slot/slot-edit'
 import { LayerRow, type DragOverState } from './layer-row'
 import { TokensSections } from '../TokensPanel/TokensPanel'
 
@@ -160,6 +161,12 @@ export function LayersPanel({ className }: LayersPanelProps) {
       const currentPage = docProxy.pageMap.get(activePageId)
       if (!currentPage) return
       const objects = currentPage.objects
+      // Dropping frames onto a slot assigns them as views (not a reparent).
+      const slotDrop = resolveSlotDrop({ targetId, side, draggedIds, objects })
+      if (slotDrop) {
+        await addViewsToSlot(slotDrop.slotId, slotDrop.viewIds)
+        return
+      }
       const resolved = resolveDropTarget({ targetId, side, draggedIds, objects })
       if (!resolved) return
       const { redoChanges, undoChanges } = buildReparentChanges({

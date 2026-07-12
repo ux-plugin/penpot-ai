@@ -203,6 +203,10 @@ const RawJustifySelf: Record<string, number> = {
  * Translates shape type to WASM enum
  */
 export function translateShapeType(type: ShapeType): number {
+  // A slot (SPA router outlet) renders as a frame — an empty clipped box until
+  // its active view is drawn into it (Phase C rendering). render-wasm has no
+  // 'slot' primitive, so map it to 'frame' here rather than falling back to rect.
+  if (type === 'slot') return RawShapeType.frame
   return RawShapeType[type] ?? RawShapeType.rect
 }
 

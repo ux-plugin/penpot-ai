@@ -18,6 +18,7 @@ import type {
   ComponentInstance,
   ComponentShape,
 } from 'penpot-exporter/types'
+import type { SlotShape, LocalNode } from '@skia-rs-wasm/common/slot-shape'
 import { pointsToRect, rectToCenter, joinRects } from './rect'
 import { ZERO_UUID } from '../types'
 
@@ -117,6 +118,15 @@ export function isComponentInstance(shape: PenpotNode | null | undefined): shape
 
 export function isComponentShape(shape: PenpotNode | null | undefined): shape is ComponentShape {
   return shape != null && shape.type === 'component'
+}
+
+/**
+ * Slot = a Build-mode router outlet (see common/slot-shape.ts). Param is widened to
+ * `LocalNode` because `'slot'` is not in the upstream `PenpotNode` union; passing a
+ * plain `PenpotNode` still narrows correctly.
+ */
+export function isSlotShape(shape: LocalNode | null | undefined): shape is SlotShape {
+  return shape != null && shape.type === 'slot'
 }
 
 export function hasShapes(node: PenpotNode): node is PenpotNode & { shapes: string[] } {

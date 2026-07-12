@@ -799,6 +799,37 @@ pub extern "C" fn set_structure_modifiers() -> Result<()> {
     Ok(())
 }
 
+/// Set the transient "force layout-absolute" overrides from a flat list of
+/// 16-byte shape UUIDs. While set, those shapes are treated as layout-absolute
+/// (skipped by their container's flex/grid flow) — used during a reparent drag
+/// so the dragged shape can be a child of a layout target for paint without the
+/// layout repositioning it. Cleared by `clean_modifiers`.
+#[no_mangle]
+#[wasm_error]
+pub extern "C" fn set_absolute_modifiers() -> Result<()> {
+    let bytes = mem::bytes();
+
+    let ids: Vec<Uuid> = bytes
+        .chunks(16)
+        .filter(|chunk| chunk.len() == 16)
+        .map(|chunk| {
+            uuid_from_u32_quartet(
+                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]),
+                u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]),
+                u32::from_le_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]),
+                u32::from_le_bytes([chunk[12], chunk[13], chunk[14], chunk[15]]),
+            )
+        })
+        .collect();
+
+    with_state_mut!(state, {
+        state.shapes.set_absolute(ids);
+    });
+
+    mem::free_bytes()?;
+    Ok(())
+}
+
 #[no_mangle]
 #[wasm_error]
 pub extern "C" fn clean_modifiers() -> Result<()> {

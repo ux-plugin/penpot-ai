@@ -4,6 +4,14 @@ export const GrowType = {
   "auto-height": 2,
 };
 
+export const TextEditorEvent = {
+  "none": 0,
+  "content-changed": 1,
+  "selection-changed": 2,
+  "styles-changed": 3,
+  "needs-layout": 4,
+};
+
 export const RawBlendMode = {
   "normal": 3,
   "screen": 14,

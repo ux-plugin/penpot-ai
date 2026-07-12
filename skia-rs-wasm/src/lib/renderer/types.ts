@@ -29,6 +29,8 @@ export type ShapeType =
   | 'circle'
   | 'svg-raw'
   | 'image'
+  /** Build-mode SPA router outlet; references view frames, owns no children. See common/slot-shape.ts. */
+  | 'slot'
 
 /** Boolean operation type (matches exporter BoolOperations string union) */
 export type BoolType = 'union' | 'difference' | 'intersection' | 'exclude'

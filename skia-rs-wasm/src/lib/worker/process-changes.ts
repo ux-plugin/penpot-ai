@@ -200,16 +200,14 @@ function processMovObjects(data: IndexedPage, change: MovObjectsChange): Indexed
       ? parent.id
       : (parent as IndexedShape).frameId ?? ZERO_UUID
 
-  const insertIndex =
-    afterShape != null
-      ? (parent.shapes?.indexOf(afterShape) ?? -1) + 1
-      : index
-
   const oldParentIds = new Map<string, string | undefined>()
   for (const shapeId of shapeIds) {
     oldParentIds.set(shapeId, objects[shapeId]?.parentId)
   }
 
+  // Detach from OLD parents (a reparent). A same-parent move is skipped here —
+  // the shape is stripped from the destination below instead, which is what makes
+  // an in-place reorder actually move.
   for (const shapeId of shapeIds) {
     const oldParentId = oldParentIds.get(shapeId)
     if (oldParentId && oldParentId !== parentId) {
@@ -222,13 +220,15 @@ function processMovObjects(data: IndexedPage, change: MovObjectsChange): Indexed
   }
 
   const currentParent = objects[parentId] ?? parent
-  const parentShapes = currentParent.shapes ?? []
-  let newParentShapes = [...parentShapes]
-  for (const shapeId of shapeIds) {
-    if (!newParentShapes.includes(shapeId)) {
-      newParentShapes = insertAtIndex(newParentShapes, insertIndex, [shapeId])
-    }
-  }
+  const movingSet = new Set(shapeIds)
+  // Strip the moving shapes from the destination FIRST, then re-insert at
+  // `insertIndex`. Without this a same-parent reorder was a no-op: the shape was
+  // still in the list, so the old `!includes` guard skipped the insert and the
+  // tree never followed. Insert is against the stripped list, so `insertIndex`
+  // (sibling-space, dragged excluded) lines up for both reorder and reparent.
+  const withoutMoving = (currentParent.shapes ?? []).filter((s: string) => !movingSet.has(s))
+  const insertIndex = afterShape != null ? withoutMoving.indexOf(afterShape) + 1 : index
+  const newParentShapes = insertAtIndex(withoutMoving, insertIndex, shapeIds)
   objects[parentId] = { ...currentParent, shapes: newParentShapes }
 
   for (const shapeId of shapeIds) {

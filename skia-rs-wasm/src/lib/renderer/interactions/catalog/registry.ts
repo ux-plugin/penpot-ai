@@ -37,7 +37,7 @@ export interface ActionCatalogEntry {
   lowers: ActionLowering
   /** What `Action.target` must address, and whether `Action.value` is required. */
   expects: {
-    target?: 'variable' | 'collection' | 'node.state' | 'screen' | 'overlay' | 'none'
+    target?: 'variable' | 'collection' | 'node.state' | 'screen' | 'overlay' | 'slot' | 'none'
     value?: boolean
   }
 }

@@ -14,14 +14,47 @@
 
 import type { Point } from 'penpot-exporter/types'
 import type { IndexedPage, IndexedShape } from '../../worker/types'
-import { findContainerAtPoint } from '../../components/LayersPanel/reparent'
+import { findContainerAtPoint, findSlotAtPoint } from '../../components/LayersPanel/reparent'
+import { isFrameShape } from '../../worker/geometry/shapes'
 import { rectToCenter } from '../../worker/geometry/rect'
 import { ZERO_UUID } from '@skia-rs-wasm/common/conversions'
+import { computeDropIndex, hasAnyLayout } from './drop-intent'
 
 /** Per-shape reparent intent. Only present when the new parent differs from the current one. */
 export interface PerShapeReparent {
   parentId: string
   index: number
+}
+
+/**
+ * Detect "drop a view frame onto a slot" intent at commit time.
+ *
+ * For each selected *frame* whose projected center lands on a slot, returns a
+ * `frameId -> slotId` entry. The caller assigns the frame as the slot's active
+ * view (a reference) and excludes it from the move/reparent commit — the frame
+ * snaps back to where it was; only `slot.activeView` changes. Non-frames and
+ * frames not over a slot are absent.
+ */
+export function detectSlotDropTargets(
+  selectedIds: ReadonlySet<string>,
+  page: IndexedPage,
+  delta: Point,
+): Map<string, string> {
+  const result = new Map<string, string>()
+  if (selectedIds.size === 0) return result
+  const objects = page.objects as Record<string, IndexedShape>
+  const excludeIds = Array.from(selectedIds)
+
+  for (const id of selectedIds) {
+    const shape = objects[id]
+    if (!isFrameShape(shape) || !shape.selrect) continue
+    const baseCenter = rectToCenter(shape.selrect)
+    if (!baseCenter) continue
+    const projected: Point = { x: baseCenter.x + delta.x, y: baseCenter.y + delta.y }
+    const slotId = findSlotAtPoint(objects, projected, excludeIds)
+    if (slotId) result.set(id, slotId)
+  }
+  return result
 }
 
 /** A single (parent, index, ids) target — used by the commit pipeline to build mov-objects. */
@@ -53,6 +86,13 @@ export function detectReparentTargets(
   selectedIds: ReadonlySet<string>,
   page: IndexedPage,
   delta: Point,
+  /**
+   * Point used to pick the insertion index within a flex container. Pass the
+   * cursor's world position (Figma-style) — otherwise the shape's own center is
+   * used, which for a shape larger than the container's children sits past all of
+   * them and always lands last.
+   */
+  indexPoint?: Point,
 ): Map<string, PerShapeReparent> {
   const result = new Map<string, PerShapeReparent>()
   if (selectedIds.size === 0) return result
@@ -65,15 +105,29 @@ export function detectReparentTargets(
     const baseCenter = rectToCenter(shape.selrect)
     if (!baseCenter) continue
     const projected: Point = { x: baseCenter.x + delta.x, y: baseCenter.y + delta.y }
-    const hit = findContainerAtPoint(objects, projected, excludeIds)
+    // Resolve the target container at the CURSOR (Figma-style), matching the
+    // drop-preview overlay so preview and commit agree on the same frame. Without
+    // this the container was picked at the shape's projected center — a different
+    // point than the cursor — which is what made the placeholder and the actual
+    // reparent disagree near borders. Falls back to the center when no cursor.
+    const hit = findContainerAtPoint(objects, indexPoint ?? projected, excludeIds)
     // When the projected center falls outside every container, escape to the
     // root frame (parentId == null sentinel) — matches the existing handler's
     // behavior at handlers/move.ts:189.
     const newParent = hit ?? (excludeIds.includes(ZERO_UUID) ? null : ZERO_UUID)
     if (!newParent) continue
-    if (newParent === shape.parentId) continue
     const parent = objects[newParent]
-    const index = parent?.shapes?.length ?? 0
+    // Same-parent drop is an in-place reorder — only meaningful when the parent
+    // has a layout (flex/grid). For a non-layout parent it's a free move, so skip.
+    const sameParent = newParent === shape.parentId
+    if (sameParent && !(parent && hasAnyLayout(parent))) continue
+    // Insert at the cursor position (matches the drop-preview) rather than always
+    // appending. computeDropIndex handles flex (row/col); non-layout and grid
+    // parents append. For a same-parent reorder, exclude the dragged shapes from
+    // the index math (they're lifted out of the flow during the drag).
+    const index = parent
+      ? computeDropIndex(parent, objects, indexPoint ?? projected, sameParent ? selectedIds : undefined)
+      : 0
     result.set(id, { parentId: newParent, index })
   }
   return result
@@ -239,6 +293,40 @@ export function buildLayoutDetachEntries(
       id,
       value: 0,
     })
+  }
+  return out
+}
+
+/**
+ * Build the per-frame "reparent preview" structure modifiers for a drag.
+ *
+ * For each dragged shape: `remove-children` from its real parent (so the source
+ * layout reflows without it) and `add-children` to the hovered **target** as its
+ * **topmost** child, so it paints above the target's own fill and its other
+ * children — i.e. above the parent it's being dropped into, without hoisting it
+ * over the rest of the canvas. These are transient modifiers — `get()` applies
+ * them to the paint traversal and `cleanModifiers` reverts them on release; the
+ * real reparent is committed at the computed index on drop. The dragged shapes
+ * are additionally marked layout-absolute (via `setAbsoluteModifiers`) so a
+ * flex/grid target skips them in its flow and they stay under the cursor via
+ * their translate modifier.
+ */
+export function buildReparentPreviewEntries(
+  selectedIds: ReadonlySet<string>,
+  page: IndexedPage,
+  targetId: string,
+): StructureModifierEntry[] {
+  const out: StructureModifierEntry[] = []
+  const objects = page.objects as Record<string, IndexedShape>
+  for (const id of selectedIds) {
+    const realParent = (objects[id] as { parentId?: string } | undefined)?.parentId
+    if (realParent && realParent !== targetId) {
+      out.push({ type: 'remove-children', parent: realParent, id, value: 0 })
+    }
+    // index 0 = topmost child: the SSA scheduler (emit_tree_in_z_order) paints
+    // the last-emitted child on top, and children_ids_iter emits self.children[0]
+    // last, so the front of the target's child list is the top of its z-order.
+    out.push({ type: 'add-children', parent: targetId, id, index: 0, value: 0 })
   }
   return out
 }

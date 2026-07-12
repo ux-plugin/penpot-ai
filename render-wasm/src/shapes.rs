@@ -527,6 +527,36 @@ impl Shape {
         }
     }
 
+    /// Force this shape's flex/grid layout-item to be (non-)absolute. Absolute
+    /// items are skipped by their container's layout (see `initialize_tracks`),
+    /// so they keep their own geometry instead of being placed in a track. Used
+    /// as a transient override during a reparent drag so the dragged shape can be
+    /// a child of a layout target (painted on top) without being laid out — it
+    /// stays under the cursor via its transform modifier. Creates a default
+    /// fixed-size layout-item when the shape has none.
+    pub fn set_layout_absolute(&mut self, value: bool) {
+        match &mut self.layout_item {
+            Some(item) => item.is_absolute = value,
+            None => {
+                self.layout_item = Some(LayoutItem {
+                    margin_top: 0.0,
+                    margin_right: 0.0,
+                    margin_bottom: 0.0,
+                    margin_left: 0.0,
+                    h_sizing: Sizing::Fix,
+                    v_sizing: Sizing::Fix,
+                    max_h: None,
+                    min_h: None,
+                    max_w: None,
+                    min_w: None,
+                    is_absolute: value,
+                    z_index: None,
+                    align_self: None,
+                });
+            }
+        }
+    }
+
     // FIXME: These arguments could be grouped or simplified
     #[allow(clippy::too_many_arguments)]
     pub fn set_flex_layout_data(
@@ -1533,12 +1563,18 @@ impl Shape {
         for st in structure {
             match st.entry_type {
                 StructureEntryType::AddChild => {
-                    if result.is_empty() {
-                        result.insert(st.id);
+                    // A child already present (reordering) can only reach index
+                    // len-1; a NEW child (reparented from elsewhere) can append at
+                    // index len. The old flat `len-1` clamp made appending
+                    // impossible, so dropping a reparented shape at the last slot
+                    // landed one position early (off-by-one vs the document).
+                    let max_index = if result.contains(&st.id) {
+                        result.len().saturating_sub(1)
                     } else {
-                        let index = usize::min(result.len() - 1, st.index as usize);
-                        result.shift_insert(index, st.id);
-                    }
+                        result.len()
+                    };
+                    let index = usize::min(max_index, st.index as usize);
+                    result.shift_insert(index, st.id);
                 }
                 StructureEntryType::RemoveChild => {
                     to_remove.insert(&st.id);
