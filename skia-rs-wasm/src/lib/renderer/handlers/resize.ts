@@ -53,6 +53,25 @@ function noZero(v: number, min: number): number {
   return v
 }
 
+/**
+ * Constrain per-axis resize scales.
+ * - `shift`: uniform scale = the larger magnitude (sign-preserving).
+ * - else: unchanged — a side handle (one mult is 0) resizes a single axis, a
+ *   corner resizes both. (3D scenes used to aspect-lock here; they now use the
+ *   window/crop camera model instead, so they resize per-side like any shape.)
+ */
+export function constrainResizeScale(
+  sx: number,
+  sy: number,
+  opts: { shift: boolean },
+): { sx: number; sy: number } {
+  if (opts.shift) {
+    const s = Math.max(Math.abs(sx), Math.abs(sy))
+    return { sx: sx < 0 ? -s : s, sy: sy < 0 ? -s : s }
+  }
+  return { sx, sy }
+}
+
 export function startResizeSelected(
   initialPosition: Point,
   handle: ResizeHandlePosition
@@ -144,16 +163,12 @@ export function startResizeSelected(
     map((deltaWorld) => {
       const dLocalX = Tinv.a * deltaWorld.x + Tinv.c * deltaWorld.y
       const dLocalY = Tinv.b * deltaWorld.x + Tinv.d * deltaWorld.y
-      let sx = noZero((localW + dLocalX * mult.x) / localW, 0.001)
-      let sy = noZero((localH + dLocalY * mult.y) / localH, 0.001)
+      const rawSx = noZero((localW + dLocalX * mult.x) / localW, 0.001)
+      const rawSy = noZero((localH + dLocalY * mult.y) / localH, 0.001)
 
-      const keys = getModifierKeys()
-      const lock = keys.shift
-      if (lock) {
-        const s = Math.max(Math.abs(sx), Math.abs(sy))
-        sx = sx < 0 ? -s : s
-        sy = sy < 0 ? -s : s
-      }
+      let { sx, sy } = constrainResizeScale(rawSx, rawSy, {
+        shift: getModifierKeys().shift,
+      })
       const minScale = MIN_SIZE / Math.min(localW, localH)
       if (Math.abs(sx) < minScale) sx = sx < 0 ? -minScale : minScale
       if (Math.abs(sy) < minScale) sy = sy < 0 ? -minScale : minScale

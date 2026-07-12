@@ -4,6 +4,9 @@ import { canvasMachine } from '@/lib/renderer/machine/canvas-machine'
 import { buildKeyBindings, dispatchKey } from '@/lib/renderer/input/key-bindings'
 import type { CommandCtx } from '@/lib/renderer/input/commands'
 import { DEFAULT_SHORTCUTS } from '@/lib/renderer/store/shortcuts-store'
+import { setFocusedObject, scene3dProxy } from '@/lib/renderer/three/scene3d-store'
+import { editPlacement } from '@/lib/renderer/three/scene3d-focus'
+import { recentEdits } from '@/lib/renderer/three/edit-history'
 
 function ctxFor(actor: ReturnType<typeof createActor<typeof canvasMachine>>): CommandCtx {
   return {
@@ -78,6 +81,18 @@ describe('dispatchKey', () => {
     const a = createActor(canvasMachine).start()
     expect(dispatchKey(key('KeyZ'), bindings, ctxFor(a))).toBe(false)
   })
+
+  it('Backspace/Delete delete the selection in idle, but not while typing or path editing', () => {
+    const a = createActor(canvasMachine).start()
+    expect(dispatchKey(key('Backspace'), bindings, ctxFor(a))).toBe(true)
+    expect(dispatchKey(key('Delete'), bindings, ctxFor(a))).toBe(true)
+    // typing in an input / contentEditable → skipped (notInInput)
+    const typing = { closest: (sel: string) => (sel.includes('input') || sel.includes('contenteditable') ? {} : null) }
+    expect(dispatchKey(key('Backspace', { target: typing }), bindings, ctxFor(a))).toBe(false)
+    // path editing → central dispatch defers to the path overlay's own handler
+    a.send({ type: 'START_PATH_EDIT', shapeId: 's1' })
+    expect(dispatchKey(key('Backspace'), bindings, ctxFor(a))).toBe(false)
+  })
 })
 
 describe('rebindable tool keys (config-driven)', () => {
@@ -89,5 +104,88 @@ describe('rebindable tool keys (config-driven)', () => {
     // …the rebound one does.
     expect(dispatchKey(key('KeyQ'), custom, ctxFor(a))).toBe(true)
     expect(a.getSnapshot().context.drawTool).toBe('pen')
+  })
+})
+
+describe('scene3d edit bindings', () => {
+  it('KeyG/KeyR/KeyS switch the gizmo only while editing a 3D scene', () => {
+    const a = createActor(canvasMachine).start()
+    // Not editing: a gizmo-only key (G) is unhandled.
+    expect(dispatchKey(key('KeyG'), bindings, ctxFor(a))).toBe(false)
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('KeyG'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('translate')
+    expect(dispatchKey(key('KeyR'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('rotate')
+    expect(dispatchKey(key('KeyS'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('scale')
+  })
+
+  it('KeyR is Rectangle in select mode but Rotate while editing a 3D scene', () => {
+    const a = createActor(canvasMachine).start()
+    // Select mode: R toggles the rectangle tool.
+    expect(dispatchKey(key('KeyR'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.drawTool).toBe('rect')
+    // Drop the tool, enter 3D edit: the SAME key now rotates, not draws.
+    a.send({ type: 'DRAW_TOOL_DEACTIVATE' })
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('KeyR'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('rotate')
+    expect(a.getSnapshot().context.drawTool).toBeNull()
+  })
+
+  it('Escape exits 3D-scene editing', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(true)
+    dispatchKey(key('Escape'), bindings, ctxFor(a))
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+  })
+
+  it('Backspace deletes the focused object while editing a 3D scene (clears focus)', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    setFocusedObject('cube-1')
+    expect(dispatchKey(key('Backspace'), bindings, ctxFor(a))).toBe(true)
+    expect(scene3dProxy.focusedObjectId).toBeNull()
+  })
+
+  it('KeyF frames/resets the view while editing, but is the Frame tool otherwise', () => {
+    const a = createActor(canvasMachine).start()
+    // Select mode: F arms the frame tool.
+    expect(dispatchKey(key('KeyF'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.drawTool).toBe('frame')
+    // Editing: F is consumed by the frame-view command and does NOT arm the tool.
+    a.send({ type: 'DRAW_TOOL_DEACTIVATE' })
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('KeyF'), bindings, ctxFor(a))).toBe(true)
+    expect(a.getSnapshot().context.drawTool).toBeNull()
+  })
+
+  it('Home recenters the scene only while editing a 3D scene', () => {
+    const a = createActor(canvasMachine).start()
+    // Not editing: Home is unhandled.
+    expect(dispatchKey(key('Home'), bindings, ctxFor(a))).toBe(false)
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('Home'), bindings, ctxFor(a))).toBe(true)
+  })
+
+  it('KeyM toggles focus only while editing a 3D scene', () => {
+    editPlacement.value = 'in-place'
+    const a = createActor(canvasMachine).start()
+    expect(dispatchKey(key('KeyM'), bindings, ctxFor(a))).toBe(false) // not editing
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('KeyM'), bindings, ctxFor(a))).toBe(true)
+    expect(editPlacement.value).toBe('focus')
+    editPlacement.value = 'in-place' // restore shared signal for other tests
+  })
+
+  it('Tab cycles recent edits only while editing a 3D scene', () => {
+    recentEdits.value = [{ kind: 'scene3d', targetId: 's2', name: 's2' }]
+    const a = createActor(canvasMachine).start()
+    expect(dispatchKey(key('Tab'), bindings, ctxFor(a))).toBe(false) // not editing
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(dispatchKey(key('Tab'), bindings, ctxFor(a))).toBe(true)
+    recentEdits.value = []
   })
 })

@@ -29,6 +29,7 @@ import {
 import { rendererSyncHandler, syncRendererAfterUpdate } from './renderer-sync'
 import { selectionSyncHandler } from './selection-sync'
 import { workerSyncHandler } from '../../worker/worker-sync'
+import { scene3dSyncHandler } from '../three/scene3d-sync'
 import { recordHistoryFrame } from '../../history/history-sync'
 
 // Subscriber registration — explicit, ordered, single source of truth.
@@ -40,6 +41,11 @@ import { recordHistoryFrame } from '../../history/history-sync'
 onChangesApplied(rendererSyncHandler)
 onChangesApplied(selectionSyncHandler)
 onChangesApplied(workerSyncHandler)
+// scene3d-sync reconciles the in-memory 3D read-cache (scene3dProxy) from
+// `node.scene3d` after every commit, incl. undo/redo. It only reads the already
+// updated page + mutates the proxy (no new changes), so order vs the others is
+// immaterial; placed last among the document subscribers.
+onChangesApplied(scene3dSyncHandler)
 
 function toPlainPage(page: IndexedPage): IndexedPage {
   try {

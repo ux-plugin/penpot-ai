@@ -10,6 +10,7 @@
 import { useCallback, useState, type ComponentType, type ReactNode } from 'react'
 import { useSelector } from '@xstate/react'
 import {
+  Box,
   Check,
   ChevronUp,
   Circle,
@@ -26,10 +27,14 @@ import {
 import { Popover as PopoverPrimitive } from 'radix-ui'
 import { useCanvasActor } from '../renderer/machine/canvas-actor-context'
 import type { DrawTool } from '../renderer/machine/canvas-machine'
+import { create3DScene } from '../renderer/three/create-3d-scene'
+import { setFocusedObject } from '../renderer/three/scene3d-store'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { IconFrame, IconRect } from './shape-icons'
 import { PenEditFlyout } from './PenEditFlyout'
+import { Scene3DEditMenu } from './Scene3DEditMenu'
+import { EditResumeChip } from './EditResumeChip'
 
 const placeholderTitle = 'Coming soon'
 
@@ -144,6 +149,9 @@ export function ShapeToolbar() {
   // While a path node is being edited the strip collapses to a single context:
   // every tool but the Pen greys out, and the Pen grows its liquid-glass submenu.
   const editing = useSelector(canvasActor, (s) => s.matches('pathEditing'))
+  // 3D-scene edit mode collapses the strip the same way: tools recede and the
+  // contextual 3D menu sits above the pill (Scene3DEditMenu).
+  const scene3dEditing = useSelector(canvasActor, (s) => s.matches('scene3dEditing'))
   // The shape the menu face currently shows (the last shape the user picked).
   const [lastShapeTool, setLastShapeTool] = useState<DrawTool>('rect')
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false)
@@ -168,6 +176,13 @@ export function ShapeToolbar() {
   const onFrame = useCallback(() => toggleDrawTool('frame'), [toggleDrawTool])
   const onText = useCallback(() => toggleDrawTool('text'), [toggleDrawTool])
   const onPen = useCallback(() => toggleDrawTool('pen'), [toggleDrawTool])
+  const onAdd3D = useCallback(() => {
+    void create3DScene().then((id) => {
+      if (!id) return
+      canvasActor.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: id })
+      setFocusedObject(null)
+    })
+  }, [canvasActor])
 
   // Pick a shape from the menu: always activate it (not toggle), remember it as
   // the menu face, and close the popover.
@@ -185,9 +200,9 @@ export function ShapeToolbar() {
     setPenMenuOpen(false)
   }, [canvasActor])
 
-  // While editing a path, every tool but the Pen recedes (greyed + inert) so the
-  // single active context is unmistakable.
-  const dimEdit = editing && 'pointer-events-none opacity-40 grayscale'
+  // While editing a path (or a 3D scene), every other tool recedes (greyed +
+  // inert) so the single active context is unmistakable.
+  const dimEdit = (editing || scene3dEditing) && 'pointer-events-none opacity-40 grayscale'
 
   const toolBtn = (
     pressed: boolean,
@@ -238,9 +253,17 @@ export function ShapeToolbar() {
 
   return (
     <aside
-      className="pointer-events-auto fixed bottom-6 left-1/2 z-60 -translate-x-1/2"
+      className="pointer-events-auto fixed bottom-6 left-1/2 z-60 flex -translate-x-1/2 flex-col items-center gap-2"
       aria-label="Shape tools"
     >
+      {/* Transient "resume last edit" — floated to the right of the pill (absolute, so
+          the main toolbar stays centred), aligned with the bottom tool row. */}
+      <div className="absolute bottom-0 left-full ml-3 flex items-center">
+        <EditResumeChip />
+      </div>
+
+      {/* Contextual 3D menu, above the strip — like the pen's edit flyout. */}
+      <Scene3DEditMenu />
       <ul className="flex list-none flex-row items-center gap-0.5 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md">
         {toolBtn(drawTool == null, onSelect, 'Select and move', <MousePointer2 className="size-5 shrink-0 stroke-[1.5]" />)}
         {toolBtn(drawTool === 'frame', onFrame, 'Draw frame (F)', <IconFrame className="shrink-0" />)}
@@ -316,6 +339,7 @@ export function ShapeToolbar() {
           'Draw text (T)',
           <Type className="size-5 shrink-0 stroke-[1.5]" />,
         )}
+        {toolBtn(false, onAdd3D, 'Add 3D scene', <Box className="size-5 shrink-0 stroke-[1.5]" />)}
         {disabledTool('Image', Image)}
         {disabledTool('Comment', MessageCircle)}
       </ul>

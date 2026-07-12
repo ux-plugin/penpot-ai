@@ -35,6 +35,13 @@ export const DEFAULT_SHORTCUTS: ShortcutsConfig = {
   pathMoveKey: 'KeyM',
   pathAddKey: 'KeyA',
   pathBendKey: 'KeyB',
+  scene3dMoveKey: 'KeyG',
+  scene3dRotateKey: 'KeyR',
+  scene3dScaleKey: 'KeyS',
+  scene3dFrameKey: 'KeyF',
+  scene3dRecenterKey: 'Home',
+  scene3dFocusKey: 'KeyM',
+  scene3dCycleKey: 'Tab',
   wheelZoomEnabled: true,
   wheelScalePerPixel: 0.002,
 }

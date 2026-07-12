@@ -615,6 +615,18 @@ function hasVisibleBackgroundEffect(shape: PenpotNode): boolean {
   return false
 }
 
+/**
+ * True when the shape backs an embedded 3D scene (carries a `scene3d` document).
+ * The scene's container rect has a transparent fill — the three.js overlay paints
+ * the scene over it — but it is a SOLID interactive surface, not a hollow stroked
+ * box. So it must be interior-hittable on a click, not treated as stroke-only
+ * (which would let clicks fall through its middle). `scene3d` is an app-level field
+ * not in `PenpotNode`, so read it structurally.
+ */
+function isScene3dFrame(shape: PenpotNode): boolean {
+  return (shape as { scene3d?: unknown }).scene3d != null
+}
+
 export function overlaps(shape: PenpotNode, rect: Selrect, usingSelrect: boolean = false): boolean {
   if (!shape) {
     return false
@@ -640,7 +652,8 @@ export function overlaps(shape: PenpotNode, rect: Selrect, usingSelrect: boolean
     (!shape.fills || shape.fills.length === 0) &&
     !svgAttrs?.fill &&
     !svgAttrs?.style?.fill &&
-    !hasVisibleBackgroundEffect(shape)
+    !hasVisibleBackgroundEffect(shape) &&
+    !isScene3dFrame(shape)
   ) {
     const shapeTypeInner = shape.type
 

@@ -16,7 +16,8 @@ import { Undo2, Redo2, FilePlus2, Settings, Frame, Blocks, Minus, Plus } from 'l
 import type { LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { createNewDocument, setDocument, undo, redo } from '../page-crud'
+import { undo, redo } from '../page-crud'
+import { resetToNewDocument } from '../persistence'
 import { editorMode, setEditorMode, type EditorMode } from '../renderer/signals/editor-mode'
 import { viewport } from '../renderer/signals/pointer'
 import { zoomInAtCenter, zoomOutAtCenter, setZoomLevel } from '../renderer/viewport-zoom'
@@ -131,7 +132,9 @@ export function TopBar({ onOpenSettings }: { onOpenSettings: () => void }) {
           title="New document"
           onClick={() => {
             if (window.confirm('Start a new document? The current one will be discarded.')) {
-              void setDocument(createNewDocument())
+              // Also clears any persisted document — the escape hatch from a
+              // stale/corrupt saved state.
+              void resetToNewDocument()
             }
           }}
         >

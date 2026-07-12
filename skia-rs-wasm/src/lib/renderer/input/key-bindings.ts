@@ -32,6 +32,7 @@ export interface KeyBinding {
 
 const hasDrawTool = (s: Snapshot) => s.context.drawTool != null
 const inPathEditing = (s: Snapshot) => s.matches('pathEditing')
+const inScene3dEditing = (s: Snapshot) => s.matches('scene3dEditing')
 
 export type ToolKeyField =
   | 'selectKey'
@@ -42,15 +43,24 @@ export type ToolKeyField =
   | 'pathMoveKey'
   | 'pathAddKey'
   | 'pathBendKey'
+  | 'scene3dMoveKey'
+  | 'scene3dRotateKey'
+  | 'scene3dScaleKey'
+  | 'scene3dFrameKey'
+  | 'scene3dRecenterKey'
+  | 'scene3dFocusKey'
+  | 'scene3dCycleKey'
 
 export interface ToolBindingDesc {
   /** ShortcutsConfig field holding this binding's key code. */
   field: ToolKeyField
   command: Command
   label: string
-  category: 'Tools' | 'Path editing'
+  category: 'Tools' | 'Path editing' | '3D editing'
   /** Only active while editing a path. */
   pathOnly?: boolean
+  /** Only active while editing a 3D scene. */
+  scene3dOnly?: boolean
 }
 
 /** The rebindable tool / sub-tool keys — the single source for both the binding
@@ -64,26 +74,48 @@ export const TOOL_BINDINGS: ToolBindingDesc[] = [
   { field: 'pathMoveKey', command: { type: 'PATH_SUBTOOL', sub: 'move' }, label: 'Move points', category: 'Path editing', pathOnly: true },
   { field: 'pathAddKey', command: { type: 'PATH_SUBTOOL', sub: 'add' }, label: 'Add points', category: 'Path editing', pathOnly: true },
   { field: 'pathBendKey', command: { type: 'PATH_SUBTOOL', sub: 'bend' }, label: 'Bend points', category: 'Path editing', pathOnly: true },
+  { field: 'scene3dMoveKey', command: { type: 'SCENE3D_GIZMO', mode: 'translate' }, label: 'Move gizmo', category: '3D editing', scene3dOnly: true },
+  { field: 'scene3dRotateKey', command: { type: 'SCENE3D_GIZMO', mode: 'rotate' }, label: 'Rotate gizmo', category: '3D editing', scene3dOnly: true },
+  { field: 'scene3dScaleKey', command: { type: 'SCENE3D_GIZMO', mode: 'scale' }, label: 'Scale gizmo', category: '3D editing', scene3dOnly: true },
+  { field: 'scene3dFrameKey', command: { type: 'SCENE3D_FRAME_VIEW' }, label: 'Frame / reset view', category: '3D editing', scene3dOnly: true },
+  { field: 'scene3dRecenterKey', command: { type: 'SCENE3D_RECENTER' }, label: 'Recenter scene', category: '3D editing', scene3dOnly: true },
+  { field: 'scene3dFocusKey', command: { type: 'SCENE3D_TOGGLE_FOCUS' }, label: 'Focus (maximize)', category: '3D editing', scene3dOnly: true },
+  { field: 'scene3dCycleKey', command: { type: 'SCENE3D_EDIT_CYCLE', dir: 1 }, label: 'Cycle recent edits', category: '3D editing', scene3dOnly: true },
 ]
 
 /** Build the binding list for the active shortcut config. The tool / sub-tool
  *  letters come from TOOL_BINDINGS (rebindable via ShortcutsConfig); pan/zoom keys
  *  from the config directly; Esc/Enter stay fixed. */
 export function buildKeyBindings(s: ShortcutsConfig): KeyBinding[] {
+  const toolRow = (tb: ToolBindingDesc): KeyBinding => ({
+    codes: [s[tb.field]],
+    bareOnly: true,
+    notInInput: true,
+    ...(tb.pathOnly ? { when: inPathEditing } : tb.scene3dOnly ? { when: inScene3dEditing } : {}),
+    command: tb.command,
+  })
+  // Mode-guarded sub-tool letters (path / 3D) are emitted BEFORE the plain tool
+  // letters so a key reused across modes (e.g. R = Rotate gizmo while editing a 3D
+  // scene, Rectangle otherwise) resolves to the mode-specific binding first; outside
+  // that mode its guard fails and the plain tool binding wins.
+  const guardedTools = TOOL_BINDINGS.filter((tb) => tb.pathOnly || tb.scene3dOnly)
+  const plainTools = TOOL_BINDINGS.filter((tb) => !tb.pathOnly && !tb.scene3dOnly)
   return [
     // Esc cancels an armed draw tool first (matches prior handler order), then
-    // Esc/Enter finishes a path edit.
+    // Esc/Enter finishes a path edit, then Esc leaves 3D-scene editing.
     { codes: ['Escape'], when: hasDrawTool, command: { type: 'DRAW_CANCEL' } },
     { codes: ['Escape', 'Enter', 'NumpadEnter'], when: inPathEditing, command: { type: 'PATH_FINISH' } },
+    { codes: ['Escape'], when: inScene3dEditing, command: { type: 'SCENE3D_EXIT' } },
 
-    // Tool + path sub-tool letters, from the rebindable config (see TOOL_BINDINGS).
-    ...TOOL_BINDINGS.map((tb): KeyBinding => ({
-      codes: [s[tb.field]],
-      bareOnly: true,
-      notInInput: true,
-      ...(tb.pathOnly ? { when: inPathEditing } : {}),
-      command: tb.command,
-    })),
+    // Delete / Backspace: remove the focused object while editing a 3D scene; otherwise
+    // remove the current selection (idle). Path/text editing handle their own deletion,
+    // and `notInInput` skips typing.
+    { codes: ['Backspace', 'Delete'], notInInput: true, when: inScene3dEditing, command: { type: 'SCENE3D_DELETE' } },
+    { codes: ['Backspace', 'Delete'], notInInput: true, when: (s) => s.matches('idle'), command: { type: 'DELETE_SELECTION' } },
+
+    // Tool + sub-tool letters, from the rebindable config (see TOOL_BINDINGS).
+    ...guardedTools.map(toolRow),
+    ...plainTools.map(toolRow),
 
     // Viewport pan / zoom / reset (rebindable via ShortcutsConfig).
     { codes: [s.panLeft], command: { type: 'PAN', dx: 1, dy: 0 } },

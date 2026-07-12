@@ -15,6 +15,7 @@ import { enrichPageWithPositionData } from './enrich-position-data'
 import { setSelectedIds } from './document-selection'
 import { docProxy, getActiveOrSinglePageId, type DocumentMeta } from './doc-proxy'
 import { emptyTokensLib } from '../../tokens/types'
+import { hydrateScene3dFromDocument } from '../three/scene3d-sync'
 
 function buildPageMap(children: PenpotDocument['children']): Map<string, IndexedPage> {
   const map = new Map<string, IndexedPage>()
@@ -85,6 +86,10 @@ export class DocumentModel {
     const firstPageId =
       children?.[0]?.id ?? (docProxy.pageMap.size ? docProxy.pageMap.keys().next().value ?? null : null)
     docProxy.currentPageId = firstPageId
+
+    // Rebuild the 3D read-cache from `node.scene3d` on the freshly loaded pages
+    // (disposes any prior instances). No-op for a blank document.
+    hydrateScene3dFromDocument()
 
     const state = useWorkspaceStore.getState()
     setSelectedIds(new Set())

@@ -4,12 +4,15 @@
  * the active tab so the user never sees "Design" while looking at the Tokens pane.
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { Fragment, useCallback, useMemo, useState } from 'react'
 import type { IndexedPage, IndexedShape } from '../../worker/types'
 import type { PenpotNode, PenpotPage } from 'penpot-exporter/types'
 import { useSnapshot } from 'valtio'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { setSelectedIds } from '../../renderer/store/document-selection'
+import { scene3dProxy } from '../../renderer/three/scene3d-store'
+import { useScene3dEditing } from '../../renderer/three/use-scene3d-editing'
+import { Scene3DObjectRow } from './Scene3DObjectRow'
 import { orderedNodesWithDepth } from '../../renderer/store/ordered-page-nodes'
 import { FloatingEditorRail } from '../EditorShell/floating-editor-rail'
 import { cn } from '@/lib/utils'
@@ -43,6 +46,8 @@ export interface LayersPanelProps {
 
 export function LayersPanel({ className }: LayersPanelProps) {
   const doc = useSnapshot(docProxy)
+  const sceneSnap = useSnapshot(scene3dProxy)
+  const { editingSceneId, enter } = useScene3dEditing()
   const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
 
   const [collapsed, setCollapsed] = useState(false)
@@ -390,22 +395,40 @@ export function LayersPanel({ className }: LayersPanelProps) {
                     <ul className="list-none space-y-0.5 p-0">
                       {shapeLayers.map(({ node, depth }) => {
                         const active = selectedIds.has(node.id)
+                        // A 3D scene reveals its objects nested beneath it; clicking
+                        // one selects the scene and enters edit mode focused on it.
+                        const sceneDoc = sceneSnap.scenes.get(node.id)
                         return (
-                          <li key={node.id}>
-                            <LayerRow
-                              node={node}
-                              depth={depth}
-                              active={active}
-                              selectedIds={selectedIds}
-                              objects={page.objects as Record<string, IndexedShape>}
-                              dragOver={dragOver}
-                              onSelect={onLayerRowClick}
-                              onDragStart={onLayerDragStart}
-                              onDragOver={setDragOver}
-                              onDragEnd={onLayerDragEnd}
-                              onDrop={onLayerDrop}
-                            />
-                          </li>
+                          <Fragment key={node.id}>
+                            <li>
+                              <LayerRow
+                                node={node}
+                                depth={depth}
+                                active={active}
+                                selectedIds={selectedIds}
+                                objects={page.objects as Record<string, IndexedShape>}
+                                dragOver={dragOver}
+                                onSelect={onLayerRowClick}
+                                onDragStart={onLayerDragStart}
+                                onDragOver={setDragOver}
+                                onDragEnd={onLayerDragEnd}
+                                onDrop={onLayerDrop}
+                              />
+                            </li>
+                            {sceneDoc?.objects.map((o) => (
+                              <li key={o.id}>
+                                <Scene3DObjectRow
+                                  name={o.name}
+                                  depth={depth + 1}
+                                  focused={editingSceneId === node.id && sceneSnap.focusedObjectId === o.id}
+                                  onClick={() => {
+                                    setSelectedIds(new Set([node.id]))
+                                    enter(node.id, o.id)
+                                  }}
+                                />
+                              </li>
+                            ))}
+                          </Fragment>
                         )
                       })}
                     </ul>

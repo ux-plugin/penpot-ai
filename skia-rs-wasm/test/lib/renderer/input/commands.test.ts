@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { createActor } from 'xstate'
 import { canvasMachine } from '@/lib/renderer/machine/canvas-machine'
 import { runCommand, type CommandCtx } from '@/lib/renderer/input/commands'
 import { DEFAULT_SHORTCUTS } from '@/lib/renderer/store/shortcuts-store'
+import { sceneFrameViewRequest, setFocusedObject, scene3dProxy } from '@/lib/renderer/three/scene3d-store'
+import { editPlacement } from '@/lib/renderer/three/scene3d-focus'
+import { recentEdits } from '@/lib/renderer/three/edit-history'
 
 /** A ctx whose viewport ops are no-ops (renderer null) — enough for tool/path commands. */
 function ctxFor(actor: ReturnType<typeof createActor<typeof canvasMachine>>): CommandCtx {
@@ -17,6 +20,13 @@ function ctxFor(actor: ReturnType<typeof createActor<typeof canvasMachine>>): Co
 }
 
 describe('runCommand', () => {
+  // Focus placement is a module signal shared across tests — reset so SCENE3D_EXIT's
+  // "pop focus first" branch doesn't bleed between cases.
+  beforeEach(() => {
+    editPlacement.value = 'in-place'
+    recentEdits.value = []
+  })
+
   it('TOOL_TOGGLE activates an inactive tool, then deactivates the active one', () => {
     const a = createActor(canvasMachine).start()
     const ctx = ctxFor(a)
@@ -62,5 +72,74 @@ describe('runCommand', () => {
       runCommand({ type: 'ZOOM_IN' }, ctx)
       runCommand({ type: 'ZOOM_RESET' }, ctx)
     }).not.toThrow()
+  })
+
+  it('SCENE3D_GIZMO switches the gizmo sub-tool', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    runCommand({ type: 'SCENE3D_GIZMO', mode: 'scale' }, ctxFor(a))
+    expect(a.getSnapshot().context.scene3dGizmoMode).toBe('scale')
+  })
+
+  it('SCENE3D_EXIT and TOOL_SELECT both leave 3D-scene editing', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    runCommand({ type: 'SCENE3D_EXIT' }, ctxFor(a))
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's2' })
+    runCommand({ type: 'TOOL_SELECT' }, ctxFor(a))
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+  })
+
+  it('SCENE3D_FRAME_VIEW bumps the frame-view request signal', () => {
+    const before = sceneFrameViewRequest.value
+    runCommand({ type: 'SCENE3D_FRAME_VIEW' }, ctxFor(createActor(canvasMachine).start()))
+    expect(sceneFrameViewRequest.value).toBe(before + 1)
+  })
+
+  it('DELETE_SELECTION is a safe no-op with no active page', () => {
+    const a = createActor(canvasMachine).start()
+    expect(() => runCommand({ type: 'DELETE_SELECTION' }, ctxFor(a))).not.toThrow()
+  })
+
+  it('SCENE3D_DELETE clears the focused object (safe no-op without a doc)', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    setFocusedObject('cube-1')
+    expect(() => runCommand({ type: 'SCENE3D_DELETE' }, ctxFor(a))).not.toThrow()
+    expect(scene3dProxy.focusedObjectId).toBeNull()
+  })
+
+  it('SCENE3D_RECENTER is a safe no-op without a renderer/canvas', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    expect(() => runCommand({ type: 'SCENE3D_RECENTER' }, ctxFor(a))).not.toThrow()
+  })
+
+  it('SCENE3D_TOGGLE_FOCUS flips the edit placement', () => {
+    const a = createActor(canvasMachine).start()
+    runCommand({ type: 'SCENE3D_TOGGLE_FOCUS' }, ctxFor(a))
+    expect(editPlacement.value).toBe('focus')
+    runCommand({ type: 'SCENE3D_TOGGLE_FOCUS' }, ctxFor(a))
+    expect(editPlacement.value).toBe('in-place')
+  })
+
+  it('SCENE3D_EXIT pops focus first, then leaves editing on the next press', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    editPlacement.value = 'focus'
+    runCommand({ type: 'SCENE3D_EXIT' }, ctxFor(a))
+    expect(editPlacement.value).toBe('in-place')
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(true) // still editing
+    runCommand({ type: 'SCENE3D_EXIT' }, ctxFor(a))
+    expect(a.getSnapshot().matches('scene3dEditing')).toBe(false)
+  })
+
+  it('SCENE3D_EDIT_CYCLE enters the next recent edit', () => {
+    recentEdits.value = [{ kind: 'scene3d', targetId: 's2', name: 's2' }]
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 's1' })
+    runCommand({ type: 'SCENE3D_EDIT_CYCLE', dir: 1 }, ctxFor(a))
+    expect(a.getSnapshot().context.scene3dEditingId).toBe('s2')
   })
 })

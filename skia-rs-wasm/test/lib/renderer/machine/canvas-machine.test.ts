@@ -92,3 +92,34 @@ describe('canvas-machine — pathEditing (Phase B: sub-tool in context, flat act
     expect(s.context.pathSubTool).toBe('move')
   })
 })
+
+describe('canvas-machine — scene3dEditing (exit + empty-canvas)', () => {
+  it('SCENE3D_EDIT_ENTER enters scene3dEditing on the Move gizmo', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 'scn' })
+    const s = a.getSnapshot()
+    expect(s.matches('scene3dEditing')).toBe(true)
+    expect(s.context.scene3dEditingId).toBe('scn')
+    expect(s.context.scene3dGizmoMode).toBe('translate')
+  })
+
+  it('SCENE3D_EDIT_EXIT returns to idle and clears the edited scene', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 'scn' })
+    a.send({ type: 'SCENE3D_EDIT_EXIT' })
+    const s = a.getSnapshot()
+    expect(s.matches('scene3dEditing')).toBe(false)
+    expect(s.context.scene3dEditingId).toBeNull()
+  })
+
+  it('a mousedown on empty canvas leaves 3D-edit (routes into the normal marquee/deselect)', () => {
+    const a = createActor(canvasMachine).start()
+    a.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: 'scn' })
+    a.send({ type: 'POINTER_DOWN_ON_CANVAS', append: false, remove: false })
+    const s = a.getSnapshot()
+    // The transition targets `marqueeSelect`; its invoked selectActor settles back to
+    // idle in the test harness. What matters: 3D-edit is left and the id is cleared.
+    expect(s.matches('scene3dEditing')).toBe(false)
+    expect(s.context.scene3dEditingId).toBeNull()
+  })
+})

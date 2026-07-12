@@ -26,6 +26,9 @@ export type DrawTool =
 /** Vector-edit sub-tool (Move / Add points / Bend), held while in `pathEditing`. */
 export type PathSubTool = 'move' | 'add' | 'bend'
 
+/** Gizmo sub-tool (translate / rotate / scale), held while in `scene3dEditing`. */
+export type Scene3DGizmoMode = 'translate' | 'rotate' | 'scale'
+
 export interface CanvasContext {
   resizeHandle: ResizeHandlePosition | null
   rotationCorner: ResizeHandlePosition | null
@@ -44,6 +47,11 @@ export interface CanvasContext {
   /** The active vector-edit sub-tool. Replaces the old `selecting`/`pen`/`bending`
    *  sub-states, so the activity tree (idle/dragging/placing) isn't triplicated. */
   pathSubTool: PathSubTool
+  /** Scene currently in 3D-edit mode (the `scene3dEditing` mode), or null. The
+   *  focused object within it lives in scene3dProxy (overlay/inspector concern). */
+  scene3dEditingId: string | null
+  /** The active gizmo sub-tool while editing a 3D scene. */
+  scene3dGizmoMode: Scene3DGizmoMode
 }
 
 export type CanvasEvent =
@@ -70,6 +78,12 @@ export type CanvasEvent =
   | { type: 'PATH_SET_SUBTOOL'; subTool: PathSubTool }
   | { type: 'PATH_PEN_DOWN' }
   | { type: 'PATH_SET_DRAFT_FROM'; node: number | null }
+  // 3D-scene edit mode. Entered by selecting a scene + "Edit in 3D", picking an
+  // object in the inspector, or creating a scene. The focused object lives in
+  // scene3dProxy; the machine owns the mode + gizmo sub-tool.
+  | { type: 'SCENE3D_EDIT_ENTER'; sceneId: string }
+  | { type: 'SCENE3D_EDIT_EXIT' }
+  | { type: 'SCENE3D_SET_GIZMO'; mode: Scene3DGizmoMode }
 
 const canvasMachineSetup = setup({
   types: {
@@ -109,6 +123,8 @@ export const canvasMachine = canvasMachineSetup.createMachine({
     pathEditingShapeId: null,
     pathDraftFromNode: null,
     pathSubTool: 'move',
+    scene3dEditingId: null,
+    scene3dGizmoMode: 'translate',
   },
   on: {
     DRAW_TOOL_ACTIVATE: {
@@ -147,6 +163,10 @@ export const canvasMachine = canvasMachineSetup.createMachine({
         START_PATH_EDIT: {
           target: 'pathEditing',
           actions: assign({ pathEditingShapeId: ({ event }) => event.shapeId }),
+        },
+        SCENE3D_EDIT_ENTER: {
+          target: 'scene3dEditing',
+          actions: assign({ scene3dEditingId: ({ event }) => event.sceneId }),
         },
       },
     },
@@ -339,6 +359,41 @@ export const canvasMachine = canvasMachineSetup.createMachine({
           on: {
             PATH_POINTER_UP: { target: 'idle' },
           },
+        },
+      },
+    },
+    // 3D-scene edit mode (sibling of pathEditing). Like textEditing/pathEditing,
+    // normal pointer gestures (wired on `idle`) are naturally suspended; the
+    // Scene3DLayer drives the gizmo/orbit/raycast while this is active and the
+    // bottom toolbar shows the contextual add/gizmo menu. The focused object is
+    // overlay state (scene3dProxy); the machine owns the mode + gizmo sub-tool.
+    scene3dEditing: {
+      // (Re)start on the Move (translate) gizmo each time edit mode begins.
+      entry: assign({ scene3dGizmoMode: (): Scene3DGizmoMode => 'translate' }),
+      on: {
+        // Switch directly between scenes (e.g. picking another scene's object).
+        SCENE3D_EDIT_ENTER: {
+          actions: assign({ scene3dEditingId: ({ event }) => event.sceneId }),
+        },
+        SCENE3D_EDIT_EXIT: {
+          target: 'idle',
+          actions: assign({ scene3dEditingId: () => null }),
+        },
+        SCENE3D_SET_GIZMO: {
+          actions: assign({ scene3dGizmoMode: ({ event }) => event.mode }),
+        },
+        // A mousedown on empty canvas (outside the edited scene's box; clicks inside
+        // it are captured by the 3D edit surface and never reach the 2D handler) leaves
+        // 3D-edit and behaves like a normal empty-canvas click: run the marquee/deselect.
+        // Clearing the selection there also satisfies the overlay's selection-driven
+        // exit; setting scene3dEditingId null here makes the exit immediate on press.
+        POINTER_DOWN_ON_CANVAS: {
+          target: 'marqueeSelect',
+          actions: assign({
+            scene3dEditingId: () => null,
+            areaSelectionAppend: ({ event }) => event.append,
+            areaSelectionRemove: ({ event }) => event.remove,
+          }),
         },
       },
     },

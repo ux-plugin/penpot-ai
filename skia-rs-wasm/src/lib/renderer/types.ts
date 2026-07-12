@@ -207,6 +207,18 @@ export interface ShortcutsConfig {
   pathMoveKey: string
   pathAddKey: string
   pathBendKey: string
+  /** 3D-scene gizmo sub-tool keys (active only while editing a 3D scene). */
+  scene3dMoveKey: string
+  scene3dRotateKey: string
+  scene3dScaleKey: string
+  /** Frame the focused object / reset the view (active only while editing a 3D scene). */
+  scene3dFrameKey: string
+  /** Recenter the 2D viewport on the edited scene (active only while editing a 3D scene). */
+  scene3dRecenterKey: string
+  /** Toggle focus (maximize) mode (active only while editing a 3D scene). */
+  scene3dFocusKey: string
+  /** Cycle to the next recent edit (active only while editing a 3D scene). */
+  scene3dCycleKey: string
   wheelZoomEnabled: boolean
   wheelScalePerPixel: number
 }
