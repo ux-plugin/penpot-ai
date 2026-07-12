@@ -157,6 +157,9 @@ export interface WasmModule {
   _add_shape_outer_stroke(width: number, style: number, cap_start: number, cap_end: number): void
   _add_shape_stroke_fill(): void
   _clear_shape_strokes(): void
+  _set_shape_stroke_dashes(): void
+  _set_shape_stroke_props(join: number, cap: number, miter: number): void
+  _set_shape_stroke_dynamic(frequency: number, wiggle: number, smoothen: number): void
 
   // Shadows
   _add_shape_shadow(

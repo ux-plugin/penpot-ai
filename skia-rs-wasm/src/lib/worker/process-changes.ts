@@ -18,6 +18,7 @@ import type {
 } from 'penpot-exporter/types'
 import type { PenpotNode } from 'penpot-exporter/types'
 import { isFrameShape } from './geometry/shapes'
+import { isPageInteractionsChange } from '../changes/page-interactions-change'
 import { assignHierarchy, ensureShapes, isIndexedShape } from './helpers'
 import { applyGeometryDefaults } from '@skia-rs-wasm/common/shape-defaults'
 
@@ -298,6 +299,11 @@ function processReorderChildren(data: IndexedPage, change: ReorderChildrenChange
 }
 
 export function processChange(data: IndexedPage, change: Change): IndexedPage {
+  // Page-level interactions edit — rides the same pipeline as shape changes but
+  // isn't part of penpot-exporter's shape `Change` union (see page-interactions-change).
+  if (isPageInteractionsChange(change)) {
+    return { ...data, interactions: change.interactions }
+  }
   switch (change.type) {
     case 'add-obj':
       return processAddObj(data, change)

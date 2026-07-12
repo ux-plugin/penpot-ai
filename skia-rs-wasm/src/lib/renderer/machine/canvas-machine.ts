@@ -11,6 +11,7 @@ import { handleAreaSelection } from '../handlers/selection'
 import { handleDrawShape, pendingTextEdit } from '../handlers/draw-shape'
 import { startGradientDrag } from '../handlers/gradient'
 import type { GradientHandleKind } from '../handlers/gradient'
+import { dropDegeneratePathOnExit } from '../handlers/path-session'
 import type { Point, ResizeHandlePosition } from '../types'
 
 export type DrawTool =
@@ -107,6 +108,10 @@ const canvasMachineSetup = setup({
       ({ input }: { input: { handle: GradientHandleKind; position: Point } }) =>
         startGradientDrag(input.handle, input.position),
     ),
+  },
+  actions: {
+    // Leaving an edit session drops a 0-edge path (lone dot / isolated nodes).
+    dropDegeneratePath: ({ context }) => dropDegeneratePathOnExit(context.pathEditingShapeId),
   },
 })
 
@@ -308,6 +313,9 @@ export const canvasMachine = canvasMachineSetup.createMachine({
       initial: 'idle',
       // Entering fresh from another mode starts on Move with no pen draft.
       entry: assign({ pathDraftFromNode: () => null, pathSubTool: () => 'move' }),
+      // Leaving the session (any exit: done / Escape / tool-switch / click-away)
+      // drops the path if it's degenerate — the one authoritative cleanup point.
+      exit: 'dropDegeneratePath',
       on: {
         // Switch directly between path shapes without bouncing through idle.
         START_PATH_EDIT: {

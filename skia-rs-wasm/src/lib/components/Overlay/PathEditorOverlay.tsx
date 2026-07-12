@@ -34,6 +34,8 @@ import { pathEditNetwork } from '../../renderer/signals/selection'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { getSelectedIdsSet, setSelectedIds } from '../../renderer/store/document-selection'
 import { applyChanges } from '../../page-crud'
+import { useHistoryStore } from '../../history/history-store'
+import { PEN_CREATE_TX } from '../../renderer/handlers/draw-path'
 import type { Change } from 'penpot-exporter/types'
 import { useWorkspaceStore } from '../../renderer/store/workspace-store'
 import {
@@ -48,10 +50,9 @@ import {
   type Anchor,
   type Pt,
 } from '../../renderer/geom/anchors'
-import { getSubpaths } from '../../renderer/geom/subpaths'
+import { cloneNet, vnFromContent } from '../../renderer/geom/vn-from-content'
 import {
   networkContent,
-  subpathsToVN,
   vnAddNode,
   vnConnectNodes,
   vnTightBounds,
@@ -73,24 +74,6 @@ const ADD_HIT_PX = 8
 const NODE_HIT_PX = 12
 
 type XY = { x: number; y: number }
-
-const cloneNet = (vn: VectorNetwork): VectorNetwork => ({
-  nodes: vn.nodes.map((n) => ({ x: n.x, y: n.y })),
-  edges: vn.edges.map((e) => ({
-    a: e.a,
-    b: e.b,
-    ...(e.ha ? { ha: { x: e.ha.x, y: e.ha.y } } : {}),
-    ...(e.hb ? { hb: { x: e.hb.x, y: e.hb.y } } : {}),
-  })),
-})
-
-/** The network a node carries: explicit `content.network`, else built (with merge,
- *  so coincident endpoints heal into shared nodes) from its sub-paths. */
-function vnFromContent(content: unknown): VectorNetwork {
-  const net = (content as { network?: VectorNetwork } | null | undefined)?.network
-  if (net && Array.isArray(net.nodes) && net.nodes.length > 0) return cloneNet(net)
-  return subpathsToVN(getSubpaths(content as Parameters<typeof getSubpaths>[0]), true)
-}
 
 /** Node-geometry partial from a network: content (network + sharp mirror) and a
  *  tight curve bbox (hugs the path, not the handle hull — see vnTightBounds). */
@@ -209,6 +192,10 @@ export function PathEditorOverlay() {
       next.delete(shapeId)
       setSelectedIds(next)
     }
+    // Abandoned before any edge: drop the open create transaction so the dot's
+    // add-obj leaves no orphan undo frame (the shape is being deleted anyway).
+    // No-op when no transaction is open (e.g. emptying an existing path).
+    useHistoryStore.getState().discardTransactions()
     void applyChanges([{ type: 'del-obj', id: shapeId, pageId: pid } as unknown as Change])
   }, [shapeId, canvasActor])
 
@@ -233,6 +220,10 @@ export function PathEditorOverlay() {
       void commitNodePartialUpdate(shapeId, before, { content: c, points, selrect, x, y, width, height }, pid).then(
         () => {
           pathEditNetwork.value = null
+          // Close the create transaction: the dot + this first edge become one
+          // undo entry. No-op for every later edit (the transaction is already
+          // committed, and existing paths never opened it).
+          useHistoryStore.getState().commitTransaction(PEN_CREATE_TX)
         },
       )
     },
@@ -508,12 +499,14 @@ export function PathEditorOverlay() {
   }, [isPathEditing, inPen, selectedNode, deleteSelected, canvasActor])
 
   // Drop stray isolated nodes (a pen point placed but never connected) once we're
-  // no longer drawing — so an abandoned draft can't leave a "non-connected" dot.
+  // no longer drawing — but only when real edges remain. A fully degenerate
+  // (0-edge) result is left for the `pathEditing` exit action, the one
+  // authoritative "a path with no edges must not persist" point (it fires on
+  // every way of leaving — done / escape / tool-switch / click-away).
   useEffect(() => {
     if (!isPathEditing || inPen || !shapeId) return
     const pruned = vnPruneIsolatedNodes(committedVN)
-    // No edges (all isolated) ⇒ commitVN deletes the shape; otherwise drop strays.
-    if (pruned.edges.length === 0 || pruned.nodes.length < committedVN.nodes.length) {
+    if (pruned.edges.length > 0 && pruned.nodes.length < committedVN.nodes.length) {
       commitVN(pruned)
     }
   }, [isPathEditing, inPen, shapeId, committedVN, commitVN])

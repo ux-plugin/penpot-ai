@@ -212,6 +212,7 @@ pub(crate) fn draw_stroke_on_path(
     shadow: Option<&ImageFilter>,
     blur: Option<&ImageFilter>,
     svg_attrs: Option<&SvgAttrs>,
+    seed: u32,
     antialias: bool,
 ) {
     let is_open = path.is_open();
@@ -232,6 +233,12 @@ pub(crate) fn draw_stroke_on_path(
         canvas.concat(pt);
     }
     let skia_path = path.to_skia_path(svg_attrs);
+    // "Dynamic" strokes perturb the geometry before stroking; everything below
+    // (render + caps) then operates on the wavy path.
+    let skia_path = match &stroke.dynamic {
+        Some(dynamic) => super::dynamic::apply_dynamic(&skia_path, dynamic, seed),
+        None => skia_path,
+    };
 
     match stroke.render_kind(is_open) {
         StrokeKind::Inner => {
@@ -248,6 +255,171 @@ pub(crate) fn draw_stroke_on_path(
     handle_stroke_caps(&skia_path, stroke, canvas, is_open, paint, blur, antialias);
 
     canvas.restore_to_count(save_count);
+}
+
+/// Builds a closed Skia path for a primitive shape (rect / frame / ellipse) so a
+/// Dynamic stroke can perturb its outline the same way it perturbs a vector
+/// path. Returns `None` for shape types that aren't closed primitives.
+fn closed_primitive_path(shape_type: &Type, rect: &Rect) -> Option<skia::Path> {
+    let mut pb = skia::PathBuilder::new();
+    match shape_type {
+        Type::Rect(_) | Type::Frame(_) => match shape_type.corners() {
+            Some(corners) => {
+                let rrect = RRect::new_rect_radii(*rect, &corners);
+                pb.add_rrect(rrect, None, None);
+            }
+            None => {
+                pb.add_rect(rect, None, None);
+            }
+        },
+        Type::Circle => {
+            pb.add_oval(rect, None, None);
+        }
+        _ => return None,
+    }
+    Some(pb.detach())
+}
+
+/// Renders a Dynamic (perturbed) stroke for a *closed* primitive. The primitive
+/// is converted to a path, deformed with the same routine used for vector
+/// paths, then stroked with the path-alignment strategy (inner/center/outer via
+/// clip + doubled width). The caller supplies a paint from
+/// `to_stroked_paint(false, …)`.
+#[allow(clippy::too_many_arguments)]
+fn draw_dynamic_stroke_on_primitive(
+    canvas: &skia::Canvas,
+    stroke: &Stroke,
+    skia_path: &skia::Path,
+    paint: &skia::Paint,
+    shadow: Option<&ImageFilter>,
+    blur: Option<&ImageFilter>,
+    seed: u32,
+    antialias: bool,
+) {
+    let Some(dynamic) = stroke.dynamic.as_ref() else {
+        return;
+    };
+
+    let mut draw_paint = paint.clone();
+    let filter = compose_filters(blur, shadow);
+    draw_paint.set_image_filter(filter);
+
+    let deformed = super::dynamic::apply_dynamic(skia_path, dynamic, seed);
+
+    // Primitives are closed, so there are no caps to draw.
+    match stroke.render_kind(false) {
+        StrokeKind::Inner => draw_inner_stroke_path(canvas, &deformed, &draw_paint, blur, antialias),
+        StrokeKind::Center => {
+            canvas.draw_path(&deformed, &draw_paint);
+        }
+        StrokeKind::Outer => draw_outer_stroke_path(canvas, &deformed, &draw_paint, blur, antialias),
+    }
+}
+
+/// Shared per-shape-type dispatch for a shape *body* stroke (non-image fills),
+/// used by BOTH stacks — RenderState (`render_single_internal` / `render_merged`)
+/// and SSA (`ssa::strokes`) — for the single and merged cases alike. Collapses
+/// what used to be four near-identical rect/circle/path matches into one.
+///
+/// The caller owns the pieces that genuinely differ:
+/// - canvas transform is already set up by the caller;
+/// - `selrect` is `shape.selrect`, or the outset-expanded rect for the merged path;
+/// - `merged_shader = Some(shader)` overrides the paint shader for the merged
+///   case (the inner `Option` may itself be `None`); `None` = single case, keep
+///   each stroke's own fill shader;
+/// - `path_outset` grows the *path* stroke width for the single-stroke outline
+///   feature (merged passes `None`, expanding `selrect` instead).
+///
+/// Rect/ellipse take the cheap inset route unless the stroke is Dynamic, in
+/// which case they convert to a closed path and deform like real paths.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_body_stroke(
+    canvas: &skia::Canvas,
+    shape_type: &Type,
+    stroke: &Stroke,
+    selrect: &Rect,
+    svg_attrs: Option<&SvgAttrs>,
+    path_transform: Option<&Matrix>,
+    scale: f32,
+    shadow: Option<&ImageFilter>,
+    blur: Option<&ImageFilter>,
+    merged_shader: Option<Option<skia::Shader>>,
+    path_outset: Option<f32>,
+    seed: u32,
+    antialias: bool,
+) {
+    match shape_type {
+        Type::Rect(_) | Type::Frame(_) | Type::Circle => {
+            if stroke.dynamic.is_some() {
+                if let Some(skia_path) = closed_primitive_path(shape_type, selrect) {
+                    let mut paint = stroke.to_stroked_paint(false, selrect, svg_attrs, antialias);
+                    if let Some(shader) = merged_shader {
+                        paint.set_shader(shader);
+                    }
+                    draw_dynamic_stroke_on_primitive(
+                        canvas, stroke, &skia_path, &paint, shadow, blur, seed, antialias,
+                    );
+                }
+            } else {
+                let mut paint = stroke.to_paint(selrect, svg_attrs, antialias);
+                if let Some(shader) = merged_shader {
+                    paint.set_shader(shader);
+                }
+                if matches!(shape_type, Type::Circle) {
+                    draw_stroke_on_circle(
+                        canvas, stroke, selrect, &paint, scale, shadow, blur, antialias,
+                    );
+                } else {
+                    draw_stroke_on_rect(
+                        canvas,
+                        stroke,
+                        selrect,
+                        &shape_type.corners(),
+                        &paint,
+                        scale,
+                        shadow,
+                        blur,
+                        antialias,
+                    );
+                }
+            }
+        }
+        Type::Path(_) | Type::Bool(_) => {
+            if let Some(path) = shape_type.path() {
+                let is_open = path.is_open();
+                let mut paint = stroke.to_stroked_paint(is_open, selrect, svg_attrs, antialias);
+                if let Some(shader) = merged_shader {
+                    paint.set_shader(shader);
+                }
+                // Apply outset by increasing stroke width (single-stroke outline).
+                if let Some(s) = path_outset.filter(|&s| s > 0.0) {
+                    let current_width = paint.stroke_width();
+                    // Path stroke kinds are built differently:
+                    // - Center uses the stroke width directly.
+                    // - Inner/Outer use a doubled width plus clipping/clearing logic.
+                    // Compensate outset so visual growth is comparable across kinds.
+                    let outset_growth = match stroke.render_kind(is_open) {
+                        StrokeKind::Center => s * 2.0,
+                        StrokeKind::Inner | StrokeKind::Outer => s * 4.0,
+                    };
+                    paint.set_stroke_width(current_width + outset_growth);
+                }
+                draw_stroke_on_path(
+                    canvas,
+                    stroke,
+                    path,
+                    &paint,
+                    path_transform,
+                    shadow,
+                    blur,
+                    svg_attrs,
+                    seed,
+                    antialias,
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 fn handle_stroke_cap(
@@ -700,13 +872,14 @@ pub fn render(
     )
 }
 
-fn strokes_share_geometry(strokes: &[&Stroke]) -> bool {
+pub(crate) fn strokes_share_geometry(strokes: &[&Stroke]) -> bool {
     strokes.windows(2).all(|pair| {
         pair[0].kind == pair[1].kind
             && pair[0].width == pair[1].width
             && pair[0].style == pair[1].style
             && pair[0].cap_start == pair[1].cap_start
             && pair[0].cap_end == pair[1].cap_end
+            && pair[0].dynamic == pair[1].dynamic
     })
 }
 
@@ -803,58 +976,22 @@ fn render_merged(
     let svg_attrs = shape.svg_attrs.as_ref();
     let path_transform = shape.to_path_transform();
 
-    match &shape.shape_type {
-        shape_type @ (Type::Rect(_) | Type::Frame(_)) => {
-            let mut paint = representative.to_paint(&selrect, svg_attrs, antialias);
-            paint.set_shader(merged.shader());
-            draw_stroke_on_rect(
-                canvas,
-                representative,
-                &selrect,
-                &shape_type.corners(),
-                &paint,
-                scale,
-                None,
-                blur_filter.as_ref(),
-                antialias,
-            );
-        }
-        Type::Circle => {
-            let mut paint = representative.to_paint(&selrect, svg_attrs, antialias);
-            paint.set_shader(merged.shader());
-            draw_stroke_on_circle(
-                canvas,
-                representative,
-                &selrect,
-                &paint,
-                scale,
-                None,
-                blur_filter.as_ref(),
-                antialias,
-            );
-        }
-        Type::Text(_) => {}
-        shape_type @ (Type::Path(_) | Type::Bool(_)) => {
-            if let Some(path) = shape_type.path() {
-                let is_open = path.is_open();
-                let mut paint =
-                    representative.to_stroked_paint(is_open, &selrect, svg_attrs, antialias);
-                paint.set_shader(merged.shader());
-                draw_stroke_on_path(
-                    canvas,
-                    representative,
-                    path,
-                    &paint,
-                    path_transform.as_ref(),
-                    None,
-                    blur_filter.as_ref(),
-                    svg_attrs,
-                    antialias,
-                );
-            }
-        }
-        _ => unreachable!("This shape should not have strokes"),
-    }
+    let seed = super::dynamic::seed_from_bytes(shape.id.as_bytes());
+    draw_body_stroke(
+        canvas,
+        &shape.shape_type,
+        representative,
+        &selrect,
+        svg_attrs,
+        path_transform.as_ref(),
+        scale,
+        None,
+        blur_filter.as_ref(),
+        Some(merged.shader()),
+        None,
+        seed,
+        antialias,
+    );
     Ok(())
 }
 
@@ -964,68 +1101,22 @@ fn render_single_internal(
             )?;
         }
     } else {
-        match &shape.shape_type {
-            shape_type @ (Type::Rect(_) | Type::Frame(_)) => {
-                let paint = stroke.to_paint(&selrect, svg_attrs, antialias);
-                draw_stroke_on_rect(
-                    canvas,
-                    stroke,
-                    &selrect,
-                    &shape_type.corners(),
-                    &paint,
-                    scale,
-                    shadow,
-                    blur.as_ref(),
-                    antialias,
-                );
-            }
-            Type::Circle => {
-                let paint = stroke.to_paint(&selrect, svg_attrs, antialias);
-                draw_stroke_on_circle(
-                    canvas,
-                    stroke,
-                    &selrect,
-                    &paint,
-                    scale,
-                    shadow,
-                    blur.as_ref(),
-                    antialias,
-                );
-            }
-            Type::Text(_) => {}
-            shape_type @ (Type::Path(_) | Type::Bool(_)) => {
-                if let Some(path) = shape_type.path() {
-                    let is_open = path.is_open();
-                    let mut paint =
-                        stroke.to_stroked_paint(is_open, &selrect, svg_attrs, antialias);
-                    // Apply outset by increasing stroke width
-                    if let Some(s) = outset.filter(|&s| s > 0.0) {
-                        let current_width = paint.stroke_width();
-                        // Path stroke kinds are built differently:
-                        // - Center uses the stroke width directly.
-                        // - Inner/Outer use a doubled width plus clipping/clearing logic.
-                        // Compensate outset so visual growth is comparable across kinds.
-                        let outset_growth = match stroke.render_kind(is_open) {
-                            StrokeKind::Center => s * 2.0,
-                            StrokeKind::Inner | StrokeKind::Outer => s * 4.0,
-                        };
-                        paint.set_stroke_width(current_width + outset_growth);
-                    }
-                    draw_stroke_on_path(
-                        canvas,
-                        stroke,
-                        path,
-                        &paint,
-                        path_transform.as_ref(),
-                        shadow,
-                        blur.as_ref(),
-                        svg_attrs,
-                        antialias,
-                    );
-                }
-            }
-            _ => unreachable!("This shape should not have strokes"),
-        }
+        let seed = super::dynamic::seed_from_bytes(shape.id.as_bytes());
+        draw_body_stroke(
+            canvas,
+            &shape.shape_type,
+            stroke,
+            &selrect,
+            svg_attrs,
+            path_transform.as_ref(),
+            scale,
+            shadow,
+            blur.as_ref(),
+            None,
+            outset,
+            seed,
+            antialias,
+        );
     }
     Ok(())
 }

@@ -6,8 +6,9 @@ import { cn } from '@/lib/utils'
 import { fillSwatchBackground } from '../../FillEditor/fill-swatch-background'
 import { isColorFill } from '../../../renderer/api/constants'
 import { normalizeHex } from '../../../renderer/properties/panel-utils'
-import { useColorEditorFor } from '../use-color-editor'
+import { useColorEditor, useStrokeSettingsFor } from '../use-color-editor'
 import { NumericField } from '../NumericField'
+import { SlidersHorizontal } from 'lucide-react'
 
 const ALIGN_OPTIONS = ['center', 'inner', 'outer'] as const
 const STYLE_OPTIONS = ['solid', 'dotted', 'dashed', 'mixed'] as const
@@ -47,7 +48,14 @@ export interface StrokeRowProps {
 }
 
 export function StrokeRow({ stroke, index, readOnly, onChange, onRemove, colorLocked, widthLocked }: StrokeRowProps) {
-  const { isActive: expanded, openEditor, closeEditor } = useColorEditorFor('stroke', index)
+  const { activeTarget, activeFill, activeStrokeSettings, openEditor, closeEditor } = useColorEditor()
+  const { openStrokeSettings } = useStrokeSettingsFor('stroke', index)
+
+  // The color swatch and the settings button share one `activeTarget` key, so
+  // disambiguate by which panel's state is set.
+  const isThisTarget = activeTarget?.kind === 'stroke' && activeTarget.index === index
+  const colorExpanded = isThisTarget && activeFill !== null
+  const settingsOpen = isThisTarget && activeStrokeSettings !== null
 
   const fill = strokeToFill(stroke)
   const isSolid = isColorFill(fill)
@@ -82,16 +90,29 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove, colorLo
   const toggleExpand = useCallback(
     (e: React.MouseEvent) => {
       if (readOnly) return
-      if (expanded) {
+      if (colorExpanded) {
         closeEditor()
       } else {
         const y = (e.currentTarget as HTMLElement).getBoundingClientRect().top
-        openEditor(fill, y, `Stroke ${index + 1} color`, (nextFill) => {
+        openEditor('stroke', index, fill, y, `Stroke ${index + 1} color`, (nextFill) => {
           onChange(fillToStrokeColor(nextFill, stroke), index)
         })
       }
     },
-    [readOnly, expanded, closeEditor, openEditor, fill, index, stroke, onChange],
+    [readOnly, colorExpanded, closeEditor, openEditor, fill, index, stroke, onChange],
+  )
+
+  const toggleSettings = useCallback(
+    (e: React.MouseEvent) => {
+      if (readOnly) return
+      if (settingsOpen) {
+        closeEditor()
+      } else {
+        const y = (e.currentTarget as HTMLElement).getBoundingClientRect().top
+        openStrokeSettings(stroke, y, 'Stroke settings', (next) => onChange(next, index))
+      }
+    },
+    [readOnly, settingsOpen, closeEditor, openStrokeSettings, stroke, index, onChange],
   )
 
   if (readOnly) {
@@ -120,18 +141,18 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove, colorLo
           className={cn(
             'size-5 shrink-0 rounded border border-border',
             'focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
-            expanded && 'ring-2 ring-ring',
+            colorExpanded && 'ring-2 ring-ring',
             colorLocked && 'opacity-60',
           )}
           style={{ background: swatchBg }}
           title={
             colorLocked
               ? 'Bound to a token — unlink to edit'
-              : expanded
+              : colorExpanded
                 ? 'Close stroke color editor'
                 : 'Open stroke color editor'
           }
-          aria-expanded={expanded}
+          aria-expanded={colorExpanded}
           aria-label="Toggle stroke color editor"
         />
         <Input
@@ -204,6 +225,18 @@ export function StrokeRow({ stroke, index, readOnly, onChange, onRemove, colorLo
             </option>
           ))}
         </select>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className={cn('shrink-0', settingsOpen && 'bg-accent text-accent-foreground')}
+          onClick={toggleSettings}
+          aria-label="Stroke settings"
+          aria-pressed={settingsOpen}
+          title="Stroke settings (dashes, cap, join, miter)"
+        >
+          <SlidersHorizontal className="size-3.5" />
+        </Button>
       </div>
     </div>
   )

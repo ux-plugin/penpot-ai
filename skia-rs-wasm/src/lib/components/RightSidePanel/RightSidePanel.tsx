@@ -23,6 +23,8 @@ import {
 } from './color-editor-context'
 import { FloatingColorEditorPanel } from './FloatingColorEditorPanel'
 import { FloatingEffectEditorPanel } from './FloatingEffectEditorPanel'
+import { FloatingStrokeSettingsPanel } from './FloatingStrokeSettingsPanel'
+import type { StrokeWithSettings } from '../../renderer/stroke-settings'
 import { InspectorTabBar } from '../Inspector/InspectorTabBar'
 import { InteractionsTab } from '../Inspector/InteractionsTab'
 import { CodeTab } from '../Inspector/CodeTab'
@@ -51,13 +53,19 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
   const [activeEffect, setActiveEffect] = useState<EffectItem | null>(null)
   const onEffectChangeRef = useRef<((effect: EffectItem) => void) | null>(null)
 
+  // Stroke-settings editor state (Basic tab: dashes / dash-cap / join / miter)
+  const [activeStrokeSettings, setActiveStrokeSettings] = useState<StrokeWithSettings | null>(null)
+  const onStrokeSettingsChangeRef = useRef<((stroke: StrokeWithSettings) => void) | null>(null)
+
   const closeEditor = useCallback(() => {
     setActiveTarget(null)
     setActiveFill(null)
     setActiveEffect(null)
+    setActiveStrokeSettings(null)
     setTitle('')
     onChangeRef.current = null
     onEffectChangeRef.current = null
+    onStrokeSettingsChangeRef.current = null
     activeEditorTarget.value = null
   }, [])
 
@@ -67,9 +75,11 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
       setActiveFill(fill)
       setAnchorY(y)
       setTitle(t)
-      // Clear effect-specific state so FloatingEffectEditorPanel hides
+      // Clear effect / stroke-settings state so only the color panel shows
       setActiveEffect(null)
       onEffectChangeRef.current = null
+      setActiveStrokeSettings(null)
+      onStrokeSettingsChangeRef.current = null
       onChangeRef.current = (next: Fill) => {
         setActiveFill(next)
         onChange(next)
@@ -85,11 +95,40 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
       setActiveEffect(effect)
       setAnchorY(y)
       setTitle(t)
-      // Clear fill-specific state so FloatingColorEditorPanel hides
+      // Clear fill / stroke-settings state so only the effect panel shows
       setActiveFill(null)
       onChangeRef.current = null
+      setActiveStrokeSettings(null)
+      onStrokeSettingsChangeRef.current = null
       onEffectChangeRef.current = (next: EffectItem) => {
         setActiveEffect(next)
+        onChange(next)
+      }
+      activeEditorTarget.value = { kind, index }
+    },
+    [],
+  )
+
+  const openStrokeSettings = useCallback(
+    (
+      kind: ColorEditorKind,
+      index: number,
+      stroke: StrokeWithSettings,
+      y: number,
+      t: string,
+      onChange: (stroke: StrokeWithSettings) => void,
+    ) => {
+      setActiveTarget({ kind, index })
+      setActiveStrokeSettings(stroke)
+      setAnchorY(y)
+      setTitle(t)
+      // Clear fill / effect state so only the stroke-settings panel shows
+      setActiveFill(null)
+      onChangeRef.current = null
+      setActiveEffect(null)
+      onEffectChangeRef.current = null
+      onStrokeSettingsChangeRef.current = (next: StrokeWithSettings) => {
+        setActiveStrokeSettings(next)
         onChange(next)
       }
       activeEditorTarget.value = { kind, index }
@@ -154,8 +193,22 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
       activeEffect,
       onEffectChangeRef,
       openEffectEditor,
+      activeStrokeSettings,
+      onStrokeSettingsChangeRef,
+      openStrokeSettings,
     }),
-    [activeTarget, activeFill, activeEffect, anchorY, title, openEditor, openEffectEditor, closeEditor],
+    [
+      activeTarget,
+      activeFill,
+      activeEffect,
+      activeStrokeSettings,
+      anchorY,
+      title,
+      openEditor,
+      openEffectEditor,
+      openStrokeSettings,
+      closeEditor,
+    ],
   )
 
   const count = selectedIds.size
@@ -215,6 +268,7 @@ export function RightSidePanel({ className }: RightSidePanelProps) {
     <ColorEditorContext.Provider value={colorEditorCtx}>
       <FloatingColorEditorPanel />
       <FloatingEffectEditorPanel />
+      <FloatingStrokeSettingsPanel />
       <FloatingEditorRail
         side="right"
         title="Inspector"
