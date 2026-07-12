@@ -15,6 +15,10 @@ impl Subpath {
         }
     }
 
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
     pub fn start(&self) -> Option<Point> {
         self.segments.first().and_then(|s| match s {
             Segment::MoveTo(p) | Segment::LineTo(p) => Some(*p),
@@ -32,6 +36,14 @@ impl Subpath {
 
     pub fn is_closed(&self) -> bool {
         self.closed.unwrap_or_else(|| self.calculate_closed())
+    }
+
+    /// True only when the sub-path is EXPLICITLY closed (ends with a `Close`).
+    /// Unlike `is_closed`, this does NOT infer closure from coincident first/last
+    /// points — used for FILL so an open contour whose tip happens to land back on
+    /// its start (a branch dropped on a shared node) is never filled.
+    pub fn ends_with_close(&self) -> bool {
+        matches!(self.segments.last(), Some(Segment::Close))
     }
 
     pub fn reversed(&self) -> Self {
@@ -93,7 +105,6 @@ pub fn closed_subpaths(subpaths: Vec<Subpath>) -> Vec<Subpath> {
 
         let mut current = subpaths[i].clone();
         used[i] = true;
-        let mut merged_any = false;
 
         loop {
             if current.is_closed() {
@@ -131,7 +142,6 @@ pub fn closed_subpaths(subpaths: Vec<Subpath>) -> Vec<Subpath> {
                     if let Some(new_current) = try_merge(&current, candidate, mode) {
                         used[j] = true;
                         current = new_current;
-                        merged_any = true;
                         did_merge = true;
                         break;
                     }
@@ -143,15 +153,11 @@ pub fn closed_subpaths(subpaths: Vec<Subpath>) -> Vec<Subpath> {
             }
         }
 
-        if !current.is_closed() && merged_any {
-            if let Some(start) = current.start() {
-                let mut segs = current.segments.clone();
-                segs.push(Segment::LineTo(start));
-                segs.push(Segment::Close);
-                current = Subpath::new(segs);
-            }
-        }
-
+        // NOTE: we intentionally do NOT fabricate closure for chains that merged
+        // but don't actually close (start != end). An open chain of edges (A-B-C)
+        // must remain open so it strokes only and is excluded from fill. Merges
+        // that genuinely close (a ring split across sub-paths) already break the
+        // loop above via `is_closed()` once start ≈ end.
         result.push(current);
     }
 

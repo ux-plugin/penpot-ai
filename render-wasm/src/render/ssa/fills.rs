@@ -286,7 +286,12 @@ fn draw_path(
     let Some(transform) = shape.to_path_transform() else {
         return;
     };
-    let sk_path = path.to_skia_path(shape.svg_attrs.as_ref()).make_transform(&transform);
+    // FILL uses only the explicitly-closed sub-paths: an open contour (e.g. a
+    // branch off a shared node) must stroke but never fill. Strokes keep using
+    // `to_skia_path` (all segments). This mirrors `surfaces.rs::draw_path_to`.
+    let sk_path = path
+        .to_fill_skia_path(shape.svg_attrs.as_ref())
+        .make_transform(&transform);
     canvas.draw_path(&sk_path, paint);
 }
 

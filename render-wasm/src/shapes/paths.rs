@@ -228,6 +228,48 @@ impl Path {
         path
     }
 
+    /// The path used for FILL: only the closed sub-paths. Open sub-paths (e.g. a
+    /// line branching off a closed shape's corner) would otherwise be filled by
+    /// Skia's implicit close — here they're dropped from the fill geometry so they
+    /// only stroke. Stroke rendering keeps using `to_skia_path` (all segments).
+    pub fn to_fill_skia_path(&self, svg_attrs: Option<&SvgAttrs>) -> skia::Path {
+        // Fill is built ONLY from sub-paths that are EXPLICITLY closed (end with a
+        // `Close`). An open contour never fills — even if its first and last points
+        // happen to coincide (e.g. a branch whose tip was dropped back on a shared
+        // node). The editor always emits an explicit close for closed sub-paths, so
+        // that is the reliable signal; coincident-endpoint inference (used by
+        // `is_closed`) is deliberately NOT applied here.
+        let subpaths = subpaths::split_into_subpaths(&self.segments);
+        let mut pb = skia::PathBuilder::new();
+        for sp in subpaths.iter().filter(|sp| sp.ends_with_close()) {
+            for segment in sp.segments().iter() {
+                match *segment {
+                    Segment::MoveTo(xy) => {
+                        pb.move_to(xy);
+                    }
+                    Segment::LineTo(xy) => {
+                        pb.line_to(xy);
+                    }
+                    Segment::CurveTo((c1, c2, xy)) => {
+                        pb.cubic_to(c1, c2, xy);
+                    }
+                    Segment::Close => {
+                        pb.close();
+                    }
+                }
+            }
+            // Force the contour closed even when it was implied by start ≈ end.
+            pb.close();
+        }
+        let mut path = pb.detach();
+        if let Some(attrs) = svg_attrs {
+            if attrs.fill_rule == FillRule::Evenodd {
+                path.set_fill_type(skia::PathFillType::EvenOdd);
+            }
+        }
+        path
+    }
+
     pub fn contains(&self, p: skia::Point) -> bool {
         self.skia_path.contains(p)
     }
@@ -295,5 +337,145 @@ impl Path {
 
     pub fn bounds(&self) -> math::Bounds {
         math::Bounds::from_rect(self.skia_path.bounds())
+    }
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+
+    fn square_segments() -> Vec<Segment> {
+        vec![
+            Segment::MoveTo((0.0, 0.0)),
+            Segment::LineTo((10.0, 0.0)),
+            Segment::LineTo((10.0, 10.0)),
+            Segment::LineTo((0.0, 10.0)),
+            Segment::Close,
+        ]
+    }
+
+    #[test]
+    fn fill_path_excludes_open_branch() {
+        // Closed square + an open branch off corner (0,0) out to (-6,-6).
+        let mut segs = square_segments();
+        segs.push(Segment::MoveTo((0.0, 0.0)));
+        segs.push(Segment::LineTo((-6.0, -6.0)));
+        let path = Path::new(segs);
+        assert!(path.is_open(), "the branch makes the path open");
+
+        // The stroke path (full) still reaches the branch tip.
+        let full = path.to_skia_path(None);
+        assert!(full.bounds().left <= -5.9, "full path includes the branch");
+
+        // The fill path is only the square — the open branch is dropped.
+        let fill = path.to_fill_skia_path(None);
+        let b = *fill.bounds();
+        assert!(b.left >= -0.01 && b.top >= -0.01, "fill excludes the branch tip");
+        assert!((b.right - 10.0).abs() < 0.01 && (b.bottom - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn fill_path_unchanged_for_closed_shape() {
+        let path = Path::new(square_segments());
+        assert!(!path.is_open());
+        assert_eq!(path.to_skia_path(None).bounds(), path.to_fill_skia_path(None).bounds());
+    }
+}
+
+#[cfg(test)]
+mod fill_open_tests {
+    use super::*;
+
+    #[test]
+    fn fill_empty_for_open_polyline() {
+        // 3 nodes, 2 edges, NOT closed (a branch linked through extra nodes).
+        let segs = vec![
+            Segment::MoveTo((0.0, 0.0)),
+            Segment::LineTo((50.0, 80.0)),
+            Segment::LineTo((100.0, 0.0)),
+        ];
+        let path = Path::new(segs);
+        assert!(path.is_open(), "open polyline should be open");
+        assert!(path.to_fill_skia_path(None).is_empty(), "open polyline must not fill");
+    }
+
+    #[test]
+    fn fill_empty_for_open_chain_split_across_subpaths() {
+        // The vector-network editor serializes each edge as its own sub-path:
+        // edge A-B and edge B-C share endpoint B but the chain A-B-C is open
+        // (A != C). The merge logic must NOT fabricate closure here.
+        let segs = vec![
+            Segment::MoveTo((0.0, 0.0)),
+            Segment::LineTo((50.0, 80.0)),
+            Segment::MoveTo((50.0, 80.0)),
+            Segment::LineTo((100.0, 0.0)),
+        ];
+        let path = Path::new(segs);
+        assert!(path.is_open(), "open chain across sub-paths must be open");
+        assert!(
+            path.to_fill_skia_path(None).is_empty(),
+            "open chain across sub-paths must not fill"
+        );
+    }
+
+    #[test]
+    fn fill_empty_for_open_branch_with_coincident_endpoints() {
+        // The exact bug from the editor: an open branch (NO close-path) whose tip
+        // was dropped back on the start node, so first ≈ last. Coincidence must NOT
+        // make it fill — only an explicit `Close` does.
+        let segs = vec![
+            Segment::MoveTo((0.0, 0.0)),
+            Segment::LineTo((50.0, 80.0)),
+            Segment::LineTo((100.0, 0.0)),
+            Segment::LineTo((0.0, 0.0)), // back onto the start, but NO Close
+        ];
+        let path = Path::new(segs);
+        assert!(
+            path.to_fill_skia_path(None).is_empty(),
+            "open branch with coincident endpoints must not fill without an explicit close"
+        );
+    }
+
+    #[test]
+    fn fill_only_blob_for_closed_blob_plus_coincident_open_branch() {
+        // Closed blob (explicit close) sharing its corner with an open branch whose
+        // tip lands back on that corner. Only the blob fills.
+        let segs = vec![
+            Segment::MoveTo((0.0, 0.0)),
+            Segment::LineTo((10.0, 0.0)),
+            Segment::LineTo((10.0, 10.0)),
+            Segment::LineTo((0.0, 10.0)),
+            Segment::Close,
+            // open branch off the corner, tip dropped back on the corner (no close)
+            Segment::MoveTo((0.0, 0.0)),
+            Segment::LineTo((-20.0, 5.0)),
+            Segment::LineTo((-20.0, 40.0)),
+            Segment::LineTo((0.0, 0.0)),
+        ];
+        let path = Path::new(segs);
+        let b = *path.to_fill_skia_path(None).bounds();
+        assert!(b.left >= -0.01 && b.top >= -0.01, "branch excluded from fill");
+        assert!((b.right - 10.0).abs() < 0.01 && (b.bottom - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn fill_only_square_for_square_plus_open_branch() {
+        let segs = vec![
+            // closed square
+            Segment::MoveTo((0.0, 0.0)),
+            Segment::LineTo((10.0, 0.0)),
+            Segment::LineTo((10.0, 10.0)),
+            Segment::LineTo((0.0, 10.0)),
+            Segment::Close,
+            // open branch off the corner through two more nodes
+            Segment::MoveTo((0.0, 0.0)),
+            Segment::LineTo((-20.0, 5.0)),
+            Segment::LineTo((-20.0, 40.0)),
+        ];
+        let path = Path::new(segs);
+        assert!(path.is_open());
+        let b = *path.to_fill_skia_path(None).bounds();
+        assert!(b.left >= -0.01 && b.top >= -0.01, "branch excluded from fill");
+        assert!((b.right - 10.0).abs() < 0.01 && (b.bottom - 10.0).abs() < 0.01);
     }
 }

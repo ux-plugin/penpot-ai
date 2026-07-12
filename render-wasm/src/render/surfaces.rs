@@ -589,7 +589,7 @@ impl Surfaces {
         outset: Option<f32>,
         inset: Option<f32>,
     ) {
-        if let Some(path) = shape.get_skia_path() {
+        if let Some(path) = shape.get_fill_skia_path() {
             let canvas = self.canvas_and_mark_dirty(id);
             if let Some(s) = outset.filter(|&s| s > 0.0) {
                 // Draw path as a thick stroke to get outset (expanded) silhouette

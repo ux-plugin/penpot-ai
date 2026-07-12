@@ -1436,6 +1436,22 @@ impl Shape {
         }
     }
 
+    /// Like `get_skia_path`, but only the closed sub-paths — used for FILL so open
+    /// branches stroke without being filled. Stroke rendering keeps `get_skia_path`.
+    pub fn get_fill_skia_path(&self) -> Option<skia::Path> {
+        if let Some(path) = self.shape_type.path() {
+            let mut skia_path = path.to_fill_skia_path(self.svg_attrs.as_ref());
+            if !math::identitish(&self.transform) {
+                if let Some(path_transform) = self.to_path_transform() {
+                    skia_path = skia_path.make_transform(&path_transform);
+                }
+            }
+            Some(skia_path)
+        } else {
+            None
+        }
+    }
+
     fn transform_selrect(&mut self, transform: &Matrix) {
         if math::is_move_only_matrix(transform) {
             let tx = transform.translate_x();
