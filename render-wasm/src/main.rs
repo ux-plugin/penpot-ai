@@ -1,5 +1,6 @@
 #[cfg(target_arch = "wasm32")]
 mod emscripten;
+mod anim;
 mod error;
 mod math;
 mod mem;
@@ -834,12 +835,6 @@ pub extern "C" fn set_absolute_modifiers() -> Result<()> {
 #[wasm_error]
 pub extern "C" fn clean_modifiers() -> Result<()> {
     with_state_mut!(state, {
-        // Reverting modifiers also alters the visible scene — bump
-        // scene revision so cached glass / bg-blur backdrops drop.
-        {
-            state.render_state.scene_revision =
-                state.render_state.scene_revision.wrapping_add(1);
-        }
         state.shapes.clean_all();
     });
     Ok(())

@@ -274,15 +274,6 @@ pub(crate) struct RenderState {
     pub render_area_with_margins: Rect,
     pub tile_viewbox: tiles::TileViewbox,
     pub tile_grid: crate::tile_grid::TileGrid,
-    /// Coarse revision counter feeding `backdrop_hash` for `Gather`
-    /// effect-cache keys (phase 4). Bumped on any shape mutation
-    /// path that could change the pixels behind a glass / bg-blur
-    /// shape — `set_modifiers`, `clean_modifiers`. Pan/zoom do not
-    /// bump it because world coords are unchanged. Pessimistic on
-    /// move (every glass entry invalidates even if the moved shape
-    /// is far away); phase 6 narrows this with per-shape mutation
-    /// invalidation.
-    pub scene_revision: u64,
     // nested_fills maintains a stack of group  fills that apply to nested shapes
     // without their own fill definitions. This is necessary because in SVG, a group's `fill`
     // can affect its child elements if they don't specify one themselves. If the planned
@@ -357,7 +348,6 @@ impl RenderState {
                 1.0,
             ),
             tile_grid: crate::tile_grid::TileGrid::new(),
-            scene_revision: 0,
             nested_fills: vec![],
             show_grid: None,
             focus_mode: FocusMode::new(),

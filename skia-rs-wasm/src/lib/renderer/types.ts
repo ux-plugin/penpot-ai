@@ -235,6 +235,10 @@ export interface CanvasWrapperProps {
   startSlot?: ReactNode
   /** Optional content after the canvas column (e.g. right rail). */
   endSlot?: ReactNode
+  /** Optional resizable panel docked below the canvas (e.g. motion timeline). */
+  bottomSlot?: ReactNode
+  /** Optional content absolutely overlaid on the canvas column (e.g. Build-mode preview). */
+  centerOverlay?: ReactNode
   /**
    * Sibling UI rendered inside the canvas XState provider (e.g. fixed toolbars/panels that call `useCanvasActor`).
    * The canvas column does not include this; use for overlays that sit outside the canvas subtree in layout.

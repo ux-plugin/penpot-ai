@@ -282,17 +282,6 @@ impl State {
     }
 
     pub fn set_modifiers(&mut self, modifiers: HashMap<Uuid, skia::Matrix>) {
-        // Bump scene revision so any cached glass / bg-blur output
-        // keyed on the previous backdrop_hash misses on the next
-        // render. Coarse — invalidates every gather entry even when
-        // the moved shape doesn't intersect a particular glass shape.
-        // Phase 6 narrows this with per-shape invalidation.
-        {
-            self.render_state.scene_revision =
-                self.render_state.scene_revision.wrapping_add(1);
-        }
-
-
         self.shapes.set_modifiers(modifiers);
     }
 

@@ -9,7 +9,11 @@ import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } fr
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
 import { TopBar } from './lib/components/TopBar'
-import { BuildWorkspace } from './lib/components/BuildWorkspace'
+import { TimelinePanel } from './lib/components/Motion/TimelinePanel'
+import { ComponentTree } from './lib/components/BuildMode/ComponentTree'
+import { ChatPanel } from './lib/components/BuildMode/ChatPanel'
+import { PreviewStage } from './lib/components/BuildMode/PreviewStage'
+import { inspectorTab } from './lib/renderer/signals/inspector-tab'
 import { editorMode } from './lib/renderer/signals/editor-mode'
 import { useSignalCoalesced } from './lib/renderer/signals/use-signal-coalesced'
 
@@ -24,6 +28,20 @@ function readDebugPipFromUrl(): boolean {
   if (typeof window === 'undefined') return false
   const v = new URLSearchParams(window.location.search).get('debugPip')
   return v === '1' || v === 'true'
+}
+
+/** Build-mode left rail: live component tree above the chat panel. */
+function BuildLeftRail() {
+  return (
+    <div className="pointer-events-auto flex h-full w-full min-h-0 flex-col overflow-hidden border-r border-border bg-white">
+      <div className="min-h-0 flex-1 overflow-auto">
+        <ComponentTree />
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto border-t border-border">
+        <ChatPanel />
+      </div>
+    </div>
+  )
 }
 
 function App() {
@@ -98,6 +116,23 @@ function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  const tab = useSignalCoalesced(inspectorTab)
+  const motionActive = tab === 'motion'
+  const startSlot = mode === 'design' ? <LayersPanel /> : <BuildLeftRail />
+  const endSlot = <RightSidePanel />
+  const bottomSlot = motionActive ? <TimelinePanel /> : undefined
+  const centerOverlay =
+    mode === 'design' ? (
+      <ShapeToolbar />
+    ) : (
+      <div
+        className="pointer-events-auto flex h-full w-full"
+        style={{ background: 'var(--editor-canvas-chrome)' }}
+      >
+        <PreviewStage />
+      </div>
+    )
+
   return (
     <div
       className="canvas-container relative font-sans [--top-bar-height:2.75rem]"
@@ -109,19 +144,13 @@ function App() {
           rendererOptions={rendererOptions}
           onError={handleError}
           containerStyle={{ width: '100%', height: '100%' }}
+          startSlot={startSlot}
+          endSlot={endSlot}
+          bottomSlot={bottomSlot}
+          centerOverlay={centerOverlay}
           overlays={
             <>
-              {/* The inspector rail floats over both modes (z-50 > Build's z-40). */}
-              <RightSidePanel />
-{mode === 'design' ? (
-                <>
-                  <LayersPanel />
-                  <ShapeToolbar />
-                  <CursorHint />
-                </>
-              ) : (
-                <BuildWorkspace />
-              )}
+              {mode === 'design' && <CursorHint />}
               <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
               {error && (
                 <div

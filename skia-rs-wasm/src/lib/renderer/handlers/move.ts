@@ -28,6 +28,7 @@ import { snapMoveDeltaToGrid } from './pixel-snap'
 import { getSelectedIdsSet } from '../store/document-selection'
 import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { applyModifiersAndCommit } from './utils'
+import { motionDragBase, recordDragKeyframe } from '../motion/motion-store'
 import { DRAG_RENDER_INTERVAL_MS } from './drag-render-interval'
 import {
   cloneSelectionRect,
@@ -101,6 +102,12 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
       : null
 
   const lastEventDeltaRef = { current: { x: 0, y: 0 } }
+  // Motion authoring: the shape's current animated offset from rest at the
+  // playhead (null unless the Motion tab is open and the playhead is off the
+  // rest frame). Added to the drag below so the shape follows the cursor from
+  // its displaced pose instead of snapping to rest.
+  const motionBase =
+    selectedIds.size === 1 ? motionDragBase(selectedIds.values().next().value as string) : null
   // Pre-compute "remove from real parent" structure entries for any selected
   // shape whose parent has a layout. These are stable across the gesture so we
   // build them once and re-emit each frame after cleanModifiers wipes them.
@@ -298,9 +305,16 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
       // → mirror to modifierOverlay store. Mirrors CLJS `set-wasm-modifiers`
       // (modifiers.cljs:612-642). cleanModifiers wipes pool.structure too, so
       // detach entries are re-emitted every frame via the options bag.
+      // baselineRect (the overlay preview above) already includes motionBase --
+      // seekMotion refreshes it to the animated rect -- so the overlay uses the
+      // drag delta alone. The shape modifier, however, translates from the
+      // document (rest) pose, so it must add motionBase to stay under the cursor.
+      const renderDelta = motionBase
+        ? { x: worldDelta.x + motionBase.x, y: worldDelta.y + motionBase.y }
+        : worldDelta
       const moveEntries: Array<[string, Matrix]> = Array.from(selectedIds, (id) => [
         id,
-        translateMatrix(worldDelta.x, worldDelta.y),
+        translateMatrix(renderDelta.x, renderDelta.y),
       ])
       // Skip the reset push when a probe is active: it already rendered the
       // reflowed-siblings + cursor-following-shape state, and re-pushing without the
@@ -336,6 +350,21 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
         return
       }
       const delta = lastEventDeltaRef.current
+
+      // Motion authoring: with the Motion tab open and the playhead off the rest
+      // frame, a single-shape drag becomes an x/y keyframe (an offset from rest)
+      // instead of a document move. The motion preview then owns the modifiers,
+      // so we neither cleanModifiers nor commit geometry -- seekMotion (inside
+      // recordDragKeyframe) has already replaced the drag modifiers with the
+      // animated pose at the playhead.
+      if (selectedIds.size === 1) {
+        const onlyId = selectedIds.values().next().value as string
+        if (recordDragKeyframe(onlyId, delta.x, delta.y)) {
+          movePreviewWorldDelta.value = { x: 0, y: 0 }
+          wasmSelRect.value = querySelectionRect(renderer, selectedIds)
+          return
+        }
+      }
 
       // Compute the final reparent intent against the same delta we'll commit
       // geometry for. This bundles `mov-objects` into the same commit call. The

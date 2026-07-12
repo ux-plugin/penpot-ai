@@ -6,6 +6,7 @@ import { FillEditor } from '../FillEditor/FillEditor'
 import { textEditorActive, refocusTextEditor } from '@/lib/renderer/signals/text-editor'
 import { markHistoryInteraction } from '@/lib/history/history-store'
 import { useColorEditor } from './use-color-editor'
+import { useInspectorAnchorRight } from './use-inspector-anchor'
 
 export function FloatingColorEditorPanel() {
   const { activeTarget, activeFill, anchorY, title, closeEditor, onChangeRef } = useColorEditor()
@@ -20,6 +21,7 @@ export function FloatingColorEditorPanel() {
 
   // Reset position when a new editor opens
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset drag position when the editor target changes
     setPos(null)
   }, [targetKey])
 
@@ -80,6 +82,8 @@ export function FloatingColorEditorPanel() {
     e.currentTarget.releasePointerCapture(e.pointerId)
   }, [])
 
+  const anchorRight = useInspectorAnchorRight(targetKey != null)
+
   if (!activeTarget || !activeFill) return null
 
   const defaultTop = Math.max(12, Math.min(anchorY, window.innerHeight - 400))
@@ -87,7 +91,7 @@ export function FloatingColorEditorPanel() {
   const positionStyle: React.CSSProperties = pos
     ? { left: pos.x, top: pos.y }
     : {
-        right: 'calc(0.75rem + var(--properties-panel-width, 280px) + 0.5rem)',
+        right: anchorRight ?? 'calc(var(--properties-panel-width, 280px) + 0.5rem)',
         top: defaultTop,
       }
 

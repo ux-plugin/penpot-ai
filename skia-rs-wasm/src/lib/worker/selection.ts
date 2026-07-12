@@ -5,7 +5,7 @@
 
 import type { SelectionIndex, IndexedPage, QueryParams, SelectionIndexShape } from './types'
 import type { IndexedShape } from './types'
-import type { PenpotNode, Selrect } from 'penpot-exporter/types'
+import type { PenpotNode, Selrect, Matrix } from 'penpot-exporter/types'
 import { ZERO_UUID, makeSelrect } from './types'
 import * as quadtree from './quadtree'
 import { pointsToRect, makeRect, containsRect } from './geometry/rect'
@@ -52,6 +52,26 @@ function shapeToBounds(shape: PenpotNode): Selrect | null {
   return normalizeSelrect(shape.selrect) || null
 }
 
+/** AABB of a rest bound after a rest->animated affine (the four corners' extent). */
+function transformBoundsByMatrix(b: Selrect, t: Matrix): Selrect {
+  const corners = [
+    [b.x, b.y],
+    [b.x + b.width, b.y],
+    [b.x + b.width, b.y + b.height],
+    [b.x, b.y + b.height],
+  ] as const
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const [x, y] of corners) {
+    const wx = t.a * x + t.c * y + t.e
+    const wy = t.b * x + t.d * y + t.f
+    if (wx < minX) minX = wx
+    if (wx > maxX) maxX = wx
+    if (wy < minY) minY = wy
+    if (wy > maxY) maxY = wy
+  }
+  return makeSelrect(minX, minY, maxX - minX, maxY - minY)
+}
+
 function indexShape(
   objects: Record<string, PenpotNode>,
   parentsIndex: Record<string, Set<string>>,
@@ -64,7 +84,12 @@ function indexShape(
     return index
   }
 
-  const bound: Selrect = makeSelrect(bounds.x, bounds.y, bounds.width, bounds.height)
+  // A hit-transform overlay (paused motion) displaces the shape: index its
+  // ANIMATED bounds so the broad phase finds it where it's drawn. Narrow phase
+  // (overlaps) inverse-maps the query back to the stored rest geometry.
+  const hitTransform = (shape as SelectionIndexShape).hitTransform
+  const animated = hitTransform ? transformBoundsByMatrix(bounds, hitTransform) : bounds
+  const bound: Selrect = makeSelrect(animated.x, animated.y, animated.width, animated.height)
 
   const shapeId = shape.id
   const frameId = shape.frameId || ZERO_UUID

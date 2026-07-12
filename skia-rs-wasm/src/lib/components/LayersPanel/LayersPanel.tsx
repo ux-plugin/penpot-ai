@@ -220,6 +220,7 @@ export function LayersPanel({ className }: LayersPanelProps) {
 
   return (
     <FloatingEditorRail
+      docked
       side="left"
       title={TAB_TITLES[activeTab]}
       collapsed={collapsed}

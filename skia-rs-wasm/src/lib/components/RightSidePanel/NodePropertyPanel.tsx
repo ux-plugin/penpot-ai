@@ -1,6 +1,7 @@
 import type { RectLikeNode } from '../../renderer/properties/panel-utils'
 import { NodeIdentitySection } from './Sections/NodeIdentitySection'
 import { PositionSection } from './Sections/PositionSection'
+import { MotionRestSection } from './Sections/MotionRestSection'
 import { AppearanceSection } from './Sections/AppearanceSection'
 import { ShapeSection } from './Sections/ShapeSection'
 import { VectorEditSection } from './Sections/VectorEditSection'
@@ -35,6 +36,8 @@ export function NodePropertyPanel({ nodeId, initialNode, readOnly }: NodePropert
       <PositionSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 
       {isScene3D(nodeId) && <ThreeDObjectSection nodeId={nodeId} />}
+
+      <MotionRestSection nodeId={nodeId} />
 
       <AppearanceSection nodeId={nodeId} initialNode={initialNode} readOnly={readOnly} />
 

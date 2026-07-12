@@ -8,6 +8,7 @@
  * to the whole page so the tab is never blank.
  */
 
+import { CodeBlock } from '../CodeBlock'
 import { useMemo } from 'react'
 import { useSnapshot } from 'valtio'
 import type { IndexedPage } from '../../worker/types'
@@ -73,16 +74,8 @@ export function CodeTab() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
-        {scopeLabel ? `Scope: ${scopeLabel}` : ''}
-      </div>
-      <pre
-        className="m-0 min-h-0 flex-1 overflow-auto p-3 text-[11px] leading-relaxed text-foreground"
-        style={{ fontFamily: 'ui-monospace, monospace' }}
-      >
-        {code}
-      </pre>
+    <div className="flex h-full min-h-0 flex-col p-2">
+      <CodeBlock code={code} label={scopeLabel || 'tsx'} className="min-h-0 flex-1" />
     </div>
   )
 }

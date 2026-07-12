@@ -277,7 +277,7 @@ export function ShapeToolbar() {
 
   return (
     <aside
-      className="pointer-events-auto fixed bottom-6 left-1/2 z-60 flex -translate-x-1/2 flex-col items-center gap-2"
+      className="pointer-events-auto absolute bottom-6 left-1/2 z-60 flex -translate-x-1/2 flex-col items-center gap-2"
       aria-label="Shape tools"
     >
       {/* Transient "resume last edit" — floated to the right of the pill (absolute, so

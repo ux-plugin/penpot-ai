@@ -39,6 +39,25 @@ function inverseTransformPoint(world: Point, t: Matrix): Point {
 
 const EPSILON = 1e-10
 
+/** AABB of a query rect mapped by the INVERSE of an affine (world query -> rest space). */
+function inverseTransformRect(rect: Selrect, t: Matrix): Selrect {
+  const corners: Point[] = [
+    point(rect.x, rect.y),
+    point(rect.x + rect.width, rect.y),
+    point(rect.x + rect.width, rect.y + rect.height),
+    point(rect.x, rect.y + rect.height),
+  ]
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const c of corners) {
+    const p = inverseTransformPoint(c, t)
+    if (p.x < minX) minX = p.x
+    if (p.x > maxX) maxX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.y > maxY) maxY = p.y
+  }
+  return makeSelrect(minX, minY, maxX - minX, maxY - minY)
+}
+
 function almostZero(value: number): boolean {
   return Math.abs(value) < EPSILON
 }
@@ -632,15 +651,21 @@ export function overlaps(shape: PenpotNode, rect: Selrect, usingSelrect: boolean
     return false
   }
 
+  // Modifier-aware hit-test: a shape carrying a rest->animated overlay transform
+  // (set during a paused motion preview) is DRAWN elsewhere than its rest
+  // geometry, so map the world query back into rest space before testing.
+  const hitTransform = (shape as { hitTransform?: Matrix }).hitTransform
+  const src = hitTransform ? inverseTransformRect(rect, hitTransform) : rect
+
   // Adjust rect for stroke width
   const firstStroke = shape.strokes?.[0]
   const strokeWidth = firstStroke?.strokeWidth ?? 0
   const swidth = strokeWidth / 2
   const adjustedRect: Selrect = makeSelrect(
-    rect.x - swidth,
-    rect.y - swidth,
-    rect.width + 2 * swidth,
-    rect.height + 2 * swidth
+    src.x - swidth,
+    src.y - swidth,
+    src.width + 2 * swidth,
+    src.height + 2 * swidth
   )
 
   // Handle shapes without fills (stroke-only) — but skip stroke-only mode

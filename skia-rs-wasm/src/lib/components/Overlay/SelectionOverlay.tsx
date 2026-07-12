@@ -23,6 +23,7 @@ import {
   wasmSelectionRect as wasmSelectionRectSignal,
 } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
+import { motionPlaying, motionPreviewActive } from '../../renderer/motion/motion-store'
 import {
   HANDLE_FILL,
   HANDLE_SIZE_WORLD,
@@ -103,10 +104,17 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   // reads these instead of the stale doc content.
   const editorIsEmpty = useSignalCoalesced(textEditorIsEmpty)
   const editingId = useSignalCoalesced(textEditorShapeId)
+  const isMotionPreview = useSignalCoalesced(motionPreviewActive)
+  const isMotionPlaying = useSignalCoalesced(motionPlaying)
 
   const rawZoom = viewport?.zoom ?? 1
   const safeZoom = Number.isFinite(rawZoom) && rawZoom > 0 ? rawZoom : 1
   const hasFiniteSelectionRect = finiteSelectionOverlayRect(wasmSelectionRect)
+  // Selection chrome (box outline + move grab) shows when a motion preview is
+  // PAUSED — hidden only during active playback. The edit handles (resize /
+  // rotation / corner squares) stay gated on `!isMotionPreview`, so they're
+  // hidden while paused until they become keyframe-aware (scale/rotate/resize
+  // land in later slices).
   const showHandles =
     selectedIds.size >= 1 &&
     hasFiniteSelectionRect &&
@@ -114,7 +122,9 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     !isMoving &&
     !isTextEditing &&
     !isPathEditing &&
-    !isScene3dEditing
+    !isScene3dEditing &&
+    !isMotionPlaying
+  const showEditHandles = showHandles && !isMotionPreview
 
   const hitSize = HANDLE_SIZE_WORLD / safeZoom
 
@@ -195,8 +205,8 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     wasmSelectionRect.height > thresholdTinyWorld
 
   useLayoutEffect(() => {
-    selectionCornerHandlesVisible.value = showHandles && showCornerHandles
-  }, [showHandles, showCornerHandles])
+    selectionCornerHandlesVisible.value = showEditHandles && showCornerHandles
+  }, [showEditHandles, showCornerHandles])
 
   // Hide the selection outline only for an empty *click-created* text box, so it
   // shows just the caret until characters are typed. Click-created boxes are
@@ -224,8 +234,8 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     // Hide the box outline while vector-editing too — the PathEditorOverlay's
     // anchor/handle markers stand in for the selection box.
     selectionRectOutlineVisible.value =
-      !isMoving && !selectedTextEmpty && !isPathEditing && !isScene3dEditing
-  }, [isMoving, selectedTextEmpty, isPathEditing, isScene3dEditing])
+      !isMoving && !selectedTextEmpty && !isPathEditing && !isScene3dEditing && !isMotionPlaying
+  }, [isMoving, selectedTextEmpty, isPathEditing, isScene3dEditing, isMotionPlaying])
 
   const gradientForOverlay = useGradientFill()
 
@@ -314,23 +324,27 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
               overrideCursor={overrideCursor}
               onPointerDown={onSelectionRectPointerDown}
             />
-            <ResizeHandles
-              effectiveBounds={rect}
-              zoom={safeZoom}
-              skipCorners
-              rotationDeg={rotationDeg}
-              halfFlip={halfFlip}
-              overrideCursor={overrideCursor}
-              onResizeHandlePointerDown={onResizeHandlePointerDown}
-            />
-            <RotationHitArea
-              bounds={rect}
-              zoom={safeZoom}
-              rotationDeg={rotationDeg}
-              halfFlip={halfFlip}
-              overrideCursor={overrideCursor}
-              onPointerDown={onRotationPointerDown}
-            />
+            {showEditHandles && (
+              <>
+                <ResizeHandles
+                  effectiveBounds={rect}
+                  zoom={safeZoom}
+                  skipCorners
+                  rotationDeg={rotationDeg}
+                  halfFlip={halfFlip}
+                  overrideCursor={overrideCursor}
+                  onResizeHandlePointerDown={onResizeHandlePointerDown}
+                />
+                <RotationHitArea
+                  bounds={rect}
+                  zoom={safeZoom}
+                  rotationDeg={rotationDeg}
+                  halfFlip={halfFlip}
+                  overrideCursor={overrideCursor}
+                  onPointerDown={onRotationPointerDown}
+                />
+              </>
+            )}
           </g>
           {gradientForOverlay != null && (
             <g style={{ filter: 'url(#selection-line-glow)' }}>

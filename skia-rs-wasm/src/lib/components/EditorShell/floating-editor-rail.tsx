@@ -15,6 +15,8 @@ export interface FloatingEditorRailProps extends React.ComponentProps<'aside'> {
   onCollapsedChange: (collapsed: boolean) => void
   children?: React.ReactNode
   footer?: React.ReactNode
+  /** Flush docked styling for use inside a resizable panel (no fixed positioning, rounding, or shadow). */
+  docked?: boolean
 }
 
 export function FloatingEditorRail({
@@ -25,8 +27,34 @@ export function FloatingEditorRail({
   children,
   footer,
   className,
+  docked = false,
   ...rest
 }: FloatingEditorRailProps) {
+  if (docked) {
+    return (
+      <aside
+        className={cn(
+          'pointer-events-auto flex h-full w-full min-h-0 flex-col overflow-hidden bg-white text-card-foreground',
+          side === 'left' ? 'border-r border-border' : 'border-l border-border',
+          className,
+        )}
+        {...rest}
+      >
+        <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border px-3 py-2">
+          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-foreground">
+            {title}
+          </h2>
+        </div>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
+        {footer != null ? (
+          <div className="shrink-0 border-t border-border px-3 py-2 text-xs text-muted-foreground">
+            {footer}
+          </div>
+        ) : null}
+      </aside>
+    )
+  }
+
   return (
     <aside
       className={cn(
