@@ -16,6 +16,7 @@ import {
   type Noise,
   type RectLikeNode,
 } from '../../../renderer/properties/panel-utils'
+import type { Material } from '../../../renderer/api/material'
 import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
@@ -24,6 +25,9 @@ import { useColorEditor } from '../use-color-editor'
 function mergeEffects(node: RectLikeNode): EffectItem[] {
   const items: EffectItem[] = []
   for (const s of (node as Record<string, unknown>).shadow as Shadow[] ?? []) {
+    // Guard against holey/corrupted shadow arrays (e.g. an undefined pushed by
+    // a stale splitEffects) so the whole panel doesn't crash on `s.style`.
+    if (!s) continue
     items.push({ kind: s.style, shadow: s })
   }
   // A shape may carry a layer blur AND a background blur simultaneously
@@ -52,6 +56,10 @@ function mergeEffects(node: RectLikeNode): EffectItem[] {
   if (texture) {
     items.push({ kind: 'texture', texture })
   }
+  const material = (node as Record<string, unknown>).material as Material | undefined
+  if (material) {
+    items.push({ kind: 'material', material })
+  }
   return items
 }
 
@@ -63,6 +71,7 @@ function splitEffects(effects: EffectItem[]): {
   glass: Glass | undefined
   noise: Noise | undefined
   texture: Texture | undefined
+  material: Material | undefined
 } {
   const shadows: Shadow[] = []
   let layerBlur: Blur | undefined
@@ -70,6 +79,7 @@ function splitEffects(effects: EffectItem[]): {
   let glass: Glass | undefined
   let noise: Noise | undefined
   let texture: Texture | undefined
+  let material: Material | undefined
   // At most one of each blur kind survives — if the user added two
   // layer-blur rows, the last one wins. Same for background-blur.
   for (const e of effects) {
@@ -83,11 +93,13 @@ function splitEffects(effects: EffectItem[]): {
       noise = e.noise
     } else if (e.kind === 'texture') {
       texture = e.texture
-    } else {
+    } else if (e.kind === 'material') {
+      material = e.material
+    } else if (e.kind === 'drop-shadow' || e.kind === 'inner-shadow') {
       shadows.push(e.shadow)
     }
   }
-  return { shadow: shadows, layerBlur, backgroundBlur, glass, noise, texture }
+  return { shadow: shadows, layerBlur, backgroundBlur, glass, noise, texture, material }
 }
 
 export interface EffectsSectionProps {
@@ -114,7 +126,7 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
       const before = getCommittedNodeOnActivePage(nodeId)
       const pid = getActiveOrSinglePageId()
       if (!before || !pid) return
-      const { shadow, layerBlur, backgroundBlur, glass, noise, texture } = splitEffects(next)
+      const { shadow, layerBlur, backgroundBlur, glass, noise, texture, material } = splitEffects(next)
       const partial: Record<string, unknown> = { shadow }
       // Include blur fields when they have a value or when clearing a
       // previously set blur. Use null (not undefined) to clear —
@@ -141,6 +153,10 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
       const hadTexture = (before as Record<string, unknown>).texture != null
       if (texture !== undefined || hadTexture) {
         partial.texture = texture ?? null
+      }
+      const hadMaterial = (before as Record<string, unknown>).material != null
+      if (material !== undefined || hadMaterial) {
+        partial.material = material ?? null
       }
       await commitNodePartialUpdate(nodeId, before, partial as Partial<PenpotNode>, pid)
     },

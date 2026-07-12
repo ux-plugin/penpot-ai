@@ -1,4 +1,5 @@
 import type { Blur, Fill, Glass, PenpotNode, Shadow, Stroke } from 'penpot-exporter/types'
+import type { Material } from '../api/material'
 
 export const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -122,7 +123,25 @@ export const DEFAULT_TEXTURE: Texture = {
   hidden: false,
 }
 
-/** Max stacked effects (shadows + blur + glass + noise + texture) per shape. */
+/**
+ * A custom SkSL shader material (post-body overlay effect). `Material` is
+ * defined next to the WASM bridge (`api/material.ts`) and reused here so the
+ * panel and the renderer share one type. The starter source is a UV gradient
+ * — `u_resolution` (engine-supplied) is the shape size in px.
+ */
+export const DEFAULT_MATERIAL: Material = {
+  source: `// Engine-supplied uniforms must still be declared to use them.
+uniform float2 u_resolution; // shape size in px (filled by the engine)
+
+half4 main(float2 p) {
+  float2 uv = p / u_resolution;
+  return half4(uv.x, uv.y, 1.0, 1.0);
+}`,
+  uniforms: [],
+  hidden: false,
+}
+
+/** Max stacked effects (shadows + blur + glass + noise + texture + material) per shape. */
 export const MAX_EFFECTS = 8
 
 export type EffectKind =
@@ -133,6 +152,7 @@ export type EffectKind =
   | 'glass'
   | 'noise'
   | 'texture'
+  | 'material'
 
 export type EffectItem =
   | { kind: 'drop-shadow'; shadow: Shadow }
@@ -142,6 +162,7 @@ export type EffectItem =
   | { kind: 'glass'; glass: Glass }
   | { kind: 'noise'; noise: Noise }
   | { kind: 'texture'; texture: Texture }
+  | { kind: 'material'; material: Material }
 
 export function normalizeHex(input: string): string {
   let s = input.trim()

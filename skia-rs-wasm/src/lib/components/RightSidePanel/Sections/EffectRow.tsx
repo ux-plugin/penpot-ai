@@ -11,6 +11,7 @@ import {
   DEFAULT_GLASS,
   DEFAULT_NOISE,
   DEFAULT_TEXTURE,
+  DEFAULT_MATERIAL,
 } from '../../../renderer/properties/panel-utils'
 import type { ColorEditorKind } from '../color-editor-context'
 import { useEffectEditorFor } from '../use-color-editor'
@@ -23,6 +24,7 @@ const EFFECT_KIND_OPTIONS: { value: EffectKind; label: string }[] = [
   { value: 'glass', label: 'Glass' },
   { value: 'noise', label: 'Noise' },
   { value: 'texture', label: 'Texture' },
+  { value: 'material', label: 'Custom shader' },
 ]
 
 /** Convert Shadow color to a Fill so swatch background can be computed. */
@@ -42,6 +44,7 @@ function getEffectHidden(item: EffectItem): boolean {
   if (item.kind === 'glass') return item.glass.hidden ?? false
   if (item.kind === 'noise') return item.noise.hidden ?? false
   if (item.kind === 'texture') return item.texture.hidden ?? false
+  if (item.kind === 'material') return item.material.hidden ?? false
   return item.shadow.hidden
 }
 
@@ -64,12 +67,16 @@ function convertEffect(current: EffectItem, newKind: EffectKind): EffectItem {
   if (newKind === 'texture') {
     return { kind: 'texture', texture: { ...DEFAULT_TEXTURE, hidden } }
   }
+  if (newKind === 'material') {
+    return { kind: 'material', material: { ...DEFAULT_MATERIAL, hidden } }
+  }
   if (
     current.kind === 'layer-blur' ||
     current.kind === 'background-blur' ||
     current.kind === 'glass' ||
     current.kind === 'noise' ||
-    current.kind === 'texture'
+    current.kind === 'texture' ||
+    current.kind === 'material'
   ) {
     return { kind: newKind, shadow: { ...DEFAULT_SHADOW, style: newKind, hidden } }
   }
@@ -90,6 +97,7 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
   const isGlass = effect.kind === 'glass'
   const isNoise = effect.kind === 'noise'
   const isTexture = effect.kind === 'texture'
+  const isMaterial = effect.kind === 'material'
 
   const { isActive: effectExpanded, openEffectEditor, closeEditor } = useEffectEditorFor(effect.kind as ColorEditorKind, index)
 
@@ -261,6 +269,29 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
             <svg viewBox="0 0 12 12" className="size-3 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth="1.2">
               <path d="M2 2h8v8H2z" />
               <path d="M2 6h8M6 2v8" />
+            </svg>
+          </button>
+        )}
+
+        {/* Material indicator: code / shader icon (</>) */}
+        {isMaterial && (
+          <button
+            type="button"
+            onClick={toggleEffectExpand}
+            className={cn(
+              'flex size-5 shrink-0 items-center justify-center rounded border',
+              'focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
+              effectExpanded
+                ? 'border-ring bg-accent ring-2 ring-ring'
+                : 'border-border bg-gradient-to-br from-indigo-100 to-purple-100',
+            )}
+            title={effectExpanded ? 'Close shader editor' : 'Open shader editor'}
+            aria-expanded={effectExpanded}
+            aria-label="Toggle shader editor"
+          >
+            <svg viewBox="0 0 12 12" className="size-3 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4.5 3.5 2 6l2.5 2.5" />
+              <path d="M7.5 3.5 10 6l-2.5 2.5" />
             </svg>
           </button>
         )}

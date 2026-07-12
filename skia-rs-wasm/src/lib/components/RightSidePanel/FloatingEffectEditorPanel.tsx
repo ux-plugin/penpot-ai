@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { Blur, Fill, Glass, Shadow } from 'penpot-exporter/types'
 import { Eye, EyeOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -6,6 +6,9 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { EffectItem, EffectKind, Noise, NoiseSlot, Texture } from '../../renderer/properties/panel-utils'
 import { MAX_NOISE_SLOTS, normalizeHex } from '../../renderer/properties/panel-utils'
+import type { Material, MaterialUniformValue, MaterialCompileResult } from '../../renderer/api/material'
+import { compileMaterial } from '../../renderer/api/material'
+import { getWasmModule } from '../../renderer/wasm-module'
 import { isColorFill } from '@/lib/renderer/verification'
 import { fillSwatchBackground } from '../FillEditor/fill-swatch-background'
 import { useColorEditor } from './use-color-editor'
@@ -22,7 +25,26 @@ const EFFECT_KIND_OPTIONS: { value: EffectKind; label: string }[] = [
   { value: 'glass', label: 'Glass' },
   { value: 'noise', label: 'Noise' },
   { value: 'texture', label: 'Texture' },
+  { value: 'material', label: 'Custom shader' },
 ]
+
+/** Pack normalized-float RGB(A) components into a #RRGGBB hex string. */
+function rgbToHex(vals: number[]): string {
+  const c = (x: number) =>
+    Math.max(0, Math.min(255, Math.round((x ?? 0) * 255)))
+      .toString(16)
+      .padStart(2, '0')
+  return `#${c(vals[0])}${c(vals[1])}${c(vals[2])}`
+}
+
+/** Parse #RRGGBB into `comps` normalized floats (alpha=1 for vec4). */
+function hexToRgb(hex: string, comps: number): number[] {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16) / 255
+  const g = parseInt(h.slice(2, 4), 16) / 255
+  const b = parseInt(h.slice(4, 6), 16) / 255
+  return comps >= 4 ? [r, g, b, 1] : [r, g, b]
+}
 
 // ── Surface profile SVG icons (16×16 viewBox, cross-section curves) ──
 
@@ -142,6 +164,25 @@ export function FloatingEffectEditorPanel() {
   // live, blur clears the draft back to the committed value.
   const [hexDraft, setHexDraft] = useState<string | null>(null)
 
+  // Material: compile+reflect the SkSL (debounced) so the panel can render
+  // controls + show errors. Hooks must run unconditionally, so `materialSource`
+  // is derived from the (possibly-null) active effect before the early return.
+  const [compileResult, setCompileResult] = useState<MaterialCompileResult | null>(null)
+  const materialSource =
+    activeEffect?.kind === 'material' ? activeEffect.material.source : null
+  useEffect(() => {
+    if (materialSource == null) {
+      setCompileResult(null)
+      return
+    }
+    const module = getWasmModule()
+    if (!module) return
+    const id = setTimeout(() => {
+      setCompileResult(compileMaterial(module, materialSource))
+    }, 150)
+    return () => clearTimeout(id)
+  }, [materialSource])
+
   if (!targetKey || !activeEffect) return null
 
   const isShadow = activeEffect.kind === 'drop-shadow' || activeEffect.kind === 'inner-shadow'
@@ -149,12 +190,14 @@ export function FloatingEffectEditorPanel() {
   const isGlass = activeEffect.kind === 'glass'
   const isNoise = activeEffect.kind === 'noise'
   const isTexture = activeEffect.kind === 'texture'
+  const isMaterial = activeEffect.kind === 'material'
 
   const shadow = isShadow ? activeEffect.shadow : null
   const blur = isBlur ? activeEffect.blur : null
   const glass = isGlass ? activeEffect.glass : null
   const noise = isNoise ? activeEffect.noise : null
   const texture = isTexture ? activeEffect.texture : null
+  const material = isMaterial ? activeEffect.material : null
 
   // ── Shadow color helpers ──
   const shadowFill = shadow ? shadowColorToFill(shadow) : null
@@ -193,6 +236,11 @@ export function FloatingEffectEditorPanel() {
     handleEffectChange({ kind: 'texture', texture: { ...texture, ...partial } })
   }
 
+  const handleMaterialUpdate = (partial: Partial<Material>) => {
+    if (!material) return
+    handleEffectChange({ kind: 'material', material: { ...material, ...partial } })
+  }
+
   // Solid-only color commit, coalesced into one undo frame per picker burst
   // (mirrors the fills color editor). Gradients aren't editable inline here.
   const commitShadowColor = (hex: string) => {
@@ -224,7 +272,9 @@ export function FloatingEffectEditorPanel() {
         ? noise?.hidden
         : isTexture
           ? texture?.hidden
-          : shadow?.hidden
+          : isMaterial
+            ? material?.hidden
+            : shadow?.hidden
 
   const toggleHidden = () => {
     if (isGlass && glass) {
@@ -235,6 +285,8 @@ export function FloatingEffectEditorPanel() {
       handleNoiseUpdate({ hidden: !noise.hidden })
     } else if (isTexture && texture) {
       handleTextureUpdate({ hidden: !texture.hidden })
+    } else if (isMaterial && material) {
+      handleMaterialUpdate({ hidden: !material.hidden })
     } else if (isShadow && shadow) {
       handleShadowUpdate({ hidden: !shadow.hidden })
     }
@@ -616,6 +668,118 @@ export function FloatingEffectEditorPanel() {
           </label>
         </div>
       )}
+
+      {/* ── Material (custom SkSL shader) controls ── */}
+      {isMaterial && material && (() => {
+        const uniforms = compileResult?.uniforms ?? []
+
+        const readVals = (name: string, comps: number): number[] => {
+          const u = material.uniforms?.find((x) => x.name === name)
+          if (!u) return Array.from({ length: comps }, () => 0)
+          return u.value.type === 'f32' ? [u.value.value] : [...u.value.value]
+        }
+        const commitVals = (name: string, comps: number, vals: number[]) => {
+          let value: MaterialUniformValue
+          if (comps <= 1) value = { type: 'f32', value: vals[0] ?? 0 }
+          else if (comps === 2) value = { type: 'vec2', value: [vals[0] ?? 0, vals[1] ?? 0] }
+          else if (comps === 3) value = { type: 'vec3', value: [vals[0] ?? 0, vals[1] ?? 0, vals[2] ?? 0] }
+          else value = { type: 'vec4', value: [vals[0] ?? 0, vals[1] ?? 0, vals[2] ?? 0, vals[3] ?? 0] }
+          const others = (material.uniforms ?? []).filter((x) => x.name !== name)
+          handleMaterialUpdate({ uniforms: [...others, { name, value }] })
+        }
+
+        return (
+          <div className="space-y-3">
+            {/* SkSL source editor */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-medium text-muted-foreground">SkSL source</span>
+              <textarea
+                className="border-input bg-background h-44 w-full resize-y rounded-md border p-2 font-mono text-[11px] leading-relaxed"
+                spellCheck={false}
+                value={material.source}
+                onChange={(e) => handleMaterialUpdate({ source: e.target.value })}
+              />
+            </div>
+
+            {/* Compile status */}
+            <div className="text-[11px]">
+              {compileResult == null ? (
+                <span className="text-muted-foreground">Compiling…</span>
+              ) : compileResult.ok ? (
+                <span className="text-emerald-600">
+                  ✓ Compiled · {uniforms.length} uniform{uniforms.length === 1 ? '' : 's'}
+                  {compileResult.inputs.length > 0
+                    ? ` · ${compileResult.inputs.length} input${compileResult.inputs.length === 1 ? '' : 's'}`
+                    : ''}
+                </span>
+              ) : (
+                <span className="break-words font-mono text-red-600">{compileResult.error}</span>
+              )}
+            </div>
+
+            {/* Reflected uniform controls (slider per component, or a color swatch) */}
+            {compileResult?.ok && uniforms.length > 0 && (
+              <div className="space-y-2 border-t border-border pt-2">
+                {uniforms.map((u) => {
+                  const comps = u.components || 1
+                  const vals = readVals(u.name, comps)
+
+                  if (u.isColor && comps >= 3) {
+                    const hex = rgbToHex(vals)
+                    return (
+                      <div key={u.name} className="flex items-center gap-2">
+                        <span className="w-24 shrink-0 truncate font-mono text-[11px] text-muted-foreground" title={u.name}>{u.name}</span>
+                        <label className="relative size-5 shrink-0 overflow-hidden rounded border border-border" style={{ background: hex }} title="Pick color">
+                          <input
+                            type="color"
+                            aria-label={u.name}
+                            value={hex}
+                            onChange={(e) => commitVals(u.name, comps, hexToRgb(e.target.value, comps))}
+                            className="absolute inset-0 size-full cursor-pointer opacity-0"
+                          />
+                        </label>
+                        <Input
+                          type="text"
+                          className="h-7 min-w-0 flex-1 font-mono text-xs"
+                          value={hex}
+                          onChange={(e) => {
+                            const v = e.target.value.trim()
+                            if (/^#[0-9A-Fa-f]{6}$/.test(v)) commitVals(u.name, comps, hexToRgb(v, comps))
+                          }}
+                        />
+                      </div>
+                    )
+                  }
+
+                  return (
+                    <div key={u.name} className="flex items-center gap-2">
+                      <span className="w-24 shrink-0 truncate font-mono text-[11px] text-muted-foreground" title={u.name}>{u.name}</span>
+                      <div className="flex min-w-0 flex-1 gap-1">
+                        {Array.from({ length: comps }).map((_, i) => (
+                          <NumericField
+                            key={i}
+                            className="h-7 min-w-0 flex-1 px-1.5 text-xs"
+                            aria-label={`${u.name}[${i}]`}
+                            value={vals[i] ?? 0}
+                            min={-9999}
+                            max={9999}
+                            step={0.01}
+                            onCommit={(nv) => {
+                              const next = [...vals]
+                              next[i] = nv
+                              commitVals(u.name, comps, next)
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      })()}
     </FloatingPanelShell>
   )
 }
