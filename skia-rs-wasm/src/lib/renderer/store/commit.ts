@@ -22,6 +22,10 @@ import {
   onChangesApplied,
   type ChangesAppliedPagePayload,
 } from '../../changes/change-emitter'
+import {
+  type DocMetaChange,
+  processDocMetaChanges,
+} from '../../changes/doc-meta-change'
 import { rendererSyncHandler, syncRendererAfterUpdate } from './renderer-sync'
 import { selectionSyncHandler } from './selection-sync'
 import { workerSyncHandler } from '../../worker/worker-sync'
@@ -98,20 +102,40 @@ export function applyChangesLocally(
 }
 
 /**
+ * Apply doc-meta changes synchronously to `docProxy.meta`. No subscribers run
+ * here — the library panels read `docProxy.meta` reactively via Valtio and
+ * re-render on the assignment below.
+ */
+function applyDocMetaChangesLocally(changes: readonly DocMetaChange[]): void {
+  if (changes.length === 0) return
+  if (!docProxy.meta) return
+  docProxy.meta = processDocMetaChanges(docProxy.meta, changes)
+}
+
+/**
  * Apply Change[] to docProxy and dispatch a `changes-applied` event.
  * Subscribers handle renderer sync, worker indexes, and history.
+ *
+ * Commits may carry doc-meta changes alongside page changes (e.g. a library
+ * sync edits a paint style AND rewrites the cached color on every referencing
+ * fill). Doc-meta is applied first, synchronously, against `docProxy.meta`;
+ * page changes follow on the existing per-page path; one frame is recorded.
  */
 export async function commitChanges(params: CommitChangesParams): Promise<void> {
   const {
     redoChanges,
     undoChanges = [],
+    docMetaRedoChanges = [],
+    docMetaUndoChanges = [],
     pageId: explicitPageId,
     saveUndo,
     fromHistory,
     ignoreRendererSync,
   } = params
 
-  if (redoChanges.length === 0) return
+  const hasPageChanges = redoChanges.length > 0
+  const hasDocMetaChanges = docMetaRedoChanges.length > 0
+  if (!hasPageChanges && !hasDocMetaChanges) return
 
   for (const c of redoChanges) {
     if (c.type === 'add-obj') {
@@ -119,32 +143,40 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
     }
   }
 
-  const fallbackPageId = explicitPageId ?? getActiveOrSinglePageId()
-  const byPage = groupChangesByPageId(redoChanges, fallbackPageId)
-  if (byPage.size === 0) return
+  // Doc-meta first so subscribers and post-commit reads observe the new
+  // library state in sync with any cascading page rewrites in the same frame.
+  applyDocMetaChangesLocally(docMetaRedoChanges)
 
   const pages: ChangesAppliedPagePayload[] = []
-  for (const [pageId, pageChanges] of byPage) {
-    const result = applyChangesLocally({ pageId, redoChanges: pageChanges })
-    if (!result) continue
-    pages.push({
-      pageId,
-      changes: pageChanges,
-      oldPage: result.oldPage,
-      updatedPage: result.updatedPage,
-    })
+  if (hasPageChanges) {
+    const fallbackPageId = explicitPageId ?? getActiveOrSinglePageId()
+    const byPage = groupChangesByPageId(redoChanges, fallbackPageId)
+    for (const [pageId, pageChanges] of byPage) {
+      const result = applyChangesLocally({ pageId, redoChanges: pageChanges })
+      if (!result) continue
+      pages.push({
+        pageId,
+        changes: pageChanges,
+        oldPage: result.oldPage,
+        updatedPage: result.updatedPage,
+      })
+    }
+    // No page actually got changes (e.g. all changes had unknown pageIds and
+    // no fallback): still proceed if doc-meta has work; otherwise abort.
+    if (pages.length === 0 && !hasDocMetaChanges) return
   }
 
-  if (pages.length === 0) return
-
   const resolvedFromHistory = fromHistory ?? false
-  const resolvedSaveUndo = saveUndo ?? undoChanges.length > 0
+  const resolvedSaveUndo =
+    saveUndo ?? (undoChanges.length > 0 || docMetaUndoChanges.length > 0)
 
   // Record the undo frame SYNCHRONOUSLY, before the async dispatch — so it
   // exists the instant docProxy is mutated and `commitChanges` yields.
   recordHistoryFrame({
     redoChanges,
     undoChanges,
+    docMetaRedoChanges,
+    docMetaUndoChanges,
     fromHistory: resolvedFromHistory,
     saveUndo: resolvedSaveUndo,
   })
@@ -152,6 +184,8 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
   await emitChangesApplied({
     redoChanges,
     undoChanges,
+    docMetaRedoChanges,
+    docMetaUndoChanges,
     pages,
     fromHistory: resolvedFromHistory,
     saveUndo: resolvedSaveUndo,

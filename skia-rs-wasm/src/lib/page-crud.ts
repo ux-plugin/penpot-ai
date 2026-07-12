@@ -82,6 +82,10 @@ export async function undo(): Promise<void> {
   if (!frame) return
   await commitChanges({
     redoChanges: frame.undoChanges,
+    // On undo: the frame's `docMetaUndoChanges` are the "forward" inversions
+    // to apply (revert add → del, mod → mod with prior value). saveUndo:false
+    // + fromHistory:true bypass history-sync, so no new frame is recorded.
+    docMetaRedoChanges: frame.docMetaUndoChanges,
     saveUndo: false,
     fromHistory: true,
   })
@@ -94,6 +98,7 @@ export async function redo(): Promise<void> {
   if (!frame) return
   await commitChanges({
     redoChanges: frame.redoChanges,
+    docMetaRedoChanges: frame.docMetaRedoChanges,
     saveUndo: false,
     fromHistory: true,
   })

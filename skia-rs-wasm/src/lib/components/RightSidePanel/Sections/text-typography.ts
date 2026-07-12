@@ -241,12 +241,17 @@ export function readTypography(node: NodeWithText): TypographyValues {
   }
 }
 
-/** Span-level typography attributes the panel can set. */
+/**
+ * Span-level typography attributes the panel can set. Also used by the token
+ * apply path (`src/lib/tokens/materialize.ts`), which stamps a typography
+ * token's resolved font properties onto every span.
+ */
 export type SpanPatch = Partial<
   Pick<
     TextNode,
     | 'fontFamily'
     | 'fontId'
+    | 'fontVariantId'
     | 'fontWeight'
     | 'fontStyle'
     | 'fontSize'
@@ -255,6 +260,8 @@ export type SpanPatch = Partial<
     | 'textDecoration'
     | 'textTransform'
     | 'textDirection'
+    | 'typographyRefId'
+    | 'typographyRefFile'
     | 'fills'
   >
 >

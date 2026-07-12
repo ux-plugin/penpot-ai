@@ -1,9 +1,12 @@
 import { proxy } from 'valtio'
 import { proxyMap, proxySet } from 'valtio/utils'
 import type { PenpotDocument } from 'penpot-exporter/types'
+import type { TokensLib } from '../../tokens/types'
 import type { IndexedNode, IndexedPage } from '../../worker/types'
 
-export type DocumentMeta = Omit<PenpotDocument, 'children'>
+// `tokens` is a runtime `TokensLib` at the editor layer, not the serialized DTCG
+// container the exporter declares — the resolver/CRUD operate on the runtime shape.
+export type DocumentMeta = Omit<PenpotDocument, 'children' | 'tokens'> & { tokens?: TokensLib }
 
 export interface DocState {
   meta: DocumentMeta | null

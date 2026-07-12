@@ -14,6 +14,7 @@ import { useHistoryStore } from '../../history/history-store'
 import { enrichPageWithPositionData } from './enrich-position-data'
 import { setSelectedIds } from './document-selection'
 import { docProxy, getActiveOrSinglePageId, type DocumentMeta } from './doc-proxy'
+import { emptyTokensLib } from '../../tokens/types'
 
 function buildPageMap(children: PenpotDocument['children']): Map<string, IndexedPage> {
   const map = new Map<string, IndexedPage>()
@@ -71,6 +72,11 @@ export class DocumentModel {
     useHistoryStore.getState().clearHistory()
     const { children, ...meta } = doc
     docProxy.meta = meta as DocumentMeta
+    // Tokens live as a runtime TokensLib at the editor layer. Coerce away any
+    // serialized DTCG container (import is deferred) and guarantee the slot exists.
+    if (!Array.isArray((docProxy.meta.tokens as { sets?: unknown } | undefined)?.sets)) {
+      docProxy.meta.tokens = emptyTokensLib()
+    }
     const pageMap = buildPageMap(children)
     docProxy.pageMap.clear()
     for (const [pageId, page] of pageMap) {

@@ -57,6 +57,7 @@ import {
   type TextDirection,
   type VAlign,
 } from './text-typography'
+import { TokenBinding } from '../tokens/TokenBinding'
 import { familyMeta } from '@/lib/renderer/api/google-fonts'
 import { useSignalCoalesced } from '@/lib/renderer/signals/use-signal-coalesced'
 import {
@@ -185,6 +186,10 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
   // Doc-model display carries its own Mixed flags (per-range styling can leave
   // differing span values even when nothing is being edited).
   const docDisplay = readTypographyDisplay(initialNode)
+  const typographyToken = (initialNode as { appliedTokens?: Record<string, string> })
+    .appliedTokens?.typography
+  // A token-bound typography is read-only; edit by unlinking (drift decision).
+  const controlsDisabled = readOnly || Boolean(typographyToken)
   const docValues = docDisplay.values
   const live = editing && editingId === nodeId && liveStyles != null
   const { values, mixed } = live ? displayFromCurrentStyles(liveStyles, docValues) : docDisplay
@@ -348,11 +353,20 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
 
         {!collapsed && (
           <div className="space-y-3">
+            {(typographyToken || !readOnly) && (
+              <TokenBinding
+                nodeId={nodeId}
+                attr="typography"
+                tokenType="typography"
+                label="typography"
+                boundName={typographyToken}
+              />
+            )}
             {/* Font family on its own row — opens the searchable picker panel. */}
             <button
               ref={fontTriggerRef}
               type="button"
-              disabled={readOnly}
+              disabled={controlsDisabled}
               onClick={openPicker}
               aria-label="Font family"
               aria-haspopup="dialog"
@@ -374,7 +388,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
               <Select
                 value={mixed.weight ? '' : values.weight}
                 onValueChange={(w) => void commit({ span: { fontWeight: w } })}
-                disabled={readOnly}
+                disabled={controlsDisabled}
               >
                 <SelectTrigger size="sm" className="min-w-0 flex-1" aria-label="Font weight">
                   <SelectValue placeholder={mixed.weight ? 'Mixed' : 'Weight'} />
@@ -390,7 +404,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
               <div className="flex gap-1">
                 <ToggleButton
                   active={!mixed.italic && values.italic}
-                  disabled={readOnly}
+                  disabled={controlsDisabled}
                   label="Italic"
                   onClick={() =>
                     void commit({ span: { fontStyle: values.italic ? 'normal' : 'italic' } })
@@ -400,7 +414,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                 </ToggleButton>
                 <ToggleButton
                   active={!mixed.decoration && values.decoration === 'underline'}
-                  disabled={readOnly}
+                  disabled={controlsDisabled}
                   label="Underline"
                   onClick={() => void commit({ span: { textDecoration: nextDecoration(values.decoration, 'underline') } })}
                 >
@@ -408,7 +422,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                 </ToggleButton>
                 <ToggleButton
                   active={!mixed.decoration && values.decoration === 'line-through'}
-                  disabled={readOnly}
+                  disabled={controlsDisabled}
                   label="Strikethrough"
                   onClick={() => void commit({ span: { textDecoration: nextDecoration(values.decoration, 'line-through') } })}
                 >
@@ -428,7 +442,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                   type="number"
                   min={1}
                   step={1}
-                  disabled={readOnly}
+                  disabled={controlsDisabled}
                   value={sizeDraft ?? (mixed.size ? '' : values.size)}
                   placeholder={mixed.size ? 'Mixed' : undefined}
                   onChange={(e) => setSizeDraft(e.target.value)}
@@ -447,7 +461,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                   type="number"
                   min={0}
                   step={0.1}
-                  disabled={readOnly}
+                  disabled={controlsDisabled}
                   value={lineDraft ?? (mixed.lineHeight ? '' : values.lineHeight)}
                   placeholder={mixed.lineHeight ? 'Mixed' : undefined}
                   onChange={(e) => setLineDraft(e.target.value)}
@@ -470,7 +484,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                     <ToggleButton
                       key={value}
                       active={!mixed.hAlign && values.hAlign === value}
-                      disabled={readOnly}
+                      disabled={controlsDisabled}
                       label={label}
                       onClick={() => void commit({ textAlign: value })}
                     >
@@ -483,7 +497,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                     <ToggleButton
                       key={value}
                       active={values.vAlign === value}
-                      disabled={readOnly}
+                      disabled={controlsDisabled}
                       label={label}
                       onClick={() => void commit({ verticalAlign: value })}
                     >
@@ -504,7 +518,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                   id="rsp-letter-spacing"
                   type="number"
                   step={0.1}
-                  disabled={readOnly}
+                  disabled={controlsDisabled}
                   value={letterDraft ?? (mixed.letterSpacing ? '' : values.letterSpacing)}
                   placeholder={mixed.letterSpacing ? 'Mixed' : undefined}
                   onChange={(e) => setLetterDraft(e.target.value)}
@@ -525,7 +539,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                       <ToggleButton
                         key={value}
                         active={active}
-                        disabled={readOnly}
+                        disabled={controlsDisabled}
                         label={label}
                         onClick={() =>
                           void commit({ span: { textTransform: active ? 'none' : value } })
@@ -555,7 +569,7 @@ export function TypographySection({ nodeId, initialNode, readOnly }: TypographyS
                       className="flex-1"
                       aria-pressed={active}
                       title={title}
-                      disabled={readOnly}
+                      disabled={controlsDisabled}
                       onClick={() => void commit({ span: { textDirection: value } })}
                     >
                       {label}

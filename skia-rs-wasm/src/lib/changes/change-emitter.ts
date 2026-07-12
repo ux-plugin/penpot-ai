@@ -24,6 +24,7 @@
 
 import type { Change } from 'penpot-exporter/types'
 import type { IndexedPage } from '../worker/types'
+import type { DocMetaChange } from './doc-meta-change'
 
 export interface ChangesAppliedPagePayload {
   pageId: string
@@ -40,6 +41,15 @@ export interface ChangesAppliedEvent {
   redoChanges: Change[]
   /** Full undo set across every affected page (for history). */
   undoChanges: Change[]
+  /**
+   * Doc-meta arm of the commit — library CRUD (paint styles, text styles).
+   * Renderer-sync / selection-sync / worker-sync ignore these; doc-meta state
+   * has already been applied to `docProxy.meta` by the time the event fires.
+   * UI panels reading the library re-render via Valtio's reactivity, not this
+   * event. Included here only so history-sync can record them on the frame.
+   */
+  docMetaRedoChanges: readonly DocMetaChange[]
+  docMetaUndoChanges: readonly DocMetaChange[]
   /** Per-page payload — one entry per page touched by this commit. */
   pages: readonly ChangesAppliedPagePayload[]
   fromHistory: boolean

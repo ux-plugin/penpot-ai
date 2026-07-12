@@ -1,5 +1,7 @@
 /**
- * Left rail: page / layer tree, page metadata, layer selection.
+ * Left rail: tabbed surface with Design (pages + layers) and Tokens (design
+ * tokens — color/typography + the full token system). The rail title follows
+ * the active tab so the user never sees "Design" while looking at the Tokens pane.
  */
 
 import { useCallback, useMemo, useState } from 'react'
@@ -19,6 +21,19 @@ import { setActivePage, addPage } from '../../page-crud'
 import { commitChanges } from '../../renderer/store/commit'
 import { buildReparentChanges, resolveDropTarget, type DropSide } from './reparent'
 import { LayerRow, type DragOverState } from './layer-row'
+import { TokensSections } from '../TokensPanel/TokensPanel'
+
+type LeftRailTab = 'design' | 'tokens'
+
+const TABS: { id: LeftRailTab; label: string }[] = [
+  { id: 'design', label: 'Design' },
+  { id: 'tokens', label: 'Tokens' },
+]
+
+const TAB_TITLES: Record<LeftRailTab, string> = {
+  design: 'Design',
+  tokens: 'Tokens',
+}
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -34,6 +49,7 @@ export function LayersPanel({ className }: LayersPanelProps) {
   const [pagesOpen, setPagesOpen] = useState(true)
   const [layersOpen, setLayersOpen] = useState(true)
   const [dragOver, setDragOver] = useState<DragOverState | null>(null)
+  const [activeTab, setActiveTab] = useState<LeftRailTab>('design')
 
   const [editingPageId, setEditingPageId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState('')
@@ -182,21 +198,54 @@ export function LayersPanel({ className }: LayersPanelProps) {
     await commitChanges({ redoChanges, undoChanges, pageId: activePageId })
   }, [])
 
-  const footer = layerCount === 1 ? '1 layer' : `${layerCount} layers`
+  const designFooter = layerCount === 1 ? '1 layer' : `${layerCount} layers`
+  const tokensCount = useMemo(() => {
+    const sets = doc.meta?.tokens?.sets ?? []
+    return sets.reduce((n, s) => n + s.tokens.length, 0)
+  }, [doc.meta?.tokens])
+  const tokensFooter = tokensCount === 1 ? '1 token' : `${tokensCount} tokens`
+  const footer = activeTab === 'design' ? designFooter : tokensFooter
 
   return (
     <FloatingEditorRail
       side="left"
-      title="Design"
+      title={TAB_TITLES[activeTab]}
       collapsed={collapsed}
       onCollapsedChange={setCollapsed}
       footer={footer}
       data-layers-panel
       className={cn('min-h-0', className)}
     >
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-2 p-2">
-          {/* PAGES Section */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* Tab bar — same pill style as InspectorTabBar in the right rail. */}
+        <div
+          role="tablist"
+          aria-label="Left rail"
+          className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5"
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={cn(
+                'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                activeTab === t.id
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'design' && (
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="space-y-2 p-2">
+              {/* PAGES Section */}
           <section>
             <div className="flex items-center gap-0.5 pl-1 pr-0.5">
               <button
@@ -399,8 +448,19 @@ export function LayersPanel({ className }: LayersPanelProps) {
               </div>
             )}
           </section>
-        </div>
-      </ScrollArea>
+
+            </div>
+          </ScrollArea>
+        )}
+
+        {activeTab === 'tokens' && (
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="space-y-2 p-2">
+              <TokensSections />
+            </div>
+          </ScrollArea>
+        )}
+      </div>
     </FloatingEditorRail>
   )
 }
