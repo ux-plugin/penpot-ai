@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { Stroke } from 'penpot-exporter/types'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -31,9 +31,9 @@ export function StrokesSection({ nodeId, readOnly, initialNode }: StrokesSection
   const [collapsed, setCollapsed] = useState(false)
 
   // Render-phase sync: when initialNode changes externally, reset optimistic local state.
-  const prevNodeRef = useRef(initialNode)
-  if (prevNodeRef.current !== initialNode) {
-    prevNodeRef.current = initialNode
+  const [prevNode, setPrevNode] = useState(initialNode)
+  if (prevNode !== initialNode) {
+    setPrevNode(initialNode)
     setStrokes(initialNode.strokes ? [...initialNode.strokes] : [])
   }
 

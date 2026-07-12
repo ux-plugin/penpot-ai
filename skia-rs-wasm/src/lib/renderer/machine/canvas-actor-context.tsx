@@ -11,6 +11,8 @@ import type { CanvasActorRef } from './canvas-actor-types'
 
 const CanvasActorContext = createContext<CanvasActorRef | null>(null)
 
+// The provider and its consumer hook belong in one file; Fast Refresh still works.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useCanvasActor(): CanvasActorRef {
   const ref = useContext(CanvasActorContext)
   if (ref == null) {

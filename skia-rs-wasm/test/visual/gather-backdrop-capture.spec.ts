@@ -91,7 +91,6 @@ test(`gather-backdrop-capture: ${SCENE_NAME} | ${SCENARIO} @ f${FRAMES}`, async 
     },
     [SCENARIO, FRAMES] as const,
   )
-  // eslint-disable-next-line no-console
   console.log(
     `[gather-backdrop-capture] snapshot.cache=${JSON.stringify(runResult.snapshot.cache)} ` +
     `wallMs=${runResult.wallMs.toFixed(1)} frames=${runResult.frames}`
@@ -158,7 +157,6 @@ test(`gather-backdrop-capture: ${SCENE_NAME} | ${SCENARIO} @ f${FRAMES}`, async 
     )
   }
 
-  // eslint-disable-next-line no-console
   console.log(
     `[gather-backdrop-capture] scene=${SCENE_NAME}  backdrops=${events.length}  outDir=${dir}`,
   )

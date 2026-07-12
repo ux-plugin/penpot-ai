@@ -6,7 +6,12 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'src/lib/renderer/api/google-fonts-catalog.ts']),
+  globalIgnores([
+    'dist',
+    'src/lib/renderer/api/google-fonts-catalog.ts',
+    // Vendored git submodule — linted in its own repo, not here.
+    'packages/penpot-exporter/**',
+  ]),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -28,6 +33,14 @@ export default defineConfig([
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
+  {
+    // shadcn/ui primitives export a component plus its cva `*Variants` const by
+    // design; the fast-refresh rule can't see that and is a false positive here.
+    files: ['src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
     },
   },
 ])

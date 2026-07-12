@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { Blur, Glass, PenpotNode, Shadow } from 'penpot-exporter/types'
 import type { Texture } from '../../../renderer/properties/panel-utils'
 import { ChevronDown, ChevronRight } from 'lucide-react'
@@ -10,7 +10,6 @@ import {
 } from '../../../renderer/properties/commit-node-properties'
 import {
   DEFAULT_SHADOW,
-  DEFAULT_TEXTURE,
   MAX_EFFECTS,
   type EffectItem,
   type Noise,
@@ -114,9 +113,9 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
   const [collapsed, setCollapsed] = useState(false)
 
   // Render-phase sync: when initialNode changes externally, reset local state.
-  const prevNodeRef = useRef(initialNode)
-  if (prevNodeRef.current !== initialNode) {
-    prevNodeRef.current = initialNode
+  const [prevNode, setPrevNode] = useState(initialNode)
+  if (prevNode !== initialNode) {
+    setPrevNode(initialNode)
     setEffects(mergeEffects(initialNode))
   }
 

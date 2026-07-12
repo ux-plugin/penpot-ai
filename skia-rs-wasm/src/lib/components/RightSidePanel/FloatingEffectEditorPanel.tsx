@@ -167,21 +167,22 @@ export function FloatingEffectEditorPanel() {
   // Material: compile+reflect the SkSL (debounced) so the panel can render
   // controls + show errors. Hooks must run unconditionally, so `materialSource`
   // is derived from the (possibly-null) active effect before the early return.
-  const [compileResult, setCompileResult] = useState<MaterialCompileResult | null>(null)
+  // Tag each compiled result with the source it came from, so a source change
+  // (or clearing it) derives back to `null` — i.e. "Compiling…" — without a
+  // synchronous setState in the effect (which would cascade renders).
+  const [compiled, setCompiled] = useState<{ source: string; result: MaterialCompileResult } | null>(null)
   const materialSource =
     activeEffect?.kind === 'material' ? activeEffect.material.source : null
   useEffect(() => {
-    if (materialSource == null) {
-      setCompileResult(null)
-      return
-    }
+    if (materialSource == null) return
     const module = getWasmModule()
     if (!module) return
     const id = setTimeout(() => {
-      setCompileResult(compileMaterial(module, materialSource))
+      setCompiled({ source: materialSource, result: compileMaterial(module, materialSource) })
     }, 150)
     return () => clearTimeout(id)
   }, [materialSource])
+  const compileResult = compiled?.source === materialSource ? compiled.result : null
 
   if (!targetKey || !activeEffect) return null
 
