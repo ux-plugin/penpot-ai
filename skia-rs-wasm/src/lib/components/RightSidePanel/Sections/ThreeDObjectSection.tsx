@@ -1,23 +1,28 @@
 /**
- * ThreeDObjectSection — inspector for an embedded 3D *scene*.
+ * 3D inspector sections for an embedded 3D *scene*.
  *
- * Reads the read-cache (`scene3dProxy`, kept in sync with the document by
- * scene3d-sync). Shows scene-level controls (camera + environment) and an object
- * list — clicking an object focuses it and enters 3D-edit mode. When a scene is
- * being edited with a focused object, its transform + material are shown too.
- * Every edit commits through the document (one undoable mod-obj on the scene node).
+ * The inspector is CONTEXTUAL (the scene container is the only real 2D selection,
+ * with objects focused inside it):
+ *   - `ThreeDSceneSection`   — scene-level props (camera + environment + edit
+ *                              backdrop). Shown alongside the container's normal
+ *                              sections when the scene itself is selected. The object
+ *                              LIST lives in the Layers panel, not here.
+ *   - `ThreeDObjectInspector`— the focused object's transform + material, shown
+ *                              ALONE (NodePropertyPanel swaps out the container's 2D
+ *                              chrome) so you inspect the object, not its placeholder.
+ *
+ * Both read the read-cache (`scene3dProxy`, kept in sync by scene3d-sync) and commit
+ * through the document (one undoable mod-obj on the scene node).
  */
 
-import { useSnapshot } from 'valtio'
-import { Box } from 'lucide-react'
+import { ChevronLeft } from 'lucide-react'
 import { Separator } from '@/components/ui/separator'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
 import {
-  scene3dProxy,
   patchObjectMaterialLocal,
   patchSceneBackgroundLocal,
+  setFocusedObject,
   SCENE3D_EDIT_BACKDROP,
   type Object3DEntry,
   type Scene3DDocument,
@@ -27,10 +32,9 @@ import {
   commitObjectMaterial,
   commitObjectTransform,
   commitSceneBackground,
-  commitSceneCamera,
   commitSceneEnv,
 } from '@/lib/renderer/three/scene3d-commit'
-import { useScene3dEditing } from '@/lib/renderer/three/use-scene3d-editing'
+import { getNode } from '@/lib/renderer/store/doc-proxy'
 import { NumericField } from '../NumericField'
 
 const AXES = ['X', 'Y', 'Z'] as const
@@ -63,46 +67,88 @@ function Vec3Row({
   )
 }
 
-/** The list of objects in the scene; clicking one focuses it (entering edit mode). */
-function ObjectList({
+/**
+ * Scene-level properties (camera + environment). Rendered next to the scene
+ * container's normal sections when the scene itself is selected. No object list —
+ * that's the Layers panel's job.
+ */
+export function ThreeDSceneSection({
   scene,
-  focusedId,
-  onPick,
+  editing,
 }: {
   scene: Scene3DDocument
-  focusedId: string | null
-  onPick: (objId: string) => void
+  editing: boolean
 }) {
+  const nodeId = scene.sceneId
   return (
-    <div className="space-y-0.5">
-      <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">Objects</p>
-      {scene.objects.length === 0 && (
-        <p className="px-2 py-1 text-xs text-muted-foreground">
-          Empty scene — enter 3D edit and add an object.
-        </p>
-      )}
-      {scene.objects.map((o) => (
-        <button
-          key={o.id}
-          type="button"
-          onClick={() => onPick(o.id)}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-md px-2 py-1 text-sm',
-            o.id === focusedId ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950' : 'hover:bg-muted',
-          )}
-        >
-          <Box className="size-3.5 shrink-0 stroke-[1.5]" />
-          <span className="flex-1 truncate text-left">{o.name}</span>
-        </button>
-      ))}
-    </div>
+    <>
+      <Separator />
+      <div className="min-w-0 space-y-3">
+        <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">3D scene</p>
+
+        {/* Camera projection + FOV live in the camera popover (bottom edit strip), where
+            the whole camera list is managed. The inspector keeps only scene environment. */}
+        <div className="space-y-1">
+          <Label htmlFor="td-env">Light intensity</Label>
+          <NumericField
+            id="td-env"
+            min={0}
+            max={4}
+            step={0.1}
+            value={scene.env.intensity}
+            onCommit={(v) => void commitSceneEnv(nodeId, { intensity: v })}
+          />
+        </div>
+
+        {editing && (
+          <div className="space-y-1">
+            <Label>Edit background</Label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                aria-label="Edit background color"
+                value={scene.background ?? SCENE3D_EDIT_BACKDROP}
+                onChange={(e) => patchSceneBackgroundLocal(nodeId, e.target.value)}
+                onBlur={(e) => void commitSceneBackground(nodeId, e.target.value)}
+                className="h-8 w-8 cursor-pointer rounded-md border border-border bg-transparent p-0"
+              />
+              <Input
+                type="text"
+                value={scene.background ?? SCENE3D_EDIT_BACKDROP}
+                onChange={(e) => patchSceneBackgroundLocal(nodeId, e.target.value)}
+                onBlur={(e) => void commitSceneBackground(nodeId, e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => void commitSceneBackground(nodeId, null)}
+                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+              >
+                Default
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">Backdrop shown only while editing.</p>
+          </div>
+        )}
+      </div>
+    </>
   )
 }
 
-/** Transform + material for the focused object. */
-function ObjectProps({ sceneId, object }: { sceneId: string; object: Object3DEntry }) {
+/**
+ * The focused object's transform + material. Shown ALONE (the panel swaps out the
+ * container's 2D sections), with a breadcrumb back to the scene so scene-level props
+ * are one click away.
+ */
+export function ThreeDObjectInspector({
+  sceneId,
+  object,
+}: {
+  sceneId: string
+  object: Object3DEntry
+}) {
   const t = object.transform3d
   const m = object.material
+  const sceneName = (getNode(sceneId) as { name?: string } | undefined)?.name ?? '3D scene'
 
   const setPos = (axis: number, v: number) => {
     const position = [...t.position] as Vec3
@@ -119,15 +165,25 @@ function ObjectProps({ sceneId, object }: { sceneId: string; object: Object3DEnt
 
   return (
     <div className="min-w-0 space-y-3">
-      <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-        {object.name}
-      </p>
+      {/* Breadcrumb: which object, and one click back to the scene (clears focus). */}
+      <button
+        type="button"
+        onClick={() => setFocusedObject(null)}
+        className="flex w-full items-center gap-1 rounded-md py-0.5 text-left text-[11px] text-muted-foreground hover:text-foreground"
+      >
+        <ChevronLeft className="size-3.5 shrink-0" />
+        <span className="truncate">{sceneName}</span>
+      </button>
+      <p className="truncate text-sm font-medium">{object.name}</p>
+
       <Vec3Row label="Position" value={t.position} onCommit={setPos} />
       <Vec3Row label="Rotation (°)" value={t.rotationEuler} onCommit={setRot} />
       <div className="space-y-1">
         <Label htmlFor="td-scale">Scale</Label>
         <NumericField id="td-scale" min={0.01} step={0.05} value={t.scale[0]} onCommit={setScale} />
       </div>
+
+      <Separator />
 
       <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">Material</p>
       <div className="flex items-center gap-2">
@@ -182,90 +238,5 @@ function ObjectProps({ sceneId, object }: { sceneId: string; object: Object3DEnt
         </div>
       </div>
     </div>
-  )
-}
-
-export function ThreeDObjectSection({ nodeId }: { nodeId: string }) {
-  const snap = useSnapshot(scene3dProxy)
-  const { editingSceneId, enter } = useScene3dEditing()
-  const scene = snap.scenes.get(nodeId) as Scene3DDocument | undefined
-  if (!scene) return null
-
-  const editingThis = editingSceneId === nodeId
-  const focused =
-    editingThis && snap.focusedObjectId
-      ? scene.objects.find((o) => o.id === snap.focusedObjectId)
-      : undefined
-
-  return (
-    <>
-      <Separator />
-      <div className="min-w-0 space-y-3">
-        <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">3D scene</p>
-
-        <ObjectList
-          scene={scene}
-          focusedId={snap.focusedObjectId}
-          onPick={(id) => enter(nodeId, id)}
-        />
-
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1">
-            <Label htmlFor="td-fov">Camera FOV</Label>
-            <NumericField
-              id="td-fov"
-              min={10}
-              max={120}
-              precision={0}
-              value={scene.camera.fov}
-              onCommit={(v) => void commitSceneCamera(nodeId, { fov: v })}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="td-env">Light intensity</Label>
-            <NumericField
-              id="td-env"
-              min={0}
-              max={4}
-              step={0.1}
-              value={scene.env.intensity}
-              onCommit={(v) => void commitSceneEnv(nodeId, { intensity: v })}
-            />
-          </div>
-        </div>
-
-        {editingThis && (
-          <div className="space-y-1">
-            <Label>Edit background</Label>
-            <div className="flex items-center gap-2">
-              <input
-                type="color"
-                aria-label="Edit background color"
-                value={scene.background ?? SCENE3D_EDIT_BACKDROP}
-                onChange={(e) => patchSceneBackgroundLocal(nodeId, e.target.value)}
-                onBlur={(e) => void commitSceneBackground(nodeId, e.target.value)}
-                className="h-8 w-8 cursor-pointer rounded-md border border-border bg-transparent p-0"
-              />
-              <Input
-                type="text"
-                value={scene.background ?? SCENE3D_EDIT_BACKDROP}
-                onChange={(e) => patchSceneBackgroundLocal(nodeId, e.target.value)}
-                onBlur={(e) => void commitSceneBackground(nodeId, e.target.value)}
-              />
-              <button
-                type="button"
-                onClick={() => void commitSceneBackground(nodeId, null)}
-                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-              >
-                Default
-              </button>
-            </div>
-            <p className="text-[10px] text-muted-foreground">Backdrop shown only while editing.</p>
-          </div>
-        )}
-      </div>
-
-      {focused && <ObjectProps sceneId={nodeId} object={focused} />}
-    </>
   )
 }
