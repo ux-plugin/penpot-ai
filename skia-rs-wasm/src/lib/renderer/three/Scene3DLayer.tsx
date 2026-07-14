@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { X } from 'lucide-react'
 import { useSnapshot, subscribe } from 'valtio'
 import * as THREE from 'three'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
@@ -28,6 +29,7 @@ import {
   isScene3D,
   activeCamera,
   setFocusedObject,
+  setSelectedCamera,
   patchObjectTransformLocal,
   dollyBounds,
   frameDistanceForRadius,
@@ -40,11 +42,12 @@ import {
   buildSceneInstance,
   applyDocToInstance,
   readTransformFromObject,
+  readCameraPose,
   pickObject,
 } from './three-scene'
 import { isOrtho, isPersp, orthoFrustum } from './camera3d'
 import { recenterOnScene } from './scene3d-recenter'
-import { editPlacement, effectiveDim, exitFocus, focusRegion, focusDim, reveal } from './scene3d-focus'
+import { editPlacement, exitFocus, focusViewportRect } from './scene3d-focus'
 import { beginEditSession, endEditSession, markEditDirty } from './edit-history'
 import {
   scene3dResizePreview,
@@ -53,7 +56,7 @@ import {
   type ResizeHandle,
   type Bounds,
 } from './scene3d-resize'
-import { commitObjectTransform } from './scene3d-commit'
+import { commitCameraPatch, commitObjectTransform } from './scene3d-commit'
 import { resolveScene3dPointerDown } from './scene3d-pointer'
 import { useScene3dEditing } from './use-scene3d-editing'
 
@@ -86,9 +89,13 @@ function syncedInstance(
   doc: Scene3DDocument,
   renderer: THREE.WebGLRenderer,
 ): Scene3DInstance {
-  const wantOrtho = activeCamera(doc).projection === 'orthographic'
+  const active = activeCamera(doc)
+  const wantOrtho = active.projection === 'orthographic'
   let inst = getInstance(sceneId)
-  if (inst && isOrtho(inst.camera) !== wantOrtho) {
+  // Rebuild when the projection class flips (persp⇄ortho) OR the look-through camera
+  // changes — either way the new camera's pose/projection/fov must take, and the
+  // orbit/gizmo controls (bound to inst.camera) rebind via the effect below.
+  if (inst && (isOrtho(inst.camera) !== wantOrtho || inst.activeCamId !== active.id)) {
     deleteInstance(sceneId)
     inst = undefined
   }
@@ -158,7 +165,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   const editSurfaceRef = useRef<HTMLDivElement>(null)
   const locatorRef = useRef<HTMLButtonElement>(null)
   const resizeBoxRef = useRef<HTMLDivElement>(null)
-  const focusScrimRef = useRef<HTMLDivElement>(null)
+  const focusExitRef = useRef<HTMLButtonElement>(null)
   const resizeStateRef = useRef<{ handle: ResizeHandle; sceneId: string; startWorld: { x: number; y: number }; startBounds: Bounds } | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const gizmoRef = useRef<TransformControls | null>(null)
@@ -182,6 +189,9 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     ? (snap.scenes.get(editingSceneId) as Scene3DDocument | undefined)
     : undefined
   const editingProjection = editingDoc ? activeCamera(editingDoc).projection : null
+  // The look-through camera of the edited scene — the controls effect re-runs on a
+  // switch so orbit/gizmo rebind to the rebuilt camera at its own pose.
+  const editingActiveCameraId = editingDoc ? activeCamera(editingDoc).id : null
 
   // --- init renderer once ---
   useEffect(() => {
@@ -215,8 +225,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       void movePreviewWorldDelta.value // live move-drag translation (and reset on commit)
       void scene3dResizePreview.value // live resize-drag bounds
       void editPlacement.value // in-place ⇄ focus
-      void focusDim.value // scrim strength
-      void reveal.value // sampling-worktree reveal
+      void focusViewportRect.value // central-hole bounds (panels resized)
       scheduleDraw()
     })
     const unsubModel = subscribe(scene3dProxy, scheduleDraw)
@@ -265,7 +274,10 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   // keyboard/command exits (Esc / V, via runCommand) match the menu's exit(), which
   // also clears focus. Keeps the "no focus outside edit" invariant in one place.
   useEffect(() => {
-    if (!editingSceneId) setFocusedObject(null)
+    if (!editingSceneId) {
+      setFocusedObject(null)
+      setSelectedCamera(null)
+    }
   }, [editingSceneId])
 
   // Focus mode is opt-in per edit session: entering (or switching) a scene always
@@ -331,6 +343,17 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     // setViewOffset crop, so cursor-anchored zoom would unproject to the wrong world
     // point; plain dolly-toward-target is position-independent and correct here.
     orbit.zoomToCursor = false
+    // buildCamera restored the camera's position + orientation from the persisted
+    // pose, but the orbit PIVOT isn't in the model. Reconstruct it on the camera's
+    // forward ray at the scene-centre depth so the first drag doesn't snap and
+    // orbiting stays centred on the content. For a fresh camera (which looks at the
+    // origin) this yields ~origin — i.e. unchanged behaviour.
+    {
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(inst.camera.quaternion)
+      const pivotDist = Math.max(0.5, -inst.camera.position.dot(fwd))
+      orbit.target.copy(inst.camera.position).addScaledVector(fwd, pivotDist)
+      orbit.update()
+    }
     // Clamp the dolly to the scene's home distance (captured once on the camera, so
     // it survives dolly + edit-exit/re-enter without ratcheting the bounds inward).
     const camUserData = inst.camera.userData as {
@@ -360,6 +383,25 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     }
     orbit.addEventListener('change', scheduleDraw)
     orbitRef.current = orbit
+
+    // Persist the view pose (position + aim) so a reload restores where the user
+    // left the camera. Live nav runs through the three camera (smooth); OrbitControls
+    // fires 'end' once per gesture (orbit/pan/dolly). Debounce so a scroll burst of
+    // many 'end's collapses toward ONE undoable mod-obj, mirroring the gizmo's
+    // commit-on-drag-end. A pending write is flushed on edit-exit (cleanup).
+    // Target THIS instance's camera id (not "whatever is active now") — the effect
+    // re-runs on a look-through switch, so a pending pose can't leak onto the camera
+    // the user just switched TO.
+    const poseCamId = inst.activeCamId
+    let poseTimer = 0
+    const persistPose = () => {
+      if (poseTimer) clearTimeout(poseTimer)
+      poseTimer = window.setTimeout(() => {
+        poseTimer = 0
+        void commitCameraPatch(sceneId, poseCamId, { transform3d: readCameraPose(inst.camera) })
+      }, 350)
+    }
+    orbit.addEventListener('end', persistPose)
 
     const tc = new TransformControls(inst.camera, surface)
     tc.setMode(gizmoMode)
@@ -415,6 +457,12 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     scheduleDraw()
 
     return () => {
+      // Flush a still-pending pose write so leaving edit within the debounce window
+      // doesn't drop the last navigation (pending ⇒ nav happened since the last commit).
+      if (poseTimer) {
+        clearTimeout(poseTimer)
+        void commitCameraPatch(sceneId, poseCamId, { transform3d: readCameraPose(inst.camera) })
+      }
       surface.removeEventListener('pointerdown', onPick)
       surface.removeEventListener('wheel', onWheel)
       inst.scene.remove(tc.getHelper())
@@ -426,7 +474,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       scheduleDraw()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingSceneId, snap.focusedObjectId, editingProjection])
+  }, [editingSceneId, snap.focusedObjectId, editingProjection, editingActiveCameraId])
 
   // Gizmo sub-tool (Move/Rotate/Scale) is machine state — apply it without
   // tearing down the controls.
@@ -557,7 +605,10 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // from its placed box); everything else uses the box's on-screen rect.
       let screen: ScreenRect | null = null
       if (isEditing && focused) {
-        screen = focusRegion(cssW, cssH)
+        // Focus FILLS the central canvas hole (between the panels) edge-to-edge and
+        // resizes with it — never spilling onto the rails/timeline (the panels paint
+        // above the canvas). No inset, no dim: the hole IS the scene.
+        screen = focusViewportRect.value ?? { x: 0, y: 0, w: cssW, h: cssH }
       } else {
         const world = sceneRectWorld(sceneId, isSel)
         if (world) {
@@ -592,7 +643,20 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     // and resizes the render region, not the placed box — so hide them while focused.
     positionOffscreenLocator(selRect, editingId != null && !focused)
     positionResizeBox(selRect, editingId != null && !focused)
-    positionFocusScrim(selRect, focused)
+    positionFocusExit(selRect, focused)
+  }
+
+  /** Position the focus-mode exit (✕) at the focus region's top-right corner. */
+  function positionFocusExit(rect: ScreenRect | null, focused: boolean) {
+    const btn = focusExitRef.current
+    if (!btn) return
+    if (focused && rect) {
+      btn.style.display = 'flex'
+      btn.style.left = `${rect.x + rect.w - 40}px`
+      btn.style.top = `${rect.y + 10}px`
+    } else {
+      btn.style.display = 'none'
+    }
   }
 
   function positionEditSurface(rect: ScreenRect | null, editing: boolean) {
@@ -648,22 +712,6 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     }
   }
 
-  /** Dim everything outside the focus region via a huge box-shadow spread from a
-   *  transparent rect over the region (the "hole"). Opacity tracks the focus dim. */
-  function positionFocusScrim(rect: ScreenRect | null, focused: boolean) {
-    const scrim = focusScrimRef.current
-    if (!scrim) return
-    if (focused && rect) {
-      scrim.style.display = 'block'
-      scrim.style.left = `${rect.x}px`
-      scrim.style.top = `${rect.y}px`
-      scrim.style.width = `${rect.w}px`
-      scrim.style.height = `${rect.h}px`
-      scrim.style.boxShadow = `0 0 0 9999px rgba(15, 17, 23, ${effectiveDim()})`
-    } else {
-      scrim.style.display = 'none'
-    }
-  }
 
   /** Pointer client coords → world, via the overlay canvas origin + current viewport. */
   function pointerToWorld(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
@@ -717,13 +765,32 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
 
   return (
     <>
-      {/* Focus-mode scrim — dims everything outside the focus region (below the 3D
-          canvas so the region itself stays clear). Positioned imperatively in draw(). */}
-      <div
-        ref={focusScrimRef}
-        aria-hidden
-        style={{ position: 'absolute', display: 'none', pointerEvents: 'none', zIndex: 4, borderRadius: 8 }}
-      />
+      {/* Focus-mode exit — a ✕ at the region's top-right that leaves focus (un-maximise),
+          alongside the strip's Done (which exits 3D edit). Positioned in draw(). */}
+      <button
+        ref={focusExitRef}
+        type="button"
+        title="Exit focus"
+        aria-label="Exit focus"
+        onClick={() => exitFocus()}
+        style={{
+          position: 'absolute',
+          display: 'none',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 30,
+          height: 30,
+          borderRadius: 8,
+          border: 'none',
+          background: 'rgba(255,255,255,0.14)',
+          color: '#fff',
+          cursor: 'pointer',
+          pointerEvents: 'all',
+          zIndex: 7,
+        }}
+      >
+        <X style={{ width: 16, height: 16 }} />
+      </button>
 
       <canvas
         ref={canvasRef}
