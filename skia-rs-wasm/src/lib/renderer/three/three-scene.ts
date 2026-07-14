@@ -10,9 +10,9 @@
 import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import type { Object3DEntry, Scene3DDocument, Scene3DInstance } from './scene3d-store'
+import type { Object3DEntry, Scene3DDocument, Scene3DInstance, Vec3 } from './scene3d-store'
 import { activeCamera, type Camera3DEntry } from './scene3d-store'
-import { CAM_FAR, CAM_NEAR, isPersp, orthoFrustum, perspHalfHeightAtDistance } from './camera3d'
+import { CAM_FAR, CAM_NEAR, isOrtho, isPersp, orthoFrustum, perspHalfHeightAtDistance } from './camera3d'
 
 const DEG = Math.PI / 180
 
@@ -20,29 +20,66 @@ const DEG = Math.PI / 180
 const CAM_HOME_POS: readonly [number, number, number] = [2.4, 1.8, 2.8]
 
 /**
+ * Place a freshly-built camera at its pose: the persisted `transform3d` (position +
+ * XYZ-Euler-degree aim) when present, else the canonical 3/4 home view looking at the
+ * origin. The rendered image depends only on position + orientation, so restoring
+ * these two reproduces the saved view exactly (the orbit pivot — not in the model —
+ * is reconstructed by the overlay from the camera's forward ray).
+ */
+function applyCameraPose(
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+  cam: Camera3DEntry,
+): void {
+  const pose = cam.transform3d
+  if (pose) {
+    camera.position.set(pose.position[0], pose.position[1], pose.position[2])
+    camera.rotation.set(
+      pose.rotationEuler[0] * DEG,
+      pose.rotationEuler[1] * DEG,
+      pose.rotationEuler[2] * DEG,
+    )
+  } else {
+    camera.position.set(CAM_HOME_POS[0], CAM_HOME_POS[1], CAM_HOME_POS[2])
+    camera.lookAt(0, 0, 0)
+  }
+}
+
+/**
  * Build the scene's active camera. Perspective is framed by FOV; orthographic by a
  * world half-height chosen to match the perspective framing at the home distance
  * (so a fresh ortho scene reads at the same scale). `orthoHalfHeight` is stashed on
  * `userData` so draw() can rebuild the frustum when the viewport aspect changes.
+ * The pose (position + aim) is then applied from the camera's persisted `transform3d`.
  */
 export function buildCamera(
   cam: Camera3DEntry,
   aspect = 1,
 ): THREE.PerspectiveCamera | THREE.OrthographicCamera {
-  const [px, py, pz] = CAM_HOME_POS
   if (cam.projection === 'orthographic') {
-    const halfH = perspHalfHeightAtDistance(cam.fov, Math.hypot(px, py, pz))
+    // Ortho framing is the camera's own `orthoSize` (persisted, independent of FOV);
+    // absent ⇒ derive a sensible default from the FOV at the home distance so a first
+    // switch to ortho reads at the same scale.
+    const halfH = cam.orthoSize ?? perspHalfHeightAtDistance(cam.fov, Math.hypot(...CAM_HOME_POS))
     const f = orthoFrustum(halfH, aspect)
     const ortho = new THREE.OrthographicCamera(f.left, f.right, f.top, f.bottom, CAM_NEAR, CAM_FAR)
     ortho.userData.orthoHalfHeight = halfH
-    ortho.position.set(px, py, pz)
-    ortho.lookAt(0, 0, 0)
+    applyCameraPose(ortho, cam)
     return ortho
   }
   const persp = new THREE.PerspectiveCamera(cam.fov, aspect, CAM_NEAR, CAM_FAR)
-  persp.position.set(px, py, pz)
-  persp.lookAt(0, 0, 0)
+  applyCameraPose(persp, cam)
   return persp
+}
+
+/** Read a live camera's pose back into a serializable patch (after orbit/pan/dolly),
+ *  mirroring `readTransformFromObject` for objects. */
+export function readCameraPose(
+  camera: THREE.Camera,
+): { position: Vec3; rotationEuler: Vec3 } {
+  return {
+    position: [camera.position.x, camera.position.y, camera.position.z],
+    rotationEuler: [camera.rotation.x / DEG, camera.rotation.y / DEG, camera.rotation.z / DEG],
+  }
 }
 
 function makePrimitiveGeometry(ref: 'cube' | 'sphere' | 'plane'): THREE.BufferGeometry {
@@ -98,7 +135,8 @@ export function buildSceneInstance(
   dir.position.set(3, 5, 4)
   scene.add(ambient, dir)
 
-  const camera = buildCamera(activeCamera(doc), 1)
+  const active = activeCamera(doc)
+  const camera = buildCamera(active, 1)
 
   const objects = new Map<string, THREE.Object3D>()
   for (const entry of doc.objects ?? []) {
@@ -112,7 +150,7 @@ export function buildSceneInstance(
     envRT.dispose()
   }
 
-  return { scene, camera, objects, dispose }
+  return { scene, camera, activeCamId: active.id, objects, dispose }
 }
 
 async function loadGLTFInto(parent: THREE.Object3D, url: string): Promise<void> {
@@ -198,6 +236,13 @@ export function applyDocToInstance(
   if (isPersp(inst.camera) && inst.camera.fov !== activeCam.fov) {
     inst.camera.fov = activeCam.fov
     inst.camera.updateProjectionMatrix()
+  } else if (isOrtho(inst.camera)) {
+    // Ortho framing is driven by `orthoHalfHeight` on userData, which
+    // renderSceneIntoBox turns into the frustum each frame — keep it in sync with the
+    // active camera's persisted `orthoSize` (live-editable via the popover).
+    const halfH =
+      activeCam.orthoSize ?? perspHalfHeightAtDistance(activeCam.fov, Math.hypot(...CAM_HOME_POS))
+    inst.camera.userData.orthoHalfHeight = halfH
   }
   inst.scene.traverse((o) => {
     const light = o as THREE.Light
