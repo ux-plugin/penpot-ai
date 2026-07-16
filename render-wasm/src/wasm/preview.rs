@@ -92,10 +92,30 @@ pub extern "C" fn preview_purge() {
     }
 }
 
-/// Full teardown (app shutdown / context lost). `preview_init` can rebuild.
+/// Full teardown for a context that is still ALIVE (app shutdown, re-init).
+/// Skia frees its resources by issuing GL calls, so the preview context must be
+/// current. If the context is gone, call `preview_abandon` instead.
 #[no_mangle]
 pub extern "C" fn preview_destroy() {
     unsafe {
+        PREVIEW = None;
+    }
+}
+
+/// Teardown for a context that is GONE (`webglcontextlost`).
+///
+/// Unlike `preview_destroy`, this is safe — and REQUIRED — when the backing GL
+/// context no longer exists: it abandons Skia's resources without issuing GL
+/// calls, then drops the state. It must NOT be wrapped in make-current (there
+/// is nothing to make current); and because a plain drop would emit GL calls
+/// into whatever context *is* current, skipping this could corrupt the main
+/// canvas. `preview_init` rebuilds from scratch afterwards.
+#[no_mangle]
+pub extern "C" fn preview_abandon() {
+    unsafe {
+        if let Some(state) = PREVIEW.as_mut() {
+            state.abandon();
+        }
         PREVIEW = None;
     }
 }

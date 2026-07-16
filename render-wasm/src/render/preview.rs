@@ -33,11 +33,20 @@ pub struct PreviewState {
     material: Option<Material>,
 }
 
+/// Leash the preview context's GPU resource cache. It only ever holds one
+/// framebuffer-wrapping surface plus a compiled program or two, so it can't
+/// legitimately need much — and a bound means a long-lived preview context
+/// can't quietly accumulate VRAM across a session. Skia evicts under this
+/// budget on its own; `purge`/`abandon` are the explicit releases.
+const PREVIEW_RESOURCE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
 impl PreviewState {
     /// Build the preview GPU state + a surface wrapping the preview canvas's
     /// default framebuffer. The preview GL context must be current.
     pub fn try_new(width: i32, height: i32) -> Result<Self> {
         let mut gpu = GpuState::try_new()?;
+        gpu.context
+            .set_resource_cache_limit(PREVIEW_RESOURCE_CACHE_BYTES);
         let surface = gpu.create_target_surface(width, height)?;
         Ok(Self {
             gpu,
@@ -109,7 +118,24 @@ impl PreviewState {
     /// focus mode closes. Recreating the context would force a full shader
     /// re-compile on reopen (the GL program cache is per-context), so we keep
     /// it warm and just drop the VRAM.
+    ///
+    /// Issues GL calls, so the preview context must be current. For a context
+    /// that's already GONE use `abandon` instead.
     pub fn purge(&mut self) {
         self.gpu.context.free_gpu_resources();
+    }
+
+    /// The backing GL context is GONE (`webglcontextlost`). Drop Skia's GPU
+    /// resources **without issuing any GL calls** — the only safe move here.
+    ///
+    /// This must happen before the `PreviewState` is dropped: Skia's normal
+    /// teardown (and `purge`/`free_gpu_resources`) frees resources by *calling*
+    /// GL, which against a dead context is undefined — and worse, whatever
+    /// context happens to be current would receive those calls, so a lost
+    /// preview context could corrupt the MAIN canvas. `abandon` marks every
+    /// resource invalid and suppresses the calls, making the subsequent drop
+    /// inert. (Not `release_resources_and_abandon`, which *does* issue GL.)
+    pub fn abandon(&mut self) {
+        self.gpu.context.abandon();
     }
 }

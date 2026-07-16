@@ -226,7 +226,13 @@ export interface WasmModule {
   _preview_draw(time: number): void
   /** Drop GPU resources, keep the context warm (focus closed). */
   _preview_purge(): void
+  /** Teardown for a LIVE context (frees via GL — must be made current first). */
   _preview_destroy(): void
+  /**
+   * Teardown for a context that is GONE (`webglcontextlost`): abandons Skia's
+   * resources without issuing GL. Must NOT be wrapped in make-current.
+   */
+  _preview_abandon(): void
 
   // Corners
   _set_shape_corners(r1: number, r2: number, r3: number, r4: number): void

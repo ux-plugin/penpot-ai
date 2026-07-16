@@ -45,6 +45,8 @@ let handle: number | null = null
 let ready = false
 let container: HTMLElement | null = null
 let size = { w: 0, h: 0 }
+/** Last CSS size we were attached at — replayed to rebuild after context loss. */
+let cssSize = { w: 0, h: 0 }
 
 /** Device-pixel buffer size for a CSS size, capped. */
 function deviceSize(cssW: number, cssH: number): { w: number; h: number } {
@@ -61,13 +63,33 @@ function deviceSize(cssW: number, cssH: number): { w: number; h: number } {
 }
 
 /**
- * Tear down everything and forget the element. Used on context loss: a lost
- * context can't be recreated on the same canvas, so the element itself must be
- * replaced — the next `attach` builds a fresh one.
+ * Tear down the canvas + context. A lost context can't be revived on the same
+ * canvas, so the element goes too and the next attach/draw builds a fresh one.
+ *
+ * `contextLost` picks how the Rust side lets go, and the distinction is not
+ * cosmetic:
+ *  - alive  → `_preview_destroy` under make-current; Skia frees by calling GL.
+ *  - lost   → `_preview_abandon`, NO make-current; Skia drops its resources
+ *             without emitting GL. Skipping this would leave the wasm-side
+ *             `PREVIEW` holding a dead context, and the eventual drop would
+ *             emit its GL calls into whatever context is current — i.e. the
+ *             MAIN canvas.
+ *
+ * `container`/`cssSize` deliberately survive so `drawPreview` can rebuild after
+ * a loss; only `destroyPreview` clears them.
  */
-function discard(module: WasmModule | null): void {
+function discard(module: WasmModule | null, contextLost: boolean): void {
   if (module && handle !== null) {
-    withPreviewContext(module, () => module._preview_destroy())
+    if (contextLost) {
+      if (typeof module._preview_abandon === 'function') module._preview_abandon()
+    } else {
+      withPreviewContext(module, () => module._preview_destroy())
+    }
+    try {
+      module.GL.deleteContext(handle)
+    } catch {
+      // Emscripten may already have dropped it along with the lost context.
+    }
   }
   if (canvasEl && canvasEl.parentElement) canvasEl.parentElement.removeChild(canvasEl)
   canvasEl = null
@@ -94,12 +116,11 @@ function createCanvas(module: WasmModule): boolean {
   if (!ctx) return false
 
   el.addEventListener('webglcontextlost', (e) => {
-    // Must preventDefault for a restore to ever be possible; we rebuild from
-    // scratch on the next attach rather than trying to resurrect this one.
+    // preventDefault is what makes a restore possible at all. We don't try to
+    // resurrect this context — we abandon it (so Skia never calls GL against a
+    // dead context) and let `drawPreview` rebuild lazily.
     e.preventDefault()
-    const c = container
-    discard(null)
-    container = c
+    discard(module, true)
   })
 
   handle = module.GL.registerContext(ctx, { majorVersion: 2 })
@@ -140,6 +161,7 @@ export function attachPreview(
   if (!canvasEl && !createCanvas(module)) return false
 
   container = el
+  cssSize = { w: cssW, h: cssH }
   if (canvasEl!.parentElement !== el) el.appendChild(canvasEl!)
 
   if (!ready) {
@@ -189,6 +211,10 @@ export function drawPreview(
   material: Material | null | undefined,
   time = 0
 ): void {
+  // Rebuild after a context loss. Without this a lost context would leave the
+  // pane blank for good: `discard` clears `ready`, every draw no-ops, and the
+  // stage's attach effect only runs on mount.
+  if (!ready && container && !attachPreview(module, container, cssSize.w, cssSize.h)) return
   if (!ready) return
   withPreviewContext(module, () => {
     setPreviewMaterial(module, material)
@@ -196,8 +222,9 @@ export function drawPreview(
   })
 }
 
-/** Full teardown — app shutdown only. */
+/** Full teardown — app shutdown only. Also forgets the recovery target. */
 export function destroyPreview(module: WasmModule): void {
-  discard(module)
+  discard(module, false)
   container = null
+  cssSize = { w: 0, h: 0 }
 }
