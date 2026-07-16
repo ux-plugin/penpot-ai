@@ -28,6 +28,12 @@ export interface WasmModule {
     ): number
     makeContextCurrent(handle: number): void
     getContext(handle: number): WebGL2RenderingContext | null
+    /**
+     * The context Emscripten currently has current. Read `.handle` before
+     * switching to the preview context so it can be restored afterwards —
+     * safer than assuming the previous one was the main canvas.
+     */
+    readonly currentContext?: { handle: number; GLctx: WebGL2RenderingContext | null }
     textures: { [key: number]: WebGLTexture }
     getNewId(objects: { [key: number]: unknown }): number
   }
@@ -208,6 +214,19 @@ export interface WasmModule {
   // Compile + reflect a material's SkSL source (staged via allocBytes);
   // returns a pointer to a result buffer the caller reads then frees.
   _compile_material(): number
+
+  // Isolated focus-mode preview — renders ONE material standalone into a
+  // second GL context (the preview canvas). The caller MUST make that context
+  // current before every one of these and restore the previous one after; the
+  // Rust side binds whatever context is current. See `focus-preview.ts`.
+  _preview_init(width: number, height: number): boolean
+  _preview_resize(width: number, height: number): void
+  _preview_set_material(): void
+  _preview_clear_material(): void
+  _preview_draw(time: number): void
+  /** Drop GPU resources, keep the context warm (focus closed). */
+  _preview_purge(): void
+  _preview_destroy(): void
 
   // Corners
   _set_shape_corners(r1: number, r2: number, r3: number, r4: number): void

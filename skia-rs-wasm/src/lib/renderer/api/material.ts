@@ -67,16 +67,14 @@ const COMP_COUNT: Record<MaterialUniformValue['type'], number> = {
 const align4 = (n: number): number => (n + 3) & ~3
 
 /**
- * Set the custom SkSL material on the current shape. Clears when `material`
- * is null/undefined or has no source.
+ * Stage a material into shared memory in the LE layout above. The caller then
+ * invokes the matching wasm entry point and calls `freeBytes`.
+ *
+ * Shared by the on-canvas path (`_set_shape_material`) and the isolated focus
+ * preview (`_preview_set_material`) so the layout is written in exactly one
+ * place and the two can't drift.
  */
-export function setShapeMaterial(module: WasmModule, material: Material | null | undefined): void {
-  checkContext()
-  if (!material || !material.source) {
-    module._clear_shape_material()
-    return
-  }
-
+function stageMaterialPayload(module: WasmModule, material: Material): void {
   const enc = new TextEncoder()
   const source = enc.encode(material.source)
   const uniforms = material.uniforms ?? []
@@ -124,8 +122,40 @@ export function setShapeMaterial(module: WasmModule, material: Material | null |
       }
     }
   }
+}
 
+/**
+ * Set the custom SkSL material on the current shape. Clears when `material`
+ * is null/undefined or has no source.
+ */
+export function setShapeMaterial(module: WasmModule, material: Material | null | undefined): void {
+  checkContext()
+  if (!material || !material.source) {
+    module._clear_shape_material()
+    return
+  }
+  stageMaterialPayload(module, material)
   module._set_shape_material()
+  freeBytes(module)
+}
+
+/**
+ * Set the material rendered by the isolated focus preview. Same payload as
+ * `setShapeMaterial`, different entry point — the preview keeps its own copy
+ * and never touches the document's shape tree.
+ *
+ * Only stages + parses (no GL work), so it doesn't require the preview context
+ * to be current — but `focus-preview.ts` calls it inside the same make-current
+ * block as the draw anyway, which is harmless and keeps the sequence obvious.
+ */
+export function setPreviewMaterial(module: WasmModule, material: Material | null | undefined): void {
+  if (typeof module._preview_set_material !== 'function') return
+  if (!material || !material.source) {
+    module._preview_clear_material()
+    return
+  }
+  stageMaterialPayload(module, material)
+  module._preview_set_material()
   freeBytes(module)
 }
 

@@ -35,18 +35,49 @@ const RES_CAP_PX: f32 = 2048.0;
 /// Uniforms the renderer fills itself — never surfaced as editor controls.
 const ENGINE_UNIFORMS: [&str; 3] = ["u_resolution", "u_scale", "u_time"];
 
+/// Max compiled effects retained. The cache is a *liveness memo*, not a
+/// history: live sources are re-requested every frame so they stay resident,
+/// while dead ones (every keystroke in the editor produces a source that is
+/// compiled once and never looked up again) age out. Without a bound this
+/// grows forever — a real leak once the editor/preview compile per keystroke.
+const CACHE_CAP: usize = 64;
+
 thread_local! {
     /// Compiled effects keyed by source hash. User sources aren't `const`,
     /// so a single `OnceCell` (as glass/noise use) won't do — distinct
     /// sources must coexist, and an unchanged source must hit the cache.
+    ///
+    /// LRU-bounded to `CACHE_CAP`: `order` holds keys oldest-first and is
+    /// touched on every hit. Eviction only costs a recompile, never
+    /// correctness.
     static CACHE: RefCell<HashMap<u64, RuntimeEffect>> = RefCell::new(HashMap::new());
+    static CACHE_ORDER: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Mark `key` as most-recently-used, evicting the oldest entries past the cap.
+fn touch_cache_key(key: u64) {
+    CACHE_ORDER.with(|order| {
+        let mut order = order.borrow_mut();
+        if let Some(pos) = order.iter().position(|k| *k == key) {
+            order.remove(pos);
+        }
+        order.push(key);
+        while order.len() > CACHE_CAP {
+            let evicted = order.remove(0);
+            CACHE.with(|cache| {
+                cache.borrow_mut().remove(&evicted);
+            });
+        }
+    });
 }
 
 /// Engine-supplied uniform values. Never user-set; filled by the renderer.
-struct EngineUniforms {
-    resolution: (f32, f32),
-    scale: f32,
-    time: f32,
+/// `pub(crate)` so the isolated focus-mode preview (`render::preview`) can bind
+/// the same uniforms against its own surface instead of duplicating them.
+pub(crate) struct EngineUniforms {
+    pub resolution: (f32, f32),
+    pub scale: f32,
+    pub time: f32,
 }
 
 fn hash_source(src: &str) -> u64 {
@@ -60,14 +91,19 @@ fn hash_source(src: &str) -> u64 {
 /// caller can keep the last good frame instead of crashing.
 fn get_or_compile(src: &str) -> std::result::Result<RuntimeEffect, String> {
     let key = hash_source(src);
+    let hit = CACHE.with(|cache| cache.borrow().get(&key).cloned());
+    if let Some(effect) = hit {
+        touch_cache_key(key);
+        return Ok(effect);
+    }
+    let effect = RuntimeEffect::make_for_shader(src, None).map_err(|e| e.to_string())?;
     CACHE.with(|cache| {
-        if let Some(effect) = cache.borrow().get(&key) {
-            return Ok(effect.clone());
-        }
-        let effect = RuntimeEffect::make_for_shader(src, None).map_err(|e| e.to_string())?;
         cache.borrow_mut().insert(key, effect.clone());
-        Ok(effect)
-    })
+    });
+    // Insert then evict, so `touch` can drop the oldest without ever evicting
+    // the entry we just added (it's the newest).
+    touch_cache_key(key);
+    Ok(effect)
 }
 
 /// A reflected uniform surfaced to the editor so it can auto-generate a control
@@ -180,7 +216,10 @@ fn bind(effect: &RuntimeEffect, material: &Material, engine: &EngineUniforms) ->
 
 /// Compile + bind a material into a paint shader. `None` on compile error
 /// (caller draws nothing rather than crashing). No child samplers yet.
-fn make_material_shader(
+///
+/// `pub(crate)` so the isolated preview reuses the exact same compile + bind
+/// path as the on-canvas render — the preview can't drift from the real thing.
+pub(crate) fn make_material_shader(
     material: &Material,
     engine: &EngineUniforms,
     local_matrix: Option<&skia::Matrix>,

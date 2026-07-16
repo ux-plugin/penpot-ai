@@ -16,6 +16,8 @@ import { ChatPanel } from './lib/components/BuildMode/ChatPanel'
 import { PreviewStage } from './lib/components/BuildMode/PreviewStage'
 import { inspectorTab } from './lib/renderer/signals/inspector-tab'
 import { editorMode } from './lib/renderer/signals/editor-mode'
+import { focusStage } from './lib/renderer/signals/focus-stage'
+import { FocusStage } from './lib/components/FocusStage/FocusStage'
 import { useSignalCoalesced } from './lib/renderer/signals/use-signal-coalesced'
 
 /**
@@ -122,20 +124,24 @@ function App() {
 
   const tab = useSignalCoalesced(inspectorTab)
   const motionActive = tab === 'motion'
-  const startSlot = mode === 'design' ? <LayersPanel /> : <BuildLeftRail />
-  const endSlot = <RightSidePanel />
-  const bottomSlot = motionActive ? <TimelinePanel /> : undefined
-  const centerOverlay =
-    mode === 'design' ? (
-      <ShapeToolbar />
-    ) : (
-      <div
-        className="pointer-events-auto flex h-full w-full"
-        style={{ background: 'var(--editor-canvas-chrome)' }}
-      >
-        <PreviewStage />
-      </div>
-    )
+  // A focus stage (e.g. shader authoring) temporarily claims the center region
+  // and may rebind rails; when none is active the shell composes as usual.
+  const focus = useSignalCoalesced(focusStage)
+  const startSlot = focus?.left ?? (mode === 'design' ? <LayersPanel /> : <BuildLeftRail />)
+  const endSlot = focus?.right ?? <RightSidePanel />
+  const bottomSlot = focus?.bottom ?? (motionActive ? <TimelinePanel /> : undefined)
+  const centerOverlay = focus ? (
+    <FocusStage session={focus} />
+  ) : mode === 'design' ? (
+    <ShapeToolbar />
+  ) : (
+    <div
+      className="pointer-events-auto flex h-full w-full"
+      style={{ background: 'var(--editor-canvas-chrome)' }}
+    >
+      <PreviewStage />
+    </div>
+  )
 
   return (
     <div

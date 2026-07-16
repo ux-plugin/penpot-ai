@@ -43,7 +43,10 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn parse_material(bytes: &[u8]) -> Option<Material> {
+/// Parse the LE material payload (source + uniform slots). `pub(crate)` so the
+/// isolated preview (`wasm::preview`) reuses the exact same layout — the TS side
+/// serializes a material once and both entry points read it identically.
+pub(crate) fn parse_material(bytes: &[u8]) -> Option<Material> {
     let mut r = Reader::new(bytes);
     let hidden = r.u32()? != 0;
     let source_len = r.u32()? as usize;

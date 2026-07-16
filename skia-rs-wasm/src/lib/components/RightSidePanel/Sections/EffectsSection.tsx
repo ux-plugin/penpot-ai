@@ -17,6 +17,8 @@ import {
 } from '../../../renderer/properties/panel-utils'
 import type { Material } from '../../../renderer/api/material'
 import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
+import { openFocusStage } from '../../../renderer/signals/focus-stage'
+import { ShaderMaterialStage } from '../../FocusStage/ShaderMaterialStage'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
 
@@ -173,6 +175,22 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
     [effects, commitEffects],
   )
 
+  // Material effects open the shader focus stage (a center-region takeover)
+  // instead of the inline floating editor: SkSL authoring wants the room, and
+  // the stage commits `{ material }` straight onto this node.
+  const onOpenFocus = useCallback(
+    (index: number) => {
+      const item = effects[index]
+      if (item?.kind !== 'material') return
+      openFocusStage({
+        id: 'shader-material',
+        title: 'Custom shader',
+        center: <ShaderMaterialStage nodeId={nodeId} initialMaterial={item.material} />,
+      })
+    },
+    [effects, nodeId],
+  )
+
   const addEffect = useCallback(() => {
     if (effects.length >= MAX_EFFECTS) return
     const next: EffectItem[] = [...effects, { kind: 'drop-shadow', shadow: { ...DEFAULT_SHADOW } }]
@@ -237,6 +255,7 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
                 readOnly={readOnly}
                 onChange={onEffectChange}
                 onRemove={removeEffect}
+                onOpenFocus={onOpenFocus}
               />
             ))}
           </div>

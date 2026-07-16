@@ -8,6 +8,7 @@ pub mod material;
 pub mod mem;
 pub mod noise;
 pub mod paths;
+pub mod preview;
 pub mod shadows;
 pub mod shapes;
 pub mod strokes;
