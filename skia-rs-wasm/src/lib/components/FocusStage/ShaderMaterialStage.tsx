@@ -24,7 +24,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PenpotNode } from 'penpot-exporter/types'
-import type { Material } from '../../renderer/api/material'
+import { Pause, Play, RotateCcw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import type { Material, MaterialCompileResult } from '../../renderer/api/material'
 import {
   commitNodePartialUpdate,
   getCommittedNodeOnActivePage,
@@ -35,6 +37,7 @@ import {
   attachPreview,
   detachPreview,
   drawPreview,
+  drawPreviewFrame,
   isPreviewSupported,
   resizePreview,
 } from '../../renderer/focus-preview'
@@ -65,6 +68,30 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   const dirtyRef = useRef(false)
   const timerRef = useRef<number | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
+
+  // Clock. `u_time` is engine-owned, so whether this material animates is only
+  // knowable from the compile — hence observing MaterialEditor's result.
+  //
+  // Track the last GOOD compile, not the latest: the result is `null` while
+  // recompiling and carries `ok: false` for every half-typed line, so keying
+  // off it directly would tear the transport away and stall the loop on each
+  // keystroke. Holding the last good answer keeps the preview animating while
+  // you type — the same keep-last-good the pixels already get.
+  const [lastGood, setLastGood] = useState<MaterialCompileResult | null>(null)
+  const handleCompiled = useCallback((r: MaterialCompileResult | null) => {
+    if (r?.ok) setLastGood(r)
+  }, [])
+  const usesTime = lastGood?.usesTime === true
+  const [playing, setPlaying] = useState(true)
+  // Time lives in a ref, not state: the loop advances it every frame, and
+  // re-rendering the stage (and the textarea) at 60fps to show a clock would be
+  // absurd. The readout is written straight to the DOM below.
+  const timeRef = useRef(0)
+  const timeLabelRef = useRef<HTMLSpanElement>(null)
+
+  const paintTimeLabel = useCallback(() => {
+    if (timeLabelRef.current) timeLabelRef.current.textContent = `${timeRef.current.toFixed(1)}s`
+  }, [])
 
   /** Flush the draft to the document as ONE change. No-op when unchanged. */
   const commitNow = useCallback(() => {
@@ -111,12 +138,12 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
 
     const rect = el.getBoundingClientRect()
     if (!attachPreview(module, el, rect.width, rect.height)) return
-    drawPreview(module, draftRef.current)
+    drawPreview(module, draftRef.current, timeRef.current)
 
     const ro = new ResizeObserver(() => {
       const r = el.getBoundingClientRect()
       resizePreview(module, r.width, r.height)
-      drawPreview(module, draftRef.current)
+      drawPreview(module, draftRef.current, timeRef.current)
     })
     ro.observe(el)
     return () => {
@@ -125,8 +152,9 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     }
   }, [])
 
-  // Redraw per edit. A failed compile keeps the last good frame rather than
-  // strobing the pane blank (every half-typed line is a compile error).
+  // Redraw per edit, at the CURRENT time so a paused frame doesn't snap back
+  // to 0 while you tweak. A failed compile keeps the last good frame rather
+  // than strobing the pane blank (every half-typed line is a compile error).
   const lastSourceRef = useRef(initialMaterial.source)
   useEffect(() => {
     const module = getWasmModule()
@@ -136,26 +164,93 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     if (!sourceChanged) {
       // Uniform-only edit: same source → cache hit, no compile. Draw now so
       // dragging a slider tracks the pointer.
-      drawPreview(module, draft)
+      drawPreview(module, draft, timeRef.current)
       return
     }
-    const id = window.setTimeout(() => drawPreview(module, draft), PREVIEW_SOURCE_DEBOUNCE_MS)
+    const id = window.setTimeout(
+      () => drawPreview(module, draft, timeRef.current),
+      PREVIEW_SOURCE_DEBOUNCE_MS,
+    )
     return () => clearTimeout(id)
   }, [draft])
+
+  // Animation loop — only for a clock-driven material that's playing. rAF is
+  // throttled to zero while the tab is hidden, so an unattended preview costs
+  // nothing. Per frame this only advances time (`drawPreviewFrame`); it does
+  // NOT re-send the material, which would re-encode the whole source 60×/sec.
+  useEffect(() => {
+    if (!usesTime || !playing) return
+    const module = getWasmModule()
+    if (!module || !isPreviewSupported(module)) return
+    let raf = 0
+    let last = performance.now()
+    const tick = (now: number) => {
+      timeRef.current += (now - last) / 1000
+      last = now
+      drawPreviewFrame(module, draftRef.current, timeRef.current)
+      paintTimeLabel()
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [usesTime, playing, paintTimeLabel])
+
+  const resetTime = useCallback(() => {
+    timeRef.current = 0
+    paintTimeLabel()
+    const module = getWasmModule()
+    if (module && isPreviewSupported(module)) drawPreviewFrame(module, draftRef.current, 0)
+  }, [paintTimeLabel])
 
   return (
     <div className="absolute inset-0 flex">
       {/* Editor pane — opaque, fills height. */}
       <div className="pointer-events-auto flex w-[440px] shrink-0 flex-col overflow-hidden border-r border-border bg-background p-3">
-        <MaterialEditor material={draft} onChange={applyChange} fill />
+        <MaterialEditor material={draft} onChange={applyChange} fill onCompiled={handleCompiled} />
       </div>
 
       {/* Preview pane — hosts the isolated preview canvas. */}
-      <div className="pointer-events-auto relative min-w-0 flex-1 bg-background">
-        <span className="pointer-events-none absolute left-3 top-2 z-10 text-[11px] font-medium text-muted-foreground/80">
-          Live preview
-        </span>
-        <div ref={previewRef} className="absolute inset-2 overflow-hidden rounded-lg border border-border/60" />
+      <div className="pointer-events-auto relative flex min-w-0 flex-1 flex-col bg-background">
+        <div className="relative min-h-0 flex-1">
+          <span className="pointer-events-none absolute left-3 top-2 z-10 text-[11px] font-medium text-muted-foreground/80">
+            Live preview
+          </span>
+          <div ref={previewRef} className="absolute inset-2 overflow-hidden rounded-lg border border-border/60" />
+        </div>
+
+        {/* Transport — only for a clock-driven material (one that declares
+            `u_time`). A static shader has nothing to play. */}
+        {usesTime && (
+          <div className="flex shrink-0 items-center gap-2 border-t border-border px-3 py-1.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setPlaying((p) => !p)}
+              aria-label={playing ? 'Pause' : 'Play'}
+              title={playing ? 'Pause' : 'Play'}
+            >
+              {playing ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={resetTime}
+              aria-label="Reset time"
+              title="Reset time to 0"
+            >
+              <RotateCcw className="size-3.5" />
+            </Button>
+            <span
+              ref={timeLabelRef}
+              className="font-mono text-[11px] tabular-nums text-muted-foreground"
+            >
+              0.0s
+            </span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground/70">u_time</span>
+          </div>
+        )}
       </div>
     </div>
   )

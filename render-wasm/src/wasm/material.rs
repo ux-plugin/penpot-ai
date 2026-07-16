@@ -112,6 +112,7 @@ fn push_str(out: &mut Vec<u8>, s: &str) {
 ///   per uniform: [u32 name_len][name bytes][u32 components][u32 is_color][u32 count]
 ///   [u32 input_count]
 ///   per input: [u32 name_len][name bytes]
+///   [u32 uses_time]   — appended last so the prefix layout is unchanged
 #[no_mangle]
 pub extern "C" fn compile_material() -> u32 {
     let src_bytes = mem::bytes_or_empty();
@@ -132,6 +133,7 @@ pub extern "C" fn compile_material() -> u32 {
     for name in &result.inputs {
         push_str(&mut out, name);
     }
+    push_u32(&mut out, if result.uses_time { 1 } else { 0 });
 
     mem::write_bytes(out) as u32
 }

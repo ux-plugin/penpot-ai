@@ -55,6 +55,12 @@ export interface MaterialCompileResult {
   uniforms: ReflectedUniform[]
   /** `uniform shader` input names (e.g. `content`/`backdrop`/`field`). */
   inputs: string[]
+  /**
+   * True when the source declares `u_time` — the material is clock-driven, so
+   * the editor offers transport and runs an animation loop. `u_time` is
+   * engine-owned and never appears in `uniforms`, so this is the only signal.
+   */
+  usesTime: boolean
 }
 
 const COMP_COUNT: Record<MaterialUniformValue['type'], number> = {
@@ -180,6 +186,7 @@ export function compileMaterial(module: WasmModule, source: string): MaterialCom
       error: 'Renderer is out of date — rebuild the WASM (pnpm --filter skia-rs-wasm build:wasm).',
       uniforms: [],
       inputs: [],
+      usesTime: false,
     }
   }
 
@@ -227,12 +234,14 @@ export function compileMaterial(module: WasmModule, source: string): MaterialCom
     for (let i = 0; i < inputCount; i++) {
       inputs.push(readStr())
     }
+    const usesTime = readU32() === 1
 
     return {
       ok,
       error: error.length > 0 ? error : undefined,
       uniforms,
       inputs,
+      usesTime,
     }
   } finally {
     // Always release the staged buffer — even if parsing throws — so a failure

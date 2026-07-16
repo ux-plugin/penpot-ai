@@ -222,6 +222,29 @@ export function drawPreview(
   })
 }
 
+/**
+ * Draw the already-set material at `time` — the per-frame call for an
+ * animation loop. `drawPreview` re-encodes the SkSL source and every uniform
+ * into shared memory and re-parses them in Rust; doing that 60×/sec when only
+ * `time` moved is pure waste, so this skips straight to the draw.
+ *
+ * `material` is only a fallback: if the surface isn't live (e.g. the context
+ * was lost mid-animation) it routes through the full path, which rebuilds the
+ * context AND re-sends the material — a bare `_preview_draw` couldn't recover,
+ * since the abandoned Rust state lost its copy.
+ */
+export function drawPreviewFrame(
+  module: WasmModule,
+  material: Material | null | undefined,
+  time: number
+): void {
+  if (!ready) {
+    drawPreview(module, material, time)
+    return
+  }
+  withPreviewContext(module, () => module._preview_draw(time))
+}
+
 /** Full teardown — app shutdown only. Also forgets the recovery target. */
 export function destroyPreview(module: WasmModule): void {
   discard(module, false)

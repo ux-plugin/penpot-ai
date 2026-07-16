@@ -9,7 +9,7 @@
  * full `ShaderMaterialStage` (focus mode, taller source area).
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { NumericField } from './NumericField'
 import type { Material, MaterialUniformValue, MaterialCompileResult } from '../../renderer/api/material'
@@ -44,9 +44,16 @@ export interface MaterialEditorProps {
    * for the inline floating panel.
    */
   fill?: boolean
+  /**
+   * Observe each compile result (`null` while recompiling). The editor keeps
+   * owning the compile so every host gets the debounce + reflection for free;
+   * this just lets a host react to it — the focus stage uses `usesTime` to
+   * decide whether to show transport and run an animation loop.
+   */
+  onCompiled?: (result: MaterialCompileResult | null) => void
 }
 
-export function MaterialEditor({ material, onChange, fill = false }: MaterialEditorProps) {
+export function MaterialEditor({ material, onChange, fill = false, onCompiled }: MaterialEditorProps) {
   // Compile+reflect the SkSL (debounced) to drive the status line + controls.
   // Tag each result with the source it came from so a source change (or an
   // absent WASM module) derives back to `null` = "Compiling…" without a
@@ -63,6 +70,14 @@ export function MaterialEditor({ material, onChange, fill = false }: MaterialEdi
   }, [source])
   const compileResult = compiled?.source === source ? compiled.result : null
   const uniforms = compileResult?.uniforms ?? []
+
+  // Report each result to an interested host. Via a ref so an inline callback
+  // can't retrigger this effect every render.
+  const onCompiledRef = useRef(onCompiled)
+  onCompiledRef.current = onCompiled
+  useEffect(() => {
+    onCompiledRef.current?.(compileResult)
+  }, [compileResult])
 
   const readVals = (name: string, comps: number): number[] => {
     const u = material.uniforms?.find((x) => x.name === name)

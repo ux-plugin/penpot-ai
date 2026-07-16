@@ -43,14 +43,21 @@ const ENGINE_UNIFORMS: [&str; 3] = ["u_resolution", "u_scale", "u_time"];
 const CACHE_CAP: usize = 64;
 
 thread_local! {
-    /// Compiled effects keyed by source hash. User sources aren't `const`,
-    /// so a single `OnceCell` (as glass/noise use) won't do — distinct
-    /// sources must coexist, and an unchanged source must hit the cache.
+    /// Compile results keyed by source hash. User sources aren't `const`, so a
+    /// single `OnceCell` (as glass/noise use) won't do — distinct sources must
+    /// coexist, and an unchanged source must hit the cache.
+    ///
+    /// **Failures are cached too**, deliberately. A broken source would
+    /// otherwise recompile on every lookup: tolerable at one compile per
+    /// keystroke, but the preview's animation loop asks once per frame, so an
+    /// un-cached error meant a full SkSL compile 60×/sec for as long as the
+    /// source stayed broken — which, while typing, is most of the time.
     ///
     /// LRU-bounded to `CACHE_CAP`: `order` holds keys oldest-first and is
     /// touched on every hit. Eviction only costs a recompile, never
     /// correctness.
-    static CACHE: RefCell<HashMap<u64, RuntimeEffect>> = RefCell::new(HashMap::new());
+    static CACHE: RefCell<HashMap<u64, std::result::Result<RuntimeEffect, String>>> =
+        RefCell::new(HashMap::new());
     static CACHE_ORDER: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -92,18 +99,18 @@ fn hash_source(src: &str) -> u64 {
 fn get_or_compile(src: &str) -> std::result::Result<RuntimeEffect, String> {
     let key = hash_source(src);
     let hit = CACHE.with(|cache| cache.borrow().get(&key).cloned());
-    if let Some(effect) = hit {
+    if let Some(result) = hit {
         touch_cache_key(key);
-        return Ok(effect);
+        return result;
     }
-    let effect = RuntimeEffect::make_for_shader(src, None).map_err(|e| e.to_string())?;
+    let result = RuntimeEffect::make_for_shader(src, None).map_err(|e| e.to_string());
     CACHE.with(|cache| {
-        cache.borrow_mut().insert(key, effect.clone());
+        cache.borrow_mut().insert(key, result.clone());
     });
     // Insert then evict, so `touch` can drop the oldest without ever evicting
     // the entry we just added (it's the newest).
     touch_cache_key(key);
-    Ok(effect)
+    result
 }
 
 /// A reflected uniform surfaced to the editor so it can auto-generate a control
@@ -124,6 +131,11 @@ pub struct ReflectResult {
     pub error: Option<String>,
     pub uniforms: Vec<ReflectedUniform>,
     pub inputs: Vec<String>,
+    /// True when the source declares `u_time` — i.e. the material is
+    /// clock-driven and the editor should offer transport (play/pause) and run
+    /// an animation loop. `u_time` is engine-owned so it never appears in
+    /// `uniforms`; this flag is the only way the editor can tell.
+    pub uses_time: bool,
 }
 
 fn type_components(ty: skia::runtime_effect::uniform::Type) -> u32 {
@@ -149,9 +161,12 @@ pub fn compile_and_reflect(src: &str) -> ReflectResult {
                 error: Some(error),
                 uniforms: Vec::new(),
                 inputs: Vec::new(),
+                uses_time: false,
             }
         }
     };
+    // Detect `u_time` BEFORE the engine-uniform filter below strips it out.
+    let uses_time = effect.uniforms().iter().any(|u| u.name() == "u_time");
     let uniforms = effect
         .uniforms()
         .iter()
@@ -173,6 +188,7 @@ pub fn compile_and_reflect(src: &str) -> ReflectResult {
         error: None,
         uniforms,
         inputs,
+        uses_time,
     }
 }
 

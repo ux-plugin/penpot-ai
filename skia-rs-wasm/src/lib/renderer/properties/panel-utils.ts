@@ -132,10 +132,14 @@ export const DEFAULT_TEXTURE: Texture = {
 export const DEFAULT_MATERIAL: Material = {
   source: `// Engine-supplied uniforms must still be declared to use them.
 uniform float2 u_resolution; // shape size in px (filled by the engine)
+// Declaring u_time makes this material clock-driven: the editor's preview
+// gains transport (play/pause) and animates. Delete it for a static shader.
+uniform float u_time;        // seconds (filled by the engine)
 
 half4 main(float2 p) {
   float2 uv = p / u_resolution;
-  return half4(uv.x, uv.y, 1.0, 1.0);
+  float pulse = 0.5 + 0.5 * sin(u_time);
+  return half4(uv.x, uv.y, pulse, 1.0);
 }`,
   uniforms: [],
   hidden: false,
