@@ -1,7 +1,7 @@
 /**
  * Multi-camera model + commits (Phase: named/addable/switchable/look-through cameras).
  *
- * Pure helpers (nextCameraName / editedCamera) are tested directly; the commits
+ * Pure helpers (nextCameraName) are tested directly; the commits
  * (add / set-active / patch) run through the real commit pipeline on a booted doc,
  * asserting they land on `node.scene3d.cameras` / `activeCameraId` and are undoable.
  */
@@ -16,7 +16,6 @@ import {
   scene3dProxy,
   defaultSceneDocument,
   nextCameraName,
-  editedCamera,
   activeCamera,
   sceneCameras,
   setFocusedObject,
@@ -97,15 +96,6 @@ describe('multi-camera model helpers', () => {
       { id: 's1:c2', name: 'Camera 3', projection: 'perspective', fov: 45 },
     ]
     expect(nextCameraName(scene)).toBe('Camera 4')
-  })
-
-  it('editedCamera picks the explicit selection, else the active camera', () => {
-    const scene = defaultSceneDocument('s1')
-    const cam0 = scene.cameras![0].id
-    scene.cameras!.push({ id: 's1:c2', name: 'Camera 2', projection: 'orthographic', fov: 45 })
-    expect(editedCamera(scene, null).id).toBe(cam0) // null ⇒ active
-    expect(editedCamera(scene, 's1:c2').id).toBe('s1:c2') // explicit
-    expect(editedCamera(scene, 'nope').id).toBe(cam0) // unknown ⇒ first
   })
 
   it('focusing an object and selecting a camera are mutually exclusive', () => {

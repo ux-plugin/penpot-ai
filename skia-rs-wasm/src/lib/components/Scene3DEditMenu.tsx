@@ -21,10 +21,14 @@ import {
   scene3dProxy,
   defaultObject,
   setFocusedObject,
+  setSelectedCamera,
   activeCamera,
+  nextCameraName,
+  getInstance,
   type Scene3DDocument,
 } from '../renderer/three/scene3d-store'
-import { commitAddObject } from '../renderer/three/scene3d-commit'
+import { commitAddObject, commitAddCamera } from '../renderer/three/scene3d-commit'
+import { readCameraPose } from '../renderer/three/three-scene'
 import { recenterOnScene } from '../renderer/three/scene3d-recenter'
 import { useScene3dEditing } from '../renderer/three/use-scene3d-editing'
 import { Scene3DCameraPopover } from './Scene3DCameraPopover'
@@ -97,6 +101,22 @@ export function Scene3DEditMenu() {
     )
   }
 
+  // A camera is one of the things a scene is made of, so it's added from the same `+` as
+  // the shapes. It starts at the view you're looking through and is selected (NOT looked
+  // through) — so its frustum is there to grab and its props open in the right panel.
+  const addCamera = () => {
+    setFlyout(null)
+    if (!editingDoc) return
+    const live = getInstance(editingSceneId)?.camera
+    const transform3d = live ? readCameraPose(live) : undefined
+    void commitAddCamera(editingSceneId, {
+      name: nextCameraName(editingDoc),
+      transform3d,
+    }).then((id) => {
+      if (id) setSelectedCamera(id)
+    })
+  }
+
   const iconBtn =
     'grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-muted transition-colors'
   const sep = 'mx-1 h-5 w-px self-center bg-border'
@@ -136,12 +156,12 @@ export function Scene3DEditMenu() {
 
         <span className={sep} />
 
-        {/* Add object — single + with a primitive flyout. */}
+        {/* Add — everything a scene is made of: the shapes AND a camera. */}
         <span className="relative flex items-center">
           <button
             type="button"
-            title="Add object"
-            aria-label="Add object"
+            title="Add"
+            aria-label="Add"
             aria-expanded={flyout === 'add'}
             onClick={() => setFlyout((f) => (f === 'add' ? null : 'add'))}
             className={cn(iconBtn, flyout === 'add' && 'bg-muted text-foreground')}
@@ -160,6 +180,14 @@ export function Scene3DEditMenu() {
                   <p.Icon className="size-4 shrink-0" /> {p.label}
                 </button>
               ))}
+              <span className="my-1 block h-px bg-border" />
+              <button
+                type="button"
+                onClick={addCamera}
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted"
+              >
+                <Video className="size-4 shrink-0" /> Camera
+              </button>
             </div>
           )}
         </span>

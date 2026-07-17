@@ -206,6 +206,23 @@ export function findObject(scene: Scene3DDocument, objId: string): Object3DEntry
  * the proxy). One Scene3DInstance per scene, keyed by the scene id.
  * ------------------------------------------------------------------------- */
 
+/**
+ * The on-canvas stand-in for a camera you are NOT looking through: a wireframe frustum
+ * plus a small body, so you can see where your other cameras are and (later) grab them.
+ * Editor chrome — only ever added while the scene is being edited, never in preview.
+ */
+export interface Scene3DCameraHelper {
+  /** Identity-transformed holder for the frustum + body, added to / removed from the scene. */
+  group: THREE.Group
+  /** A stand-in camera carrying the entry's pose + lens, with a SHORT far plane so the
+   *  drawn frustum is a compact cone rather than one spanning the whole scene. */
+  cam: THREE.PerspectiveCamera | THREE.OrthographicCamera
+  helper: THREE.CameraHelper
+  /** The lens/selection the helper geometry was built from — rebuilt when it changes
+   *  (the pose is cheap to re-apply every sync, so it isn't part of this). */
+  lensKey: string
+}
+
 export interface Scene3DInstance {
   scene: THREE.Scene
   /** The scene's active camera — perspective (FOV) or orthographic (parallel). */
@@ -215,6 +232,9 @@ export interface Scene3DInstance {
   activeCamId: string
   /** objectId → its root group in the scene. */
   objects: Map<string, THREE.Object3D>
+  /** cameraId → its frustum helper, for every camera EXCEPT the one being looked
+   *  through. Populated only while the scene is edited (see scene3d-camera-helpers). */
+  cameraHelpers: Map<string, Scene3DCameraHelper>
   /** Free GPU resources (geometries, materials, env map). */
   dispose: () => void
 }
@@ -296,20 +316,12 @@ export function setFocusedObject(id: string | null): void {
   if (id !== null) scene3dProxy.selectedCameraId = null
 }
 
-/** Select a camera for editing (its props show in the popover). Does NOT change the
- *  look-through camera — that's `activeCameraId` on the doc, set via commitSetActiveCamera. */
+/** Select a camera — its properties open in the right panel (`ThreeDCameraInspector`).
+ *  Does NOT change the look-through camera — that's `activeCameraId` on the doc, set via
+ *  commitSetActiveCamera. */
 export function setSelectedCamera(id: string | null): void {
   scene3dProxy.selectedCameraId = id
   if (id !== null) scene3dProxy.focusedObjectId = null
-}
-
-/** The camera whose props the editor edits: the explicit selection, else the active
- *  (look-through) one. Falls back to the first camera. Pure — pass `selectedId` from a
- *  snapshot so it stays reactive. */
-export function editedCamera(scene: Scene3DDocument, selectedId: string | null): Camera3DEntry {
-  const cams = sceneCameras(scene)
-  const wantId = selectedId ?? scene.activeCameraId
-  return cams.find((c) => c.id === wantId) ?? cams[0]
 }
 
 /** Live (uncommitted) transform preview while a gizmo drags; committed on drag end. */
@@ -320,27 +332,6 @@ export function patchObjectTransformLocal(
 ): void {
   const obj = scene3dProxy.scenes.get(sceneId)?.objects.find((o) => o.id === objId)
   if (obj) Object.assign(obj.transform3d, patch)
-}
-
-/** Live (uncommitted) FOV preview for a specific camera while the slider drags;
- *  committed once on release via `commitCameraPatch` for a single undo frame. Mirrors
- *  the legacy `camera.fov` when patching the active camera so a synthesised legacy
- *  camera also previews. */
-export function patchCameraFovLocal(sceneId: string, camId: string, fov: number): void {
-  const scene = scene3dProxy.scenes.get(sceneId)
-  if (!scene) return
-  const cam = scene.cameras?.find((c) => c.id === camId)
-  if (cam) cam.fov = fov
-  const activeId = scene.activeCameraId ?? scene.cameras?.[0]?.id
-  if (camId === activeId) scene.camera.fov = fov
-}
-
-/** Live (uncommitted) ortho-size preview for a specific camera while the slider drags;
- *  committed once on release via `commitCameraPatch`. Only previews when it's the active
- *  (rendered) camera — draw() reads the active camera's `orthoSize`. */
-export function patchCameraOrthoSizeLocal(sceneId: string, camId: string, size: number): void {
-  const cam = scene3dProxy.scenes.get(sceneId)?.cameras?.find((c) => c.id === camId)
-  if (cam) cam.orthoSize = size
 }
 
 /** Live (uncommitted) edit-backdrop preview while the colour picker drags; committed on blur. */
