@@ -28,9 +28,21 @@ export interface MaterialUniform {
   value: MaterialUniformValue
 }
 
+/**
+ * Which language a material's `source` is authored in. Skia only *renders*
+ * SkSL, so a non-SkSL source is transpiled to SkSL before it reaches the
+ * renderer (see the render bridge); this tag selects the editor grammar, the
+ * compile/diagnostics path, and whether that transpile step runs. Lives here,
+ * not in `shader-lang`, so `Material` can carry it without importing the
+ * editor stack. Absent ⇒ `'sksl'`.
+ */
+export type ShaderLanguageId = 'sksl' | 'glsl'
+
 export interface Material {
-  /** SkSL source, compiled to this shape's fill shader. */
+  /** Shader source, in `language` (default SkSL). */
   source: string
+  /** Authoring language of `source`. Absent ⇒ `'sksl'`. */
+  language?: ShaderLanguageId
   /** Current uniform values, matched to the shader's uniforms by name. */
   uniforms?: MaterialUniform[]
   hidden?: boolean

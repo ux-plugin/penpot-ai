@@ -1,20 +1,25 @@
 /**
- * MaterialEditor — the shared editing UI for a custom SkSL shader material:
- * the SkSL source field, a debounced compile-status line, and the reflected
- * uniform controls (a color swatch for `@color` vec3/4, else a numeric field
- * per component). Owns its own compile+reflect so any host just supplies the
+ * MaterialEditor — the shared editing UI for a custom shader material: the
+ * source field, a debounced compile-status line, and the reflected uniform
+ * controls (a color swatch for `@color` vec3/4, else a numeric field per
+ * component). Owns its own compile+reflect so any host just supplies the
  * `material` and an `onChange`.
  *
- * Used both by the inline `FloatingEffectEditorPanel` (compact) and the
- * full `ShaderMaterialStage` (focus mode, taller source area).
+ * Language-agnostic: the compile + grammar come from the material's
+ * `ShaderLanguage` provider, so nothing here is SkSL-specific.
+ *
+ * Used both by the inline `FloatingEffectEditorPanel` (compact, plain textarea)
+ * and the full `ShaderMaterialStage` (focus mode, CodeMirror with highlighting +
+ * inline diagnostics).
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { NumericField } from './NumericField'
-import type { Material, MaterialUniformValue, MaterialCompileResult } from '../../renderer/api/material'
-import { compileMaterial } from '../../renderer/api/material'
+import { ShaderCodeEditor } from './ShaderCodeEditor'
+import type { Material, MaterialUniformValue } from '../../renderer/api/material'
 import { getWasmModule } from '../../renderer/wasm-module'
+import { shaderLanguage, type ShaderCompileOutput } from '../../renderer/shader-lang'
 
 /** Pack normalized-float RGB(A) components into a #RRGGBB hex string. */
 function rgbToHex(vals: number[]): string {
@@ -50,26 +55,30 @@ export interface MaterialEditorProps {
    * this just lets a host react to it — the focus stage uses `usesTime` to
    * decide whether to show transport and run an animation loop.
    */
-  onCompiled?: (result: MaterialCompileResult | null) => void
+  onCompiled?: (result: ShaderCompileOutput | null) => void
 }
 
 export function MaterialEditor({ material, onChange, fill = false, onCompiled }: MaterialEditorProps) {
-  // Compile+reflect the SkSL (debounced) to drive the status line + controls.
-  // Tag each result with the source it came from so a source change (or an
-  // absent WASM module) derives back to `null` = "Compiling…" without a
-  // synchronous setState cascade.
-  const [compiled, setCompiled] = useState<{ source: string; result: MaterialCompileResult } | null>(null)
+  const language = shaderLanguage(material.language)
+
+  // Compile+reflect the source (debounced) to drive the status line, the
+  // reflected controls, and the editor's inline diagnostics. Tag each result
+  // with the source it came from so a source change (or an absent WASM module)
+  // derives back to `null` = "Compiling…" without a synchronous setState cascade.
+  const [compiled, setCompiled] = useState<{ source: string; result: ShaderCompileOutput } | null>(null)
   const source = material.source
   useEffect(() => {
-    const module = getWasmModule()
-    if (!module) return
+    // Gate on the module being up so startup shows "Compiling…" rather than a
+    // spurious error frame before the renderer exists.
+    if (!getWasmModule()) return
     const id = setTimeout(() => {
-      setCompiled({ source, result: compileMaterial(module, source) })
+      setCompiled({ source, result: language.compile(source) })
     }, 150)
     return () => clearTimeout(id)
-  }, [source])
+  }, [source, language])
   const compileResult = compiled?.source === source ? compiled.result : null
   const uniforms = compileResult?.uniforms ?? []
+  const diagnostics = compileResult?.diagnostics ?? []
 
   // Report each result to an interested host. Via a ref so an inline callback
   // can't retrigger this effect every render.
@@ -96,17 +105,28 @@ export function MaterialEditor({ material, onChange, fill = false, onCompiled }:
 
   return (
     <div className={fill ? 'flex h-full min-h-0 flex-col gap-3' : 'space-y-3'}>
-      {/* SkSL source editor — flexes to fill height in `fill` mode. */}
+      {/* Source editor. Focus mode (`fill`) gets CodeMirror with highlighting +
+          inline diagnostics; the compact floating panel keeps a plain textarea. */}
       <div className={fill ? 'flex min-h-0 flex-1 flex-col gap-1.5' : 'space-y-1.5'}>
-        <span className="shrink-0 text-[11px] font-medium text-muted-foreground">SkSL source</span>
-        <textarea
-          className={`border-input bg-background w-full rounded-md border p-2 font-mono text-[11px] leading-relaxed ${
-            fill ? 'min-h-0 flex-1 resize-none' : 'h-44 resize-y'
-          }`}
-          spellCheck={false}
-          value={material.source}
-          onChange={(e) => onChange({ source: e.target.value })}
-        />
+        <span className="shrink-0 text-[11px] font-medium text-muted-foreground">{language.label} source</span>
+        {fill ? (
+          <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-input text-[11px]">
+            <ShaderCodeEditor
+              language={language}
+              value={material.source}
+              diagnostics={diagnostics}
+              onChange={(v) => onChange({ source: v })}
+              className="h-full"
+            />
+          </div>
+        ) : (
+          <textarea
+            className="border-input bg-background h-44 w-full resize-y rounded-md border p-2 font-mono text-[11px] leading-relaxed"
+            spellCheck={false}
+            value={material.source}
+            onChange={(e) => onChange({ source: e.target.value })}
+          />
+        )}
       </div>
 
       {/* Compile status */}
@@ -121,7 +141,11 @@ export function MaterialEditor({ material, onChange, fill = false, onCompiled }:
               : ''}
           </span>
         ) : (
-          <span className="break-words font-mono text-red-600">{compileResult.error}</span>
+          <span className="break-words font-mono text-red-600">
+            {diagnostics.length > 0
+              ? `${diagnostics.length} error${diagnostics.length === 1 ? '' : 's'} · ${diagnostics[0].message}`
+              : 'Compile failed'}
+          </span>
         )}
       </div>
 

@@ -28,7 +28,8 @@ import { Pause, Play, Repeat, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import type { Material, MaterialCompileResult } from '../../renderer/api/material'
+import type { Material } from '../../renderer/api/material'
+import type { ShaderCompileOutput } from '../../renderer/shader-lang'
 import {
   commitNodePartialUpdate,
   getCommittedNodeOnActivePage,
@@ -91,8 +92,8 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   // off it directly would tear the transport away and stall the loop on each
   // keystroke. Holding the last good answer keeps the preview animating while
   // you type — the same keep-last-good the pixels already get.
-  const [lastGood, setLastGood] = useState<MaterialCompileResult | null>(null)
-  const handleCompiled = useCallback((r: MaterialCompileResult | null) => {
+  const [lastGood, setLastGood] = useState<ShaderCompileOutput | null>(null)
+  const handleCompiled = useCallback((r: ShaderCompileOutput | null) => {
     if (r?.ok) setLastGood(r)
   }, [])
   const usesTime = lastGood?.usesTime === true

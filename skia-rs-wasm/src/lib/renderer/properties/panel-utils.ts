@@ -146,6 +146,7 @@ half4 main(float2 p) {
   float pulse = 0.5 + 0.5 * sin(TAU * u_time / LOOP);
   return half4(uv.x, uv.y, pulse, 1.0);
 }`,
+  language: 'sksl',
   uniforms: [],
   hidden: false,
 }
