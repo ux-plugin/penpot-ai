@@ -334,6 +334,17 @@ export function patchObjectTransformLocal(
   if (obj) Object.assign(obj.transform3d, patch)
 }
 
+/** Live (uncommitted) camera-pose preview while its gizmo drags; committed on drag end.
+ *  Writes the doc so the camera's frustum helper follows the grab in real time. */
+export function patchCameraTransformLocal(
+  sceneId: string,
+  camId: string,
+  transform3d: NonNullable<Camera3DEntry['transform3d']>,
+): void {
+  const cam = scene3dProxy.scenes.get(sceneId)?.cameras?.find((c) => c.id === camId)
+  if (cam) cam.transform3d = transform3d
+}
+
 /** Live (uncommitted) edit-backdrop preview while the colour picker drags; committed on blur. */
 export function patchSceneBackgroundLocal(sceneId: string, background: string | null): void {
   const scene = scene3dProxy.scenes.get(sceneId)

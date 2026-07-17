@@ -79,7 +79,7 @@ export function Scene3DEditMenu() {
       <div className="pointer-events-auto flex items-center gap-1 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md">
         <button
           type="button"
-          onClick={() => enter(scene, sceneSnap.scenes.get(scene)?.objects[0]?.id ?? null)}
+          onClick={() => enter(scene, null)}
           className="flex items-center gap-1.5 rounded-full bg-indigo-500 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-600"
         >
           <Box className="size-3.5" /> Edit in 3D
@@ -89,6 +89,12 @@ export function Scene3DEditMenu() {
   }
 
   const focusedId = sceneSnap.focusedObjectId
+  const selectedCameraId = sceneSnap.selectedCameraId
+  // The gizmo works on the focused object OR a selected camera (grab it in space); scale
+  // is meaningless for a camera, so it's dropped when one is selected (a leftover scale
+  // mode reads as move).
+  const gizmoTarget = focusedId ?? selectedCameraId
+  const activeGizmo = selectedCameraId && gizmoMode === 'scale' ? 'translate' : gizmoMode
   const editingDoc = sceneSnap.scenes.get(editingSceneId) as Scene3DDocument | undefined
   const cameraName = editingDoc ? activeCamera(editingDoc).name : 'Camera'
   const sceneName = (getNode(editingSceneId) as { name?: string } | undefined)?.name ?? '3D scene'
@@ -192,18 +198,18 @@ export function Scene3DEditMenu() {
           )}
         </span>
 
-        {/* Gizmo — only once an object is focused. */}
-        {focusedId && (
+        {/* Gizmo — once an object is focused or a camera is selected (no scale on cameras). */}
+        {gizmoTarget && (
           <>
             <span className={sep} />
-            {GIZMOS.map((g) => (
+            {GIZMOS.filter((g) => !(selectedCameraId && g.mode === 'scale')).map((g) => (
               <button
                 key={g.mode}
                 type="button"
                 title={`${g.label} (${g.key})`}
                 aria-label={g.label}
                 onClick={() => setGizmo(g.mode)}
-                className={cn(iconBtn, gizmoMode === g.mode && 'bg-violet-500/15 text-violet-700')}
+                className={cn(iconBtn, activeGizmo === g.mode && 'bg-violet-500/15 text-violet-700')}
               >
                 <g.Icon className="size-4" />
               </button>

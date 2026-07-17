@@ -12,10 +12,12 @@
 
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
-import { buildCamera, applyDocToInstance } from '@/lib/renderer/three/three-scene'
+import { buildCamera, applyDocToInstance, readCameraPose } from '@/lib/renderer/three/three-scene'
 import {
   defaultSceneDocument,
   activeCamera,
+  scene3dProxy,
+  patchCameraTransformLocal,
   type Scene3DDocument,
   type Scene3DInstance,
 } from '@/lib/renderer/three/scene3d-store'
@@ -73,5 +75,28 @@ describe('live camera tracks the document pose', () => {
     inst.camera.position.set(0, 0, 7) // orbited away
     applyDocToInstance(inst, doc)
     expect(inst.camera.position.toArray()).toEqual([0, 0, 7]) // still not fought
+  })
+})
+
+describe('camera grab (gizmo) write path', () => {
+  it('readCameraPose reads a plain Object3D — the gizmo proxy a camera is dragged by', () => {
+    const proxy = new THREE.Object3D()
+    proxy.position.set(4, -1, 2)
+    proxy.rotation.set(0, Math.PI / 2, 0)
+    const pose = readCameraPose(proxy)
+    expect(pose.position).toEqual([4, -1, 2])
+    expect(pose.rotationEuler[1]).toBeCloseTo(90, 4)
+  })
+
+  it('patchCameraTransformLocal writes the camera pose live so its frustum follows the drag', () => {
+    const doc = defaultSceneDocument('s1')
+    scene3dProxy.scenes.set('s1', doc)
+    const camId = doc.cameras![0].id
+    patchCameraTransformLocal('s1', camId, { position: [1, 2, 3], rotationEuler: [0, 45, 0] })
+    expect(scene3dProxy.scenes.get('s1')!.cameras![0].transform3d).toEqual({
+      position: [1, 2, 3],
+      rotationEuler: [0, 45, 0],
+    })
+    scene3dProxy.scenes.delete('s1')
   })
 })

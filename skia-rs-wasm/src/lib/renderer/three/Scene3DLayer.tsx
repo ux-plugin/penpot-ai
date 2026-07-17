@@ -28,9 +28,11 @@ import {
   deleteInstance,
   isScene3D,
   activeCamera,
+  sceneCameras,
   setFocusedObject,
   setSelectedCamera,
   patchObjectTransformLocal,
+  patchCameraTransformLocal,
   dollyBounds,
   frameDistanceForRadius,
   sceneFrameViewRequest,
@@ -43,7 +45,8 @@ import {
   applyDocToInstance,
   readTransformFromObject,
   readCameraPose,
-  pickObject,
+  defaultCameraPose,
+  pickScene3d,
 } from './three-scene'
 import { isOrtho, isPersp, orthoFrustum } from './camera3d'
 import { syncCameraHelpers } from './scene3d-camera-helpers'
@@ -58,7 +61,6 @@ import {
   type Bounds,
 } from './scene3d-resize'
 import { commitCameraPatch, commitObjectTransform } from './scene3d-commit'
-import { resolveScene3dPointerDown } from './scene3d-pointer'
 import { useScene3dEditing } from './use-scene3d-editing'
 
 interface ScreenRect {
@@ -413,45 +415,72 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     })
     orbit.addEventListener('end', persistPose)
 
+    // A selected CAMERA (grab it in space) or the focused OBJECT is the gizmo target —
+    // mutually exclusive. Scale is meaningless for a camera, so clamp scale→translate
+    // while one is selected.
+    const selCam = snap.selectedCameraId
+      ? sceneCameras(doc).find((c) => c.id === snap.selectedCameraId)
+      : undefined
+    // Assigned in the attach block below; the drag handlers close over it (they only run
+    // once a drag starts, long after it's set).
+    let cameraProxy: THREE.Object3D | null = null
+
     const tc = new TransformControls(inst.camera, surface)
-    tc.setMode(gizmoMode)
+    tc.setMode(selCam && gizmoMode === 'scale' ? 'translate' : gizmoMode)
     tc.addEventListener('change', scheduleDraw)
     tc.addEventListener('dragging-changed', (e) => {
       const dragging = (e as unknown as { value: boolean }).value
       orbit.enabled = !dragging
-      // Live edits run through the local preview (smooth). On drag end, persist
-      // the final transform as ONE undoable mod-obj; scene3d-sync re-seeds the proxy.
+      if (dragging) return
+      // On drag end, persist the final transform as ONE undoable mod-obj; scene3d-sync
+      // re-seeds the proxy. (Live edits run through the local preview during the drag.)
       const objId = scene3dProxy.focusedObjectId
       const obj = objId ? inst.objects.get(objId) : null
-      if (!dragging && objId && obj) void commitObjectTransform(sceneId, objId, readTransformFromObject(obj))
+      if (objId && obj) void commitObjectTransform(sceneId, objId, readTransformFromObject(obj))
+      if (selCam && cameraProxy) void commitCameraPatch(sceneId, selCam.id, { transform3d: readCameraPose(cameraProxy) })
     })
     tc.addEventListener('objectChange', () => {
       const objId = scene3dProxy.focusedObjectId
       const obj = objId ? inst.objects.get(objId) : null
       if (objId && obj) patchObjectTransformLocal(sceneId, objId, readTransformFromObject(obj))
+      // Camera grab: write the doc live so the camera's frustum follows the drag.
+      if (selCam && cameraProxy) patchCameraTransformLocal(sceneId, selCam.id, readCameraPose(cameraProxy))
     })
     inst.scene.add(tc.getHelper())
     gizmoRef.current = tc
 
-    // Attach the gizmo to the focused object.
-    const focusObj = snap.focusedObjectId ? inst.objects.get(snap.focusedObjectId) : undefined
-    if (focusObj) tc.attach(focusObj)
+    // Attach to a camera PROXY (an empty at the camera's pose — a camera isn't a scene
+    // object) or the focused object.
+    if (selCam) {
+      const pose = selCam.transform3d ?? defaultCameraPose()
+      cameraProxy = new THREE.Object3D()
+      cameraProxy.position.fromArray(pose.position)
+      cameraProxy.rotation.set(
+        THREE.MathUtils.degToRad(pose.rotationEuler[0]),
+        THREE.MathUtils.degToRad(pose.rotationEuler[1]),
+        THREE.MathUtils.degToRad(pose.rotationEuler[2]),
+      )
+      inst.scene.add(cameraProxy)
+      tc.attach(cameraProxy)
+    } else {
+      const focusObj = snap.focusedObjectId ? inst.objects.get(snap.focusedObjectId) : undefined
+      if (focusObj) tc.attach(focusObj)
+    }
 
-    // Pointer-down resolution runs through the mode-guarded resolver (the click
-    // analogue of dispatchKey): gizmo handle → TransformControls; object → focus;
-    // empty → orbit. Centralised + guarded so it can't drift from the machine mode.
+    // Click to select — an object (focus) or a camera frustum (select). A gizmo-handle
+    // press is owned by TransformControls; an empty press leaves the selection and lets
+    // OrbitControls drive the drag. The Layers tree stays a parallel way to select.
     const onPick = (e: PointerEvent) => {
-      if (e.button !== 0) return // left button only; right/middle drive pan/dolly
+      if (e.button !== 0) return // left button only; right/middle pan/dolly
+      if (tc.axis != null) return // a gizmo handle is engaged
       const r = surface.getBoundingClientRect()
       if (r.width < 1 || r.height < 1) return
       const ndcX = ((e.clientX - r.left) / r.width) * 2 - 1
       const ndcY = -(((e.clientY - r.top) / r.height) * 2 - 1)
-      resolveScene3dPointerDown(ndcX, ndcY, {
-        actor,
-        instance: inst,
-        gizmoActive: tc.axis != null,
-        pick: pickObject,
-      })
+      const hit = pickScene3d(inst, ndcX, ndcY, inst.camera)
+      if (hit?.kind === 'object') setFocusedObject(hit.id)
+      else if (hit?.kind === 'camera') setSelectedCamera(hit.id)
+      // empty → leave the selection as-is; OrbitControls handles the drag.
     }
     surface.addEventListener('pointerdown', onPick)
 
@@ -478,18 +507,20 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       inst.scene.remove(tc.getHelper())
       tc.detach()
       tc.dispose()
+      if (cameraProxy) inst.scene.remove(cameraProxy)
       orbit.dispose()
       gizmoRef.current = null
       orbitRef.current = null
       scheduleDraw()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingSceneId, snap.focusedObjectId, editingProjection, editingActiveCameraId])
+  }, [editingSceneId, snap.focusedObjectId, snap.selectedCameraId, editingProjection, editingActiveCameraId])
 
   // Gizmo sub-tool (Move/Rotate/Scale) is machine state — apply it without
-  // tearing down the controls.
+  // tearing down the controls. Scale is meaningless for a camera, so clamp it.
   useEffect(() => {
-    gizmoRef.current?.setMode(gizmoMode)
+    const isCam = scene3dProxy.selectedCameraId != null
+    gizmoRef.current?.setMode(isCam && gizmoMode === 'scale' ? 'translate' : gizmoMode)
     scheduleDraw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gizmoMode])

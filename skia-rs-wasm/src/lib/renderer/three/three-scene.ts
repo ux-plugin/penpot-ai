@@ -88,10 +88,10 @@ export function buildCamera(
   return persp
 }
 
-/** Read a live camera's pose back into a serializable patch (after orbit/pan/dolly),
- *  mirroring `readTransformFromObject` for objects. */
+/** Read a live camera's pose back into a serializable patch (after orbit/pan/dolly, or
+ *  a gizmo drag on a camera-proxy Object3D), mirroring `readTransformFromObject`. */
 export function readCameraPose(
-  camera: THREE.Camera,
+  camera: THREE.Object3D,
 ): { position: Vec3; rotationEuler: Vec3 } {
   return {
     position: [camera.position.x, camera.position.y, camera.position.z],
@@ -297,6 +297,36 @@ export function applyDocToInstance(
   })
 }
 
+/** What a viewport click resolved to — an object (mesh) or a camera (its frustum/body). */
+export type Scene3DPick = { kind: 'object'; id: string } | { kind: 'camera'; id: string }
+
+/**
+ * Raycast a normalized-device point to the nearest pickable thing in the scene — an
+ * object OR a camera frustum-helper (both selectable from the canvas). `cam` is the
+ * camera the ray is cast from (what's on screen).
+ */
+export function pickScene3d(
+  inst: Scene3DInstance,
+  ndcX: number,
+  ndcY: number,
+  cam: THREE.Camera = inst.camera,
+): Scene3DPick | null {
+  const raycaster = new THREE.Raycaster()
+  // The frustums are thin LineSegments; give the ray a little tolerance so they're
+  // clickable, not just their solid body box.
+  raycaster.params.Line = { threshold: 0.04 }
+  raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), cam)
+
+  let best: { pick: Scene3DPick; dist: number } | null = null
+  const consider = (pick: Scene3DPick, root: THREE.Object3D) => {
+    const hits = raycaster.intersectObject(root, true)
+    if (hits.length && (!best || hits[0].distance < best.dist)) best = { pick, dist: hits[0].distance }
+  }
+  for (const [id, obj] of inst.objects) consider({ kind: 'object', id }, obj)
+  for (const [id, h] of inst.cameraHelpers) consider({ kind: 'camera', id }, h.group)
+  return best?.pick ?? null
+}
+
 /** Read a live object root's transform back into a serializable patch (after a gizmo drag). */
 export function readTransformFromObject(obj: THREE.Object3D): Object3DEntry['transform3d'] {
   return {
@@ -304,18 +334,6 @@ export function readTransformFromObject(obj: THREE.Object3D): Object3DEntry['tra
     rotationEuler: [obj.rotation.x / DEG, obj.rotation.y / DEG, obj.rotation.z / DEG],
     scale: [obj.scale.x, obj.scale.y, obj.scale.z],
   }
-}
-
-/** Raycast scene-space normalized device coords → the id of the nearest hit object. */
-export function pickObject(inst: Scene3DInstance, ndcX: number, ndcY: number): string | null {
-  const raycaster = new THREE.Raycaster()
-  raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), inst.camera)
-  let best: { id: string; dist: number } | null = null
-  for (const [id, obj] of inst.objects) {
-    const hits = raycaster.intersectObject(obj, true)
-    if (hits.length && (!best || hits[0].distance < best.dist)) best = { id, dist: hits[0].distance }
-  }
-  return best?.id ?? null
 }
 
 export function disposeObject(obj: THREE.Object3D): void {

@@ -22,7 +22,7 @@ import { useWorkspaceStore } from '../store/workspace-store'
 import { useCanvasActor } from '../machine/canvas-actor-context'
 import { useViewportShortcutsStore } from '../store/shortcuts-store'
 import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
-import { isScene3D, scene3dProxy, setFocusedObject } from '../three/scene3d-store'
+import { isScene3D, setFocusedObject } from '../three/scene3d-store'
 import { Viewport, screenToWorld } from '../viewport'
 import type { ViewportPanModifier, SelectionRectResult } from '../types'
 import { effect } from '@preact/signals-core'
@@ -433,10 +433,11 @@ export function useViewportInteractions({
       const topId = pickTopmostNode(page, ids)
       const node = topId ? (page.objects[topId] as { type?: string } | undefined) : undefined
       if (topId && isScene3D(topId)) {
-        // A 3D scene drops into 3D-edit mode (the analogue of double-clicking into
-        // a frame), focused on its first object.
+        // A 3D scene drops into 3D-edit mode (the analogue of double-clicking into a
+        // frame), with NOTHING pre-selected — selecting objects/cameras is the Layers
+        // tree's job, never the canvas.
         setSelectedIds(new Set([topId]))
-        setFocusedObject(scene3dProxy.scenes.get(topId)?.objects[0]?.id ?? null)
+        setFocusedObject(null)
         canvasActor.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: topId })
       } else if (topId && node?.type === 'text') {
         setSelectedIds(new Set([topId]))
