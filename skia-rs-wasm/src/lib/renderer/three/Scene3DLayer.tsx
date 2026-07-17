@@ -46,6 +46,7 @@ import {
   pickObject,
 } from './three-scene'
 import { isOrtho, isPersp, orthoFrustum } from './camera3d'
+import { syncCameraHelpers } from './scene3d-camera-helpers'
 import { recenterOnScene } from './scene3d-recenter'
 import { editPlacement, exitFocus, focusViewportRect } from './scene3d-focus'
 import { beginEditSession, endEditSession, markEditDirty } from './edit-history'
@@ -401,6 +402,15 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
         void commitCameraPatch(sceneId, poseCamId, { transform3d: readCameraPose(inst.camera) })
       }, 350)
     }
+    // Drop a still-pending write when a new gesture starts: the next 'end' supersedes it
+    // anyway, and letting it land MID-drag would push a stale pose into the doc, which
+    // applyDocToInstance would then snap the camera back to.
+    orbit.addEventListener('start', () => {
+      if (poseTimer) {
+        clearTimeout(poseTimer)
+        poseTimer = 0
+      }
+    })
     orbit.addEventListener('end', persistPose)
 
     const tc = new TransformControls(inst.camera, surface)
@@ -625,6 +635,14 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // While the gizmo owns the focused object's transform, don't fight it.
       const skipTransformFor = isEditing ? focusedId : null
       applyDocToInstance(inst, doc, skipTransformFor)
+
+      // Frustums for the cameras you're NOT looking through — editor chrome, so only
+      // while this scene is edited (never in the composited/preview render).
+      syncCameraHelpers(inst, doc, {
+        visible: isEditing,
+        aspect: screen.w / screen.h,
+        selectedCameraId: scene3dProxy.selectedCameraId,
+      })
 
       // Edit-only backdrop fills the box while editing so the scene reads apart from the
       // document; every other scene stays transparent and composites over it. Drawn as an

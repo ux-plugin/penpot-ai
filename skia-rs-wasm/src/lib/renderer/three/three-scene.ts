@@ -26,11 +26,14 @@ const CAM_HOME_POS: readonly [number, number, number] = [2.4, 1.8, 2.8]
  * these two reproduces the saved view exactly (the orbit pivot — not in the model —
  * is reconstructed by the overlay from the camera's forward ray).
  */
-function applyCameraPose(
+export function applyCameraPose(
   camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
   cam: Camera3DEntry,
 ): void {
   const pose = cam.transform3d
+  // Stamp the pose's document identity on the camera so applyDocToInstance can tell an
+  // EXTERNAL pose change apart from the user's own live orbit (see poseKeyOf).
+  camera.userData.poseKey = poseKeyOf(pose)
   if (pose) {
     camera.position.set(pose.position[0], pose.position[1], pose.position[2])
     camera.rotation.set(
@@ -42,6 +45,20 @@ function applyCameraPose(
     camera.position.set(CAM_HOME_POS[0], CAM_HOME_POS[1], CAM_HOME_POS[2])
     camera.lookAt(0, 0, 0)
   }
+}
+
+/**
+ * Identity of a pose AS THE DOCUMENT HOLDS IT, stamped on the live camera whenever we
+ * apply one. It lets `applyDocToInstance` distinguish:
+ *  - an EXTERNAL change (inspector edit, undo) — the doc's key differs from the camera's
+ *    stamp ⇒ re-pose the live camera; and
+ *  - the user's own live orbit — the camera has moved but the doc still holds the last
+ *    committed pose, so the keys MATCH ⇒ leave the camera alone.
+ * Without it the doc would fight OrbitControls every frame (or the pose would never
+ * reach the camera at all, which is exactly what it did before).
+ */
+function poseKeyOf(pose: Camera3DEntry['transform3d']): string {
+  return pose ? JSON.stringify(pose) : 'default'
 }
 
 /**
@@ -80,6 +97,18 @@ export function readCameraPose(
     position: [camera.position.x, camera.position.y, camera.position.z],
     rotationEuler: [camera.rotation.x / DEG, camera.rotation.y / DEG, camera.rotation.z / DEG],
   }
+}
+
+/**
+ * The canonical default pose (the 3/4 home view looking at the origin) as serializable
+ * numbers — what a camera with no `transform3d` yet actually renders at. The inspector
+ * shows this so an unposed camera reads its real values, and materialises it on edit.
+ */
+export function defaultCameraPose(): { position: Vec3; rotationEuler: Vec3 } {
+  const cam = new THREE.PerspectiveCamera()
+  cam.position.set(CAM_HOME_POS[0], CAM_HOME_POS[1], CAM_HOME_POS[2])
+  cam.lookAt(0, 0, 0)
+  return readCameraPose(cam)
 }
 
 function makePrimitiveGeometry(ref: 'cube' | 'sphere' | 'plane'): THREE.BufferGeometry {
@@ -150,7 +179,14 @@ export function buildSceneInstance(
     envRT.dispose()
   }
 
-  return { scene, camera, activeCamId: active.id, objects, dispose }
+  return {
+    scene,
+    camera,
+    activeCamId: active.id,
+    objects,
+    cameraHelpers: new Map(),
+    dispose,
+  }
 }
 
 async function loadGLTFInto(parent: THREE.Object3D, url: string): Promise<void> {
@@ -233,6 +269,16 @@ export function applyDocToInstance(
   // rebuilds the instance elsewhere, so here inst.camera's type already matches the
   // active camera; only the perspective FOV can drift within the same instance.
   const activeCam = activeCamera(doc)
+
+  // Re-pose the live camera when the DOCUMENT's pose changed under it (inspector edit,
+  // undo). The pose used to reach the camera only at build time, so editing a camera's
+  // position did nothing until something forced a rebuild. Guarded by the pose key so we
+  // never fight the user's live orbit — during a drag the doc still holds the last
+  // committed pose, so the keys match and the camera is left alone.
+  if (inst.camera.userData.poseKey !== poseKeyOf(activeCam.transform3d)) {
+    applyCameraPose(inst.camera, activeCam)
+  }
+
   if (isPersp(inst.camera) && inst.camera.fov !== activeCam.fov) {
     inst.camera.fov = activeCam.fov
     inst.camera.updateProjectionMatrix()
@@ -274,12 +320,15 @@ export function pickObject(inst: Scene3DInstance, ndcX: number, ndcY: number): s
 
 export function disposeObject(obj: THREE.Object3D): void {
   obj.traverse((o) => {
-    const mesh = o as THREE.Mesh
-    if (mesh.isMesh) {
-      mesh.geometry?.dispose()
-      const m = mesh.material
-      if (Array.isArray(m)) m.forEach((mm) => mm.dispose())
-      else m?.dispose()
+    // Anything carrying GPU resources — meshes AND lines (the camera-helper frustums are
+    // LineSegments, which an isMesh-only check would silently leak).
+    const res = o as unknown as {
+      geometry?: THREE.BufferGeometry
+      material?: THREE.Material | THREE.Material[]
     }
+    res.geometry?.dispose()
+    const m = res.material
+    if (Array.isArray(m)) m.forEach((mm) => mm.dispose())
+    else m?.dispose()
   })
 }
