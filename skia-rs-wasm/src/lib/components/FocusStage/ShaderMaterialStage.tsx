@@ -24,8 +24,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PenpotNode } from 'penpot-exporter/types'
-import { Pause, Play, RotateCcw } from 'lucide-react'
+import { Pause, Play, Repeat, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/utils'
 import type { Material, MaterialCompileResult } from '../../renderer/api/material'
 import {
   commitNodePartialUpdate,
@@ -33,6 +35,7 @@ import {
 } from '../../renderer/properties/commit-node-properties'
 import { getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { getWasmModule } from '../../renderer/wasm-module'
+import { Ticker } from '../../renderer/anim/ticker'
 import {
   attachPreview,
   detachPreview,
@@ -45,6 +48,17 @@ import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
 
 /** Pause after which the draft is committed to the document as one frame. */
 const COMMIT_IDLE_MS = 1000
+
+/**
+ * Default loop length. The clock is ALWAYS bounded — there's no free-running
+ * mode, because a long duration approximates one indistinguishably (nobody
+ * watches a preview for an hour, and a page load resets it long before the
+ * wrap) while keeping one code path and making f32 precision safe by
+ * construction: `u_time <= MAX_LOOP_SECONDS` caps the error a shader can ever
+ * see. Dial the duration up to `MAX_LOOP_SECONDS` for effectively free-running.
+ */
+const DEFAULT_LOOP_SECONDS = 4
+const MAX_LOOP_SECONDS = 3600
 
 /**
  * Debounce for redrawing the preview after a *source* edit. Each distinct
@@ -83,15 +97,46 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   }, [])
   const usesTime = lastGood?.usesTime === true
   const [playing, setPlaying] = useState(true)
-  // Time lives in a ref, not state: the loop advances it every frame, and
-  // re-rendering the stage (and the textarea) at 60fps to show a clock would be
-  // absurd. The readout is written straight to the DOM below.
+  const [loop, setLoop] = useState(true)
+  const [durationSec, setDurationSec] = useState(DEFAULT_LOOP_SECONDS)
+
+  // Time lives outside React: the clock advances it every frame, and
+  // re-rendering the stage (textarea included) at 60fps just to move a readout
+  // would be wasted work. The readout and scrubber are written to the DOM.
   const timeRef = useRef(0)
   const timeLabelRef = useRef<HTMLSpanElement>(null)
+  const scrubRef = useRef<HTMLInputElement>(null)
 
-  const paintTimeLabel = useCallback(() => {
-    if (timeLabelRef.current) timeLabelRef.current.textContent = `${timeRef.current.toFixed(1)}s`
+  const paintTime = useCallback(() => {
+    if (timeLabelRef.current) timeLabelRef.current.textContent = `${timeRef.current.toFixed(2)}s`
+    // Don't fight the user's own drag.
+    if (scrubRef.current && document.activeElement !== scrubRef.current) {
+      scrubRef.current.value = String(timeRef.current)
+    }
   }, [])
+
+  /**
+   * The clock. A plain `Ticker` — the same one Motion's PlaybackController
+   * drives its timelines from — so the rAF loop, gating, loop/clamp and seek
+   * live in one tested place rather than in a component. React only flips
+   * play/pause/loop/duration; the tick itself never touches React.
+   */
+  const tickerRef = useRef<Ticker | null>(null)
+  if (tickerRef.current === null) {
+    tickerRef.current = new Ticker({
+      onTick: (timeMs) => {
+        timeRef.current = timeMs / 1000 // u_time is seconds
+        const module = getWasmModule()
+        if (module && isPreviewSupported(module)) {
+          drawPreviewFrame(module, draftRef.current, timeRef.current)
+        }
+        paintTime()
+      },
+    })
+    tickerRef.current.setDuration(DEFAULT_LOOP_SECONDS * 1000)
+    tickerRef.current.setLoop(true)
+  }
+  const ticker = tickerRef.current
 
   /** Flush the draft to the document as ONE change. No-op when unchanged. */
   const commitNow = useCallback(() => {
@@ -174,33 +219,24 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     return () => clearTimeout(id)
   }, [draft])
 
-  // Animation loop — only for a clock-driven material that's playing. rAF is
-  // throttled to zero while the tab is hidden, so an unattended preview costs
-  // nothing. Per frame this only advances time (`drawPreviewFrame`); it does
-  // NOT re-send the material, which would re-encode the whole source 60×/sec.
+  // Run the clock only for a clock-driven material that's playing. The Ticker
+  // schedules nothing while idle, so a static shader (or a paused one) costs
+  // exactly zero — and rAF is throttled to nothing while the tab is hidden.
   useEffect(() => {
-    if (!usesTime || !playing) return
-    const module = getWasmModule()
-    if (!module || !isPreviewSupported(module)) return
-    let raf = 0
-    let last = performance.now()
-    const tick = (now: number) => {
-      timeRef.current += (now - last) / 1000
-      last = now
-      drawPreviewFrame(module, draftRef.current, timeRef.current)
-      paintTimeLabel()
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [usesTime, playing, paintTimeLabel])
+    if (usesTime && playing) ticker.play()
+    else ticker.pause()
+    return () => ticker.pause()
+  }, [ticker, usesTime, playing])
 
-  const resetTime = useCallback(() => {
-    timeRef.current = 0
-    paintTimeLabel()
-    const module = getWasmModule()
-    if (module && isPreviewSupported(module)) drawPreviewFrame(module, draftRef.current, 0)
-  }, [paintTimeLabel])
+  useEffect(() => {
+    ticker.setDuration(durationSec * 1000)
+  }, [ticker, durationSec])
+
+  useEffect(() => {
+    ticker.setLoop(loop)
+  }, [ticker, loop])
+
+  const resetTime = useCallback(() => ticker.seek(0), [ticker])
 
   return (
     <div className="absolute inset-0 flex">
@@ -242,13 +278,61 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
             >
               <RotateCcw className="size-3.5" />
             </Button>
+
+            {/* Scrub — the reason the clock is bounded: a range makes any frame
+                reachable and reproducible. Seeking renders one frame without
+                disturbing play/pause. */}
+            <input
+              ref={scrubRef}
+              type="range"
+              className="min-w-0 flex-1 accent-accent"
+              min={0}
+              max={durationSec}
+              step={0.01}
+              defaultValue={0}
+              aria-label="Scrub u_time"
+              onChange={(e) => ticker.seek(Number(e.target.value) * 1000)}
+            />
+
             <span
               ref={timeLabelRef}
-              className="font-mono text-[11px] tabular-nums text-muted-foreground"
+              className="w-12 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground"
             >
-              0.0s
+              0.00s
             </span>
-            <span className="ml-auto font-mono text-[10px] text-muted-foreground/70">u_time</span>
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className={cn('shrink-0', loop ? 'text-foreground' : 'text-muted-foreground/50')}
+              onClick={() => setLoop((l) => !l)}
+              aria-label={loop ? 'Disable loop' : 'Enable loop'}
+              title={loop ? 'Looping — click to play once' : 'Play once — click to loop'}
+            >
+              <Repeat className="size-3.5" />
+            </Button>
+
+            {/* Loop length. Raise it toward an hour for an effectively
+                free-running clock; the bound is what keeps u_time's f32
+                precise and every frame reachable. */}
+            <Input
+              type="number"
+              className="h-7 w-16 shrink-0 px-1.5 text-xs"
+              min={0.1}
+              max={MAX_LOOP_SECONDS}
+              step={0.1}
+              value={durationSec}
+              aria-label="Loop duration (seconds)"
+              title="Loop length in seconds"
+              onChange={(e) => {
+                const v = Number(e.target.value)
+                if (Number.isFinite(v) && v > 0) {
+                  setDurationSec(Math.min(MAX_LOOP_SECONDS, v))
+                }
+              }}
+            />
+            <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">s</span>
           </div>
         )}
       </div>
