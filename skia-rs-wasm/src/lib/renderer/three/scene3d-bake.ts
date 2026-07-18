@@ -16,16 +16,18 @@
  * and its OWN scene instances built on the shared context (NOT the overlay's instances) —
  * lighting is only correct when the scene was built by the renderer that draws it.
  *
- * FLAG-GATED OFF. Toggle live for verification:  window.__scene3dBake(true|false)
+ * Default ON. A/B toggle live:  window.__scene3dBake(true|false)
  */
 
 import * as THREE from 'three'
 import type { WasmModule } from '../wasm-types'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { getNode } from '../store/doc-proxy'
+import { viewport } from '../signals/pointer'
+import { worldToScreen } from '../viewport'
 import { allocBytes, freeBytes, writeUUIDToDataView } from '../utils'
 import { uuidToU32Tuple } from '../types'
-import { buildSceneInstance, applyDocToInstance } from './three-scene'
+import { buildSceneInstance, applyDocToInstance, pickScene3d } from './three-scene'
 import { isPersp, orthoFrustum } from './camera3d'
 import type { Scene3DDocument, Scene3DInstance } from './scene3d-store'
 
@@ -231,6 +233,31 @@ export function unbakeNodeFill(sceneId: string): boolean {
   clearNodeFill(sceneId)
   st.filled = false
   return true
+}
+
+/**
+ * Raycast a baked scene at a canvas point to the 3D object under it. Uses the BAKE
+ * instance — the exact scene + camera that produced the on-screen image — so the pick
+ * matches what the user sees. The node's rect maps 1:1 to the baked image (Skia draws
+ * the fill over the node's geometry), so screen→NDC is just the point's position within
+ * that rect. Returns the object id (cameras have no frustum in the baked image, so only
+ * meshes are pickable here). Powers double-click-into-edit landing on the clicked object.
+ */
+export function pickBakedObjectAtScreen(sceneId: string, screenX: number, screenY: number): string | null {
+  const st = bakeState.get(sceneId)
+  if (!st) return null
+  const node = getNode(sceneId) as { x?: number; y?: number; width?: number; height?: number } | undefined
+  const vp = viewport.value
+  if (!node || !vp || node.x == null || node.y == null || !node.width || !node.height) return null
+  const tl = worldToScreen(vp, node.x, node.y)
+  const sw = node.width * vp.zoom
+  const sh = node.height * vp.zoom
+  if (sw <= 0 || sh <= 0) return null
+  const ndcX = ((screenX - tl.x) / sw) * 2 - 1
+  const ndcY = -(((screenY - tl.y) / sh) * 2 - 1)
+  if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) return null
+  const hit = pickScene3d(st.inst, ndcX, ndcY, st.inst.camera)
+  return hit && hit.kind === 'object' ? hit.id : null
 }
 
 /**
