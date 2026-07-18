@@ -44,6 +44,22 @@ export interface ShaderCompileOutput {
   usesTime: boolean
 }
 
+/**
+ * What kind of thing a completion is — a language-neutral enum. The editor maps
+ * it to a CodeMirror completion `type` (which picks the icon); keeping it neutral
+ * means the language provider never imports CodeMirror's completion API, exactly
+ * as it never imports CodeMirror's `Diagnostic`.
+ */
+export type ShaderCompletionKind = 'keyword' | 'type' | 'function' | 'variable' | 'constant'
+
+/** One autocomplete entry, language-neutral. */
+export interface ShaderCompletion {
+  label: string
+  kind: ShaderCompletionKind
+  /** Short annotation shown beside the label (e.g. a type or `uniform`). */
+  detail?: string
+}
+
 export interface ShaderLanguage {
   id: ShaderLanguageId
   label: string
@@ -58,6 +74,17 @@ export interface ShaderLanguage {
   compile(source: string): ShaderCompileOutput
   /** Starter source for a new material in this language. */
   defaultSource: string
-  /** Keywords + builtins for autocomplete (data now; completion wired later). */
-  completions: readonly string[]
+  /**
+   * Static keywords / types / builtins for autocomplete — the language-fixed
+   * vocabulary.
+   */
+  completions: readonly ShaderCompletion[]
+  /**
+   * Identifiers *declared in the source itself* — uniforms, consts, locals,
+   * params, functions — scanned from the live text. This (not compile-time
+   * reflection) is what makes a just-declared name completable: reflection only
+   * reports uniforms that are actually used in a program that compiles, so it
+   * can't offer a name while you're still typing the line that uses it.
+   */
+  symbols(source: string): ShaderCompletion[]
 }

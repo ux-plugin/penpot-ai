@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSkslDiagnostics } from '../../../../src/lib/renderer/shader-lang/sksl'
+import { parseSkslDiagnostics, skslLanguage } from '../../../../src/lib/renderer/shader-lang/sksl'
 
 /**
  * Inputs are the exact strings Skia's compiler returned (captured live), so
@@ -61,5 +61,48 @@ describe('parseSkslDiagnostics', () => {
   it('returns nothing for empty / non-diagnostic text', () => {
     expect(parseSkslDiagnostics('')).toEqual([])
     expect(parseSkslDiagnostics('just some text\nno errors here')).toEqual([])
+  })
+})
+
+/**
+ * The scanner is what makes a just-declared name completable — reflection can't,
+ * because it only reports uniforms actually used in a compiling program.
+ */
+describe('skslLanguage.symbols (declaration scan)', () => {
+  const byName = (src: string) =>
+    Object.fromEntries(skslLanguage.symbols(src).map((s) => [s.label, s]))
+
+  it('finds a uniform that is declared but never used', () => {
+    // The exact case reflection misses: declared, unreferenced ⇒ dead-stripped.
+    const src = 'uniform float3 u_color;\nhalf4 main(float2 p) { return half4(1); }'
+    expect(byName(src).u_color).toEqual({ label: 'u_color', kind: 'variable', detail: 'uniform' })
+  })
+
+  it('classifies consts, locals, params, and function names', () => {
+    const src =
+      'const float TAU = 6.28;\n' +
+      'half4 main(float2 p) {\n' +
+      '  float2 uv = p;\n' +
+      '  return half4(uv, 0, 1);\n' +
+      '}'
+    const s = byName(src)
+    expect(s.TAU.kind).toBe('constant')
+    expect(s.main.kind).toBe('function')
+    expect(s.p).toMatchObject({ kind: 'variable', detail: 'local' }) // param
+    expect(s.uv).toMatchObject({ kind: 'variable', detail: 'local' })
+  })
+
+  it('does not capture constructor / cast calls as declarations', () => {
+    // `half4(...)` and `float2(...)` are calls, not `type name` declarations.
+    const s = byName('half4 main(float2 p) { return half4(float2(1.0), 0, 1); }')
+    // Only the real declarations show up.
+    expect(Object.keys(s).sort()).toEqual(['main', 'p'])
+  })
+
+  it('de-dupes a name declared more than once, first wins', () => {
+    const out = skslLanguage.symbols('uniform float u_x;\nfloat u_x = 2.0;')
+    expect(out.filter((s) => s.label === 'u_x')).toEqual([
+      { label: 'u_x', kind: 'variable', detail: 'uniform' },
+    ])
   })
 })

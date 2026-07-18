@@ -21,4 +21,10 @@ export function shaderLanguage(id: ShaderLanguageId = DEFAULT_LANGUAGE): ShaderL
   return REGISTRY[id] ?? REGISTRY[DEFAULT_LANGUAGE]!
 }
 
-export type { ShaderLanguage, ShaderDiagnostic, ShaderCompileOutput } from './types'
+export type {
+  ShaderLanguage,
+  ShaderDiagnostic,
+  ShaderCompileOutput,
+  ShaderCompletion,
+  ShaderCompletionKind,
+} from './types'

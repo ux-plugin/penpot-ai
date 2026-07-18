@@ -85,6 +85,7 @@ export default defineConfig(({ command }) => ({
       '@codemirror/state',
       '@codemirror/lint',
       '@codemirror/lang-cpp',
+      '@codemirror/autocomplete',
     ],
   },
   build: {
