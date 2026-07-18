@@ -19,6 +19,7 @@ import type { Material } from '../../../renderer/api/material'
 import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
 import { openFocusStage } from '../../../renderer/signals/focus-stage'
 import { ShaderMaterialStage } from '../../FocusStage/ShaderMaterialStage'
+import { ShaderUniformsRail } from '../../FocusStage/ShaderUniformsRail'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
 
@@ -186,6 +187,7 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
         id: 'shader-material',
         title: 'Custom shader',
         center: <ShaderMaterialStage nodeId={nodeId} initialMaterial={item.material} />,
+        right: <ShaderUniformsRail />,
       })
     },
     [effects, nodeId],

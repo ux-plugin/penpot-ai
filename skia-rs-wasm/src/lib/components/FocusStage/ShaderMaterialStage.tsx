@@ -1,12 +1,20 @@
 /**
  * ShaderMaterialStage — the shader-authoring consumer of the generic
- * `FocusStage`. Fills the entire center region as a two-pane workbench:
+ * `FocusStage`. Fills the entire center region as a two-pane workbench, and
+ * overrides the right rail (inspector) with the uniform controls:
  *
- *   ┌──────────────┬───────────────────────────┐
- *   │  SkSL editor │   isolated live preview   │
- *   │  + status    │   (the shader alone, at   │
- *   │  + uniforms  │    a resolution we pick)  │
- *   └──────────────┴───────────────────────────┘
+ *   ┌──────────────┬───────────────────────┬──────────┐
+ *   │  SkSL editor │  isolated live preview │ uniforms │
+ *   │  + status    │  (the shader alone, at │  (right  │
+ *   │              │   a resolution we pick)│   rail)  │
+ *   └──────────────┴───────────────────────┴──────────┘
+ *      center slot                            right slot
+ *
+ * The uniform controls sit in the right rail (`ShaderUniformsRail`, a separate
+ * focus-stage slot) — the "two-persona bridge": source on the left for the
+ * coder, knobs on the right where a designer expects the inspector. That slot
+ * can't share React props with this one, so the draft is published through
+ * `shaderUniformsBridge`; this component stays authoritative.
  *
  * The preview is **isolated**, not the design canvas: it renders this material
  * standalone into its own GL surface (see `focus-preview.ts`), so there's no
@@ -28,7 +36,7 @@ import { Pause, Play, Repeat, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import type { Material } from '../../renderer/api/material'
+import type { Material, MaterialUniformValue } from '../../renderer/api/material'
 import type { ShaderCompileOutput } from '../../renderer/shader-lang'
 import {
   commitNodePartialUpdate,
@@ -46,6 +54,7 @@ import {
   resizePreview,
 } from '../../renderer/focus-preview'
 import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
+import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
 
 /** Pause after which the draft is committed to the document as one frame. */
 const COMMIT_IDLE_MS = 1000
@@ -176,6 +185,31 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   // Flush any pending draft on exit, so closing focus never drops edits.
   useEffect(() => () => commitNow(), [commitNow])
 
+  // Commit one uniform, merging against the ALWAYS-fresh draft ref (not the
+  // rendered snapshot), so the rail — which reads state through an rAF-gated
+  // signal — can never drop a sibling uniform changed in the same frame.
+  const setUniform = useCallback(
+    (name: string, value: MaterialUniformValue) => {
+      const others = (draftRef.current.uniforms ?? []).filter((u) => u.name !== name)
+      applyChange({ uniforms: [...others, { name, value }] })
+    },
+    [applyChange],
+  )
+
+  // Publish the draft + reflected uniforms to the right rail. The rail lives in
+  // a different focus-stage slot, so it reads this instead of props. Uniforms
+  // come from the last GOOD compile (same keep-last-good the preview uses), so
+  // the knobs don't vanish on every half-typed line.
+  useEffect(() => {
+    shaderUniformsBridge.value = {
+      material: draft,
+      uniforms: lastGood?.uniforms ?? [],
+      ok: lastGood != null,
+      setUniform,
+    }
+  }, [draft, lastGood, setUniform])
+  useEffect(() => () => void (shaderUniformsBridge.value = null), [])
+
   // Mount the shared preview surface into the pane; keep it sized to the pane.
   useEffect(() => {
     const module = getWasmModule()
@@ -243,7 +277,7 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     <div className="absolute inset-0 flex">
       {/* Editor pane — opaque, fills height. */}
       <div className="pointer-events-auto flex w-[440px] shrink-0 flex-col overflow-hidden border-r border-border bg-background p-3">
-        <MaterialEditor material={draft} onChange={applyChange} fill onCompiled={handleCompiled} />
+        <MaterialEditor material={draft} onChange={applyChange} fill showUniforms={false} onCompiled={handleCompiled} />
       </div>
 
       {/* Preview pane — hosts the isolated preview canvas. */}
