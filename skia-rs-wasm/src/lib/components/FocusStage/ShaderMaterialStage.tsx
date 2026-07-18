@@ -32,6 +32,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PenpotNode } from 'penpot-exporter/types'
+import type { EditorView } from '@codemirror/view'
 import { Pause, Play, Repeat, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -55,6 +56,7 @@ import {
 } from '../../renderer/focus-preview'
 import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
 import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
+import { shaderConsoleBridge } from '../../renderer/signals/shader-console-bridge'
 
 /** Pause after which the draft is committed to the document as one frame. */
 const COMMIT_IDLE_MS = 1000
@@ -92,6 +94,8 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   const dirtyRef = useRef(false)
   const timerRef = useRef<number | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
+  // The code editor's CodeMirror view, for jump-to-line from the console.
+  const editorViewRef = useRef<EditorView | null>(null)
 
   // Clock. `u_time` is engine-owned, so whether this material animates is only
   // knowable from the compile — hence observing MaterialEditor's result.
@@ -102,8 +106,15 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   // keystroke. Holding the last good answer keeps the preview animating while
   // you type — the same keep-last-good the pixels already get.
   const [lastGood, setLastGood] = useState<ShaderCompileOutput | null>(null)
+  // The LATEST compile (incl. failures) drives the console: it must show the
+  // errors on a broken shader, unlike `lastGood`. `null` = a recompile is in
+  // flight (source changed, no result yet) → the console shows "Compiling…".
+  const [latest, setLatest] = useState<ShaderCompileOutput | null>(null)
+  const [compiling, setCompiling] = useState(false)
   const handleCompiled = useCallback((r: ShaderCompileOutput | null) => {
     if (r?.ok) setLastGood(r)
+    setCompiling(r == null)
+    if (r != null) setLatest(r)
   }, [])
   const usesTime = lastGood?.usesTime === true
   const [playing, setPlaying] = useState(true)
@@ -210,6 +221,28 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   }, [draft, lastGood, setUniform])
   useEffect(() => () => void (shaderUniformsBridge.value = null), [])
 
+  // Jump the editor caret to a diagnostic's (1-based) line/column, from a
+  // console row click. Clamped so a stale diagnostic can't point off the doc.
+  const reveal = useCallback((line: number, column?: number) => {
+    const view = editorViewRef.current
+    if (!view) return
+    const doc = view.state.doc
+    const info = doc.line(Math.min(Math.max(line, 1), doc.lines))
+    const pos = column != null ? Math.min(info.from + (column - 1), info.to) : info.from
+    view.dispatch({ selection: { anchor: pos }, scrollIntoView: true })
+    view.focus()
+  }, [])
+
+  // Publish the latest compile's diagnostics to the console strip (bottom slot).
+  useEffect(() => {
+    shaderConsoleBridge.value = {
+      diagnostics: latest?.diagnostics ?? [],
+      status: compiling ? 'compiling' : latest?.ok ? 'ok' : latest ? 'error' : 'compiling',
+      reveal,
+    }
+  }, [latest, compiling, reveal])
+  useEffect(() => () => void (shaderConsoleBridge.value = null), [])
+
   // Mount the shared preview surface into the pane; keep it sized to the pane.
   useEffect(() => {
     const module = getWasmModule()
@@ -277,7 +310,14 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     <div className="absolute inset-0 flex">
       {/* Editor pane — opaque, fills height. */}
       <div className="pointer-events-auto flex w-[440px] shrink-0 flex-col overflow-hidden border-r border-border bg-background p-3">
-        <MaterialEditor material={draft} onChange={applyChange} fill showUniforms={false} onCompiled={handleCompiled} />
+        <MaterialEditor
+          material={draft}
+          onChange={applyChange}
+          fill
+          showUniforms={false}
+          onCompiled={handleCompiled}
+          onEditorReady={(view) => (editorViewRef.current = view)}
+        />
       </div>
 
       {/* Preview pane — hosts the isolated preview canvas. */}

@@ -49,6 +49,8 @@ export interface ShaderCodeEditorProps {
   value: string
   onChange: (value: string) => void
   diagnostics: ShaderDiagnostic[]
+  /** Notified with the live `EditorView` once mounted, e.g. for jump-to-line. */
+  onViewReady?: (view: EditorView) => void
   className?: string
 }
 
@@ -57,6 +59,7 @@ export function ShaderCodeEditor({
   value,
   onChange,
   diagnostics,
+  onViewReady,
   className,
 }: ShaderCodeEditorProps) {
   const viewRef = useRef<EditorView | null>(null)
@@ -98,6 +101,7 @@ export function ShaderCodeEditor({
       onChange={onChange}
       onCreateEditor={(view) => {
         viewRef.current = view
+        onViewReady?.(view)
         // Seed diagnostics that arrived before the editor mounted.
         view.dispatch(setDiagnostics(view.state, toCmDiagnostics(view.state.doc, diagnostics)))
       }}

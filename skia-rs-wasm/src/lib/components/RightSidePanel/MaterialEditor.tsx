@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import type { EditorView } from '@codemirror/view'
 import { ShaderCodeEditor } from './ShaderCodeEditor'
 import { MaterialUniformControls } from './MaterialUniformControls'
 import type { Material } from '../../renderer/api/material'
@@ -43,6 +44,12 @@ export interface MaterialEditorProps {
    * instead, so it still owns the compile here but surfaces the knobs elsewhere.
    */
   showUniforms?: boolean
+  /**
+   * Notified with the CodeMirror `EditorView` once it mounts (fill mode only —
+   * the compact textarea has no view). The focus stage uses it to drive
+   * jump-to-line from the console strip.
+   */
+  onEditorReady?: (view: EditorView) => void
 }
 
 export function MaterialEditor({
@@ -51,6 +58,7 @@ export function MaterialEditor({
   fill = false,
   onCompiled,
   showUniforms = true,
+  onEditorReady,
 }: MaterialEditorProps) {
   const language = shaderLanguage(material.language)
 
@@ -93,6 +101,7 @@ export function MaterialEditor({
               language={language}
               value={material.source}
               diagnostics={diagnostics}
+              onViewReady={onEditorReady}
               onChange={(v) => onChange({ source: v })}
               className="h-full"
             />
