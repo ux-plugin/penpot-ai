@@ -88,7 +88,15 @@ export interface ShaderMaterialStageProps {
   initialMaterial: Material
 }
 
+/** Per-open session ids, so each focus open is its own undo group. */
+let SHADER_SESSION_SEQ = 0
+
 export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialStageProps) {
+  // Unique per open: every idle-coalesced commit carries it as `groupId`, so the
+  // canvas collapses this whole session into one undo step. Generated once.
+  const groupIdRef = useRef<string | undefined>(undefined)
+  if (!groupIdRef.current) groupIdRef.current = `shader-material:${(SHADER_SESSION_SEQ += 1)}`
+
   const [draft, setDraft] = useState<Material>(initialMaterial)
   const draftRef = useRef<Material>(initialMaterial)
   const dirtyRef = useRef(false)
@@ -182,6 +190,7 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
       before,
       { material: draftRef.current } as Partial<PenpotNode>,
       pid,
+      groupIdRef.current,
     )
   }, [nodeId])
 

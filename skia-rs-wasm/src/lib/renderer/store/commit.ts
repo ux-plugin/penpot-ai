@@ -137,6 +137,8 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
     saveUndo,
     fromHistory,
     ignoreRendererSync,
+    groupId,
+    synthetic,
   } = params
 
   const hasPageChanges = redoChanges.length > 0
@@ -185,6 +187,8 @@ export async function commitChanges(params: CommitChangesParams): Promise<void> 
     docMetaUndoChanges,
     fromHistory: resolvedFromHistory,
     saveUndo: resolvedSaveUndo,
+    groupId,
+    synthetic,
   })
 
   await emitChangesApplied({
