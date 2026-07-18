@@ -62,7 +62,7 @@ import {
 } from './scene3d-resize'
 import { commitCameraPatch, commitObjectTransform } from './scene3d-commit'
 import { useScene3dEditing } from './use-scene3d-editing'
-import { isBakeEnabled, bakeSceneToNode } from './scene3d-bake'
+import { isBakeEnabled, bakeSceneToNode, unbakeNodeFill, reconcileBakes } from './scene3d-bake'
 
 interface ScreenRect {
   x: number
@@ -669,13 +669,20 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // the 3D, and it exports. The edited scene keeps the live overlay (gizmos, backdrop,
       // orbit). Flag-gated (window.__scene3dBake) while it's verified against a real render
       // target; off ⇒ the overlay path below runs for every scene as before.
-      if (isBakeEnabled() && !isEditing) {
-        // Bake at the resolution the current zoom needs (crisp when zoomed in), not the
-        // node's doc size — a rendered scene is raster, so this is how it matches vector
-        // sharpness at any zoom.
-        if (bakeSceneToNode(sceneId, doc, vp.zoom)) {
-          didBake = true
-          continue
+      if (isBakeEnabled()) {
+        if (isEditing) {
+          // Entering edit hands the scene to the live overlay — drop its stale baked fill
+          // so Skia doesn't draw it under the overlay (keeps the bake state for a fast
+          // re-bake on Done). Then fall through to the overlay render below.
+          if (unbakeNodeFill(sceneId)) didBake = true
+        } else {
+          // Bake at the resolution the current zoom needs (crisp when zoomed in), not the
+          // node's doc size — a rendered scene is raster, so this is how it matches vector
+          // sharpness at any zoom.
+          if (bakeSceneToNode(sceneId, doc, vp.zoom)) {
+            didBake = true
+            continue
+          }
         }
       }
 
@@ -702,6 +709,9 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       const glY = cssH - (screen.y + screen.h)
       renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, backdrop)
     }
+
+    // Free bake resources for scenes that were deleted (no longer in the proxy).
+    reconcileBakes(new Set(scene3dProxy.scenes.keys()))
 
     // A baked scene lives in Skia's document, so ask Skia to composite the fresh fill.
     if (didBake) useWorkspaceStore.getState().renderer?.requestRenderFrame()

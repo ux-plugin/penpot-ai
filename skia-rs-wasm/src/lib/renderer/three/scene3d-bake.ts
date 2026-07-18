@@ -31,12 +31,14 @@ import type { Scene3DDocument, Scene3DInstance } from './scene3d-store'
 
 const FILL_U8_SIZE = 164 // matches api/constants FILL_U8_SIZE
 
-let bakeEnabled = false
+// Default ON — baking is the normal path now; the toggle stays for A/B debugging.
+let bakeEnabled = true
 export function setBakeEnabled(on: boolean): void {
   bakeEnabled = on
   if (!on) {
     // Restore every baked node to a plain (fill-less) rect so the overlay path takes over.
-    for (const id of bakeState.keys()) clearNodeFill(id)
+    for (const id of bakeState.keys()) unbakeNodeFill(id)
+    useWorkspaceStore.getState().renderer?.requestRenderFrame() // drop the fills now
   }
 }
 export function isBakeEnabled(): boolean {
@@ -50,6 +52,7 @@ interface BakeState {
   imageId: string // stable Skia image id, so _update_image_from_texture overwrites in place
   w: number
   h: number
+  filled: boolean // whether the node currently carries our baked image fill
 }
 
 let bakeRenderer: THREE.WebGLRenderer | null = null
@@ -134,7 +137,7 @@ export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: num
     if (!st) {
       const inst = buildSceneInstance(r, doc)
       const rt = new THREE.WebGLRenderTarget(size.w, size.h)
-      st = { inst, rt, texId: -1, imageId: crypto.randomUUID(), w: size.w, h: size.h }
+      st = { inst, rt, texId: -1, imageId: crypto.randomUUID(), w: size.w, h: size.h, filled: false }
       bakeState.set(sceneId, st)
     } else if (st.w !== size.w || st.h !== size.h) {
       st.rt.setSize(size.w, size.h)
@@ -190,6 +193,7 @@ export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: num
     m._update_image_from_texture()
     freeBytes(m)
     setNodeImageFill(m, sceneId, st.imageId, size.w, size.h)
+    st.filled = true
     return true
   } catch (e) {
     r.resetState()
@@ -213,6 +217,34 @@ export function disposeBakeScene(sceneId: string): void {
   st.rt.dispose()
   clearNodeFill(sceneId)
   bakeState.delete(sceneId)
+}
+
+/**
+ * Clear a baked node's fill WITHOUT tearing down its bake state — the edit⇄placed
+ * handoff: entering edit hands the scene to the live overlay, so its stale baked image
+ * must go, but we keep the instance/RT so re-baking on Done is instant. Returns true if
+ * a fill was actually cleared (caller should request a Skia frame to drop it).
+ */
+export function unbakeNodeFill(sceneId: string): boolean {
+  const st = bakeState.get(sceneId)
+  if (!st || !st.filled) return false
+  clearNodeFill(sceneId)
+  st.filled = false
+  return true
+}
+
+/**
+ * Drop bake state for scenes that no longer exist (deleted). Called with the live scene
+ * id set each frame. The node is gone, so we only free GPU resources — no fill to clear.
+ */
+export function reconcileBakes(activeIds: Set<string>): void {
+  for (const id of [...bakeState.keys()]) {
+    if (activeIds.has(id)) continue
+    const st = bakeState.get(id)!
+    st.inst.dispose()
+    st.rt.dispose()
+    bakeState.delete(id)
+  }
 }
 
 // --- WASM byte writers (mirror api/fills.ts layouts; used raw so we don't depend on the
