@@ -24,6 +24,9 @@ import { ShaderConsole } from '../../FocusStage/ShaderConsole'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
 
+/** Per-open session counter, so each shader focus open is its own undo group. */
+let SHADER_SESSION_SEQ = 0
+
 /** Merge shape shadow[] + blur + glass + noise + texture into a unified EffectItem list. */
 function mergeEffects(node: RectLikeNode): EffectItem[] {
   const items: EffectItem[] = []
@@ -184,12 +187,20 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
     (index: number) => {
       const item = effects[index]
       if (item?.kind !== 'material') return
+      // The session owns its undo `groupId`: the stage's commits carry it (so
+      // canvas group-undo collapses the session), and `undoScope` re-uses it so
+      // the focus reader's revert-by-append frames are swept by that same
+      // group-undo. Unique per open — each focus session is its own group.
+      const groupId = `shader-material:${(SHADER_SESSION_SEQ += 1)}`
       openFocusStage({
         id: 'shader-material',
         title: 'Custom shader',
-        center: <ShaderMaterialStage nodeId={nodeId} initialMaterial={item.material} />,
+        center: (
+          <ShaderMaterialStage nodeId={nodeId} initialMaterial={item.material} groupId={groupId} />
+        ),
         right: <ShaderUniformsRail />,
         bottom: <ShaderConsole />,
+        undoScope: { nodeIds: [nodeId], attrs: ['material'], groupId },
       })
     },
     [effects, nodeId],

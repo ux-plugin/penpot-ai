@@ -6,6 +6,7 @@ import { CursorHint } from './lib/components/CursorHint'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
+import { focusUndo, focusRedo } from './lib/history/focus-undo'
 import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } from './lib/persistence'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
@@ -96,12 +97,18 @@ function App() {
       const t = e.target as HTMLElement | null
       if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
       const mod = e.metaKey || e.ctrlKey
+      // When a focus stage declares an `undoScope`, Cmd+Z steps through THAT
+      // session's frames finely (the focus reader) instead of reverting the
+      // whole session as one canvas step. Cmd+Z inside the SkSL editor never
+      // reaches here — the input guard above lets CodeMirror's native text-undo
+      // handle it — so this is for Cmd+Z on the surrounding chrome (uniforms).
+      const scope = focusStage.peek()?.undoScope
       if (mod && e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
-        void undo()
+        void (scope ? focusUndo(scope) : undo())
       } else if (mod && e.key === 'z' && e.shiftKey) {
         e.preventDefault()
-        void redo()
+        void (scope ? focusRedo(scope) : redo())
       } else if (
         import.meta.env.DEV &&
         e.shiftKey && (e.key === 'P' || e.key === 'p') && !mod

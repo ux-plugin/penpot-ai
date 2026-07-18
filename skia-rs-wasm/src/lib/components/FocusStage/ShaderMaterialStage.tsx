@@ -57,6 +57,8 @@ import {
 import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
 import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
 import { shaderConsoleBridge } from '../../renderer/signals/shader-console-bridge'
+import { registerFocusFlush } from '../../history/focus-pending'
+import { onChangesApplied } from '../../changes/change-emitter'
 
 /** Pause after which the draft is committed to the document as one frame. */
 const COMMIT_IDLE_MS = 1000
@@ -86,17 +88,16 @@ export interface ShaderMaterialStageProps {
   nodeId: string
   /** The material as it was when focus mode opened. */
   initialMaterial: Material
+  /**
+   * The session's undo `groupId` (owned by the opener, so it can also seed the
+   * session's `undoScope`). Every idle-coalesced commit carries it, so the
+   * canvas collapses this whole session into one undo step while the focus
+   * reader steps through the frames individually.
+   */
+  groupId: string
 }
 
-/** Per-open session ids, so each focus open is its own undo group. */
-let SHADER_SESSION_SEQ = 0
-
-export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialStageProps) {
-  // Unique per open: every idle-coalesced commit carries it as `groupId`, so the
-  // canvas collapses this whole session into one undo step. Generated once.
-  const groupIdRef = useRef<string | undefined>(undefined)
-  if (!groupIdRef.current) groupIdRef.current = `shader-material:${(SHADER_SESSION_SEQ += 1)}`
-
+export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: ShaderMaterialStageProps) {
   const [draft, setDraft] = useState<Material>(initialMaterial)
   const draftRef = useRef<Material>(initialMaterial)
   const dirtyRef = useRef(false)
@@ -174,8 +175,13 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   }
   const ticker = tickerRef.current
 
-  /** Flush the draft to the document as ONE change. No-op when unchanged. */
-  const commitNow = useCallback(() => {
+  /**
+   * Flush the draft to the document as ONE change. No-op when unchanged.
+   * Returns the commit promise so callers that must observe the recorded frame
+   * (the focus-undo flush) can await it — the frame lands synchronously inside
+   * `commitChanges`, but `commitChanges` itself is async.
+   */
+  const commitNow = useCallback(async (): Promise<void> => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current)
       timerRef.current = null
@@ -185,14 +191,14 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     const pid = getActiveOrSinglePageId()
     if (!before || !pid) return
     dirtyRef.current = false
-    void commitNodePartialUpdate(
+    await commitNodePartialUpdate(
       nodeId,
       before,
       { material: draftRef.current } as Partial<PenpotNode>,
       pid,
-      groupIdRef.current,
+      groupId,
     )
-  }, [nodeId])
+  }, [nodeId, groupId])
 
   const applyChange = useCallback(
     (partial: Partial<Material>) => {
@@ -210,7 +216,38 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   )
 
   // Flush any pending draft on exit, so closing focus never drops edits.
-  useEffect(() => () => commitNow(), [commitNow])
+  useEffect(() => () => void commitNow(), [commitNow])
+
+  // Expose the pending-draft flush to the focus-undo reader: a Cmd+Z fired
+  // moments after typing must first commit that draft so the freshest edit is a
+  // history frame the walk can see. One slot — only one focus stage is open.
+  useEffect(() => registerFocusFlush(() => commitNow()), [commitNow])
+
+  // Re-seed the draft when the committed material changes UNDER us — a focus
+  // undo/redo, a canvas undo, or token propagation on a bound uniform. Guarded
+  // on `!dirtyRef` so it never clobbers in-flight typing: the focus reader
+  // flushes the pending draft first, so by the time its revert lands we're
+  // clean. Compared by value, so our own just-landed commit is a no-op.
+  useEffect(() => {
+    return onChangesApplied((event) => {
+      if (dirtyRef.current) return
+      const touched = event.redoChanges.some(
+        (ch) =>
+          (ch as { type?: string }).type === 'mod-obj' &&
+          (ch as { id?: string }).id === nodeId,
+      )
+      if (!touched) return
+      const node = getCommittedNodeOnActivePage(nodeId)
+      const mat = (node as { material?: Material } | null)?.material
+      if (!mat || JSON.stringify(mat) === JSON.stringify(draftRef.current)) return
+      draftRef.current = mat
+      setDraft(mat)
+      const module = getWasmModule()
+      if (module && isPreviewSupported(module)) {
+        drawPreviewFrame(module, mat, timeRef.current, phaseOf(timeRef.current))
+      }
+    })
+  }, [nodeId])
 
   // Commit one uniform, merging against the ALWAYS-fresh draft ref (not the
   // rendered snapshot), so the rail — which reads state through an rAF-gated
