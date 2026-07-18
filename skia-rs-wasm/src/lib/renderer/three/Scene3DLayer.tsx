@@ -62,7 +62,14 @@ import {
 } from './scene3d-resize'
 import { commitCameraPatch, commitObjectTransform } from './scene3d-commit'
 import { useScene3dEditing } from './use-scene3d-editing'
-import { isBakeEnabled, bakeSceneToNode, unbakeNodeFill, reconcileBakes } from './scene3d-bake'
+import {
+  isBakeEnabled,
+  isLiveEditEnabled,
+  bakeSceneToNode,
+  bakeEditingScene,
+  unbakeNodeFill,
+  reconcileBakes,
+} from './scene3d-bake'
 
 interface ScreenRect {
   x: number
@@ -669,20 +676,14 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // the 3D, and it exports. The edited scene keeps the live overlay (gizmos, backdrop,
       // orbit). Flag-gated (window.__scene3dBake) while it's verified against a real render
       // target; off ⇒ the overlay path below runs for every scene as before.
-      if (isBakeEnabled()) {
-        if (isEditing) {
-          // Entering edit hands the scene to the live overlay — drop its stale baked fill
-          // so Skia doesn't draw it under the overlay (keeps the bake state for a fast
-          // re-bake on Done). Then fall through to the overlay render below.
-          if (unbakeNodeFill(sceneId)) didBake = true
-        } else {
-          // Bake at the resolution the current zoom needs (crisp when zoomed in), not the
-          // node's doc size — a rendered scene is raster, so this is how it matches vector
-          // sharpness at any zoom.
-          if (bakeSceneToNode(sceneId, doc, vp.zoom)) {
-            didBake = true
-            continue
-          }
+      // A PLACED scene composites into Skia in z-order → skip the overlay entirely.
+      if (isBakeEnabled() && !isEditing) {
+        // Bake at the resolution the current zoom needs (crisp when zoomed in), not the
+        // node's doc size — a rendered scene is raster, so this is how it matches vector
+        // sharpness at any zoom.
+        if (bakeSceneToNode(sceneId, doc, vp.zoom)) {
+          didBake = true
+          continue
         }
       }
 
@@ -699,15 +700,31 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
         selectedCameraId: scene3dProxy.selectedCameraId,
       })
 
-      // Edit-only backdrop fills the box while editing so the scene reads apart from the
-      // document; every other scene stays transparent and composites over it. Drawn as an
-      // explicit scissored clear in renderSceneIntoBox (never scene.background).
-      const backdrop = isEditing ? (doc.background ?? SCENE3D_EDIT_BACKDROP) : null
-
       // three multiplies viewport/scissor by pixelRatio internally — pass CSS/logical px.
       const glX = screen.x
       const glY = cssH - (screen.y + screen.h)
-      renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, backdrop)
+
+      // LIVE EDIT (in-place, not focus): composite the meshes into Skia mirroring the live
+      // overlay camera/objects, so the 3D stays STACKED with the 2D while you orbit/drag —
+      // then draw ONLY the edit chrome (gizmo + frustums) on the overlay above it.
+      const liveEdit = isEditing && isBakeEnabled() && isLiveEditEnabled() && !focused
+      if (liveEdit) {
+        if (bakeEditingScene(sceneId, doc, inst, vp.zoom)) didBake = true
+        const restore: boolean[] = []
+        for (const o of inst.objects.values()) {
+          restore.push(o.visible)
+          o.visible = false
+        }
+        renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, null)
+        let i = 0
+        for (const o of inst.objects.values()) o.visible = restore[i++]
+      } else {
+        // Classic full overlay (focus mode, or bake/live-edit off). Clear any stale baked
+        // fill so Skia doesn't draw it under the overlay. Edit-only backdrop fills the box.
+        if (isEditing && isBakeEnabled()) unbakeNodeFill(sceneId)
+        const backdrop = isEditing ? (doc.background ?? SCENE3D_EDIT_BACKDROP) : null
+        renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, backdrop)
+      }
     }
 
     // Free bake resources for scenes that were deleted (no longer in the proxy).

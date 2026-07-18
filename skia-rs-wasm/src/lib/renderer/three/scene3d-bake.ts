@@ -28,8 +28,8 @@ import { worldToScreen } from '../viewport'
 import { allocBytes, freeBytes, writeUUIDToDataView } from '../utils'
 import { uuidToU32Tuple } from '../types'
 import { buildSceneInstance, applyDocToInstance, pickScene3d } from './three-scene'
-import { isPersp, orthoFrustum } from './camera3d'
-import type { Scene3DDocument, Scene3DInstance } from './scene3d-store'
+import { isPersp, isOrtho, orthoFrustum } from './camera3d'
+import { activeCamera, type Scene3DDocument, type Scene3DInstance } from './scene3d-store'
 
 const FILL_U8_SIZE = 164 // matches api/constants FILL_U8_SIZE
 
@@ -45,6 +45,17 @@ export function setBakeEnabled(on: boolean): void {
 }
 export function isBakeEnabled(): boolean {
   return bakeEnabled
+}
+
+// Default ON — IN-PLACE edit composites the 3D live into Skia (stays stacked while you
+// orbit/drag), with only the gizmos/frustums on the overlay. Off ⇒ classic full overlay
+// while editing. Toggle: window.__scene3dLiveEdit(true|false)
+let liveEditEnabled = true
+export function setLiveEditEnabled(on: boolean): void {
+  liveEditEnabled = on
+}
+export function isLiveEditEnabled(): boolean {
+  return liveEditEnabled
 }
 
 interface BakeState {
@@ -116,93 +127,148 @@ function bakeResolution(sceneId: string, zoom: number): { w: number; h: number }
   return { w: pw, h: ph }
 }
 
+/** Build the per-scene bake instance/RT, or resize/rebuild it. Rebuilds when the active
+ *  projection class flips (persp⇄ortho) so the camera type matches the doc. */
+function ensureBakeState(r: THREE.WebGLRenderer, sceneId: string, doc: Scene3DDocument, w: number, h: number): BakeState {
+  let st = bakeState.get(sceneId)
+  const wantOrtho = activeCamera(doc).projection === 'orthographic'
+  if (st && isOrtho(st.inst.camera) !== wantOrtho) {
+    st.inst.dispose()
+    st.rt.dispose()
+    bakeState.delete(sceneId)
+    st = undefined
+  }
+  if (!st) {
+    const inst = buildSceneInstance(r, doc)
+    const rt = new THREE.WebGLRenderTarget(w, h)
+    st = { inst, rt, texId: -1, imageId: crypto.randomUUID(), w, h, filled: false }
+    bakeState.set(sceneId, st)
+  } else if (st.w !== w || st.h !== h) {
+    st.rt.setSize(w, h)
+    st.texId = -1 // texture reallocated on resize → must re-register
+    st.w = w
+    st.h = h
+  }
+  return st
+}
+
+/** Frame the bake camera to the FBO aspect, render the scene into the RT, register its GL
+ *  texture, and hand it to Skia as the node's image fill. Assumes st.inst is already
+ *  reconciled and the context handed to three with a clean cache (caller resetState()s). */
+function renderAndUpload(m: WasmModule, r: THREE.WebGLRenderer, sceneId: string, st: BakeState, w: number, h: number): boolean {
+  const aspect = w / h
+  const cam = st.inst.camera
+  if (isPersp(cam)) {
+    cam.aspect = aspect
+    cam.clearViewOffset()
+    cam.updateProjectionMatrix()
+  } else {
+    const halfH = (cam.userData.orthoHalfHeight as number | undefined) ?? 1
+    const f = orthoFrustum(halfH, aspect)
+    cam.left = f.left
+    cam.right = f.right
+    cam.top = f.top
+    cam.bottom = f.bottom
+    cam.updateProjectionMatrix()
+  }
+  st.inst.scene.background = null // transparent → the 3D composites over what's behind the node
+  r.setRenderTarget(st.rt)
+  r.setViewport(0, 0, w, h)
+  r.setScissorTest(false)
+  r.setClearColor(0x000000, 0)
+  r.clear(true, true, false)
+  r.render(st.inst.scene, cam)
+  r.setRenderTarget(null)
+
+  const webglTex = (r.properties.get(st.rt.texture) as { __webglTexture?: WebGLTexture }).__webglTexture
+  if (!webglTex) {
+    r.resetState()
+    return false
+  }
+  const GL = (m as unknown as { GL: { getNewId: (t: unknown[]) => number; textures: unknown[] } }).GL
+  if (st.texId < 0) st.texId = GL.getNewId(GL.textures)
+  GL.textures[st.texId] = webglTex
+
+  r.resetState() // hand back to Skia with a clean three cache, THEN touch WASM
+  writeTextureHeader(m, sceneId, st.imageId, st.texId, w, h)
+  m._update_image_from_texture()
+  freeBytes(m)
+  setNodeImageFill(m, sceneId, st.imageId, w, h)
+  st.filled = true
+  return true
+}
+
+function warnBakeFail(sceneId: string, e: unknown): void {
+  if (warnedSize.has(sceneId + ':err')) return
+  warnedSize.add(sceneId + ':err')
+  console.warn('[scene3d-bake] bake failed for', sceneId, e)
+}
+
+/** Common prelude: module + shared-context renderer + FBO size. Returns null to bail. */
+function bakePrep(sceneId: string, zoom: number): { m: WasmModule; r: THREE.WebGLRenderer; w: number; h: number } | null {
+  const m = module()
+  if (!m || typeof (m as { _update_image_from_texture?: unknown })._update_image_from_texture !== 'function') return null
+  const r = getBakeRenderer(m)
+  if (!r) return null
+  const size = bakeResolution(sceneId, zoom)
+  if (!size) return null
+  return { m, r, w: size.w, h: size.h }
+}
+
 /**
- * Render `sceneId` into its FBO in the shared context and hand Skia the texture as the
- * node's image fill. Returns true if the node now carries a fresh baked fill. Call once
- * per frame per placed scene; then request a Skia render.
+ * Bake a PLACED scene: reconcile the instance from the document and composite it into the
+ * node's fill. Call once per frame per placed scene; then request a Skia render.
  */
 export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: number): boolean {
-  const m = module()
-  if (!m || typeof (m as { _update_image_from_texture?: unknown })._update_image_from_texture !== 'function') return false
-  const r = getBakeRenderer(m)
-  if (!r) return false
-  const size = bakeResolution(sceneId, zoom)
-  if (!size) return false
-
-  // Hand the shared GL context to three with a CLEAN cache BEFORE any three work — Skia
-  // rendered last and left the context in its own state, so three (esp. buildSceneInstance's
-  // PMREM passes) must re-bind everything or it draws using Skia's buffers (the "vertex
-  // buffer not big enough" / "bufferSubData overflow" spam).
-  r.resetState()
+  const p = bakePrep(sceneId, zoom)
+  if (!p) return false
+  // Clean cache BEFORE any three work — Skia rendered last and left the shared context in
+  // its own state (three, esp. PMREM, must re-bind or it draws with Skia's buffers).
+  p.r.resetState()
   try {
-    let st = bakeState.get(sceneId)
-    if (!st) {
-      const inst = buildSceneInstance(r, doc)
-      const rt = new THREE.WebGLRenderTarget(size.w, size.h)
-      st = { inst, rt, texId: -1, imageId: crypto.randomUUID(), w: size.w, h: size.h, filled: false }
-      bakeState.set(sceneId, st)
-    } else if (st.w !== size.w || st.h !== size.h) {
-      st.rt.setSize(size.w, size.h)
-      st.texId = -1 // texture reallocated on resize → must re-register
-      st.w = size.w
-      st.h = size.h
-    }
-
-    // Reconcile the live scene/camera/objects from the document.
+    const st = ensureBakeState(p.r, sceneId, doc, p.w, p.h)
     applyDocToInstance(st.inst, doc)
-
-    // Frame the camera to the node's aspect (mirrors renderSceneIntoBox).
-    const aspect = size.w / size.h
-    const cam = st.inst.camera
-    if (isPersp(cam)) {
-      cam.aspect = aspect
-      cam.clearViewOffset()
-      cam.updateProjectionMatrix()
-    } else {
-      const halfH = (cam.userData.orthoHalfHeight as number | undefined) ?? 1
-      const f = orthoFrustum(halfH, aspect)
-      cam.left = f.left
-      cam.right = f.right
-      cam.top = f.top
-      cam.bottom = f.bottom
-      cam.updateProjectionMatrix()
-    }
-
-    // Render the scene into the FBO (transparent, so the 3D composites over whatever is
-    // behind the node in Skia).
-    st.inst.scene.background = null
-    r.setRenderTarget(st.rt)
-    r.setViewport(0, 0, size.w, size.h)
-    r.setScissorTest(false)
-    r.setClearColor(0x000000, 0)
-    r.clear(true, true, false)
-    r.render(st.inst.scene, cam)
-    r.setRenderTarget(null)
-
-    // Register the RT's GL texture in emscripten's table (reuse the id across frames).
-    const webglTex = (r.properties.get(st.rt.texture) as { __webglTexture?: WebGLTexture }).__webglTexture
-    if (!webglTex) {
-      r.resetState()
-      return false
-    }
-    const GL = (m as unknown as { GL: { getNewId: (t: unknown[]) => number; textures: unknown[] } }).GL
-    if (st.texId < 0) st.texId = GL.getNewId(GL.textures)
-    GL.textures[st.texId] = webglTex
-
-    // Hand back to Skia with a clean three cache, THEN touch WASM.
-    r.resetState()
-    writeTextureHeader(m, sceneId, st.imageId, st.texId, size.w, size.h)
-    m._update_image_from_texture()
-    freeBytes(m)
-    setNodeImageFill(m, sceneId, st.imageId, size.w, size.h)
-    st.filled = true
-    return true
+    return renderAndUpload(p.m, p.r, sceneId, st, p.w, p.h)
   } catch (e) {
-    r.resetState()
-    if (!warnedSize.has(sceneId + ':err')) {
-      warnedSize.add(sceneId + ':err')
-      console.warn('[scene3d-bake] bake failed for', sceneId, e)
+    p.r.resetState()
+    warnBakeFail(sceneId, e)
+    return false
+  }
+}
+
+/**
+ * Bake the scene BEING EDITED, mirroring the live overlay instance — so the 3D stays
+ * composited in Skia (true z-order) while you orbit/drag, instead of jumping onto the
+ * floating overlay. Orbit isn't written to the doc until gesture-end, so we copy the
+ * camera pose + object transforms straight from `srcInst` (the overlay's live instance)
+ * rather than the lagging document. The overlay then draws only the edit chrome on top.
+ */
+export function bakeEditingScene(sceneId: string, doc: Scene3DDocument, srcInst: Scene3DInstance, zoom: number): boolean {
+  const p = bakePrep(sceneId, zoom)
+  if (!p) return false
+  p.r.resetState()
+  try {
+    const st = ensureBakeState(p.r, sceneId, doc, p.w, p.h)
+    applyDocToInstance(st.inst, doc) // reconcile object add/remove + materials from the doc
+    // Then override transforms from the LIVE overlay instance (the doc lags mid-gesture).
+    st.inst.camera.position.copy(srcInst.camera.position)
+    st.inst.camera.quaternion.copy(srcInst.camera.quaternion)
+    st.inst.camera.zoom = srcInst.camera.zoom
+    if (isOrtho(st.inst.camera) && isOrtho(srcInst.camera)) {
+      st.inst.camera.userData.orthoHalfHeight = srcInst.camera.userData.orthoHalfHeight
     }
+    for (const [id, dst] of st.inst.objects) {
+      const src = srcInst.objects.get(id)
+      if (src) {
+        dst.position.copy(src.position)
+        dst.quaternion.copy(src.quaternion)
+        dst.scale.copy(src.scale)
+      }
+    }
+    return renderAndUpload(p.m, p.r, sceneId, st, p.w, p.h)
+  } catch (e) {
+    p.r.resetState()
+    warnBakeFail(sceneId, e)
     return false
   }
 }
@@ -313,5 +379,6 @@ function clearNodeFill(nodeId: string): void {
   ;(m as unknown as { _clear_shape_fills: () => void })._clear_shape_fills()
 }
 
-// Live toggle for verification against a working render target (e.g. localhost:5175).
+// Live toggles for verification against a working render target (e.g. localhost:5175).
 ;(window as unknown as Record<string, unknown>).__scene3dBake = setBakeEnabled
+;(window as unknown as Record<string, unknown>).__scene3dLiveEdit = setLiveEditEnabled
