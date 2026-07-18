@@ -62,6 +62,7 @@ import {
 } from './scene3d-resize'
 import { commitCameraPatch, commitObjectTransform } from './scene3d-commit'
 import { useScene3dEditing } from './use-scene3d-editing'
+import { isBakeEnabled, bakeSceneToNode } from './scene3d-bake'
 
 interface ScreenRect {
   x: number
@@ -636,6 +637,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     const cssW = canvasSizeRef.current.width
     const focused = editingId != null && editPlacement.value === 'focus'
     let selRect: ScreenRect | null = null
+    let didBake = false
 
     for (const [sceneId, sceneSnap] of scene3dProxy.scenes) {
       const doc = sceneSnap as Scene3DDocument
@@ -662,6 +664,21 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       if (!screen) continue
       if (isSel || isEditing) selRect = screen
 
+      // Path 1: composite a PLACED (non-editing) scene INTO Skia in z-order via its node's
+      // image fill, and skip the overlay for it — a 2D shape above the node now occludes
+      // the 3D, and it exports. The edited scene keeps the live overlay (gizmos, backdrop,
+      // orbit). Flag-gated (window.__scene3dBake) while it's verified against a real render
+      // target; off ⇒ the overlay path below runs for every scene as before.
+      if (isBakeEnabled() && !isEditing) {
+        // Bake at the resolution the current zoom needs (crisp when zoomed in), not the
+        // node's doc size — a rendered scene is raster, so this is how it matches vector
+        // sharpness at any zoom.
+        if (bakeSceneToNode(sceneId, doc, vp.zoom)) {
+          didBake = true
+          continue
+        }
+      }
+
       const inst = syncedInstance(sceneId, doc, renderer)
       // While the gizmo owns the focused object's transform, don't fight it.
       const skipTransformFor = isEditing ? focusedId : null
@@ -685,6 +702,9 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       const glY = cssH - (screen.y + screen.h)
       renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, backdrop)
     }
+
+    // A baked scene lives in Skia's document, so ask Skia to composite the fresh fill.
+    if (didBake) useWorkspaceStore.getState().renderer?.requestRenderFrame()
 
     selRectRef.current = selRect
     positionEditSurface(selRect, editingId != null)

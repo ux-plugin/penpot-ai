@@ -217,6 +217,11 @@ impl ImageStore {
         height: i32,
     ) -> Result<()> {
         let key = (id, is_thumbnail);
+        // The caller just rendered this texture with ANOTHER GL client (three.js) sharing
+        // our context, which left GL state dirty and unknown to Skia. Tell the GrContext to
+        // resync before we touch the GPU or Skia's next draw would run with three's leftover
+        // program/buffer bindings ("no valid shader program", "vertex buffer not big enough").
+        self.context.reset(None);
         let image = create_image_from_gl_texture(
             &mut self.context,
             texture_id,
