@@ -60,12 +60,47 @@ export function isLiveEditEnabled(): boolean {
 
 interface BakeState {
   inst: Scene3DInstance
-  rt: THREE.WebGLRenderTarget
-  texId: number // emscripten GL id for rt's texture (re-registered only on RT resize)
+  rt: THREE.WebGLRenderTarget // scene render target (MSAA, LINEAR — three always writes linear to RTs)
+  rtOut: THREE.WebGLRenderTarget // sRGB-encoded copy handed to Skia (the raw surface shows bytes as-is)
+  texId: number // emscripten GL id for rtOut's texture (re-registered only on resize)
   imageId: string // stable Skia image id, so _update_image_from_texture overwrites in place
   w: number
   h: number
   filled: boolean // whether the node currently carries our baked image fill
+  contentKey?: string // hash of what affects the rendered image; skip re-render if unchanged
+}
+
+// A fullscreen pass that reads the LINEAR scene texture and writes sRGB-encoded bytes.
+// three has no way to make a render target output sRGB (it hardwires workingColorSpace =
+// linear for RTs), and render-wasm's Skia surface is unmanaged (no color space → shows
+// bytes raw), so we encode ourselves. Without this the placed 3D is far too dark vs the
+// canvas-rendered edit mode (which gets the canvas's own sRGB output encode).
+let encoder: { scene: THREE.Scene; camera: THREE.Camera; material: THREE.ShaderMaterial } | null = null
+function getEncoder(): { scene: THREE.Scene; camera: THREE.Camera; material: THREE.ShaderMaterial } {
+  if (encoder) return encoder
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uTex: { value: null } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: `
+      precision highp float;
+      varying vec2 vUv;
+      uniform sampler2D uTex;
+      vec3 toSRGB(vec3 c){
+        vec3 lo = c * 12.92;
+        vec3 hi = 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+        return mix(lo, hi, step(vec3(0.0031308), c));
+      }
+      void main(){ vec4 t = texture2D(uTex, vUv); gl_FragColor = vec4(toSRGB(t.rgb), t.a); }
+    `,
+    depthTest: false,
+    depthWrite: false,
+    blending: THREE.NoBlending, // write RGBA verbatim into the output RT
+    side: THREE.DoubleSide,
+  })
+  const scene = new THREE.Scene()
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material))
+  encoder = { scene, camera: new THREE.Camera(), material }
+  return encoder
 }
 
 let bakeRenderer: THREE.WebGLRenderer | null = null
@@ -81,11 +116,18 @@ function sharedGL(m: WasmModule): WebGL2RenderingContext | null {
   return GL?.currentContext?.GLctx ?? null
 }
 
+// Multisample count for the bake FBO — antialiasing edges (the renderer's `antialias`
+// flag only covers the DEFAULT framebuffer, never a render target, so without this the
+// baked 3D has jagged edges and reads as low-res).
+const BAKE_SAMPLES = 4
+
 function getBakeRenderer(m: WasmModule): THREE.WebGLRenderer | null {
   if (bakeRenderer) return bakeRenderer
   const gl = sharedGL(m)
   if (!gl) return null
-  bakeRenderer = new THREE.WebGLRenderer({ context: gl, alpha: true, antialias: true })
+  // antialias:false — AA comes from the render target's MSAA (BAKE_SAMPLES), not the
+  // default framebuffer (which we never draw to).
+  bakeRenderer = new THREE.WebGLRenderer({ context: gl, alpha: true, antialias: false })
   bakeRenderer.setClearColor(0x000000, 0)
   bakeRenderer.autoClear = false
   return bakeRenderer
@@ -140,11 +182,13 @@ function ensureBakeState(r: THREE.WebGLRenderer, sceneId: string, doc: Scene3DDo
   }
   if (!st) {
     const inst = buildSceneInstance(r, doc)
-    const rt = new THREE.WebGLRenderTarget(w, h)
-    st = { inst, rt, texId: -1, imageId: crypto.randomUUID(), w, h, filled: false }
+    const rt = new THREE.WebGLRenderTarget(w, h, { samples: BAKE_SAMPLES }) // scene → linear + MSAA
+    const rtOut = new THREE.WebGLRenderTarget(w, h) // sRGB-encoded copy for Skia
+    st = { inst, rt, rtOut, texId: -1, imageId: crypto.randomUUID(), w, h, filled: false }
     bakeState.set(sceneId, st)
   } else if (st.w !== w || st.h !== h) {
     st.rt.setSize(w, h)
+    st.rtOut.setSize(w, h)
     st.texId = -1 // texture reallocated on resize → must re-register
     st.w = w
     st.h = h
@@ -180,7 +224,19 @@ function renderAndUpload(m: WasmModule, r: THREE.WebGLRenderer, sceneId: string,
   r.render(st.inst.scene, cam)
   r.setRenderTarget(null)
 
-  const webglTex = (r.properties.get(st.rt.texture) as { __webglTexture?: WebGLTexture }).__webglTexture
+  // Encode the LINEAR scene texture to sRGB bytes (three writes linear to RTs; the Skia
+  // surface is unmanaged and shows bytes raw, so we must pre-encode or it reads dark).
+  const enc = getEncoder()
+  enc.material.uniforms.uTex.value = st.rt.texture
+  r.setRenderTarget(st.rtOut)
+  r.setViewport(0, 0, w, h)
+  r.setScissorTest(false)
+  r.setClearColor(0x000000, 0)
+  r.clear(true, false, false)
+  r.render(enc.scene, enc.camera)
+  r.setRenderTarget(null)
+
+  const webglTex = (r.properties.get(st.rtOut.texture) as { __webglTexture?: WebGLTexture }).__webglTexture
   if (!webglTex) {
     r.resetState()
     return false
@@ -224,11 +280,28 @@ export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: num
   if (!p) return false
   // Clean cache BEFORE any three work — Skia rendered last and left the shared context in
   // its own state (three, esp. PMREM, must re-bind or it draws with Skia's buffers).
-  p.r.resetState()
   try {
     const st = ensureBakeState(p.r, sceneId, doc, p.w, p.h)
+
+    // Skip the (potentially expensive, high-res) re-render when nothing that affects the
+    // IMAGE changed — panning, moving the scene node, or moving another shape all leave the
+    // 3D content identical, only its on-screen position moves (which Skia handles by
+    // re-compositing the existing fill). Re-assert the fill cheaply in case a node mod-obj
+    // cleared it, and return without touching three.
+    const key = `${p.w}x${p.h}|${JSON.stringify(doc)}`
+    if (st.contentKey === key && st.texId >= 0) {
+      setNodeImageFill(p.m, sceneId, st.imageId, st.w, st.h)
+      st.filled = true
+      return true
+    }
+
+    // Clean cache BEFORE any three work — Skia rendered last and left the shared context in
+    // its own state (three, esp. PMREM, must re-bind or it draws with Skia's buffers).
+    p.r.resetState()
     applyDocToInstance(st.inst, doc)
-    return renderAndUpload(p.m, p.r, sceneId, st, p.w, p.h)
+    const ok = renderAndUpload(p.m, p.r, sceneId, st, p.w, p.h)
+    if (ok) st.contentKey = key
+    return ok
   } catch (e) {
     p.r.resetState()
     warnBakeFail(sceneId, e)
@@ -283,6 +356,7 @@ export function disposeBakeScene(sceneId: string): void {
   if (!st) return
   st.inst.dispose()
   st.rt.dispose()
+  st.rtOut.dispose()
   clearNodeFill(sceneId)
   bakeState.delete(sceneId)
 }
@@ -336,6 +410,7 @@ export function reconcileBakes(activeIds: Set<string>): void {
     const st = bakeState.get(id)!
     st.inst.dispose()
     st.rt.dispose()
+    st.rtOut.dispose()
     bakeState.delete(id)
   }
 }
