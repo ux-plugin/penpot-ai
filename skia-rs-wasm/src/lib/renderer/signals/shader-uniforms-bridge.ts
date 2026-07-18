@@ -11,21 +11,22 @@
  */
 
 import { signal } from '@preact/signals-core'
-import type { Material, MaterialUniformValue, ReflectedUniform } from '../api/material'
+import type { Material, MaterialUniform, ReflectedUniform } from '../api/material'
 
 export interface ShaderUniformsBridge {
-  /** The current draft — read for each uniform's live value. */
+  /** The current draft — read for each uniform's live value + token binding. */
   material: Material
   /** Reflected editable uniforms from the last GOOD compile (engine ones excluded). */
   uniforms: ReflectedUniform[]
   /** Whether the current source compiles — the rail shows a hint when it doesn't. */
   ok: boolean
   /**
-   * Commit one uniform value. The stage merges it against its always-fresh draft
-   * ref (not the rAF-lagged snapshot the rail renders from), so a rapid edit of
-   * one uniform can't clobber another; then it idle-coalesces the commit.
+   * Commit one whole uniform (value + optional token binding). The stage merges
+   * it against its always-fresh draft ref (not the rAF-lagged snapshot the rail
+   * renders from), so a rapid edit of one uniform can't clobber another; then it
+   * idle-coalesces the commit.
    */
-  setUniform: (name: string, value: MaterialUniformValue) => void
+  setUniform: (u: MaterialUniform) => void
 }
 
 export const shaderUniformsBridge = signal<ShaderUniformsBridge | null>(null)

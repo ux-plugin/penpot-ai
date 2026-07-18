@@ -27,7 +27,7 @@ export function ShaderUniformsRail() {
           <MaterialUniformControls
             uniforms={bridge.uniforms}
             material={bridge.material}
-            onChangeUniform={bridge.setUniform}
+            onCommitUniform={bridge.setUniform}
           />
         ) : (
           <p className="text-[11px] leading-relaxed text-muted-foreground">

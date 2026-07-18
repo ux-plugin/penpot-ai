@@ -37,7 +37,7 @@ import { Pause, Play, Repeat, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import type { Material, MaterialUniformValue } from '../../renderer/api/material'
+import type { Material, MaterialUniform } from '../../renderer/api/material'
 import type { ShaderCompileOutput } from '../../renderer/shader-lang'
 import {
   commitNodePartialUpdate,
@@ -207,9 +207,9 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   // rendered snapshot), so the rail — which reads state through an rAF-gated
   // signal — can never drop a sibling uniform changed in the same frame.
   const setUniform = useCallback(
-    (name: string, value: MaterialUniformValue) => {
-      const others = (draftRef.current.uniforms ?? []).filter((u) => u.name !== name)
-      applyChange({ uniforms: [...others, { name, value }] })
+    (u: MaterialUniform) => {
+      const others = (draftRef.current.uniforms ?? []).filter((x) => x.name !== u.name)
+      applyChange({ uniforms: [...others, u] })
     },
     [applyChange],
   )

@@ -26,6 +26,13 @@ export type MaterialUniformValue =
 export interface MaterialUniform {
   name: string
   value: MaterialUniformValue
+  /**
+   * When set, this uniform is bound to a design token (by name): `value` is
+   * *materialized* from the token and kept in sync, so the renderer still sees a
+   * plain value. A color uniform binds a `color` token, a scalar a `number`
+   * token. Cleared on unlink (the last value is kept).
+   */
+  token?: string
 }
 
 /**

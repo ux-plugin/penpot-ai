@@ -143,10 +143,8 @@ export function MaterialEditor({
           <MaterialUniformControls
             uniforms={uniforms}
             material={material}
-            onChangeUniform={(name, value) =>
-              onChange({
-                uniforms: [...(material.uniforms ?? []).filter((u) => u.name !== name), { name, value }],
-              })
+            onCommitUniform={(u) =>
+              onChange({ uniforms: [...(material.uniforms ?? []).filter((x) => x.name !== u.name), u] })
             }
           />
         </div>
