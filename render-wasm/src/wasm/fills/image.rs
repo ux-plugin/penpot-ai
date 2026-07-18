@@ -173,3 +173,72 @@ pub extern "C" fn store_image_from_texture() -> Result<()> {
     mem::free_bytes()?;
     Ok(())
 }
+
+/// Set (create or REPLACE) an image from an existing WebGL framebuffer texture, using
+/// bottom-left origin (a GL render target's natural orientation, unlike a decoded HTML
+/// image). Identical memory layout to `store_image_from_texture`; the difference is it
+/// OVERWRITES an existing entry, so a live source rendered into the same target every
+/// frame (a baked 3D scene) can refresh its Skia image under a stable id.
+///
+/// Memory layout (48 bytes):
+/// - bytes 0-15:  shape UUID
+/// - bytes 16-31: image UUID
+/// - bytes 32-35: is_thumbnail flag (u32)
+/// - bytes 36-39: GL texture ID (u32)
+/// - bytes 40-43: width (i32)
+/// - bytes 44-47: height (i32)
+#[no_mangle]
+#[wasm_error]
+pub extern "C" fn update_image_from_texture() -> Result<()> {
+    let bytes = mem::bytes();
+
+    if bytes.len() < 48 {
+        eprintln!("update_image_from_texture: insufficient data");
+        mem::free_bytes()?;
+        return Err(Error::RecoverableError(
+            "update_image_from_texture: insufficient data".to_string(),
+        ));
+    }
+
+    let ids = ShapeImageIds::try_from(bytes[0..IMAGE_IDS_SIZE].to_vec())
+        .map_err(|_| Error::CriticalError("Invalid image ids".to_string()))?;
+
+    let is_thumbnail_bytes = &bytes[IMAGE_IDS_SIZE..IMAGE_HEADER_SIZE];
+    let is_thumbnail_value =
+        u32::from_le_bytes(is_thumbnail_bytes.try_into().map_err(|_| {
+            Error::CriticalError("Invalid bytes for is_thumbnail flag".to_string())
+        })?);
+    let is_thumbnail = is_thumbnail_value != 0;
+
+    let texture_id = u32::from_le_bytes(
+        bytes[36..40]
+            .try_into()
+            .map_err(|_| Error::CriticalError("Invalid bytes for texture id".to_string()))?,
+    );
+    let width = i32::from_le_bytes(
+        bytes[40..44]
+            .try_into()
+            .map_err(|_| Error::CriticalError("Invalid bytes for width".to_string()))?,
+    );
+    let height = i32::from_le_bytes(
+        bytes[44..48]
+            .try_into()
+            .map_err(|_| Error::CriticalError("Invalid bytes for height".to_string()))?,
+    );
+
+    with_state_mut!(state, {
+        if let Err(msg) = state.render_state_mut().set_image_from_gl_texture(
+            ids.image_id,
+            is_thumbnail,
+            texture_id,
+            width,
+            height,
+        ) {
+            eprintln!("update_image_from_texture error: {}", msg);
+        }
+        state.touch_shape(ids.shape_id);
+    });
+
+    mem::free_bytes()?;
+    Ok(())
+}

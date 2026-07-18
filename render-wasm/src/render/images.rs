@@ -71,6 +71,7 @@ fn create_image_from_gl_texture(
     texture_id: u32,
     width: i32,
     height: i32,
+    origin: skia_safe::gpu::SurfaceOrigin,
 ) -> Result<Image> {
     use skia_safe::gpu;
     use skia_safe::gpu::gl::TextureInfo;
@@ -89,13 +90,12 @@ fn create_image_from_gl_texture(
         gpu::backend_textures::make_gl((width, height), gpu::Mipmapped::No, texture_info, label)
     };
 
-    // Create a Skia image from the backend texture
-    // Use TopLeft origin because HTML images have their origin at top-left,
-    // while WebGL textures traditionally use bottom-left
+    // Origin is caller-supplied: browser-decoded HTML images arrive top-left, while a
+    // texture rendered by a GL framebuffer (e.g. a three.js render target) is bottom-left.
     let image = Image::from_texture(
         context.as_mut(),
         &backend_texture,
-        gpu::SurfaceOrigin::TopLeft,
+        origin,
         skia::ColorType::RGBA8888,
         skia::AlphaType::Premul,
         None,
@@ -190,9 +190,41 @@ impl ImageStore {
         }
 
         // Create a Skia image from the existing GL texture
-        let image = create_image_from_gl_texture(&mut self.context, texture_id, width, height)?;
+        let image = create_image_from_gl_texture(
+            &mut self.context,
+            texture_id,
+            width,
+            height,
+            skia_safe::gpu::SurfaceOrigin::TopLeft,
+        )?;
         self.images.insert(key, StoredImage::Gpu(image));
 
+        Ok(())
+    }
+
+    /// Set (create OR replace) an image from a GL framebuffer texture, using bottom-left
+    /// origin (a GL render target's natural orientation). Unlike `add_image_from_gl_texture`
+    /// this OVERWRITES an existing entry, so a live source (e.g. a three.js scene re-rendered
+    /// every frame into the same target) can refresh its Skia image each frame under a stable
+    /// id. The wrapped texture is borrowed, so replacing the old image never deletes the
+    /// caller's GL texture.
+    pub fn set_image_from_gl_texture(
+        &mut self,
+        id: Uuid,
+        is_thumbnail: bool,
+        texture_id: u32,
+        width: i32,
+        height: i32,
+    ) -> Result<()> {
+        let key = (id, is_thumbnail);
+        let image = create_image_from_gl_texture(
+            &mut self.context,
+            texture_id,
+            width,
+            height,
+            skia_safe::gpu::SurfaceOrigin::BottomLeft,
+        )?;
+        self.images.insert(key, StoredImage::Gpu(image));
         Ok(())
     }
 
