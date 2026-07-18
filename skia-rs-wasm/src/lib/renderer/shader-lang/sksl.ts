@@ -71,7 +71,7 @@ const kind = (k: ShaderCompletion['kind'], detail: string, words: string[]): Sha
  */
 const SKSL_BUILTINS: readonly ShaderCompletion[] = [
   // engine-owned uniforms — always available, filled by the engine
-  ...kind('variable', 'engine uniform', ['u_resolution', 'u_time', 'u_scale']),
+  ...kind('variable', 'engine uniform', ['u_resolution', 'u_time', 'u_phase', 'u_scale']),
   // declaration / control-flow keywords
   ...kind('keyword', 'keyword', [
     'uniform', 'const', 'in', 'out', 'inout', 'return', 'if', 'else', 'for', 'discard',

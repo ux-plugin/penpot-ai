@@ -136,6 +136,13 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     }
   }, [])
 
+  // `u_phase` is `u_time` over the loop length, in [0, 1). The loop length is
+  // ours (the transport duration), so we do the division here and hand Rust the
+  // ready value. A ref so the ticker's once-built onTick reads it live.
+  const durationRef = useRef(DEFAULT_LOOP_SECONDS)
+  durationRef.current = durationSec
+  const phaseOf = (time: number) => (durationRef.current > 0 ? time / durationRef.current : 0)
+
   /**
    * The clock. A plain `Ticker` — the same one Motion's PlaybackController
    * drives its timelines from — so the rAF loop, gating, loop/clamp and seek
@@ -149,7 +156,7 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
         timeRef.current = timeMs / 1000 // u_time is seconds
         const module = getWasmModule()
         if (module && isPreviewSupported(module)) {
-          drawPreviewFrame(module, draftRef.current, timeRef.current)
+          drawPreviewFrame(module, draftRef.current, timeRef.current, phaseOf(timeRef.current))
         }
         paintTime()
       },
@@ -251,12 +258,12 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
 
     const rect = el.getBoundingClientRect()
     if (!attachPreview(module, el, rect.width, rect.height)) return
-    drawPreview(module, draftRef.current, timeRef.current)
+    drawPreview(module, draftRef.current, timeRef.current, phaseOf(timeRef.current))
 
     const ro = new ResizeObserver(() => {
       const r = el.getBoundingClientRect()
       resizePreview(module, r.width, r.height)
-      drawPreview(module, draftRef.current, timeRef.current)
+      drawPreview(module, draftRef.current, timeRef.current, phaseOf(timeRef.current))
     })
     ro.observe(el)
     return () => {
@@ -277,11 +284,11 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     if (!sourceChanged) {
       // Uniform-only edit: same source → cache hit, no compile. Draw now so
       // dragging a slider tracks the pointer.
-      drawPreview(module, draft, timeRef.current)
+      drawPreview(module, draft, timeRef.current, phaseOf(timeRef.current))
       return
     }
     const id = window.setTimeout(
-      () => drawPreview(module, draft, timeRef.current),
+      () => drawPreview(module, draft, timeRef.current, phaseOf(timeRef.current)),
       PREVIEW_SOURCE_DEBOUNCE_MS,
     )
     return () => clearTimeout(id)

@@ -70,12 +70,14 @@ pub extern "C" fn preview_clear_material() {
     }
 }
 
-/// Draw the current material at `time` (seconds) into the preview surface.
+/// Draw the current material into the preview surface. `time` (seconds) feeds
+/// `u_time`; `phase` (0→1 over the loop) feeds `u_phase` — the caller owns the
+/// loop length, so it computes the division.
 #[no_mangle]
-pub extern "C" fn preview_draw(time: f32) {
+pub extern "C" fn preview_draw(time: f32, phase: f32) {
     unsafe {
         if let Some(state) = PREVIEW.as_mut() {
-            state.draw(time);
+            state.draw(time, phase);
         }
     }
 }

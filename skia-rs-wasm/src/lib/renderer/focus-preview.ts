@@ -203,13 +203,15 @@ export function resizePreview(module: WasmModule, cssW: number, cssH: number): v
 }
 
 /**
- * Push a material to the preview and draw it. `time` (seconds) feeds `u_time`;
- * static shaders can leave it at 0.
+ * Push a material to the preview and draw it. `time` (seconds) feeds `u_time`
+ * and `phase` (0→1 over the loop) feeds `u_phase`; static shaders can leave both
+ * at 0.
  */
 export function drawPreview(
   module: WasmModule,
   material: Material | null | undefined,
-  time = 0
+  time = 0,
+  phase = 0
 ): void {
   // Rebuild after a context loss. Without this a lost context would leave the
   // pane blank for good: `discard` clears `ready`, every draw no-ops, and the
@@ -218,7 +220,7 @@ export function drawPreview(
   if (!ready) return
   withPreviewContext(module, () => {
     setPreviewMaterial(module, material)
-    module._preview_draw(time)
+    module._preview_draw(time, phase)
   })
 }
 
@@ -236,13 +238,14 @@ export function drawPreview(
 export function drawPreviewFrame(
   module: WasmModule,
   material: Material | null | undefined,
-  time: number
+  time: number,
+  phase = 0
 ): void {
   if (!ready) {
-    drawPreview(module, material, time)
+    drawPreview(module, material, time, phase)
     return
   }
-  withPreviewContext(module, () => module._preview_draw(time))
+  withPreviewContext(module, () => module._preview_draw(time, phase))
 }
 
 /** Full teardown — app shutdown only. Also forgets the recovery target. */

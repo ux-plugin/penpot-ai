@@ -33,7 +33,10 @@ use super::PaintCtx;
 const RES_CAP_PX: f32 = 2048.0;
 
 /// Uniforms the renderer fills itself — never surfaced as editor controls.
-const ENGINE_UNIFORMS: [&str; 3] = ["u_resolution", "u_scale", "u_time"];
+/// `u_phase` is `u_time` pre-divided by the loop length, so it runs 0→1 over one
+/// loop: animate on it (`sin(TAU * u_phase)`) and the wrap is seamless without a
+/// hand-kept `LOOP` constant.
+const ENGINE_UNIFORMS: [&str; 4] = ["u_resolution", "u_scale", "u_time", "u_phase"];
 
 /// Max compiled effects retained. The cache is a *liveness memo*, not a
 /// history: live sources are re-requested every frame so they stay resident,
@@ -85,6 +88,9 @@ pub(crate) struct EngineUniforms {
     pub resolution: (f32, f32),
     pub scale: f32,
     pub time: f32,
+    /// `time` divided by the loop length: 0→1 over one loop (the caller owns the
+    /// loop length; the on-canvas render, which has no clock, passes 0).
+    pub phase: f32,
 }
 
 fn hash_source(src: &str) -> u64 {
@@ -131,9 +137,9 @@ pub struct ReflectResult {
     pub error: Option<String>,
     pub uniforms: Vec<ReflectedUniform>,
     pub inputs: Vec<String>,
-    /// True when the source declares `u_time` — i.e. the material is
-    /// clock-driven and the editor should offer transport (play/pause) and run
-    /// an animation loop. `u_time` is engine-owned so it never appears in
+    /// True when the source declares `u_time` **or** `u_phase` — i.e. the
+    /// material is clock-driven and the editor should offer transport (play/pause)
+    /// and run an animation loop. Both are engine-owned so they never appear in
     /// `uniforms`; this flag is the only way the editor can tell.
     pub uses_time: bool,
 }
@@ -165,8 +171,12 @@ pub fn compile_and_reflect(src: &str) -> ReflectResult {
             }
         }
     };
-    // Detect `u_time` BEFORE the engine-uniform filter below strips it out.
-    let uses_time = effect.uniforms().iter().any(|u| u.name() == "u_time");
+    // Detect the clock uniforms BEFORE the engine-uniform filter strips them
+    // out. Either `u_time` or `u_phase` makes the material clock-driven.
+    let uses_time = effect
+        .uniforms()
+        .iter()
+        .any(|u| u.name() == "u_time" || u.name() == "u_phase");
     let uniforms = effect
         .uniforms()
         .iter()
@@ -220,6 +230,7 @@ fn bind(effect: &RuntimeEffect, material: &Material, engine: &EngineUniforms) ->
             }
             "u_scale" => write_f32(&mut data, off, engine.scale),
             "u_time" => write_f32(&mut data, off, engine.time),
+            "u_phase" => write_f32(&mut data, off, engine.phase),
             _ => {
                 if let Some(slot) = material.uniforms.iter().find(|s| s.name == name) {
                     write_value(&mut data, off, &slot.value);
@@ -277,6 +288,7 @@ pub fn render(ctx: &mut PaintCtx<'_>, shape: &Shape, material: &Material) -> Res
         resolution: (w, h),
         scale: ctx.scale * q,
         time: 0.0,
+        phase: 0.0,
     };
     // Offset the shader so `fragCoord` starts at the shape's top-left.
     let local = skia::Matrix::translate((selrect.x(), selrect.y()));

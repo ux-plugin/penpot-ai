@@ -83,7 +83,7 @@ impl PreviewState {
     /// you type. Instead a failed compile returns early leaving the surface
     /// untouched (the canvas is `preserveDrawingBuffer`), and the editor's
     /// status line carries the error. Only an absent/hidden material clears.
-    pub fn draw(&mut self, time: f32) {
+    pub fn draw(&mut self, time: f32, phase: f32) {
         // Build the shader first so the `&self.material` borrow ends before the
         // `&mut self.surface` / `&mut self.gpu` borrows below.
         let shader = match self.material.as_ref().filter(|m| !m.hidden) {
@@ -94,6 +94,7 @@ impl PreviewState {
                     resolution: (self.width as f32, self.height as f32),
                     scale: 1.0,
                     time,
+                    phase,
                 };
                 match make_material_shader(m, &engine, None) {
                     Some(shader) => Some(shader),

@@ -223,7 +223,7 @@ export interface WasmModule {
   _preview_resize(width: number, height: number): void
   _preview_set_material(): void
   _preview_clear_material(): void
-  _preview_draw(time: number): void
+  _preview_draw(time: number, phase: number): void
   /** Drop GPU resources, keep the context warm (focus closed). */
   _preview_purge(): void
   /** Teardown for a LIVE context (frees via GL — must be made current first). */
