@@ -24,12 +24,11 @@ import {
   commitHistoryTransaction,
 } from '../../history/history-store'
 import { SHADER_PRESET_DND_TYPE } from '../../renderer/handlers/shader-drop'
-import { ShaderThumbnail, useShaderThumbnails } from '../RightSidePanel/shader-thumbnails'
+import { ShaderThumbnail } from '../RightSidePanel/shader-thumbnails'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
 function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
-  const version = useShaderThumbnails(SHADER_PRESETS)
   const targets = selectedIds.filter((id) => id !== ROOT_UUID)
   const canApply = targets.length > 0
 
@@ -82,7 +81,7 @@ function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
             className="group flex flex-col overflow-hidden rounded-md border border-border bg-card text-left transition hover:border-ring hover:shadow-sm"
           >
             <div className="relative aspect-[5/3] w-full overflow-hidden bg-muted">
-              <ShaderThumbnail id={p.id} version={version} />
+              <ShaderThumbnail entry={p} />
             </div>
             <div className="truncate px-1.5 py-1 text-[11px] font-medium">{p.name}</div>
           </button>

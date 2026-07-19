@@ -14,7 +14,7 @@ import { useEffect, useRef } from 'react'
 import type { Material } from '../../renderer/api/material'
 import { SHADER_PRESETS } from '../../renderer/shader-lang/presets'
 import { DEFAULT_MATERIAL } from '../../renderer/properties/panel-utils'
-import { ShaderThumbnail, useShaderThumbnails } from './shader-thumbnails'
+import { ShaderThumbnail } from './shader-thumbnails'
 
 interface GalleryEntry {
   id: string
@@ -46,8 +46,6 @@ export function ShaderPresetGallery({ onPick, onClose }: ShaderPresetGalleryProp
   // Close only when the press STARTED on the backdrop (mirrors SettingsDialog) —
   // a drag that ends on the backdrop shouldn't dismiss.
   const backdropDown = useRef(false)
-  // Render (once) + paint the preset thumbnails from the shared cache.
-  const thumbVersion = useShaderThumbnails(ENTRIES)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -98,7 +96,7 @@ export function ShaderPresetGallery({ onPick, onClose }: ShaderPresetGalleryProp
               className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card text-left transition hover:border-ring hover:shadow-md focus-visible:border-ring focus-visible:outline-none"
             >
               <div className="relative aspect-[5/3] w-full overflow-hidden bg-muted">
-                <ShaderThumbnail id={e.id} version={thumbVersion} />
+                <ShaderThumbnail entry={e} />
               </div>
               <div className="px-3 py-2">
                 <div className="text-xs font-medium">{e.name}</div>
