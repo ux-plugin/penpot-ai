@@ -23,7 +23,7 @@ import {
   beginHistoryTransaction,
   commitHistoryTransaction,
 } from '../../history/history-store'
-import { SHADER_PRESET_DND_TYPE } from '../../renderer/handlers/shader-drop'
+import { armShaderDrag, consumeShaderDragClick } from '../../renderer/signals/shader-drag'
 import { ShaderThumbnail } from '../RightSidePanel/shader-thumbnails'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -67,16 +67,16 @@ function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
           <button
             key={p.id}
             type="button"
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData(SHADER_PRESET_DND_TYPE, p.id)
-              e.dataTransfer.effectAllowed = 'copy'
+            onPointerDown={(e) => armShaderDrag(p, e)}
+            onClick={() => {
+              // A press that turned into a drag suppresses the trailing click.
+              if (consumeShaderDragClick()) return
+              void apply(p.material)
             }}
-            onClick={() => void apply(p.material)}
             title={
               canApply
                 ? `Apply "${p.name}" to the selection — or drag onto the canvas`
-                : `Drag "${p.name}" onto a shape, or select one and click`
+                : `Drag "${p.name}" onto the canvas, or select a shape and click`
             }
             className="group flex flex-col overflow-hidden rounded-md border border-border bg-card text-left transition hover:border-ring hover:shadow-sm"
           >
