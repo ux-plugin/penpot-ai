@@ -19,6 +19,7 @@ import { TextEditorOverlay } from '../components/Overlay/TextEditorOverlay'
 import { PathEditorOverlay } from '../components/Overlay/PathEditorOverlay'
 import { Scene3DLayer } from './three/Scene3DLayer'
 import { useViewportInteractions } from './hooks/use-viewport-interactions'
+import { onSurfaceShaderDragOver, onSurfaceShaderDrop } from './handlers/shader-drop'
 import { useStreams } from './hooks/use-streams'
 import { cleanupWorker, initWorker } from '../worker-init'
 import { initWasmModule } from '../wasm-init'
@@ -191,6 +192,8 @@ function CanvasWorkspace({
       <div
         ref={surfaceRef}
         style={{ position: 'absolute', inset: 0, pointerEvents: 'all', touchAction: 'none' }}
+        onDragOver={onSurfaceShaderDragOver}
+        onDrop={onSurfaceShaderDrop}
       />
       {/* Motion path/ghosts draw BELOW the selection chrome; the badge sits ON TOP. */}
       <MotionPathOverlay canvasSize={canvasSize} />

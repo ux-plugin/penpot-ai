@@ -23,6 +23,7 @@ import {
   beginHistoryTransaction,
   commitHistoryTransaction,
 } from '../../history/history-store'
+import { SHADER_PRESET_DND_TYPE } from '../../renderer/handlers/shader-drop'
 import { ShaderThumbnail, useShaderThumbnails } from '../RightSidePanel/shader-thumbnails'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -67,10 +68,18 @@ function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
           <button
             key={p.id}
             type="button"
-            disabled={!canApply}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData(SHADER_PRESET_DND_TYPE, p.id)
+              e.dataTransfer.effectAllowed = 'copy'
+            }}
             onClick={() => void apply(p.material)}
-            title={canApply ? `Apply "${p.name}"` : 'Select a shape first'}
-            className="group flex flex-col overflow-hidden rounded-md border border-border bg-card text-left transition enabled:hover:border-ring enabled:hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+            title={
+              canApply
+                ? `Apply "${p.name}" to the selection — or drag onto the canvas`
+                : `Drag "${p.name}" onto a shape, or select one and click`
+            }
+            className="group flex flex-col overflow-hidden rounded-md border border-border bg-card text-left transition hover:border-ring hover:shadow-sm"
           >
             <div className="relative aspect-[5/3] w-full overflow-hidden bg-muted">
               <ShaderThumbnail id={p.id} version={version} />
