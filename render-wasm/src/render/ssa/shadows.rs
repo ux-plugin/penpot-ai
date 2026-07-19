@@ -23,7 +23,7 @@
 use skia_safe::{self as skia, Paint, RRect};
 
 use crate::error::Result;
-use crate::shapes::{Shape, Stroke, Type};
+use crate::shapes::{Brush, Shape, Stroke, StrokeKind, Type, WidthProfile};
 
 use super::PaintCtx;
 
@@ -265,8 +265,118 @@ fn draw_with_shape_transform(canvas: &skia::Canvas, shape: &Shape, paint: &Paint
     shape_matrix.pre_translate(-center);
     canvas.save();
     canvas.concat(&shape_matrix);
-    draw_silhouette(canvas, shape, paint);
+    draw_drop_silhouette(canvas, shape, paint);
     canvas.restore();
+}
+
+/// The variable-width ribbon outline for a ribbon stroke (Power / Texture / a
+/// plain stroke carrying width points), or `None` for a plain / pattern stroke.
+fn ribbon_for_stroke(stroke: &Stroke, spine: &skia::Path) -> Option<skia::Path> {
+    match stroke.brush {
+        Some(Brush::Power { profile, nib }) => {
+            crate::render::brush::power_ribbon(spine, stroke.width, profile, nib, &stroke.width_points)
+        }
+        Some(Brush::Texture { .. }) => crate::render::brush::power_ribbon(
+            spine,
+            stroke.width,
+            WidthProfile::Uniform,
+            0.0,
+            &stroke.width_points,
+        ),
+        None if stroke.width_points.len() >= 4 => crate::render::brush::power_ribbon(
+            spine,
+            stroke.width,
+            WidthProfile::Uniform,
+            0.0,
+            &stroke.width_points,
+        ),
+        _ => None,
+    }
+}
+
+/// The true painted silhouette of one stroke, as a fillable path: the
+/// variable-width RIBBON for a ribbon stroke, otherwise the stroked outline of
+/// `geom` honouring width, alignment (inner/center/outer), and dashes — mirroring
+/// `draw_inner/outer_stroke_path` (doubled width clipped to the shape). `None`
+/// for a zero-width or unstrokeable stroke.
+fn stroke_silhouette_path(stroke: &Stroke, geom: &skia::Path, is_open: bool) -> Option<skia::Path> {
+    if let Some(ribbon) = ribbon_for_stroke(stroke, geom) {
+        return Some(ribbon);
+    }
+    let w = stroke.width;
+    if w <= 0.0 {
+        return None;
+    }
+    let kind = stroke.render_kind(is_open);
+    // Inner/outer paint a doubled-width centered band then clip to the shape;
+    // center is a plain w-wide band.
+    let stroke_w = if matches!(kind, StrokeKind::Center) { w } else { w * 2.0 };
+    let mut sp = Paint::default();
+    sp.set_style(skia::PaintStyle::Stroke);
+    sp.set_stroke_width(stroke_w);
+    if !stroke.dashes.is_empty() {
+        if let Some(dash) = skia::PathEffect::dash(&stroke.dashes, 0.0) {
+            sp.set_path_effect(dash);
+        }
+    }
+    let mut outline = skia::Path::default();
+    if !skia::path_utils::fill_path_with_paint(geom, &sp, &mut outline, None, None) {
+        return None;
+    }
+    match kind {
+        StrokeKind::Center => Some(outline),
+        StrokeKind::Inner => outline.op(geom, skia::PathOp::Intersect),
+        StrokeKind::Outer => outline.op(geom, skia::PathOp::Difference),
+    }
+}
+
+/// Drop-shadow silhouette for any leaf shape: follows what is actually painted —
+/// the fill interior only when the shape has a fill (frames always fill their
+/// rect, as containers), plus each visible stroke's true shape (ribbon outline,
+/// or the aligned/dashed stroke band). This is why a stroke-only shape no longer
+/// casts a filled-center shadow and a variable-width stroke's shadow follows the
+/// ribbon rather than the vector path — now for rect / circle / frame too.
+fn draw_drop_silhouette(canvas: &skia::Canvas, shape: &Shape, paint: &Paint) {
+    // Geometry path (+ whether it's an open contour) in the space the current
+    // canvas expects, per shape type.
+    let geom: Option<(skia::Path, bool)> = match &shape.shape_type {
+        Type::Path(_) | Type::Bool(_) => shape.shape_type.path().and_then(|p| {
+            shape.to_path_transform().map(|t| {
+                let sk = p.to_skia_path(shape.svg_attrs.as_ref()).make_transform(&t);
+                (sk, p.is_open())
+            })
+        }),
+        Type::Rect(_) | Type::Frame(_) | Type::Circle => {
+            crate::render::strokes::closed_primitive_path(&shape.shape_type, &shape.selrect)
+                .map(|p| (p, false))
+        }
+        _ => None,
+    };
+    let Some((geom, is_open)) = geom else {
+        // Text / other: leave to the geometry silhouette (handled elsewhere).
+        draw_silhouette(canvas, shape, paint);
+        return;
+    };
+
+    // Frames are containers — their rect always casts a shadow even without a
+    // fill; other shapes fill only when they actually have a fill.
+    let always_fill = matches!(shape.shape_type, Type::Frame(_));
+    if always_fill || shape.has_fills() {
+        canvas.draw_path(&geom, paint);
+    }
+    // Each stroke's silhouette is built on the SAME spine the visible render uses,
+    // including that stroke's Dynamic (hand-drawn) perturbation — otherwise the
+    // shadow follows the un-perturbed vector path instead of the wiggled stroke.
+    let seed = crate::render::dynamic::seed_from_bytes(shape.id.as_bytes());
+    for stroke in shape.visible_strokes() {
+        let spine = match &stroke.dynamic {
+            Some(dynamic) => crate::render::dynamic::apply_dynamic(&geom, dynamic, seed),
+            None => geom.clone(),
+        };
+        if let Some(sil) = stroke_silhouette_path(stroke, &spine, is_open) {
+            canvas.draw_path(&sil, paint);
+        }
+    }
 }
 
 /// Draw the shape's silhouette (geometry-only, given paint) on the

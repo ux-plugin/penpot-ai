@@ -11,6 +11,8 @@ export interface FloatingPanelShellProps {
   width?: number
   minHeight?: number
   onClose: () => void
+  /** Optional pinned block below the title bar that does NOT scroll with the body. */
+  header?: React.ReactNode
   children: React.ReactNode
 }
 
@@ -21,6 +23,7 @@ export function FloatingPanelShell({
   width = 284,
   minHeight = 200,
   onClose,
+  header,
   children,
 }: FloatingPanelShellProps) {
   const panelRef = useRef<HTMLDivElement>(null)
@@ -126,9 +129,8 @@ export function FloatingPanelShell({
           <X className="size-4" />
         </Button>
       </div>
-      <div className="overflow-y-auto p-3">
-        {children}
-      </div>
+      {header && <div className="shrink-0 border-b border-border px-3 pt-3 pb-2.5">{header}</div>}
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">{children}</div>
     </div>
   )
 }
