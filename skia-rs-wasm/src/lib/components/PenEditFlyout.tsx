@@ -75,18 +75,17 @@ export function PenEditFlyout() {
   const showModePicker = inWidth && wes.active && wes.selectedIdx >= 0 && !!wes.mode
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const modeRef = useRef<HTMLDivElement>(null)
+  // Derive the open state so it closes for free when the selection goes away
+  // (tool switch, deselect) — no reset effect needed.
+  const menuOpen = modeMenuOpen && showModePicker
   useEffect(() => {
-    if (!modeMenuOpen) return
+    if (!menuOpen) return
     const onDown = (e: MouseEvent) => {
       if (!modeRef.current?.contains(e.target as Node)) setModeMenuOpen(false)
     }
     window.addEventListener('mousedown', onDown, true)
     return () => window.removeEventListener('mousedown', onDown, true)
-  }, [modeMenuOpen])
-  // Close the menu whenever the selection goes away (tool switch, deselect).
-  useEffect(() => {
-    if (!showModePicker) setModeMenuOpen(false)
-  }, [showModePicker])
+  }, [menuOpen])
 
   const seg = (active: boolean) =>
     cn(
@@ -134,7 +133,7 @@ export function PenEditFlyout() {
                 type="button"
                 onClick={() => setModeMenuOpen((o) => !o)}
                 aria-haspopup="menu"
-                aria-expanded={modeMenuOpen}
+                aria-expanded={menuOpen}
                 title="Interpolation of the segment leaving this point"
                 className="flex h-8 items-center gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-xs text-foreground hover:bg-muted"
               >
@@ -143,7 +142,7 @@ export function PenEditFlyout() {
                 <span>{WIDTH_MODE_LABEL[wes.mode]}</span>
                 <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
               </button>
-              {modeMenuOpen && (
+              {menuOpen && (
                 <div
                   role="menu"
                   className="absolute bottom-full left-0 mb-1.5 min-w-[168px] rounded-lg border border-border/80 bg-white p-1 shadow-md"

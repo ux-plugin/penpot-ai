@@ -674,10 +674,16 @@ export function PathEditorOverlay() {
   // Which width point is selected (drives the toolbar mode control), or -1.
   const [selectedWidthIdx, setSelectedWidthIdx] = useState<number>(-1)
   // Drop the working draft and selection when the shape or the tool changes.
-  useEffect(() => {
+  // Adjusting state during render (guarded by a changed key) rather than in an
+  // effect avoids the extra cascading render — see react.dev "you might not need
+  // an effect".
+  const widthResetKey = `${shapeId ?? ''}:${inWidthTool}`
+  const [prevWidthResetKey, setPrevWidthResetKey] = useState(widthResetKey)
+  if (widthResetKey !== prevWidthResetKey) {
+    setPrevWidthResetKey(widthResetKey)
     setWidthDraft(null)
     setSelectedWidthIdx(-1)
-  }, [shapeId, inWidthTool])
+  }
 
   const commitWidth = useCallback(
     async (pts: WPoint[]) => {
