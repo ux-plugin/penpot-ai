@@ -23,6 +23,7 @@ import { useEffect, useRef } from 'react'
 import type { Material } from '../../renderer/api/material'
 import { getWasmModule } from '../../renderer/wasm-module'
 import { focusStage, isFocusStageActive } from '../../renderer/signals/focus-stage'
+import { shaderDrag } from '../../renderer/signals/shader-drag'
 import {
   attachPreview,
   blitPreviewTo,
@@ -118,9 +119,14 @@ function renderEntry(module: WasmModule, entry: ThumbEntry): void {
   }
 }
 
+/** The shared surface is busy while a stage edits or a shader is being dragged. */
+function surfaceBusy(): boolean {
+  return isFocusStageActive() || shaderDrag.peek() != null
+}
+
 function tick(): void {
   rafId = null
-  if (registry.size === 0 || isFocusStageActive()) {
+  if (registry.size === 0 || surfaceBusy()) {
     releaseSurface()
     return
   }
@@ -137,17 +143,15 @@ function tick(): void {
 }
 
 function startLoop(): void {
-  if (rafId == null && registry.size > 0 && !isFocusStageActive()) {
+  if (rafId == null && registry.size > 0 && !surfaceBusy()) {
     rafId = requestAnimationFrame(tick)
   }
 }
 
-// Resume when a focus stage closes (it frees the surface); pause is handled
-// inside `tick` (it bails while a stage is active). Module-level: subscribed once.
-focusStage.subscribe(() => {
-  if (isFocusStageActive()) releaseSurface()
-  else startLoop()
-})
+// Resume when the surface frees up (a stage closes, or a drag ends); pause is
+// handled inside `tick` (it bails while the surface is busy). Subscribed once.
+focusStage.subscribe(() => (surfaceBusy() ? releaseSurface() : startLoop()))
+shaderDrag.subscribe(() => (surfaceBusy() ? releaseSurface() : startLoop()))
 
 function register(entry: ThumbEntry, cell: HTMLCanvasElement): void {
   let reg = registry.get(entry.id)
@@ -161,7 +165,7 @@ function register(entry: ThumbEntry, cell: HTMLCanvasElement): void {
   // loop then takes over to animate.
   if (!cache.has(entry.id)) {
     const module = getWasmModule()
-    if (module && isPreviewSupported(module) && !isFocusStageActive() && ensureAttached(module)) {
+    if (module && isPreviewSupported(module) && !surfaceBusy() && ensureAttached(module)) {
       renderEntry(module, entry)
     }
   }
