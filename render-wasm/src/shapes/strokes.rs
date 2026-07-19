@@ -126,9 +126,7 @@ impl Stroke {
         // width — a dragged-out width point pushes the outline well past the path's
         // box. The render/tile bounds must use that real extent, or the overflow is
         // clipped at a tile edge.
-        let is_ribbon = matches!(self.brush, Some(Brush::Power { .. }) | Some(Brush::Texture { .. }))
-            || (self.brush.is_none() && self.width_points.len() >= 4);
-        if is_ribbon {
+        if self.is_ribbon() {
             return self.ribbon_half_extent();
         }
         match self.render_kind(is_open) {
@@ -136,6 +134,14 @@ impl Stroke {
             StrokeKind::Center => self.width / 2.,
             StrokeKind::Outer => self.width,
         }
+    }
+
+    /// Ribbon brushes (variable-width Basic, Power, Texture) draw a filled ribbon
+    /// centered on the spine rather than a uniform Skia stroke — bounds/hit-testing
+    /// must use [`ribbon_half_extent`](Self::ribbon_half_extent), not `width`.
+    pub(crate) fn is_ribbon(&self) -> bool {
+        matches!(self.brush, Some(Brush::Power { .. }) | Some(Brush::Texture { .. }))
+            || (self.brush.is_none() && self.width_points.len() >= 4)
     }
 
     /// Largest half-width the rendered ribbon reaches: `base_half × max width-point
