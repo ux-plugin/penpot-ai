@@ -26,17 +26,20 @@ import { buildReparentChanges, resolveDropTarget, resolveSlotDrop, type DropSide
 import { addViewsToSlot } from '../../renderer/slot/slot-edit'
 import { LayerRow, type DragOverState } from './layer-row'
 import { TokensSections } from '../TokensPanel/TokensPanel'
+import { AssetsSections } from '../AssetsPanel/AssetsPanel'
 
-type LeftRailTab = 'design' | 'tokens'
+type LeftRailTab = 'design' | 'tokens' | 'assets'
 
 const TABS: { id: LeftRailTab; label: string }[] = [
   { id: 'design', label: 'Design' },
   { id: 'tokens', label: 'Tokens' },
+  { id: 'assets', label: 'Assets' },
 ]
 
 const TAB_TITLES: Record<LeftRailTab, string> = {
   design: 'Design',
   tokens: 'Tokens',
+  assets: 'Assets',
 }
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -488,6 +491,14 @@ export function LayersPanel({ className }: LayersPanelProps) {
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-2 p-2">
               <TokensSections />
+            </div>
+          </ScrollArea>
+        )}
+
+        {activeTab === 'assets' && (
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="space-y-2 p-2">
+              <AssetsSections />
             </div>
           </ScrollArea>
         )}

@@ -19,15 +19,9 @@ import {
 import { ShaderPresetGallery } from '../ShaderPresetGallery'
 import type { Material } from '../../../renderer/api/material'
 import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
-import { openFocusStage } from '../../../renderer/signals/focus-stage'
-import { ShaderMaterialStage } from '../../FocusStage/ShaderMaterialStage'
-import { ShaderUniformsRail } from '../../FocusStage/ShaderUniformsRail'
-import { ShaderConsole } from '../../FocusStage/ShaderConsole'
+import { openShaderStage } from '../../FocusStage/open-shader-stage'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
-
-/** Per-open session counter, so each shader focus open is its own undo group. */
-let SHADER_SESSION_SEQ = 0
 
 /** Merge shape shadow[] + blur + glass + noise + texture into a unified EffectItem list. */
 function mergeEffects(node: RectLikeNode): EffectItem[] {
@@ -188,25 +182,6 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
   // Material effects open the shader focus stage (a center-region takeover)
   // instead of the inline floating editor: SkSL authoring wants the room, and
   // the stage commits `{ material }` straight onto this node.
-  const openStageWith = useCallback(
-    (material: Material) => {
-      // The session owns its undo `groupId`: the stage's commits carry it (so
-      // canvas group-undo collapses the session), and `undoScope` re-uses it so
-      // the focus reader's revert-by-append frames are swept by that same
-      // group-undo. Unique per open — each focus session is its own group.
-      const groupId = `shader-material:${(SHADER_SESSION_SEQ += 1)}`
-      openFocusStage({
-        id: 'shader-material',
-        title: 'Custom shader',
-        center: <ShaderMaterialStage nodeId={nodeId} initialMaterial={material} groupId={groupId} />,
-        right: <ShaderUniformsRail />,
-        bottom: <ShaderConsole />,
-        undoScope: { nodeIds: [nodeId], attrs: ['material'], groupId },
-      })
-    },
-    [nodeId],
-  )
-
   const onOpenFocus = useCallback(
     (index: number) => {
       const item = effects[index]
@@ -218,9 +193,9 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
         setGalleryFor(index)
         return
       }
-      openStageWith(item.material)
+      openShaderStage(nodeId, item.material)
     },
-    [effects, openStageWith],
+    [effects, nodeId],
   )
 
   // Gallery pick: persist the chosen preset onto the effect (so exiting without
@@ -236,9 +211,9 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
         setEffects(next)
         void commitEffects(next)
       }
-      openStageWith(material)
+      openShaderStage(nodeId, material)
     },
-    [galleryFor, effects, commitEffects, openStageWith],
+    [galleryFor, effects, commitEffects, nodeId],
   )
 
   const addEffect = useCallback(() => {

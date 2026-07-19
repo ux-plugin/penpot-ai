@@ -14,17 +14,7 @@ import { useEffect, useRef } from 'react'
 import type { Material } from '../../renderer/api/material'
 import { SHADER_PRESETS } from '../../renderer/shader-lang/presets'
 import { DEFAULT_MATERIAL } from '../../renderer/properties/panel-utils'
-import { getWasmModule } from '../../renderer/wasm-module'
-import {
-  attachPreview,
-  blitPreviewTo,
-  detachPreview,
-  drawPreview,
-  isPreviewSupported,
-} from '../../renderer/focus-preview'
-
-const THUMB_W = 220
-const THUMB_H = 132
+import { ShaderThumbnail, useShaderThumbnails } from './shader-thumbnails'
 
 interface GalleryEntry {
   id: string
@@ -53,10 +43,11 @@ export interface ShaderPresetGalleryProps {
 }
 
 export function ShaderPresetGallery({ onPick, onClose }: ShaderPresetGalleryProps) {
-  const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([])
   // Close only when the press STARTED on the backdrop (mirrors SettingsDialog) —
   // a drag that ends on the backdrop shouldn't dismiss.
   const backdropDown = useRef(false)
+  // Render (once) + paint the preset thumbnails from the shared cache.
+  const thumbVersion = useShaderThumbnails(ENTRIES)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -68,32 +59,6 @@ export function ShaderPresetGallery({ onPick, onClose }: ShaderPresetGalleryProp
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [onClose])
-
-  // Render each preset once into its cell, sharing ONE GL surface. The surface
-  // attaches to an off-screen sized host (never 0×0 — that aborts init), draws
-  // each preset at its representative phase, and blits into the cell's 2D canvas.
-  useEffect(() => {
-    const module = getWasmModule()
-    if (!module || !isPreviewSupported(module)) return
-    const host = document.createElement('div')
-    host.style.cssText = `position:fixed;left:-9999px;top:0;width:${THUMB_W}px;height:${THUMB_H}px;pointer-events:none`
-    document.body.appendChild(host)
-
-    if (attachPreview(module, host, THUMB_W, THUMB_H)) {
-      ENTRIES.forEach((e, i) => {
-        const ctx = canvasRefs.current[i]?.getContext('2d')
-        if (!ctx) return
-        drawPreview(module, e.material, 0, e.thumbPhase)
-        blitPreviewTo(ctx)
-      })
-    }
-    return () => {
-      detachPreview(module)
-      host.remove()
-    }
-  }, [])
-
-  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
 
   return (
     <div
@@ -125,7 +90,7 @@ export function ShaderPresetGallery({ onPick, onClose }: ShaderPresetGalleryProp
         </div>
 
         <div className="grid grid-cols-2 gap-3 overflow-auto p-5 sm:grid-cols-3">
-          {ENTRIES.map((e, i) => (
+          {ENTRIES.map((e) => (
             <button
               key={e.id}
               type="button"
@@ -133,14 +98,7 @@ export function ShaderPresetGallery({ onPick, onClose }: ShaderPresetGalleryProp
               className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card text-left transition hover:border-ring hover:shadow-md focus-visible:border-ring focus-visible:outline-none"
             >
               <div className="relative aspect-[5/3] w-full overflow-hidden bg-muted">
-                <canvas
-                  ref={(el) => {
-                    canvasRefs.current[i] = el
-                  }}
-                  width={Math.round(THUMB_W * dpr)}
-                  height={Math.round(THUMB_H * dpr)}
-                  className="h-full w-full object-cover"
-                />
+                <ShaderThumbnail id={e.id} version={thumbVersion} />
               </div>
               <div className="px-3 py-2">
                 <div className="text-xs font-medium">{e.name}</div>
