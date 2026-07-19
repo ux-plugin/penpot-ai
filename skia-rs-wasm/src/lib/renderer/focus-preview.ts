@@ -248,6 +248,21 @@ export function drawPreviewFrame(
   withPreviewContext(module, () => module._preview_draw(time, phase))
 }
 
+/**
+ * Copy the current preview frame into a 2D canvas — used by the preset gallery
+ * to snapshot each shader into its own thumbnail cell (one shared GL surface →
+ * N cells, dodging the context cap). `preserveDrawingBuffer` is on, so the last
+ * drawn frame is readable. Returns false (leaving the cell untouched) when the
+ * surface isn't live, so the caller can fall back to a placeholder.
+ */
+export function blitPreviewTo(ctx: CanvasRenderingContext2D): boolean {
+  if (!ready || !canvasEl) return false
+  const dst = ctx.canvas
+  ctx.clearRect(0, 0, dst.width, dst.height)
+  ctx.drawImage(canvasEl, 0, 0, dst.width, dst.height)
+  return true
+}
+
 /** Full teardown — app shutdown only. Also forgets the recovery target. */
 export function destroyPreview(module: WasmModule): void {
   discard(module, false)
