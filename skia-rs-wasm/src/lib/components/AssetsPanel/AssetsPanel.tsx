@@ -5,8 +5,8 @@
  * later slot in as sibling sections here.
  *
  * Shaders: click a preset to apply it as a material effect to the selected
- * shape(s). One selection also opens the editor on it; nothing selected shows a
- * hint. (Drag-to-canvas insertion is a planned follow-up.)
+ * shape(s) — apply only; editing is a separate, explicit step (the `</>` on the
+ * material row). Nothing selected shows a hint. (Drag-to-canvas is a follow-up.)
  */
 
 import { useCallback } from 'react'
@@ -23,7 +23,6 @@ import {
   beginHistoryTransaction,
   commitHistoryTransaction,
 } from '../../history/history-store'
-import { openShaderStage } from '../FocusStage/open-shader-stage'
 import { ShaderThumbnail, useShaderThumbnails } from '../RightSidePanel/shader-thumbnails'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -37,7 +36,8 @@ function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
     async (material: Material) => {
       const pid = getActiveOrSinglePageId()
       if (!pid || targets.length === 0) return
-      // Bulk-apply as ONE undo step, then open the editor for a single target.
+      // Just apply — as ONE undo step. Editing is a separate, explicit step (the
+      // `</>` on the material row / dbl-click), not something applying forces.
       beginHistoryTransaction('assets-apply-shader')
       try {
         for (const id of targets) {
@@ -49,7 +49,6 @@ function ShadersSection({ selectedIds }: { selectedIds: readonly string[] }) {
       } finally {
         commitHistoryTransaction('assets-apply-shader')
       }
-      if (targets.length === 1) openShaderStage(targets[0], material)
     },
     [targets],
   )
