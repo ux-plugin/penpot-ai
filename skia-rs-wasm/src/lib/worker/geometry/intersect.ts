@@ -646,6 +646,18 @@ function isScene3dFrame(shape: PenpotNode): boolean {
   return (shape as { scene3d?: unknown }).scene3d != null
 }
 
+/**
+ * True when the shape carries a visible SkSL shader material. Like a regular fill,
+ * the shader paints the shape's whole interior — so a shader-filled shape must be
+ * interior-hittable even when it has no `fills`, not treated as a hollow stroked
+ * box (which would let clicks fall through its middle). `material` is an app-level
+ * field not in `PenpotNode`, so read it structurally.
+ */
+function hasShaderFill(shape: PenpotNode): boolean {
+  const m = (shape as { material?: { source?: string; hidden?: boolean } }).material
+  return !!m && typeof m.source === 'string' && m.source.trim().length > 0 && !m.hidden
+}
+
 export function overlaps(shape: PenpotNode, rect: Selrect, usingSelrect: boolean = false): boolean {
   if (!shape) {
     return false
@@ -678,7 +690,8 @@ export function overlaps(shape: PenpotNode, rect: Selrect, usingSelrect: boolean
     !svgAttrs?.fill &&
     !svgAttrs?.style?.fill &&
     !hasVisibleBackgroundEffect(shape) &&
-    !isScene3dFrame(shape)
+    !isScene3dFrame(shape) &&
+    !hasShaderFill(shape)
   ) {
     const shapeTypeInner = shape.type
 
