@@ -55,6 +55,7 @@ import {
   resizePreview,
 } from '../../renderer/focus-preview'
 import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
 import { shaderConsoleBridge } from '../../renderer/signals/shader-console-bridge'
 import { registerFocusFlush } from '../../history/focus-pending'
@@ -360,9 +361,16 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
   const resetTime = useCallback(() => ticker.seek(0), [ticker])
 
   return (
-    <div className="absolute inset-0 flex">
-      {/* Editor pane — opaque, fills height. */}
-      <div className="pointer-events-auto flex w-[440px] shrink-0 flex-col overflow-hidden border-r border-border bg-background p-3">
+    <ResizablePanelGroup orientation="horizontal" className="absolute inset-0">
+      {/* Editor pane — opaque, fills height. Drag the handle to trade room
+          between the SkSL source and the live preview; the preview's GL surface
+          follows via its ResizeObserver, CodeMirror reflows to its container. */}
+      <ResizablePanel
+        id="shader-editor"
+        minSize={22}
+        defaultSize={32}
+        className="pointer-events-auto flex min-h-0 min-w-0 flex-col overflow-hidden bg-background p-3"
+      >
         <MaterialEditor
           material={draft}
           onChange={applyChange}
@@ -371,10 +379,17 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
           onCompiled={handleCompiled}
           onEditorReady={(view) => (editorViewRef.current = view)}
         />
-      </div>
+      </ResizablePanel>
+
+      <ResizableHandle withHandle className="pointer-events-auto" />
 
       {/* Preview pane — hosts the isolated preview canvas. */}
-      <div className="pointer-events-auto relative flex min-w-0 flex-1 flex-col bg-background">
+      <ResizablePanel
+        id="shader-preview"
+        minSize={30}
+        defaultSize={68}
+        className="pointer-events-auto relative flex min-h-0 min-w-0 flex-col bg-background"
+      >
         <div className="relative min-h-0 flex-1">
           <span className="pointer-events-none absolute left-3 top-2 z-10 text-[11px] font-medium text-muted-foreground/80">
             Live preview
@@ -463,7 +478,7 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
             <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">s</span>
           </div>
         )}
-      </div>
-    </div>
+      </ResizablePanel>
+    </ResizablePanelGroup>
   )
 }
