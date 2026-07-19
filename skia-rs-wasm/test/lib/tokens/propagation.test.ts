@@ -252,6 +252,126 @@ describe('rename fix-up', () => {
   })
 })
 
+// A shader-material uniform can bind a token (`material.uniforms[].token`) — a
+// different place than `appliedTokens`. Propagation must re-materialize those
+// too, so a token/theme edit updates the shape's shader with no editor open.
+function matRect(
+  id: string,
+  uniforms: unknown[],
+  applied: Record<string, string> = {},
+): PenpotNode {
+  return {
+    id,
+    type: 'rect',
+    name: id,
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 50,
+    selrect: { ...sel },
+    points: [...pts],
+    fills: [{ fillColor: '#888888', fillOpacity: 1 }],
+    appliedTokens: applied,
+    material: { source: 'half4 main(float2 p){ return half4(1); }', uniforms },
+  } as unknown as PenpotNode
+}
+function uniformsOf(pageId: string, id: string): { name: string; value: { type: string; value: unknown }; token?: string }[] {
+  return (docProxy.pageMap.get(pageId)?.objects[id] as unknown as { material?: { uniforms: never[] } })
+    .material!.uniforms
+}
+
+describe('material-uniform token binding propagates', () => {
+  it('re-materializes a color-bound uniform (shape has NO appliedTokens)', async () => {
+    await setDocument(
+      doc([
+        page('page-1', [
+          matRect('r', [{ name: 'u_col', token: 'color.brand', value: { type: 'vec4', value: [0, 1, 0, 1] } }]),
+        ]),
+      ]),
+    )
+    installLib(createToken({ name: 'color.brand', type: 'color', value: '#00FF00' }))
+
+    await editToken(SET, 'color.brand', '#FF0000')
+
+    const u = uniformsOf('page-1', 'r')[0]
+    expect(u.value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
+    expect(u.token).toBe('color.brand') // link kept
+  })
+
+  it('re-materializes a number-bound scalar uniform', async () => {
+    await setDocument(
+      doc([
+        page('page-1', [
+          matRect('r', [{ name: 'u_amt', token: 'num.amt', value: { type: 'f32', value: 0.5 } }]),
+        ]),
+      ]),
+    )
+    installLib(createToken({ name: 'num.amt', type: 'number', value: '0.5' }))
+
+    await editToken(SET, 'num.amt', '0.8')
+
+    expect(uniformsOf('page-1', 'r')[0].value).toEqual({ type: 'f32', value: 0.8 })
+  })
+
+  it('leaves an unbound uniform untouched', async () => {
+    await setDocument(
+      doc([
+        page('page-1', [
+          matRect('r', [
+            { name: 'u_col', token: 'color.brand', value: { type: 'vec4', value: [0, 1, 0, 1] } },
+            { name: 'u_free', value: { type: 'f32', value: 0.25 } },
+          ]),
+        ]),
+      ]),
+    )
+    installLib(createToken({ name: 'color.brand', type: 'color', value: '#00FF00' }))
+
+    await editToken(SET, 'color.brand', '#FF0000')
+
+    const us = uniformsOf('page-1', 'r')
+    expect(us[0].value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
+    expect(us[1].value).toEqual({ type: 'f32', value: 0.25 }) // no token → untouched
+  })
+
+  it('one undo reverts the token AND the materialized uniform', async () => {
+    await setDocument(
+      doc([
+        page('page-1', [
+          matRect('r', [{ name: 'u_col', token: 'color.brand', value: { type: 'vec4', value: [0, 1, 0, 1] } }]),
+        ]),
+      ]),
+    )
+    installLib(createToken({ name: 'color.brand', type: 'color', value: '#00FF00' }))
+
+    await editToken(SET, 'color.brand', '#FF0000')
+    expect(uniformsOf('page-1', 'r')[0].value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
+
+    await undo()
+    expect(uniformsOf('page-1', 'r')[0].value).toEqual({ type: 'vec4', value: [0, 1, 0, 1] })
+    expect(
+      (docProxy.meta!.tokens as TokensLib).sets[0].tokens.find((t) => t.name === 'color.brand')!.value,
+    ).toBe('#00FF00')
+
+    await redo()
+    expect(uniformsOf('page-1', 'r')[0].value).toEqual({ type: 'vec4', value: [1, 0, 0, 1] })
+  })
+
+  it('a rename fixes up the uniform token link', async () => {
+    await setDocument(
+      doc([
+        page('page-1', [
+          matRect('r', [{ name: 'u_col', token: 'color.brand', value: { type: 'vec4', value: [0, 1, 0, 1] } }]),
+        ]),
+      ]),
+    )
+    installLib(createToken({ name: 'color.brand', type: 'color', value: '#00FF00' }))
+
+    await editToken(SET, 'color.brand', '#00FF00', 'color.primary')
+
+    expect(uniformsOf('page-1', 'r')[0].token).toBe('color.primary')
+  })
+})
+
 describe('delete leaves a dangling reference', () => {
   it('keeps the concrete value and the (now-dangling) appliedTokens link', async () => {
     await setDocument(doc([page('page-1', [rect('r', '#ffffff', { fill: 'color.bg' })])]))

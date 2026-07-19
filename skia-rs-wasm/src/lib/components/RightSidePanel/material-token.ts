@@ -55,3 +55,26 @@ export function materializeTokenValue(
   }
   return null
 }
+
+const VALUE_COMPS: Record<MaterialUniformValue['type'], number> = {
+  f32: 1,
+  vec2: 2,
+  vec3: 3,
+  vec4: 4,
+}
+
+/**
+ * Re-materialize a token for a STORED uniform value — the propagation path,
+ * where no compiled reflection is available. Color-vs-number is inferred from
+ * the stored value's type (binding is only ever offered for a scalar → number
+ * token or a vec3/vec4 color → color token, so the type is a faithful proxy for
+ * `isColor`/`components`). Returns null if unresolved or unbindable (e.g. vec2).
+ */
+export function rematerializeStoredUniform(
+  value: MaterialUniformValue,
+  resolved: ResolvedToken | undefined,
+): MaterialUniformValue | null {
+  const components = VALUE_COMPS[value.type]
+  const synthetic: ReflectedUniform = { name: '', components, isColor: components >= 3, count: 1 }
+  return materializeTokenValue(synthetic, resolved)
+}
