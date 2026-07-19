@@ -23,7 +23,6 @@ import { useEffect, useRef } from 'react'
 import type { Material } from '../../renderer/api/material'
 import { getWasmModule } from '../../renderer/wasm-module'
 import { focusStage, isFocusStageActive } from '../../renderer/signals/focus-stage'
-import { shaderDrag } from '../../renderer/signals/shader-drag'
 import {
   attachPreview,
   blitPreviewTo,
@@ -119,9 +118,13 @@ function renderEntry(module: WasmModule, entry: ThumbEntry): void {
   }
 }
 
-/** The shared surface is busy while a stage edits or a shader is being dragged. */
+/**
+ * The shared offscreen surface is busy only while a focus stage edits. A shader
+ * DRAG no longer contends for it — its drop preview is rendered by the main canvas
+ * (a transient WASM clone), so thumbnails (and the cursor chip) keep animating.
+ */
 function surfaceBusy(): boolean {
-  return isFocusStageActive() || shaderDrag.peek() != null
+  return isFocusStageActive()
 }
 
 function tick(): void {
@@ -148,10 +151,9 @@ function startLoop(): void {
   }
 }
 
-// Resume when the surface frees up (a stage closes, or a drag ends); pause is
-// handled inside `tick` (it bails while the surface is busy). Subscribed once.
+// Resume when the surface frees up (a focus stage closes); pause is handled
+// inside `tick` (it bails while the surface is busy). Subscribed once.
 focusStage.subscribe(() => (surfaceBusy() ? releaseSurface() : startLoop()))
-shaderDrag.subscribe(() => (surfaceBusy() ? releaseSurface() : startLoop()))
 
 function register(entry: ThumbEntry, cell: HTMLCanvasElement): void {
   let reg = registry.get(entry.id)

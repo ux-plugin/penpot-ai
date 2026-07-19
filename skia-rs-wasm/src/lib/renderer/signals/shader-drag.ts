@@ -3,16 +3,20 @@
  * custom replacement for native HTML5 drag-and-drop. Native DnD can't give us a
  * custom cursor chip, a live preview, or hover feedback; a pointer drag can.
  *
- * The drag publishes its state to `shaderDrag` (a signal); `ShaderDragOverlay`
- * renders the chip, the target outline/name, and the empty-canvas ghost from it.
+ * The drop PREVIEW is drawn by the real renderer: as the cursor moves we load a
+ * transient, shader-filled clone of the hovered shape into the WASM store (see
+ * `handlers/shader-preview-node` — the shader twin of the flex drop placeholder).
+ * That gives a WYSIWYG fill clipped to the shape's true silhouette, animated, and
+ * under the floating tools (it's canvas content), with no overlay/clip math. The
+ * clone is WASM-only — never in docProxy or undo — and is destroyed on release.
+ * The cursor chip + target label are the only DOM chrome (`ShaderDragOverlay`).
  *
- * **Target resolution.** As the cursor moves we hit-test the point (the SAME
- * query the click-selection uses), then walk the hit up to the OUTERMOST element
- * under the page root — the "upper-most component" — because with unbounded
- * nesting the innermost leaf is rarely the intended target. One deterministic
- * target, no depth stepping. On empty canvas the target is a ghost rectangle the
- * drop would create. Coordinates are client-space; `surfaceOrigin` converts to
- * the surface-relative space the hit-test/world math expect.
+ * **Target resolution.** A shader is a fill: the whole shape is a valid target,
+ * even one with no fill (an unfilled path you can't click "inside"). So we don't
+ * use the fill-based selection hit-test — we test the cursor against the SELRECT
+ * of each TOP-LEVEL object (the "upper-most component"), topmost by draw order.
+ * That makes any shape droppable anywhere in its bounds and is deterministic
+ * regardless of nesting depth. Off every top-level bound → an empty-canvas rect.
  */
 
 import { signal } from '@preact/signals-core'
@@ -21,9 +25,14 @@ import type { ShaderPreset } from '../shader-lang/presets'
 import { viewport } from './pointer'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
-import { worldToScreen } from '../viewport'
-import { queryNodesAtPoint, pickTopmostNode } from '../selection/query-at-point'
+import { worldToScreen, screenToWorld } from '../viewport'
 import { applyShaderToNode, createRectWithShader } from '../handlers/shader-drop'
+import {
+  showShaderPreviewForNode,
+  showShaderPreviewRect,
+  hideShaderPreview,
+  type ShaderPreviewNode,
+} from '../handlers/shader-preview-node'
 import type { IndexedPage } from '../../worker/types'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
@@ -33,10 +42,18 @@ const NEW_H = 160
 /** Pointer travel before a press becomes a drag (vs a click-to-apply). */
 const DRAG_THRESHOLD = 4
 
-/** A rectangle in CLIENT coordinates (what the overlay positions against). */
+/** A rectangle in CLIENT coordinates (what the DOM overlay positions against). */
 export interface DragRect {
   left: number
   top: number
+  width: number
+  height: number
+}
+
+/** A rectangle in WORLD coordinates (for the transient preview rect). */
+export interface WorldRect {
+  x: number
+  y: number
   width: number
   height: number
 }
@@ -45,11 +62,14 @@ export interface ShaderDragTargetComponent {
   kind: 'component'
   nodeId: string
   name: string
+  /** Client-space bounds — for the label in the fixed overlay. */
   rect: DragRect
 }
 export interface ShaderDragTargetEmpty {
   kind: 'empty'
   rect: DragRect
+  /** World-space ghost bounds (for the transient preview rect). */
+  world: WorldRect
 }
 
 export interface ShaderDragState {
@@ -63,9 +83,9 @@ export interface ShaderDragState {
 export const shaderDrag = signal<ShaderDragState | null>(null)
 
 let surfaceOrigin = { left: 0, top: 0, width: 0, height: 0 }
-let hitInFlight = false
-let hitLatest: { x: number; y: number } | null = null
 let clickSuppressUntil = 0
+/** The live transient preview clone in WASM, or null when none is showing. */
+let preview: ShaderPreviewNode | null = null
 
 function findSurface(): HTMLElement | null {
   return document.querySelector('[data-canvas-surface]')
@@ -77,22 +97,48 @@ function overCanvas(clientX: number, clientY: number): boolean {
   return !!el?.closest('[data-canvas-surface]')
 }
 
-/** Walk up to the top-level object under the page root (the "upper-most component"). */
-function outermostUnderRoot(page: IndexedPage, nodeId: string): string {
+interface Selrect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+interface RootInfo {
+  rootId: string
+  /** The root's DOCUMENT child list (never includes the transient preview). */
+  rootChildIds: readonly string[]
+}
+
+function getRootInfo(page: IndexedPage): RootInfo | null {
   const root = Object.values(page.objects).find((o) => o.parentId == null)
-  const rootId = root?.id
-  let cur = nodeId
-  for (let i = 0; i < 128; i++) {
-    const parent = (page.objects[cur] as { parentId?: string } | undefined)?.parentId
-    if (!parent || parent === rootId) break
-    cur = parent
+  if (!root?.id) return null
+  return { rootId: root.id, rootChildIds: root.shapes ?? [] }
+}
+
+/**
+ * Topmost top-level object whose selrect contains the world point, or null. We
+ * scan `root.shapes` (draw order, last = top) and keep the last match, so an
+ * overlapping shape drawn later wins — mirroring visual stacking.
+ */
+function topLevelHit(page: IndexedPage, wx: number, wy: number): string | null {
+  const root = Object.values(page.objects).find((o) => o.parentId == null)
+  const children = root?.shapes
+  if (!children) return null
+  let hit: string | null = null
+  for (const id of children) {
+    if (id === ROOT_UUID) continue
+    const s = (page.objects[id] as { selrect?: Selrect } | undefined)?.selrect
+    if (s && wx >= s.x && wx <= s.x + s.width && wy >= s.y && wy <= s.y + s.height) {
+      hit = id
+    }
   }
-  return cur
+  return hit
 }
 
 function nodeClientRect(page: IndexedPage, nodeId: string): DragRect | null {
   const vp = viewport.value
-  const node = page.objects[nodeId] as { selrect?: { x: number; y: number; width: number; height: number } } | undefined
+  const node = page.objects[nodeId] as { selrect?: Selrect } | undefined
   if (!vp || !node?.selrect) return null
   const s = node.selrect
   const tl = worldToScreen(vp, s.x, s.y)
@@ -113,69 +159,96 @@ function emptyGhost(cursorX: number, cursorY: number): DragRect {
   return { left: cursorX - w / 2, top: cursorY - h / 2, width: w, height: h }
 }
 
-async function runHitTest(): Promise<void> {
-  if (hitInFlight || !hitLatest) return
-  const pt = hitLatest
-  hitLatest = null
-  hitInFlight = true
-  try {
-    const cur = shaderDrag.peek()
-    const { workerClient } = useWorkspaceStore.getState()
-    const pageId = getActiveOrSinglePageId()
-    const vp = viewport.value
-    if (!cur || !workerClient || !pageId || !vp) return
+/** World-space ghost bounds matching {@link emptyGhost}, for the preview rect. */
+function emptyGhostWorld(cursorX: number, cursorY: number): WorldRect {
+  const vp = viewport.value
+  const c = vp ? screenToWorld(vp, cursorX - surfaceOrigin.left, cursorY - surfaceOrigin.top) : { x: 0, y: 0 }
+  return { x: c.x - NEW_W / 2, y: c.y - NEW_H / 2, width: NEW_W, height: NEW_H }
+}
 
-    let target: ShaderDragState['target'] = null
-    const withinSurface =
-      pt.x >= 0 && pt.y >= 0 && pt.x <= surfaceOrigin.width && pt.y <= surfaceOrigin.height
-    if (withinSurface) {
-      const ids = await queryNodesAtPoint(workerClient, pageId, vp, pt.x, pt.y)
-      const page = getPage(pageId)
-      const top = pickTopmostNode(page, ids)
-      const latest = shaderDrag.peek()
-      if (!latest) return
-      if (page && top && top !== ROOT_UUID) {
-        const outer = outermostUnderRoot(page, top)
-        const rect = nodeClientRect(page, outer)
-        if (rect) {
-          const name = (page.objects[outer] as { name?: string }).name ?? 'Component'
-          target = { kind: 'component', nodeId: outer, name, rect }
-        }
-      }
-      if (!target) {
-        target = { kind: 'empty', rect: emptyGhost(latest.cursor.x, latest.cursor.y) }
+/** Synchronously resolve the drop target for a client-space cursor. */
+function resolveTarget(clientX: number, clientY: number): ShaderDragState['target'] {
+  const sx = clientX - surfaceOrigin.left
+  const sy = clientY - surfaceOrigin.top
+  const within = sx >= 0 && sy >= 0 && sx <= surfaceOrigin.width && sy <= surfaceOrigin.height
+  if (!within) return null
+
+  const vp = viewport.value
+  const pageId = getActiveOrSinglePageId()
+  const page = pageId ? getPage(pageId) : null
+  if (vp && page) {
+    const world = screenToWorld(vp, sx, sy)
+    const id = topLevelHit(page, world.x, world.y)
+    if (id) {
+      const rect = nodeClientRect(page, id)
+      if (rect) {
+        const name = (page.objects[id] as { name?: string }).name ?? 'Component'
+        return { kind: 'component', nodeId: id, name, rect }
       }
     }
-    const now = shaderDrag.peek()
-    if (now) shaderDrag.value = { ...now, target }
-  } finally {
-    hitInFlight = false
-    if (hitLatest) void runHitTest()
   }
+  return { kind: 'empty', rect: emptyGhost(clientX, clientY), world: emptyGhostWorld(clientX, clientY) }
+}
+
+/** Drive the transient WASM preview clone to match the resolved target. */
+function syncPreview(target: ShaderDragState['target'], material: ShaderPreset['material']): void {
+  const renderer = useWorkspaceStore.getState().renderer
+  const pageId = getActiveOrSinglePageId()
+  const page = pageId ? getPage(pageId) : null
+  const root = page ? getRootInfo(page) : null
+  if (!renderer || !page || !root) return
+
+  if (target?.kind === 'component') {
+    const node = page.objects[target.nodeId] as Record<string, unknown> | undefined
+    if (node) {
+      preview = showShaderPreviewForNode(
+        renderer,
+        root.rootId,
+        root.rootChildIds,
+        target.nodeId,
+        node,
+        material,
+        preview,
+      )
+      return
+    }
+  } else if (target?.kind === 'empty') {
+    preview = showShaderPreviewRect(renderer, root.rootId, root.rootChildIds, target.world, material, preview)
+    return
+  }
+  clearPreview()
+}
+
+/** Tear down the transient preview clone, if any. */
+function clearPreview(): void {
+  if (!preview) return
+  const renderer = useWorkspaceStore.getState().renderer
+  const pageId = getActiveOrSinglePageId()
+  const page = pageId ? getPage(pageId) : null
+  const root = page ? getRootInfo(page) : null
+  if (renderer && root) hideShaderPreview(renderer, root.rootChildIds, preview)
+  preview = null
 }
 
 function onMove(e: PointerEvent): void {
   const cur = shaderDrag.peek()
   if (!cur) return
-  const cursor = { x: e.clientX, y: e.clientY }
-  // Keep the empty ghost glued to the cursor between hit-tests; the outline for a
-  // component target waits for the (async) hit-test to re-resolve.
-  const target =
-    cur.target?.kind === 'empty' ? { kind: 'empty' as const, rect: emptyGhost(cursor.x, cursor.y) } : cur.target
-  shaderDrag.value = { ...cur, cursor, target }
-  hitLatest = { x: e.clientX - surfaceOrigin.left, y: e.clientY - surfaceOrigin.top }
-  void runHitTest()
+  const target = resolveTarget(e.clientX, e.clientY)
+  syncPreview(target, cur.preset.material)
+  shaderDrag.value = { ...cur, cursor: { x: e.clientX, y: e.clientY }, target }
 }
 
 function onUp(e: PointerEvent): void {
   const cur = shaderDrag.peek()
+  const t = cur?.target
+  const overCanvasNow = overCanvas(e.clientX, e.clientY)
   teardown()
+  clearPreview()
   shaderDrag.value = null
   if (!cur) return
   clickSuppressUntil = performance.now() + 300
   // A release over a floating panel cancels — you dropped off the canvas.
-  if (!overCanvas(e.clientX, e.clientY)) return
-  const t = cur.target
+  if (!overCanvasNow) return
   if (t?.kind === 'component') {
     void applyShaderToNode(cur.preset.material, t.nodeId)
   } else {
@@ -186,6 +259,7 @@ function onUp(e: PointerEvent): void {
 function onKey(e: KeyboardEvent): void {
   if (e.key === 'Escape') {
     teardown()
+    clearPreview()
     shaderDrag.value = null
   }
 }
@@ -204,12 +278,12 @@ function startShaderDrag(preset: ShaderPreset, clientX: number, clientY: number)
     width: rect?.width ?? window.innerWidth,
     height: rect?.height ?? window.innerHeight,
   }
-  shaderDrag.value = { preset, cursor: { x: clientX, y: clientY }, target: null }
+  const target = resolveTarget(clientX, clientY)
+  syncPreview(target, preset.material)
+  shaderDrag.value = { preset, cursor: { x: clientX, y: clientY }, target }
   window.addEventListener('pointermove', onMove)
   window.addEventListener('pointerup', onUp)
   window.addEventListener('keydown', onKey, true)
-  hitLatest = { x: clientX - surfaceOrigin.left, y: clientY - surfaceOrigin.top }
-  void runHitTest()
 }
 
 /**
