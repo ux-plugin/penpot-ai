@@ -314,6 +314,7 @@ function renderAndUpload(
   w: number,
   h: number,
   clip: Clip | null,
+  backdrop: string | null = null,
 ): boolean {
   // Frame the camera. Without a clip the whole node fills the FBO (aspect = w/h). With a
   // clip the camera frames the WHOLE node (aspect = node aspect) and setViewOffset crops it
@@ -333,7 +334,10 @@ function renderAndUpload(
   if (clip) cam.setViewOffset(clip.fullW, clip.fullH, clip.offX, clip.offY, clip.subW, clip.subH)
   else cam.clearViewOffset()
   cam.updateProjectionMatrix()
-  st.inst.scene.background = null // transparent → the 3D composites over what's behind the node
+  // A placed scene bakes transparent so it composites over what's behind the node. The
+  // scene being EDITED passes its backdrop through, so the box shows the background set in
+  // the scene parameters — same value the overlay path paints when the bake is off.
+  st.inst.scene.background = backdrop ? new THREE.Color(backdrop) : null
   // Skia rendered last on this shared context and leaves SAMPLER OBJECTS bound to texture
   // units. A bound sampler OVERRIDES the texture's own min/mag filter for whatever three
   // samples on that unit — Skia's NEAREST sampler re-filtered the PMREM env atlas, whose
@@ -508,7 +512,13 @@ export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: num
  * camera pose + object transforms straight from `srcInst` (the overlay's live instance)
  * rather than the lagging document. The overlay then draws only the edit chrome on top.
  */
-export function bakeEditingScene(sceneId: string, doc: Scene3DDocument, srcInst: Scene3DInstance, zoom: number): boolean {
+export function bakeEditingScene(
+  sceneId: string,
+  doc: Scene3DDocument,
+  srcInst: Scene3DInstance,
+  zoom: number,
+  backdrop: string | null = null,
+): boolean {
   const p = bakePrep()
   if (!p) return false
   const size = bakeResolution(sceneId, zoom) // editing always bakes the whole node (no clip)
@@ -532,7 +542,7 @@ export function bakeEditingScene(sceneId: string, doc: Scene3DDocument, srcInst:
         dst.scale.copy(src.scale)
       }
     }
-    return renderAndUpload(p.m, p.r, sceneId, st, size.w, size.h, null)
+    return renderAndUpload(p.m, p.r, sceneId, st, size.w, size.h, null, backdrop)
   } catch (e) {
     p.r.resetState()
     warnBakeFail(sceneId, e)

@@ -713,9 +713,20 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // LIVE EDIT (in-place, not focus): composite the meshes into Skia mirroring the live
       // overlay camera/objects, so the 3D stays STACKED with the 2D while you orbit/drag —
       // then draw ONLY the edit chrome (gizmo + frustums) on the overlay above it.
+      // The backdrop is a SCENE parameter, so it applies wherever the meshes actually
+      // render — the bake while live-editing, the overlay otherwise. A placed scene stays
+      // transparent so it composites over the canvas.
+      const backdrop = isEditing ? (doc.background ?? SCENE3D_EDIT_BACKDROP) : null
+
       const liveEdit = isEditing && isBakeEnabled() && isLiveEditEnabled() && !focused
-      if (liveEdit) {
-        if (bakeEditingScene(sceneId, doc, inst, vp.zoom)) didBake = true
+      // Only hand the meshes to the bake if the bake actually SUCCEEDED. It can fail for
+      // ordinary reasons (no `_update_image_from_texture` in the loaded wasm, an FBO that
+      // won't allocate), and hiding them regardless would leave the scene nowhere at all:
+      // not in Skia, not on the overlay — an empty box with only the gizmo. On failure we
+      // fall through to the overlay, exactly like the placed path above.
+      const bakedEdit = liveEdit && bakeEditingScene(sceneId, doc, inst, vp.zoom, backdrop)
+      if (bakedEdit) {
+        didBake = true
         const restore: boolean[] = []
         for (const o of inst.objects.values()) {
           restore.push(o.visible)
@@ -725,10 +736,9 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
         let i = 0
         for (const o of inst.objects.values()) o.visible = restore[i++]
       } else {
-        // Classic full overlay (focus mode, or bake/live-edit off). Clear any stale baked
-        // fill so Skia doesn't draw it under the overlay. Edit-only backdrop fills the box.
+        // Classic full overlay (focus mode, bake/live-edit off, or a bake that failed).
+        // Clear any stale baked fill so Skia doesn't draw it under the overlay.
         if (isEditing && isBakeEnabled()) unbakeNodeFill(sceneId)
-        const backdrop = isEditing ? (doc.background ?? SCENE3D_EDIT_BACKDROP) : null
         renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, backdrop)
       }
     }
