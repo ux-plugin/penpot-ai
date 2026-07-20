@@ -55,6 +55,11 @@ import {
   resizePreview,
 } from '../../renderer/focus-preview'
 import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
+import { ShaderGraphEditor } from './ShaderGraphEditor'
+import { shaderLanguage } from '../../renderer/shader-lang'
+import { compileGraphToSksl } from '../../renderer/shader-lang/graph/compile'
+import { starterGraph } from '../../renderer/shader-lang/graph/starter'
+import type { ShaderGraph } from '../../renderer/shader-lang/graph/types'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
 import { shaderConsoleBridge } from '../../renderer/signals/shader-console-bridge'
@@ -261,6 +266,43 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
     [applyChange],
   )
 
+  // ---- Graph authoring -----------------------------------------------------
+  // A material either carries a graph (visual authoring; `source` is generated)
+  // or not (hand-written code). Both feed the exact same draft/commit/preview
+  // machinery above — the graph only changes how `source` is produced.
+  const hasGraph = draft.graph != null
+  const [mode, setMode] = useState<'code' | 'graph'>(initialMaterial.graph ? 'graph' : 'code')
+
+  /** Edit the graph → recompile → one draft change carrying both. */
+  const applyGraph = useCallback(
+    (next: ShaderGraph) => {
+      applyChange({ graph: next, source: compileGraphToSksl(next).source })
+    },
+    [applyChange],
+  )
+
+  const startGraph = useCallback(() => {
+    const g = starterGraph()
+    applyChange({ graph: g, source: compileGraphToSksl(g).source })
+  }, [applyChange])
+
+  /** Keep the generated source, drop the graph — it becomes hand-authored code. */
+  const detachGraph = useCallback(() => {
+    applyChange({ graph: undefined })
+    setMode('code')
+  }, [applyChange])
+
+  // With a graph, `MaterialEditor` isn't mounted — so it can't own the compile.
+  // Run it here (debounced like the editor does) so the transport, uniforms rail
+  // and console keep working exactly as in code mode.
+  useEffect(() => {
+    if (!hasGraph) return
+    const id = window.setTimeout(() => {
+      handleCompiled(shaderLanguage(draft.language).compile(draft.source))
+    }, PREVIEW_SOURCE_DEBOUNCE_MS)
+    return () => clearTimeout(id)
+  }, [hasGraph, draft.source, draft.language, handleCompiled])
+
   // Publish the draft + reflected uniforms to the right rail. The rail lives in
   // a different focus-stage slot, so it reads this instead of props. Uniforms
   // come from the last GOOD compile (same keep-last-good the preview uses), so
@@ -371,14 +413,74 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
         defaultSize={32}
         className="pointer-events-auto flex min-h-0 min-w-0 flex-col overflow-hidden bg-background p-3"
       >
-        <MaterialEditor
-          material={draft}
-          onChange={applyChange}
-          fill
-          showUniforms={false}
-          onCompiled={handleCompiled}
-          onEditorReady={(view) => (editorViewRef.current = view)}
-        />
+        {/* Authoring mode. Code and Graph are two ways to produce ONE `source`;
+            they are not a round-trip — a graph generates code, never the reverse. */}
+        <div className="mb-2 flex shrink-0 items-center gap-2">
+          <div className="flex rounded-md border border-border p-0.5">
+            {(['code', 'graph'] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={cn(
+                  'rounded px-2 py-0.5 text-[11px] font-medium capitalize transition',
+                  mode === m ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground',
+                )}
+                onClick={() => setMode(m)}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          {hasGraph && mode === 'code' && (
+            <>
+              <span className="text-[10px] text-muted-foreground/80">Generated from graph</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-6 px-2 text-[11px]"
+                onClick={detachGraph}
+                title="Keep this source and edit it by hand — the graph is discarded"
+              >
+                Detach
+              </Button>
+            </>
+          )}
+        </div>
+
+        {mode === 'graph' ? (
+          hasGraph && draft.graph ? (
+            <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/60">
+              <ShaderGraphEditor graph={draft.graph} onChange={applyGraph} />
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border/60 p-6 text-center">
+              <p className="text-xs text-muted-foreground">
+                Build this shader visually by wiring nodes together.
+              </p>
+              <Button type="button" size="sm" onClick={startGraph}>
+                Start a graph
+              </Button>
+              <p className="max-w-[16rem] text-[10px] text-muted-foreground/70">
+                Replaces the current source, which is then generated from the graph.
+              </p>
+            </div>
+          )
+        ) : hasGraph ? (
+          // Read-only: the graph owns this source. Detach to take it over.
+          <pre className="min-h-0 flex-1 overflow-auto rounded-lg border border-border/60 bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+            {draft.source}
+          </pre>
+        ) : (
+          <MaterialEditor
+            material={draft}
+            onChange={applyChange}
+            fill
+            showUniforms={false}
+            onCompiled={handleCompiled}
+            onEditorReady={(view) => (editorViewRef.current = view)}
+          />
+        )}
       </ResizablePanel>
 
       <ResizableHandle withHandle className="pointer-events-auto" />
