@@ -82,9 +82,12 @@ export function MaterialEditor({
   const diagnostics = compileResult?.diagnostics ?? []
 
   // Report each result to an interested host. Via a ref so an inline callback
-  // can't retrigger this effect every render.
+  // can't retrigger this effect every render. The ref is synced in its own
+  // effect (not during render) — it lands before any handler can read it.
   const onCompiledRef = useRef(onCompiled)
-  onCompiledRef.current = onCompiled
+  useEffect(() => {
+    onCompiledRef.current = onCompiled
+  })
   useEffect(() => {
     onCompiledRef.current?.(compileResult)
   }, [compileResult])

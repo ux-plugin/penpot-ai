@@ -275,11 +275,15 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
 
   // Read the live graph/callback through refs so every handler below can have an
   // EMPTY dep array. That keeps `data.onParam`/`onDelete` identity-stable, which
-  // is what lets the memoized node view skip re-rendering siblings.
+  // is what lets the memoized node view skip re-rendering siblings. The refs are
+  // synced in an effect, not during render — handlers only fire after commit, so
+  // they still observe the current values.
   const graphRef = useRef(graph)
-  graphRef.current = graph
   const onChangeRef = useRef(onChange)
-  onChangeRef.current = onChange
+  useEffect(() => {
+    graphRef.current = graph
+    onChangeRef.current = onChange
+  })
 
   const setParam = useCallback((nodeId: string, param: string, value: ParamValue) => {
     const g = graphRef.current
@@ -299,7 +303,12 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
 
   // React Flow owns the in-flight gesture. Seeded from the IR and re-seeded
   // whenever the IR actually changes (our own commits, undo, external edits).
+  //
+  // `setParam`/`deleteNode` read refs, so the rule flags handing them to a call
+  // made during render. `toRfNodes` only stores them on `data` — React Flow
+  // invokes them from node event handlers, never while rendering.
   const [rfNodes, setRfNodes, onNodesChangeInternal] = useNodesState<RFNode<ShaderNodeData>>(
+    // eslint-disable-next-line react-hooks/refs
     toRfNodes(graph, setParam, deleteNode),
   )
   const [rfEdges, setRfEdges, onEdgesChangeInternal] = useEdgesState<RFEdge>(toRfEdges(graph))
@@ -331,9 +340,12 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
     [onNodesChangeInternal],
   )
 
-  // Latest rendered positions, for the drag-stop commit below.
+  // Latest rendered positions, for the drag-stop commit below. Synced in an
+  // effect: drag-stop fires long after commit, so it reads the settled value.
   const rfNodesRef = useRef(rfNodes)
-  rfNodesRef.current = rfNodes
+  useEffect(() => {
+    rfNodesRef.current = rfNodes
+  })
 
   /** Commit the moved node(s) once, and flag it so codegen is skipped. */
   const onNodeDragStop = useCallback(() => {

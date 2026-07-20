@@ -155,7 +155,9 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
   // ours (the transport duration), so we do the division here and hand Rust the
   // ready value. A ref so the ticker's once-built onTick reads it live.
   const durationRef = useRef(DEFAULT_LOOP_SECONDS)
-  durationRef.current = durationSec
+  useEffect(() => {
+    durationRef.current = durationSec
+  })
   const phaseOf = (time: number) => (durationRef.current > 0 ? time / durationRef.current : 0)
 
   /**
@@ -164,9 +166,17 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
    * live in one tested place rather than in a component. React only flips
    * play/pause/loop/duration; the tick itself never touches React.
    */
-  const tickerRef = useRef<Ticker | null>(null)
-  if (tickerRef.current === null) {
-    tickerRef.current = new Ticker({
+  // Built once via a lazy `useState` initializer rather than a null-ref check, so
+  // nothing is written during render. `onTick` reads everything it needs through
+  // refs (`draftRef`, `timeRef`, `durationRef` via `phaseOf`) and `paintTime` is
+  // dep-free, so the once-built closure always sees live values.
+  //
+  // The rule sees `draftRef.current` lexically inside the initializer and calls it
+  // a render-phase read. It isn't: it lives in `onTick`, which only ever runs from
+  // the Ticker's rAF loop.
+  // eslint-disable-next-line react-hooks/refs
+  const [ticker] = useState(() => {
+    const t = new Ticker({
       onTick: (timeMs) => {
         timeRef.current = timeMs / 1000 // u_time is seconds
         const module = getWasmModule()
@@ -176,10 +186,10 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
         paintTime()
       },
     })
-    tickerRef.current.setDuration(DEFAULT_LOOP_SECONDS * 1000)
-    tickerRef.current.setLoop(true)
-  }
-  const ticker = tickerRef.current
+    t.setDuration(DEFAULT_LOOP_SECONDS * 1000)
+    t.setLoop(true)
+    return t
+  })
 
   /**
    * Flush the draft to the document as ONE change. No-op when unchanged.

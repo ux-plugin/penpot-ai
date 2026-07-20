@@ -19,7 +19,7 @@
  * at call time, so the CodeMirror extension is built once and never reconfigured.
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import type { EditorView } from '@codemirror/view'
 import type { Text } from '@codemirror/state'
@@ -68,10 +68,7 @@ export function ShaderCodeEditor({
   // It scans the live document at call time (via `language.symbols`) so an
   // identifier completes the moment it's declared — no editor reconfigure, no
   // wait on a compile.
-  const completionExt = useRef<ReturnType<typeof autocompletion> | null>(null)
-  const completionLang = useRef<ShaderLanguage | null>(null)
-  if (completionLang.current !== language) {
-    completionLang.current = language
+  const completionExt = useMemo(() => {
     const source = (ctx: CompletionContext): CompletionResult | null => {
       const word = ctx.matchBefore(/[\w]+/)
       // Nothing typed and not an explicit trigger (Ctrl-Space) ⇒ don't pop up.
@@ -83,8 +80,8 @@ export function ShaderCodeEditor({
         validFor: /^[\w]*$/,
       }
     }
-    completionExt.current = autocompletion({ override: [source], icons: true })
-  }
+    return autocompletion({ override: [source], icons: true })
+  }, [language])
 
   // Push the latest diagnostics into the live editor whenever they change.
   useEffect(() => {
@@ -105,7 +102,7 @@ export function ShaderCodeEditor({
         // Seed diagnostics that arrived before the editor mounted.
         view.dispatch(setDiagnostics(view.state, toCmDiagnostics(view.state.doc, diagnostics)))
       }}
-      extensions={[language.highlight(), lintGutter(), completionExt.current!]}
+      extensions={[language.highlight(), lintGutter(), completionExt]}
       basicSetup={{
         lineNumbers: true,
         highlightActiveLine: false,

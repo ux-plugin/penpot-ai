@@ -94,7 +94,12 @@ export function MaterialUniformControls({ uniforms, material, onCommitUniform }:
   // so it only fires on a real change. (While these controls are mounted only —
   // full propagation while closed is a fast-follow.)
   const latest = useRef({ material, uniforms, resolved, onCommitUniform })
-  latest.current = { material, uniforms, resolved, onCommitUniform }
+  // Synced in an effect rather than during render. Declared BEFORE the
+  // re-materialize effect below, so it has already landed by the time that one
+  // reads `latest.current`.
+  useEffect(() => {
+    latest.current = { material, uniforms, resolved, onCommitUniform }
+  })
   const boundSig = (material.uniforms ?? [])
     .filter((u) => u.token)
     .map((u) => `${u.name}:${JSON.stringify(resolved.get(u.token!)?.resolvedValue ?? null)}`)
