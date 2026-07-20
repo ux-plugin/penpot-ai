@@ -91,6 +91,22 @@ describe('overlaps — a shader material makes the interior solid', () => {
     expect(overlaps(shaderRect({ source: '  ' }), at(50, 50))).toBe(false)
   })
 
+  // Skia closes an open sub-path implicitly when filling it, so a filled OPEN
+  // path paints an interior — and must be clickable there. (20,30) is interior
+  // and well clear of every stroke, so it isolates the fill behaviour.
+  it('open path: interior click MISSES while unfilled', () => {
+    expect(overlaps(vShape({ segments }), at(20, 30))).toBe(false)
+  })
+
+  it('open path: interior click HITS once a shader material fills it', () => {
+    expect(overlaps({ ...vShape({ segments }), material: SHADER } as PenpotNode, at(20, 30))).toBe(true)
+  })
+
+  it('open path: interior click HITS with an ordinary fill too', () => {
+    const filled = { ...vShape({ segments }), fills: [{ fillColor: '#ff0000' }] } as unknown as PenpotNode
+    expect(overlaps(filled, at(20, 30))).toBe(true)
+  })
+
   it('closed path: interior click MISSES with no fill, HITS with a shader material', () => {
     // A closed square with no fill — interior is hollow until the shader fills it.
     const closed = [

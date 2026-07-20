@@ -34,6 +34,7 @@ import {
   type Node as RFNode,
   type NodeChange,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { Plus, Trash2 } from 'lucide-react'
@@ -267,6 +268,10 @@ function toRfEdges(graph: ShaderGraph): RFEdge[] {
 
 export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // The React Flow instance (for screen↔flow conversion) and the pane element,
+  // so a new node can be dropped at the centre of what's currently visible.
+  const rfRef = useRef<ReactFlowInstance<RFNode<ShaderNodeData>, RFEdge> | null>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
 
   // Read the live graph/callback through refs so every handler below can have an
   // EMPTY dep array. That keeps `data.onParam`/`onDelete` identity-stable, which
@@ -371,25 +376,31 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
   const addNode = useCallback((spec: NodeSpec) => {
     const g = graphRef.current
     const id = newNodeId(g)
-    // Stagger new nodes so they don't stack exactly on top of each other.
-    const offset = g.nodes.length * 24
-    onChangeRef.current({
-      ...g,
-      nodes: [
-        ...g.nodes,
-        { id, kind: spec.kind, position: { x: 40 + (offset % 240), y: 40 + (offset % 180) } },
-      ],
-    })
+    // Drop it where you're looking: the centre of the visible pane, converted
+    // from screen to flow space so it lands correctly at any pan/zoom. A small
+    // stagger keeps successive adds from stacking perfectly.
+    const stagger = (g.nodes.length % 5) * 18
+    let position = { x: 40 + stagger, y: 40 + stagger }
+    const rf = rfRef.current
+    const pane = wrapperRef.current
+    if (rf && pane) {
+      const r = pane.getBoundingClientRect()
+      const c = rf.screenToFlowPosition({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+      // Offset by roughly half a node so the node is centred, not its corner.
+      position = { x: c.x - 84 + stagger, y: c.y - 40 + stagger }
+    }
+    onChangeRef.current({ ...g, nodes: [...g.nodes, { id, kind: spec.kind, position }] })
   }, [])
 
   const hasOutput = graph.nodes.some((n) => n.kind === OUTPUT_KIND)
 
   return (
-    <div className="relative h-full w-full">
+    <div ref={wrapperRef} className="relative h-full w-full">
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
         nodeTypes={nodeTypes}
+        onInit={(inst) => (rfRef.current = inst)}
         onNodesChange={onNodesChange}
         onNodeDragStop={onNodeDragStop}
         onEdgesChange={onEdgesChange}
