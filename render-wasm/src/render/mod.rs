@@ -28,6 +28,7 @@ pub(crate) use images::{get_dest_rect, get_source_rect};
 pub(crate) mod dynamic;
 pub(crate) mod noise;
 pub(crate) mod options;
+pub(crate) mod preview;
 mod shadows;
 mod strokes;
 pub(crate) mod surfaces;

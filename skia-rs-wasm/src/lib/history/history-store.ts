@@ -35,6 +35,21 @@ function isCommitFrameEmpty(frame: CommitFrame): boolean {
   return frame.undoChanges.length === 0 && docUndo.length === 0
 }
 
+/**
+ * Index at which the top *run* begins: the top frame, extended down while the
+ * previous frame shares the top's `groupId`. A frame with no `groupId` is a run
+ * of one (so ordinary edits never merge with each other). `stack.length` when
+ * the stack is empty.
+ */
+function runStart(stack: CommitFrame[]): number {
+  if (stack.length === 0) return stack.length
+  const top = stack[stack.length - 1]
+  if (top.groupId == null) return stack.length - 1
+  let i = stack.length - 1
+  while (i > 0 && stack[i - 1].groupId === top.groupId) i--
+  return i
+}
+
 export interface HistoryState {
   undoStack: CommitFrame[]
   redoStack: CommitFrame[]
@@ -56,6 +71,18 @@ export interface HistoryState {
   popRedoFrame: () => CommitFrame | undefined
   /** After redo, push frame back onto undo stack. */
   pushUndoFrame: (frame: CommitFrame) => void
+  /**
+   * Pop the top *run* — the top frame plus any consecutive frames sharing its
+   * `groupId` (a lone frame when `groupId` is absent). Canvas group-undo reverts
+   * a run as ONE step. Returned oldest→newest (commit order); empty if nothing.
+   */
+  popUndoRun: () => CommitFrame[]
+  /** Push a run onto the redo stack (preserving order). */
+  pushRedoRun: (run: CommitFrame[]) => void
+  /** Pop the top run off the redo stack (mirror of {@link popUndoRun}). */
+  popRedoRun: () => CommitFrame[]
+  /** Push a run back onto the undo stack (preserving order). */
+  pushUndoRun: (run: CommitFrame[]) => void
   /**
    * Open (or join) the undo transaction. Refcounted by id: the accumulated
    * frame is pushed when every holder has committed. Re-beginning with the
@@ -104,6 +131,9 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
             undoChanges: [...frame.undoChanges, ...s.transaction.undoChanges],
             docMetaRedoChanges: mergedDocRedo.length > 0 ? mergedDocRedo : undefined,
             docMetaUndoChanges: mergedDocUndo.length > 0 ? mergedDocUndo : undefined,
+            // Grouping is orthogonal to transactions; keep a groupId if either
+            // the buffer or the incoming frame carries one.
+            groupId: s.transaction.groupId ?? frame.groupId,
           },
           redoStack: [],
         }
@@ -139,6 +169,34 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
     set((s) => ({
       undoStack: [...s.undoStack, frame].slice(-MAX_UNDO),
     }))
+  },
+
+  popUndoRun: () => {
+    const { undoStack } = get()
+    const start = runStart(undoStack)
+    if (start >= undoStack.length) return []
+    const run = undoStack.slice(start)
+    set({ undoStack: undoStack.slice(0, start) })
+    return run
+  },
+
+  pushRedoRun: (run) => {
+    if (run.length === 0) return
+    set((s) => ({ redoStack: [...s.redoStack, ...run] }))
+  },
+
+  popRedoRun: () => {
+    const { redoStack } = get()
+    const start = runStart(redoStack)
+    if (start >= redoStack.length) return []
+    const run = redoStack.slice(start)
+    set({ redoStack: redoStack.slice(0, start) })
+    return run
+  },
+
+  pushUndoRun: (run) => {
+    if (run.length === 0) return
+    set((s) => ({ undoStack: [...s.undoStack, ...run].slice(-MAX_UNDO) }))
   },
 
   beginTransaction: (id, timeoutMs = TRANSACTION_TIMEOUT_MS) => {

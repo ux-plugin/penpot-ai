@@ -3,9 +3,11 @@ import { useFontReconnect } from '@/lib/renderer/api/font-reconnect'
 import { CanvasWrapper } from './lib/renderer/canvas-wrapper'
 import { ShapeToolbar } from './lib/components/ShapeToolbar'
 import { CursorHint } from './lib/components/CursorHint'
+import { ShaderDragOverlay } from './lib/components/Overlay/ShaderDragOverlay'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
+import { focusUndo, focusRedo } from './lib/history/focus-undo'
 import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } from './lib/persistence'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
@@ -16,6 +18,8 @@ import { ChatPanel } from './lib/components/BuildMode/ChatPanel'
 import { PreviewStage } from './lib/components/BuildMode/PreviewStage'
 import { inspectorTab } from './lib/renderer/signals/inspector-tab'
 import { editorMode } from './lib/renderer/signals/editor-mode'
+import { focusStage } from './lib/renderer/signals/focus-stage'
+import { FocusStage } from './lib/components/FocusStage/FocusStage'
 import { useSignalCoalesced } from './lib/renderer/signals/use-signal-coalesced'
 
 /**
@@ -94,12 +98,18 @@ function App() {
       const t = e.target as HTMLElement | null
       if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
       const mod = e.metaKey || e.ctrlKey
+      // When a focus stage declares an `undoScope`, Cmd+Z steps through THAT
+      // session's frames finely (the focus reader) instead of reverting the
+      // whole session as one canvas step. Cmd+Z inside the SkSL editor never
+      // reaches here — the input guard above lets CodeMirror's native text-undo
+      // handle it — so this is for Cmd+Z on the surrounding chrome (uniforms).
+      const scope = focusStage.peek()?.undoScope
       if (mod && e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
-        void undo()
+        void (scope ? focusUndo(scope) : undo())
       } else if (mod && e.key === 'z' && e.shiftKey) {
         e.preventDefault()
-        void redo()
+        void (scope ? focusRedo(scope) : redo())
       } else if (
         import.meta.env.DEV &&
         e.shiftKey && (e.key === 'P' || e.key === 'p') && !mod
@@ -122,20 +132,24 @@ function App() {
 
   const tab = useSignalCoalesced(inspectorTab)
   const motionActive = tab === 'motion'
-  const startSlot = mode === 'design' ? <LayersPanel /> : <BuildLeftRail />
-  const endSlot = <RightSidePanel />
-  const bottomSlot = motionActive ? <TimelinePanel /> : undefined
-  const centerOverlay =
-    mode === 'design' ? (
-      <ShapeToolbar />
-    ) : (
-      <div
-        className="pointer-events-auto flex h-full w-full"
-        style={{ background: 'var(--editor-canvas-chrome)' }}
-      >
-        <PreviewStage />
-      </div>
-    )
+  // A focus stage (e.g. shader authoring) temporarily claims the center region
+  // and may rebind rails; when none is active the shell composes as usual.
+  const focus = useSignalCoalesced(focusStage)
+  const startSlot = focus?.left ?? (mode === 'design' ? <LayersPanel /> : <BuildLeftRail />)
+  const endSlot = focus?.right ?? <RightSidePanel />
+  const bottomSlot = focus?.bottom ?? (motionActive ? <TimelinePanel /> : undefined)
+  const centerOverlay = focus ? (
+    <FocusStage session={focus} />
+  ) : mode === 'design' ? (
+    <ShapeToolbar />
+  ) : (
+    <div
+      className="pointer-events-auto flex h-full w-full"
+      style={{ background: 'var(--editor-canvas-chrome)' }}
+    >
+      <PreviewStage />
+    </div>
+  )
 
   return (
     <div
@@ -155,6 +169,7 @@ function App() {
           overlays={
             <>
               {mode === 'design' && <CursorHint />}
+              <ShaderDragOverlay />
               <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
               {error && (
                 <div

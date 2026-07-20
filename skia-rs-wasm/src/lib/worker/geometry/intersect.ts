@@ -286,8 +286,8 @@ function overlapsPath(shape: PathShape | BoolShape, rect: Selrect, includeConten
 
   // Prefer the real outline: flatten the path's curve segments into polylines and
   // test against those, so a click anywhere on the stroke hits — not only where it
-  // runs near the bounding box (the old `shape.points` approximation). Closed
-  // sub-paths also get an inside-test when fills are in play (`includeContent`).
+  // runs near the bounding box (the old `shape.points` approximation). Sub-paths
+  // also get an inside-test when fills are in play (`includeContent`).
   const polys = flattenPathSegments(pathSegmentsOf(content))
   if (polys.length > 0) {
     for (const poly of polys) {
@@ -295,12 +295,17 @@ function overlapsPath(shape: PathShape | BoolShape, rect: Selrect, includeConten
       if (intersectsLines(rectLines, polyLines)) {
         return true
       }
-      if (
-        includeContent &&
-        poly.closed &&
-        (isPointInsideNonzero(rectPoints[0], polyLines) || isPointInsideNonzero(poly.pts[0], rectLines))
-      ) {
-        return true
+      if (includeContent) {
+        // Fills apply to OPEN sub-paths too — Skia closes them implicitly when
+        // filling — so the interior must be hittable either way, or hit-testing
+        // disagrees with what's actually painted. Close the ring for the test.
+        const filled = poly.closed ? polyLines : pointsToLines(poly.pts, true)
+        if (
+          isPointInsideNonzero(rectPoints[0], filled) ||
+          isPointInsideNonzero(poly.pts[0], rectLines)
+        ) {
+          return true
+        }
       }
     }
     return false
@@ -646,6 +651,18 @@ function isScene3dFrame(shape: PenpotNode): boolean {
   return (shape as { scene3d?: unknown }).scene3d != null
 }
 
+/**
+ * True when the shape carries a visible SkSL shader material. Like a regular fill,
+ * the shader paints the shape's whole interior — so a shader-filled shape must be
+ * interior-hittable even when it has no `fills`, not treated as a hollow stroked
+ * box (which would let clicks fall through its middle). `material` is an app-level
+ * field not in `PenpotNode`, so read it structurally.
+ */
+function hasShaderFill(shape: PenpotNode): boolean {
+  const m = (shape as { material?: { source?: string; hidden?: boolean } }).material
+  return !!m && typeof m.source === 'string' && m.source.trim().length > 0 && !m.hidden
+}
+
 export function overlaps(shape: PenpotNode, rect: Selrect, usingSelrect: boolean = false): boolean {
   if (!shape) {
     return false
@@ -678,7 +695,8 @@ export function overlaps(shape: PenpotNode, rect: Selrect, usingSelrect: boolean
     !svgAttrs?.fill &&
     !svgAttrs?.style?.fill &&
     !hasVisibleBackgroundEffect(shape) &&
-    !isScene3dFrame(shape)
+    !isScene3dFrame(shape) &&
+    !hasShaderFill(shape)
   ) {
     const shapeTypeInner = shape.type
 

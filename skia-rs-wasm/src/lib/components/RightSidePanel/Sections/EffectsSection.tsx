@@ -9,14 +9,17 @@ import {
   getCommittedNodeOnActivePage,
 } from '../../../renderer/properties/commit-node-properties'
 import {
+  DEFAULT_MATERIAL,
   DEFAULT_SHADOW,
   MAX_EFFECTS,
   type EffectItem,
   type Noise,
   type RectLikeNode,
 } from '../../../renderer/properties/panel-utils'
+import { ShaderPresetGallery } from '../ShaderPresetGallery'
 import type { Material } from '../../../renderer/api/material'
 import { getActiveOrSinglePageId } from '../../../renderer/store/doc-proxy'
+import { openShaderStage } from '../../FocusStage/open-shader-stage'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
 
@@ -173,6 +176,46 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
     [effects, commitEffects],
   )
 
+  // When set, the preset gallery is open for this material effect index.
+  const [galleryFor, setGalleryFor] = useState<number | null>(null)
+
+  // Material effects open the shader focus stage (a center-region takeover)
+  // instead of the inline floating editor: SkSL authoring wants the room, and
+  // the stage commits `{ material }` straight onto this node.
+  const onOpenFocus = useCallback(
+    (index: number) => {
+      const item = effects[index]
+      if (item?.kind !== 'material') return
+      // A still-default material means the user hasn't written anything yet —
+      // offer the preset gallery as a starting point. An already-edited shader
+      // opens straight into the editor (don't interrupt existing work).
+      if (item.material.source === DEFAULT_MATERIAL.source) {
+        setGalleryFor(index)
+        return
+      }
+      openShaderStage(nodeId, item.material)
+    },
+    [effects, nodeId],
+  )
+
+  // Gallery pick: persist the chosen preset onto the effect (so exiting without
+  // editing still keeps it), then open the stage on it.
+  const onPickPreset = useCallback(
+    (material: Material) => {
+      const index = galleryFor
+      setGalleryFor(null)
+      if (index == null) return
+      const next = [...effects]
+      if (next[index]?.kind === 'material') {
+        next[index] = { kind: 'material', material }
+        setEffects(next)
+        void commitEffects(next)
+      }
+      openShaderStage(nodeId, material)
+    },
+    [galleryFor, effects, commitEffects, nodeId],
+  )
+
   const addEffect = useCallback(() => {
     if (effects.length >= MAX_EFFECTS) return
     const next: EffectItem[] = [...effects, { kind: 'drop-shadow', shadow: { ...DEFAULT_SHADOW } }]
@@ -237,6 +280,7 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
                 readOnly={readOnly}
                 onChange={onEffectChange}
                 onRemove={removeEffect}
+                onOpenFocus={onOpenFocus}
               />
             ))}
           </div>
@@ -246,6 +290,10 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
           <p className="text-xs text-muted-foreground">No effects. Use + to add.</p>
         )}
       </div>
+
+      {galleryFor != null && (
+        <ShaderPresetGallery onPick={onPickPreset} onClose={() => setGalleryFor(null)} />
+      )}
     </>
   )
 }

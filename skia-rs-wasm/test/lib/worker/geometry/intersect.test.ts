@@ -60,3 +60,63 @@ describe('overlaps — path hit-test uses real segment geometry', () => {
     expect(overlaps(vShape({ foo: 1 }), at(0, 50))).toBe(true) // on the left bbox edge
   })
 })
+
+/** A no-fill rect, optionally carrying a shader material, for interior-hit tests. */
+function shaderRect(material: unknown): PenpotNode {
+  return {
+    type: 'rect',
+    fills: [],
+    strokes: [{ strokeWidth: 2 }],
+    selrect: makeSelrect(0, 0, 100, 100),
+    ...(material != null ? { material } : {}),
+  } as unknown as PenpotNode
+}
+
+const SHADER = { source: 'half4 main(float2 p){return half4(1);}' }
+
+describe('overlaps — a shader material makes the interior solid', () => {
+  it('rect: interior click MISSES with no fill and no material (stroke-only)', () => {
+    expect(overlaps(shaderRect(null), at(50, 50))).toBe(false)
+  })
+
+  it('rect: interior click HITS once a shader material fills it', () => {
+    expect(overlaps(shaderRect(SHADER), at(50, 50))).toBe(true)
+  })
+
+  it('rect: a hidden shader material does NOT count as a fill', () => {
+    expect(overlaps(shaderRect({ ...SHADER, hidden: true }), at(50, 50))).toBe(false)
+  })
+
+  it('rect: an empty-source material does NOT count as a fill', () => {
+    expect(overlaps(shaderRect({ source: '  ' }), at(50, 50))).toBe(false)
+  })
+
+  // Skia closes an open sub-path implicitly when filling it, so a filled OPEN
+  // path paints an interior — and must be clickable there. (20,30) is interior
+  // and well clear of every stroke, so it isolates the fill behaviour.
+  it('open path: interior click MISSES while unfilled', () => {
+    expect(overlaps(vShape({ segments }), at(20, 30))).toBe(false)
+  })
+
+  it('open path: interior click HITS once a shader material fills it', () => {
+    expect(overlaps({ ...vShape({ segments }), material: SHADER } as PenpotNode, at(20, 30))).toBe(true)
+  })
+
+  it('open path: interior click HITS with an ordinary fill too', () => {
+    const filled = { ...vShape({ segments }), fills: [{ fillColor: '#ff0000' }] } as unknown as PenpotNode
+    expect(overlaps(filled, at(20, 30))).toBe(true)
+  })
+
+  it('closed path: interior click MISSES with no fill, HITS with a shader material', () => {
+    // A closed square with no fill — interior is hollow until the shader fills it.
+    const closed = [
+      { type: 'move-to', x: 0, y: 0 },
+      { type: 'line-to', x: 100, y: 0 },
+      { type: 'line-to', x: 100, y: 100 },
+      { type: 'line-to', x: 0, y: 100 },
+      { type: 'close-path' },
+    ]
+    expect(overlaps(vShape({ segments: closed }), at(50, 50))).toBe(false)
+    expect(overlaps({ ...vShape({ segments: closed }), material: SHADER } as PenpotNode, at(50, 50))).toBe(true)
+  })
+})

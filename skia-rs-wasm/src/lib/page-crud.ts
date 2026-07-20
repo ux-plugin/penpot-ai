@@ -78,29 +78,33 @@ export async function commitChangesPublic(params: CommitChangesParams): Promise<
 export async function undo(): Promise<void> {
   // An in-flight gesture (open transaction) becomes the frame this undo pops.
   useHistoryStore.getState().flushTransactions()
-  const frame = useHistoryStore.getState().popUndoFrame()
-  if (!frame) return
+  // Canvas undo reverts a whole RUN (consecutive same-`groupId` frames) as one
+  // step — so a focus session's idle-coalesced chunks undo together. A lone
+  // ungrouped edit is a run of one, so ordinary undo is unchanged.
+  const run = useHistoryStore.getState().popUndoRun()
+  if (run.length === 0) return
+  // Apply inverses newest→oldest (reverse of commit order) so the run reverts to
+  // its pre-run state. `docMetaUndoChanges` are the forward inversions to apply.
+  const reversed = [...run].reverse()
   await commitChanges({
-    redoChanges: frame.undoChanges,
-    // On undo: the frame's `docMetaUndoChanges` are the "forward" inversions
-    // to apply (revert add → del, mod → mod with prior value). saveUndo:false
-    // + fromHistory:true bypass history-sync, so no new frame is recorded.
-    docMetaRedoChanges: frame.docMetaUndoChanges,
+    redoChanges: reversed.flatMap((f) => f.undoChanges),
+    docMetaRedoChanges: reversed.flatMap((f) => f.docMetaUndoChanges ?? []),
     saveUndo: false,
     fromHistory: true,
   })
-  useHistoryStore.getState().pushRedoFrame(frame)
+  useHistoryStore.getState().pushRedoRun(run)
 }
 
 export async function redo(): Promise<void> {
   useHistoryStore.getState().flushTransactions()
-  const frame = useHistoryStore.getState().popRedoFrame()
-  if (!frame) return
+  const run = useHistoryStore.getState().popRedoRun()
+  if (run.length === 0) return
+  // Re-apply forward, oldest→newest.
   await commitChanges({
-    redoChanges: frame.redoChanges,
-    docMetaRedoChanges: frame.docMetaRedoChanges,
+    redoChanges: run.flatMap((f) => f.redoChanges),
+    docMetaRedoChanges: run.flatMap((f) => f.docMetaRedoChanges ?? []),
     saveUndo: false,
     fromHistory: true,
   })
-  useHistoryStore.getState().pushUndoFrame(frame)
+  useHistoryStore.getState().pushUndoRun(run)
 }

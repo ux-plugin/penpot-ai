@@ -217,6 +217,7 @@ function CanvasWorkspace({
           attach here (see use-viewport-interactions). */}
       <div
         ref={surfaceRef}
+        data-canvas-surface
         style={{ position: 'absolute', inset: 0, pointerEvents: 'all', touchAction: 'none' }}
       />
       {/* Motion path/ghosts draw BELOW the selection chrome; the badge sits ON TOP. */}

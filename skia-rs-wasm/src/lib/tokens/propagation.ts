@@ -25,6 +25,8 @@ import { docProxy } from '../renderer/store/doc-proxy'
 import { materializeAttrWrites, type AttrWrite } from './materialize'
 import { resolveTokens } from './resolve'
 import type { TokenProperties, TokensLib } from './types'
+import type { Material } from '../renderer/api/material'
+import { rematerializeStoredUniform } from '../components/RightSidePanel/material-token'
 
 function buildModObj(pageId: string, id: string, assign: Record<string, unknown>): ModObjChange {
   return { type: 'mod-obj', id, pageId, operations: [{ type: 'assign', value: assign }] }
@@ -51,8 +53,9 @@ export async function collectTokenPropagation(
   for (const [pageId, page] of docSnap.pageMap) {
     for (const id of Object.keys(page.objects)) {
       const shape = page.objects[id] as PenpotNode & { appliedTokens?: Record<string, string> }
-      const applied = shape.appliedTokens
-      if (!applied || Object.keys(applied).length === 0) continue
+      // A shape participates if it applies tokens to attrs OR binds a token in a
+      // shader-material uniform — the two live in different places.
+      const applied: Record<string, string> = shape.appliedTokens ?? {}
 
       const writes: AttrWrite[] = []
       const appliedNext: Record<string, string> = { ...applied }
@@ -86,6 +89,29 @@ export async function collectTokenPropagation(
         redoAssign.appliedTokens = appliedNext
         undoAssign.appliedTokens = { ...applied }
       }
+
+      // Material-uniform token bindings live on `material.uniforms[].token`, not
+      // `appliedTokens`. Re-materialize them here so a token/theme edit reaches a
+      // shape whose shader binds a token even with NO editor open (the editor's
+      // own re-materialize effect covers only the open case). Folds into the
+      // same `mod-obj` as any attr writes, so one Cmd+Z reverts everything.
+      const mat = (shape as { material?: Material }).material
+      if (mat?.uniforms?.some((u) => u.token)) {
+        let matChanged = false
+        const nextUniforms = mat.uniforms.map((u) => {
+          if (!u.token) return u
+          const effToken = renames?.get(u.token) ?? u.token
+          const nextVal = rematerializeStoredUniform(u.value, resolved.get(effToken))
+          const next = { ...u, token: effToken, ...(nextVal ? { value: nextVal } : {}) }
+          if (!jsonEqual(next, u)) matChanged = true
+          return next
+        })
+        if (matChanged) {
+          redoAssign.material = { ...mat, uniforms: nextUniforms }
+          undoAssign.material = structuredClone(mat)
+        }
+      }
+
       if (Object.keys(redoAssign).length === 0) continue
 
       redo.push(buildModObj(pageId, id, redoAssign))
