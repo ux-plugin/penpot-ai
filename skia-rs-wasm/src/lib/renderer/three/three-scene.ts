@@ -317,13 +317,26 @@ export function pickScene3d(
   raycaster.params.Line = { threshold: 0.04 }
   raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), cam)
 
+  // Objects and camera frustums compete in ONE pass so the nearest wins regardless
+  // of kind. Built as a flat candidate list rather than a `consider` closure: an
+  // assignment inside a callback is invisible to TS's narrowing, which would leave
+  // `best` typed as its `null` initializer at the return.
+  const candidates: Array<[Scene3DPick, THREE.Object3D]> = [
+    ...Array.from(inst.objects, ([id, obj]): [Scene3DPick, THREE.Object3D] => [
+      { kind: 'object', id },
+      obj,
+    ]),
+    ...Array.from(inst.cameraHelpers, ([id, h]): [Scene3DPick, THREE.Object3D] => [
+      { kind: 'camera', id },
+      h.group,
+    ]),
+  ]
+
   let best: { pick: Scene3DPick; dist: number } | null = null
-  const consider = (pick: Scene3DPick, root: THREE.Object3D) => {
+  for (const [pick, root] of candidates) {
     const hits = raycaster.intersectObject(root, true)
     if (hits.length && (!best || hits[0].distance < best.dist)) best = { pick, dist: hits[0].distance }
   }
-  for (const [id, obj] of inst.objects) consider({ kind: 'object', id }, obj)
-  for (const [id, h] of inst.cameraHelpers) consider({ kind: 'camera', id }, h.group)
   return best?.pick ?? null
 }
 
