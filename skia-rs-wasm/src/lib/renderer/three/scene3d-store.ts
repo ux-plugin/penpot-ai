@@ -50,9 +50,19 @@ export interface Camera3DEntry {
   id: string
   name: string
   projection: CameraProjection
-  /** Vertical field of view in degrees (perspective only; ignored for ortho). */
+  /** Vertical field of view in degrees (used when `projection === 'perspective'`). */
   fov: number
-  transform3d: { position: Vec3; rotationEuler: Vec3 }
+  /** World half-height of the orthographic frustum (used when `projection ===
+   *  'orthographic'`). Stored SEPARATELY from `fov` so toggling persp⇄ortho is lossless
+   *  — each projection keeps its own framing. Absent ⇒ derived from `fov` at the home
+   *  distance the first time the camera goes orthographic. */
+  orthoSize?: number
+  /** Persisted view pose (position + aim as XYZ Euler degrees). ABSENT ⇒ the camera
+   *  uses the canonical default 3/4 framing (`buildCamera`); it is written when the
+   *  user navigates (orbit/pan/dolly) in edit mode, so a reload restores the last
+   *  view. Ortho "dolly" is a zoom, not a position, so ortho zoom is not captured
+   *  here — only the angle + pan persist for an ortho camera. */
+  transform3d?: { position: Vec3; rotationEuler: Vec3 }
 }
 
 /** A whole 3D scene: shared camera + environment + an ordered list of objects. */
@@ -96,11 +106,17 @@ interface Scene3DState {
   /** The object focused within the editing scene (the gizmo target). The edit mode
    *  itself + which scene is being edited live in the canvasMachine (`scene3dEditing`). */
   focusedObjectId: string | null
+  /** The camera SELECTED for editing in the editing scene (its props show in the
+   *  popover). Distinct from the scene's `activeCameraId` (the look-through camera the
+   *  scene renders through, persisted on the doc): you can select a camera to tweak it
+   *  without switching the view. Transient editor state; `null` ⇒ edit the active one. */
+  selectedCameraId: string | null
 }
 
 export const scene3dProxy = proxy<Scene3DState>({
   scenes: proxyMap<string, Scene3DDocument>(),
   focusedObjectId: null,
+  selectedCameraId: null,
 })
 
 const OBJECT_BINDABLE = [
@@ -131,15 +147,26 @@ export function defaultObject(id: string, source: Source3D, name?: string): Obje
   }
 }
 
-/** The scene's default camera — a perspective camera matching the initial view. */
+/** The scene's default camera — a perspective camera matching the initial view.
+ *  No `transform3d`: an unset pose means `buildCamera` uses the canonical 3/4
+ *  framing. Navigating in edit mode writes the pose, and reload restores it. */
 export function defaultCamera(sceneId: string): Camera3DEntry {
   return {
     id: `${sceneId}:cam0`,
-    name: 'Camera',
+    name: 'Camera 1',
     projection: 'perspective',
     fov: 45,
-    transform3d: { position: [0, 0, 6], rotationEuler: [0, 0, 0] },
   }
+}
+
+/** A unique "Camera N" name for a new camera in a scene (N = one past the highest
+ *  existing "Camera N", so names don't collide even after deletes). */
+export function nextCameraName(scene: Scene3DDocument): string {
+  const nums = sceneCameras(scene).map((c) => {
+    const m = /^Camera (\d+)$/.exec(c.name)
+    return m ? Number(m[1]) : 0
+  })
+  return `Camera ${Math.max(0, ...nums) + 1}`
 }
 
 /** The scene's cameras, synthesising a default for legacy scenes that predate the
@@ -179,12 +206,35 @@ export function findObject(scene: Scene3DDocument, objId: string): Object3DEntry
  * the proxy). One Scene3DInstance per scene, keyed by the scene id.
  * ------------------------------------------------------------------------- */
 
+/**
+ * The on-canvas stand-in for a camera you are NOT looking through: a wireframe frustum
+ * plus a small body, so you can see where your other cameras are and (later) grab them.
+ * Editor chrome — only ever added while the scene is being edited, never in preview.
+ */
+export interface Scene3DCameraHelper {
+  /** Identity-transformed holder for the frustum + body, added to / removed from the scene. */
+  group: THREE.Group
+  /** A stand-in camera carrying the entry's pose + lens, with a SHORT far plane so the
+   *  drawn frustum is a compact cone rather than one spanning the whole scene. */
+  cam: THREE.PerspectiveCamera | THREE.OrthographicCamera
+  helper: THREE.CameraHelper
+  /** The lens/selection the helper geometry was built from — rebuilt when it changes
+   *  (the pose is cheap to re-apply every sync, so it isn't part of this). */
+  lensKey: string
+}
+
 export interface Scene3DInstance {
   scene: THREE.Scene
   /** The scene's active camera — perspective (FOV) or orthographic (parallel). */
   camera: THREE.PerspectiveCamera | THREE.OrthographicCamera
+  /** The camera-entry id `camera` was built from. Switching the look-through camera
+   *  (`activeCameraId`) rebuilds the instance so the new camera's pose/projection take. */
+  activeCamId: string
   /** objectId → its root group in the scene. */
   objects: Map<string, THREE.Object3D>
+  /** cameraId → its frustum helper, for every camera EXCEPT the one being looked
+   *  through. Populated only while the scene is edited (see scene3d-camera-helpers). */
+  cameraHelpers: Map<string, Scene3DCameraHelper>
   /** Free GPU resources (geometries, materials, env map). */
   dispose: () => void
 }
@@ -261,6 +311,17 @@ export function isScene3D(id: string): boolean {
 
 export function setFocusedObject(id: string | null): void {
   scene3dProxy.focusedObjectId = id
+  // Focusing an object and selecting a camera are mutually exclusive within a scene,
+  // so the tree row and the camera popover never show two different "selected" things.
+  if (id !== null) scene3dProxy.selectedCameraId = null
+}
+
+/** Select a camera — its properties open in the right panel (`ThreeDCameraInspector`).
+ *  Does NOT change the look-through camera — that's `activeCameraId` on the doc, set via
+ *  commitSetActiveCamera. */
+export function setSelectedCamera(id: string | null): void {
+  scene3dProxy.selectedCameraId = id
+  if (id !== null) scene3dProxy.focusedObjectId = null
 }
 
 /** Live (uncommitted) transform preview while a gizmo drags; committed on drag end. */
@@ -271,6 +332,17 @@ export function patchObjectTransformLocal(
 ): void {
   const obj = scene3dProxy.scenes.get(sceneId)?.objects.find((o) => o.id === objId)
   if (obj) Object.assign(obj.transform3d, patch)
+}
+
+/** Live (uncommitted) camera-pose preview while its gizmo drags; committed on drag end.
+ *  Writes the doc so the camera's frustum helper follows the grab in real time. */
+export function patchCameraTransformLocal(
+  sceneId: string,
+  camId: string,
+  transform3d: NonNullable<Camera3DEntry['transform3d']>,
+): void {
+  const cam = scene3dProxy.scenes.get(sceneId)?.cameras?.find((c) => c.id === camId)
+  if (cam) cam.transform3d = transform3d
 }
 
 /** Live (uncommitted) edit-backdrop preview while the colour picker drags; committed on blur. */

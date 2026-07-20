@@ -249,6 +249,7 @@ export interface WasmModule {
   // Images
   _store_image(): void
   _store_image_from_texture(): void
+  _update_image_from_texture(): void
   _is_image_cached(a: number, b: number, c: number, d: number, is_thumbnail: boolean): number
 
   // Set transient "force layout-absolute" overrides from a heap list of 16-byte

@@ -22,8 +22,21 @@ fn draw_image_fill(
     let container = &shape.selrect;
     let path_transform = shape.to_path_transform();
 
-    let src_rect = get_source_rect(size, container, image_fill);
-    let dest_rect = container;
+    // A viewport-clipped slice carries an explicit destination sub-rect (local coords): the
+    // texture IS the exact on-screen slice, so draw it WHOLE into that sub-rect (no aspect
+    // crop). Otherwise the image maps over the whole container as usual.
+    let dest_override = image_fill.dest();
+    let src_full = get_source_rect(size, container, image_fill);
+    let (src_arg, dest_rect): (
+        Option<(&skia::Rect, skia::canvas::SrcRectConstraint)>,
+        &skia::Rect,
+    ) = match dest_override.as_ref() {
+        Some(d) => (None, d),
+        None => (
+            Some((&src_full, skia::canvas::SrcRectConstraint::Strict)),
+            container,
+        ),
+    };
 
     let mut image_paint = skia::Paint::default();
     image_paint.set_anti_alias(antialias);
@@ -81,7 +94,7 @@ fn draw_image_fill(
     // Draw the image with the calculated destination rectangle
     canvas.draw_image_rect_with_sampling_options(
         image,
-        Some((&src_rect, skia::canvas::SrcRectConstraint::Strict)),
+        src_arg,
         dest_rect,
         render_state.sampling_options,
         paint,

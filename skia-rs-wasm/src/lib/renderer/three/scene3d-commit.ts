@@ -16,7 +16,12 @@ import {
 } from '../properties/commit-node-properties'
 import { getActiveOrSinglePageId } from '../store/doc-proxy'
 import { sceneCameras } from './scene3d-store'
-import type { Camera3DEntry, Object3DEntry, Scene3DDocument } from './scene3d-store'
+import type {
+  Camera3DEntry,
+  CameraProjection,
+  Object3DEntry,
+  Scene3DDocument,
+} from './scene3d-store'
 
 /** The committed scene document on the node (plain clone, detached from the proxy). */
 function currentScene(sceneId: string): Scene3DDocument | null {
@@ -44,11 +49,32 @@ export async function commitSceneCamera(
 }
 
 /**
- * Patch the scene's ACTIVE camera entry (e.g. `projection`, `fov`). Materialises the
- * `cameras[]` array for legacy scenes (synthesised from the old single `camera.fov`)
- * and mirrors FOV back onto the legacy `camera` field so both representations stay
- * consistent. One undoable `mod-obj`.
+ * Patch a specific camera entry (e.g. `projection`, `fov`, `transform3d`). Materialises
+ * the `cameras[]` array for legacy scenes (synthesised from the old single `camera.fov`).
+ * FOV is mirrored onto the legacy `camera` field only when patching the ACTIVE camera,
+ * so the render (which reads `activeCamera`) and the legacy field stay consistent. One
+ * undoable `mod-obj`. No-op if `camId` isn't in the scene.
  */
+export async function commitCameraPatch(
+  sceneId: string,
+  camId: string,
+  patch: Partial<Camera3DEntry>,
+): Promise<void> {
+  const doc = currentScene(sceneId)
+  if (!doc) return
+  const cams = doc.cameras && doc.cameras.length > 0 ? doc.cameras : sceneCameras(doc)
+  const idx = cams.findIndex((c) => c.id === camId)
+  if (idx < 0) return
+  cams[idx] = { ...cams[idx], ...patch }
+  doc.cameras = cams
+  doc.activeCameraId = doc.activeCameraId ?? cams[0].id
+  if (typeof patch.fov === 'number' && cams[idx].id === doc.activeCameraId) {
+    doc.camera.fov = patch.fov // legacy mirror (active camera only)
+  }
+  await commitScene3d(sceneId, doc)
+}
+
+/** Patch the ACTIVE (look-through) camera — the pose-persistence path (orbit end). */
 export async function commitActiveCameraPatch(
   sceneId: string,
   patch: Partial<Camera3DEntry>,
@@ -56,15 +82,52 @@ export async function commitActiveCameraPatch(
   const doc = currentScene(sceneId)
   if (!doc) return
   const cams = doc.cameras && doc.cameras.length > 0 ? doc.cameras : sceneCameras(doc)
-  const activeId = doc.activeCameraId ?? cams[0].id
-  const idx = Math.max(
-    0,
-    cams.findIndex((c) => c.id === activeId),
-  )
-  cams[idx] = { ...cams[idx], ...patch }
+  await commitCameraPatch(sceneId, doc.activeCameraId ?? cams[0].id, patch)
+}
+
+/**
+ * Append a new camera to the scene and return its id (or null if the scene is gone).
+ * Does NOT change the look-through camera — the caller decides whether to select it
+ * (`setSelectedCamera`) and/or look through it (`commitSetActiveCamera`). The pose is
+ * the caller's (typically the current live view, so the camera starts "here").
+ */
+export async function commitAddCamera(
+  sceneId: string,
+  entry: {
+    name: string
+    transform3d?: Camera3DEntry['transform3d']
+    projection?: CameraProjection
+    fov?: number
+  },
+): Promise<string | null> {
+  const doc = currentScene(sceneId)
+  if (!doc) return null
+  const cams = doc.cameras && doc.cameras.length > 0 ? doc.cameras : sceneCameras(doc)
+  const id = `${sceneId}:cam-${crypto.randomUUID()}`
+  const cam: Camera3DEntry = {
+    id,
+    name: entry.name,
+    projection: entry.projection ?? 'perspective',
+    fov: entry.fov ?? cams[0].fov,
+    transform3d: entry.transform3d,
+  }
+  doc.cameras = [...cams, cam]
+  doc.activeCameraId = doc.activeCameraId ?? cams[0].id
+  await commitScene3d(sceneId, doc)
+  return id
+}
+
+/** Look through a camera: make it the scene's ACTIVE (rendered-through) camera. Keeps
+ *  the legacy `camera.fov` in sync with the newly-active camera. One undoable `mod-obj`. */
+export async function commitSetActiveCamera(sceneId: string, camId: string): Promise<void> {
+  const doc = currentScene(sceneId)
+  if (!doc) return
+  const cams = doc.cameras && doc.cameras.length > 0 ? doc.cameras : sceneCameras(doc)
+  const cam = cams.find((c) => c.id === camId)
+  if (!cam) return
   doc.cameras = cams
-  doc.activeCameraId = cams[idx].id
-  if (typeof patch.fov === 'number') doc.camera.fov = patch.fov // legacy mirror
+  doc.activeCameraId = camId
+  doc.camera.fov = cam.fov
   await commitScene3d(sceneId, doc)
 }
 

@@ -1,17 +1,18 @@
 /**
- * Scene3DEditMenu — the contextual 3D menu that sits above the bottom tool strip,
- * mirroring how the pen's edit flyout appears while `pathEditing`.
+ * Scene3DEditMenu — the contextual 3D toolbar above the bottom tool strip, mirroring
+ * how the pen's edit flyout appears while `pathEditing`.
  *
- * Driven by the `scene3dEditing` canvasMachine state:
- *  - a 3D scene is selected (not editing) → an "Edit in 3D" entry button
- *  - editing                              → add primitives, gizmo sub-tools
- *                                           (once an object is focused), and Done
+ * Icon-first (to match the main toolbar): a slim violet mode chip + icon buttons with
+ * tooltips. Groups: view (recenter · focus) │ add (a single + with a Cube/Sphere/Plane
+ * flyout) │ gizmo (move · rotate · scale, once an object is focused) │ camera (a chip
+ * showing the active camera's name, opening the camera list popover) │ Done.
  *
- * Renders nothing when neither applies.
+ * Renders nothing unless a 3D scene is selected or being edited.
  */
 
+import { useEffect, useRef, useState } from 'react'
 import { useSnapshot } from 'valtio'
-import { Box, Crosshair, Maximize2, Minimize2 } from 'lucide-react'
+import { Box, Circle, Square, Crosshair, Maximize2, Minimize2, Move3d, Rotate3d, Scale3d, Plus, Video, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { docProxy, getNode } from '../renderer/store/doc-proxy'
 import { useSignalCoalesced } from '../renderer/signals/use-signal-coalesced'
@@ -20,37 +21,50 @@ import {
   scene3dProxy,
   defaultObject,
   setFocusedObject,
+  setSelectedCamera,
   activeCamera,
-  type CameraProjection,
+  nextCameraName,
+  getInstance,
   type Scene3DDocument,
 } from '../renderer/three/scene3d-store'
-import { commitActiveCameraPatch, commitAddObject } from '../renderer/three/scene3d-commit'
+import { commitAddObject, commitAddCamera } from '../renderer/three/scene3d-commit'
+import { readCameraPose } from '../renderer/three/three-scene'
 import { recenterOnScene } from '../renderer/three/scene3d-recenter'
 import { useScene3dEditing } from '../renderer/three/use-scene3d-editing'
+import { Scene3DCameraPopover } from './Scene3DCameraPopover'
 import type { Scene3DGizmoMode } from '../renderer/machine/canvas-machine'
 
 const ADD_PRIMS = [
-  { ref: 'cube', label: 'Cube' },
-  { ref: 'sphere', label: 'Sphere' },
-  { ref: 'plane', label: 'Plane' },
+  { ref: 'cube', label: 'Cube', Icon: Box },
+  { ref: 'sphere', label: 'Sphere', Icon: Circle },
+  { ref: 'plane', label: 'Plane', Icon: Square },
 ] as const
 
-const GIZMOS: { mode: Scene3DGizmoMode; label: string }[] = [
-  { mode: 'translate', label: 'Move' },
-  { mode: 'rotate', label: 'Rotate' },
-  { mode: 'scale', label: 'Scale' },
+const GIZMOS: { mode: Scene3DGizmoMode; label: string; key: string; Icon: typeof Move3d }[] = [
+  { mode: 'translate', label: 'Move', key: 'G', Icon: Move3d },
+  { mode: 'rotate', label: 'Rotate', key: 'R', Icon: Rotate3d },
+  { mode: 'scale', label: 'Scale', key: 'S', Icon: Scale3d },
 ]
 
-const PROJECTIONS: { key: CameraProjection; label: string }[] = [
-  { key: 'perspective', label: 'Persp' },
-  { key: 'orthographic', label: 'Ortho' },
-]
+type Flyout = 'add' | 'camera' | null
 
 export function Scene3DEditMenu() {
   const { editingSceneId, gizmoMode, enter, exit, setGizmo } = useScene3dEditing()
   const sceneSnap = useSnapshot(scene3dProxy)
   const docSnap = useSnapshot(docProxy)
   const placement = useSignalCoalesced(editPlacement)
+  const [flyout, setFlyout] = useState<Flyout>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // Close any open flyout on an outside click.
+  useEffect(() => {
+    if (!flyout) return
+    const onDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setFlyout(null)
+    }
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  }, [flyout])
 
   const selId =
     docSnap.selectedIds.size === 1 ? (docSnap.selectedIds.values().next().value as string) : null
@@ -58,17 +72,14 @@ export function Scene3DEditMenu() {
 
   if (!editingSceneId && !selectedScene) return null
 
-  const shell =
-    'pointer-events-auto flex items-center gap-1 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md'
-
   // Selected (not editing): offer to enter edit, focused on the first object.
   if (!editingSceneId) {
     const scene = selectedScene!
     return (
-      <div className={shell}>
+      <div className="pointer-events-auto flex items-center gap-1 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md">
         <button
           type="button"
-          onClick={() => enter(scene, sceneSnap.scenes.get(scene)?.objects[0]?.id ?? null)}
+          onClick={() => enter(scene, null)}
           className="flex items-center gap-1.5 rounded-full bg-indigo-500 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-600"
         >
           <Box className="size-3.5" /> Edit in 3D
@@ -78,113 +89,165 @@ export function Scene3DEditMenu() {
   }
 
   const focusedId = sceneSnap.focusedObjectId
+  const selectedCameraId = sceneSnap.selectedCameraId
+  // The gizmo works on the focused object OR a selected camera (grab it in space); scale
+  // is meaningless for a camera, so it's dropped when one is selected (a leftover scale
+  // mode reads as move).
+  const gizmoTarget = focusedId ?? selectedCameraId
+  const activeGizmo = selectedCameraId && gizmoMode === 'scale' ? 'translate' : gizmoMode
   const editingDoc = sceneSnap.scenes.get(editingSceneId) as Scene3DDocument | undefined
-  const projection = editingDoc ? activeCamera(editingDoc).projection : 'perspective'
+  const cameraName = editingDoc ? activeCamera(editingDoc).name : 'Camera'
   const sceneName = (getNode(editingSceneId) as { name?: string } | undefined)?.name ?? '3D scene'
+
   const addObject = (ref: (typeof ADD_PRIMS)[number]['ref']) => {
     const id = crypto.randomUUID()
+    setFlyout(null)
     void commitAddObject(editingSceneId, defaultObject(id, { kind: 'primitive', ref })).then(() =>
       setFocusedObject(id),
     )
   }
 
-  // Buttons in a group sit tight (adjacent, hover-bg distinguishes each); action groups
-  // are split by a light half-height inset divider (the strong full-height split is the
-  // purple↔white zone boundary), so the rhythm reads as chunks.
-  const toolBtn = 'my-1.5 flex items-center rounded-md px-2 text-xs'
-  const sep = 'mx-1.5 h-4 w-px self-center bg-border'
+  // A camera is one of the things a scene is made of, so it's added from the same `+` as
+  // the shapes. It starts at the view you're looking through and is selected (NOT looked
+  // through) — so its frustum is there to grab and its props open in the right panel.
+  const addCamera = () => {
+    setFlyout(null)
+    if (!editingDoc) return
+    const live = getInstance(editingSceneId)?.camera
+    const transform3d = live ? readCameraPose(live) : undefined
+    void commitAddCamera(editingSceneId, {
+      name: nextCameraName(editingDoc),
+      transform3d,
+    }).then((id) => {
+      if (id) setSelectedCamera(id)
+    })
+  }
+
+  const iconBtn =
+    'grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-muted transition-colors'
+  const sep = 'mx-1 h-5 w-px self-center bg-border'
 
   return (
-    <div className="pointer-events-auto inline-flex items-stretch overflow-hidden rounded-xl border border-border/80 shadow-md">
-      {/* Mode zone — a solid-purple, NON-interactive status cluster (Figma-style grouped
-          zones), so "you are editing" reads as a mode, not as one of the action buttons.
-          On the fixed strip, so it stays visible when the scene box is panned off-screen. */}
-      <div className="flex items-center gap-2 bg-violet-500 px-3.5 py-2.5 text-xs font-medium text-white">
-        <span className="size-1.5 rounded-full bg-white" aria-hidden />
-        Editing · {sceneName}
+    <div
+      ref={rootRef}
+      className="pointer-events-auto relative inline-flex items-stretch rounded-xl border border-border/80 bg-white shadow-md"
+    >
+      {/* Mode chip — a solid-violet status cluster so "you are editing" reads as a mode. */}
+      <div className="flex items-center gap-2 rounded-l-xl bg-violet-500 px-3.5 text-xs font-medium text-white">
+        <span className="size-1.5 rounded-full bg-white/90" aria-hidden />
+        <Box className="size-4" aria-hidden />
+        {sceneName}
+      </div>
+
+      <div className="flex items-stretch px-1.5 py-1">
+        {/* View */}
         <button
           type="button"
           title="Recenter scene"
           aria-label="Recenter scene"
           onClick={() => recenterOnScene(editingSceneId)}
-          className="ml-0.5 rounded-md p-1 text-white/80 hover:bg-white/15 hover:text-white"
+          className={iconBtn}
         >
-          <Crosshair className="size-3.5" />
+          <Crosshair className="size-4" />
         </button>
         <button
           type="button"
           title={placement === 'focus' ? 'Exit focus' : 'Focus (maximize)'}
-          aria-label={placement === 'focus' ? 'Exit focus' : 'Focus (maximize)'}
+          aria-label={placement === 'focus' ? 'Exit focus' : 'Focus'}
           onClick={toggleFocus}
-          className={cn(
-            '-mr-1 rounded-md p-1 hover:bg-white/15 hover:text-white',
-            placement === 'focus' ? 'bg-white/20 text-white' : 'text-white/80',
-          )}
+          className={cn(iconBtn, placement === 'focus' && 'bg-violet-500/15 text-violet-700')}
         >
-          {placement === 'focus' ? (
-            <Minimize2 className="size-3.5" />
-          ) : (
-            <Maximize2 className="size-3.5" />
-          )}
+          {placement === 'focus' ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
         </button>
-      </div>
 
-      {/* Tools zone — the actions. Full-height separators between groups; Done at the end. */}
-      <div className="flex items-stretch bg-white px-1.5">
-        {ADD_PRIMS.map((p) => (
+        <span className={sep} />
+
+        {/* Add — everything a scene is made of: the shapes AND a camera. */}
+        <span className="relative flex items-center">
           <button
-            key={p.ref}
             type="button"
-            onClick={() => addObject(p.ref)}
-            className={cn(toolBtn, 'text-muted-foreground hover:bg-muted')}
+            title="Add"
+            aria-label="Add"
+            aria-expanded={flyout === 'add'}
+            onClick={() => setFlyout((f) => (f === 'add' ? null : 'add'))}
+            className={cn(iconBtn, flyout === 'add' && 'bg-muted text-foreground')}
           >
-            + {p.label}
+            <Plus className="size-5" />
           </button>
-        ))}
+          {flyout === 'add' && (
+            <div className="absolute bottom-full left-1/2 mb-2 -translate-x-1/2 rounded-xl border border-border/80 bg-white p-1 shadow-md">
+              {ADD_PRIMS.map((p) => (
+                <button
+                  key={p.ref}
+                  type="button"
+                  onClick={() => addObject(p.ref)}
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted"
+                >
+                  <p.Icon className="size-4 shrink-0" /> {p.label}
+                </button>
+              ))}
+              <span className="my-1 block h-px bg-border" />
+              <button
+                type="button"
+                onClick={addCamera}
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted"
+              >
+                <Video className="size-4 shrink-0" /> Camera
+              </button>
+            </div>
+          )}
+        </span>
 
-        {focusedId && (
+        {/* Gizmo — once an object is focused or a camera is selected (no scale on cameras). */}
+        {gizmoTarget && (
           <>
             <span className={sep} />
-            {GIZMOS.map((g) => (
+            {GIZMOS.filter((g) => !(selectedCameraId && g.mode === 'scale')).map((g) => (
               <button
                 key={g.mode}
                 type="button"
+                title={`${g.label} (${g.key})`}
+                aria-label={g.label}
                 onClick={() => setGizmo(g.mode)}
-                className={cn(
-                  toolBtn,
-                  gizmoMode === g.mode
-                    ? 'bg-violet-500/15 text-violet-700'
-                    : 'text-muted-foreground hover:bg-muted',
-                )}
+                className={cn(iconBtn, activeGizmo === g.mode && 'bg-violet-500/15 text-violet-700')}
               >
-                {g.label}
+                <g.Icon className="size-4" />
               </button>
             ))}
           </>
         )}
 
         <span className={sep} />
-        {PROJECTIONS.map((p) => (
+
+        {/* Camera — chip showing the active (look-through) camera; opens the list popover. */}
+        <span className="relative flex items-center">
           <button
-            key={p.key}
             type="button"
-            onClick={() => void commitActiveCameraPatch(editingSceneId, { projection: p.key })}
+            title="Cameras"
+            aria-expanded={flyout === 'camera'}
+            onClick={() => setFlyout((f) => (f === 'camera' ? null : 'camera'))}
             className={cn(
-              toolBtn,
-              projection === p.key
-                ? 'bg-violet-500/15 text-violet-700'
-                : 'text-muted-foreground hover:bg-muted',
+              'my-1 flex items-center gap-1.5 rounded-md border border-border px-2 text-xs',
+              flyout === 'camera' ? 'bg-muted text-foreground' : 'text-foreground hover:bg-muted',
             )}
           >
-            {p.label}
+            <Video className="size-4 text-violet-600" />
+            <span className="max-w-[6rem] truncate">{cameraName}</span>
+            <ChevronDown className="size-3 text-muted-foreground" />
           </button>
-        ))}
+          {flyout === 'camera' && (
+            <div className="absolute bottom-full right-0 mb-2">
+              <Scene3DCameraPopover sceneId={editingSceneId} />
+            </div>
+          )}
+        </span>
 
         <span className={sep} />
+
         <button
           type="button"
           onClick={exit}
-          className={cn(toolBtn, 'font-medium text-muted-foreground hover:bg-muted')}
+          className="my-1 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-muted"
         >
           Done
         </button>

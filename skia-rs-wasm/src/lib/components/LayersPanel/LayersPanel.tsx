@@ -10,15 +10,23 @@ import type { PenpotNode, PenpotPage } from 'penpot-exporter/types'
 import { useSnapshot } from 'valtio'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { setSelectedIds } from '../../renderer/store/document-selection'
-import { scene3dProxy } from '../../renderer/three/scene3d-store'
+import {
+  scene3dProxy,
+  sceneCameras,
+  activeCamera,
+  setSelectedCamera,
+  type Scene3DDocument,
+} from '../../renderer/three/scene3d-store'
+import { commitSetActiveCamera } from '../../renderer/three/scene3d-commit'
 import { useScene3dEditing } from '../../renderer/three/use-scene3d-editing'
 import { Scene3DObjectRow } from './Scene3DObjectRow'
+import { Scene3DCameraRow } from './Scene3DCameraRow'
 import { orderedNodesWithDepth } from '../../renderer/store/ordered-page-nodes'
 import { FloatingEditorRail } from '../EditorShell/floating-editor-rail'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { ChevronDown, ChevronRight, FileText, Plus } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, Plus, Video } from 'lucide-react'
 import { commitPageMetadataUpdate } from '../../renderer/properties/commit-page-properties'
 import { setActivePage, addPage } from '../../page-crud'
 import { commitChanges } from '../../renderer/store/commit'
@@ -52,6 +60,16 @@ export function LayersPanel({ className }: LayersPanelProps) {
   const selectedIds = useMemo(() => new Set(doc.selectedIds), [doc.selectedIds])
 
   const [collapsed, setCollapsed] = useState(false)
+  // Scene ids whose "Cameras" sub-group is collapsed (default: expanded).
+  const [collapsedCamGroups, setCollapsedCamGroups] = useState<Set<string>>(new Set())
+  const toggleCamGroup = useCallback((sceneId: string) => {
+    setCollapsedCamGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(sceneId)) next.delete(sceneId)
+      else next.add(sceneId)
+      return next
+    })
+  }, [])
   const [pagesOpen, setPagesOpen] = useState(true)
   const [layersOpen, setLayersOpen] = useState(true)
   const [dragOver, setDragOver] = useState<DragOverState | null>(null)
@@ -423,6 +441,69 @@ export function LayersPanel({ className }: LayersPanelProps) {
                                 onDrop={onLayerDrop}
                               />
                             </li>
+                            {sceneDoc &&
+                              (() => {
+                                const scene = sceneDoc as Scene3DDocument
+                                const cams = sceneCameras(scene)
+                                const activeCamId = activeCamera(scene).id
+                                const camsCollapsed = collapsedCamGroups.has(node.id)
+                                // Collapsed keeps the ACTIVE camera visible (so you can
+                                // still see + switch which one is in use); the rest fold
+                                // away behind a +N count.
+                                const visibleCams = camsCollapsed
+                                  ? cams.filter((c) => c.id === activeCamId)
+                                  : cams
+                                const hiddenCams = cams.length - visibleCams.length
+                                return (
+                                  <>
+                                    {/* Cameras sub-group — always above the meshes, collapsible. */}
+                                    <li>
+                                      <div
+                                        role="button"
+                                        tabIndex={0}
+                                        onClick={() => toggleCamGroup(node.id)}
+                                        className="flex h-7 w-full cursor-pointer items-center gap-1.5 rounded-md px-2 text-muted-foreground hover:bg-muted/60"
+                                        style={{ paddingLeft: 8 + (depth + 1) * 12 }}
+                                      >
+                                        {camsCollapsed ? (
+                                          <ChevronRight className="size-3.5 shrink-0" />
+                                        ) : (
+                                          <ChevronDown className="size-3.5 shrink-0" />
+                                        )}
+                                        <Video className="size-3.5 shrink-0" />
+                                        <span className="flex-1 text-[11px] font-medium tracking-wide uppercase">
+                                          Cameras
+                                        </span>
+                                        {camsCollapsed && hiddenCams > 0 && (
+                                          <span className="text-[10px] tabular-nums">+{hiddenCams}</span>
+                                        )}
+                                      </div>
+                                    </li>
+                                    {visibleCams.map((c) => (
+                                      <li key={c.id}>
+                                        <Scene3DCameraRow
+                                          name={c.name}
+                                          depth={depth + 2}
+                                          active={c.id === activeCamId}
+                                          sceneEditing={editingSceneId === node.id}
+                                          selected={
+                                            editingSceneId === node.id &&
+                                            sceneSnap.selectedCameraId === c.id
+                                          }
+                                          onSelect={() => {
+                                            setSelectedIds(new Set([node.id]))
+                                            enter(node.id, null)
+                                            setSelectedCamera(c.id)
+                                          }}
+                                          onLookThrough={() =>
+                                            void commitSetActiveCamera(node.id, c.id)
+                                          }
+                                        />
+                                      </li>
+                                    ))}
+                                  </>
+                                )
+                              })()}
                             {sceneDoc?.objects.map((o) => (
                               <li key={o.id}>
                                 <Scene3DObjectRow

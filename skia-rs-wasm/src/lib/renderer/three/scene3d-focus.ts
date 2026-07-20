@@ -15,6 +15,17 @@ export type EditPlacement = 'in-place' | 'focus'
 /** Where the edited scene renders: at its box (`in-place`) or a centred region (`focus`). */
 export const editPlacement = signal<EditPlacement>('in-place')
 
+/**
+ * The central canvas viewport (the "hole" between the panels), in overlay-canvas CSS
+ * px. The full-bleed canvas underlaps the left/right rails + bottom timeline, so focus
+ * mode must render INTO this rect — never over the panels. Published by the canvas
+ * shell (canvas-wrapper) as the hole resizes; `null` ⇒ not measured yet (fall back to
+ * the whole canvas).
+ */
+export const focusViewportRect = signal<{ x: number; y: number; w: number; h: number } | null>(
+  null,
+)
+
 /** How much the surrounding canvas dims while focused (0 = none, 1 = black). The one
  *  shared "how much context do I see" control (a static setting, not a peek gesture). */
 export const focusDim = signal(0.4)
@@ -34,15 +45,4 @@ export function exitFocus(): void {
 /** The effective dim (0 while the sampling worktree is revealing). */
 export function effectiveDim(): number {
   return reveal.value ? 0 : focusDim.value
-}
-
-/**
- * The centred screen region (CSS px) the scene renders into while focused — a fixed
- * fraction of the canvas, independent of the box's pan/zoom, so the scene is always
- * on-screen and comfortably large. Pure.
- */
-export function focusRegion(cw: number, ch: number): { x: number; y: number; w: number; h: number } {
-  const mx = cw * 0.12
-  const my = ch * 0.1
-  return { x: mx, y: my, w: Math.max(cw - mx * 2, 1), h: Math.max(ch - my * 2, 1) }
 }

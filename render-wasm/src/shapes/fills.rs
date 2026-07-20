@@ -331,6 +331,11 @@ pub struct ImageFill {
     width: i32,
     height: i32,
     keep_aspect_ratio: bool,
+    /// Optional destination sub-rectangle in the shape's LOCAL (selrect) coords. When set,
+    /// the image is drawn only into this sub-rect of the shape instead of over the whole
+    /// container — used to composite a viewport-clipped 3D bake (only the on-screen slice,
+    /// rendered at native resolution) at its correct place within the node. `[l, t, r, b]`.
+    dest: Option<[f32; 4]>,
 }
 
 impl ImageFill {
@@ -341,7 +346,13 @@ impl ImageFill {
             width,
             height,
             keep_aspect_ratio,
+            dest: None,
         }
+    }
+
+    pub fn with_dest(mut self, dest: Option<[f32; 4]>) -> Self {
+        self.dest = dest;
+        self
     }
 
     pub fn id(&self) -> Uuid {
@@ -354,6 +365,12 @@ impl ImageFill {
 
     pub fn keep_aspect_ratio(&self) -> bool {
         self.keep_aspect_ratio
+    }
+
+    /// Destination sub-rect (local/selrect coords) if this fill is a viewport-clipped slice.
+    pub fn dest(&self) -> Option<skia_safe::Rect> {
+        self.dest
+            .map(|[l, t, r, b]| skia_safe::Rect::new(l, t, r, b))
     }
 }
 

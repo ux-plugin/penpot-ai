@@ -149,9 +149,9 @@ export function runCommand(cmd: Command, ctx: CommandCtx): void {
       const current = actor.getSnapshot().context.scene3dEditingId
       const next = cycleEdit(recentEdits.value, current, cmd.dir)
       if (next && next.targetId !== current) {
-        const first = scene3dProxy.scenes.get(next.targetId)?.objects[0]?.id ?? null
+        // Enter with nothing focused — selection is the Layers tree's job.
         setSelectedIds(new Set([next.targetId]))
-        setFocusedObject(first)
+        setFocusedObject(null)
         actor.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: next.targetId })
       }
       return
