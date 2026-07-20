@@ -22,6 +22,21 @@ import { parse, toJs } from '../expression'
 import { parseRefPath } from '../addressing'
 import { anchorAttr, instanceKeyAttr } from '../anchor'
 
+/**
+ * Slot presentation — a router-outlet descriptor carried by a slot PNode.
+ *
+ * A slot owns no children; it *references* candidate view frames, one of which
+ * renders at a time. `views` holds each candidate's already-projected subtree
+ * (keyed by view-frame id) so the runtime can swap between them without another
+ * document walk (the repeater pattern: template available, selection at render
+ * time). `activeView` is the design-time default — the runtime's `slotViews`
+ * override wins over it when a `show-in-slot` action has fired.
+ */
+export interface SlotPresentation {
+  activeView?: string
+  views: Record<string, PNode>
+}
+
 /** Minimal presentation node (stand-in for parsed AI JSX). */
 export interface PNode {
   nodeId: NodeId
@@ -30,6 +45,8 @@ export interface PNode {
   children?: PNode[]
   /** Static inline style carried from the design shape (e.g. fill → background). */
   style?: Record<string, string>
+  /** Present iff this node is a slot; carries its projected candidate views. */
+  slot?: SlotPresentation
 }
 
 export interface EmitOptions {
@@ -180,7 +197,11 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
     props.push(`style={{ ${entries} }}`)
   }
 
-  const childNodes = (node.children ?? []).map((c) => emitNode(c, ir))
+  // A slot renders its active view's subtree. Phase-0 code gen is a static
+  // snapshot (the design-time default); runtime view-switching lowers later.
+  const slotDefault = node.slot ? node.slot.views[node.slot.activeView ?? ''] : undefined
+  const childSource = slotDefault ? [slotDefault] : (node.children ?? [])
+  const childNodes = childSource.map((c) => emitNode(c, ir))
   const open = `<${node.tag} ${props.join(' ')}>`
   const close = `</${node.tag}>`
 

@@ -10,7 +10,7 @@ import { useMemo, useState, createElement, type ReactNode } from 'react'
 import type { PageInteractions, Interaction } from '../ir'
 import { STYLE_PROPS, type PNode } from '../compile/emit-react'
 import { parse, evaluate } from '../expression'
-import { initRuntime, buildEnv, runInteraction, type RuntimeState } from './runtime'
+import { initRuntime, buildEnv, runInteraction, activeSlotView, type RuntimeState } from './runtime'
 
 type Env = Record<string, unknown>
 
@@ -36,10 +36,17 @@ export function InteractionRuntime({ ir, root }: { ir: PageInteractions; root: P
   const env = useMemo(() => buildEnv(ir, rt), [ir, rt])
   // recompute env from the *current* state inside the updater to avoid staleness
   const fire = (it: Interaction) => setRt((cur) => runInteraction(ir, cur, it, buildEnv(ir, cur)))
-  return <>{renderNode(root, env, ir, fire)}</>
+  return <>{renderNode(root, env, ir, fire, rt.slotViews)}</>
 }
 
-function renderNode(node: PNode, env: Env, ir: PageInteractions, fire: (it: Interaction) => void, key?: number | string): ReactNode {
+function renderNode(
+  node: PNode,
+  env: Env,
+  ir: PageInteractions,
+  fire: (it: Interaction) => void,
+  slots: Record<string, string>,
+  key?: number | string,
+): ReactNode {
   const rep = ir.repeaters.find((r) => r.node === node.nodeId)
   if (rep) {
     const as = rep.as ?? 'item'
@@ -47,10 +54,10 @@ function renderNode(node: PNode, env: Env, ir: PageInteractions, fire: (it: Inte
     return coll.map((item, i) => {
       const itemEnv: Env = { ...env, [as]: item }
       const k = rep.key ? safeEval(rep.key, itemEnv) : isRecord(item) && 'id' in item ? (item.id as string) : i
-      return renderElement(node, itemEnv, ir, fire, true, k ?? i)
+      return renderElement(node, itemEnv, ir, fire, slots, true, k ?? i)
     })
   }
-  return renderElement(node, env, ir, fire, false, key)
+  return renderElement(node, env, ir, fire, slots, false, key)
 }
 
 function renderElement(
@@ -58,6 +65,7 @@ function renderElement(
   env: Env,
   ir: PageInteractions,
   fire: (it: Interaction) => void,
+  slots: Record<string, string>,
   instance: boolean,
   key?: number | string,
 ): ReactNode {
@@ -87,8 +95,12 @@ function renderElement(
   }
 
   let children: ReactNode
-  if (textChild !== undefined) children = asText(textChild)
-  else if (node.children) children = node.children.map((c, i) => renderNode(c, env, ir, fire, i))
+  if (node.slot) {
+    const activeId = activeSlotView(slots, node.nodeId, node.slot.activeView)
+    const view = activeId ? node.slot.views[activeId] : undefined
+    children = view ? renderNode(view, env, ir, fire, slots) : null
+  } else if (textChild !== undefined) children = asText(textChild)
+  else if (node.children) children = node.children.map((c, i) => renderNode(c, env, ir, fire, slots, i))
   else children = node.text ?? null
 
   return createElement(node.tag, props, children)

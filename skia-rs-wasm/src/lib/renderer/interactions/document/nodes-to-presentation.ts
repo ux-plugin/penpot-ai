@@ -13,7 +13,8 @@
  */
 
 import type { IndexedPage, IndexedShape } from '../../../worker/types'
-import type { PNode } from '../compile/emit-react'
+import type { PNode, SlotPresentation } from '../compile/emit-react'
+import { isSlotShape } from '../../../worker/geometry/shapes'
 
 const NAME_TAG: Array<[RegExp, string]> = [
   [/button|btn/, 'button'],
@@ -72,14 +73,49 @@ function styleFor(shape: IndexedShape): Record<string, string> | undefined {
   return shape.type === 'text' ? { color } : { background: color }
 }
 
-function toPNode(shape: IndexedShape, objects: Record<string, IndexedShape>): PNode {
+/**
+ * Project a slot's candidate view frames into a {@link SlotPresentation}. Each
+ * referenced view id is looked up in the same page objects and walked into its
+ * own subtree; the runtime later renders exactly one of them. `projecting` guards
+ * against re-entrancy if a view frame (transitively) contains the slot again.
+ */
+function slotPresentation(
+  slot: { views: string[]; activeView?: string },
+  objects: Record<string, IndexedShape>,
+  projecting: Set<string>,
+): SlotPresentation {
+  const views: Record<string, PNode> = {}
+  for (const viewId of slot.views) {
+    if (projecting.has(viewId)) continue
+    const view = objects[viewId]
+    if (!view) continue
+    projecting.add(viewId)
+    views[viewId] = toPNode(view, objects, projecting)
+    projecting.delete(viewId)
+  }
+  return { activeView: slot.activeView, views }
+}
+
+function toPNode(
+  shape: IndexedShape,
+  objects: Record<string, IndexedShape>,
+  projecting: Set<string> = new Set(),
+): PNode {
   const node: PNode = { nodeId: shape.id, tag: tagFor(shape) }
   const style = styleFor(shape)
   if (style) node.style = style
+  // A slot owns no children — it references view frames. Emit a slot descriptor
+  // carrying each candidate's projected subtree instead of walking `shapes`.
+  if (isSlotShape(shape)) {
+    node.slot = slotPresentation(shape, objects, projecting)
+    // Clip the shown view to the outlet box when the slot clips (showContent:false).
+    if (shape.showContent === false) node.style = { ...node.style, overflow: 'hidden' }
+    return node
+  }
   const children = (shape.shapes ?? [])
     .map((id) => objects[id])
     .filter((c): c is IndexedShape => Boolean(c))
-    .map((c) => toPNode(c, objects))
+    .map((c) => toPNode(c, objects, projecting))
   if (children.length) {
     node.children = children
   } else {
