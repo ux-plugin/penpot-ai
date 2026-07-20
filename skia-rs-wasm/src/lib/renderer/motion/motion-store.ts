@@ -115,12 +115,21 @@ const controller = new PlaybackController(sink, {
 })
 
 function computePivots(shapes: ShapeMotion[]): Map<string, Pivot> {
-  const renderer = useWorkspaceStore.getState().renderer
   const pivots = new Map<string, Pivot>()
-  if (!renderer) return pivots
   for (const shape of shapes) {
-    const rect = querySelectionRect(renderer, [shape.targetId])
-    if (rect) pivots.set(shape.targetId, { cx: rect.center.x, cy: rect.center.y })
+    // The scale/rotation pivot MUST be the shape's REST centre, read from the
+    // committed document geometry -- NOT querySelectionRect, which is
+    // modifier-aware and returns the already-displaced/scaled centre while a
+    // preview modifier is applied. propsToModifier composes translate ∘ scale
+    // about this pivot; with the rest centre the shape scales about its *moved*
+    // centre (correct). A displaced pivot double-counts the translation by
+    // (1 − s)·delta, so scale/rotation + translation drifts and jumps -- pure
+    // translation is unaffected because s = 1 leaves the pivot unused.
+    const node = getCommittedNodeOnActivePage(shape.targetId) as
+      | { selrect?: { x: number; y: number; width: number; height: number } }
+      | null
+    const sr = node?.selrect
+    if (sr) pivots.set(shape.targetId, { cx: sr.x + sr.width / 2, cy: sr.y + sr.height / 2 })
   }
   return pivots
 }
@@ -353,20 +362,40 @@ export function recordDragKeyframe(targetId: string, worldDx: number, worldDy: n
 }
 
 /**
- * The shape's animated offset from rest at the current playhead -- but only while
- * a drag there should author motion (Motion tab open, playhead off the rest
- * frame). The move handler adds this to the drag delta so the shape tracks the
- * cursor from its DISPLACED pose instead of snapping back to rest. Null when a
- * drag should just move the document pose.
+ * The shape's ANIMATED matrix M(t) at the current playhead -- the exact transform
+ * that drew it this frame (translate + rotation + scale) -- but only while a
+ * gesture there should author motion (Motion tab open, playhead off the rest
+ * frame). Null when a gesture should just edit the document pose.
+ *
+ * Gestures compose ON TOP of this (`gesture ∘ M(t)`) rather than replacing it.
+ * That matters because `setWasmModifiers` is replace-all: pushing a bare
+ * translate would wipe M(t) and snap an animated shape back to its rest size for
+ * the duration of the drag. Composing keeps the animated scale/rotation and just
+ * moves the shape from where it visually is. Read from the sink's last-applied
+ * map so it is exactly what was drawn (no re-derivation, no drift).
  */
-export function motionDragBase(targetId: string): { x: number; y: number } | null {
+export function motionAnimatedMatrix(targetId: string): Matrix | null {
   if (inspectorTab.value !== 'motion') return null
   const t = motionTime.value
   if (t === restFrameFor(targetId)) return null
-  return {
-    x: keyframeDelta(motionShapes.value, targetId, 'x', t),
-    y: keyframeDelta(motionShapes.value, targetId, 'y', t),
-  }
+  return sink.lastApplied.get(targetId) ?? null
+}
+
+/**
+ * Record a rotation-handle drag (delta degrees) as a rotation keyframe at the
+ * playhead: the shape's existing rotation delta here PLUS the drag, so dragging
+ * the handle nudges the animated angle. Active only while the Motion tab is open
+ * AND the playhead is off the rest frame (on the rest frame the handle rotates
+ * the shape's home pose via the normal geometry commit). Returns true when it
+ * consumed the gesture so the rotate handler skips committing node.rotation.
+ */
+export function recordRotateKeyframe(targetId: string, deltaDeg: number): boolean {
+  if (inspectorTab.value !== 'motion') return false
+  const t = motionTime.value
+  if (t === restFrameFor(targetId)) return false
+  const delta = keyframeDelta(motionShapes.value, targetId, 'rotation', t) + deltaDeg
+  setKeyframeAtPlayhead(targetId, 'rotation', delta)
+  return true
 }
 
 // --- Parameters (param-domain driving) ---
