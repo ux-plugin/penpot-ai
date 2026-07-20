@@ -7,6 +7,7 @@ use crate::{shapes::ImageFill, utils::uuid_from_u32_quartet};
 use macros::wasm_error;
 
 const FLAG_KEEP_ASPECT_RATIO: u8 = 1 << 0;
+const FLAG_HAS_DEST: u8 = 1 << 1;
 const IMAGE_IDS_SIZE: usize = 32;
 const IMAGE_HEADER_SIZE: usize = 36; // 32 bytes for IDs + 4 bytes for is_thumbnail flag
 
@@ -23,20 +24,32 @@ pub struct RawImageFillData {
     // 16-bit padding here, reserved for future use
     width: i32,
     height: i32,
+    // Optional destination sub-rect (local/selrect coords), valid iff FLAG_HAS_DEST — a
+    // viewport-clipped 3D slice draws only here instead of over the whole shape.
+    dest_l: f32,
+    dest_t: f32,
+    dest_r: f32,
+    dest_b: f32,
 }
 
 impl From<RawImageFillData> for ImageFill {
     fn from(value: RawImageFillData) -> Self {
         let id = uuid_from_u32_quartet(value.a, value.b, value.c, value.d);
         let keep_aspect_ratio = value.flags & FLAG_KEEP_ASPECT_RATIO != 0;
+        let dest = if value.flags & FLAG_HAS_DEST != 0 {
+            Some([value.dest_l, value.dest_t, value.dest_r, value.dest_b])
+        } else {
+            None
+        };
 
-        Self::new(
+        ImageFill::new(
             id,
             value.opacity,
             value.width,
             value.height,
             keep_aspect_ratio,
         )
+        .with_dest(dest)
     }
 }
 
