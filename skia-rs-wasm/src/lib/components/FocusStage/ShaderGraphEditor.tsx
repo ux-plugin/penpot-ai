@@ -1,24 +1,33 @@
 /**
  * ShaderGraphEditor — the node-canvas view over a {@link ShaderGraph}.
  *
- * Deliberately a THIN, fully-controlled view: the IR is the single source of
- * truth, React Flow only renders it and reports gestures back as IR edits. No
- * graph state lives in React Flow, and no React Flow types leak into the model or
- * the codegen — so replacing this with our own canvas later is a swap of this one
+ * The IR is the single source of truth and no React Flow types reach the model or
+ * the codegen, so replacing this with our own canvas later is a swap of this one
  * file.
+ *
+ * **Transient vs committed state.** React Flow owns the in-flight gesture in local
+ * state; the IR is updated only at meaningful moments. A node drag therefore costs
+ * nothing but React Flow's own render — driving the IR on every drag frame meant
+ * rebuilding the graph, RECOMPILING the SkSL and re-rendering the whole stage per
+ * mouse-move. Positions are committed once, on drag stop, and flagged
+ * `layoutOnly` so they skip codegen entirely (position is view state — the
+ * compiler ignores it). Structural edits (connect, delete, add, param) go to the
+ * IR immediately, since those genuinely change the shader.
  *
  * Ports are typed (float / vec2 / color) and colour-coded; an input port with a
  * same-named param shows an inline control while it's UNWIRED, and hides it once
  * a wire supplies the value (the wire wins — see `compile.ts`'s resolution order).
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import {
   Background,
   Controls,
   Handle,
   Position,
   ReactFlow,
+  useEdgesState,
+  useNodesState,
   type Connection,
   type Edge as RFEdge,
   type EdgeChange,
@@ -63,8 +72,12 @@ interface ShaderNodeData extends Record<string, unknown> {
   onDelete: (nodeId: string) => void
 }
 
-/** A single node: title bar, typed port rows, and inline controls for unwired params. */
-function ShaderNodeView({ data, selected }: NodeProps<RFNode<ShaderNodeData>>) {
+/**
+ * A single node: title bar, typed port rows, and inline controls for unwired
+ * params. Memoized, and its `data` callbacks are identity-stable, so dragging one
+ * node doesn't re-render the rest of the graph.
+ */
+const ShaderNodeView = memo(function ShaderNodeView({ data, selected }: NodeProps<RFNode<ShaderNodeData>>) {
   const { node, spec, wired, onParam, onDelete } = data
   const params = spec.params
   const wiredSet = new Set(wired)
@@ -147,7 +160,7 @@ function ShaderNodeView({ data, selected }: NodeProps<RFNode<ShaderNodeData>>) {
       </div>
     </div>
   )
-}
+})
 
 function ParamControl({
   type,
@@ -211,131 +224,163 @@ function newNodeId(graph: ShaderGraph): string {
   }
 }
 
+/** How an IR edit should be treated downstream. */
+export interface GraphChangeOptions {
+  /** Positions only — the shader is unchanged, so skip codegen. */
+  layoutOnly?: boolean
+}
+
 export interface ShaderGraphEditorProps {
   graph: ShaderGraph
-  onChange: (next: ShaderGraph) => void
+  onChange: (next: ShaderGraph, opts?: GraphChangeOptions) => void
+}
+
+function toRfNodes(
+  graph: ShaderGraph,
+  onParam: ShaderNodeData['onParam'],
+  onDelete: ShaderNodeData['onDelete'],
+): RFNode<ShaderNodeData>[] {
+  return graph.nodes.flatMap((node) => {
+    const spec = NODE_SPECS[node.kind]
+    if (!spec) return []
+    const wired = graph.edges.filter((e) => e.to.node === node.id).map((e) => e.to.port)
+    return [
+      {
+        id: node.id,
+        type: 'shaderNode',
+        position: node.position,
+        data: { node, spec, wired, onParam, onDelete },
+      },
+    ]
+  })
+}
+
+function toRfEdges(graph: ShaderGraph): RFEdge[] {
+  return graph.edges.map((e) => ({
+    id: e.id,
+    source: e.from.node,
+    sourceHandle: e.from.port,
+    target: e.to.node,
+    targetHandle: e.to.port,
+  }))
 }
 
 export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
   const [paletteOpen, setPaletteOpen] = useState(false)
 
-  const setParam = useCallback(
-    (nodeId: string, param: string, value: ParamValue) => {
-      onChange({
-        ...graph,
-        nodes: graph.nodes.map((n) =>
-          n.id === nodeId ? { ...n, params: { ...n.params, [param]: value } } : n,
-        ),
-      })
-    },
-    [graph, onChange],
-  )
+  // Read the live graph/callback through refs so every handler below can have an
+  // EMPTY dep array. That keeps `data.onParam`/`onDelete` identity-stable, which
+  // is what lets the memoized node view skip re-rendering siblings.
+  const graphRef = useRef(graph)
+  graphRef.current = graph
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
 
-  const deleteNode = useCallback(
-    (nodeId: string) => {
-      onChange({
-        nodes: graph.nodes.filter((n) => n.id !== nodeId),
-        edges: graph.edges.filter((e) => e.from.node !== nodeId && e.to.node !== nodeId),
-      })
-    },
-    [graph, onChange],
-  )
-
-  const rfNodes = useMemo<RFNode<ShaderNodeData>[]>(() => {
-    return graph.nodes.flatMap((node) => {
-      const spec = NODE_SPECS[node.kind]
-      if (!spec) return []
-      const wired = graph.edges.filter((e) => e.to.node === node.id).map((e) => e.to.port)
-      return [
-        {
-          id: node.id,
-          type: 'shaderNode',
-          position: node.position,
-          data: { node, spec, wired, onParam: setParam, onDelete: deleteNode },
-        },
-      ]
+  const setParam = useCallback((nodeId: string, param: string, value: ParamValue) => {
+    const g = graphRef.current
+    onChangeRef.current({
+      ...g,
+      nodes: g.nodes.map((n) => (n.id === nodeId ? { ...n, params: { ...n.params, [param]: value } } : n)),
     })
-  }, [graph, setParam, deleteNode])
+  }, [])
 
-  const rfEdges = useMemo<RFEdge[]>(
-    () =>
-      graph.edges.map((e) => ({
-        id: e.id,
-        source: e.from.node,
-        sourceHandle: e.from.port,
-        target: e.to.node,
-        targetHandle: e.to.port,
-      })),
-    [graph],
+  const deleteNode = useCallback((nodeId: string) => {
+    const g = graphRef.current
+    onChangeRef.current({
+      nodes: g.nodes.filter((n) => n.id !== nodeId),
+      edges: g.edges.filter((e) => e.from.node !== nodeId && e.to.node !== nodeId),
+    })
+  }, [])
+
+  // React Flow owns the in-flight gesture. Seeded from the IR and re-seeded
+  // whenever the IR actually changes (our own commits, undo, external edits).
+  const [rfNodes, setRfNodes, onNodesChangeInternal] = useNodesState<RFNode<ShaderNodeData>>(
+    toRfNodes(graph, setParam, deleteNode),
   )
+  const [rfEdges, setRfEdges, onEdgesChangeInternal] = useEdgesState<RFEdge>(toRfEdges(graph))
 
-  // React Flow reports gestures; we translate them into IR edits. Only position
-  // and removal matter — selection/dimension changes are view-only state.
+  useEffect(() => {
+    setRfNodes(toRfNodes(graph, setParam, deleteNode))
+    setRfEdges(toRfEdges(graph))
+  }, [graph, setParam, deleteNode, setRfNodes, setRfEdges])
+
   const onNodesChange = useCallback(
     (changes: NodeChange<RFNode<ShaderNodeData>>[]) => {
-      let nodes = graph.nodes
-      let removed: string[] = []
-      for (const c of changes) {
-        if (c.type === 'position' && c.position) {
-          const pos = c.position
-          nodes = nodes.map((n) => (n.id === c.id ? { ...n, position: { x: pos.x, y: pos.y } } : n))
-        } else if (c.type === 'remove') {
-          // The output node is the graph's terminal — never removable.
-          if (graph.nodes.find((n) => n.id === c.id)?.kind === OUTPUT_KIND) continue
-          removed.push(c.id)
-        }
-      }
-      if (removed.length === 0 && nodes === graph.nodes) return
+      const g = graphRef.current
+      // The output node is the graph's terminal — never removable.
+      const allowed = changes.filter(
+        (c) => !(c.type === 'remove' && g.nodes.find((n) => n.id === c.id)?.kind === OUTPUT_KIND),
+      )
+      // Positions land in React Flow's state only; the IR hears about them on
+      // drag stop. Everything here is view state until then.
+      onNodesChangeInternal(allowed)
+
+      const removed = allowed.filter((c) => c.type === 'remove').map((c) => c.id)
+      if (removed.length === 0) return
       const gone = new Set(removed)
-      onChange({
-        nodes: nodes.filter((n) => !gone.has(n.id)),
-        edges: graph.edges.filter((e) => !gone.has(e.from.node) && !gone.has(e.to.node)),
+      onChangeRef.current({
+        nodes: g.nodes.filter((n) => !gone.has(n.id)),
+        edges: g.edges.filter((e) => !gone.has(e.from.node) && !gone.has(e.to.node)),
       })
     },
-    [graph, onChange],
+    [onNodesChangeInternal],
   )
+
+  // Latest rendered positions, for the drag-stop commit below.
+  const rfNodesRef = useRef(rfNodes)
+  rfNodesRef.current = rfNodes
+
+  /** Commit the moved node(s) once, and flag it so codegen is skipped. */
+  const onNodeDragStop = useCallback(() => {
+    const g = graphRef.current
+    const moved = new Map(rfNodesRef.current.map((n) => [n.id, n.position]))
+    let changed = false
+    const nodes = g.nodes.map((n) => {
+      const p = moved.get(n.id)
+      if (!p || (p.x === n.position.x && p.y === n.position.y)) return n
+      changed = true
+      return { ...n, position: { x: p.x, y: p.y } }
+    })
+    if (changed) onChangeRef.current({ ...g, nodes }, { layoutOnly: true })
+  }, [])
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange<RFEdge>[]) => {
+      onEdgesChangeInternal(changes)
       const removed = new Set(changes.filter((c) => c.type === 'remove').map((c) => c.id))
       if (removed.size === 0) return
-      onChange({ ...graph, edges: graph.edges.filter((e) => !removed.has(e.id)) })
+      const g = graphRef.current
+      onChangeRef.current({ ...g, edges: g.edges.filter((e) => !removed.has(e.id)) })
     },
-    [graph, onChange],
+    [onEdgesChangeInternal],
   )
 
-  const onConnect = useCallback(
-    (c: Connection) => {
-      if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return
-      const next: Edge = {
-        id: `${c.source}.${c.sourceHandle}->${c.target}.${c.targetHandle}`,
-        from: { node: c.source, port: c.sourceHandle },
-        to: { node: c.target, port: c.targetHandle },
-      }
-      // An input port takes at most one wire — reconnecting replaces it.
-      const edges = graph.edges.filter(
-        (e) => !(e.to.node === next.to.node && e.to.port === next.to.port),
-      )
-      onChange({ ...graph, edges: [...edges, next] })
-    },
-    [graph, onChange],
-  )
+  const onConnect = useCallback((c: Connection) => {
+    if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return
+    const next: Edge = {
+      id: `${c.source}.${c.sourceHandle}->${c.target}.${c.targetHandle}`,
+      from: { node: c.source, port: c.sourceHandle },
+      to: { node: c.target, port: c.targetHandle },
+    }
+    const g = graphRef.current
+    // An input port takes at most one wire — reconnecting replaces it.
+    const edges = g.edges.filter((e) => !(e.to.node === next.to.node && e.to.port === next.to.port))
+    onChangeRef.current({ ...g, edges: [...edges, next] })
+  }, [])
 
-  const addNode = useCallback(
-    (spec: NodeSpec) => {
-      const id = newNodeId(graph)
-      // Stagger new nodes so they don't stack exactly on top of each other.
-      const offset = graph.nodes.length * 24
-      onChange({
-        ...graph,
-        nodes: [
-          ...graph.nodes,
-          { id, kind: spec.kind, position: { x: 40 + (offset % 240), y: 40 + (offset % 180) } },
-        ],
-      })
-    },
-    [graph, onChange],
-  )
+  const addNode = useCallback((spec: NodeSpec) => {
+    const g = graphRef.current
+    const id = newNodeId(g)
+    // Stagger new nodes so they don't stack exactly on top of each other.
+    const offset = g.nodes.length * 24
+    onChangeRef.current({
+      ...g,
+      nodes: [
+        ...g.nodes,
+        { id, kind: spec.kind, position: { x: 40 + (offset % 240), y: 40 + (offset % 180) } },
+      ],
+    })
+  }, [])
 
   const hasOutput = graph.nodes.some((n) => n.kind === OUTPUT_KIND)
 
@@ -346,6 +391,7 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
         edges={rfEdges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
+        onNodeDragStop={onNodeDragStop}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         fitView

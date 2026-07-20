@@ -273,10 +273,15 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
   const hasGraph = draft.graph != null
   const [mode, setMode] = useState<'code' | 'graph'>(initialMaterial.graph ? 'graph' : 'code')
 
-  /** Edit the graph → recompile → one draft change carrying both. */
+  /**
+   * Edit the graph → recompile → one draft change carrying both. A `layoutOnly`
+   * edit (node positions, committed on drag stop) leaves the shader untouched, so
+   * it skips codegen — dragging a node must not recompile SkSL.
+   */
   const applyGraph = useCallback(
-    (next: ShaderGraph) => {
-      applyChange({ graph: next, source: compileGraphToSksl(next).source })
+    (next: ShaderGraph, opts?: { layoutOnly?: boolean }) => {
+      if (opts?.layoutOnly) applyChange({ graph: next })
+      else applyChange({ graph: next, source: compileGraphToSksl(next).source })
     },
     [applyChange],
   )
@@ -296,7 +301,7 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
   // Run it here (debounced like the editor does) so the transport, uniforms rail
   // and console keep working exactly as in code mode.
   useEffect(() => {
-    if (!hasGraph) return
+    if (!hasGraph || !getWasmModule()) return
     const id = window.setTimeout(() => {
       handleCompiled(shaderLanguage(draft.language).compile(draft.source))
     }, PREVIEW_SOURCE_DEBOUNCE_MS)
