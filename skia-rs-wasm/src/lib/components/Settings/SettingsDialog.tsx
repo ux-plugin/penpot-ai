@@ -8,13 +8,13 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { X, RotateCcw, SlidersHorizontal, Bot, Keyboard, Lock, Monitor } from 'lucide-react'
+import { X, RotateCcw, SlidersHorizontal, Bot, Keyboard } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useViewportShortcutsStore, DEFAULT_SHORTCUTS } from '../../renderer/store/shortcuts-store'
-import { useAiSettingsStore } from '../../renderer/store/ai-settings-store'
 import { hasSecureKeyStore } from '../../renderer/platform'
+import { AiKeychainPanel } from './AiKeychainPanel'
 import type { ShortcutsConfig, ViewportPanModifier } from '../../renderer/types'
 import { TOOL_BINDINGS, type ToolKeyField } from '../../renderer/input/key-bindings'
 import { formatKeyCode, shortcutRows, toolKeyConflict } from './shortcut-display'
@@ -107,9 +107,6 @@ const TAB_TRIGGER_CLASS =
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const cfg = useViewportShortcutsStore((s) => s.viewportShortcuts)
   const setCfg = useViewportShortcutsStore((s) => s.setViewportShortcuts)
-  const ai = useAiSettingsStore((s) => s.ai)
-  const setAi = useAiSettingsStore((s) => s.setAi)
-  const resetAi = useAiSettingsStore((s) => s.resetAi)
   const canBYOK = hasSecureKeyStore()
   // Close only when the press STARTED on the backdrop — a drag/click that began
   // inside the dialog (e.g. selecting input text) must not close it on release.
@@ -263,49 +260,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                   Conversations use the built-in model. The provider key is kept on the server — never in this browser.
                 </p>
 
-                <div className="mt-4 rounded-lg border border-border/70 bg-muted/40 p-3.5">
-                  <div className="mb-3 flex items-center gap-2">
-                    <Lock className="size-3.5 text-muted-foreground" />
-                    <span className="text-sm font-medium text-muted-foreground">Bring your own key</span>
-                    {!canBYOK && (
-                      <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground/70">
-                        <Monitor className="size-3.5" />
-                        desktop app only
-                      </span>
-                    )}
-                  </div>
-                  <div className="space-y-3">
-                    <Field label="API key">
-                      <input
-                        type="password"
-                        autoComplete="off"
-                        spellCheck={false}
-                        placeholder="sk-…"
-                        disabled={!canBYOK}
-                        className={`${SELECT_CLASS} w-56 disabled:cursor-not-allowed disabled:opacity-50`}
-                        value={ai.apiKey}
-                        onChange={(e) => setAi({ apiKey: e.target.value })}
-                      />
-                    </Field>
-                    <Field label="Model">
-                      <input
-                        type="text"
-                        spellCheck={false}
-                        placeholder="provider/model"
-                        disabled={!canBYOK}
-                        className={`${SELECT_CLASS} w-56 disabled:cursor-not-allowed disabled:opacity-50`}
-                        value={ai.model}
-                        onChange={(e) => setAi({ model: e.target.value })}
-                      />
-                    </Field>
-                  </div>
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    {canBYOK
-                      ? 'Stored in your device keychain and used to call the provider directly.'
-                      : "A browser can't store a key securely. In the desktop app your key is held in the OS keychain and used to call the provider directly."}
-                  </p>
-                  {canBYOK && <PaneReset label="Clear key" onReset={resetAi} />}
-                </div>
+                <AiKeychainPanel canBYOK={canBYOK} />
               </TabsContent>
 
               <TabsContent value="shortcuts" className="mt-0">

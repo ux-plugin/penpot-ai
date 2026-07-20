@@ -16,6 +16,7 @@ import { streamText } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { listTriggers, listActions } from '../catalog'
 import type { PageInteractions } from '../ir'
+import { getDesktopChat, getKeyStore } from '../../desktop-bridge'
 
 export interface AiChatContext {
   request: string
@@ -109,11 +110,8 @@ const BACKEND_URL =
 const BACKEND_KEY = (import.meta.env.VITE_AI_BACKEND_KEY as string | undefined)?.trim() || ''
 
 /**
- * Resolve the chat model. Web/platform path → the backend LLM-provider facade
- * (provider key held server-side; the browser carries only our backend credential).
- *
- * Seam: on a surface with secure key storage (desktop/terminal, `SessionCaps.canBYOK`),
- * return a direct/IPC provider here instead — added in the desktop BYOK slice.
+ * The web/platform model: the backend LLM-provider facade (provider key held
+ * server-side; the browser carries only our backend credential).
  */
 function resolveModel() {
   const provider = createOpenAICompatible({
@@ -124,11 +122,28 @@ function resolveModel() {
   return provider.chatModel('platform')
 }
 
+/**
+ * Desktop BYOK: when the user has stored a key, run the completion in the Electron
+ * main process (the key never enters renderer JS). Returns null when the bridge is
+ * absent (web) or no key is stored, so the caller uses the platform facade.
+ */
+async function byokComplete(prompt: string): Promise<string | null> {
+  const chat = getDesktopChat()
+  if (!chat) return null
+  const status = await getKeyStore()?.getStatus()
+  if (!status?.hasKey) return null
+  const { text } = await chat.complete({ prompt })
+  return text
+}
+
 export async function aiChat(ctx: AiChatContext): Promise<AiChatResult> {
   const prompt = buildPrompt(ctx)
-  // Stream from the backend facade and accumulate the full reply, then parse the
-  // `{ reply, ir }` envelope. A transport failure (backend down, 401) rejects the
-  // text promise → ApiSession falls back to the offline interpreter.
+  // Prefer the desktop BYOK path (provider call in main); otherwise stream from the
+  // backend facade. Either transport failure (bad key, backend down, 401) rejects →
+  // ApiSession falls back to the offline interpreter.
+  const byok = await byokComplete(prompt)
+  if (byok !== null) return parseResult(byok)
+
   const result = streamText({ model: resolveModel(), prompt })
   return parseResult(await result.text)
 }
