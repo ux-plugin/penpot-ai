@@ -201,6 +201,49 @@ fn draw_inner_stroke_path(
     canvas.restore();
 }
 
+/// Trim a ribbon to the canvas' current clip before filling it.
+///
+/// A ribbon is filled once per tile it overlaps, and Skia processes the WHOLE
+/// path each time — the clip only discards the resulting pixels, not the
+/// tessellation work. At deep zoom the ribbon's device extent dwarfs a single
+/// tile, so nearly all of that work is thrown away: measured at 100x zoom, the
+/// per-tile fill cost rises ~9x while the geometry is unchanged. Intersecting
+/// the geometry with the clip first bounds each tile's cost to what it can
+/// actually show.
+///
+/// Two guards keep this from being a pessimisation:
+/// - Skipped when the paint carries an image filter (drop shadow / blur). Those
+///   sample beyond the clip, so trimming the source would cut the effect off at
+///   tile seams.
+/// - Skipped unless the ribbon is substantially larger than the clip, since the
+///   path op isn't free and buys nothing when the path already fits.
+fn clip_ribbon_to_tile(
+    canvas: &skia::Canvas,
+    ribbon: skia::Path,
+    paint: &skia::Paint,
+) -> skia::Path {
+    if paint.image_filter().is_some() {
+        return ribbon;
+    }
+    let Some(clip) = canvas.local_clip_bounds() else {
+        return ribbon;
+    };
+    let bounds = ribbon.compute_tight_bounds();
+    // Only pay for the op when most of the path lies outside this tile.
+    let path_area = bounds.width() * bounds.height();
+    let clip_area = clip.width() * clip.height();
+    if clip_area <= 0.0 || path_area <= clip_area * 4.0 {
+        return ribbon;
+    }
+    // Pad by a pixel so antialiased edges at the seam match the unclipped fill.
+    let mut pad = clip;
+    pad.outset((1.0, 1.0));
+    match ribbon.op(&skia::Path::rect(pad, None), skia::PathOp::Intersect) {
+        Some(clipped) => clipped,
+        None => ribbon,
+    }
+}
+
 // For outer stroke we draw a center stroke (with double width) and use another path with blend mode clear to remove the inner stroke added
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_stroke_on_path(
@@ -249,6 +292,7 @@ pub(crate) fn draw_stroke_on_path(
             let mut fill = draw_paint.clone();
             fill.set_style(skia::PaintStyle::Fill);
             fill.set_path_effect(None);
+            let ribbon = clip_ribbon_to_tile(canvas, ribbon, &fill);
             canvas.draw_path(&ribbon, &fill);
             canvas.restore_to_count(save_count);
             return;
@@ -269,6 +313,7 @@ pub(crate) fn draw_stroke_on_path(
             let mut fill = draw_paint.clone();
             fill.set_style(skia::PaintStyle::Fill);
             fill.set_path_effect(None);
+            let ribbon = clip_ribbon_to_tile(canvas, ribbon, &fill);
             canvas.draw_path(&ribbon, &fill);
             canvas.restore_to_count(save_count);
             return;
