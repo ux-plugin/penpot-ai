@@ -20,6 +20,7 @@ import {
   emptyTokensLib,
   isSupportedTokenType,
   isTokenAlias,
+  themeTopSet,
   tokenAliasName,
   tokenTypesForAttr,
   type TokensLib,
@@ -190,6 +191,44 @@ describe('active sets + override order', () => {
     l.activeThemes = []
     expect(activeSets(l)).toEqual([])
     expect(collectActiveTokens(l).size).toBe(0)
+  })
+
+  // A per-mode edit must land in the set that WINS for that theme, else the new
+  // value is written but silently shadowed by a later set.
+  describe('themeTopSet (where a per-mode edit lands)', () => {
+    it('picks the last of the theme’s sets in lib order', () => {
+      const l = lib()
+      const dark = l.themes.find((t) => t.id === 'th-dark')!
+      expect(themeTopSet(l, dark)?.name).toBe('dark')
+    })
+
+    it('is the only set when the theme enables one', () => {
+      const l = lib()
+      const light = l.themes.find((t) => t.id === 'th-light')!
+      expect(themeTopSet(l, light)?.name).toBe('base')
+    })
+
+    it('follows lib order, not the order listed on the theme', () => {
+      const l = lib()
+      const reversed = createTokenTheme({ id: 'th-r', name: 'r', sets: ['dark', 'base'] })
+      expect(themeTopSet(l, reversed)?.name).toBe('dark')
+    })
+
+    it('agrees with resolution — writing to the top set wins', () => {
+      const l = lib()
+      l.activeThemes = ['th-dark']
+      const dark = l.themes.find((t) => t.id === 'th-dark')!
+      const top = themeTopSet(l, dark)!
+      // color.bg resolves to the dark set's token, which lives in the top set.
+      expect(collectActiveTokens(l).get('color.bg')?.value).toBe('#111111')
+      expect(top.tokens.some((t) => t.name === 'color.bg')).toBe(true)
+    })
+
+    it('is undefined for a theme with no sets, or only unknown ones', () => {
+      const l = lib()
+      expect(themeTopSet(l, createTokenTheme({ name: 'empty', sets: [] }))).toBeUndefined()
+      expect(themeTopSet(l, createTokenTheme({ name: 'ghost', sets: ['nope'] }))).toBeUndefined()
+    })
   })
 })
 

@@ -264,6 +264,35 @@ export function activeSets(lib: TokensLib): TokenSet[] {
 }
 
 /**
+ * The set a per-theme edit should land in — the LAST of the theme's sets in lib
+ * order. Resolution lets a later active set override an earlier one, so writing
+ * here is what makes the value actually win for that theme. Undefined when the
+ * theme enables no existing set (nothing to write to).
+ */
+export function themeTopSet(lib: TokensLib, theme: TokenTheme): TokenSet | undefined {
+  const names = new Set(theme.sets)
+  let top: TokenSet | undefined
+  for (const set of lib.sets) if (names.has(set.name)) top = set
+  return top
+}
+
+/**
+ * For each set NAME, the themes that enable it. Lets the UI flag a set as
+ * "shared with <other theme>" — a write there changes every theme that uses it.
+ */
+export function setUsage(lib: TokensLib): Map<string, TokenTheme[]> {
+  const out = new Map<string, TokenTheme[]>()
+  for (const theme of lib.themes) {
+    for (const name of theme.sets) {
+      const arr = out.get(name) ?? []
+      arr.push(theme)
+      out.set(name, arr)
+    }
+  }
+  return out
+}
+
+/**
  * Flatten all tokens from the active sets into a single name→token map. When the
  * same name appears in more than one active set, the later set (in lib order)
  * wins — that is how modes override a base set.
