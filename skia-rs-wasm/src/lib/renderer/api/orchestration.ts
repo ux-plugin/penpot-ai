@@ -112,7 +112,10 @@ export function setObject(
     setShapeType(module, wasmType)
   }
   if (wantsKey('showContent')) {
-    setShapeClipContent(module, type === 'frame' ? !shape.showContent : false)
+    // A slot renders as a frame (translateShapeType) and clips its shown view to
+    // the outlet box, so it honours `showContent` exactly like a frame does.
+    const clips = type === 'frame' || type === 'slot'
+    setShapeClipContent(module, clips ? !shape.showContent : false)
   }
   if (wantsKey('constraintsH', 'constraintsV')) {
     setShapeConstraints(module, shape.constraintsH, shape.constraintsV)
