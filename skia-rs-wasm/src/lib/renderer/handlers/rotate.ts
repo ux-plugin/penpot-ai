@@ -27,8 +27,9 @@ import {
   finiteSelectionRect,
   rotateSelectionRectAroundPivot,
 } from './selection-rect-helpers'
-import { rotationMatrixAroundPoint } from '../geom/matrix'
+import { composeMatrix, rotationMatrixAroundPoint, transformPoint } from '../geom/matrix'
 import { getWorkspaceWasmTransform } from '../store/modifier-overlay'
+import { motionAnimatedMatrix, recordRotateKeyframe } from '../motion/motion-store'
 import type { Point } from '../types'
 import type { Matrix } from 'penpot-exporter/types'
 import type { IndexedNode } from '../../worker/types'
@@ -85,8 +86,20 @@ export function startRotateSelected(initialPosition: Point): Observable<void> {
     ? cloneSelectionRect(wasmSelRect.peek()!)
     : null
 
+  // Motion authoring: the shape's animated matrix M(t) at the playhead (null unless
+  // the Motion tab is open and the playhead is off the rest frame). The gesture
+  // composes ON TOP of it, so the animated scale/translation survives the rotation
+  // instead of being wiped by the replace-all `setWasmModifiers`.
+  const animMatrix = isSingle ? motionAnimatedMatrix(ids[0]) : null
+  // Gesture pivot = the shape's VISIBLE centre. M(t) maps the rest centre to where
+  // the shape is drawn, so that is what the user is rotating about. This is also
+  // exactly consistent with the commit: R(animCentre, θ) ∘ M(t) equals adding θ to
+  // the motion's rotation (which pivots about the rest centre), because M(t)
+  // translates the rest centre onto the animated one.
+  const pivot = animMatrix ? transformPoint(animMatrix, cx, cy) : { x: cx, y: cy }
+
   const initialWorld = screenToWorld(vp, initialPosition.x, initialPosition.y)
-  const initialAngleDeg = angleDegFromCenter(cx, cy, initialWorld.x, initialWorld.y)
+  const initialAngleDeg = angleDegFromCenter(pivot.x, pivot.y, initialWorld.x, initialWorld.y)
 
   const stopper = dragStopper()
   const latestDeltaDegRef = { current: 0 }
@@ -97,7 +110,7 @@ export function startRotateSelected(initialPosition: Point): Observable<void> {
   const rotateStream = signalToObservable(pointerPos).pipe(
     filter((pos): pos is NonNullable<typeof pos> => pos !== null),
     map((pos) => screenToWorld(vp, pos.x, pos.y)),
-    map((world) => angleDegFromCenter(cx, cy, world.x, world.y)),
+    map((world) => angleDegFromCenter(pivot.x, pivot.y, world.x, world.y)),
     map((currentAngleDeg) => currentAngleDeg - initialAngleDeg),
     tap((deltaDeg) => {
       if (commitDoneRef.current) return
@@ -106,7 +119,10 @@ export function startRotateSelected(initialPosition: Point): Observable<void> {
 
       rotatePreviewDeltaDeg.value = deltaDeg
 
-      const matrix = rotationMatrixAroundPoint(cx, cy, deltaDeg)
+      // Compose the gesture over the animated pose so scale/translation survive;
+      // without motion this is the plain rotation about the rest centre.
+      const gesture = rotationMatrixAroundPoint(pivot.x, pivot.y, deltaDeg)
+      const matrix = animMatrix ? composeMatrix(gesture, animMatrix) : gesture
       const entries: Array<[string, Matrix]> = ids.map((id) => [id, matrix])
       renderer.setWasmModifiers(entries)
 
@@ -118,7 +134,12 @@ export function startRotateSelected(initialPosition: Point): Observable<void> {
       // the WASM bounds query (each shape's bounds are unioned there);
       // single-selection (the common case) reads the map directly.
       let nextRect = null
-      if (baselineRect && ids.length === 1) {
+      if (animMatrix && baselineRect) {
+        // Baseline already reflects the animated pose, so rotate it by the drag
+        // alone (about the visible centre) -- composing the full matrix here would
+        // double-count M(t).
+        nextRect = rotateSelectionRectAroundPivot(baselineRect, pivot.x, pivot.y, deltaDeg)
+      } else if (baselineRect && ids.length === 1) {
         const propagated = getWorkspaceWasmTransform(ids[0])
         if (propagated) {
           nextRect = applyMatrixToSelectionRect(baselineRect, propagated)
@@ -151,6 +172,19 @@ export function startRotateSelected(initialPosition: Point): Observable<void> {
         return
       }
       const deltaDeg = latestDeltaDegRef.current
+
+      // Motion authoring: with the Motion tab open and the playhead off the rest
+      // frame, a single-shape rotation becomes a rotation keyframe (a delta from
+      // rest) instead of a document rotation. The motion preview then owns the
+      // modifiers -- seekMotion (inside recordRotateKeyframe) has already replaced
+      // the drag modifier with the animated pose -- so we neither cleanModifiers
+      // nor commit geometry.
+      if (isSingle && recordRotateKeyframe(ids[0], deltaDeg)) {
+        commitDoneRef.current = true
+        wasmSelRect.value = querySelectionRect(renderer, ids)
+        return
+      }
+
       const matrix = rotationMatrixAroundPoint(cx, cy, deltaDeg)
       const entries: Array<[string, Matrix]> = ids.map((id) => [id, matrix])
       applyModifiersAndCommit(entries)

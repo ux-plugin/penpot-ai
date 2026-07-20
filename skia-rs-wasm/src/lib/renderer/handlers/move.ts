@@ -28,14 +28,14 @@ import { snapMoveDeltaToGrid } from './pixel-snap'
 import { getSelectedIdsSet } from '../store/document-selection'
 import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { applyModifiersAndCommit } from './utils'
-import { motionDragBase, recordDragKeyframe } from '../motion/motion-store'
+import { motionAnimatedMatrix, recordDragKeyframe } from '../motion/motion-store'
 import { DRAG_RENDER_INTERVAL_MS } from './drag-render-interval'
 import {
   cloneSelectionRect,
   finiteSelectionRect,
   translateSelectionRectWorld,
 } from './selection-rect-helpers'
-import { identityMatrix, translateMatrix } from '../geom/matrix'
+import { composeMatrix, identityMatrix, translateMatrix } from '../geom/matrix'
 import {
   buildCommitStructureEntries,
   buildLayoutDetachEntries,
@@ -102,12 +102,23 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
       : null
 
   const lastEventDeltaRef = { current: { x: 0, y: 0 } }
-  // Motion authoring: the shape's current animated offset from rest at the
-  // playhead (null unless the Motion tab is open and the playhead is off the
-  // rest frame). Added to the drag below so the shape follows the cursor from
-  // its displaced pose instead of snapping to rest.
-  const motionBase =
-    selectedIds.size === 1 ? motionDragBase(selectedIds.values().next().value as string) : null
+  // Motion authoring: the shape's animated matrix M(t) at the playhead (null
+  // unless the Motion tab is open and the playhead is off the rest frame). The
+  // drag composes ON TOP of it below.
+  const animMatrix =
+    selectedIds.size === 1 ? motionAnimatedMatrix(selectedIds.values().next().value as string) : null
+
+  /**
+   * The per-frame preview matrix for the dragged shapes. `setWasmModifiers` is
+   * replace-all, so while a motion preview is applied a bare translate would wipe
+   * M(t) and snap the shape back to its REST SIZE for the whole drag. Composing
+   * `translate(drag) ∘ M(t)` keeps the animated scale/rotation and moves the shape
+   * from where it visually is. Without motion this is just the plain translate.
+   */
+  const previewMatrix = (dx: number, dy: number): Matrix => {
+    const drag = translateMatrix(dx, dy)
+    return animMatrix ? composeMatrix(drag, animMatrix) : drag
+  }
   // Pre-compute "remove from real parent" structure entries for any selected
   // shape whose parent has a layout. These are stable across the gesture so we
   // build them once and re-emit each frame after cleanModifiers wipes them.
@@ -271,7 +282,7 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
             const previewStructure = buildReparentPreviewEntries(selectedIds, page, firstTarget.parentId)
             const probeReflow = collectReflowParents(selectedIds, page, probeTargets)
             const probeEntries: Array<[string, Matrix]> = [
-              ...Array.from(selectedIds, (id) => [id, translateMatrix(worldDelta.x, worldDelta.y)] as [string, Matrix]),
+              ...Array.from(selectedIds, (id) => [id, previewMatrix(worldDelta.x, worldDelta.y)] as [string, Matrix]),
               ...Array.from(probeReflow, (id) => [id, identityMatrix()] as [string, Matrix]),
             ]
             renderer.setWasmModifiers(probeEntries, {
@@ -305,16 +316,13 @@ export function startMoveSelected(initialPosition: Point): Observable<void> {
       // → mirror to modifierOverlay store. Mirrors CLJS `set-wasm-modifiers`
       // (modifiers.cljs:612-642). cleanModifiers wipes pool.structure too, so
       // detach entries are re-emitted every frame via the options bag.
-      // baselineRect (the overlay preview above) already includes motionBase --
-      // seekMotion refreshes it to the animated rect -- so the overlay uses the
-      // drag delta alone. The shape modifier, however, translates from the
-      // document (rest) pose, so it must add motionBase to stay under the cursor.
-      const renderDelta = motionBase
-        ? { x: worldDelta.x + motionBase.x, y: worldDelta.y + motionBase.y }
-        : worldDelta
+      // The overlay preview above translates baselineRect by the drag alone --
+      // seekMotion already refreshed it to the animated (displaced, scaled) rect,
+      // so it needs no motion term. The shape modifier does: it composes the drag
+      // over M(t) so the animated pose survives the gesture (see previewMatrix).
       const moveEntries: Array<[string, Matrix]> = Array.from(selectedIds, (id) => [
         id,
-        translateMatrix(renderDelta.x, renderDelta.y),
+        previewMatrix(worldDelta.x, worldDelta.y),
       ])
       // Skip the reset push when a probe is active: it already rendered the
       // reflowed-siblings + cursor-following-shape state, and re-pushing without the
