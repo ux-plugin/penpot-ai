@@ -646,6 +646,12 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     let selRect: ScreenRect | null = null
     let didBake = false
 
+    // The canvas viewport in document coords — drives viewport-clipped baking (render only
+    // a zoomed-in scene's on-screen slice at native resolution).
+    const vtl = screenToWorld(vp, 0, 0)
+    const vbr = screenToWorld(vp, cssW, cssH)
+    const visibleWorld = { left: vtl.x, top: vtl.y, right: vbr.x, bottom: vbr.y }
+
     for (const [sceneId, sceneSnap] of scene3dProxy.scenes) {
       const doc = sceneSnap as Scene3DDocument
       const isSel = sceneId === selId
@@ -681,7 +687,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
         // Bake at the resolution the current zoom needs (crisp when zoomed in), not the
         // node's doc size — a rendered scene is raster, so this is how it matches vector
         // sharpness at any zoom.
-        if (bakeSceneToNode(sceneId, doc, vp.zoom)) {
+        if (bakeSceneToNode(sceneId, doc, vp.zoom, visibleWorld)) {
           didBake = true
           continue
         }
