@@ -17,7 +17,13 @@ import { getCommittedNodeOnActivePage } from '@/lib/renderer/properties/commit-n
 import { docProxy } from '@/lib/renderer/store/doc-proxy'
 import { isSlotShape } from '@/lib/worker/geometry/shapes'
 import { removeViewFromSlot, setActiveView, setSlotClip } from '@/lib/renderer/slot/slot-edit'
-import { addNewViewToSlot, selectView, viewName } from '@/lib/renderer/slot/slot-authoring'
+import {
+  addNewViewToSlot,
+  convertFrameToSlot,
+  convertSlotToFrame,
+  selectView,
+  viewName,
+} from '@/lib/renderer/slot/slot-authoring'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
 
 interface SlotSectionProps {
@@ -37,7 +43,31 @@ export function SlotSection({ nodeId, readOnly }: SlotSectionProps) {
     if (!readOnly) void addNewViewToSlot(nodeId)
   }, [nodeId, readOnly])
 
-  if (!isSlotShape(slot)) return null
+  // A plain frame gets the way in: converting extracts its content into the
+  // outlet's first view (see convertFrameToSlot). The page root is never an outlet.
+  if (!isSlotShape(slot)) {
+    if (readOnly || slot?.type !== 'frame') return null
+    return (
+      <>
+        <Separator />
+        <div className="min-w-0 space-y-2">
+          <p className="py-0.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">Slot</p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => void convertFrameToSlot(nodeId)}
+          >
+            Convert to slot
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Turns this frame into a router outlet. Its content becomes the outlet&apos;s first view.
+          </p>
+        </div>
+      </>
+    )
+  }
 
   const clip = slot.showContent === false
   const views = slot.views
@@ -129,6 +159,18 @@ export function SlotSection({ nodeId, readOnly }: SlotSectionProps) {
               />
               Clip content
             </label>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full"
+              disabled={readOnly}
+              onClick={() => void convertSlotToFrame(nodeId)}
+              title="Views stay as separate frames"
+            >
+              Convert to frame
+            </Button>
           </div>
         )}
       </div>
