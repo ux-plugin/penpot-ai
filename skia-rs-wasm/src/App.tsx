@@ -138,17 +138,30 @@ function App() {
   const startSlot = focus?.left ?? (mode === 'design' ? <LayersPanel /> : <BuildLeftRail />)
   const endSlot = focus?.right ?? <RightSidePanel />
   const bottomSlot = focus?.bottom ?? (motionActive ? <TimelinePanel /> : undefined)
-  const centerOverlay = focus ? (
+  const baseCenter =
+    mode === 'design' ? (
+      <ShapeToolbar />
+    ) : (
+      <div
+        className="pointer-events-auto flex h-full w-full"
+        style={{ background: 'var(--editor-canvas-chrome)' }}
+      >
+        <PreviewStage />
+      </div>
+    )
+  // A focus session with its own `center` (shader) fully claims the region. One
+  // that declares none (3D edit) contributes ONLY the shared header — the shell
+  // keeps its normal center (ShapeToolbar, where the 3D edit toolbar lives) below
+  // it, so 3D's chrome stays exactly as it was.
+  const centerOverlay = !focus ? (
+    baseCenter
+  ) : focus.center !== undefined ? (
     <FocusStage session={focus} />
-  ) : mode === 'design' ? (
-    <ShapeToolbar />
   ) : (
-    <div
-      className="pointer-events-auto flex h-full w-full"
-      style={{ background: 'var(--editor-canvas-chrome)' }}
-    >
-      <PreviewStage />
-    </div>
+    <>
+      <FocusStage session={focus} />
+      {baseCenter}
+    </>
   )
 
   return (

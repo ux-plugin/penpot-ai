@@ -50,8 +50,12 @@ export interface FocusStageSession {
   id: string
   /** Title shown in the stage's header bar. */
   title: ReactNode
-  /** Center content — fills the canvas-hole region under the header bar. */
-  center: ReactNode
+  /**
+   * Center content — fills the canvas-hole region under the header bar. Omit for a
+   * header-only session (e.g. 3D edit): the shell keeps its normal center content
+   * (the tool strip) beneath the shared header instead.
+   */
+  center?: ReactNode
   /** Optional left-rail override. Omit to keep the current mode's left rail. */
   left?: ReactNode
   /** Optional right-rail override. Omit to keep the current inspector rail. */
@@ -75,6 +79,14 @@ export interface FocusStageSession {
 
 /** The active focus session, or `null` when the editor is in its normal shell. */
 export const focusStage = signal<FocusStageSession | null>(null)
+
+/**
+ * Height (px) of the shared `FocusStage` header bar. Kept here because two places
+ * depend on it: `FocusStage` renders the bar at this height (Tailwind `h-9`), and
+ * the canvas shell insets the 3D `focusViewportRect` by it so a scene rendered in
+ * the hole doesn't tuck under the bar. Change both if you change this.
+ */
+export const FOCUS_STAGE_HEADER_PX = 36
 
 /** True while any focus stage is active. Cheap read for non-React gating. */
 export function isFocusStageActive(): boolean {
