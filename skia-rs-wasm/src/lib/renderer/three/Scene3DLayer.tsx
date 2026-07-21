@@ -11,7 +11,6 @@
  */
 
 import { useEffect, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
-import { X } from 'lucide-react'
 import { useSnapshot, subscribe } from 'valtio'
 import * as THREE from 'three'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
@@ -176,7 +175,6 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
   const editSurfaceRef = useRef<HTMLDivElement>(null)
   const locatorRef = useRef<HTMLButtonElement>(null)
   const resizeBoxRef = useRef<HTMLDivElement>(null)
-  const focusExitRef = useRef<HTMLButtonElement>(null)
   const resizeStateRef = useRef<{ handle: ResizeHandle; sceneId: string; startWorld: { x: number; y: number }; startBounds: Bounds } | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const gizmoRef = useRef<TransformControls | null>(null)
@@ -755,20 +753,6 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     // and resizes the render region, not the placed box — so hide them while focused.
     positionOffscreenLocator(selRect, editingId != null && !focused)
     positionResizeBox(selRect, editingId != null && !focused)
-    positionFocusExit(selRect, focused)
-  }
-
-  /** Position the focus-mode exit (✕) at the focus region's top-right corner. */
-  function positionFocusExit(rect: ScreenRect | null, focused: boolean) {
-    const btn = focusExitRef.current
-    if (!btn) return
-    if (focused && rect) {
-      btn.style.display = 'flex'
-      btn.style.left = `${rect.x + rect.w - 40}px`
-      btn.style.top = `${rect.y + 10}px`
-    } else {
-      btn.style.display = 'none'
-    }
   }
 
   function positionEditSurface(rect: ScreenRect | null, editing: boolean) {
@@ -877,33 +861,6 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
 
   return (
     <>
-      {/* Focus-mode exit — a ✕ at the region's top-right that leaves focus (un-maximise),
-          alongside the strip's Done (which exits 3D edit). Positioned in draw(). */}
-      <button
-        ref={focusExitRef}
-        type="button"
-        title="Exit focus"
-        aria-label="Exit focus"
-        onClick={() => exitFocus()}
-        style={{
-          position: 'absolute',
-          display: 'none',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 30,
-          height: 30,
-          borderRadius: 8,
-          border: 'none',
-          background: 'rgba(255,255,255,0.14)',
-          color: '#fff',
-          cursor: 'pointer',
-          pointerEvents: 'all',
-          zIndex: 7,
-        }}
-      >
-        <X style={{ width: 16, height: 16 }} />
-      </button>
-
       <canvas
         ref={canvasRef}
         width={canvasSize.width}
