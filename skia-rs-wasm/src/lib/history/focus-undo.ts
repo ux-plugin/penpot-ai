@@ -139,6 +139,20 @@ export function hasFocusRedo(scope: FocusUndoScope): boolean {
 }
 
 /**
+ * True when the canvas redo stack's top frame is in this focus scope — i.e. an
+ * in-scope edit that was undone by the CANVAS reader (pop model), not the focus
+ * reader (append model). The two models don't share a stack, so `focusRedo`
+ * (which walks the undo stack) can't reach it; the router bridges to the canvas
+ * `redo()` when this is true. Scope-checked so focus mode never redoes a foreign
+ * canvas edit that merely happens to sit on top of the redo stack.
+ */
+export function canvasRedoInFocusScope(scope: FocusUndoScope): boolean {
+  const redoStack = useHistoryStore.getState().redoStack
+  const top = redoStack[redoStack.length - 1]
+  return top != null && frameInScope(top, scope)
+}
+
+/**
  * Serialize focus undo/redo. Each op reads the stack, then `await`s an async
  * commit before its result lands — so overlapping calls (Cmd+Z autorepeat, or a
  * fast-clicked button) would otherwise all read the SAME pre-append stack and

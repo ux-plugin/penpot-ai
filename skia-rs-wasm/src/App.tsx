@@ -7,7 +7,7 @@ import { ShaderDragOverlay } from './lib/components/Overlay/ShaderDragOverlay'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
-import { focusUndo, focusRedo } from './lib/history/focus-undo'
+import { focusUndo, focusRedo, canvasRedoInFocusScope } from './lib/history/focus-undo'
 import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } from './lib/persistence'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
@@ -109,7 +109,17 @@ function App() {
         void (scope ? focusUndo(scope) : undo())
       } else if (mod && e.key === 'z' && e.shiftKey) {
         e.preventDefault()
-        void (scope ? focusRedo(scope) : redo())
+        // Focus redo is append-only over the undo stack; it can't reach an
+        // in-scope edit the CANVAS reader popped onto the redo stack (e.g. an
+        // undo done after leaving the stage). Bridge to the canvas redo when the
+        // redo-stack top is in scope, so redo isn't silently a no-op.
+        if (scope) {
+          void focusRedo(scope).then((did) => {
+            if (!did && canvasRedoInFocusScope(scope)) void redo()
+          })
+        } else {
+          void redo()
+        }
       } else if (
         import.meta.env.DEV &&
         e.shiftKey && (e.key === 'P' || e.key === 'p') && !mod
