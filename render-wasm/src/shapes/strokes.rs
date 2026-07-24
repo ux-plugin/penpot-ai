@@ -45,6 +45,40 @@ pub struct DynamicStroke {
     pub smoothen: f32,
 }
 
+/// Width envelope along a PowerStroke's length (arc-fraction 0..1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WidthProfile {
+    Uniform,
+    TaperBoth,
+    TaperStart,
+    TaperEnd,
+    Bulge,
+    /// Hand-authored points — read from `Stroke::width_points` instead of a
+    /// preset formula. Falls back to `Uniform` when there are no points.
+    Custom,
+}
+
+/// Brush = the stroke's rendering engine. `None` on the stroke means the default
+/// basic vector outline; each variant here is a non-basic engine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Brush {
+    /// Variable-width ("PowerStroke") — build a filled ribbon whose half-width
+    /// follows `profile` (and an optional calligraphic `nib` angle).
+    Power {
+        profile: WidthProfile,
+        /// Calligraphic nib angle in degrees; `<= 0` = round (no nib).
+        nib: f32,
+    },
+    /// Textured ("stretch") brush — a uniform-width ribbon broken up by
+    /// procedural grain so it reads as a dry / grungy ink stroke.
+    Texture {
+        /// Grain feature size in world units (bigger = coarser grain).
+        scale: f32,
+        /// Solidity 0..1 — low = very broken, high = mostly solid.
+        density: f32,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stroke {
     pub fill: Fill,
@@ -65,6 +99,15 @@ pub struct Stroke {
     pub miter_limit: Option<f32>,
     /// Procedural "Dynamic" perturbation applied before stroking. `None` = off.
     pub dynamic: Option<DynamicStroke>,
+    /// Brush engine. `None` = the default basic vector outline.
+    pub brush: Option<Brush>,
+    /// Hand-authored width points for `WidthProfile::Custom`, flattened as
+    /// `[t, left, right, mode, …]`: `t` = arc-fraction 0..1 along the stroke,
+    /// `left` / `right` = half-width multipliers of the stroke width on each
+    /// side, `mode` = how the segment *leaving* this point interpolates
+    /// (`0` smooth / Catmull-Rom, `1` corner / linear, `2` stepped / hold-left).
+    /// Stored here (not in `Brush`) so `Brush` stays `Copy`, mirroring `dashes`.
+    pub width_points: Vec<f32>,
 }
 
 impl Stroke {
@@ -78,11 +121,43 @@ impl Stroke {
     }
 
     pub fn bounds_width(&self, is_open: bool) -> f32 {
+        // Ribbon brushes (variable-width Basic, Power, Texture) draw a filled ribbon
+        // CENTERED on the spine whose half-width can far exceed the base stroke
+        // width — a dragged-out width point pushes the outline well past the path's
+        // box. The render/tile bounds must use that real extent, or the overflow is
+        // clipped at a tile edge.
+        if self.is_ribbon() {
+            return self.ribbon_half_extent();
+        }
         match self.render_kind(is_open) {
             StrokeKind::Inner => 0.,
             StrokeKind::Center => self.width / 2.,
             StrokeKind::Outer => self.width,
         }
+    }
+
+    /// Ribbon brushes (variable-width Basic, Power, Texture) draw a filled ribbon
+    /// centered on the spine rather than a uniform Skia stroke — bounds/hit-testing
+    /// must use [`ribbon_half_extent`](Self::ribbon_half_extent), not `width`.
+    pub(crate) fn is_ribbon(&self) -> bool {
+        matches!(self.brush, Some(Brush::Power { .. }) | Some(Brush::Texture { .. }))
+            || (self.brush.is_none() && self.width_points.len() >= 4)
+    }
+
+    /// Largest half-width the rendered ribbon reaches: `base_half × max width-point
+    /// multiplier`. Mirrors `render::brush::power_ribbon` so the bounds match what
+    /// is actually drawn.
+    fn ribbon_half_extent(&self) -> f32 {
+        // Floor mirrors render::brush::MIN_WIDTH so thin strokes match the render.
+        const MIN_WIDTH: f32 = 4.0;
+        let base_half = self.width.max(MIN_WIDTH) * 0.5;
+        let mut max_mult = 1.0_f32;
+        let mut i = 0;
+        while i + 3 < self.width_points.len() {
+            max_mult = max_mult.max(self.width_points[i + 1]).max(self.width_points[i + 2]);
+            i += 4;
+        }
+        base_half * max_mult
     }
 
     pub fn max_bounds_width<'a>(strokes: impl Iterator<Item = &'a Stroke>, is_open: bool) -> f32 {
@@ -109,6 +184,8 @@ impl Stroke {
             line_join: None,
             miter_limit: None,
             dynamic: None,
+            brush: None,
+            width_points: Vec::new(),
         }
     }
 
@@ -130,6 +207,8 @@ impl Stroke {
             line_join: None,
             miter_limit: None,
             dynamic: None,
+            brush: None,
+            width_points: Vec::new(),
         }
     }
 
@@ -151,6 +230,8 @@ impl Stroke {
             line_join: None,
             miter_limit: None,
             dynamic: None,
+            brush: None,
+            width_points: Vec::new(),
         }
     }
 
@@ -184,6 +265,18 @@ impl Stroke {
 
     pub fn set_dynamic(&mut self, dynamic: DynamicStroke) {
         self.dynamic = Some(dynamic);
+    }
+
+    pub fn set_brush(&mut self, brush: Brush) {
+        self.brush = Some(brush);
+    }
+
+    /// Set hand-authored width points (`[t, left, right, mode, …]`). A trailing
+    /// partial quad is dropped so the buffer is always well-formed.
+    pub fn set_width_points(&mut self, mut points: Vec<f32>) {
+        let usable = points.len() - (points.len() % 4);
+        points.truncate(usable);
+        self.width_points = points;
     }
 
     pub fn scale_content(&mut self, value: f32) {

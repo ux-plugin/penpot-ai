@@ -47,7 +47,9 @@ export function commandInfo(cmd: Command): { label: string; category: ShortcutCa
     case 'DRAW_CANCEL': return { label: 'Cancel tool', category: 'Tools' }
     case 'DELETE_SELECTION': return { label: 'Delete selection', category: 'Tools' }
     case 'PATH_SUBTOOL': {
-      const n: Record<string, string> = { move: 'Move', add: 'Add', bend: 'Bend' }
+      const n: Record<string, string> = { move: 'Move', add: 'Add', bend: 'Bend', width: 'Width' }
+      // Width sculpts the stroke, not the anchors — so it isn't "… points".
+      if (cmd.sub === 'width') return { label: 'Width tool', category: 'Path editing' }
       return { label: `${n[cmd.sub] ?? cmd.sub} points`, category: 'Path editing' }
     }
     case 'PATH_FINISH': return { label: 'Finish editing', category: 'Path editing' }

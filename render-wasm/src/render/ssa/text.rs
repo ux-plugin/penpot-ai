@@ -179,6 +179,10 @@ pub fn render_drop_shadows(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> 
     let xform = ctx.tile_and_shape_transform_matrix(shape);
     let text_content = text_content_orig.new_bounds(shape.selrect());
     let shadows: Vec<_> = shape.drop_shadows_visible().cloned().collect();
+    // See `get_drop_shadow_filter_capped` — bound the kernel to the tile margin
+    // so the per-tile filter cost doesn't scale with zoom.
+    let max_dev_sigma = ctx.margins.width as f32 / 3.0;
+    let scale = ctx.scale;
 
     // Phase 1: draw each shadow's text into the scratch surface.
     {
@@ -189,7 +193,7 @@ pub fn render_drop_shadows(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> 
         canvas.concat(&xform);
 
         for shadow in &shadows {
-            let Some(filter) = shadow.get_drop_shadow_filter() else {
+            let Some(filter) = shadow.get_drop_shadow_filter_capped(scale, max_dev_sigma) else {
                 continue;
             };
             let mut shadow_paint = Paint::default();

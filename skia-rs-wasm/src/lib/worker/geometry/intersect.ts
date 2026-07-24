@@ -496,6 +496,21 @@ function getShapePointsForOverlap(shape: PenpotNode): Point[] {
   return pts ?? []
 }
 
+/** Half-width the stroke reaches outward from the spine, for hit padding. A
+ *  variable-width ribbon (hand-authored `strokeWidthPoints`, flat `[t,l,r,mode,…]`)
+ *  reaches `base_half × its largest l/r multiplier`, floored to mirror the
+ *  renderer's MIN_WIDTH; a plain stroke is just `width/2`. */
+function strokeHitHalf(stroke: { strokeWidth?: number }): number {
+  const w = stroke.strokeWidth ?? 0
+  const wp = (stroke as { strokeWidthPoints?: number[] }).strokeWidthPoints
+  if (Array.isArray(wp) && wp.length >= 4) {
+    let mult = 1
+    for (let i = 0; i + 3 < wp.length; i += 4) mult = Math.max(mult, wp[i + 1], wp[i + 2])
+    return (Math.max(w, 4) / 2) * mult
+  }
+  return w / 2
+}
+
 /** Outer padding (expansion): center → strokeWidth, outer → 2*strokeWidth, inner → 0. Max across strokes. */
 function getStrokePaddingOuter(shape: PenpotNode): number {
   const strokes = shape.strokes
@@ -674,10 +689,11 @@ export function overlaps(shape: PenpotNode, rect: Selrect, usingSelrect: boolean
   const hitTransform = (shape as { hitTransform?: Matrix }).hitTransform
   const src = hitTransform ? inverseTransformRect(rect, hitTransform) : rect
 
-  // Adjust rect for stroke width
+  // Adjust rect for stroke width. A variable-width ribbon reaches
+  // base_half × its largest width-point multiplier — well past the base half-width
+  // — so pad the hit test by that real extent, or clicks on the wide band miss.
   const firstStroke = shape.strokes?.[0]
-  const strokeWidth = firstStroke?.strokeWidth ?? 0
-  const swidth = strokeWidth / 2
+  const swidth = firstStroke ? strokeHitHalf(firstStroke) : 0
   const adjustedRect: Selrect = makeSelrect(
     src.x - swidth,
     src.y - swidth,
