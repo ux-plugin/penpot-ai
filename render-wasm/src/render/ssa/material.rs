@@ -33,20 +33,64 @@ use super::PaintCtx;
 const RES_CAP_PX: f32 = 2048.0;
 
 /// Uniforms the renderer fills itself — never surfaced as editor controls.
-const ENGINE_UNIFORMS: [&str; 3] = ["u_resolution", "u_scale", "u_time"];
+/// `u_phase` is `u_time` pre-divided by the loop length, so it runs 0→1 over one
+/// loop: animate on it (`sin(TAU * u_phase)`) and the wrap is seamless without a
+/// hand-kept `LOOP` constant.
+const ENGINE_UNIFORMS: [&str; 4] = ["u_resolution", "u_scale", "u_time", "u_phase"];
+
+/// Max compiled effects retained. The cache is a *liveness memo*, not a
+/// history: live sources are re-requested every frame so they stay resident,
+/// while dead ones (every keystroke in the editor produces a source that is
+/// compiled once and never looked up again) age out. Without a bound this
+/// grows forever — a real leak once the editor/preview compile per keystroke.
+const CACHE_CAP: usize = 64;
 
 thread_local! {
-    /// Compiled effects keyed by source hash. User sources aren't `const`,
-    /// so a single `OnceCell` (as glass/noise use) won't do — distinct
-    /// sources must coexist, and an unchanged source must hit the cache.
-    static CACHE: RefCell<HashMap<u64, RuntimeEffect>> = RefCell::new(HashMap::new());
+    /// Compile results keyed by source hash. User sources aren't `const`, so a
+    /// single `OnceCell` (as glass/noise use) won't do — distinct sources must
+    /// coexist, and an unchanged source must hit the cache.
+    ///
+    /// **Failures are cached too**, deliberately. A broken source would
+    /// otherwise recompile on every lookup: tolerable at one compile per
+    /// keystroke, but the preview's animation loop asks once per frame, so an
+    /// un-cached error meant a full SkSL compile 60×/sec for as long as the
+    /// source stayed broken — which, while typing, is most of the time.
+    ///
+    /// LRU-bounded to `CACHE_CAP`: `order` holds keys oldest-first and is
+    /// touched on every hit. Eviction only costs a recompile, never
+    /// correctness.
+    static CACHE: RefCell<HashMap<u64, std::result::Result<RuntimeEffect, String>>> =
+        RefCell::new(HashMap::new());
+    static CACHE_ORDER: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Mark `key` as most-recently-used, evicting the oldest entries past the cap.
+fn touch_cache_key(key: u64) {
+    CACHE_ORDER.with(|order| {
+        let mut order = order.borrow_mut();
+        if let Some(pos) = order.iter().position(|k| *k == key) {
+            order.remove(pos);
+        }
+        order.push(key);
+        while order.len() > CACHE_CAP {
+            let evicted = order.remove(0);
+            CACHE.with(|cache| {
+                cache.borrow_mut().remove(&evicted);
+            });
+        }
+    });
 }
 
 /// Engine-supplied uniform values. Never user-set; filled by the renderer.
-struct EngineUniforms {
-    resolution: (f32, f32),
-    scale: f32,
-    time: f32,
+/// `pub(crate)` so the isolated focus-mode preview (`render::preview`) can bind
+/// the same uniforms against its own surface instead of duplicating them.
+pub(crate) struct EngineUniforms {
+    pub resolution: (f32, f32),
+    pub scale: f32,
+    pub time: f32,
+    /// `time` divided by the loop length: 0→1 over one loop (the caller owns the
+    /// loop length; the on-canvas render, which has no clock, passes 0).
+    pub phase: f32,
 }
 
 fn hash_source(src: &str) -> u64 {
@@ -60,14 +104,19 @@ fn hash_source(src: &str) -> u64 {
 /// caller can keep the last good frame instead of crashing.
 fn get_or_compile(src: &str) -> std::result::Result<RuntimeEffect, String> {
     let key = hash_source(src);
+    let hit = CACHE.with(|cache| cache.borrow().get(&key).cloned());
+    if let Some(result) = hit {
+        touch_cache_key(key);
+        return result;
+    }
+    let result = RuntimeEffect::make_for_shader(src, None).map_err(|e| e.to_string());
     CACHE.with(|cache| {
-        if let Some(effect) = cache.borrow().get(&key) {
-            return Ok(effect.clone());
-        }
-        let effect = RuntimeEffect::make_for_shader(src, None).map_err(|e| e.to_string())?;
-        cache.borrow_mut().insert(key, effect.clone());
-        Ok(effect)
-    })
+        cache.borrow_mut().insert(key, result.clone());
+    });
+    // Insert then evict, so `touch` can drop the oldest without ever evicting
+    // the entry we just added (it's the newest).
+    touch_cache_key(key);
+    result
 }
 
 /// A reflected uniform surfaced to the editor so it can auto-generate a control
@@ -88,6 +137,11 @@ pub struct ReflectResult {
     pub error: Option<String>,
     pub uniforms: Vec<ReflectedUniform>,
     pub inputs: Vec<String>,
+    /// True when the source declares `u_time` **or** `u_phase` — i.e. the
+    /// material is clock-driven and the editor should offer transport (play/pause)
+    /// and run an animation loop. Both are engine-owned so they never appear in
+    /// `uniforms`; this flag is the only way the editor can tell.
+    pub uses_time: bool,
 }
 
 fn type_components(ty: skia::runtime_effect::uniform::Type) -> u32 {
@@ -113,9 +167,16 @@ pub fn compile_and_reflect(src: &str) -> ReflectResult {
                 error: Some(error),
                 uniforms: Vec::new(),
                 inputs: Vec::new(),
+                uses_time: false,
             }
         }
     };
+    // Detect the clock uniforms BEFORE the engine-uniform filter strips them
+    // out. Either `u_time` or `u_phase` makes the material clock-driven.
+    let uses_time = effect
+        .uniforms()
+        .iter()
+        .any(|u| u.name() == "u_time" || u.name() == "u_phase");
     let uniforms = effect
         .uniforms()
         .iter()
@@ -137,6 +198,7 @@ pub fn compile_and_reflect(src: &str) -> ReflectResult {
         error: None,
         uniforms,
         inputs,
+        uses_time,
     }
 }
 
@@ -168,6 +230,7 @@ fn bind(effect: &RuntimeEffect, material: &Material, engine: &EngineUniforms) ->
             }
             "u_scale" => write_f32(&mut data, off, engine.scale),
             "u_time" => write_f32(&mut data, off, engine.time),
+            "u_phase" => write_f32(&mut data, off, engine.phase),
             _ => {
                 if let Some(slot) = material.uniforms.iter().find(|s| s.name == name) {
                     write_value(&mut data, off, &slot.value);
@@ -180,7 +243,10 @@ fn bind(effect: &RuntimeEffect, material: &Material, engine: &EngineUniforms) ->
 
 /// Compile + bind a material into a paint shader. `None` on compile error
 /// (caller draws nothing rather than crashing). No child samplers yet.
-fn make_material_shader(
+///
+/// `pub(crate)` so the isolated preview reuses the exact same compile + bind
+/// path as the on-canvas render — the preview can't drift from the real thing.
+pub(crate) fn make_material_shader(
     material: &Material,
     engine: &EngineUniforms,
     local_matrix: Option<&skia::Matrix>,
@@ -222,6 +288,7 @@ pub fn render(ctx: &mut PaintCtx<'_>, shape: &Shape, material: &Material) -> Res
         resolution: (w, h),
         scale: ctx.scale * q,
         time: 0.0,
+        phase: 0.0,
     };
     // Offset the shader so `fragCoord` starts at the shape's top-left.
     let local = skia::Matrix::translate((selrect.x(), selrect.y()));

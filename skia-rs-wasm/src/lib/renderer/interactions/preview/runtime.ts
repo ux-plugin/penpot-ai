@@ -88,6 +88,20 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
   }
 }
 
+/**
+ * Which view a slot renders: a fired `show-in-slot` override (in `slotViews`)
+ * wins over the slot's design-time default (`activeView`). Shared by the preview
+ * runtime and any renderer so the precedence is defined in exactly one place.
+ * Returns undefined for an empty slot (no override and no default).
+ */
+export function activeSlotView(
+  slotViews: Record<string, string>,
+  slotId: string,
+  designDefault: string | undefined,
+): string | undefined {
+  return slotViews[slotId] ?? designDefault
+}
+
 export function runInteraction(ir: PageInteractions, rt: RuntimeState, it: Interaction, env: Record<string, unknown>): RuntimeState {
   if (it.if && !safeEval(it.if, env)) return rt
   let next = rt

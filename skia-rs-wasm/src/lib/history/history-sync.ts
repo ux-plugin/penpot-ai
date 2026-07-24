@@ -24,6 +24,7 @@ export function recordHistoryFrame(params: {
   docMetaUndoChanges?: readonly DocMetaChange[]
   fromHistory: boolean
   saveUndo: boolean
+  groupId?: string
 }): void {
   if (params.fromHistory) return
   if (!params.saveUndo) return
@@ -37,5 +38,6 @@ export function recordHistoryFrame(params: {
     undoChanges: params.undoChanges,
     docMetaRedoChanges: docRedo.length > 0 ? [...docRedo] : undefined,
     docMetaUndoChanges: docUndo.length > 0 ? [...docUndo] : undefined,
+    groupId: params.groupId,
   })
 }

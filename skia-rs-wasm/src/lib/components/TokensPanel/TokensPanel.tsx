@@ -34,11 +34,11 @@ import {
   FolderTree,
   LayoutGrid,
   List,
+  ListFilter,
   Pencil,
   Plus,
   Search,
   SlidersHorizontal,
-  Table2,
   X,
 } from 'lucide-react'
 import { useSnapshot } from 'valtio'
@@ -75,7 +75,7 @@ import {
 import { applyToken, defaultApplyAttrs } from '../../tokens/apply'
 import { type ResolvedToken, type ResolvedTokens } from '../../tokens/resolve'
 import { useResolvedTokens } from '../../tokens/use-resolved-tokens'
-import { TokensTableOverlay } from './TokensTableOverlay'
+import { TokensEditorOverlay } from './TokensEditorOverlay'
 import { checkTokenValue, tokenValuePrefix } from '../../tokens/token-value-rules'
 import {
   buildTokenTree,
@@ -1236,9 +1236,107 @@ function FilterBar({
         title="Filter tokens by theme or set"
         onClick={() => (open ? setOpen(false) : openMenu())}
       >
-        <SlidersHorizontal className="size-3.5 text-muted-foreground" aria-hidden />
+        <ListFilter className="size-3.5 text-muted-foreground" aria-hidden />
         <span>Filter</span>
         {active && <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden />}
+        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      </button>
+      {menu}
+    </>
+  )
+}
+
+// ── View picker (tree / cards / list) — one compact dropdown, not a 3-icon strip ─
+
+type TokenView = 'tree' | 'cards' | 'list'
+
+const VIEW_OPTIONS: { value: TokenView; label: string; icon: typeof FolderTree }[] = [
+  { value: 'tree', label: 'Tree', icon: FolderTree },
+  { value: 'cards', label: 'Cards', icon: LayoutGrid },
+  { value: 'list', label: 'List', icon: List },
+]
+
+function ViewMenu({ view, onChange }: { view: TokenView; onChange: (v: TokenView) => void }) {
+  const [open, setOpen] = useState(false)
+  const [rect, setRect] = useState<DOMRect | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const current = VIEW_OPTIONS.find((o) => o.value === view) ?? VIEW_OPTIONS[0]
+  const CurrentIcon = current.icon
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  const openMenu = () => {
+    setRect(btnRef.current?.getBoundingClientRect() ?? null)
+    setOpen(true)
+  }
+
+  const W = 132
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
+  const left = rect ? Math.round(Math.min(Math.max(8, rect.right - W), vw - W - 8)) : 8
+  const top = rect ? Math.round(rect.bottom + 6) : 8
+
+  const menu =
+    open && rect
+      ? createPortal(
+          <div className="fixed inset-0 z-50" onMouseDown={() => setOpen(false)}>
+            <div
+              className="absolute overflow-hidden rounded-lg border border-border bg-background py-1 shadow-xl"
+              style={{ left, top, width: W }}
+              role="menu"
+              aria-label="Token view"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              {VIEW_OPTIONS.map((o) => {
+                const Icon = o.icon
+                const selected = o.value === view
+                return (
+                  <button
+                    key={o.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    className={cn(
+                      'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/60',
+                      selected ? 'text-foreground' : 'text-muted-foreground',
+                    )}
+                    onClick={() => {
+                      onChange(o.value)
+                      setOpen(false)
+                    }}
+                  >
+                    <Icon className="size-3.5 shrink-0" aria-hidden />
+                    <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                    {selected && <Check className="size-3.5 shrink-0 text-foreground" aria-hidden />}
+                  </button>
+                )
+              })}
+            </div>
+          </div>,
+          document.body,
+        )
+      : null
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        data-token-view-trigger=""
+        className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs text-foreground hover:border-ring"
+        aria-label={`View: ${current.label}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Change view"
+        onClick={() => (open ? setOpen(false) : openMenu())}
+      >
+        <CurrentIcon className="size-3.5 text-muted-foreground" aria-hidden />
         <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       {menu}
@@ -1578,53 +1676,6 @@ function SetsThemesSection({
   )
 }
 
-// ── Advanced (compare table only) ─────────────────────────────────────────────
-
-function AdvancedSection({
-  lib,
-  onOpenTable,
-}: {
-  lib: TokensLib | undefined
-  onOpenTable: () => void
-}) {
-  const [open, setOpen] = useState(false)
-  const hasSets = (lib?.sets.length ?? 0) > 0
-
-  return (
-    <section className="border-t border-border pt-1">
-      <button
-        type="button"
-        className="flex w-full items-center gap-1 rounded-md py-1 pl-1 pr-1 text-left hover:text-foreground"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        {open ? (
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-        ) : (
-          <ChevronRight className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-        )}
-        <span className="text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">
-          Advanced
-        </span>
-      </button>
-      {open && (
-        <div className="px-1 pb-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start text-muted-foreground"
-            disabled={!hasSets}
-            onClick={onOpenTable}
-          >
-            <Table2 className="size-3.5" /> Compare all themes (table)
-          </Button>
-        </div>
-      )}
-    </section>
-  )
-}
-
 // ── Public composite ─────────────────────────────────────────────────────────
 
 /** Case-insensitive search over a definition — matches name, set, or value text. */
@@ -1818,47 +1869,20 @@ export function TokensSections() {
             </button>
           )}
         </div>
-        <div className="inline-flex shrink-0 rounded-md border border-border p-0.5" role="group" aria-label="Token view">
-          <button
-            type="button"
-            aria-label="Tree view"
-            aria-pressed={view === 'tree'}
-            title="Folder tree"
-            className={cn(
-              'rounded p-1 transition-colors',
-              view === 'tree' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
-            )}
-            onClick={() => setView('tree')}
-          >
-            <FolderTree className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            aria-label="Card view"
-            aria-pressed={view === 'cards'}
-            title="Card view"
-            className={cn(
-              'rounded p-1 transition-colors',
-              view === 'cards' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
-            )}
-            onClick={() => setView('cards')}
-          >
-            <LayoutGrid className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            aria-label="List view"
-            aria-pressed={view === 'list'}
-            title="List view"
-            className={cn(
-              'rounded p-1 transition-colors',
-              view === 'list' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
-            )}
-            onClick={() => setView('list')}
-          >
-            <List className="size-3.5" />
-          </button>
-        </div>
+        <ViewMenu view={view} onChange={setView} />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className={cn('shrink-0', tableOpen && 'bg-accent text-accent-foreground')}
+          disabled={(lib?.sets.length ?? 0) === 0}
+          aria-label="Open tokens editor"
+          aria-pressed={tableOpen}
+          title="Open the full tokens editor"
+          onClick={() => setTableOpen(true)}
+        >
+          <SlidersHorizontal className="size-3.5" />
+        </Button>
       </div>
       {view === 'tree' ? (
         <div className="space-y-1 px-1">
@@ -1911,7 +1935,6 @@ export function TokensSections() {
         onNewTheme={() => setCreatingTheme(true)}
         onCloseCreate={() => setCreatingTheme(false)}
       />
-      <AdvancedSection lib={lib} onOpenTable={() => setTableOpen(true)} />
       {editing && lib && (
         <TokenEditor
           lib={lib}
@@ -1922,7 +1945,7 @@ export function TokensSections() {
           onClose={() => setEditing(null)}
         />
       )}
-      {tableOpen && <TokensTableOverlay lib={lib} onClose={() => setTableOpen(false)} />}
+      {tableOpen && <TokensEditorOverlay lib={lib} onClose={() => setTableOpen(false)} />}
     </div>
   )
 }

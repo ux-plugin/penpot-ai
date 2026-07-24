@@ -10,9 +10,9 @@
 import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import type { Object3DEntry, Scene3DDocument, Scene3DInstance } from './scene3d-store'
+import type { Object3DEntry, Scene3DDocument, Scene3DInstance, Vec3 } from './scene3d-store'
 import { activeCamera, type Camera3DEntry } from './scene3d-store'
-import { CAM_FAR, CAM_NEAR, isPersp, orthoFrustum, perspHalfHeightAtDistance } from './camera3d'
+import { CAM_FAR, CAM_NEAR, isOrtho, isPersp, orthoFrustum, perspHalfHeightAtDistance } from './camera3d'
 
 const DEG = Math.PI / 180
 
@@ -20,29 +20,95 @@ const DEG = Math.PI / 180
 const CAM_HOME_POS: readonly [number, number, number] = [2.4, 1.8, 2.8]
 
 /**
+ * Place a freshly-built camera at its pose: the persisted `transform3d` (position +
+ * XYZ-Euler-degree aim) when present, else the canonical 3/4 home view looking at the
+ * origin. The rendered image depends only on position + orientation, so restoring
+ * these two reproduces the saved view exactly (the orbit pivot — not in the model —
+ * is reconstructed by the overlay from the camera's forward ray).
+ */
+export function applyCameraPose(
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+  cam: Camera3DEntry,
+): void {
+  const pose = cam.transform3d
+  // Stamp the pose's document identity on the camera so applyDocToInstance can tell an
+  // EXTERNAL pose change apart from the user's own live orbit (see poseKeyOf).
+  camera.userData.poseKey = poseKeyOf(pose)
+  if (pose) {
+    camera.position.set(pose.position[0], pose.position[1], pose.position[2])
+    camera.rotation.set(
+      pose.rotationEuler[0] * DEG,
+      pose.rotationEuler[1] * DEG,
+      pose.rotationEuler[2] * DEG,
+    )
+  } else {
+    camera.position.set(CAM_HOME_POS[0], CAM_HOME_POS[1], CAM_HOME_POS[2])
+    camera.lookAt(0, 0, 0)
+  }
+}
+
+/**
+ * Identity of a pose AS THE DOCUMENT HOLDS IT, stamped on the live camera whenever we
+ * apply one. It lets `applyDocToInstance` distinguish:
+ *  - an EXTERNAL change (inspector edit, undo) — the doc's key differs from the camera's
+ *    stamp ⇒ re-pose the live camera; and
+ *  - the user's own live orbit — the camera has moved but the doc still holds the last
+ *    committed pose, so the keys MATCH ⇒ leave the camera alone.
+ * Without it the doc would fight OrbitControls every frame (or the pose would never
+ * reach the camera at all, which is exactly what it did before).
+ */
+function poseKeyOf(pose: Camera3DEntry['transform3d']): string {
+  return pose ? JSON.stringify(pose) : 'default'
+}
+
+/**
  * Build the scene's active camera. Perspective is framed by FOV; orthographic by a
  * world half-height chosen to match the perspective framing at the home distance
  * (so a fresh ortho scene reads at the same scale). `orthoHalfHeight` is stashed on
  * `userData` so draw() can rebuild the frustum when the viewport aspect changes.
+ * The pose (position + aim) is then applied from the camera's persisted `transform3d`.
  */
 export function buildCamera(
   cam: Camera3DEntry,
   aspect = 1,
 ): THREE.PerspectiveCamera | THREE.OrthographicCamera {
-  const [px, py, pz] = CAM_HOME_POS
   if (cam.projection === 'orthographic') {
-    const halfH = perspHalfHeightAtDistance(cam.fov, Math.hypot(px, py, pz))
+    // Ortho framing is the camera's own `orthoSize` (persisted, independent of FOV);
+    // absent ⇒ derive a sensible default from the FOV at the home distance so a first
+    // switch to ortho reads at the same scale.
+    const halfH = cam.orthoSize ?? perspHalfHeightAtDistance(cam.fov, Math.hypot(...CAM_HOME_POS))
     const f = orthoFrustum(halfH, aspect)
     const ortho = new THREE.OrthographicCamera(f.left, f.right, f.top, f.bottom, CAM_NEAR, CAM_FAR)
     ortho.userData.orthoHalfHeight = halfH
-    ortho.position.set(px, py, pz)
-    ortho.lookAt(0, 0, 0)
+    applyCameraPose(ortho, cam)
     return ortho
   }
   const persp = new THREE.PerspectiveCamera(cam.fov, aspect, CAM_NEAR, CAM_FAR)
-  persp.position.set(px, py, pz)
-  persp.lookAt(0, 0, 0)
+  applyCameraPose(persp, cam)
   return persp
+}
+
+/** Read a live camera's pose back into a serializable patch (after orbit/pan/dolly, or
+ *  a gizmo drag on a camera-proxy Object3D), mirroring `readTransformFromObject`. */
+export function readCameraPose(
+  camera: THREE.Object3D,
+): { position: Vec3; rotationEuler: Vec3 } {
+  return {
+    position: [camera.position.x, camera.position.y, camera.position.z],
+    rotationEuler: [camera.rotation.x / DEG, camera.rotation.y / DEG, camera.rotation.z / DEG],
+  }
+}
+
+/**
+ * The canonical default pose (the 3/4 home view looking at the origin) as serializable
+ * numbers — what a camera with no `transform3d` yet actually renders at. The inspector
+ * shows this so an unposed camera reads its real values, and materialises it on edit.
+ */
+export function defaultCameraPose(): { position: Vec3; rotationEuler: Vec3 } {
+  const cam = new THREE.PerspectiveCamera()
+  cam.position.set(CAM_HOME_POS[0], CAM_HOME_POS[1], CAM_HOME_POS[2])
+  cam.lookAt(0, 0, 0)
+  return readCameraPose(cam)
 }
 
 function makePrimitiveGeometry(ref: 'cube' | 'sphere' | 'plane'): THREE.BufferGeometry {
@@ -98,7 +164,8 @@ export function buildSceneInstance(
   dir.position.set(3, 5, 4)
   scene.add(ambient, dir)
 
-  const camera = buildCamera(activeCamera(doc), 1)
+  const active = activeCamera(doc)
+  const camera = buildCamera(active, 1)
 
   const objects = new Map<string, THREE.Object3D>()
   for (const entry of doc.objects ?? []) {
@@ -112,7 +179,14 @@ export function buildSceneInstance(
     envRT.dispose()
   }
 
-  return { scene, camera, objects, dispose }
+  return {
+    scene,
+    camera,
+    activeCamId: active.id,
+    objects,
+    cameraHelpers: new Map(),
+    dispose,
+  }
 }
 
 async function loadGLTFInto(parent: THREE.Object3D, url: string): Promise<void> {
@@ -195,15 +269,75 @@ export function applyDocToInstance(
   // rebuilds the instance elsewhere, so here inst.camera's type already matches the
   // active camera; only the perspective FOV can drift within the same instance.
   const activeCam = activeCamera(doc)
+
+  // Re-pose the live camera when the DOCUMENT's pose changed under it (inspector edit,
+  // undo). The pose used to reach the camera only at build time, so editing a camera's
+  // position did nothing until something forced a rebuild. Guarded by the pose key so we
+  // never fight the user's live orbit — during a drag the doc still holds the last
+  // committed pose, so the keys match and the camera is left alone.
+  if (inst.camera.userData.poseKey !== poseKeyOf(activeCam.transform3d)) {
+    applyCameraPose(inst.camera, activeCam)
+  }
+
   if (isPersp(inst.camera) && inst.camera.fov !== activeCam.fov) {
     inst.camera.fov = activeCam.fov
     inst.camera.updateProjectionMatrix()
+  } else if (isOrtho(inst.camera)) {
+    // Ortho framing is driven by `orthoHalfHeight` on userData, which
+    // renderSceneIntoBox turns into the frustum each frame — keep it in sync with the
+    // active camera's persisted `orthoSize` (live-editable via the popover).
+    const halfH =
+      activeCam.orthoSize ?? perspHalfHeightAtDistance(activeCam.fov, Math.hypot(...CAM_HOME_POS))
+    inst.camera.userData.orthoHalfHeight = halfH
   }
   inst.scene.traverse((o) => {
     const light = o as THREE.Light
     if ((light as THREE.AmbientLight).isAmbientLight) light.intensity = 0.35 * doc.env.intensity
     else if ((light as THREE.DirectionalLight).isDirectionalLight) light.intensity = 1.1 * doc.env.intensity
   })
+}
+
+/** What a viewport click resolved to — an object (mesh) or a camera (its frustum/body). */
+export type Scene3DPick = { kind: 'object'; id: string } | { kind: 'camera'; id: string }
+
+/**
+ * Raycast a normalized-device point to the nearest pickable thing in the scene — an
+ * object OR a camera frustum-helper (both selectable from the canvas). `cam` is the
+ * camera the ray is cast from (what's on screen).
+ */
+export function pickScene3d(
+  inst: Scene3DInstance,
+  ndcX: number,
+  ndcY: number,
+  cam: THREE.Camera = inst.camera,
+): Scene3DPick | null {
+  const raycaster = new THREE.Raycaster()
+  // The frustums are thin LineSegments; give the ray a little tolerance so they're
+  // clickable, not just their solid body box.
+  raycaster.params.Line = { threshold: 0.04 }
+  raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), cam)
+
+  // Objects and camera frustums compete in ONE pass so the nearest wins regardless
+  // of kind. Built as a flat candidate list rather than a `consider` closure: an
+  // assignment inside a callback is invisible to TS's narrowing, which would leave
+  // `best` typed as its `null` initializer at the return.
+  const candidates: Array<[Scene3DPick, THREE.Object3D]> = [
+    ...Array.from(inst.objects, ([id, obj]): [Scene3DPick, THREE.Object3D] => [
+      { kind: 'object', id },
+      obj,
+    ]),
+    ...Array.from(inst.cameraHelpers, ([id, h]): [Scene3DPick, THREE.Object3D] => [
+      { kind: 'camera', id },
+      h.group,
+    ]),
+  ]
+
+  let best: { pick: Scene3DPick; dist: number } | null = null
+  for (const [pick, root] of candidates) {
+    const hits = raycaster.intersectObject(root, true)
+    if (hits.length && (!best || hits[0].distance < best.dist)) best = { pick, dist: hits[0].distance }
+  }
+  return best?.pick ?? null
 }
 
 /** Read a live object root's transform back into a serializable patch (after a gizmo drag). */
@@ -215,26 +349,17 @@ export function readTransformFromObject(obj: THREE.Object3D): Object3DEntry['tra
   }
 }
 
-/** Raycast scene-space normalized device coords → the id of the nearest hit object. */
-export function pickObject(inst: Scene3DInstance, ndcX: number, ndcY: number): string | null {
-  const raycaster = new THREE.Raycaster()
-  raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), inst.camera)
-  let best: { id: string; dist: number } | null = null
-  for (const [id, obj] of inst.objects) {
-    const hits = raycaster.intersectObject(obj, true)
-    if (hits.length && (!best || hits[0].distance < best.dist)) best = { id, dist: hits[0].distance }
-  }
-  return best?.id ?? null
-}
-
 export function disposeObject(obj: THREE.Object3D): void {
   obj.traverse((o) => {
-    const mesh = o as THREE.Mesh
-    if (mesh.isMesh) {
-      mesh.geometry?.dispose()
-      const m = mesh.material
-      if (Array.isArray(m)) m.forEach((mm) => mm.dispose())
-      else m?.dispose()
+    // Anything carrying GPU resources — meshes AND lines (the camera-helper frustums are
+    // LineSegments, which an isMesh-only check would silently leak).
+    const res = o as unknown as {
+      geometry?: THREE.BufferGeometry
+      material?: THREE.Material | THREE.Material[]
     }
+    res.geometry?.dispose()
+    const m = res.material
+    if (Array.isArray(m)) m.forEach((mm) => mm.dispose())
+    else m?.dispose()
   })
 }

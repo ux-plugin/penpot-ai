@@ -3,9 +3,12 @@ import { useFontReconnect } from '@/lib/renderer/api/font-reconnect'
 import { CanvasWrapper } from './lib/renderer/canvas-wrapper'
 import { ShapeToolbar } from './lib/components/ShapeToolbar'
 import { CursorHint } from './lib/components/CursorHint'
+import { ShaderDragOverlay } from './lib/components/Overlay/ShaderDragOverlay'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
+import { focusUndo, focusRedo } from './lib/history/focus-undo'
+import { isFocusBufferOpen } from './lib/history/history-store'
 import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } from './lib/persistence'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
@@ -16,6 +19,8 @@ import { ChatPanel } from './lib/components/BuildMode/ChatPanel'
 import { PreviewStage } from './lib/components/BuildMode/PreviewStage'
 import { inspectorTab } from './lib/renderer/signals/inspector-tab'
 import { editorMode } from './lib/renderer/signals/editor-mode'
+import { focusStage } from './lib/renderer/signals/focus-stage'
+import { FocusStage } from './lib/components/FocusStage/FocusStage'
 import { useSignalCoalesced } from './lib/renderer/signals/use-signal-coalesced'
 
 /**
@@ -94,12 +99,19 @@ function App() {
       const t = e.target as HTMLElement | null
       if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
       const mod = e.metaKey || e.ctrlKey
+      // While a focus stage's sub-history buffer is open, Cmd+Z steps through
+      // THAT session's frames (the buffer cursor) instead of reverting the whole
+      // session as one canvas step. On exit the session folds to one canvas
+      // entry. Cmd+Z inside the SkSL editor never reaches here — the input guard
+      // above lets CodeMirror's native text-undo handle it — so this is for
+      // Cmd+Z on the surrounding chrome (uniforms).
+      const focusOpen = isFocusBufferOpen()
       if (mod && e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
-        void undo()
+        void (focusOpen ? focusUndo() : undo())
       } else if (mod && e.key === 'z' && e.shiftKey) {
         e.preventDefault()
-        void redo()
+        void (focusOpen ? focusRedo() : redo())
       } else if (
         import.meta.env.DEV &&
         e.shiftKey && (e.key === 'P' || e.key === 'p') && !mod
@@ -122,10 +134,13 @@ function App() {
 
   const tab = useSignalCoalesced(inspectorTab)
   const motionActive = tab === 'motion'
-  const startSlot = mode === 'design' ? <LayersPanel /> : <BuildLeftRail />
-  const endSlot = <RightSidePanel />
-  const bottomSlot = motionActive ? <TimelinePanel /> : undefined
-  const centerOverlay =
+  // A focus stage (e.g. shader authoring) temporarily claims the center region
+  // and may rebind rails; when none is active the shell composes as usual.
+  const focus = useSignalCoalesced(focusStage)
+  const startSlot = focus?.left ?? (mode === 'design' ? <LayersPanel /> : <BuildLeftRail />)
+  const endSlot = focus?.right ?? <RightSidePanel />
+  const bottomSlot = focus?.bottom ?? (motionActive ? <TimelinePanel /> : undefined)
+  const baseCenter =
     mode === 'design' ? (
       <ShapeToolbar />
     ) : (
@@ -136,6 +151,20 @@ function App() {
         <PreviewStage />
       </div>
     )
+  // A focus session with its own `center` (shader) fully claims the region. One
+  // that declares none (3D edit) contributes ONLY the shared header — the shell
+  // keeps its normal center (ShapeToolbar, where the 3D edit toolbar lives) below
+  // it, so 3D's chrome stays exactly as it was.
+  const centerOverlay = !focus ? (
+    baseCenter
+  ) : focus.center !== undefined ? (
+    <FocusStage session={focus} />
+  ) : (
+    <>
+      <FocusStage session={focus} />
+      {baseCenter}
+    </>
+  )
 
   return (
     <div
@@ -155,6 +184,7 @@ function App() {
           overlays={
             <>
               {mode === 'design' && <CursorHint />}
+              <ShaderDragOverlay />
               <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
               {error && (
                 <div

@@ -7,6 +7,7 @@ use crate::{shapes::ImageFill, utils::uuid_from_u32_quartet};
 use macros::wasm_error;
 
 const FLAG_KEEP_ASPECT_RATIO: u8 = 1 << 0;
+const FLAG_HAS_DEST: u8 = 1 << 1;
 const IMAGE_IDS_SIZE: usize = 32;
 const IMAGE_HEADER_SIZE: usize = 36; // 32 bytes for IDs + 4 bytes for is_thumbnail flag
 
@@ -23,20 +24,32 @@ pub struct RawImageFillData {
     // 16-bit padding here, reserved for future use
     width: i32,
     height: i32,
+    // Optional destination sub-rect (local/selrect coords), valid iff FLAG_HAS_DEST — a
+    // viewport-clipped 3D slice draws only here instead of over the whole shape.
+    dest_l: f32,
+    dest_t: f32,
+    dest_r: f32,
+    dest_b: f32,
 }
 
 impl From<RawImageFillData> for ImageFill {
     fn from(value: RawImageFillData) -> Self {
         let id = uuid_from_u32_quartet(value.a, value.b, value.c, value.d);
         let keep_aspect_ratio = value.flags & FLAG_KEEP_ASPECT_RATIO != 0;
+        let dest = if value.flags & FLAG_HAS_DEST != 0 {
+            Some([value.dest_l, value.dest_t, value.dest_r, value.dest_b])
+        } else {
+            None
+        };
 
-        Self::new(
+        ImageFill::new(
             id,
             value.opacity,
             value.width,
             value.height,
             keep_aspect_ratio,
         )
+        .with_dest(dest)
     }
 }
 
@@ -166,6 +179,75 @@ pub extern "C" fn store_image_from_texture() -> Result<()> {
         ) {
             // FIXME: Review if we should return a RecoverableError
             eprintln!("store_image_from_texture error: {}", msg);
+        }
+        state.touch_shape(ids.shape_id);
+    });
+
+    mem::free_bytes()?;
+    Ok(())
+}
+
+/// Set (create or REPLACE) an image from an existing WebGL framebuffer texture, using
+/// bottom-left origin (a GL render target's natural orientation, unlike a decoded HTML
+/// image). Identical memory layout to `store_image_from_texture`; the difference is it
+/// OVERWRITES an existing entry, so a live source rendered into the same target every
+/// frame (a baked 3D scene) can refresh its Skia image under a stable id.
+///
+/// Memory layout (48 bytes):
+/// - bytes 0-15:  shape UUID
+/// - bytes 16-31: image UUID
+/// - bytes 32-35: is_thumbnail flag (u32)
+/// - bytes 36-39: GL texture ID (u32)
+/// - bytes 40-43: width (i32)
+/// - bytes 44-47: height (i32)
+#[no_mangle]
+#[wasm_error]
+pub extern "C" fn update_image_from_texture() -> Result<()> {
+    let bytes = mem::bytes();
+
+    if bytes.len() < 48 {
+        eprintln!("update_image_from_texture: insufficient data");
+        mem::free_bytes()?;
+        return Err(Error::RecoverableError(
+            "update_image_from_texture: insufficient data".to_string(),
+        ));
+    }
+
+    let ids = ShapeImageIds::try_from(bytes[0..IMAGE_IDS_SIZE].to_vec())
+        .map_err(|_| Error::CriticalError("Invalid image ids".to_string()))?;
+
+    let is_thumbnail_bytes = &bytes[IMAGE_IDS_SIZE..IMAGE_HEADER_SIZE];
+    let is_thumbnail_value =
+        u32::from_le_bytes(is_thumbnail_bytes.try_into().map_err(|_| {
+            Error::CriticalError("Invalid bytes for is_thumbnail flag".to_string())
+        })?);
+    let is_thumbnail = is_thumbnail_value != 0;
+
+    let texture_id = u32::from_le_bytes(
+        bytes[36..40]
+            .try_into()
+            .map_err(|_| Error::CriticalError("Invalid bytes for texture id".to_string()))?,
+    );
+    let width = i32::from_le_bytes(
+        bytes[40..44]
+            .try_into()
+            .map_err(|_| Error::CriticalError("Invalid bytes for width".to_string()))?,
+    );
+    let height = i32::from_le_bytes(
+        bytes[44..48]
+            .try_into()
+            .map_err(|_| Error::CriticalError("Invalid bytes for height".to_string()))?,
+    );
+
+    with_state_mut!(state, {
+        if let Err(msg) = state.render_state_mut().set_image_from_gl_texture(
+            ids.image_id,
+            is_thumbnail,
+            texture_id,
+            width,
+            height,
+        ) {
+            eprintln!("update_image_from_texture error: {}", msg);
         }
         state.touch_shape(ids.shape_id);
     });

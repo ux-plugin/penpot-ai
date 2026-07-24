@@ -1,8 +1,8 @@
 use crate::math::{Matrix, Point, Rect};
 
 use crate::shapes::{
-    merge_fills, Corners, Fill, ImageFill, Path, Shape, Stroke, StrokeCap, StrokeKind, SvgAttrs,
-    Type,
+    merge_fills, Brush, Corners, Fill, ImageFill, Path, Shape, Stroke, StrokeCap, StrokeKind,
+    SvgAttrs, Type,
 };
 use skia_safe::{self as skia, ImageFilter, RRect};
 
@@ -201,6 +201,49 @@ fn draw_inner_stroke_path(
     canvas.restore();
 }
 
+/// Trim a ribbon to the canvas' current clip before filling it.
+///
+/// A ribbon is filled once per tile it overlaps, and Skia processes the WHOLE
+/// path each time — the clip only discards the resulting pixels, not the
+/// tessellation work. At deep zoom the ribbon's device extent dwarfs a single
+/// tile, so nearly all of that work is thrown away: measured at 100x zoom, the
+/// per-tile fill cost rises ~9x while the geometry is unchanged. Intersecting
+/// the geometry with the clip first bounds each tile's cost to what it can
+/// actually show.
+///
+/// Two guards keep this from being a pessimisation:
+/// - Skipped when the paint carries an image filter (drop shadow / blur). Those
+///   sample beyond the clip, so trimming the source would cut the effect off at
+///   tile seams.
+/// - Skipped unless the ribbon is substantially larger than the clip, since the
+///   path op isn't free and buys nothing when the path already fits.
+fn clip_ribbon_to_tile(
+    canvas: &skia::Canvas,
+    ribbon: skia::Path,
+    paint: &skia::Paint,
+) -> skia::Path {
+    if paint.image_filter().is_some() {
+        return ribbon;
+    }
+    let Some(clip) = canvas.local_clip_bounds() else {
+        return ribbon;
+    };
+    let bounds = ribbon.compute_tight_bounds();
+    // Only pay for the op when most of the path lies outside this tile.
+    let path_area = bounds.width() * bounds.height();
+    let clip_area = clip.width() * clip.height();
+    if clip_area <= 0.0 || path_area <= clip_area * 4.0 {
+        return ribbon;
+    }
+    // Pad by a pixel so antialiased edges at the seam match the unclipped fill.
+    let mut pad = clip;
+    pad.outset((1.0, 1.0));
+    match ribbon.op(&skia::Path::rect(pad, None), skia::PathOp::Intersect) {
+        Some(clipped) => clipped,
+        None => ribbon,
+    }
+}
+
 // For outer stroke we draw a center stroke (with double width) and use another path with blend mode clear to remove the inner stroke added
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_stroke_on_path(
@@ -240,6 +283,58 @@ pub(crate) fn draw_stroke_on_path(
         None => skia_path,
     };
 
+    // PowerStroke (variable width): fill a generated ribbon instead of stroking
+    // the spine. Open contours → a ribbon; closed → an annular band.
+    if let Some(Brush::Power { profile, nib }) = stroke.brush {
+        if let Some(ribbon) =
+            super::brush::power_ribbon(&skia_path, stroke.width, profile, nib, &stroke.width_points)
+        {
+            let mut fill = draw_paint.clone();
+            fill.set_style(skia::PaintStyle::Fill);
+            fill.set_path_effect(None);
+            let ribbon = clip_ribbon_to_tile(canvas, ribbon, &fill);
+            canvas.draw_path(&ribbon, &fill);
+            canvas.restore_to_count(save_count);
+            return;
+        }
+    }
+
+    // Any stroke with hand-authored width points (incl. plain Basic / no brush)
+    // renders as a variable-width filled ribbon — variable width is a stroke
+    // property, not a special brush. (Pattern is excluded upstream.)
+    if stroke.brush.is_none() && stroke.width_points.len() >= 4 {
+        if let Some(ribbon) = super::brush::power_ribbon(
+            &skia_path,
+            stroke.width,
+            crate::shapes::WidthProfile::Uniform,
+            0.0,
+            &stroke.width_points,
+        ) {
+            let mut fill = draw_paint.clone();
+            fill.set_style(skia::PaintStyle::Fill);
+            fill.set_path_effect(None);
+            let ribbon = clip_ribbon_to_tile(canvas, ribbon, &fill);
+            canvas.draw_path(&ribbon, &fill);
+            canvas.restore_to_count(save_count);
+            return;
+        }
+    }
+
+    // Texture brush: (variable- or uniform-width) ribbon broken up by grain.
+    if let Some(Brush::Texture { scale, density }) = stroke.brush {
+        if let Some(ribbon) = super::brush::power_ribbon(
+            &skia_path,
+            stroke.width,
+            crate::shapes::WidthProfile::Uniform,
+            0.0,
+            &stroke.width_points,
+        ) {
+            super::brush::draw_grain(canvas, &ribbon, &draw_paint, scale, density);
+            canvas.restore_to_count(save_count);
+            return;
+        }
+    }
+
     match stroke.render_kind(is_open) {
         StrokeKind::Inner => {
             draw_inner_stroke_path(canvas, &skia_path, &draw_paint, blur, antialias);
@@ -260,7 +355,7 @@ pub(crate) fn draw_stroke_on_path(
 /// Builds a closed Skia path for a primitive shape (rect / frame / ellipse) so a
 /// Dynamic stroke can perturb its outline the same way it perturbs a vector
 /// path. Returns `None` for shape types that aren't closed primitives.
-fn closed_primitive_path(shape_type: &Type, rect: &Rect) -> Option<skia::Path> {
+pub(crate) fn closed_primitive_path(shape_type: &Type, rect: &Rect) -> Option<skia::Path> {
     let mut pb = skia::PathBuilder::new();
     match shape_type {
         Type::Rect(_) | Type::Frame(_) => match shape_type.corners() {
@@ -350,6 +445,70 @@ pub(crate) fn draw_body_stroke(
 ) {
     match shape_type {
         Type::Rect(_) | Type::Frame(_) | Type::Circle => {
+            // Basic (no brush) with width points → variable-width band.
+            if stroke.brush.is_none() && stroke.width_points.len() >= 4 {
+                if let Some(prim) = closed_primitive_path(shape_type, selrect) {
+                    if let Some(ribbon) = super::brush::power_ribbon(
+                        &prim,
+                        stroke.width,
+                        crate::shapes::WidthProfile::Uniform,
+                        0.0,
+                        &stroke.width_points,
+                    ) {
+                        let mut fill = stroke.to_paint(selrect, svg_attrs, antialias);
+                        if let Some(shader) = merged_shader.clone() {
+                            fill.set_shader(shader);
+                        }
+                        fill.set_style(skia::PaintStyle::Fill);
+                        fill.set_path_effect(None);
+                        fill.set_image_filter(compose_filters(blur, shadow));
+                        canvas.draw_path(&ribbon, &fill);
+                        return;
+                    }
+                }
+            }
+            // PowerStroke: build a variable-width band around the closed outline.
+            if let Some(Brush::Power { profile, nib }) = stroke.brush {
+                if let Some(prim) = closed_primitive_path(shape_type, selrect) {
+                    if let Some(ribbon) = super::brush::power_ribbon(
+                        &prim,
+                        stroke.width,
+                        profile,
+                        nib,
+                        &stroke.width_points,
+                    ) {
+                        let mut fill = stroke.to_paint(selrect, svg_attrs, antialias);
+                        if let Some(shader) = merged_shader.clone() {
+                            fill.set_shader(shader);
+                        }
+                        fill.set_style(skia::PaintStyle::Fill);
+                        fill.set_path_effect(None);
+                        fill.set_image_filter(compose_filters(blur, shadow));
+                        canvas.draw_path(&ribbon, &fill);
+                        return;
+                    }
+                }
+            }
+            // Texture brush: grainy band around the closed outline.
+            if let Some(Brush::Texture { scale, density }) = stroke.brush {
+                if let Some(prim) = closed_primitive_path(shape_type, selrect) {
+                    if let Some(ribbon) = super::brush::power_ribbon(
+                        &prim,
+                        stroke.width,
+                        crate::shapes::WidthProfile::Uniform,
+                        0.0,
+                        &stroke.width_points,
+                    ) {
+                        let mut base = stroke.to_paint(selrect, svg_attrs, antialias);
+                        if let Some(shader) = merged_shader.clone() {
+                            base.set_shader(shader);
+                        }
+                        base.set_image_filter(compose_filters(blur, shadow));
+                        super::brush::draw_grain(canvas, &ribbon, &base, scale, density);
+                        return;
+                    }
+                }
+            }
             if stroke.dynamic.is_some() {
                 if let Some(skia_path) = closed_primitive_path(shape_type, selrect) {
                     let mut paint = stroke.to_stroked_paint(false, selrect, svg_attrs, antialias);

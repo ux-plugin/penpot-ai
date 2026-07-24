@@ -63,7 +63,30 @@ export default defineConfig(({ command }) => ({
     alias: {
       '@': resolve(__dirname, 'src'),
       '@skia-rs-wasm/common': resolve(__dirname, 'src/lib/common'),
-    }
+    },
+    // Force a single React instance. There's only one copy on disk, but this
+    // guards against a dep resolving its own — the "Invalid hook call / null
+    // dispatcher" class of failure.
+    dedupe: ['react', 'react-dom'],
+  },
+  // Pre-bundle the CodeMirror stack (and React) up front. These are only
+  // reached lazily via the shader focus stage, so Vite would otherwise
+  // discover them mid-session, re-optimize, and tear React across the
+  // already-loaded page. Including them makes the first optimize pass complete.
+  optimizeDeps: {
+    include: [
+      'react',
+      'react-dom',
+      'react-dom/client',
+      'react/jsx-runtime',
+      'react/jsx-dev-runtime',
+      '@uiw/react-codemirror',
+      '@codemirror/view',
+      '@codemirror/state',
+      '@codemirror/lint',
+      '@codemirror/lang-cpp',
+      '@codemirror/autocomplete',
+    ],
   },
   build: {
     lib: {

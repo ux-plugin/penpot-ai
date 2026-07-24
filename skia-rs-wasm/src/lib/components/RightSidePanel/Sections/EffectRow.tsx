@@ -89,9 +89,15 @@ export interface EffectRowProps {
   readOnly: boolean
   onChange: (effect: EffectItem, index: number) => void
   onRemove: (index: number) => void
+  /**
+   * Open a full-screen focus editor for this effect instead of the inline
+   * floating panel. Provided for effects that need the room (materials); when
+   * absent the row falls back to the inline editor.
+   */
+  onOpenFocus?: (index: number) => void
 }
 
-export function EffectRow({ effect, index, readOnly, onChange, onRemove }: EffectRowProps) {
+export function EffectRow({ effect, index, readOnly, onChange, onRemove, onOpenFocus }: EffectRowProps) {
   const isShadow = effect.kind === 'drop-shadow' || effect.kind === 'inner-shadow'
   const isBlur = effect.kind === 'layer-blur' || effect.kind === 'background-blur'
   const isGlass = effect.kind === 'glass'
@@ -273,21 +279,19 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove }: Effec
           </button>
         )}
 
-        {/* Material indicator: code / shader icon (</>) */}
+        {/* Material indicator: code / shader icon (</>) — opens the focus stage
+            (a center-region SkSL workbench) rather than the inline editor. */}
         {isMaterial && (
           <button
             type="button"
-            onClick={toggleEffectExpand}
+            onClick={(e) => (onOpenFocus ? onOpenFocus(index) : toggleEffectExpand(e))}
             className={cn(
               'flex size-5 shrink-0 items-center justify-center rounded border',
               'focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
-              effectExpanded
-                ? 'border-ring bg-accent ring-2 ring-ring'
-                : 'border-border bg-gradient-to-br from-indigo-100 to-purple-100',
+              'border-border bg-gradient-to-br from-indigo-100 to-purple-100',
             )}
-            title={effectExpanded ? 'Close shader editor' : 'Open shader editor'}
-            aria-expanded={effectExpanded}
-            aria-label="Toggle shader editor"
+            title="Open shader editor"
+            aria-label="Open shader editor"
           >
             <svg viewBox="0 0 12 12" className="size-3 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4.5 3.5 2 6l2.5 2.5" />

@@ -1,6 +1,8 @@
 import { app, BrowserWindow, protocol, net, session, shell } from 'electron'
 import { join, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { registerByokIpc } from './byok'
+import { registerChatIpc } from './chat'
 
 const isDev = !app.isPackaged
 
@@ -158,9 +160,13 @@ function createWindow(): BrowserWindow {
   return win
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerAppProtocol()
   configurePermissions()
+  // Register the BYOK keystore IPC (and warm its cache) before the window loads, so
+  // the renderer's first getStatus() call always has a handler waiting.
+  await registerByokIpc()
+  registerChatIpc()
   createWindow()
 
   app.on('activate', () => {

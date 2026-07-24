@@ -14,6 +14,7 @@
  */
 
 import type { WasmModule } from '../wasm-types'
+import type { ShaderGraph } from '../shader-lang/graph/types'
 import { checkContext } from './context'
 import { allocBytes, freeBytes } from '../utils'
 
@@ -26,14 +27,41 @@ export type MaterialUniformValue =
 export interface MaterialUniform {
   name: string
   value: MaterialUniformValue
+  /**
+   * When set, this uniform is bound to a design token (by name): `value` is
+   * *materialized* from the token and kept in sync, so the renderer still sees a
+   * plain value. A color uniform binds a `color` token, a scalar a `number`
+   * token. Cleared on unlink (the last value is kept).
+   */
+  token?: string
 }
 
+/**
+ * Which language a material's `source` is authored in. Skia only *renders*
+ * SkSL, so a non-SkSL source is transpiled to SkSL before it reaches the
+ * renderer (see the render bridge); this tag selects the editor grammar, the
+ * compile/diagnostics path, and whether that transpile step runs. Lives here,
+ * not in `shader-lang`, so `Material` can carry it without importing the
+ * editor stack. Absent ⇒ `'sksl'`.
+ */
+export type ShaderLanguageId = 'sksl' | 'glsl'
+
 export interface Material {
-  /** SkSL source, compiled to this shape's fill shader. */
+  /** Shader source, in `language` (default SkSL). */
   source: string
+  /** Authoring language of `source`. Absent ⇒ `'sksl'`. */
+  language?: ShaderLanguageId
   /** Current uniform values, matched to the shader's uniforms by name. */
   uniforms?: MaterialUniform[]
   hidden?: boolean
+  /**
+   * Node-graph authoring model. When present the graph is the SOURCE OF TRUTH and
+   * `source` is its compiled output (`compileGraphToSksl`) — the renderer still only
+   * ever consumes `source`, so nothing below this layer knows about graphs. Absent
+   * ⇒ the material was authored as code. Type-only import: `graph/types` is pure
+   * declarations, so this doesn't pull the editor stack into the WASM layer.
+   */
+  graph?: ShaderGraph
 }
 
 /** A uniform reflected from compiled SkSL — drives which control the editor shows. */
@@ -55,6 +83,12 @@ export interface MaterialCompileResult {
   uniforms: ReflectedUniform[]
   /** `uniform shader` input names (e.g. `content`/`backdrop`/`field`). */
   inputs: string[]
+  /**
+   * True when the source declares `u_time` — the material is clock-driven, so
+   * the editor offers transport and runs an animation loop. `u_time` is
+   * engine-owned and never appears in `uniforms`, so this is the only signal.
+   */
+  usesTime: boolean
 }
 
 const COMP_COUNT: Record<MaterialUniformValue['type'], number> = {
@@ -67,16 +101,14 @@ const COMP_COUNT: Record<MaterialUniformValue['type'], number> = {
 const align4 = (n: number): number => (n + 3) & ~3
 
 /**
- * Set the custom SkSL material on the current shape. Clears when `material`
- * is null/undefined or has no source.
+ * Stage a material into shared memory in the LE layout above. The caller then
+ * invokes the matching wasm entry point and calls `freeBytes`.
+ *
+ * Shared by the on-canvas path (`_set_shape_material`) and the isolated focus
+ * preview (`_preview_set_material`) so the layout is written in exactly one
+ * place and the two can't drift.
  */
-export function setShapeMaterial(module: WasmModule, material: Material | null | undefined): void {
-  checkContext()
-  if (!material || !material.source) {
-    module._clear_shape_material()
-    return
-  }
-
+function stageMaterialPayload(module: WasmModule, material: Material): void {
   const enc = new TextEncoder()
   const source = enc.encode(material.source)
   const uniforms = material.uniforms ?? []
@@ -124,8 +156,40 @@ export function setShapeMaterial(module: WasmModule, material: Material | null |
       }
     }
   }
+}
 
+/**
+ * Set the custom SkSL material on the current shape. Clears when `material`
+ * is null/undefined or has no source.
+ */
+export function setShapeMaterial(module: WasmModule, material: Material | null | undefined): void {
+  checkContext()
+  if (!material || !material.source) {
+    module._clear_shape_material()
+    return
+  }
+  stageMaterialPayload(module, material)
   module._set_shape_material()
+  freeBytes(module)
+}
+
+/**
+ * Set the material rendered by the isolated focus preview. Same payload as
+ * `setShapeMaterial`, different entry point — the preview keeps its own copy
+ * and never touches the document's shape tree.
+ *
+ * Only stages + parses (no GL work), so it doesn't require the preview context
+ * to be current — but `focus-preview.ts` calls it inside the same make-current
+ * block as the draw anyway, which is harmless and keeps the sequence obvious.
+ */
+export function setPreviewMaterial(module: WasmModule, material: Material | null | undefined): void {
+  if (typeof module._preview_set_material !== 'function') return
+  if (!material || !material.source) {
+    module._preview_clear_material()
+    return
+  }
+  stageMaterialPayload(module, material)
+  module._preview_set_material()
   freeBytes(module)
 }
 
@@ -150,6 +214,7 @@ export function compileMaterial(module: WasmModule, source: string): MaterialCom
       error: 'Renderer is out of date — rebuild the WASM (pnpm --filter skia-rs-wasm build:wasm).',
       uniforms: [],
       inputs: [],
+      usesTime: false,
     }
   }
 
@@ -197,12 +262,14 @@ export function compileMaterial(module: WasmModule, source: string): MaterialCom
     for (let i = 0; i < inputCount; i++) {
       inputs.push(readStr())
     }
+    const usesTime = readU32() === 1
 
     return {
       ok,
       error: error.length > 0 ? error : undefined,
       uniforms,
       inputs,
+      usesTime,
     }
   } finally {
     // Always release the staged buffer — even if parsing throws — so a failure

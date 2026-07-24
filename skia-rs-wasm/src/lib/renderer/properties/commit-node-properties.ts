@@ -193,7 +193,13 @@ export async function commitNodePartialUpdate(
   id: string,
   nodeBefore: PenpotNode,
   partial: Partial<PenpotNode>,
-  pageId: string | null | undefined
+  pageId: string | null | undefined,
+  /**
+   * Focus-session grouping tag for the recorded frame (see CommitFrame). A
+   * focus stage passes its session id so its idle-coalesced commits undo as one
+   * step on the canvas; ordinary panel edits omit it.
+   */
+  groupId?: string
 ): Promise<void> {
   const redoAssign: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(partial)) {
@@ -220,6 +226,7 @@ export async function commitNodePartialUpdate(
       redoChanges: bundle.redoChanges,
       undoChanges: bundle.undoChanges,
       pageId: pid,
+      groupId,
     })
     return
   }
@@ -314,6 +321,7 @@ export async function commitNodePartialUpdate(
     redoChanges: combinedRedo,
     undoChanges: combinedUndo,
     pageId: pid,
+    groupId,
   })
 
   clearModifierOverlay()

@@ -199,3 +199,55 @@ pub extern "C" fn set_shape_stroke_dynamic(frequency: f32, wiggle: f32, smoothen
         }
     });
 }
+
+fn width_profile_from_u8(value: u8) -> shapes::WidthProfile {
+    match value {
+        1 => shapes::WidthProfile::TaperBoth,
+        2 => shapes::WidthProfile::TaperStart,
+        3 => shapes::WidthProfile::TaperEnd,
+        4 => shapes::WidthProfile::Bulge,
+        5 => shapes::WidthProfile::Custom,
+        _ => shapes::WidthProfile::Uniform,
+    }
+}
+
+/// Set hand-authored width points on the current shape's last stroke. Values
+/// (`[t, left, right, …]`, f32 little-endian) are read from the shared byte
+/// buffer, mirroring the `set_shape_stroke_dashes` convention.
+#[no_mangle]
+pub extern "C" fn set_shape_stroke_width_points() {
+    with_current_shape_mut!(state, |shape: &mut Shape| {
+        let bytes = mem::bytes();
+        let points: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        if let Some(stroke) = shape.strokes.last_mut() {
+            stroke.set_width_points(points);
+        }
+    });
+}
+
+/// Select a PowerStroke (variable-width) brush on the current shape's last
+/// stroke. `profile` is the width-envelope index; `nib` is the calligraphic nib
+/// angle in degrees (`<= 0` = round / no nib).
+#[no_mangle]
+pub extern "C" fn set_shape_stroke_brush_power(profile: u8, nib: f32) {
+    let profile = width_profile_from_u8(profile);
+    with_current_shape_mut!(state, |shape: &mut Shape| {
+        if let Some(stroke) = shape.strokes.last_mut() {
+            stroke.set_brush(shapes::Brush::Power { profile, nib });
+        }
+    });
+}
+
+/// Select a Texture ("stretch") brush on the current shape's last stroke.
+/// `scale` is the grain feature size (world units); `density` is solidity 0..1.
+#[no_mangle]
+pub extern "C" fn set_shape_stroke_brush_texture(scale: f32, density: f32) {
+    with_current_shape_mut!(state, |shape: &mut Shape| {
+        if let Some(stroke) = shape.strokes.last_mut() {
+            stroke.set_brush(shapes::Brush::Texture { scale, density });
+        }
+    });
+}

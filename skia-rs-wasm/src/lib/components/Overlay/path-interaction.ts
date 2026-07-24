@@ -16,7 +16,7 @@
  * Pure and unit-tested — no React, no signals. Consumers pass plain inputs.
  */
 
-import { Link2, Move, Plus, Spline } from 'lucide-react'
+import { Link2, Move, Plus, Spline, UnfoldVertical } from 'lucide-react'
 import type { HintIcon } from '../CursorHint'
 import { PEN_CURSOR, SELECT_CURSOR } from '../cursors'
 import type { PathSubTool } from '../../renderer/machine/canvas-machine'
@@ -28,7 +28,7 @@ export type { PathSubTool }
 /** What the overlay's hit-test found under the cursor. */
 export type PathHover = 'node' | 'node-target' | 'edge' | 'empty'
 
-export type PathMode = 'pan' | 'move' | 'bend' | 'add-edge' | 'add-free' | 'connect' | 'idle'
+export type PathMode = 'pan' | 'move' | 'bend' | 'add-edge' | 'add-free' | 'connect' | 'idle' | 'width'
 
 export interface PathInteractionInput {
   subTool: PathSubTool
@@ -52,13 +52,20 @@ export interface PathResolved {
 
 /** The sub-tool the user effectively has, with Alt as a transient bend override
  *  from ANY base tool (Move/Add/Bend + Alt ⇒ Bend). Used for the toolbar
- *  highlight, so the lit sub-tool follows Alt the moment it's held. */
+ *  highlight, so the lit sub-tool follows Alt the moment it's held.
+ *
+ *  Width is the one carve-out: it has no anchors to bend, and it owns Alt itself
+ *  (Alt-drag = move one side only), so Alt must not steal it away to Bend. */
 export function effectiveSubTool(subTool: PathSubTool, altHeld: boolean): PathSubTool {
+  if (subTool === 'width') return 'width'
   return altHeld ? 'bend' : subTool
 }
 
 function resolveMode(i: PathInteractionInput): PathMode {
   if (i.panHeld) return 'pan'
+  // Width resolves before the Alt→Bend override — inside the Width tool, Alt
+  // means "drag one side", not "bend". Pan still preempts it.
+  if (i.subTool === 'width') return 'width'
   // Alt is a transient Bend override from any sub-tool (incl. Add): over a node
   // it bends; over empty/edge there's nothing to bend, so it idles — which also
   // suppresses the Add ghost, so Add + Alt clearly reads as "bend", not "add".
@@ -80,6 +87,7 @@ const CURSOR: Record<PathMode, string> = {
   move: SELECT_CURSOR,
   bend: SELECT_CURSOR,
   idle: SELECT_CURSOR,
+  width: SELECT_CURSOR,
   'add-edge': PEN_CURSOR,
   'add-free': PEN_CURSOR,
   connect: PEN_CURSOR,
@@ -90,6 +98,7 @@ const HINT: Record<PathMode, HintIcon | null> = {
   idle: null,
   move: Move,
   bend: Spline,
+  width: UnfoldVertical,
   'add-edge': Plus,
   'add-free': Plus,
   connect: Link2,

@@ -28,6 +28,12 @@ export interface WasmModule {
     ): number
     makeContextCurrent(handle: number): void
     getContext(handle: number): WebGL2RenderingContext | null
+    /**
+     * The context Emscripten currently has current. Read `.handle` before
+     * switching to the preview context so it can be restored afterwards —
+     * safer than assuming the previous one was the main canvas.
+     */
+    readonly currentContext?: { handle: number; GLctx: WebGL2RenderingContext | null }
     textures: { [key: number]: WebGLTexture }
     getNewId(objects: { [key: number]: unknown }): number
   }
@@ -160,6 +166,9 @@ export interface WasmModule {
   _set_shape_stroke_dashes(): void
   _set_shape_stroke_props(join: number, cap: number, miter: number): void
   _set_shape_stroke_dynamic(frequency: number, wiggle: number, smoothen: number): void
+  _set_shape_stroke_brush_power(profile: number, nib: number): void
+  _set_shape_stroke_brush_texture(scale: number, density: number): void
+  _set_shape_stroke_width_points(): void
 
   // Shadows
   _add_shape_shadow(
@@ -209,6 +218,25 @@ export interface WasmModule {
   // returns a pointer to a result buffer the caller reads then frees.
   _compile_material(): number
 
+  // Isolated focus-mode preview — renders ONE material standalone into a
+  // second GL context (the preview canvas). The caller MUST make that context
+  // current before every one of these and restore the previous one after; the
+  // Rust side binds whatever context is current. See `focus-preview.ts`.
+  _preview_init(width: number, height: number): boolean
+  _preview_resize(width: number, height: number): void
+  _preview_set_material(): void
+  _preview_clear_material(): void
+  _preview_draw(time: number, phase: number): void
+  /** Drop GPU resources, keep the context warm (focus closed). */
+  _preview_purge(): void
+  /** Teardown for a LIVE context (frees via GL — must be made current first). */
+  _preview_destroy(): void
+  /**
+   * Teardown for a context that is GONE (`webglcontextlost`): abandons Skia's
+   * resources without issuing GL. Must NOT be wrapped in make-current.
+   */
+  _preview_abandon(): void
+
   // Corners
   _set_shape_corners(r1: number, r2: number, r3: number, r4: number): void
 
@@ -249,6 +277,7 @@ export interface WasmModule {
   // Images
   _store_image(): void
   _store_image_from_texture(): void
+  _update_image_from_texture(): void
   _is_image_cached(a: number, b: number, c: number, d: number, is_thumbnail: boolean): number
 
   // Set transient "force layout-absolute" overrides from a heap list of 16-byte

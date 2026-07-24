@@ -1,8 +1,11 @@
 /**
- * PlaybackController — a gated animation clock. While playing it advances a
- * playhead off a wall clock, evaluates its timelines each frame, and pushes the
- * resulting modifiers to a sink; while idle it schedules nothing (no 60fps loop
- * when nothing animates). `seek` renders one discrete frame for scrubbing.
+ * PlaybackController — timeline playback. It owns a `Ticker` (the gated clock);
+ * each frame it evaluates its timelines at the playhead and pushes the resulting
+ * modifiers to a sink. `seek` renders one discrete frame for scrubbing.
+ *
+ * The clock itself lives in `anim/ticker` because it isn't specific to
+ * timelines — the shader focus preview drives `u_time` off the same one. What's
+ * here is the timeline half: evaluate → modifiers → sink.
  *
  * The clock and frame scheduler are injectable so the controller is testable
  * without a browser; they default to performance.now / requestAnimationFrame. A
@@ -13,6 +16,7 @@
 import type { Timeline } from '../anim/types'
 import { evaluateTimeline } from '../anim/evaluate'
 import type { EvalContext } from '../anim/sample'
+import { Ticker } from '../anim/ticker'
 import { propsToModifier, type Modifier, type Pivot } from './modifier'
 import type { SampledProperties } from './props'
 
@@ -41,54 +45,51 @@ export interface PlaybackOptions {
 
 export class PlaybackController {
   private timelines: Timeline[] = []
-  private durationMs = 0
-  private timeMs = 0
-  private playing = false
-  private startWall = 0
-  private handle: number | null = null
-  private loopEnabled = false
   private pivots: Map<string, Pivot>
 
+  private readonly ticker: Ticker
   private readonly sink: ModifierSink
-  private readonly now: () => number
-  private readonly schedule: (cb: () => void) => number
-  private readonly cancel: (handle: number) => void
   private readonly getParams: () => Record<string, number>
   private readonly evaluateFrame?: (ctx: EvalContext) => Map<string, Record<string, number>> | null
   private readonly onFrame?: (timeMs: number) => void
-  private readonly onStop?: () => void
 
   constructor(sink: ModifierSink, options: PlaybackOptions = {}) {
     this.sink = sink
-    this.now = options.now ?? (() => performance.now())
-    this.schedule = options.schedule ?? ((cb) => requestAnimationFrame(cb))
-    this.cancel = options.cancel ?? ((h) => cancelAnimationFrame(h))
     this.pivots = options.pivots ?? new Map()
     this.getParams = options.params ?? (() => ({}))
     this.evaluateFrame = options.evaluateFrame
     this.onFrame = options.onFrame
-    this.onStop = options.onStop
+    this.ticker = new Ticker({
+      now: options.now,
+      schedule: options.schedule,
+      cancel: options.cancel,
+      onTick: (t) => this.renderFrame(t),
+      onStop: options.onStop,
+    })
   }
 
   get currentTime(): number {
-    return this.timeMs
+    return this.ticker.currentTime
   }
 
   get duration(): number {
-    return this.durationMs
+    return this.ticker.duration
   }
 
   get isPlaying(): boolean {
-    return this.playing
+    return this.ticker.isPlaying
   }
 
   setTimelines(timelines: Timeline[]): void {
     this.timelines = timelines
-    this.durationMs = timelines.reduce((max, t) => Math.max(max, t.duration), 0)
+    // The master duration is the longest timeline; each timeline still owns its
+    // own loop/clamp. Zero (no timelines) makes the Ticker's `play` a no-op,
+    // which is exactly the old empty-timeline guard.
+    this.ticker.setDuration(timelines.reduce((max, t) => Math.max(max, t.duration), 0))
   }
 
   setLoop(loop: boolean): void {
-    this.loopEnabled = loop
+    this.ticker.setLoop(loop)
   }
 
   /** Per-target rotation/scale pivot (shape centre). Recompute before play/seek. */
@@ -97,42 +98,16 @@ export class PlaybackController {
   }
 
   play(): void {
-    if (this.playing || this.timelines.length === 0) return
-    this.playing = true
-    this.startWall = this.now() - this.timeMs
-    this.handle = this.schedule(this.tick)
+    this.ticker.play()
   }
 
   pause(): void {
-    if (!this.playing) return
-    this.playing = false
-    if (this.handle !== null) {
-      this.cancel(this.handle)
-      this.handle = null
-    }
+    this.ticker.pause()
   }
 
   /** Jump to `t` (ms) and render that frame once, without starting playback. */
   seek(t: number): void {
-    this.timeMs = this.normalize(t)
-    if (this.playing) this.startWall = this.now() - this.timeMs
-    this.renderFrame(this.timeMs)
-  }
-
-  private tick = (): void => {
-    if (!this.playing) return
-    const raw = this.now() - this.startWall
-    if (!this.loopEnabled && raw >= this.durationMs) {
-      this.timeMs = this.durationMs
-      this.renderFrame(this.timeMs)
-      this.playing = false
-      this.handle = null
-      this.onStop?.()
-      return
-    }
-    this.timeMs = this.normalize(raw)
-    this.renderFrame(this.timeMs)
-    this.handle = this.schedule(this.tick)
+    this.ticker.seek(t)
   }
 
   private renderFrame(t: number): void {
@@ -162,13 +137,4 @@ export class PlaybackController {
     return out
   }
 
-  /** Clamp (or wrap when looping) a master time into the timeline range. */
-  private normalize(t: number): number {
-    if (this.durationMs <= 0) return 0
-    if (this.loopEnabled) {
-      const m = t % this.durationMs
-      return m < 0 ? m + this.durationMs : m
-    }
-    return Math.max(0, Math.min(t, this.durationMs))
-  }
 }

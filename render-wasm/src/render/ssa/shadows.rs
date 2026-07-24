@@ -23,7 +23,7 @@
 use skia_safe::{self as skia, Paint, RRect};
 
 use crate::error::Result;
-use crate::shapes::{Shape, Stroke, Type};
+use crate::shapes::{Brush, Shape, Stroke, StrokeKind, Type, WidthProfile};
 
 use super::PaintCtx;
 
@@ -42,6 +42,11 @@ pub fn render_drop_shadows(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> 
     // transform via a save/concat/restore around its silhouette draw.
     let tile_xform = ctx.tile_transform_matrix();
     let shadows: Vec<_> = shape.drop_shadows_visible().cloned().collect();
+    // Cap the blur kernel to the tile margin (≈3σ) — same bound
+    // `render_background_blur` uses. Without it the sigma scales with zoom and
+    // the per-tile filter cost explodes. See `get_drop_shadow_filter_capped`.
+    let max_dev_sigma = ctx.margins.width as f32 / 3.0;
+    let scale = ctx.scale;
 
     // For Frame/Group with recursive children, gather descendants whose
     // silhouettes should fuse into the same shadow. Matches legacy
@@ -63,7 +68,7 @@ pub fn render_drop_shadows(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> 
         canvas.concat(&tile_xform);
 
         for shadow in &shadows {
-            let Some(filter) = shadow.get_drop_shadow_filter() else {
+            let Some(filter) = shadow.get_drop_shadow_filter_capped(scale, max_dev_sigma) else {
                 continue;
             };
             let mut shadow_paint = Paint::default();
@@ -80,14 +85,24 @@ pub fn render_drop_shadows(ctx: &mut PaintCtx<'_>, shape: &Shape) -> Result<()> 
             silhouette.set_color(skia::Color::BLACK);
             silhouette.set_anti_alias(antialias);
 
+            // How far this shadow's filter reaches past the silhouette, in
+            // device px, so the per-tile silhouette clip below keeps enough
+            // source to feed it. Isotropic terms only (blur ~3σ using the
+            // CAPPED sigma, plus spread) — the offset is directional and is
+            // handled by translating the clip rather than padding it.
+            let sigma_dev =
+                (crate::shapes::radius_to_sigma(shadow.blur) * scale).min(max_dev_sigma);
+            let reach_dev = 3.0 * sigma_dev + shadow.spread * scale;
+            let offset_dev = (shadow.offset.0 * scale, shadow.offset.1 * scale);
+
             // Frame/group: draw the container's own silhouette plus
             // every recursive child's silhouette accumulated into the
             // same save_layer. The single filter then operates on the
             // fused alpha mask. Each shape gets its OWN centered shape
             // transform — selrect is in shape-local coords, not world.
-            draw_with_shape_transform(canvas, shape, &silhouette);
+            draw_with_shape_transform(canvas, shape, &silhouette, reach_dev, offset_dev);
             for child in &recursive_children {
-                draw_with_shape_transform(canvas, child, &silhouette);
+                draw_with_shape_transform(canvas, child, &silhouette, reach_dev, offset_dev);
             }
 
             canvas.restore();
@@ -254,19 +269,192 @@ fn walk_children(ctx: &PaintCtx<'_>, parent: &Shape, out: &mut Vec<Shape>) {
     }
 }
 
+/// Trim a shadow silhouette to the current tile before filling it.
+///
+/// Measured: the silhouette draw is 94% of all drop-shadow cost at deep zoom
+/// (~1257 µs per tile, against 64 µs for the blur itself and 8 µs for the
+/// composite) — because a ribbon silhouette is filled in full for every tile it
+/// touches, and Skia tessellates the whole path each time even though the clip
+/// throws almost all of it away. Same waste, and same remedy, as
+/// `strokes::clip_ribbon_to_tile`.
+///
+/// The filter samples *outside* the tile, so the kept region is the tile shifted
+/// back by the shadow's offset and grown by its isotropic reach (blur + spread);
+/// otherwise shadows would be cut off at tile seams.
+fn clip_silhouette_to_tile(
+    canvas: &skia::Canvas,
+    sil: skia::Path,
+    reach_dev: f32,
+    offset_dev: (f32, f32),
+) -> skia::Path {
+    let Some(clip) = canvas.local_clip_bounds() else {
+        return sil;
+    };
+    let b = sil.compute_tight_bounds();
+    // Only pay for the path op when most of the silhouette is off-tile.
+    if b.width() * b.height() <= clip.width() * clip.height() * 4.0 {
+        return sil;
+    }
+    // Device -> local units, using the canvas' own matrix, so intervening shape
+    // transforms can't skew the padding.
+    let m = canvas.local_to_device_as_3x3();
+    let sx = (m.scale_x() * m.scale_x() + m.skew_y() * m.skew_y()).sqrt();
+    let inv = if sx > 1e-6 { 1.0 / sx } else { 1.0 };
+    // A shadow displaced by `offset` draws tile pixel `p` from source pixel
+    // `p - offset`, so the region we must keep is the tile TRANSLATED back by
+    // the offset — not the tile expanded by it in every direction. Expanding
+    // symmetrically is correct but wildly loose: at deep zoom `offset * scale`
+    // dwarfs both the blur reach and the tile, and the clip stops clipping.
+    let mut r = clip;
+    r.offset((-offset_dev.0 * inv, -offset_dev.1 * inv));
+    // Blur (~3σ) and spread do reach in every direction.
+    let pad = reach_dev * inv;
+    r.outset((pad + 1.0, pad + 1.0));
+    match sil.op(&skia::Path::rect(r, None), skia::PathOp::Intersect) {
+        Some(clipped) => clipped,
+        None => sil,
+    }
+}
+
 /// Concat the shape's own centered transform on top of the existing
 /// canvas matrix (which carries only the tile transform), then draw
 /// the silhouette, then restore. Used for the recursive frame/group
 /// path where each child gets its own transform.
-fn draw_with_shape_transform(canvas: &skia::Canvas, shape: &Shape, paint: &Paint) {
+fn draw_with_shape_transform(
+    canvas: &skia::Canvas,
+    shape: &Shape,
+    paint: &Paint,
+    reach_dev: f32,
+    offset_dev: (f32, f32),
+) {
     let center = shape.center();
     let mut shape_matrix = shape.transform;
     shape_matrix.post_translate(center);
     shape_matrix.pre_translate(-center);
     canvas.save();
     canvas.concat(&shape_matrix);
-    draw_silhouette(canvas, shape, paint);
+    draw_drop_silhouette(canvas, shape, paint, reach_dev, offset_dev);
     canvas.restore();
+}
+
+/// The variable-width ribbon outline for a ribbon stroke (Power / Texture / a
+/// plain stroke carrying width points), or `None` for a plain / pattern stroke.
+fn ribbon_for_stroke(stroke: &Stroke, spine: &skia::Path) -> Option<skia::Path> {
+    match stroke.brush {
+        Some(Brush::Power { profile, nib }) => {
+            crate::render::brush::power_ribbon(spine, stroke.width, profile, nib, &stroke.width_points)
+        }
+        Some(Brush::Texture { .. }) => crate::render::brush::power_ribbon(
+            spine,
+            stroke.width,
+            WidthProfile::Uniform,
+            0.0,
+            &stroke.width_points,
+        ),
+        None if stroke.width_points.len() >= 4 => crate::render::brush::power_ribbon(
+            spine,
+            stroke.width,
+            WidthProfile::Uniform,
+            0.0,
+            &stroke.width_points,
+        ),
+        _ => None,
+    }
+}
+
+/// The true painted silhouette of one stroke, as a fillable path: the
+/// variable-width RIBBON for a ribbon stroke, otherwise the stroked outline of
+/// `geom` honouring width, alignment (inner/center/outer), and dashes — mirroring
+/// `draw_inner/outer_stroke_path` (doubled width clipped to the shape). `None`
+/// for a zero-width or unstrokeable stroke.
+fn stroke_silhouette_path(stroke: &Stroke, geom: &skia::Path, is_open: bool) -> Option<skia::Path> {
+    if let Some(ribbon) = ribbon_for_stroke(stroke, geom) {
+        return Some(ribbon);
+    }
+    let w = stroke.width;
+    if w <= 0.0 {
+        return None;
+    }
+    let kind = stroke.render_kind(is_open);
+    // Inner/outer paint a doubled-width centered band then clip to the shape;
+    // center is a plain w-wide band.
+    let stroke_w = if matches!(kind, StrokeKind::Center) { w } else { w * 2.0 };
+    let mut sp = Paint::default();
+    sp.set_style(skia::PaintStyle::Stroke);
+    sp.set_stroke_width(stroke_w);
+    if !stroke.dashes.is_empty() {
+        if let Some(dash) = skia::PathEffect::dash(&stroke.dashes, 0.0) {
+            sp.set_path_effect(dash);
+        }
+    }
+    let mut outline = skia::Path::default();
+    if !skia::path_utils::fill_path_with_paint(geom, &sp, &mut outline, None, None) {
+        return None;
+    }
+    match kind {
+        StrokeKind::Center => Some(outline),
+        StrokeKind::Inner => outline.op(geom, skia::PathOp::Intersect),
+        StrokeKind::Outer => outline.op(geom, skia::PathOp::Difference),
+    }
+}
+
+/// Drop-shadow silhouette for any leaf shape: follows what is actually painted —
+/// the fill interior only when the shape has a fill (frames always fill their
+/// rect, as containers), plus each visible stroke's true shape (ribbon outline,
+/// or the aligned/dashed stroke band). This is why a stroke-only shape no longer
+/// casts a filled-center shadow and a variable-width stroke's shadow follows the
+/// ribbon rather than the vector path — now for rect / circle / frame too.
+fn draw_drop_silhouette(
+    canvas: &skia::Canvas,
+    shape: &Shape,
+    paint: &Paint,
+    reach_dev: f32,
+    offset_dev: (f32, f32),
+) {
+    // Geometry path (+ whether it's an open contour) in the space the current
+    // canvas expects, per shape type.
+    let geom: Option<(skia::Path, bool)> = match &shape.shape_type {
+        Type::Path(_) | Type::Bool(_) => shape.shape_type.path().and_then(|p| {
+            shape.to_path_transform().map(|t| {
+                let sk = p.to_skia_path(shape.svg_attrs.as_ref()).make_transform(&t);
+                (sk, p.is_open())
+            })
+        }),
+        Type::Rect(_) | Type::Frame(_) | Type::Circle => {
+            crate::render::strokes::closed_primitive_path(&shape.shape_type, &shape.selrect)
+                .map(|p| (p, false))
+        }
+        _ => None,
+    };
+    let Some((geom, is_open)) = geom else {
+        // Text / other: leave to the geometry silhouette (handled elsewhere).
+        draw_silhouette(canvas, shape, paint);
+        return;
+    };
+
+    // Frames are containers — their rect always casts a shadow even without a
+    // fill; other shapes fill only when they actually have a fill.
+    let always_fill = matches!(shape.shape_type, Type::Frame(_));
+    if always_fill || shape.has_fills() {
+        // Same per-tile trimming as the stroke silhouettes below — a filled
+        // shape's geometry is just as oversized at deep zoom.
+        let g = clip_silhouette_to_tile(canvas, geom.clone(), reach_dev, offset_dev);
+        canvas.draw_path(&g, paint);
+    }
+    // Each stroke's silhouette is built on the SAME spine the visible render uses,
+    // including that stroke's Dynamic (hand-drawn) perturbation — otherwise the
+    // shadow follows the un-perturbed vector path instead of the wiggled stroke.
+    let seed = crate::render::dynamic::seed_from_bytes(shape.id.as_bytes());
+    for stroke in shape.visible_strokes() {
+        let spine = match &stroke.dynamic {
+            Some(dynamic) => crate::render::dynamic::apply_dynamic(&geom, dynamic, seed),
+            None => geom.clone(),
+        };
+        if let Some(sil) = stroke_silhouette_path(stroke, &spine, is_open) {
+            let sil = clip_silhouette_to_tile(canvas, sil, reach_dev, offset_dev);
+            canvas.draw_path(&sil, paint);
+        }
+    }
 }
 
 /// Draw the shape's silhouette (geometry-only, given paint) on the

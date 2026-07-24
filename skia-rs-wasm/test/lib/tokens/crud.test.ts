@@ -14,6 +14,7 @@ import {
   createToken,
   createTokenSet,
   createTokenTheme,
+  effectiveActiveTokens,
   type TokensLib,
 } from '../../../src/lib/tokens/types'
 import {
@@ -25,6 +26,7 @@ import {
   deleteTokenSet,
   modifyToken,
   moveToken,
+  reorderSet,
   setActiveThemes,
 } from '../../../src/lib/tokens/crud'
 import { makeBaseDocument, resetWorkspace } from '../fixtures'
@@ -153,6 +155,50 @@ describe('deleteTokenSet', () => {
 
     await redo()
     expect(setNames()).toEqual(['a', 'c'])
+  })
+})
+
+describe('reorderSet (precedence)', () => {
+  it('moves a set to a new index and undo restores the order', async () => {
+    await setDocument(makeBaseDocument())
+    await addTokenSet(createTokenSet({ id: 'a', name: 'a' }))
+    await addTokenSet(createTokenSet({ id: 'b', name: 'b' }))
+    await addTokenSet(createTokenSet({ id: 'c', name: 'c' }))
+    expect(setNames()).toEqual(['a', 'b', 'c'])
+
+    await reorderSet('c', 0) // c to the front
+    expect(setNames()).toEqual(['c', 'a', 'b'])
+
+    await undo()
+    expect(setNames()).toEqual(['a', 'b', 'c'])
+
+    await redo()
+    expect(setNames()).toEqual(['c', 'a', 'b'])
+  })
+
+  it('changes which set wins resolution (later in lib order overrides)', async () => {
+    await setDocument(makeBaseDocument())
+    const base = createTokenSet({ id: 's-base', name: 'base' })
+    base.tokens = [createToken({ id: 't1', name: 'color.bg', type: 'color', value: '#FFFFFF' })]
+    const dark = createTokenSet({ id: 's-dark', name: 'dark' })
+    dark.tokens = [createToken({ id: 't2', name: 'color.bg', type: 'color', value: '#000000' })]
+    await addTokenSet(base)
+    await addTokenSet(dark) // [base, dark] → dark is last, so dark wins
+    expect(effectiveActiveTokens(lib()).get('color.bg')?.value).toBe('#000000')
+
+    await reorderSet('s-dark', 0) // [dark, base] → base is now last, base wins
+    expect(effectiveActiveTokens(lib()).get('color.bg')?.value).toBe('#FFFFFF')
+
+    await undo()
+    expect(effectiveActiveTokens(lib()).get('color.bg')?.value).toBe('#000000')
+  })
+
+  it('is a no-op when moving to the same index', async () => {
+    await setDocument(makeBaseDocument())
+    await addTokenSet(createTokenSet({ id: 'a', name: 'a' }))
+    await addTokenSet(createTokenSet({ id: 'b', name: 'b' }))
+    await reorderSet('a', 0)
+    expect(setNames()).toEqual(['a', 'b'])
   })
 })
 

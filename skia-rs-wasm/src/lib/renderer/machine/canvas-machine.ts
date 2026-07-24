@@ -25,8 +25,9 @@ export type DrawTool =
   | 'polygon'
   | 'star'
 
-/** Vector-edit sub-tool (Move / Add points / Bend), held while in `pathEditing`. */
-export type PathSubTool = 'move' | 'add' | 'bend'
+/** Vector-edit sub-tool (Move / Add points / Bend / Width), held while in
+ *  `pathEditing`. `width` sculpts the stroke's variable-width profile. */
+export type PathSubTool = 'move' | 'add' | 'bend' | 'width'
 
 /** Gizmo sub-tool (translate / rotate / scale), held while in `scene3dEditing`. */
 export type Scene3DGizmoMode = 'translate' | 'rotate' | 'scale'

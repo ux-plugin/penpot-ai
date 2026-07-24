@@ -12,6 +12,28 @@ import type { Stroke } from 'penpot-exporter/types'
 export type StrokeDashCap = 'butt' | 'round' | 'square'
 export type StrokeBasicJoin = 'miter' | 'round' | 'bevel'
 
+/** Rendering engine that draws a stroke. `basic` = the standard Skia vector
+ *  outline; the rest are the phased brush engines (see the brush plan). */
+export type StrokeBrushEngine =
+  | 'basic'
+  | 'power'
+  | 'roughen'
+  | 'sketch'
+  | 'texture-dab'
+  | 'texture-stretch'
+
+/**
+ * Selected brush snapshot stored on the stroke. Absent = the default `basic`
+ * outline. We snapshot id + engine + params (rather than referencing a brush
+ * library by id) so a shared document stays renderable without the author's
+ * library present.
+ */
+export interface StrokeBrush {
+  id: string
+  engine: StrokeBrushEngine
+  params?: Record<string, number | string | number[]>
+}
+
 /** "Dynamic" stroke — procedural hand-drawn perturbation. All fields 0..1. */
 export interface StrokeDynamic {
   /** Wiggle wavelength (higher = shorter waves / more wiggles). */
@@ -33,6 +55,15 @@ export interface StrokeBasicSettings {
   strokeMiterLimit?: number
   /** Procedural "Dynamic" perturbation. Absent = off. */
   strokeDynamic?: StrokeDynamic
+  /** Selected brush. Absent = the default `basic` outline. */
+  strokeBrush?: StrokeBrush
+  /** Hand-authored variable-width points `[t, left, right, mode, …]`
+   *  (arc-fraction, per-side half-width multipliers, and the interpolation mode
+   *  of the segment leaving the point: `0` smooth / `1` corner / `2` stepped).
+   *  A stroke-level property — any ribbon-drawn stroke (incl. plain `basic`)
+   *  renders variable width when present; overrides a PowerStroke preset.
+   *  Absent = uniform / preset. */
+  strokeWidthPoints?: number[]
 }
 
 export type StrokeWithSettings = Stroke & StrokeBasicSettings

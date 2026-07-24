@@ -132,11 +132,20 @@ export const DEFAULT_TEXTURE: Texture = {
 export const DEFAULT_MATERIAL: Material = {
   source: `// Engine-supplied uniforms must still be declared to use them.
 uniform float2 u_resolution; // shape size in px (filled by the engine)
+// Declaring a clock uniform makes this material animate: the preview gains
+// transport (play/scrub/loop). u_phase runs 0->1 over the loop, so a full
+// cycle wraps seamlessly with no hand-kept LOOP constant. (u_time, raw
+// seconds, is also available.) Delete the clock uniform for a static shader.
+uniform float u_phase;       // 0 -> 1 over one loop
+
+const float TAU = 6.2831853;
 
 half4 main(float2 p) {
   float2 uv = p / u_resolution;
-  return half4(uv.x, uv.y, 1.0, 1.0);
+  float pulse = 0.5 + 0.5 * sin(TAU * u_phase);
+  return half4(uv.x, uv.y, pulse, 1.0);
 }`,
+  language: 'sksl',
   uniforms: [],
   hidden: false,
 }

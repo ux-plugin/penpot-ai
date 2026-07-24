@@ -18,6 +18,9 @@ import { MotionBadge } from '../components/Overlay/MotionBadge'
 import { TextEditorOverlay } from '../components/Overlay/TextEditorOverlay'
 import { PathEditorOverlay } from '../components/Overlay/PathEditorOverlay'
 import { Scene3DLayer } from './three/Scene3DLayer'
+import { focusViewportRect } from './three/scene3d-focus'
+import { focusStage, FOCUS_STAGE_HEADER_PX } from './signals/focus-stage'
+import { useScene3dFocusStageBinding } from '../components/FocusStage/scene3d-focus-binding'
 import { useViewportInteractions } from './hooks/use-viewport-interactions'
 import { useStreams } from './hooks/use-streams'
 import { cleanupWorker, initWorker } from '../worker-init'
@@ -45,10 +48,16 @@ function CanvasWorkspace({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
+  const holeRef = useRef<HTMLDivElement>(null)
   const [canvasSize, setCanvasSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
   const [timelineHeight, setTimelineHeight] = useState(260)
   const timelineResizeRef = useRef<{ startY: number; startH: number } | null>(null)
   const setViewportShortcuts = useViewportShortcutsStore((state) => state.setViewportShortcuts)
+
+  // Mirror 3D-edit mode into the single focus slot so it's mutually exclusive with
+  // the shader stage (and shares the focus header). Mounted here: one instance,
+  // inside the canvas-actor provider.
+  useScene3dFocusStageBinding()
 
   // Apply initial shortcuts when provided (e.g. on mount or when prop changes)
   useEffect(() => {
@@ -118,6 +127,41 @@ function CanvasWorkspace({
     const ro = new ResizeObserver(syncSize)
     ro.observe(container)
     return () => ro.disconnect()
+  }, [])
+
+  // Publish the central canvas-hole rect (between the panels), in overlay-canvas px, so
+  // 3D focus mode renders there instead of over the full-bleed canvas + panels. Recomputes
+  // whenever the hole or the canvas column changes size (rail resize, timeline resize,
+  // window resize) or a focus stage opens/closes (its header eats the hole's top edge).
+  useEffect(() => {
+    const hole = holeRef.current
+    const container = containerRef.current
+    if (!hole || !container) return
+    const measure = () => {
+      const h = hole.getBoundingClientRect()
+      const c = container.getBoundingClientRect()
+      // A focus stage draws an opaque header at the hole's top; drop the 3D render
+      // region below it so a scene in `focus` placement isn't tucked under the bar.
+      const headerInset = focusStage.peek() ? FOCUS_STAGE_HEADER_PX : 0
+      focusViewportRect.value = {
+        x: h.left - c.left,
+        y: h.top - c.top + headerInset,
+        w: h.width,
+        h: Math.max(h.height - headerInset, 1),
+      }
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(hole)
+    ro.observe(container)
+    window.addEventListener('resize', measure)
+    const unsubFocus = focusStage.subscribe(measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+      unsubFocus()
+      focusViewportRect.value = null
+    }
   }, [])
 
   // When renderer becomes available, resize to current canvas size
@@ -190,6 +234,7 @@ function CanvasWorkspace({
           attach here (see use-viewport-interactions). */}
       <div
         ref={surfaceRef}
+        data-canvas-surface
         style={{ position: 'absolute', inset: 0, pointerEvents: 'all', touchAction: 'none' }}
       />
       {/* Motion path/ghosts draw BELOW the selection chrome; the badge sits ON TOP. */}
@@ -221,7 +266,10 @@ function CanvasWorkspace({
   // The hole is `relative` so the shape toolbar can float at its bottom edge.
   return (
     <div className={cn('relative h-full min-h-0 min-w-0 w-full', workspaceClassName)}>
-      <div className="absolute inset-0">{canvasColumn}</div>
+      {/* `isolate` scopes the canvas's internal z-indexes (its overlays use z 5-7) into
+          their own stacking context, so nothing on the canvas can ever paint above the
+          panel/tool layer below — the rails, timeline, and toolbars always win. */}
+      <div className="absolute inset-0 isolate">{canvasColumn}</div>
 
       <div className="pointer-events-none absolute inset-0 flex flex-col">
         <div className="min-h-0 w-full flex-1">
@@ -247,7 +295,9 @@ function CanvasWorkspace({
               defaultSize={62}
               className="relative min-h-0 min-w-0"
             >
-              {centerOverlay}
+              <div ref={holeRef} className="relative h-full w-full">
+                {centerOverlay}
+              </div>
             </ResizablePanel>
             {endSlot != null && (
               <>

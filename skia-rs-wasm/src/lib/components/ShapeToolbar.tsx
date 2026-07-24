@@ -30,6 +30,8 @@ import { useCanvasActor } from '../renderer/machine/canvas-actor-context'
 import type { DrawTool } from '../renderer/machine/canvas-machine'
 import { create3DScene } from '../renderer/three/create-3d-scene'
 import { setFocusedObject } from '../renderer/three/scene3d-store'
+import { editPlacement } from '../renderer/three/scene3d-focus'
+import { useSignalCoalesced } from '../renderer/signals/use-signal-coalesced'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { IconFrame, IconRect } from './shape-icons'
@@ -159,6 +161,9 @@ export function ShapeToolbar() {
   // 3D-scene edit mode collapses the strip the same way: tools recede and the
   // contextual 3D menu sits above the pill (Scene3DEditMenu).
   const scene3dEditing = useSelector(canvasActor, (s) => s.matches('scene3dEditing'))
+  // In 3D focus mode the scene fills the canvas hole; the creation tools would just be
+  // clutter over it, so hide the main strip (the contextual 3D menu above stays).
+  const focusMode = useSignalCoalesced(editPlacement) === 'focus'
   // The shape the menu face currently shows (the last shape the user picked).
   const [lastShapeTool, setLastShapeTool] = useState<DrawTool>('rect')
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false)
@@ -288,7 +293,12 @@ export function ShapeToolbar() {
 
       {/* Contextual 3D menu, above the strip — like the pen's edit flyout. */}
       <Scene3DEditMenu />
-      <ul className="flex list-none flex-row items-center gap-0.5 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md">
+      <ul
+        className={cn(
+          'flex list-none flex-row items-center gap-0.5 rounded-full border border-border/80 bg-white px-2 py-1.5 shadow-md',
+          focusMode && 'hidden',
+        )}
+      >
         {toolBtn(drawTool == null, onSelect, 'Select and move', <MousePointer2 className="size-5 shrink-0 stroke-[1.5]" />)}
 
         {/* Collapsible frame menu: the face activates the last-used frame tool

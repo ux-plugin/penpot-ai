@@ -17,6 +17,13 @@ export interface CommitFrame {
   undoChanges: Change[]
   docMetaRedoChanges?: DocMetaChange[]
   docMetaUndoChanges?: DocMetaChange[]
+  /**
+   * Write-time tag: the focus session that produced this frame. A focus
+   * session's frames land in its sub-history buffer (not the undo stack) and
+   * fold into one entry on exit, which carries this as its label. See
+   * [[project_undo_model]].
+   */
+  groupId?: string
 }
 
 export interface CommitChangesParams {
@@ -36,4 +43,6 @@ export interface CommitChangesParams {
   fromHistory?: boolean
   /** Skip renderer sync after local document apply (rare). */
   ignoreRendererSync?: boolean
+  /** Stamp the recorded frame's `groupId` (focus-session grouping — see CommitFrame). */
+  groupId?: string
 }

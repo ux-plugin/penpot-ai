@@ -35,11 +35,11 @@ export function EditResumeChip() {
 
   const resume = () => {
     const target = last.targetId
-    const first = scene3dProxy.scenes.get(target)?.objects[0]?.id ?? null
-    // Re-enter like any other enter site: select first (upholds the invariant), focus
-    // the first object, drop into edit.
+    // Re-enter like any other enter site: select the scene (upholds the "edit follows
+    // selection" invariant) and drop into edit with nothing focused — selecting
+    // objects/cameras is the Layers tree's job.
     setSelectedIds(new Set([target]))
-    setFocusedObject(first)
+    setFocusedObject(null)
     actor.send({ type: 'SCENE3D_EDIT_ENTER', sceneId: target })
     clearLastExited()
   }

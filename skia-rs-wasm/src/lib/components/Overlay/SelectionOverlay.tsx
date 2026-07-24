@@ -111,10 +111,10 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const safeZoom = Number.isFinite(rawZoom) && rawZoom > 0 ? rawZoom : 1
   const hasFiniteSelectionRect = finiteSelectionOverlayRect(wasmSelectionRect)
   // Selection chrome (box outline + move grab) shows when a motion preview is
-  // PAUSED — hidden only during active playback. The edit handles (resize /
-  // rotation / corner squares) stay gated on `!isMotionPreview`, so they're
-  // hidden while paused until they become keyframe-aware (scale/rotate/resize
-  // land in later slices).
+  // PAUSED — hidden only during active playback. Resize + corner squares stay
+  // gated on `!isMotionPreview` (W/H resize authoring is Slice 3c, not yet
+  // keyframe-aware), but ROTATION is keyframe-aware now (dragging it authors a
+  // rotation keyframe via rotate.ts), so its handle shows while paused too.
   const showHandles =
     selectedIds.size >= 1 &&
     hasFiniteSelectionRect &&
@@ -125,6 +125,9 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     !isScene3dEditing &&
     !isMotionPlaying
   const showEditHandles = showHandles && !isMotionPreview
+  // Rotation handle: visible in design mode AND while a motion preview is paused
+  // (so the user can grab it to author a rotation keyframe).
+  const showRotateHandle = showHandles
 
   const hitSize = HANDLE_SIZE_WORLD / safeZoom
 
@@ -325,25 +328,25 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
               onPointerDown={onSelectionRectPointerDown}
             />
             {showEditHandles && (
-              <>
-                <ResizeHandles
-                  effectiveBounds={rect}
-                  zoom={safeZoom}
-                  skipCorners
-                  rotationDeg={rotationDeg}
-                  halfFlip={halfFlip}
-                  overrideCursor={overrideCursor}
-                  onResizeHandlePointerDown={onResizeHandlePointerDown}
-                />
-                <RotationHitArea
-                  bounds={rect}
-                  zoom={safeZoom}
-                  rotationDeg={rotationDeg}
-                  halfFlip={halfFlip}
-                  overrideCursor={overrideCursor}
-                  onPointerDown={onRotationPointerDown}
-                />
-              </>
+              <ResizeHandles
+                effectiveBounds={rect}
+                zoom={safeZoom}
+                skipCorners
+                rotationDeg={rotationDeg}
+                halfFlip={halfFlip}
+                overrideCursor={overrideCursor}
+                onResizeHandlePointerDown={onResizeHandlePointerDown}
+              />
+            )}
+            {showRotateHandle && (
+              <RotationHitArea
+                bounds={rect}
+                zoom={safeZoom}
+                rotationDeg={rotationDeg}
+                halfFlip={halfFlip}
+                overrideCursor={overrideCursor}
+                onPointerDown={onRotationPointerDown}
+              />
             )}
           </g>
           {gradientForOverlay != null && (

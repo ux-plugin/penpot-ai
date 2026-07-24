@@ -167,6 +167,31 @@ export async function deleteTokenSet(setId: Uuid): Promise<void> {
   )
 }
 
+/**
+ * Move a set to a new index in lib order — this is what changes precedence (a
+ * later set overrides an earlier one). Implemented as remove + re-insert in one
+ * atomic frame, and propagated because the resolved winners can change. `toIndex`
+ * is the desired final position.
+ */
+export async function reorderSet(setId: Uuid, toIndex: number): Promise<void> {
+  const sets = currentLib().sets
+  const from = sets.findIndex((s) => s.id === setId)
+  const clamped = Math.max(0, Math.min(toIndex, sets.length - 1))
+  if (from < 0 || from === clamped) return
+  const set = sets[from] as TokenSet
+  await commitTokenChange(
+    [
+      { type: 'del-token-set', setId },
+      { type: 'add-token-set', set, index: clamped },
+    ],
+    [
+      { type: 'del-token-set', setId },
+      { type: 'add-token-set', set, index: from },
+    ],
+    { propagate: true },
+  )
+}
+
 // ── Themes / modes ───────────────────────────────────────────────────────────
 
 export async function addTheme(theme: TokenTheme): Promise<void> {

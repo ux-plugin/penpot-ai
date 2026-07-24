@@ -8,13 +8,9 @@
  * `hasSecureKeyStore()` stays disabled on the web.
  */
 
-interface ZoetropeBridge {
-  keyStore?: unknown
-}
+import { getKeyStore } from './desktop-bridge'
 
 /** True when a secure (OS-backed) key store is available — desktop/terminal, not a browser. */
 export function hasSecureKeyStore(): boolean {
-  if (typeof window === 'undefined') return false
-  const bridge = (window as unknown as { zoetrope?: ZoetropeBridge }).zoetrope
-  return !!bridge?.keyStore
+  return getKeyStore() != null
 }

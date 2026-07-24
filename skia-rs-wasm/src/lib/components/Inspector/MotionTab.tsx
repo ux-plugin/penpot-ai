@@ -36,6 +36,8 @@ const PROPS: { property: AnimatableProperty; label: string; disabled?: boolean }
   { property: 'x', label: 'X' },
   { property: 'y', label: 'Y' },
   { property: 'rotation', label: 'Rotation' },
+  { property: 'scaleX', label: 'Scale X' },
+  { property: 'scaleY', label: 'Scale Y' },
   { property: 'opacity', label: 'Opacity (soon)', disabled: true },
 ]
 
@@ -143,6 +145,11 @@ export function MotionTab() {
         return typeof n?.y === 'number' ? n.y : 0
       case 'rotation':
         return typeof n?.rotation === 'number' ? n.rotation : 0
+      case 'scaleX':
+      case 'scaleY':
+        // Rest scale is the identity multiplier (1×); the stored keyframe value is
+        // the delta from it (end − 1), which the modifier maps back to `1 + delta`.
+        return 1
       case 'opacity':
         return typeof n?.opacity === 'number' ? n.opacity : 1
       default:

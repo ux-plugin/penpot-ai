@@ -913,10 +913,16 @@ impl Shape {
 
         let mut max_stroke: Option<f32> = None;
         for stroke in self.strokes.iter() {
-            let width = match stroke.render_kind(false) {
-                StrokeKind::Inner => -stroke.width / 2.,
-                StrokeKind::Center => 0.,
-                StrokeKind::Outer => stroke.width,
+            // Ribbon strokes extend by their real half-extent (a dragged width point
+            // reaches well past `width`); uniform strokes by their alignment offset.
+            let width = if stroke.is_ribbon() {
+                stroke.bounds_width(false)
+            } else {
+                match stroke.render_kind(false) {
+                    StrokeKind::Inner => -stroke.width / 2.,
+                    StrokeKind::Center => 0.,
+                    StrokeKind::Outer => stroke.width,
+                }
             };
             max_stroke = Some(max_stroke.unwrap_or(f32::MIN).max(width));
         }
