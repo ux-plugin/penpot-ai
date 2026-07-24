@@ -76,35 +76,36 @@ export async function commitChangesPublic(params: CommitChangesParams): Promise<
 }
 
 export async function undo(): Promise<void> {
+  // While a focus stage's sub-history buffer is open the canvas reader is
+  // disabled — Cmd+Z is handled by focusUndo (App.tsx routes it). Guard here too
+  // so menu/toolbar/programmatic paths can't bypass the router.
+  if (useHistoryStore.getState().focusBuffer) return
   // An in-flight gesture (open transaction) becomes the frame this undo pops.
   useHistoryStore.getState().flushTransactions()
-  // Canvas undo reverts a whole RUN (consecutive same-`groupId` frames) as one
-  // step — so a focus session's idle-coalesced chunks undo together. A lone
-  // ungrouped edit is a run of one, so ordinary undo is unchanged.
-  const run = useHistoryStore.getState().popUndoRun()
-  if (run.length === 0) return
-  // Apply inverses newest→oldest (reverse of commit order) so the run reverts to
-  // its pre-run state. `docMetaUndoChanges` are the forward inversions to apply.
-  const reversed = [...run].reverse()
+  // One frame = one step: a focus session lands one folded frame, a transaction
+  // one merged frame, an ordinary edit its own. `undoChanges` is already the
+  // full newest-first inverse, so applying it reverts the frame's whole effect.
+  const frame = useHistoryStore.getState().popUndoFrame()
+  if (!frame) return
   await commitChanges({
-    redoChanges: reversed.flatMap((f) => f.undoChanges),
-    docMetaRedoChanges: reversed.flatMap((f) => f.docMetaUndoChanges ?? []),
+    redoChanges: frame.undoChanges,
+    docMetaRedoChanges: frame.docMetaUndoChanges,
     saveUndo: false,
     fromHistory: true,
   })
-  useHistoryStore.getState().pushRedoRun(run)
+  useHistoryStore.getState().pushRedoFrame(frame)
 }
 
 export async function redo(): Promise<void> {
+  if (useHistoryStore.getState().focusBuffer) return
   useHistoryStore.getState().flushTransactions()
-  const run = useHistoryStore.getState().popRedoRun()
-  if (run.length === 0) return
-  // Re-apply forward, oldest→newest.
+  const frame = useHistoryStore.getState().popRedoFrame()
+  if (!frame) return
   await commitChanges({
-    redoChanges: run.flatMap((f) => f.redoChanges),
-    docMetaRedoChanges: run.flatMap((f) => f.docMetaRedoChanges ?? []),
+    redoChanges: frame.redoChanges,
+    docMetaRedoChanges: frame.docMetaRedoChanges,
     saveUndo: false,
     fromHistory: true,
   })
-  useHistoryStore.getState().pushUndoRun(run)
+  useHistoryStore.getState().pushUndoFrame(frame)
 }

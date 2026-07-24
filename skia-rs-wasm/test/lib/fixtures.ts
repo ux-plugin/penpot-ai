@@ -151,6 +151,7 @@ export function resetWorkspace(): void {
     redoStack: [],
     transaction: null,
     transactionHolders: new Set(),
+    focusBuffer: null,
   })
 }
 
