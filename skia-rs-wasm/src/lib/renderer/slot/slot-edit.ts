@@ -86,3 +86,21 @@ export async function removeViewFromSlot(slotId: string, viewId: string): Promis
   const activeView = slot.activeView === viewId ? views[0] : slot.activeView
   await commitSlot(slot, views, activeView)
 }
+
+/**
+ * Toggle whether the slot clips its shown view to the outlet box. Backed by the
+ * existing `showContent` frame field (the renderer already honours it): clipping
+ * on ⇒ `showContent: false`. One history frame; no-op if unchanged.
+ */
+export async function setSlotClip(slotId: string, clip: boolean): Promise<void> {
+  const slot = getCommittedNodeOnActivePage(slotId)
+  if (!isSlotShape(slot)) return
+  const showContent = !clip
+  if (slot.showContent === showContent) return
+  await commitNodePartialUpdate(
+    slot.id,
+    slot as unknown as PenpotNode,
+    { showContent } as Partial<PenpotNode>,
+    currentPageId(),
+  )
+}
