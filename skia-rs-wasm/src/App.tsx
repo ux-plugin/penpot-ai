@@ -7,7 +7,8 @@ import { ShaderDragOverlay } from './lib/components/Overlay/ShaderDragOverlay'
 import { LayersPanel } from './lib/components/LayersPanel/LayersPanel'
 import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
-import { focusUndo, focusRedo, canvasRedoInFocusScope } from './lib/history/focus-undo'
+import { focusUndo, focusRedo } from './lib/history/focus-undo'
+import { isFocusBufferOpen } from './lib/history/history-store'
 import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } from './lib/persistence'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
@@ -98,28 +99,19 @@ function App() {
       const t = e.target as HTMLElement | null
       if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
       const mod = e.metaKey || e.ctrlKey
-      // When a focus stage declares an `undoScope`, Cmd+Z steps through THAT
-      // session's frames finely (the focus reader) instead of reverting the
-      // whole session as one canvas step. Cmd+Z inside the SkSL editor never
-      // reaches here — the input guard above lets CodeMirror's native text-undo
-      // handle it — so this is for Cmd+Z on the surrounding chrome (uniforms).
-      const scope = focusStage.peek()?.undoScope
+      // While a focus stage's sub-history buffer is open, Cmd+Z steps through
+      // THAT session's frames (the buffer cursor) instead of reverting the whole
+      // session as one canvas step. On exit the session folds to one canvas
+      // entry. Cmd+Z inside the SkSL editor never reaches here — the input guard
+      // above lets CodeMirror's native text-undo handle it — so this is for
+      // Cmd+Z on the surrounding chrome (uniforms).
+      const focusOpen = isFocusBufferOpen()
       if (mod && e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
-        void (scope ? focusUndo(scope) : undo())
+        void (focusOpen ? focusUndo() : undo())
       } else if (mod && e.key === 'z' && e.shiftKey) {
         e.preventDefault()
-        // Focus redo is append-only over the undo stack; it can't reach an
-        // in-scope edit the CANVAS reader popped onto the redo stack (e.g. an
-        // undo done after leaving the stage). Bridge to the canvas redo when the
-        // redo-stack top is in scope, so redo isn't silently a no-op.
-        if (scope) {
-          void focusRedo(scope).then((did) => {
-            if (!did && canvasRedoInFocusScope(scope)) void redo()
-          })
-        } else {
-          void redo()
-        }
+        void (focusOpen ? focusRedo() : redo())
       } else if (
         import.meta.env.DEV &&
         e.shiftKey && (e.key === 'P' || e.key === 'p') && !mod

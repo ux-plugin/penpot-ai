@@ -18,18 +18,12 @@ export interface CommitFrame {
   docMetaRedoChanges?: DocMetaChange[]
   docMetaUndoChanges?: DocMetaChange[]
   /**
-   * Write-time tag: the focus session that produced this frame. Canvas undo
-   * collapses a run of consecutive same-`groupId` frames into ONE step (so a
-   * shader session's idle-coalesced chunks undo together), while focus undo
-   * still reverts them one chunk at a time. See [[project_undo_model]].
+   * Write-time tag: the focus session that produced this frame. A focus
+   * session's frames land in its sub-history buffer (not the undo stack) and
+   * fold into one entry on exit, which carries this as its label. See
+   * [[project_undo_model]].
    */
   groupId?: string
-  /**
-   * A selective revert-by-append frame (a focus undo of an interleaved edit).
-   * Canvas group-undo sweeps it (it carries the session `groupId`); the focus
-   * view skips it, so re-undoing doesn't ping-pong into a redo.
-   */
-  synthetic?: boolean
 }
 
 export interface CommitChangesParams {
@@ -51,6 +45,4 @@ export interface CommitChangesParams {
   ignoreRendererSync?: boolean
   /** Stamp the recorded frame's `groupId` (focus-session grouping — see CommitFrame). */
   groupId?: string
-  /** Mark the recorded frame `synthetic` (a focus revert-by-append — see CommitFrame). */
-  synthetic?: boolean
 }

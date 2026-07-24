@@ -76,6 +76,10 @@ export async function commitChangesPublic(params: CommitChangesParams): Promise<
 }
 
 export async function undo(): Promise<void> {
+  // While a focus stage's sub-history buffer is open the canvas reader is
+  // disabled — Cmd+Z is handled by focusUndo (App.tsx routes it). Guard here too
+  // so menu/toolbar/programmatic paths can't bypass the router.
+  if (useHistoryStore.getState().focusBuffer) return
   // An in-flight gesture (open transaction) becomes the frame this undo pops.
   useHistoryStore.getState().flushTransactions()
   // Canvas undo reverts a whole RUN (consecutive same-`groupId` frames) as one
@@ -96,6 +100,7 @@ export async function undo(): Promise<void> {
 }
 
 export async function redo(): Promise<void> {
+  if (useHistoryStore.getState().focusBuffer) return
   useHistoryStore.getState().flushTransactions()
   const run = useHistoryStore.getState().popRedoRun()
   if (run.length === 0) return

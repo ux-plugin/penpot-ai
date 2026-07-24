@@ -95,10 +95,10 @@ export interface ShaderMaterialStageProps {
   /** The material as it was when focus mode opened. */
   initialMaterial: Material
   /**
-   * The session's undo `groupId` (owned by the opener, so it can also seed the
-   * session's `undoScope`). Every idle-coalesced commit carries it, so the
-   * canvas collapses this whole session into one undo step while the focus
-   * reader steps through the frames individually.
+   * The session's undo `groupId` (owned by the opener). Every idle-coalesced
+   * commit carries it; the commits land in the focus sub-history buffer while
+   * the stage is open, and on exit fold into one canvas undo entry labelled with
+   * it. See [[project_undo_model]].
    */
   groupId: string
 }
