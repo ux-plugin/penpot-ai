@@ -4,3 +4,6 @@
 [submodule "sdk/zoetrope"]
 	path = sdk/zoetrope
 	url = https://github.com/ux-plugin/rrweb.git
+[submodule "vello"]
+	path = vello
+	url = https://github.com/ux-plugin/vello.git

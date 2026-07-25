@@ -469,11 +469,16 @@ dependencies = [
  "indexmap",
  "lru",
  "macros",
+ "render-core",
  "rustc-hash",
  "skia-safe",
  "thiserror",
  "uuid",
 ]
+
+[[package]]
+name = "render-core"
+version = "0.1.0"
 
 [[package]]
 name = "rustc-hash"
