@@ -47,20 +47,28 @@ The single-binary alternative (wgpu's GLES backend over Emscripten's GL via `glo
 - `model_export.rs` (render-wasm re-deriving a neutral model for another module) is **the wrong direction** in the end state and becomes unnecessary.
 - Both modules are fed directly by the host with the same document.
 
+**`model_export` dies via D4, not via D6/A.** It disappears the moment the host projects directly to `render-vello` (Phase 2), because then nobody asks render-wasm to re-derive a neutral scene. That is independent of whether render-wasm ever adopts the core's types internally. The original wording implied D3 required approach A; it does not, and D16 explains why that distinction matters.
+
 ### D4 — `skia-rs-wasm` is the host and owns the document
 Not CLJS. `skia-rs-wasm` holds the document model (`IndexedShape`/`IndexedPage`), resolves geometry in TS (`renderer/geom/`: vector-network-faces, planarize, fillet, path-arc, subpaths, matrix), and already drives render-wasm via `node-factory`/`wasm-module`. Projection to a renderer originates **there**, which is what makes the two modules peers.
 
 Exception: **text**. Skia's paragraph layout lives inside render-wasm, not in the host.
 
 ### D5 — Shared Rust crate: `render-core`
-Backend-neutral, zero dependencies, `#![forbid(unsafe_code)]`. Today: `geom` (Point/Rect/Matrix, SkMatrix element order) + `model` (Color/Fill/ShapeKind/PathSeg/Path/Node/Scene). 596 lines, 11 tests, builds for `wasm32-unknown-unknown`. Compiled into both artifacts; only one ships per session.
+Backend-neutral, `#![forbid(unsafe_code)]`, compiled into both artifacts with only one shipping per session. It re-exports kurbo and peniko (D12) and adds `model` — `ShapeKind`, `Node`, `Scene`, i.e. only the part that is genuinely Penpot's. Builds for `wasm32-unknown-emscripten` and `wasm32-unknown-unknown`; 3 tests. It lives at the repo root as a sibling of both backends (D15).
 
-**Partly superseded by D12:** the crate stays, but "zero dependencies" is dropped deliberately — the geometry and paint atoms come from kurbo and peniko instead of being hand-written here.
+*Original wording, now superseded:* this decision first specified "zero dependencies" and a hand-written `geom` module of f32 atoms mirroring `SkMatrix` element order and Skia's precision, explicitly so that approach A would be "a type-swap, not a behavior change." D12 replaced those atoms with kurbo, which is f64. That was the right call for the handoff and for the Vello backend, but it is precisely what changed A's cost — see D16.
 
-### D6 — Approach B now, approach A as the destination
+### D6 — Approach B for the model boundary
 For the model boundary we chose **B: neutral model + convert at the handoff**, over **A: swap Skia types in place**. A is one indivisible ~260-site change because the four geom atoms (`Matrix`, `Point`, `Rect`, `Color`) are type-coupled.
 
-But under D3 the end state wants the core to **be** the model, which is A. So B is the stepping stone that unblocks Vello without touching the shipping Skia engine; A is where render-wasm eventually lands as the core absorbs the model.
+B unblocks Vello without touching the shipping Skia engine, and it is reversible.
+
+**Amended by D16.** This decision originally read "approach B now, approach A as the destination," on the reasoning that D3's end state wants the core to *be* the model. Two things falsify that as written:
+1. D3's consequence — `model_export` disappearing — follows from D4 (the host projects to both peers), not from A. See the note in D3.
+2. D12 made A materially more expensive by making the core f64, against a Skia that is f32 by construction.
+
+So A is no longer the assumed destination. It is one option, gated on conditions D16 states. Phase 7 stays "converge or hold" and is now genuinely open rather than leaning.
 
 ### D7 — One ABI contract, two adapters
 Both modules expose the same logical surface so the host can load either interchangeably. The interop differs (Emscripten `Module._fn` vs wasm-bindgen), so each gets a thin TS adapter behind one `Renderer` interface in `skia-rs-wasm`.
@@ -88,7 +96,9 @@ This supersedes D5's "zero dependencies" — the dependency is the point.
 
 **Known gap:** kurbo has no boolean path operations ([linebender/kurbo#277](https://github.com/linebender/kurbo/issues/277)). Graphite's standalone `path-bool` is the option when bool shapes need to render.
 
-**Gate: cleared.** `kurbo 0.13.1` + `peniko 0.6.1` (the vello fork's own pins, so both artifacts link one kurbo) build for **`wasm32-unknown-emscripten`** and **`wasm32-unknown-unknown`**, and render-core's 11 tests stay green natively. Six transitive crates, all pure Rust: `arrayvec`, `polycool`, `smallvec`, `color`, `linebender_resource_handle`.
+**Gate: cleared.** `kurbo 0.13.1` + `peniko 0.6.1` (the vello fork's own pins, so both artifacts link one kurbo) build for **`wasm32-unknown-emscripten`** and **`wasm32-unknown-unknown`**, with render-core's tests green natively. Six transitive crates, all pure Rust: `arrayvec`, `polycool`, `smallvec`, `color`, `linebender_resource_handle`.
+
+**Cost this incurs elsewhere, stated plainly:** kurbo is f64 and Skia is f32. That is free for the handoff and for the Vello backend, and it is the reason approach A got more expensive. D16 has the analysis; D5 records what was given up.
 
 Worth noting for anyone repeating this: there is no emscripten SDK on the dev machine — render-wasm builds inside `docker/devenv`, and `render-wasm/build` sources `/opt/emsdk/emsdk_env.sh`, which does not exist locally. The check still works natively because an **rlib** build invokes no linker, so `cargo build --lib --target wasm32-unknown-emscripten` needs no `emcc`. Linking the full render-wasm cdylib still does.
 
@@ -106,6 +116,9 @@ Prefer `imaging`'s `PaintSink` shape over `anyrender`'s `PaintScene`: its explic
 
 `imaging_conformance` is a candidate for Phase 2's visual diff: it already targets skia-safe against vello_hybrid, our exact pair. Note render-wasm pins skia-safe 0.93.1 while `imaging_skia` uses 0.97.0.
 
+### D14 — Reuse the Linebender stack wherever it already exists
+See [Ecosystem survey](#ecosystem-survey). The short version: the filter graph, blur, drop shadow and atlas in `vello_common` are **upstream**, not ours — our fork commit adds only `FilterPrimitive::Custom`, the evaluation scenes and the embeddable renderer that is now `render-vello` (D15). Text is parley + fontique + glifo. Lottie is velato + interpoli. SVG is vello_svg.
+
 ### D15 — Three sibling crates; the submodule depends on nothing outside itself
 `render-core/`, `render-wasm/` and `render-vello/` sit side by side at the repo root, and both backends depend on the core.
 
@@ -119,22 +132,38 @@ Now the direction is parent → child throughout. `render-vello` depends into `v
 
 **Known naming wart:** `render-wasm` vs `render-vello` reads as though only one targets wasm. Both do; the honest pair is `render-skia`/`render-vello`. Renaming touches `render-wasm/build`, the docker devenv, `skia-rs-wasm`'s `build:wasm` and the artifact name, so it is deferred rather than decided against. The same applies to `FocusRenderer`/`create_focus_renderer` in `render-vello`, which are leftovers from the superseded focus-mode framing (D3).
 
-### D14 — Reuse the Linebender stack wherever it already exists
-See [Ecosystem survey](#ecosystem-survey). The short version: the filter graph, blur, drop shadow and atlas in `vello_common` are **upstream**, not ours — our fork commit adds only `FilterPrimitive::Custom`, the evaluation scenes and `focus_embed`. Text is parley + fontique + glifo. Lottie is velato + interpoli. SVG is vello_svg.
+### D16 — The f32/f64 boundary; approach A is gated, not destined
+The facts, all verified in source rather than assumed:
+
+- **Skia is f32 by construction.** `include/core/SkScalar.h` has `typedef float SkScalar;` unconditionally — there is no double-scalar build option. `skia_safe::Point` is `{x: scalar, y: scalar}`; `Rect` is four bare `f32`.
+- **kurbo is f64-only.**
+- **Vello also encodes f32 to the GPU.** `vello_encoding::Transform` is `matrix: [f32; 4]`, `translation: [f32; 2]`. kurbo's f64 is CPU-side curve math — flattening, offsetting, stroke expansion — truncated at the encode boundary exactly as Skia truncates at the draw call.
+
+So both engines rasterize in f32, because GPUs do. **f64 is a curve-algorithm choice, not a rendering-precision one.** "Make everything f64" is not available, and A cannot avoid a per-call truncation.
+
+**Where A's cost actually is.** Not the casts. At 10k shapes, ~20 conversions each is ~200k `f32.demote_f64` per frame; even pessimistically that is well under 1% of a 16.7 ms budget, and caching converted values would fix it if it were not. The cost is the **working set**: at the plan's own sizing (~52 B/node + ~22 B/cubic segment at f32) a 10k-shape document is ~5 MB of geometry, and f64 roughly doubles it — the difference between plausibly cache-resident and definitely not. Caching cannot help, because the copies *are* the problem. Pan and zoom dirty everything, which is exactly when it bites.
+
+**What A would buy.** f64 world space with f32 device space is a legitimately better architecture at extreme zoom, where f32 world coordinates lose precision. Plus one model instead of two. It is a trade, not a loss.
+
+**Ordering is what decides it, and Masonry shows why.** Masonry runs kurbo f64 through its entire widget tree with no f32 mirror, and does not pay per frame — because `masonry_core/src/passes/paint.rs` keeps `scene_cache: HashMap<WidgetId, (Scene, Scene, Scene)>` and only re-records when a `request_paint` flag is set; a clean widget's recorded scene is reused, `clear()`ed rather than reallocated. **The retained scene is the cache.** So whether A's memory cost matters is not a property of the type system — it is a property of whether dirty-gated per-node retained scenes exist. That is D8, currently scheduled in Phase 6.
+
+**Therefore A is not attempted until both hold:** D8's dirty gating has landed, and a pan/zoom on a real document has been measured with D9's present-to-present harness. With those, A is cheap. Without them, A is expensive for precisely the reason the casts are not.
+
+*Caveat on the precedent:* Masonry is hundreds of widgets, not 10k shapes, its damage-region handling is still open ([xilem#789](https://github.com/linebender/xilem/issues/789)), and a UI never pans or zooms its whole scene. It validates the pattern, not the scale. The cache-residency numbers above are reasoning from the plan's sizing figures, not measurements.
 
 ---
 
 ## What is already built
 
 **Phase 0 — embeddable Vello module. Done.**
-`focus_embed` exposes `FocusRenderer` on a **host-provided** canvas with no internal event loop: `render()`, `resize()`, `key()`, `set_scene()`, `set_transform()`, `status()`. WebGPU-first with WebGL2 fallback, preferred surface format (no extra per-frame copy), enlarged filter atlas, frame-skip instead of panic on atlas exhaustion. Verified in browser.
+`render-vello` (originally `focus_embed`) exposes `FocusRenderer` on a **host-provided** canvas with no internal event loop: `render()`, `resize()`, `key()`, `set_scene()`, `set_transform()`, `status()`. WebGPU-first with WebGL2 fallback, preferred surface format (no extra per-frame copy), enlarged filter atlas, frame-skip instead of panic on atlas exhaustion. Verified in browser. Builds standalone for `wasm32-unknown-unknown` since D15.
 
-**Phase 1 — neutral core + end-to-end proof. Half done.**
-- `render-core` geom + model, 11 tests.
-- `core_convert.rs` — Skia↔core geometry boundary.
-- `model_export.rs` — `Shape` → `render_core::model::Node` for rects, circles, paths, solid fills; 5 tests passing natively.
-- `model_scene.rs` in `focus_embed` — renders a `render_core::model::Scene` with Vello.
-- **End-to-end verified in browser:** real Skia `Shape` → neutral model → Vello pixels (rect, circle, cubic path), zero console errors.
+**Phase 1 — neutral core + end-to-end proof. Steps 1–3 and 5 done; step 4 remains.**
+- `render-core` re-exports kurbo + peniko and keeps `model` (`ShapeKind`/`Node`/`Scene`); 3 tests. `geom.rs` deleted (D12).
+- `core_convert.rs` — Skia↔kurbo boundary, with the matrix element-order trap pinned by an asymmetric fixture and a map-a-point test.
+- `model_export.rs` — `Shape` → `render_core::model::Node` for rects, circles, paths, solid fills, emitting `BezPath`/`Brush`. Strokes and gradients are step 4.
+- `scene.rs` in `render-vello` — renders a `render_core::model::Scene` with Vello, now with no conversion helpers at all.
+- **End-to-end verified in browser:** real Skia `Shape` → neutral model → Vello pixels (rect, circle, cubic path), zero console errors. *Verified before the D12/D15 rewrite; not re-run since.*
 
 ---
 
@@ -169,7 +198,7 @@ A cross-frame tile cache is **useless for globally dynamic scenes** — pan/zoom
 Pass counts (`is_multi_pass` is true only for these two): GaussianBlur = 2 (BLUR_H, BLUR_V); DropShadow = 4 (OFFSET, BLUR_H, BLUR_V, COMPOSITE); Custom = 1.
 
 ### Sizing
-- Binaries: render-wasm ~8.3 MB release; `focus_embed` 4.2 MB. Only one downloads.
+- Binaries: render-wasm ~8.3 MB release; `render-vello` 4.2 MB (measured as `focus_embed`, pre-restructure). Only one downloads.
 - Geometry data: ~52 B/node + ~22 B/cubic segment.
 - render-wasm's `Path` already stores geometry **twice** (`segments: Vec<Segment>` + `skia_path: skia::Path`).
 
@@ -217,10 +246,14 @@ Blur, drop/inner shadow, blend modes, masks, clips onto Vello's filter graph. Po
 Parley layout/shaping → Vello glyph runs. Image decode/upload to Vello textures; browser-decoded texture fast path → wgpu interop. Highest-risk phase.
 
 ### Phase 6 — caching + animator
-Rive-style dependency-ordered dirty propagation. Layer-texture cache and filter-atlas pooling. Benchmark against Skia using present-cadence on real files.
+Rive-style dependency-ordered dirty propagation (D8), following Masonry's shape: a retained recorded scene per node, re-recorded only when a dirty flag is set. Layer-texture cache and filter-atlas pooling. Benchmark against Skia using present-cadence on real files — **including a pan and a zoom**, which are the cases that dirty everything.
+
+This phase is also the gate on Phase 7: per D16, approach A cannot be judged before dirty gating exists and that measurement has been taken.
 
 ### Phase 7 — converge or hold
 Either keep two peer modules indefinitely, or absorb render-wasm's model into `render-core` (approach A) so both modules share one model outright.
+
+Genuinely open, not leaning (D6 as amended by D16). Note that `model_export` disappearing does **not** require A — it goes away in Phase 2 when the host feeds `render-vello` directly (D3, D4). A is only about whether render-wasm itself stops holding Skia types internally, and it carries the f64 working-set cost D16 quantifies.
 
 ---
 
@@ -228,7 +261,7 @@ Either keep two peer modules indefinitely, or absorb render-wasm's model into `r
 
 - **How much geometry is already resolved in `skia-rs-wasm`'s TS layer vs inside render-wasm/Skia?** This sizes the shared core directly. The more that is already neutral in TS, the less Skia-resolution work remains. Text is the known Skia-internal case; stroke expansion is answered by D12 (`kurbo::stroke`), boolean ops remain unverified.
 - **Does `imaging_conformance` run without its desktop GPU features?** `imaging_skia`'s `gpu` feature pulls wgpu 28, ash, Metal and D3D. The CPU path is what we would want; unverified.
-- **`render-core`'s home** — repo root, to serve two peers.
+- ~~**`render-core`'s home**~~ — settled by D15: repo root, sibling to both backends.
 - **`vello_hybrid` has no threading.** If CPU-side encode becomes the bottleneck, that work has to be added.
 - **Feature parity surface:** inner shadow, backdrop blur, all blend modes, exact gradient semantics.
 - **Download cost** of the Vello module vs Skia, and how the host chooses when WebGPU is present but the document is effect-light.
