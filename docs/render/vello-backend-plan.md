@@ -231,7 +231,12 @@ Rewritten under D12. The original "hand-write strokes, gradients, opacity/blend,
 
 *Deferred to later phases: text, effects, custom shaders, boolean ops.*
 
-**Status: steps 1–3 and 5 done.** `render-core` is kurbo + peniko with `geom.rs` deleted; `core_convert` is Skia↔kurbo with the matrix element-order trap pinned by tests; `model_export` emits `BezPath`/`Brush`. Step 4 — extending the projection to strokes and gradients — is what remains before Phase 2.
+**Status: Phase 1 complete.** `render-core` is kurbo + peniko with `geom.rs` deleted; `core_convert` is Skia↔kurbo with the matrix element-order trap pinned by tests; `model_export` emits `BezPath`/`Brush`, gradients and strokes.
+
+Three things step 4 settled, each recorded in the code:
+- **Gradients**: linear → `new_linear`, radial → `new_radial` (radius from `Gradient::width.0`), angular → `new_sweep` over 0..2π. **Diamond has no peniko equivalent** — a Penpot/Figma construct, not a CSS/SVG one — so it is not projected and rides along with the Phase-4 SkSL→WGSL work (D10).
+- **Strokes**: `kurbo::Stroke` already carries width, join, caps, miter limit and dash pattern, so `model::Stroke` is just `{ style, brush }`. **`StrokeKind` inner/outer is dropped, not approximated** — it is an offsetting decision with no kurbo slot, and projecting it as centred would draw it in the wrong place. Path offsetting comes later.
+- **`Gradient`'s fields are now `pub`** in `shapes/fills.rs` — the first edit to shipping engine code under D6. It is read-only data exposure, not a type swap, so B's guarantee (no behaviour change in the Skia path) holds. `colors`/`offsets` remain parallel; only `add_stops` appends.
 
 ### Phase 2 — live data path
 Feed `render-vello` a real document from `skia-rs-wasm` rather than a hand-built model. Decide the wire format: reuse render-wasm's, or define one on `render-core`. Vello renders a real Penpot page (geometry only). Visual diff against Skia — evaluate `imaging_conformance` and `imaging_snapshot_tests` (D13) before writing our own harness, since they already target skia-safe against vello_hybrid.

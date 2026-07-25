@@ -96,6 +96,7 @@ fn demo_model() -> m::Scene {
         path: None,
         transform: Affine::translate((40.0, 60.0)),
         fills: vec![Brush::Solid(Color::from_rgba8(56, 152, 236, 255))],
+        strokes: vec![],
         opacity: 1.0,
         hidden: false,
     });
@@ -107,6 +108,7 @@ fn demo_model() -> m::Scene {
         path: None,
         transform: Affine::translate((250.0, 55.0)),
         fills: vec![Brush::Solid(Color::from_rgba8(240, 90, 40, 255))],
+        strokes: vec![],
         opacity: 1.0,
         hidden: false,
     });
@@ -125,6 +127,7 @@ fn demo_model() -> m::Scene {
         path: Some(path),
         transform: Affine::translate((430.0, 40.0)),
         fills: vec![Brush::Solid(Color::from_rgba8(70, 190, 120, 255))],
+        strokes: vec![],
         opacity: 1.0,
         hidden: false,
     });

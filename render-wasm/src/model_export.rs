@@ -9,10 +9,11 @@
 #![allow(dead_code)]
 
 use crate::core_convert::{affine_to_core, color_to_core, rect_to_core};
-use crate::shapes::{Fill, Path, Segment, Shape, Type};
-use render_core::kurbo::BezPath;
+use crate::shapes::{Fill, Gradient, Path, Segment, Shape, StrokeKind, Type};
+use crate::shapes::{StrokeLineCap, StrokeLineJoin};
+use render_core::kurbo::{self, BezPath, Point};
 use render_core::model as m;
-use render_core::peniko::Brush;
+use render_core::peniko::{Brush, ColorStop, Gradient as PGradient};
 
 /// Project a shape into the neutral model. Returns `None` for shape kinds not yet supported.
 pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
@@ -25,6 +26,7 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
     };
 
     let fills = shape.fills.iter().filter_map(fill_to_core).collect();
+    let strokes = shape.strokes.iter().filter_map(stroke_to_core).collect();
 
     Some(m::Node {
         id: shape.id.as_u128(),
@@ -33,6 +35,7 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         path,
         transform: affine_to_core(&shape.transform),
         fills,
+        strokes,
         opacity: shape.opacity,
         hidden: shape.hidden,
     })
@@ -58,9 +61,80 @@ fn path_to_core(path: &Path) -> BezPath {
 fn fill_to_core(fill: &Fill) -> Option<Brush> {
     match fill {
         Fill::Solid(solid) => Some(Brush::Solid(color_to_core(solid.0))),
-        // Gradients and image fills map onto `Brush::Gradient` / `Brush::Image`, which peniko
-        // already provides — they need a converter here, not a new model type.
-        _ => None,
+        Fill::LinearGradient(g) => Some(Brush::Gradient(
+            PGradient::new_linear(pt(g.start), pt(g.end)).with_stops(&stops(g)[..]),
+        )),
+        // `width.0` is the radius scalar for radial (see `Gradient::width`).
+        Fill::RadialGradient(g) => Some(Brush::Gradient(
+            PGradient::new_radial(pt(g.start), g.width.0).with_stops(&stops(g)[..]),
+        )),
+        // Angular is peniko's sweep. Penpot's angular stops are already normalised over a
+        // full turn, so the sweep spans 0..2π.
+        Fill::AngularGradient(g) => Some(Brush::Gradient(
+            PGradient::new_sweep(pt(g.start), 0.0, std::f32::consts::TAU).with_stops(&stops(g)[..]),
+        )),
+        // Diamond has no peniko equivalent — it is a Penpot/Figma construct, not a CSS/SVG
+        // one. It is already on the SkSL->WGSL list for Phase 4 via `FilterPrimitive::Custom`
+        // (D10), and rides along with the other custom shaders rather than getting a model type.
+        Fill::DiamondGradient(_) => None,
+        // Image fills map onto `Brush::Image`; deferred with the rest of the image work.
+        Fill::Image(_) => None,
+    }
+}
+
+#[inline]
+fn pt(p: (f32, f32)) -> Point {
+    Point::new(p.0 as f64, p.1 as f64)
+}
+
+/// `ColorStops` is a newtype over a `SmallVec` with no `FromIterator`, and `with_stops` takes
+/// any `ColorStopsSource` — `&[ColorStop]` is one — so a plain `Vec` is the simplest bridge.
+fn stops(g: &Gradient) -> Vec<ColorStop> {
+    g.colors
+        .iter()
+        .zip(g.offsets.iter())
+        .map(|(c, off)| ColorStop {
+            offset: *off,
+            color: color_to_core(*c).into(),
+        })
+        .collect()
+}
+
+fn stroke_to_core(stroke: &crate::shapes::Stroke) -> Option<m::Stroke> {
+    let brush = fill_to_core(&stroke.fill)?;
+
+    let mut style = kurbo::Stroke::new(stroke.width as f64);
+
+    if let Some(join) = stroke.line_join {
+        style.join = match join {
+            StrokeLineJoin::Miter => kurbo::Join::Miter,
+            StrokeLineJoin::Round => kurbo::Join::Round,
+            StrokeLineJoin::Bevel => kurbo::Join::Bevel,
+        };
+    }
+    if let Some(limit) = stroke.miter_limit {
+        style.miter_limit = limit as f64;
+    }
+    if let Some(cap) = stroke.dash_cap {
+        let cap = match cap {
+            StrokeLineCap::Butt => kurbo::Cap::Butt,
+            StrokeLineCap::Round => kurbo::Cap::Round,
+            StrokeLineCap::Square => kurbo::Cap::Square,
+        };
+        style.start_cap = cap;
+        style.end_cap = cap;
+    }
+    if !stroke.dashes.is_empty() {
+        style.dash_pattern = stroke.dashes.iter().map(|d| *d as f64).collect();
+    }
+
+    // `StrokeKind` (inner/outer/center) is an offsetting decision, not a stroke style, and
+    // kurbo has no slot for it. Centre needs nothing; inner/outer need the path offset before
+    // it reaches this model, which is not done yet — so they are dropped rather than projected
+    // as if they were centred.
+    match stroke.kind {
+        StrokeKind::Center => Some(m::Stroke { style, brush }),
+        StrokeKind::Inner | StrokeKind::Outer => None,
     }
 }
 
@@ -145,13 +219,107 @@ mod tests {
         assert!(node.path.is_none());
     }
 
+    fn rect_shape() -> Shape {
+        let mut shape = Shape::new(Uuid::nil());
+        shape.set_shape_type(Type::Rect(ShapeRect::default()));
+        shape.set_selrect(0.0, 0.0, 100.0, 100.0);
+        shape
+    }
+
+    fn two_stop_gradient() -> Gradient {
+        Gradient::new(
+            (0.0, 0.0),
+            (100.0, 0.0),
+            255,
+            (50.0, 0.0),
+            &[
+                (skia::Color::from_argb(255, 255, 0, 0), 0.0),
+                (skia::Color::from_argb(255, 0, 0, 255), 1.0),
+            ],
+        )
+    }
+
     #[test]
-    fn non_solid_fills_are_skipped_for_now() {
-        // A rect with only a (currently-unsupported) fill projects, but with no fills yet.
+    fn projects_a_linear_gradient_with_its_stops() {
+        let mut shape = rect_shape();
+        shape.add_fill(Fill::LinearGradient(two_stop_gradient()));
+
+        let node = node_from_shape(&shape).expect("rect projects");
+        let Brush::Gradient(g) = &node.fills[0] else {
+            panic!("expected a gradient brush, got {:?}", node.fills[0]);
+        };
+        assert_eq!(g.stops.len(), 2);
+        assert_eq!(g.stops[0].offset, 0.0);
+        assert_eq!(g.stops[1].offset, 1.0);
+    }
+
+    /// Angular is peniko's sweep; radial carries its radius from `width.0`. Both must produce
+    /// a gradient rather than silently dropping, which is what the old converter did.
+    #[test]
+    fn radial_and_angular_both_project() {
+        for fill in [
+            Fill::RadialGradient(two_stop_gradient()),
+            Fill::AngularGradient(two_stop_gradient()),
+        ] {
+            let mut shape = rect_shape();
+            shape.add_fill(fill);
+            let node = node_from_shape(&shape).expect("rect projects");
+            assert!(matches!(node.fills[0], Brush::Gradient(_)));
+        }
+    }
+
+    /// Diamond has no peniko equivalent and rides along with the Phase-4 custom shaders.
+    #[test]
+    fn diamond_gradient_is_not_projected() {
+        let mut shape = rect_shape();
+        shape.add_fill(Fill::DiamondGradient(two_stop_gradient()));
+
+        let node = node_from_shape(&shape).expect("rect still projects");
+        assert!(node.fills.is_empty());
+    }
+
+    #[test]
+    fn projects_a_centre_stroke() {
+        use crate::shapes::{StrokeStyle, SolidColor};
+
+        let mut shape = rect_shape();
+        let mut stroke = crate::shapes::Stroke::new_center_stroke(4.0, StrokeStyle::Solid, None, None);
+        stroke.fill = Fill::Solid(SolidColor(skia::Color::from_argb(255, 1, 2, 3)));
+        stroke.dashes = vec![6.0, 2.0];
+        stroke.miter_limit = Some(9.0);
+        shape.add_stroke(stroke);
+
+        let node = node_from_shape(&shape).expect("rect projects");
+        assert_eq!(node.strokes.len(), 1);
+        let s = &node.strokes[0];
+        assert_eq!(s.style.width, 4.0);
+        assert_eq!(s.style.miter_limit, 9.0);
+        assert_eq!(s.style.dash_pattern.as_slice(), &[6.0, 2.0]);
+        assert_eq!(s.brush, Brush::Solid(Color::from_rgba8(1, 2, 3, 255)));
+    }
+
+    /// Inner/outer need the path offset before this model; projecting them as centred would
+    /// render them in the wrong place, so they are dropped instead.
+    #[test]
+    fn inner_stroke_is_dropped_rather_than_mis_projected() {
+        use crate::shapes::{StrokeStyle, SolidColor};
+
+        let mut shape = rect_shape();
+        let mut stroke = crate::shapes::Stroke::new_inner_stroke(4.0, StrokeStyle::Solid, None, None);
+        stroke.fill = Fill::Solid(SolidColor(skia::Color::from_argb(255, 1, 2, 3)));
+        shape.add_stroke(stroke);
+
+        let node = node_from_shape(&shape).expect("rect projects");
+        assert!(node.strokes.is_empty());
+    }
+
+    #[test]
+    fn rect_with_no_fills_projects_empty() {
         let mut shape = Shape::new(Uuid::nil());
         shape.set_shape_type(Type::Rect(ShapeRect::default()));
         shape.set_selrect(0.0, 0.0, 10.0, 10.0);
         let node = node_from_shape(&shape).expect("rect projects");
         assert!(node.fills.is_empty());
+        assert!(node.strokes.is_empty());
     }
 }

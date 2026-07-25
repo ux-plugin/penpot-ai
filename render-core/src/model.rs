@@ -14,6 +14,18 @@
 use kurbo::{Affine, BezPath, Rect};
 use peniko::Brush;
 
+/// A stroke: how to expand the outline, and what to paint it with.
+///
+/// `kurbo::Stroke` already carries width, join, caps, miter limit, dash pattern and dash
+/// offset, so there is nothing to hand-write here (D12). What it does *not* carry is
+/// Penpot's `StrokeKind` (inner/outer/center) — that is an offsetting decision, not a
+/// stroke-style one, and is applied to the path before it reaches this model.
+#[derive(Clone, Debug)]
+pub struct Stroke {
+    pub style: kurbo::Stroke,
+    pub brush: Brush,
+}
+
 /// The geometry family of a node. `Frame`, `Text`, … follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -39,6 +51,8 @@ pub struct Node {
     /// Paints, back to front. `peniko::Brush` already covers solid, gradient and image, so
     /// gradients need no new type here — only a converter in `model_export`.
     pub fills: Vec<Brush>,
+    /// Strokes, back to front, painted over the fills.
+    pub strokes: Vec<Stroke>,
     pub opacity: f32,
     pub hidden: bool,
 }
@@ -78,6 +92,7 @@ mod tests {
             path: None,
             transform: Affine::IDENTITY,
             fills: vec![Brush::Solid(Color::from_rgba8(255, 0, 0, 255))],
+            strokes: vec![],
             opacity: 1.0,
             hidden: false,
         });
@@ -104,6 +119,7 @@ mod tests {
             path: Some(path),
             transform: Affine::IDENTITY,
             fills: vec![],
+            strokes: vec![],
             opacity: 1.0,
             hidden: false,
         };
