@@ -8,10 +8,11 @@
 
 #![allow(dead_code)]
 
-use crate::core_convert::{matrix_to_core, rect_to_core};
+use crate::core_convert::{affine_to_core, color_to_core, rect_to_core};
 use crate::shapes::{Fill, Path, Segment, Shape, Type};
-use render_core::geom as g;
+use render_core::kurbo::BezPath;
 use render_core::model as m;
+use render_core::peniko::Brush;
 
 /// Project a shape into the neutral model. Returns `None` for shape kinds not yet supported.
 pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
@@ -30,38 +31,35 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         kind,
         bounds: rect_to_core(shape.selrect),
         path,
-        transform: matrix_to_core(&shape.transform),
+        transform: affine_to_core(&shape.transform),
         fills,
         opacity: shape.opacity,
         hidden: shape.hidden,
     })
 }
 
-fn path_to_core(path: &Path) -> m::Path {
-    let segments = path.segments().iter().map(seg_to_core).collect();
-    m::Path { segments }
-}
-
-fn seg_to_core(seg: &Segment) -> m::PathSeg {
-    match *seg {
-        Segment::MoveTo((x, y)) => m::PathSeg::MoveTo(g::Point::new(x, y)),
-        Segment::LineTo((x, y)) => m::PathSeg::LineTo(g::Point::new(x, y)),
-        Segment::CurveTo(((c1x, c1y), (c2x, c2y), (ex, ey))) => m::PathSeg::CubicTo {
-            c1: g::Point::new(c1x, c1y),
-            c2: g::Point::new(c2x, c2y),
-            end: g::Point::new(ex, ey),
-        },
-        Segment::Close => m::PathSeg::Close,
-    }
-}
-
-fn fill_to_core(fill: &Fill) -> Option<m::Fill> {
-    match fill {
-        Fill::Solid(solid) => {
-            let c = solid.0;
-            Some(m::Fill::Solid(m::Color::rgba(c.r(), c.g(), c.b(), c.a())))
+fn path_to_core(path: &Path) -> BezPath {
+    let mut bp = BezPath::new();
+    for seg in path.segments() {
+        match *seg {
+            Segment::MoveTo((x, y)) => bp.move_to((x as f64, y as f64)),
+            Segment::LineTo((x, y)) => bp.line_to((x as f64, y as f64)),
+            Segment::CurveTo(((c1x, c1y), (c2x, c2y), (ex, ey))) => bp.curve_to(
+                (c1x as f64, c1y as f64),
+                (c2x as f64, c2y as f64),
+                (ex as f64, ey as f64),
+            ),
+            Segment::Close => bp.close_path(),
         }
-        // Gradients and image fills are deferred until the neutral model gains them.
+    }
+    bp
+}
+
+fn fill_to_core(fill: &Fill) -> Option<Brush> {
+    match fill {
+        Fill::Solid(solid) => Some(Brush::Solid(color_to_core(solid.0))),
+        // Gradients and image fills map onto `Brush::Gradient` / `Brush::Image`, which peniko
+        // already provides — they need a converter here, not a new model type.
         _ => None,
     }
 }
@@ -72,7 +70,8 @@ mod tests {
     use crate::math::Matrix;
     use crate::shapes::{Group, Rect as ShapeRect, SolidColor};
     use crate::uuid::Uuid;
-    use render_core::geom as g;
+    use render_core::kurbo::{PathEl, Point, Rect};
+    use render_core::peniko::Color;
     use skia_safe as skia;
 
     #[test]
@@ -89,14 +88,14 @@ mod tests {
 
         assert_eq!(node.id, Uuid::nil().as_u128());
         assert_eq!(node.kind, m::ShapeKind::Rect);
-        assert_eq!(node.bounds, g::Rect::from_ltrb(10.0, 20.0, 40.0, 80.0));
-        assert_eq!(node.transform.translate_x(), 5.0);
-        assert_eq!(node.transform.translate_y(), 7.0);
+        assert_eq!(node.bounds, Rect::new(10.0, 20.0, 40.0, 80.0));
+        let [_, _, _, _, tx, ty] = node.transform.as_coeffs();
+        assert_eq!((tx, ty), (5.0, 7.0));
         assert_eq!(node.opacity, 0.5);
-        assert_eq!(node.hidden, false);
+        assert!(!node.hidden);
         assert_eq!(
             node.fills,
-            vec![m::Fill::Solid(m::Color::rgba(10, 20, 30, 255))]
+            vec![Brush::Solid(Color::from_rgba8(10, 20, 30, 255))]
         );
     }
 
@@ -109,7 +108,7 @@ mod tests {
 
     #[test]
     fn projects_a_vector_path() {
-        use crate::shapes::{Path as ShapePath, Segment};
+        use crate::shapes::Path as ShapePath;
 
         let mut shape = Shape::new(Uuid::nil());
         shape.set_shape_type(Type::Path(ShapePath::new(vec![
@@ -121,19 +120,21 @@ mod tests {
 
         let node = node_from_shape(&shape).expect("a path must project");
         assert_eq!(node.kind, m::ShapeKind::Path);
+
         let path = node.path.expect("path geometry present");
-        assert_eq!(path.segments.len(), 4);
-        assert_eq!(path.segments[0], m::PathSeg::MoveTo(g::Point::new(0.0, 0.0)));
-        assert_eq!(path.segments[1], m::PathSeg::LineTo(g::Point::new(10.0, 0.0)));
+        let els = path.elements();
+        assert_eq!(els.len(), 4);
+        assert_eq!(els[0], PathEl::MoveTo(Point::new(0.0, 0.0)));
+        assert_eq!(els[1], PathEl::LineTo(Point::new(10.0, 0.0)));
         assert_eq!(
-            path.segments[2],
-            m::PathSeg::CubicTo {
-                c1: g::Point::new(11.0, 1.0),
-                c2: g::Point::new(12.0, 2.0),
-                end: g::Point::new(10.0, 10.0),
-            }
+            els[2],
+            PathEl::CurveTo(
+                Point::new(11.0, 1.0),
+                Point::new(12.0, 2.0),
+                Point::new(10.0, 10.0),
+            )
         );
-        assert_eq!(path.segments[3], m::PathSeg::Close);
+        assert_eq!(els[3], PathEl::ClosePath);
     }
 
     #[test]

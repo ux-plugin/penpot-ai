@@ -10,9 +10,9 @@ publish = false
 # and wasm32-unknown-unknown (Vello/wasm-bindgen module), so it carries no backend deps.
 
 [dependencies]
-# Intentionally empty for the geometry foundation. Neutral math is hand-rolled f32 to
-# mirror Skia's semantics exactly (f32 precision, SkMatrix element order) so the eventual
-# migration in render-wasm is a type-swap, not a behavior change. glam/bezier-rs interop
-# can be added later for the path/segment layer.
+# Versions pinned to match the vello fork's workspace, so the Vello module and render-wasm
+# share one kurbo/peniko rather than linking two incompatible copies.
+kurbo = "0.13.1"
+peniko = "0.6.1"
 
 [dev-dependencies]

@@ -79,6 +79,8 @@
 /blob-report/
 /playwright/.cache/
 /render-wasm/target/
+/render-core/target/
+/render-vello/target/
 /**/node_modules
 /**/.yarn/*
 /.pnpm-store

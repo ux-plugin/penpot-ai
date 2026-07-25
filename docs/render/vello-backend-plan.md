@@ -1,0 +1,234 @@
+# Vello as a peer rendering backend — decisions & plan
+
+Status: **Phase 0 done, Phase 1 in progress.** Architecture: **two standalone wasm modules, one chosen at runtime.**
+
+This supersedes the earlier "Option A, focus-mode first" framing. See [Decision log](#decision-log) for what changed and why.
+
+---
+
+## Where things live
+
+Committed on `develop` as `109b8d95fe` — *feat(render-wasm): backend-neutral render-core + Vello backend groundwork* — with the `vello` submodule pinned at `39f16bd9`, *feat(sparse_strips): user-authored WGSL filters + Penpot backend evaluation*.
+
+Note: the main worktree has since moved off `develop` onto `wip/tree-snapshot-2026-07-25`. `develop` itself still points at `109b8d95fe`, and the four commits on that wip branch do not touch the Vello track.
+
+| Thing | Path | Notes |
+|---|---|---|
+| Neutral shared crate | `render-core/` | kurbo + peniko + the node/scene model. Owned by neither backend |
+| Skia backend | `render-wasm/` | cargo package `render`, bin `render_wasm` |
+| Skia↔neutral boundary | `render-wasm/src/core_convert.rs` | free fns, affine-only |
+| Shape → neutral projection | `render-wasm/src/model_export.rs` | **transitional** — unnecessary in the end state |
+| Vello backend | `render-vello/` | was `focus_embed` inside the submodule; see D15 |
+| Vello fork | `vello/` (submodule → `ux-plugin/vello.git`) | branch `custom-wgsl-filter`; carries **only** the engine change |
+| This plan | `docs/render/vello-backend-plan.md` | spans all three crates, so it is not render-wasm's |
+
+The `vello-spike` worktree at `../penpot-ai-vello-spike` is now empty of vello work and can be removed.
+
+Both trees are clean: the main repo and the `vello` submodule carry no uncommitted work.
+
+---
+
+## Decision log
+
+### D1 — Vello is worth adopting
+It beats Skia on the case Skia handles poorly: many stacked effects, zoomed in, animated. Proven in-browser on WebGPU with a working user-authored WGSL filter.
+
+### D2 — Two wasm modules, exactly one loaded at runtime
+One binary **cannot** be both targets:
+- render-wasm must build for `wasm32-unknown-emscripten` — the Skia binaries it links are prebuilt only for that target. Skia pins the module to Emscripten.
+- `wgpu`'s browser backend is built on `web-sys`, which is wasm-bindgen-generated and only works on `wasm32-unknown-unknown` plus the wasm-bindgen post-processing step.
+
+So: two artifacts, and the host **downloads exactly one**. Because only one is ever loaded, this eliminates the concerns that killed earlier designs — no runtime memory duplication, no cross-module projection, no second serialization target, no dual-canvas plumbing.
+
+The single-binary alternative (wgpu's GLES backend over Emscripten's GL via `glow`) stays deferred: unproven, WebGL2-level only, and it reopens the shared-GL-context sampler-leak risk.
+
+### D3 — The Vello module is a standalone peer, not a focus-mode add-on
+`render-vello` is a **full replacement** for `render-wasm`, not a side canvas for shader focus mode. Consequences:
+- `model_export.rs` (render-wasm re-deriving a neutral model for another module) is **the wrong direction** in the end state and becomes unnecessary.
+- Both modules are fed directly by the host with the same document.
+
+### D4 — `skia-rs-wasm` is the host and owns the document
+Not CLJS. `skia-rs-wasm` holds the document model (`IndexedShape`/`IndexedPage`), resolves geometry in TS (`renderer/geom/`: vector-network-faces, planarize, fillet, path-arc, subpaths, matrix), and already drives render-wasm via `node-factory`/`wasm-module`. Projection to a renderer originates **there**, which is what makes the two modules peers.
+
+Exception: **text**. Skia's paragraph layout lives inside render-wasm, not in the host.
+
+### D5 — Shared Rust crate: `render-core`
+Backend-neutral, zero dependencies, `#![forbid(unsafe_code)]`. Today: `geom` (Point/Rect/Matrix, SkMatrix element order) + `model` (Color/Fill/ShapeKind/PathSeg/Path/Node/Scene). 596 lines, 11 tests, builds for `wasm32-unknown-unknown`. Compiled into both artifacts; only one ships per session.
+
+**Partly superseded by D12:** the crate stays, but "zero dependencies" is dropped deliberately — the geometry and paint atoms come from kurbo and peniko instead of being hand-written here.
+
+### D6 — Approach B now, approach A as the destination
+For the model boundary we chose **B: neutral model + convert at the handoff**, over **A: swap Skia types in place**. A is one indivisible ~260-site change because the four geom atoms (`Matrix`, `Point`, `Rect`, `Color`) are type-coupled.
+
+But under D3 the end state wants the core to **be** the model, which is A. So B is the stepping stone that unblocks Vello without touching the shipping Skia engine; A is where render-wasm eventually lands as the core absorbs the model.
+
+### D7 — One ABI contract, two adapters
+Both modules expose the same logical surface so the host can load either interchangeably. The interop differs (Emscripten `Module._fn` vs wasm-bindgen), so each gets a thin TS adapter behind one `Renderer` interface in `skia-rs-wasm`.
+
+### D8 — Animator: Rive's model, not full rebuild
+Dependency-ordered dirty propagation (`m_DependencyOrder`, `graphOrder`, `m_DirtDepth`, `ComponentDirt` flags) rather than re-encoding the scene each frame. Rive also ring-buffers its GPU allocators.
+
+### D9 — Present-to-present cadence is the fps standard
+See [Measurement](#measurement-methodology). Encode-throughput and GPU-fence timing both mislead.
+
+### D10 — Custom effects → WGSL via `FilterPrimitive::Custom`
+The fork's mechanism works end to end. The SkSL RuntimeEffects (glass refraction/displacement/composite, noise, texture, diamond/angular gradients) port to WGSL through it.
+
+### D11 — Text → Parley
+The single largest sub-project. Skia `textlayout` Paragraph → Parley layout/shaping feeding Vello glyph runs.
+
+Downgraded from research to integration by D14: Graphite and Blitz both ship the parley + fontique + skrifa path against Vello today, and Bevy and Gosub have adopted Parley too.
+
+### D12 — Geometry and paint atoms come from kurbo + peniko, not from us
+`render-core/src/geom.rs` **is** kurbo. `model.rs`'s `Color`, `Fill`, `Path`, `PathSeg` **are** peniko plus `kurbo::BezPath`. Both crates are pure Rust and `no_std`-capable (allocator required), and neither pins a wasm target — which was the entire reason we hand-rolled in the first place.
+
+kurbo also already ships most of what Phase 1 was going to write by hand: `stroke()` / `stroke_with()` (stroke expansion), `dash()`, `flatten()`, the `offset` module, `fit_to_bezpath`. peniko covers `Brush`, `Gradient`, `Image`, `BlendMode`, `Compose`, fill rule and `Style`; `color` covers CSS Color 4.
+
+This supersedes D5's "zero dependencies" — the dependency is the point.
+
+**Known gap:** kurbo has no boolean path operations ([linebender/kurbo#277](https://github.com/linebender/kurbo/issues/277)). Graphite's standalone `path-bool` is the option when bool shapes need to render.
+
+**Gate: cleared.** `kurbo 0.13.1` + `peniko 0.6.1` (the vello fork's own pins, so both artifacts link one kurbo) build for **`wasm32-unknown-emscripten`** and **`wasm32-unknown-unknown`**, and render-core's 11 tests stay green natively. Six transitive crates, all pure Rust: `arrayvec`, `polycool`, `smallvec`, `color`, `linebender_resource_handle`.
+
+Worth noting for anyone repeating this: there is no emscripten SDK on the dev machine — render-wasm builds inside `docker/devenv`, and `render-wasm/build` sources `/opt/emsdk/emsdk_env.sh`, which does not exist locally. The check still works natively because an **rlib** build invokes no linker, so `cargo build --lib --target wasm32-unknown-emscripten` needs no `emcc`. Linking the full render-wasm cdylib still does.
+
+### D13 — Backend-abstraction crates are a reference, not a dependency
+Two crates already solve "one drawing API, several 2D backends":
+
+- **`anyrender`** (Dioxus, for Blitz) — `PaintScene` + `WindowRenderer` + `ImageRenderer`, kurbo/peniko-typed, with `anyrender_vello`, `_vello_hybrid`, `_vello_cpu` and `_skia` backends.
+- **`imaging`** (forest-rs) — adopted by Masonry in [xilem#1696](https://github.com/linebender/xilem/pull/1696), replacing its hardcoded Vello classic. `PaintSink` streams borrowed `*Ref<'_>` commands; `record::Scene` retains an owned stream for validation and replay. Backends: `imaging_skia` (skia-safe 0.97), `imaging_vello`, `_vello_cpu`, `_vello_hybrid`, `_tiny_skia`. Plus `imaging_conformance`, `imaging_snapshot_tests`, `imaging_wind_tunnel`, `svg_imaging`, `velato_imaging`.
+
+We take the **shape**, not the crate, for two reasons:
+1. Both solve *one binary, many backends*. Our split is two separately-compiled wasm artifacts for different targets (D2) with the switch in TypeScript (D7). A Rust trait cannot span them.
+2. `FilterPrimitive::Custom` carrying user-authored WGSL (D10) cannot be expressed in a backend-neutral sink — Skia cannot run WGSL. Our differentiator is inherently per-backend.
+
+Prefer `imaging`'s `PaintSink` shape over `anyrender`'s `PaintScene`: its explicit **streaming vs retained** split maps onto the caching plan (D8) directly — the retained form is the subtree-replay hook, the streaming form is the per-frame path. `anyrender` has one `Scene` and does not make the distinction.
+
+`imaging_conformance` is a candidate for Phase 2's visual diff: it already targets skia-safe against vello_hybrid, our exact pair. Note render-wasm pins skia-safe 0.93.1 while `imaging_skia` uses 0.97.0.
+
+### D15 — Three sibling crates; the submodule depends on nothing outside itself
+`render-core/`, `render-wasm/` and `render-vello/` sit side by side at the repo root, and both backends depend on the core.
+
+Previously the Vello module lived *inside* the submodule as `vello/sparse_strips/vello_hybrid/examples/focus_embed`, with `render-core = { path = "../../../../../render-wasm/render-core" }` — a child repository declaring a dependency on a path in its superproject. Because `focus_embed` was also a workspace member, a bare `cargo metadata` at the fork root needed a file from Penpot: **the fork could not be built standalone**, and every upstream rebase dragged a foreign dependency along.
+
+Now the direction is parent → child throughout. `render-vello` depends into `vello/`; the fork carries only `FilterPrimitive::Custom` (an upstreamable engine change) plus the evaluation scenes, which stay because they are written against vello's own `ExampleScene`/`RenderingContext` harness.
+
+**No shared cargo workspace, deliberately.** Under D2 the two backends never link together — two binaries, exactly one ships — so a unified lockfile buys nothing. `render-vello`'s kurbo/peniko are pinned automatically because `vello_hybrid` is in its graph; `render-core` only has to declare compatible versions. A workspace at the repo root would also make cargo treat this polyglot monorepo as a Rust workspace.
+
+**The cost, recorded so it is not rediscovered:** leaving vello's workspace turned every `workspace = true` in `render-vello/Cargo.toml` into a hand-pinned version — wgpu, web-sys, wasm-bindgen and the rest. They must be re-checked against `vello/Cargo.toml`'s `[workspace.dependencies]` whenever the submodule is bumped; two incompatible wgpu copies in one graph fail confusingly.
+
+**Known naming wart:** `render-wasm` vs `render-vello` reads as though only one targets wasm. Both do; the honest pair is `render-skia`/`render-vello`. Renaming touches `render-wasm/build`, the docker devenv, `skia-rs-wasm`'s `build:wasm` and the artifact name, so it is deferred rather than decided against. The same applies to `FocusRenderer`/`create_focus_renderer` in `render-vello`, which are leftovers from the superseded focus-mode framing (D3).
+
+### D14 — Reuse the Linebender stack wherever it already exists
+See [Ecosystem survey](#ecosystem-survey). The short version: the filter graph, blur, drop shadow and atlas in `vello_common` are **upstream**, not ours — our fork commit adds only `FilterPrimitive::Custom`, the evaluation scenes and `focus_embed`. Text is parley + fontique + glifo. Lottie is velato + interpoli. SVG is vello_svg.
+
+---
+
+## What is already built
+
+**Phase 0 — embeddable Vello module. Done.**
+`focus_embed` exposes `FocusRenderer` on a **host-provided** canvas with no internal event loop: `render()`, `resize()`, `key()`, `set_scene()`, `set_transform()`, `status()`. WebGPU-first with WebGL2 fallback, preferred surface format (no extra per-frame copy), enlarged filter atlas, frame-skip instead of panic on atlas exhaustion. Verified in browser.
+
+**Phase 1 — neutral core + end-to-end proof. Half done.**
+- `render-core` geom + model, 11 tests.
+- `core_convert.rs` — Skia↔core geometry boundary.
+- `model_export.rs` — `Shape` → `render_core::model::Node` for rects, circles, paths, solid fills; 5 tests passing natively.
+- `model_scene.rs` in `focus_embed` — renders a `render_core::model::Scene` with Vello.
+- **End-to-end verified in browser:** real Skia `Shape` → neutral model → Vello pixels (rect, circle, cubic path), zero console errors.
+
+---
+
+## Findings
+
+### Measurement methodology
+Three ways to compute fps, only one correct:
+
+1. `1000 / encode_ms` — CPU encode throughput. Overstates badly (showed an impossible 172 fps).
+2. `on_submitted_work_done` GPU fence — **lowballs** (showed 7 fps). The callback is deferred by main-thread contention, so samples absorb event-loop lag.
+3. **Present-to-present interval** — equals perceived fps, vsync-capped. This is the standard.
+
+### Encode cost and caching tiers
+Encode measured ~12 ms on the stress scene. Caching, cheapest first:
+1. Dirty-propagating typed change-set (Rive model) — re-encode only what changed.
+2. Layer-texture caching — cache rendered subtrees.
+3. Filter-atlas pooling.
+4. Per-path encode cached in **local space**, transformed on GPU — a deep Vello change, and zoom still forces re-flattening.
+5. Dynamic resolution under motion.
+
+### Tiling
+A cross-frame tile cache is **useless for globally dynamic scenes** — pan/zoom invalidates every tile. Effects make it worse: blur crosses tile seams, so tiles need aprons.
+
+### Threading
+- `vello_cpu` has a rayon `multi_threaded` dispatch. **`vello_hybrid` does not.**
+- wasm threads need `SharedArrayBuffer` → cross-origin isolation (COOP `same-origin` + COEP `require-corp`). Fine when we control the headers.
+- For third-party embeds where we don't: message-passing workers, no header requirement.
+
+### Shader graph
+`naga` is an IR / translator / validator — **not an optimizer**. `spirv-opt` optimizes *within* a shader; neither restructures passes. Fusing a DAG into one shader is only valid for **pointwise runs between convolution barriers**.
+
+Pass counts (`is_multi_pass` is true only for these two): GaussianBlur = 2 (BLUR_H, BLUR_V); DropShadow = 4 (OFFSET, BLUR_H, BLUR_V, COMPOSITE); Custom = 1.
+
+### Sizing
+- Binaries: render-wasm ~8.3 MB release; `focus_embed` 4.2 MB. Only one downloads.
+- Geometry data: ~52 B/node + ~22 B/cubic segment.
+- render-wasm's `Path` already stores geometry **twice** (`segments: Vec<Segment>` + `skia_path: skia::Path`).
+
+### Ecosystem survey
+
+What already exists, so we do not rebuild it.
+
+**Adopt as-is.** `kurbo` (geometry, stroke expansion, dashing, flatten, offset, fit) · `peniko` (Brush, Gradient, Image, fill rule, BlendMode, Compose, Style) · `color` (CSS Color 4) · `parley` + `fontique` + `glifo` (layout, shaping, fallback, outlines, colour emoji, `PlainEditor`) · `vello_common::filter` (filter graph, blur, drop shadow, atlas — **upstream**) · `velato` + `interpoli` (Lottie, value animation) · `vello_svg` (usvg → scene).
+
+**Copy the shape.** `anyrender` and `imaging` (see D13) · Masonry's imaging migration · Graphite's `path-bool` for booleans.
+
+**Still ours.** Document → scene projection from `skia-rs-wasm` and the wire format · the Skia-side adapter · the SkSL → WGSL effect ports · inner shadow and backdrop blur (Vello gaps) · dirty propagation and caching.
+
+**Peer projects on this stack.** Graphite pairs Vello with kurbo, resvg/usvg, parley and skrifa, on wgpu 29 targeting WebGPU — their Vello path is self-described as alpha. Blitz pairs Vello with Parley, Stylo and Taffy through `anyrender`. Both landed on the same crate set we would.
+
+**Maturity.** `vello_hybrid` is "roughly beta quality" as of Linebender's Q1 2026 report — usable, with rough edges and performance work outstanding.
+
+---
+
+## Plan
+
+### Phase 1 (finish) — adopt kurbo + peniko as the core
+Rewritten under D12. The original "hand-write strokes, gradients, opacity/blend, hierarchy, corner radius into `render-core`" is largely writing kurbo and peniko a second time.
+
+1. **Gate:** verify kurbo + peniko build for `wasm32-unknown-emscripten`. Everything below depends on it.
+2. Delete `render-core/src/geom.rs`; re-export kurbo. Replace `model.rs`'s `Color`, `Fill`, `Path`, `PathSeg` with peniko and `kurbo::BezPath`. Keep only what is genuinely ours: node identity, `ShapeKind`, hierarchy, the Penpot effect stack.
+3. Retype `core_convert.rs` as kurbo↔Skia rather than ours↔Skia. Still affine-only.
+4. Extend `model_export` in step — strokes and gradients now map onto peniko types instead of newly hand-written ones. Keep the native tests green.
+5. Relocate `render-core` out of `render-wasm/` to a shared root and repoint both consumers. **Done** — went further, per D15: `render-vello` also moved out of the submodule, so all three crates are siblings.
+
+*Deferred to later phases: text, effects, custom shaders, boolean ops.*
+
+**Status: steps 1–3 and 5 done.** `render-core` is kurbo + peniko with `geom.rs` deleted; `core_convert` is Skia↔kurbo with the matrix element-order trap pinned by tests; `model_export` emits `BezPath`/`Brush`. Step 4 — extending the projection to strokes and gradients — is what remains before Phase 2.
+
+### Phase 2 — live data path
+Feed `render-vello` a real document from `skia-rs-wasm` rather than a hand-built model. Decide the wire format: reuse render-wasm's, or define one on `render-core`. Vello renders a real Penpot page (geometry only). Visual diff against Skia — evaluate `imaging_conformance` and `imaging_snapshot_tests` (D13) before writing our own harness, since they already target skia-safe against vello_hybrid.
+
+### Phase 3 — common ABI + runtime selection
+Define the `Renderer` interface in `skia-rs-wasm`, shaped after `imaging`'s `PaintSink` (D13) with its streaming/retained split; write the two adapters (Emscripten and wasm-bindgen); capability-detect WebGPU and lazily download the matching `.wasm`. After this phase the two modules are genuinely interchangeable.
+
+### Phase 4 — effects parity
+Blur, drop/inner shadow, blend modes, masks, clips onto Vello's filter graph. Port the SkSL RuntimeEffects to WGSL via `FilterPrimitive::Custom`. Fuse pointwise runs between convolution barriers. Known Vello gaps to close: inner shadow, backdrop/background-blur semantics.
+
+### Phase 5 — text + images
+Parley layout/shaping → Vello glyph runs. Image decode/upload to Vello textures; browser-decoded texture fast path → wgpu interop. Highest-risk phase.
+
+### Phase 6 — caching + animator
+Rive-style dependency-ordered dirty propagation. Layer-texture cache and filter-atlas pooling. Benchmark against Skia using present-cadence on real files.
+
+### Phase 7 — converge or hold
+Either keep two peer modules indefinitely, or absorb render-wasm's model into `render-core` (approach A) so both modules share one model outright.
+
+---
+
+## Open questions
+
+- **How much geometry is already resolved in `skia-rs-wasm`'s TS layer vs inside render-wasm/Skia?** This sizes the shared core directly. The more that is already neutral in TS, the less Skia-resolution work remains. Text is the known Skia-internal case; stroke expansion is answered by D12 (`kurbo::stroke`), boolean ops remain unverified.
+- **Does `imaging_conformance` run without its desktop GPU features?** `imaging_skia`'s `gpu` feature pulls wgpu 28, ash, Metal and D3D. The CPU path is what we would want; unverified.
+- **`render-core`'s home** — repo root, to serve two peers.
+- **`vello_hybrid` has no threading.** If CPU-side encode becomes the bottleneck, that work has to be added.
+- **Feature parity surface:** inner shadow, backdrop blur, all blend modes, exact gradient semantics.
+- **Download cost** of the Vello module vs Skia, and how the host chooses when WebGPU is present but the document is effect-light.

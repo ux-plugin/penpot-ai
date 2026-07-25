@@ -1,0 +1,51 @@
+[package]
+name = "render-vello"
+version = "0.1.0"
+description = "The Vello rendering backend: a wasm-bindgen module that renders a backend-neutral render-core scene. Peer to render-wasm (Skia); the host loads exactly one."
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[lib]
+name = "render_vello"
+crate-type = ["cdylib", "rlib"]
+
+# NOTE: this crate deliberately lives OUTSIDE the `vello/` submodule and depends *into* it,
+# rather than being an example inside it that depends back out at the superproject. That keeps
+# the fork a clean, rebaseable fork carrying only the engine change (`FilterPrimitive::Custom`).
+#
+# The cost of leaving vello's workspace is right here: every version below was `workspace = true`
+# and is now pinned by hand. They MUST stay in step with `vello/Cargo.toml`'s
+# `[workspace.dependencies]` — wgpu especially, since two incompatible wgpu copies in one graph
+# fail in confusing ways. When bumping the submodule, re-check this block against it.
+[dependencies]
+render-core = { path = "../render-core" }
+
+vello_common = { path = "../vello/sparse_strips/vello_common", default-features = false }
+vello_hybrid = { path = "../vello/sparse_strips/vello_hybrid" }
+# Transitional: the demo/evaluation scenes still live in the fork's example harness. A
+# production render-vello should not link them — they go when the live data path (Phase 2)
+# replaces the hand-built scene.
+vello_example_scenes = { path = "../vello/sparse_strips/vello_example_scenes" }
+
+wgpu = { version = "29.0.3", features = ["webgl"] }
+
+wasm-bindgen = "0.2.114"
+wasm-bindgen-futures = "0.4.64"
+js-sys = "0.3.91"
+web-sys = { version = "0.3.91", features = [
+    "Window",
+    "Document",
+    "Element",
+    "Performance",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "CssStyleDeclaration",
+    "WebGl2RenderingContext",
+    "KeyboardEvent",
+] }
+
+console_error_panic_hook = "0.1.7"
+console_log = "1.0"
+log = "0.4.29"
