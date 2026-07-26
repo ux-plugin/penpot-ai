@@ -5,6 +5,7 @@
 
 import { create } from 'zustand'
 import type { CommitFrame } from '../changes/commit-types'
+import { useJournalStore } from './journal/journal-store'
 
 const MAX_UNDO = 200
 
@@ -235,6 +236,13 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
   },
 
   beginTransaction: (id, timeoutMs = TRANSACTION_TIMEOUT_MS) => {
+    // Journal dual-write (step A): mirror the gesture boundary so a drag that
+    // merges into ONE frame here also merges into ONE journal entry. Mirrored
+    // inside the store action rather than the exported wrapper because callers
+    // like PathEditorOverlay drive `useHistoryStore.getState()` directly. The
+    // journal gets no watchdog of its own (`0`) — this store's timer fires
+    // `commitTransaction`, which mirrors across, so there is one timer, not two.
+    useJournalStore.getState().begin(id, 0)
     set((s) => ({
       transaction: s.transaction ?? { redoChanges: [], undoChanges: [] },
       transactionHolders: new Set([...s.transactionHolders, id]),
@@ -254,6 +262,7 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
 
   commitTransaction: (id) => {
     clearTransactionTimer(id)
+    useJournalStore.getState().commit(id) // step-A mirror
     set((s) => {
       if (!s.transactionHolders.has(id)) return s
       const holders = new Set(s.transactionHolders)
@@ -269,6 +278,7 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
 
   flushTransactions: () => {
     clearAllTransactionTimers()
+    useJournalStore.getState().flush() // step-A mirror
     set((s) => {
       const tx = s.transaction
       if (!tx || isCommitFrameEmpty(tx)) {
@@ -298,11 +308,14 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
 
   discardTransactions: () => {
     clearAllTransactionTimers()
+    useJournalStore.getState().discard() // step-A mirror
     set({ transaction: null, transactionHolders: new Set<string>() })
   },
 
   clearHistory: () => {
     clearAllTransactionTimers()
+    // step-A mirror: loading a document must not leave the previous one's log.
+    useJournalStore.getState().clear()
     set({
       undoStack: [],
       redoStack: [],

@@ -16,6 +16,8 @@
 import type { Change } from 'penpot-exporter/types'
 import type { DocMetaChange } from '../changes/doc-meta-change'
 import { useHistoryStore } from './history-store'
+import { appendTxn } from './journal/journal-store'
+import { toOps } from './journal/codec'
 
 export function recordHistoryFrame(params: {
   redoChanges: Change[]
@@ -38,6 +40,23 @@ export function recordHistoryFrame(params: {
     undoChanges: params.undoChanges,
     docMetaRedoChanges: docRedo.length > 0 ? [...docRedo] : undefined,
     docMetaUndoChanges: docUndo.length > 0 ? [...docUndo] : undefined,
+    groupId: params.groupId,
+  })
+
+  // ── Journal dual-write (Phase 1 step A; see docs/history-redesign-plan.md) ──
+  // Temporary. The journal is written but NOT read: undo/redo still pop the
+  // stacks above, so this cannot change behaviour. Its purpose is to populate
+  // the log from real application traffic, so the two representations can be
+  // compared on genuine flows rather than fixtures, before the reader swaps in
+  // step B. Guarded identically to the push above, so the log holds exactly the
+  // frames the stack holds.
+  appendTxn({
+    ops: toOps({
+      redoChanges: params.redoChanges,
+      undoChanges: params.undoChanges,
+      docMetaRedoChanges: docRedo,
+      docMetaUndoChanges: docUndo,
+    }),
     groupId: params.groupId,
   })
 }
