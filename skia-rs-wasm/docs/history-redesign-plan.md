@@ -700,7 +700,8 @@ needed for the token-propagation bloat (~5 MB at 10k shapes; see
 
 ## Open questions
 
-- Dependency policy per lens: which modes cascade vs. refuse vs. partial.
+- Dependency between operations — **mechanism settled, policy still open.**
+  See "Operation dependencies" below.
 - Whether the animation lens picks by keyframe time or by recency.
 - Component/instance `origin` links: how the tab renders "changed via main
   component" and whether it links across.
@@ -708,6 +709,56 @@ needed for the token-propagation bloat (~5 MB at 10k shapes; see
   stop being useful.
 - Whether saved points are only automatic (checkpoints) or the user can name one.
 - Hot-window size, and whether the cursor persists for single-player sessions.
+
+### Operation dependencies
+
+"Undo A only" is ill-defined when later operations were built on A (see
+"Selective undo is not always well-defined"). Prior art for the general case is
+Cheng, He, Xu, Han, Cai & Chen, *A multi-user selective undo/redo approach for
+collaborative CAD systems*, JCDE 1(2) 2014, 103–115 (doi 10.7315/JCDE.2014.011)
+— same group as the Cai/He selective-undo line already cited. They derive a
+*dependency operation set* from a Feature Combination Hierarchy, undo the target
+together with its whole set, re-evaluate only the affected branch, and forbid
+redoing an operation that was undone as a dependency.
+
+**We need much less machinery than they do, and the reason is worth recording.**
+Their hierarchy exists because parametric CAD dependencies are *implicit*: a
+feature is defined against topological entities created by an earlier feature
+("fillet this edge"), which is the persistent-naming problem. Ours are
+*explicit* — every dependency in this codebase is a UUID stored in the node.
+That includes 3D: `scene3d` is a plain scene graph, not CSG, so it adds no
+constructive dependencies. So the answer is an **index, not a hierarchy**:
+
+- **Structural edges come free.** An op on an entity depends on whatever created
+  it; a child depends on whatever created its parent. Both fall out of `add` and
+  `mov`, which already carry `parent`.
+- **Reference edges need one extractor per field** — `refsOf(op) -> EntityId[]`
+  over token bindings, component/instance links, slot targets, shader material
+  field references, interaction targets. Verify each against the real node shape
+  when building it; not all carry the reference in the obvious form.
+- Feed both into a derived inverted table `txn_refs(referenced, seq)`, alongside
+  `txn_entity` and `txn_subtree`. The dependency set of a target is then the
+  entities it created, the later transactions touching or referencing those, and
+  the transitive closure — a backward walk bounded by the gap, structurally the
+  same as the liveness pass.
+
+**This implies no encoding commitment (D14) and can be deferred at zero cost.**
+Index tables are derived, never authoritative, and rebuildable from `ops`, so
+`txn_refs` can be built when Phase 3 needs it and backfilled over history
+already written. Contrast the `scene3d` decomposition, which *is* an encoding
+change and therefore has a Phase 2 deadline.
+
+**Still open — the policy.** Cascade is correct but harsh: silently deleting a
+shape and an hour of edits on it because an old create was undone is arguably
+worse than refusing. Current lean for the Phase 3 tab is **refuse with an
+explanation**, keeping cascade as an explicit "undo this and everything built on
+it" action, with the choice per lens. If cascade is adopted, their redo
+restriction follows — an operation undone as a dependency must not be
+independently redoable.
+
+Note Phase 1 needs none of this: today's system already cascades destructively
+through `del-obj`, so behaviour matches either way. This becomes reachable when
+the tab lets a user undo an arbitrary old operation.
 
 ## Naming for the code
 
