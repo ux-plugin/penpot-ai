@@ -36,6 +36,15 @@ import type { DocMetaChange } from '../../changes/doc-meta-change'
 import type { Op, SetOp } from './op'
 import { DOC_ENTITY } from './op'
 
+/** The `Change` variants this module models structurally; anything else is boxed. */
+const MODELLED = new Set<string>([
+  'add-obj',
+  'del-obj',
+  'mod-obj',
+  'mov-objects',
+  'reorder-children',
+])
+
 /** Positions are opaque to `rebase`. Phase 1 derives them from the array index. */
 const posOf = (index: number | null | undefined): string => String(index ?? -1)
 const indexOf = (pos: string): number | null => {
@@ -77,26 +86,61 @@ export function docMetaField(change: DocMetaChange): string {
  * counterpart in `was`. `invert()` swaps the two, which is precisely the right
  * inverse without this module knowing anything about tokens. Modelling tokens
  * as real field ops is worthwhile later; it is not needed to move the log.
+ *
+ * Paired POSITIONALLY, not by identity. `appendDocMetaPair` mirrors the page
+ * arm — redo appended, undo prepended — so `redo[i]` pairs with
+ * `undo[len-1-i]`. Pairing by {@link docMetaField} instead looks tempting but is
+ * wrong whenever one commit emits several changes sharing an identity:
+ * `reorderSet` emits `del-token-set` + `add-token-set` for the SAME set, and
+ * identity pairing collapsed them into a duplicate `add` with the `del` lost.
+ * The field is still the conflict key — just not the pairing key.
  */
 function docMetaOps(
   redo: readonly DocMetaChange[],
   undo: readonly DocMetaChange[],
 ): SetOp[] {
-  const byField = new Map<string, DocMetaChange>()
-  for (const c of undo) byField.set(docMetaField(c), c)
-  return redo.map((c) => ({
+  return redo.map((c, i) => ({
     t: 'set',
     entity: DOC_ENTITY,
     field: docMetaField(c),
     val: c,
-    was: byField.get(docMetaField(c)),
+    was: undo[undo.length - 1 - i],
+    arm: 'meta',
   }))
+}
+
+/**
+ * Carry a `Change` the switch below does not model — today `set-page-interactions`,
+ * which is a local extension to the exporter's union. Boxed verbatim so it
+ * round-trips exactly, keyed by page so two interaction edits to one page still
+ * collide. Dropping unknown variants instead is silent data loss: undo simply
+ * fails to revert them.
+ */
+function boxedPageOp(change: Change, undo: Change | undefined): SetOp {
+  const c = change as { pageId?: string; type: string }
+  return {
+    t: 'set',
+    entity: c.pageId ?? 'page',
+    page: c.pageId,
+    field: `page:${c.type}`,
+    val: change,
+    was: undo,
+    arm: 'page',
+  }
 }
 
 // ------------------------------------------------------------------ pairing
 
 /** Does `undo` look like the inverse of `redo`? */
 function isCounterpart(redo: Change, undo: Change): boolean {
+  // A variant we do not model (a local extension) pairs with the same variant
+  // on the same page — the shape of every such change in this codebase.
+  if (!MODELLED.has(redo.type)) {
+    return (
+      undo.type === redo.type &&
+      (undo as { pageId?: string }).pageId === (redo as { pageId?: string }).pageId
+    )
+  }
   switch (redo.type) {
     case 'add-obj':
       return undo.type === 'del-obj' && undo.id === redo.id
@@ -197,6 +241,10 @@ export function toOps(params: {
 
   params.redoChanges.forEach((change, i) => {
     const undo = counterpart(change, undos, i)
+    if (!MODELLED.has(change.type)) {
+      ops.push(boxedPageOp(change, undo))
+      return
+    }
     switch (change.type) {
       case 'add-obj':
         ops.push({
@@ -251,16 +299,6 @@ export function toOps(params: {
 // --------------------------------------------------------------- to changes
 
 /**
- * Ops that are boxed doc-meta records rather than shape edits. Deliberately not
- * a type predicate: `op is SetOp` would narrow the *negative* branch to exclude
- * every `SetOp`, not just the doc-meta ones, silently dropping ordinary field
- * edits from the rebuild.
- */
-function isDocMeta(op: Op): boolean {
-  return op.t === 'set' && op.entity === DOC_ENTITY
-}
-
-/**
  * Rebuild a commit from journal ops — what undo feeds back into
  * `commitChanges`. Consecutive ops that belong together are recombined (a run
  * of `set`s on one entity becomes one `mod-obj`; a run of `mov`s sharing a
@@ -277,9 +315,14 @@ export function toChanges(ops: readonly Op[]): {
   for (let i = 0; i < ops.length; i += 1) {
     const op = ops[i]
 
-    if (op.t === 'set' && op.entity === DOC_ENTITY) {
+    if (op.t === 'set' && op.arm !== undefined) {
       // `val` holds the change for this direction; `invert` already swapped it.
-      if (op.val !== undefined) docMetaChanges.push(op.val as DocMetaChange)
+      // An absent `val` means the commit recorded no counterpart, so there is
+      // nothing to emit in this direction.
+      if (op.val !== undefined) {
+        if (op.arm === 'meta') docMetaChanges.push(op.val as DocMetaChange)
+        else changes.push(op.val as Change)
+      }
       continue
     }
 
@@ -309,7 +352,7 @@ export function toChanges(ops: readonly Op[]): {
         let j = i
         while (j < ops.length) {
           const next = ops[j]
-          if (next.t !== 'set' || next.entity !== op.entity || isDocMeta(next)) break
+          if (next.t !== 'set' || next.entity !== op.entity || next.arm !== undefined) break
           value[next.field] = next.val
           j += 1
         }

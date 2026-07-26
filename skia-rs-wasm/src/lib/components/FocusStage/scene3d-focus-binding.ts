@@ -22,7 +22,7 @@
 import { useEffect } from 'react'
 import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { openFocusStage, closeFocusStage, focusStage } from '../../renderer/signals/focus-stage'
-import { beginFocusBuffer, endFocusBuffer } from '../../history/history-store'
+import { enterScope, exitScope } from '../../history/journal/scope'
 
 const SCENE3D_STAGE_ID = 'scene-3d'
 
@@ -41,14 +41,14 @@ function openScene3dSession(exitMachine: () => void): void {
     id: SCENE3D_STAGE_ID,
     title: '3D scene',
     // Every exit path (explicit EXIT, eviction, mousedown-off-scene) funnels
-    // here exactly once: leave edit mode AND fold the session's edits into one
-    // canvas undo entry.
+    // here exactly once: leave edit mode AND collapse the session's edits into
+    // one canvas undo entry.
     onExit: () => {
       exitMachine()
-      endFocusBuffer()
+      exitScope()
     },
   })
-  beginFocusBuffer(`scene-3d:${(SCENE3D_SESSION_SEQ += 1)}`)
+  enterScope(`scene-3d:${(SCENE3D_SESSION_SEQ += 1)}`)
 }
 
 /**

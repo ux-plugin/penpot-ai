@@ -46,8 +46,8 @@ export interface FocusStageSession {
    * session replacing this one). For cleanup only — do NOT call `closeFocusStage`
    * from here (it's already closing).
    *
-   * A stage that wants a focus sub-history opens a buffer (`beginFocusBuffer`)
-   * and sets `onExit: endFocusBuffer` to fold it into one canvas undo entry on
+   * A stage that wants its own undo granularity calls `enterScope(tag)` and
+   * sets `onExit: exitScope` to collapse the session into one canvas entry on
    * close (see `open-shader-stage.tsx`).
    */
   onExit?: () => void

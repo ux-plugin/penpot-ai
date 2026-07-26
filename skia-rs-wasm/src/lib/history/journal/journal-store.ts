@@ -68,7 +68,21 @@ export interface Txn {
   groupId?: string
   /** Set when this transaction reverts another — the back-pointer redo follows. */
   undoes?: number
+  /**
+   * Set on the entry written when a focus scope closes. Its `ops` restate what
+   * the transactions in `(from, to]` already applied, so one canvas undo reverts
+   * the whole session — but they are a *restatement*, not new work. Anything
+   * replaying the log forward (Phase 2 snapshots) must skip either this entry or
+   * the range it covers, or the session lands twice.
+   */
+  collapses?: { from: number; to: number }
   ops: Op[]
+}
+
+/** An open scope and the head it opened at, so its range is known on exit. */
+export interface ScopeFrame {
+  tag: ScopeTag
+  fromSeq: number
 }
 
 /** What a caller supplies; the store owns `seq` and `parentSeq`. */
@@ -77,6 +91,7 @@ export interface TxnInput {
   scope?: ScopeTag
   groupId?: string
   undoes?: number
+  collapses?: { from: number; to: number }
   actor?: ActorId
 }
 
@@ -106,7 +121,7 @@ export interface JournalState {
    * mode marks its work simply by pushing — no parallel buffer, no branching in
    * the commit path. Slice 5 wires the stages to it.
    */
-  scopes: ScopeTag[]
+  scopes: ScopeFrame[]
 
   /** Append ops as one transaction (or merge into the open one). Returns the entry, if any. */
   append: (input: TxnInput) => Txn | undefined
@@ -128,10 +143,12 @@ export interface JournalState {
 
   /** Enter a scope; subsequent entries are stamped with it. */
   pushScope: (scope: ScopeTag) => void
-  /** Leave the current scope. */
-  popScope: () => void
+  /** Leave the current scope, returning the frame that closed. */
+  popScope: () => ScopeFrame | undefined
   /** The scope entries are currently stamped with. */
   currentScope: () => ScopeTag
+  /** The open scope frame, or undefined in the canvas. */
+  currentScopeFrame: () => ScopeFrame | undefined
 
   clear: () => void
 }
@@ -143,6 +160,7 @@ function mergeInput(a: TxnInput, b: TxnInput): TxnInput {
     scope: a.scope ?? b.scope,
     groupId: a.groupId ?? b.groupId,
     undoes: a.undoes ?? b.undoes,
+    collapses: a.collapses ?? b.collapses,
     actor: a.actor ?? b.actor,
   }
 }
@@ -154,7 +172,11 @@ export const useJournalStore = create<JournalState>()((set, get) => ({
   scopes: [],
 
   append: (input) => {
-    if (input.ops.length === 0) return undefined
+    // An undo whose ops all dropped (the target's effect was already gone)
+    // still has to be recorded, or the target stays live and the next undo
+    // picks it again — forever. Such an entry is a tombstone: it applies
+    // nothing and exists only to mark its target reverted.
+    if (input.ops.length === 0 && input.undoes === undefined) return undefined
 
     if (get().pending) {
       set((s) => ({ pending: s.pending ? mergeInput(s.pending, input) : input }))
@@ -170,6 +192,7 @@ export const useJournalStore = create<JournalState>()((set, get) => ({
       scope: input.scope ?? s.currentScope(),
       groupId: input.groupId,
       undoes: input.undoes,
+      collapses: input.collapses,
       ops: input.ops,
     }
     set({ txns: [...s.txns, txn].slice(-MAX_TXNS) })
@@ -234,17 +257,25 @@ export const useJournalStore = create<JournalState>()((set, get) => ({
   pushScope: (scope) => {
     // An in-flight gesture belongs to the scope it started in.
     get().flush()
-    set((s) => ({ scopes: [...s.scopes, scope] }))
+    set((s) => ({ scopes: [...s.scopes, { tag: scope, fromSeq: s.head() }] }))
   },
 
   popScope: () => {
+    // Land any in-flight gesture INSIDE the scope, before leaving it.
     get().flush()
+    const frame = get().currentScopeFrame()
     set((s) => ({ scopes: s.scopes.slice(0, -1) }))
+    return frame
   },
 
   currentScope: () => {
     const { scopes } = get()
-    return scopes.length === 0 ? CANVAS_SCOPE : scopes[scopes.length - 1]
+    return scopes.length === 0 ? CANVAS_SCOPE : scopes[scopes.length - 1].tag
+  },
+
+  currentScopeFrame: () => {
+    const { scopes } = get()
+    return scopes.length === 0 ? undefined : scopes[scopes.length - 1]
   },
 
   clear: () => {

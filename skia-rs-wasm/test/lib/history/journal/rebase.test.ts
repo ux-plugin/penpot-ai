@@ -20,7 +20,9 @@ import { describe, expect, it } from 'vitest'
 import fc from 'fast-check'
 import type { EntityId, Op, Pos } from '../../../../src/lib/history/journal/op'
 import { invert, invertAll } from '../../../../src/lib/history/journal/op'
-import { rebase, rebased } from '../../../../src/lib/history/journal/rebase'
+import { isForeignConflict, rebase, rebased, resolve } from '../../../../src/lib/history/journal/rebase'
+import type { Txn } from '../../../../src/lib/history/journal/journal-store'
+import { CANVAS_SCOPE, LOCAL_ACTOR } from '../../../../src/lib/history/journal/journal-store'
 
 // ---------------------------------------------------------------- reference model
 
@@ -133,6 +135,15 @@ function realize(doc: Doc, list: readonly Intent[]): { ops: Op[]; doc: Doc } {
   return { ops, doc: cur }
 }
 
+/**
+ * Wrap gap ops as the transaction they would have been committed in. The gap is
+ * typed as `Txn[]` rather than `Op[]` so a conflict can name the actor behind
+ * it — see `isForeignConflict`.
+ */
+function gapOf(ops: Op[], actor: string = LOCAL_ACTOR): Txn[] {
+  return ops.length === 0 ? [] : [{ seq: 1, actor, parentSeq: 0, scope: CANVAS_SCOPE, ops }]
+}
+
 const POOL_A = ['a1', 'a2', 'a3']
 const POOL_B = ['b1', 'b2', 'b3']
 
@@ -179,7 +190,7 @@ describe('rebase', () => {
         const base = emptyDoc()
         const { ops, doc } = realize(base, a)
         const { ops: gap } = realize(doc, b)
-        for (const d of rebase(ops, gap)) {
+        for (const d of rebase(ops, gapOf(gap))) {
           // Identity, not just equality: rebase classifies, it does not rebuild.
           expect(ops).toContain(d.op)
         }
@@ -196,7 +207,7 @@ describe('rebase', () => {
           ? [{ t: 'del', entity: victim, node: {}, parent: doc.nodes[victim].parent, pos: doc.nodes[victim].pos }]
           : []
         fc.pre(gap.length > 0)
-        for (const d of rebase(ops, gap)) {
+        for (const d of rebase(ops, gapOf(gap))) {
           // `add` is exempt: re-creating something the gap removed is coherent.
           if (d.op.entity === victim && d.op.t !== 'add') {
             expect(d.kind).toBe('dropped')
@@ -213,9 +224,33 @@ describe('rebase', () => {
       { k: 'set', e: 'a1', f: 'fill', v: 1 },
     ])
     const { ops: gap } = realize(doc, [{ k: 'set', e: 'a1', f: 'fill', v: 2 }])
-    const out = rebase(invertAll(ops.slice(1)), gap)
+    const out = rebase(invertAll(ops.slice(1)), gapOf(gap))
     expect(out.map((d) => d.kind)).toEqual(['conflict'])
     expect(out[0].kind === 'conflict' && out[0].reason).toBe('field-overwritten')
+  })
+
+  it('names the actor behind a conflict, so policy can tell mine from theirs', () => {
+    const base = emptyDoc()
+    const { ops, doc } = realize(base, [
+      { k: 'add', e: 'a1', p: ROOT, pos: 'm' },
+      { k: 'set', e: 'a1', f: 'fill', v: 1 },
+    ])
+    const { ops: gap } = realize(doc, [{ k: 'set', e: 'a1', f: 'fill', v: 2 }])
+    const inverse = invertAll(ops.slice(1))
+
+    const mine = rebase(inverse, gapOf(gap, LOCAL_ACTOR))
+    expect(isForeignConflict(mine[0], LOCAL_ACTOR)).toBe(false)
+    // `refuse` lets my own later edit through — refusing it would make undo
+    // silently do nothing in ordinary single-user work.
+    expect(resolve(mine, 'refuse', LOCAL_ACTOR).ops).toHaveLength(1)
+
+    const theirs = rebase(inverse, gapOf(gap, 'someone-else'))
+    expect(isForeignConflict(theirs[0], LOCAL_ACTOR)).toBe(true)
+    const out = resolve(theirs, 'refuse', LOCAL_ACTOR)
+    expect(out.ops).toHaveLength(0)
+    expect(out.refused).toHaveLength(1)
+    // `apply` clobbers regardless — the Phase 1 canvas policy.
+    expect(resolve(theirs, 'apply', LOCAL_ACTOR).ops).toHaveLength(1)
   })
 
   /**
@@ -230,7 +265,7 @@ describe('rebase', () => {
         const { ops, doc: afterOps } = realize(base, a)
         const { ops: gap, doc: afterGap } = realize(afterOps, b)
 
-        const undone = applyAll(afterGap, rebased(rebase(invertAll(ops), gap)))
+        const undone = applyAll(afterGap, rebased(rebase(invertAll(ops), gapOf(gap))))
         // Disjoint entity pools, so the gap alone reaches the same state.
         expect(undone).toEqual(applyAll(base, gap))
       }),

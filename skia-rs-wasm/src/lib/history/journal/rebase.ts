@@ -26,6 +26,8 @@
  * it down.
  */
 
+import type { ActorId, Txn } from './journal-store'
+import { LOCAL_ACTOR } from './journal-store'
 import type { EntityId, Op } from './op'
 import { opKey } from './op'
 
@@ -46,7 +48,21 @@ export type ConflictReason =
 export type Disposition =
   | { kind: 'ok'; op: Op }
   | { kind: 'dropped'; op: Op; reason: DropReason }
-  | { kind: 'conflict'; op: Op; reason: ConflictReason }
+  | {
+      kind: 'conflict'
+      op: Op
+      reason: ConflictReason
+      /**
+       * Who wrote the conflicting work in the gap. This is why the gap arrives
+       * as transactions rather than bare ops: a conflict against your own later
+       * edit is recoverable and expected, while clobbering a collaborator's
+       * concurrent write destroys something they can see and you may not know
+       * exists. Same mechanics, very different blast radius — so the policy has
+       * to be able to tell them apart, and actor identity only survives on the
+       * transaction.
+       */
+      by: ActorId
+    }
 
 /** Whether an entity survives the ops in the gap, and whether it was disturbed. */
 interface EntityFate {
@@ -56,6 +72,8 @@ interface EntityFate {
   moved: boolean
   /** True once any structural op mentions the entity. */
   seen: boolean
+  /** Actor behind the most recent structural op. */
+  by: ActorId
 }
 
 /**
@@ -63,32 +81,36 @@ interface EntityFate {
  * written in it. One pass, so `rebase` is O(gap + ops) rather than quadratic —
  * the gap can be an entire offline session.
  */
-function summarize(over: readonly Op[]): {
+function summarize(over: readonly Txn[]): {
   fates: Map<EntityId, EntityFate>
-  written: Set<string>
+  written: Map<string, ActorId>
 } {
   const fates = new Map<EntityId, EntityFate>()
-  const written = new Set<string>()
+  const written = new Map<string, ActorId>()
 
-  const fateOf = (entity: EntityId): EntityFate => {
+  const fateOf = (entity: EntityId, by: ActorId): EntityFate => {
     let f = fates.get(entity)
     if (!f) {
-      f = { deleted: false, moved: false, seen: false }
+      f = { deleted: false, moved: false, seen: false, by }
       fates.set(entity, f)
     }
     return f
   }
 
-  for (const op of over) {
-    if (op.t === 'set') {
-      written.add(opKey(op))
-      continue
+  for (const txn of over) {
+    for (const op of txn.ops) {
+      if (op.t === 'set') {
+        // Last writer of this key is the one a conflict is against.
+        written.set(opKey(op), txn.actor)
+        continue
+      }
+      const f = fateOf(op.entity, txn.actor)
+      f.seen = true
+      // Last structural op wins — an entity deleted then re-added exists again.
+      f.deleted = op.t === 'del'
+      f.by = txn.actor
+      if (op.t === 'mov') f.moved = true
     }
-    const f = fateOf(op.entity)
-    f.seen = true
-    // Last structural op wins — an entity deleted then re-added exists again.
-    f.deleted = op.t === 'del'
-    if (op.t === 'mov') f.moved = true
   }
 
   return { fates, written }
@@ -118,10 +140,11 @@ function existsInGap(fates: Map<EntityId, EntityFate>, entity: EntityId): boolea
  * positionally aligned with `ops`, so a caller can report per-op outcomes
  * without re-deriving them.
  */
-export function rebase(ops: readonly Op[], over: readonly Op[]): Disposition[] {
+export function rebase(ops: readonly Op[], over: readonly Txn[]): Disposition[] {
   if (over.length === 0) return ops.map((op) => ({ kind: 'ok', op }))
 
   const { fates, written } = summarize(over)
+  const blame = (entity: EntityId): ActorId => fates.get(entity)?.by ?? LOCAL_ACTOR
 
   return ops.map((op): Disposition => {
     switch (op.t) {
@@ -132,16 +155,21 @@ export function rebase(ops: readonly Op[], over: readonly Op[]): Disposition[] {
         // blindly applying it would resurrect a value the later writer replaced
         // — the precise failure the plan's "do not store inverses" rule is
         // about. Surface it; the lens decides.
-        if (written.has(opKey(op))) return { kind: 'conflict', op, reason: 'field-overwritten' }
+        const by = written.get(opKey(op))
+        if (by !== undefined) return { kind: 'conflict', op, reason: 'field-overwritten', by }
         return { kind: 'ok', op }
       }
 
       case 'add': {
         // Re-creating something that already exists again would duplicate it.
-        if (existsInGap(fates, op.entity)) return { kind: 'conflict', op, reason: 'entity-exists' }
+        if (existsInGap(fates, op.entity)) {
+          return { kind: 'conflict', op, reason: 'entity-exists', by: blame(op.entity) }
+        }
         // Restore must clamp to a surviving ancestor rather than resurrect an
         // orphan; that clamping is the policy's job, not ours.
-        if (isDeleted(fates, op.parent)) return { kind: 'conflict', op, reason: 'parent-gone' }
+        if (isDeleted(fates, op.parent)) {
+          return { kind: 'conflict', op, reason: 'parent-gone', by: blame(op.parent) }
+        }
         return { kind: 'ok', op }
       }
 
@@ -155,10 +183,12 @@ export function rebase(ops: readonly Op[], over: readonly Op[]): Disposition[] {
 
       case 'mov': {
         if (isDeleted(fates, op.entity)) return { kind: 'dropped', op, reason: 'entity-deleted' }
-        if (isDeleted(fates, op.parent)) return { kind: 'conflict', op, reason: 'parent-gone' }
+        if (isDeleted(fates, op.parent)) {
+          return { kind: 'conflict', op, reason: 'parent-gone', by: blame(op.parent) }
+        }
         // Our `wasParent`/`wasPos` describe a placement that no longer holds.
         if (fates.get(op.entity)?.moved === true) {
-          return { kind: 'conflict', op, reason: 'moved-since' }
+          return { kind: 'conflict', op, reason: 'moved-since', by: blame(op.entity) }
         }
         return { kind: 'ok', op }
       }
@@ -174,4 +204,37 @@ export function rebased(dispositions: readonly Disposition[]): Op[] {
 /** True when any op needs the lens's conflict policy before it can be committed. */
 export function hasConflict(dispositions: readonly Disposition[]): boolean {
   return dispositions.some((d) => d.kind === 'conflict')
+}
+
+/**
+ * True when a conflict is against work someone else wrote — the case that
+ * warrants refusing rather than clobbering. A conflict against your own later
+ * edit is visible, yours, and recoverable through your own redo.
+ */
+export function isForeignConflict(d: Disposition, me: ActorId): boolean {
+  return d.kind === 'conflict' && d.by !== me
+}
+
+/**
+ * Apply a lens's conflict policy, yielding the ops to commit. `dropped` ops are
+ * always discarded — they address something that no longer exists, so there is
+ * nothing for a policy to decide.
+ */
+export function resolve(
+  dispositions: readonly Disposition[],
+  policy: 'refuse' | 'apply',
+  me: ActorId,
+): { ops: Op[]; refused: Disposition[] } {
+  const ops: Op[] = []
+  const refused: Disposition[] = []
+  for (const d of dispositions) {
+    if (d.kind === 'ok') ops.push(d.op)
+    else if (d.kind === 'conflict') {
+      // `refuse` only holds back FOREIGN conflicts; refusing your own later
+      // edit would make undo silently do nothing in ordinary single-user work.
+      if (policy === 'refuse' && isForeignConflict(d, me)) refused.push(d)
+      else ops.push(d.op)
+    }
+  }
+  return { ops, refused }
 }

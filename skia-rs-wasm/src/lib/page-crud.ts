@@ -6,6 +6,13 @@
 import { documentModel } from './renderer/store/document-model'
 import { commitChanges } from './renderer/store/commit'
 import { useHistoryStore } from './history/history-store'
+import { LOCAL_ACTOR, useJournalStore, type Txn } from './history/journal/journal-store'
+import { canvasLens, localCtx, pickRedo, pickUndo, scopeLens, type HistoryLens } from './history/journal/lens'
+import { rebase, resolve } from './history/journal/rebase'
+import { invertAll } from './history/journal/op'
+import { toChanges } from './history/journal/codec'
+import { activeScope } from './history/journal/scope'
+import { flushFocusPending } from './history/focus-pending'
 import type { IndexedPage } from './worker/types'
 import { flattenPageToIndexed } from './worker/types'
 import type { PenpotDocument, PenpotNode, PenpotPage, Change } from 'penpot-exporter/types'
@@ -75,37 +82,65 @@ export async function commitChangesPublic(params: CommitChangesParams): Promise<
   await commitChanges(params)
 }
 
+/**
+ * The lens both entry points read through — Cmd+Z and the toolbar alike.
+ *
+ * Deliberately derived from the open scope rather than passed in. If Cmd+Z
+ * routed to the focus lens while the toolbar stayed on the canvas lens, a
+ * toolbar click during a focus session would canvas-undo a transaction the
+ * user's own focus edits are built on top of — the destructive create-undo
+ * case, reachable with a single actor. One resolver, one answer.
+ */
+function currentLens(): HistoryLens {
+  const tag = activeScope()
+  return tag === undefined ? canvasLens : scopeLens(tag)
+}
+
+/**
+ * Revert `target` by committing its rebased inverse forward as an ordinary
+ * transaction carrying an `undoes` back-pointer. Shared by undo and redo — they
+ * differ only in which query found the target, which is the point of the model.
+ */
+async function revert(target: Txn, lens: HistoryLens): Promise<void> {
+  const gap = useJournalStore.getState().since(target.seq)
+  const { ops } = resolve(rebase(invertAll(target.ops), gap), lens.conflict, LOCAL_ACTOR)
+
+  if (ops.length > 0) {
+    const { changes, docMetaChanges } = toChanges(ops)
+    await commitChanges({
+      redoChanges: changes,
+      docMetaRedoChanges: docMetaChanges,
+      saveUndo: false,
+      fromHistory: true,
+    })
+  }
+  // Recorded even when nothing applied — the entry is what marks the target
+  // reverted, and without it the next undo would pick the same target forever.
+  useJournalStore.getState().append({ ops, undoes: target.seq, scope: target.scope })
+}
+
 export async function undo(): Promise<void> {
-  // While a focus stage's sub-history buffer is open the canvas reader is
-  // disabled — Cmd+Z is handled by focusUndo (App.tsx routes it). Guard here too
-  // so menu/toolbar/programmatic paths can't bypass the router.
-  if (useHistoryStore.getState().focusBuffer) return
-  // An in-flight gesture (open transaction) becomes the frame this undo pops.
+  // A focus stage's live draft is not in the log until it flushes, so a Cmd+Z
+  // moments after typing must commit it first or it would be skipped over.
+  await flushFocusPending()
+  // An in-flight gesture becomes the transaction this undo targets. Drives both
+  // stores while the dual-write lasts.
   useHistoryStore.getState().flushTransactions()
-  // One frame = one step: a focus session lands one folded frame, a transaction
-  // one merged frame, an ordinary edit its own. `undoChanges` is already the
-  // full newest-first inverse, so applying it reverts the frame's whole effect.
-  const frame = useHistoryStore.getState().popUndoFrame()
-  if (!frame) return
-  await commitChanges({
-    redoChanges: frame.undoChanges,
-    docMetaRedoChanges: frame.docMetaUndoChanges,
-    saveUndo: false,
-    fromHistory: true,
-  })
-  useHistoryStore.getState().pushRedoFrame(frame)
+
+  const lens = currentLens()
+  const target = pickUndo(useJournalStore.getState().txns, lens, localCtx())
+  if (!target) return
+  await revert(target, lens)
 }
 
 export async function redo(): Promise<void> {
-  if (useHistoryStore.getState().focusBuffer) return
+  await flushFocusPending()
   useHistoryStore.getState().flushTransactions()
-  const frame = useHistoryStore.getState().popRedoFrame()
-  if (!frame) return
-  await commitChanges({
-    redoChanges: frame.redoChanges,
-    docMetaRedoChanges: frame.docMetaRedoChanges,
-    saveUndo: false,
-    fromHistory: true,
-  })
-  useHistoryStore.getState().pushUndoFrame(frame)
+
+  const lens = currentLens()
+  // Redo is undo at the opposite chain parity: reverting the undo re-applies
+  // what it took away. There is no redo stack to pop.
+  const target = pickRedo(useJournalStore.getState().txns, lens, localCtx())
+  if (!target) return
+  await revert(target, lens)
 }
