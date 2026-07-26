@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>render-vello dev host</title>
+  </head>
+  <body>
+    <!--
+      Minimal replacement for what `cargo run_wasm` generated while this crate
+      still lived inside the vello workspace (D15 moved it out, which orphaned
+      that alias). The bin target IS the mock host: it creates its own canvas,
+      owns the requestAnimationFrame loop, and forwards keys — so this page only
+      has to instantiate the module.
+
+      Status is mirrored into the document title so a headless check can read it
+      without a screenshot.
+    -->
+    <script type="module">
+      import init from "./pkg/render-vello.js";
+
+      init()
+        .then(() => {
+          document.title = "render-vello: running";
+        })
+        .catch((err) => {
+          document.title = "render-vello: init FAILED";
+          console.error("render-vello init failed:", err);
+        });
+    </script>
+  </body>
+</html>

@@ -81,6 +81,7 @@
 /render-wasm/target/
 /render-core/target/
 /render-vello/target/
+/render-vello/dev/pkg/
 /**/node_modules
 /**/.yarn/*
 /.pnpm-store
