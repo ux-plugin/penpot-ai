@@ -1,8 +1,10 @@
 #[cfg(target_arch = "wasm32")]
 mod emscripten;
 mod anim;
+mod core_convert;
 mod error;
 mod math;
+mod model_export;
 mod mem;
 mod performance;
 mod render;
