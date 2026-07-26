@@ -39,6 +39,8 @@ import {
 import { ResizeHandles } from './ResizeHandles'
 import { MoveHitArea } from './MoveHitArea'
 import { RotationHitArea } from './RotationHitArea'
+import { CenterGizmo } from './CenterGizmo'
+import { chromeExtent } from './chrome-extent'
 import { AreaMarquee } from './AreaMarquee'
 import { GradientOverlay } from './GradientOverlay'
 import { finiteSelectionOverlayRect } from './finite-selection-overlay-rect'
@@ -124,10 +126,21 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     !isPathEditing &&
     !isScene3dEditing &&
     !isMotionPlaying
-  const showEditHandles = showHandles && !isMotionPreview
+  // How big the box actually is on screen. When it degenerates (a motion scaled
+  // the shape to ~0, it's sub-pixel, or we're zoomed far out) the transform's
+  // linear part is singular, so EVERY child of the bounds group collapses to a
+  // point — the box and its handles stop being grabbable. The centre gizmo takes
+  // over in that case; it hangs off a translate-only anchor and can't collapse.
+  const extent = chromeExtent(wasmSelectionRect, safeZoom)
+  const isDegenerate = extent.degenerate
+  // Resize/corner handles need real bounds to hang off, so they also require a
+  // non-degenerate box (on top of the existing motion gate — W/H authoring is
+  // Slice 3c).
+  const showEditHandles = showHandles && !isMotionPreview && !isDegenerate
   // Rotation handle: visible in design mode AND while a motion preview is paused
-  // (so the user can grab it to author a rotation keyframe).
-  const showRotateHandle = showHandles
+  // (so the user can grab it to author a rotation keyframe). When degenerate the
+  // gizmo carries rotation instead, so the bounds-anchored one stands down.
+  const showRotateHandle = showHandles && !isDegenerate
 
   const hitSize = HANDLE_SIZE_WORLD / safeZoom
 
@@ -349,6 +362,22 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
               />
             )}
           </g>
+          {/*
+            Mounted OUTSIDE the bounds group on purpose: that group's linear part
+            is singular at scale 0, so anything inside it collapses. The gizmo
+            anchors to the centre (translate only) and survives.
+          */}
+          {wasmSelectionRect != null && (
+            <CenterGizmo
+              center={wasmSelectionRect.center}
+              zoom={safeZoom}
+              degenerate={isDegenerate}
+              allowRotate={showHandles}
+              overrideCursor={overrideCursor}
+              onMovePointerDown={onSelectionRectPointerDown}
+              onRotationPointerDown={onRotationPointerDown}
+            />
+          )}
           {gradientForOverlay != null && (
             <g style={{ filter: 'url(#selection-line-glow)' }}>
               <GradientOverlay wasmSelectionRect={wasmSelectionRect} gradient={gradientForOverlay} zoom={safeZoom} onHandlePointerDown={onGradientHandlePointerDown} />
