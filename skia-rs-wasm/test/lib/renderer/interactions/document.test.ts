@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { PenpotPage } from 'penpot-exporter/types'
 import { flattenPageToIndexed, unflattenIndexedPageToPage } from '../../../../src/lib/worker/flatten'
 import { emptyPageInteractions, type PageInteractions } from '../../../../src/lib/renderer/interactions/ir'
-import { nodesToPresentation } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
+import { nodesToPresentation, findPNode } from '../../../../src/lib/renderer/interactions/document/nodes-to-presentation'
 
 const ZERO = '00000000-0000-0000-0000-000000000000'
 
@@ -131,5 +131,135 @@ describe('nodesToPresentation — slot projection', () => {
     // not Home (already in-flight), so it terminates.
     expect(slot?.slot?.views.home).toBeDefined()
     expect(Object.keys(slot?.slot?.views ?? {})).toEqual(['home', 'about'])
+  })
+})
+
+/** A page whose shapes carry real design properties, not just names. */
+function makeStyledPage(): PenpotPage {
+  return {
+    id: 'page-1',
+    name: 'Page 1',
+    background: '#ffffff',
+    children: [
+      { id: ZERO, type: 'frame', name: 'Root', selrect: { x: 0, y: 0, width: 1200, height: 900 } },
+      {
+        id: 'card',
+        type: 'frame',
+        name: 'Card',
+        selrect: { x: 10, y: 20, width: 320, height: 180 },
+        fills: [{ fillColor: '#ffffff', fillOpacity: 1 }],
+        strokes: [{ strokeColor: '#e5e7eb', strokeWidth: 1, strokeStyle: 'solid' }],
+        r1: 12,
+        r2: 12,
+        r3: 12,
+        r4: 12,
+        children: [
+          {
+            id: 'title',
+            type: 'text',
+            name: 'Title',
+            selrect: { x: 20, y: 30, width: 200, height: 24 },
+            fills: [{ fillColor: '#111827' }],
+            content: { children: [{ fontSize: 18, fontWeight: 600, textAlign: 'left', children: [{ text: 'Hello' }] }] },
+          },
+        ],
+      },
+      {
+        id: 'ghost',
+        type: 'rect',
+        name: 'Hidden box',
+        hidden: true,
+        selrect: { x: 0, y: 0, width: 50, height: 50 },
+      },
+      {
+        id: 'faded',
+        type: 'rect',
+        name: 'Faded',
+        opacity: 0.5,
+        selrect: { x: 0, y: 0, width: 40, height: 40 },
+        fills: [{ fillColor: '#3B82F6', fillOpacity: 0.5 }],
+      },
+    ],
+  } as unknown as PenpotPage
+}
+
+describe('nodesToPresentation — design properties become inline CSS', () => {
+  const build = () => nodesToPresentation(flattenPageToIndexed(makeStyledPage()))
+  const find = (id: string) => {
+    const walk = (n: NonNullable<ReturnType<typeof build>>): NonNullable<ReturnType<typeof build>> | null => {
+      if (n.nodeId === id) return n
+      for (const c of n.children ?? []) {
+        const hit = walk(c)
+        if (hit) return hit
+      }
+      return null
+    }
+    const root = build()
+    return root ? walk(root) : null
+  }
+
+  it('carries size from the selrect so a shape is not a zero-height div', () => {
+    expect(find('card')?.style).toMatchObject({ width: '320px', minHeight: '180px' })
+  })
+
+  it('exempts the page root from sizing — it adapts to its container', () => {
+    const root = build()
+    expect(root?.style?.width).toBeUndefined()
+    expect(root?.style?.minHeight).toBeUndefined()
+  })
+
+  it('carries fill, border and radius', () => {
+    expect(find('card')?.style).toMatchObject({
+      background: '#ffffff',
+      border: '1px solid #e5e7eb',
+      borderRadius: '12px',
+    })
+  })
+
+  it('makes containers stack their children as a column', () => {
+    expect(find('card')?.style).toMatchObject({ display: 'flex', flexDirection: 'column', gap: '8px' })
+    expect(find('title')?.style?.display).toBeUndefined() // leaf, not a container
+  })
+
+  it('maps a text fill to color plus typography, not background', () => {
+    const title = find('title')?.style
+    expect(title).toMatchObject({ color: '#111827', fontSize: '18px', fontWeight: '600', textAlign: 'left' })
+    expect(title?.background).toBeUndefined()
+  })
+
+  it('folds fill opacity into the colour and carries shape opacity', () => {
+    expect(find('faded')?.style).toMatchObject({ background: '#3B82F680', opacity: '0.5' })
+  })
+
+  it('hides a hidden shape but keeps its anchor element', () => {
+    expect(find('ghost')?.style?.display).toBe('none')
+    expect(find('ghost')?.nodeId).toBe('ghost') // still present: one node, one anchor
+  })
+})
+
+describe('findPNode — the scoping primitive for "show only the selection"', () => {
+  const tree = () => nodesToPresentation(flattenPageToIndexed(makeStyledPage()))!
+
+  it('finds a nested node and returns its whole subtree', () => {
+    const card = findPNode(tree(), 'card')
+    expect(card?.nodeId).toBe('card')
+    expect(card?.children?.map((c) => c.nodeId)).toEqual(['title'])
+  })
+
+  it('finds the root itself', () => {
+    expect(findPNode(tree(), ZERO)?.nodeId).toBe(ZERO)
+  })
+
+  it('returns null for an id that is not in the tree', () => {
+    expect(findPNode(tree(), 'nope')).toBeNull()
+  })
+
+  it('searches inside a slot’s candidate views, not just children', () => {
+    const root = {
+      nodeId: 'root',
+      tag: 'div',
+      slot: { activeView: 'viewA', views: { viewA: { nodeId: 'viewA', tag: 'div', children: [{ nodeId: 'deep', tag: 'span' }] } } },
+    }
+    expect(findPNode(root, 'deep')?.nodeId).toBe('deep')
   })
 })
