@@ -14,6 +14,17 @@ import type { TriggerType, ActionType } from '../ir'
 
 export type Platform = 'web' | 'native'
 
+/**
+ * Wiring status of a catalog entry.
+ *
+ * `'stable'` (the default) means the preview runtime AND the React emitter both
+ * execute it. `'planned'` means the entry is registered — so the IR round-trips,
+ * addressing validates, and the shape of the feature is declared — but nothing
+ * runs it yet. Authoring UIs MUST offer planned entries disabled: a trigger you
+ * can select that silently never fires is worse than one you can't select.
+ */
+export type CatalogStatus = 'stable' | 'planned'
+
 export interface TriggerCatalogEntry {
   key: TriggerType
   label: string
@@ -24,6 +35,8 @@ export interface TriggerCatalogEntry {
   fallback?: TriggerType
   /** Expected param keys for `Trigger.params`. */
   params?: string[]
+  /** Defaults to `'stable'` when absent. */
+  status?: CatalogStatus
 }
 
 /** Which normalized graph node-kind an action lowers to. */
@@ -39,7 +52,15 @@ export interface ActionCatalogEntry {
   expects: {
     target?: 'variable' | 'collection' | 'node.state' | 'screen' | 'overlay' | 'slot' | 'none'
     value?: boolean
+    /**
+     * Extra expression params the action reads from `Action.params` (via
+     * `actionParam`), in the order an authoring UI should show them. Each is a
+     * `{ key, label, placeholder }` the panel renders as one expression field.
+     */
+    params?: Array<{ key: string; label: string; placeholder?: string }>
   }
+  /** Defaults to `'stable'` when absent. */
+  status?: CatalogStatus
 }
 
 const triggers = new Map<TriggerType, TriggerCatalogEntry>()
@@ -67,6 +88,15 @@ export function isKnownTrigger(key: TriggerType): boolean {
 
 export function isKnownAction(key: ActionType): boolean {
   return actions.has(key)
+}
+
+/**
+ * Whether a registered entry is declared-but-not-yet-executed. Unknown keys are
+ * NOT planned — they're unknown, which the addressing validator reports
+ * separately. Authoring UIs disable planned entries.
+ */
+export function isPlanned(entry: { status?: CatalogStatus } | undefined): boolean {
+  return entry?.status === 'planned'
 }
 
 export function listTriggers(): TriggerCatalogEntry[] {

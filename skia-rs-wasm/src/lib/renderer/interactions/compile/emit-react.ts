@@ -17,8 +17,9 @@
  */
 
 import type { PageInteractions, NodeId, ValueType, Action, Repeater } from '../ir'
+import { actionParam } from '../ir'
 import { getAction } from '../catalog'
-import { parse, toJs } from '../expression'
+import { parse, toJs, objectBodyJs } from '../expression'
 import { parseRefPath } from '../addressing'
 import { anchorAttr, instanceKeyAttr } from '../anchor'
 
@@ -88,16 +89,49 @@ function tsType(vt: ValueType): string {
   }
 }
 
-function emitAction(a: Action): string {
+/**
+ * Lower one action to a JS statement. Exported so the catalog-parity tests can
+ * check each entry against the preview runtime's `applyAction` directly.
+ */
+export function emitAction(a: Action): string {
   const targetRoot = a.target ? parseRefPath(a.target).root : ''
   const value = a.value ? toJs(parse(a.value)) : 'undefined'
+  const set = setterName(targetRoot)
   switch (a.type) {
     case 'collection.append':
-      return `${setterName(targetRoot)}((prev) => [...prev, ${value}])`
+      return `${set}((prev) => [...prev, ${value}])`
+    case 'collection.insert': {
+      const at = actionParam(a, 'at')
+      const i = at ? toJs(parse(at)) : '0'
+      return `${set}((prev) => [...prev.slice(0, ${i}), ${value}, ...prev.slice(${i})])`
+    }
     case 'collection.remove':
-      return `${setterName(targetRoot)}((prev) => prev.filter((item) => !(${value})))`
+      return `${set}((prev) => prev.filter((item) => !(${value})))`
+    case 'collection.update': {
+      // An object-literal value is a patch (spliced into a spread merge so the
+      // generated line reads like hand-written React); anything else replaces;
+      // no value leaves the item alone. Mirrored by `applyAction`, which
+      // branches on the same AST check.
+      let next: string
+      if (!a.value) next = 'item'
+      else {
+        const body = objectBodyJs(parse(a.value))
+        next = body === undefined ? value : body ? `{ ...item, ${body} }` : 'item'
+      }
+      const where = actionParam(a, 'where')
+      const mapped = where ? `${toJs(parse(where))} ? ${next} : item` : next
+      // The arrow body is ALWAYS parenthesized: an unwrapped `{ ...item, x: 1 }`
+      // parses as a block statement, not an object literal.
+      return `${set}((prev) => prev.map((item) => (${mapped})))`
+    }
+    case 'collection.clear':
+      return `${set}([])`
     case 'set-variable':
-      return `${setterName(targetRoot)}(${value})`
+      return `${set}(${value})`
+    case 'toggle-variable':
+      return `${set}((prev) => !prev)`
+    case 'increment':
+      return `${set}((prev) => prev + ${a.value ? value : '1'})`
     case 'node.setState':
       return `${stateSetter(targetRoot)}(${value})`
     case 'open-url':

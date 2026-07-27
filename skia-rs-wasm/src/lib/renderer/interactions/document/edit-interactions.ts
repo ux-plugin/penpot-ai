@@ -76,6 +76,30 @@ export function setActionValue(ir: PageInteractions, id: string, index: number, 
   return mapAction(ir, id, index, (a) => ({ ...a, value: value || undefined }))
 }
 
+/**
+ * Set (or, with an empty string, clear) one of an action's extra expression
+ * params — `where` on `collection.update`, `at` on `collection.insert`. Which
+ * keys an action accepts is declared by its catalog entry's `expects.params`.
+ * Clearing the last param drops `params` entirely so the IR stays minimal.
+ */
+export function setActionParam(
+  ir: PageInteractions,
+  id: string,
+  index: number,
+  key: string,
+  value: string,
+): PageInteractions {
+  return mapAction(ir, id, index, (a) => {
+    const params = { ...a.params }
+    if (value.trim()) params[key] = value
+    else delete params[key]
+    const next: Action = { ...a }
+    if (Object.keys(params).length) next.params = params
+    else delete next.params
+    return next
+  })
+}
+
 // ---- page variables (page-scoped state the actions read/write) ----
 
 export function makeCollectionVariable(id: string): Variable {

@@ -10,6 +10,7 @@ import {
   setActionType,
   setActionTarget,
   setActionValue,
+  setActionParam,
   addVariable,
   removeVariable,
   makeCollectionVariable,
@@ -296,5 +297,47 @@ describe('scaffold parity — repeater + binding authored via reducers', () => {
     const rows = coll.map((item) => evaluate(parse(binding.from), { ...env, [rep.as ?? 'item']: item }))
 
     expect(rows).toEqual(['Item 1', 'Item 2'])
+  })
+})
+
+describe('setActionParam — extra expression params (where / at)', () => {
+  /** An interaction with one `collection.update` action to hang params on. */
+  function authorUpdate() {
+    let ir = addVariable(emptyPageInteractions(), makeCollectionVariable('items'))
+    ir = addInteraction(ir, 'saveBtn', 'i1')
+    ir = addAction(ir, 'i1', 'collection.update')
+    ir = setActionTarget(ir, 'i1', 0, 'items')
+    return ir
+  }
+  const actionOf = (ir: ReturnType<typeof authorUpdate>) => ir.interactions.find((x) => x.id === 'i1')!.do[0]
+
+  it('sets a param', () => {
+    const ir = setActionParam(authorUpdate(), 'i1', 0, 'where', 'item.id == 2')
+    expect(actionOf(ir).params).toEqual({ where: 'item.id == 2' })
+  })
+
+  it('keeps params independent of each other', () => {
+    let ir = setActionParam(authorUpdate(), 'i1', 0, 'where', 'item.id == 2')
+    ir = setActionParam(ir, 'i1', 0, 'at', '1')
+    expect(actionOf(ir).params).toEqual({ where: 'item.id == 2', at: '1' })
+  })
+
+  it('clearing the last param drops `params` entirely, keeping the IR minimal', () => {
+    let ir = setActionParam(authorUpdate(), 'i1', 0, 'where', 'item.id == 2')
+    ir = setActionParam(ir, 'i1', 0, 'where', '  ')
+    expect(actionOf(ir).params).toBeUndefined()
+  })
+
+  it('does not mutate the input IR', () => {
+    const before = authorUpdate()
+    const after = setActionParam(before, 'i1', 0, 'where', 'item.id == 2')
+    expect(actionOf(before).params).toBeUndefined()
+    expect(after).not.toBe(before)
+  })
+
+  it('changing the action type clears params along with target and value', () => {
+    let ir = setActionParam(authorUpdate(), 'i1', 0, 'where', 'item.id == 2')
+    ir = setActionType(ir, 'i1', 0, 'collection.clear')
+    expect(actionOf(ir)).toEqual({ type: 'collection.clear' })
   })
 })

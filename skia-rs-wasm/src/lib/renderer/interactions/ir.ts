@@ -102,6 +102,16 @@ export interface Action {
   params?: Record<string, Json>
 }
 
+/**
+ * Read an expression param off an action (`where`, `at`, …), normalizing absent,
+ * non-string, and blank to `undefined` so callers get one "not supplied" case.
+ * Which keys an action reads is declared by its catalog entry's `expects.params`.
+ */
+export function actionParam(a: Action, key: string): Expr | undefined {
+  const v = a.params?.[key]
+  return typeof v === 'string' && v.trim() ? v : undefined
+}
+
 // ---- ECA sugar (node-scoped & app-scoped) ----
 
 /** A node-attached interaction: trigger -> guard -> actions. */
