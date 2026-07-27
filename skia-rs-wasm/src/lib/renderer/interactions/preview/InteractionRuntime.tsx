@@ -6,13 +6,28 @@
  * `data-node-id` anchor so what you click maps back to the design node.
  */
 
-import { useMemo, useState, createElement, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, createElement, type ReactNode } from 'react'
 import type { PageInteractions, Interaction } from '../ir'
 import { STYLE_PROPS, type PNode } from '../compile/emit-react'
 import { parse, evaluate } from '../expression'
-import { initRuntime, buildEnv, runInteraction, activeSlotView, type RuntimeState } from './runtime'
+import {
+  initRuntime,
+  buildEnv,
+  runInteraction,
+  activeSlotView,
+  diffRuntime,
+  affectedNodes,
+  type RuntimeState,
+  type ActivityEntry,
+} from './runtime'
 
 type Env = Record<string, unknown>
+
+/** Runtime state plus the interaction that produced it (null before anything fires). */
+interface Snapshot {
+  rt: RuntimeState
+  cause: { it: Interaction; before: RuntimeState } | null
+}
 
 const EVENT_PROP: Record<string, string> = {
   press: 'onClick',
@@ -31,11 +46,52 @@ const asArray = (x: unknown): unknown[] => (Array.isArray(x) ? x : [])
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 const asText = (v: unknown): string => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? ''))
 
-export function InteractionRuntime({ ir, root }: { ir: PageInteractions; root: PNode }) {
-  const [rt, setRt] = useState<RuntimeState>(() => initRuntime(ir))
+export function InteractionRuntime({
+  ir,
+  root,
+  onRuntime,
+}: {
+  ir: PageInteractions
+  root: PNode
+  /**
+   * Observe the running state. Called once on mount and after every state
+   * change, with the activity entry for the interaction that caused it (null on
+   * mount). Reporting happens in an EFFECT, not inside the setState updater —
+   * updaters must stay pure, or StrictMode's double-invoke would log twice.
+   */
+  onRuntime?: (rt: RuntimeState, activity: ActivityEntry | null) => void
+}) {
+  // State and its cause travel together: the updater records which interaction
+  // produced this state and what preceded it, so the reporting effect can diff
+  // without a ref. The updater stays pure — StrictMode's double-invoke yields
+  // the same snapshot rather than a duplicate log entry.
+  const [snap, setSnap] = useState<Snapshot>(() => ({ rt: initRuntime(ir), cause: null }))
+  const { rt } = snap
   const env = useMemo(() => buildEnv(ir, rt), [ir, rt])
   // recompute env from the *current* state inside the updater to avoid staleness
-  const fire = (it: Interaction) => setRt((cur) => runInteraction(ir, cur, it, buildEnv(ir, cur)))
+  const fire = (it: Interaction) =>
+    setSnap((cur) => ({
+      rt: runInteraction(ir, cur.rt, it, buildEnv(ir, cur.rt)),
+      cause: { it, before: cur.rt },
+    }))
+
+  useEffect(() => {
+    if (!onRuntime) return
+    const { rt: state, cause } = snap
+    if (!cause) {
+      onRuntime(state, null) // initial mount: state, but nothing has fired yet
+      return
+    }
+    // An entry with no changes is still worth showing — it's how you see that a
+    // guard blocked the interaction rather than the click missing entirely.
+    onRuntime(state, {
+      node: cause.it.on.node,
+      trigger: cause.it.on.trigger.type,
+      changes: diffRuntime(cause.before, state),
+      affected: affectedNodes(ir, cause.before, state),
+    })
+  }, [snap, ir, onRuntime])
+
   return <>{renderNode(root, env, ir, fire, rt.slotViews)}</>
 }
 

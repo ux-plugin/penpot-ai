@@ -13,20 +13,11 @@ import { useMemo } from 'react'
 import { useSnapshot } from 'valtio'
 import type { IndexedPage } from '../../worker/types'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
-import { nodesToPresentation } from '../../renderer/interactions/document/nodes-to-presentation'
+import { nodesToPresentation, findPNode } from '../../renderer/interactions/document/nodes-to-presentation'
 import { emptyPageInteractions, type PageInteractions } from '../../renderer/interactions/ir'
-import { emitReactComponent, type PNode } from '../../renderer/interactions/compile/emit-react'
+import { emitReactComponent } from '../../renderer/interactions/compile/emit-react'
 
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
-
-function findPNode(node: PNode, id: string): PNode | null {
-  if (node.nodeId === id) return node
-  for (const c of node.children ?? []) {
-    const found = findPNode(c, id)
-    if (found) return found
-  }
-  return null
-}
 
 function pascalCase(raw: string, fallback: string): string {
   const p = raw
