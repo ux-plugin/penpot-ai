@@ -149,13 +149,38 @@ export function pickUndo(
   return pick(txns, lens, ctx, 0)
 }
 
-/** The undo this lens would reverse — redo, found by parity rather than a stack. */
+/**
+ * The undo this lens would reverse — redo, found by parity rather than a stack.
+ *
+ * With no redo stack there is nothing to clear, so the rule that a fresh edit
+ * discards the redo branch has to be expressed here instead: walking
+ * newest-first, an original edit (depth 0) encountered before any undo means
+ * the user has done new work on top and redo is gone. Without this, redo
+ * reaches straight past new work and resurrects what was undone — which is not
+ * what any editor does.
+ *
+ * A *redo* (even depth, but not 0) does not invalidate anything, so the walk
+ * steps over it and keeps looking; that is what lets a run of undos be redone
+ * one after another.
+ *
+ * The check sits inside the lens filter deliberately: another actor's edit must
+ * not discard my redo branch.
+ */
 export function pickRedo(
   txns: readonly Txn[],
   lens: HistoryLens,
   ctx: LensCtx,
 ): Txn | undefined {
-  return pick(txns, lens, ctx, 1)
+  const live = liveness(txns)
+  for (let i = txns.length - 1; i >= 0; i -= 1) {
+    const t = txns[i]
+    if (!lens.filter(t, ctx)) continue
+    if (live.get(t.seq) !== true) continue
+    const depth = chainDepth(txns, t)
+    if (depth % 2 === 1) return t
+    if (depth === 0) return undefined // fresh work on top — the branch is gone
+  }
+  return undefined
 }
 
 /** Default context — the single local actor, until Phase 4. */
