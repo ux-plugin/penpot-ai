@@ -23,7 +23,7 @@ import {
   type Derived,
   type Json,
 } from '../../renderer/interactions/ir'
-import { listTriggers, listActions, getAction } from '../../renderer/interactions/catalog'
+import { listTriggers, listActions, getAction, isPlanned, type CatalogStatus } from '../../renderer/interactions/catalog'
 import { isSlotShape, isFrameShape } from '../../worker/geometry/shapes'
 import { addViewToSlot } from '../../renderer/slot/slot-edit'
 import { parse } from '../../renderer/interactions/expression'
@@ -37,6 +37,7 @@ import {
   setActionType,
   setActionTarget,
   setActionValue,
+  setActionParam,
   addVariable,
   removeVariable,
   makeCollectionVariable,
@@ -85,6 +86,30 @@ const sectionHeadCls = 'mb-1.5 text-[0.7rem] font-semibold uppercase tracking-wi
 /** Props a binding can drive (the runtime maps `text`/`children` to the text child). */
 const COMMON_PROPS = ['text', 'visible', 'disabled', 'value', 'opacity']
 
+/**
+ * Label for a catalog option, suffixed when the entry is registered but not yet
+ * executed. Paired with a `disabled` option so a planned entry is visible (you
+ * can see it's coming, and an IR that already uses one still displays it) but
+ * can't be newly authored into an interaction that would never fire.
+ */
+function optionLabel(entry: { label: string; status?: CatalogStatus }): string {
+  return isPlanned(entry) ? `${entry.label} — not wired yet` : entry.label
+}
+
+/** Value-field hint per action, so the example matches what the action does. */
+function valuePlaceholder(type: string): string {
+  switch (type) {
+    case 'collection.update':
+      return 'an object patches the item, e.g. { done: true }'
+    case 'increment':
+      return 'amount, blank = 1'
+    case 'open-url':
+      return 'url, e.g. "https://example.com"'
+    default:
+      return 'value, e.g. { label: "Item " + (items.length + 1) }'
+  }
+}
+
 function ActionRow({
   it,
   index,
@@ -104,6 +129,7 @@ function ActionRow({
   const entry = getAction(action.type)
   const expectsTarget = entry?.expects.target ?? 'none'
   const expectsValue = entry?.expects.value ?? false
+  const expectsParams = entry?.expects.params ?? []
   const id = it.id as string
   const err = exprError(action.value)
 
@@ -126,8 +152,8 @@ function ActionRow({
           aria-label="Action"
         >
           {listActions().map((a) => (
-            <option key={a.key} value={a.key}>
-              {a.label}
+            <option key={a.key} value={a.key} disabled={isPlanned(a) && a.key !== action.type}>
+              {optionLabel(a)}
             </option>
           ))}
         </select>
@@ -219,22 +245,48 @@ function ActionRow({
           </select>
         </div>
       ) : (
-        expectsValue && (
-          <div className="mt-1.5">
-            <input
-              key={`${id}-${index}-${action.type}`}
-              className={cn(inputCls, err && 'border-destructive')}
-              defaultValue={action.value ?? ''}
-              placeholder='value, e.g. { label: "Item " + (items.length + 1) }'
-              onBlur={(e) => commit(setActionValue(liveIR(), id, index, e.target.value))}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-              }}
-              aria-label="Action value"
-            />
-            {err && <p className="mt-0.5 text-[10px] text-destructive">{err}</p>}
-          </div>
-        )
+        <>
+          {expectsValue && (
+            <div className="mt-1.5">
+              <input
+                key={`${id}-${index}-${action.type}`}
+                className={cn(inputCls, err && 'border-destructive')}
+                defaultValue={action.value ?? ''}
+                placeholder={valuePlaceholder(action.type)}
+                onBlur={(e) => commit(setActionValue(liveIR(), id, index, e.target.value))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                }}
+                aria-label="Action value"
+              />
+              {err && <p className="mt-0.5 text-[10px] text-destructive">{err}</p>}
+            </div>
+          )}
+
+          {expectsParams.map((p) => {
+            const cur = typeof action.params?.[p.key] === 'string' ? (action.params[p.key] as string) : ''
+            const pErr = exprError(cur)
+            return (
+              <div key={p.key} className="mt-1.5 flex items-start gap-1.5">
+                <span className="mt-1.5 w-11 shrink-0 text-[11px] text-muted-foreground">{p.label}</span>
+                <div className="min-w-0 flex-1">
+                  <input
+                    key={`${id}-${index}-${action.type}-${p.key}`}
+                    className={cn(inputCls, pErr && 'border-destructive')}
+                    defaultValue={cur}
+                    placeholder={p.placeholder}
+                    onBlur={(e) => commit(setActionParam(liveIR(), id, index, p.key, e.target.value))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                    }}
+                    aria-label={`Action ${p.label}`}
+                  />
+                  {pErr && <p className="mt-0.5 text-[10px] text-destructive">{pErr}</p>}
+                </div>
+              </div>
+            )
+          })}
+        </>
       )}
     </div>
   )
@@ -268,8 +320,8 @@ function InteractionCard({
           aria-label="Trigger"
         >
           {triggers.map((t) => (
-            <option key={t.key} value={t.key}>
-              {t.label}
+            <option key={t.key} value={t.key} disabled={isPlanned(t) && t.key !== it.on.trigger.type}>
+              {optionLabel(t)}
             </option>
           ))}
         </select>
