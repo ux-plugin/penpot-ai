@@ -14,5 +14,6 @@ publish = false
 # share one kurbo/peniko rather than linking two incompatible copies.
 kurbo = "0.13.1"
 peniko = "0.6.1"
+render-macros = { path = "../render-macros" }
 
 [dev-dependencies]

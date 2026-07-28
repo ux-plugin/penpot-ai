@@ -913,7 +913,7 @@ pub extern "C" fn text_editor_get_current_styles() -> *mut u8 {
         for fill in &styles.fills {
             if let Ok(raw_fill) = RawFillData::try_from(fill) {
                 fill_bytes
-                    .extend_from_slice(&<[u8; std::mem::size_of::<RawFillData>()]>::from(raw_fill));
+                    .extend_from_slice(&crate::wasm::fills::raw_fill_to_bytes(raw_fill));
                 fill_count += 1;
             }
         }

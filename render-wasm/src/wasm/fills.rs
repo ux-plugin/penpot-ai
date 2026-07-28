@@ -1,4 +1,4 @@
-use render_macros::{wasm_error, ToJs};
+use render_macros::wasm_error;
 
 use crate::error::Error;
 use crate::mem;
@@ -12,19 +12,9 @@ mod gradient;
 mod image;
 mod solid;
 
-const RAW_FILL_DATA_SIZE: usize = std::mem::size_of::<RawFillData>();
-
-#[repr(C, u8, align(4))]
-#[derive(Debug, PartialEq, Clone, Copy, ToJs)]
-#[allow(dead_code)]
-pub enum RawFillData {
-    Solid(solid::RawSolidData) = 0x00,
-    Linear(gradient::RawGradientData) = 0x01,
-    Radial(gradient::RawGradientData) = 0x02,
-    Image(image::RawImageFillData) = 0x03,
-    Angular(gradient::RawGradientData) = 0x04,
-    Diamond(gradient::RawGradientData) = 0x05,
-}
+// The wire layout and its discriminants live in render-core (D17), so the Vello module reads
+// the same bytes through the same definitions. Everything Skia-facing stays in this file.
+pub use render_core::abi::{RawFillData, RAW_FILL_DATA_SIZE};
 
 impl From<RawFillData> for shapes::Fill {
     fn from(fill_data: RawFillData) -> Self {
@@ -79,27 +69,29 @@ impl TryFrom<&shapes::Fill> for RawFillData {
     }
 }
 
-impl From<[u8; RAW_FILL_DATA_SIZE]> for RawFillData {
-    fn from(bytes: [u8; RAW_FILL_DATA_SIZE]) -> Self {
-        unsafe { std::mem::transmute(bytes) }
-    }
+// These were `From`/`TryFrom` impls. Now that `RawFillData` lives in render-core they would be
+// foreign-trait-on-foreign-type, which the orphan rule forbids, so they are free functions.
+//
+// They also stay in render-wasm rather than moving with the struct, because render-core is
+// `#![forbid(unsafe_code)]`. Worth flagging while we are here: `raw_fill_to_bytes` is unsound
+// as written — these layouts carry padding (`RawGradientData` documents 24 reserved bits), and
+// transmuting a struct *into* bytes exposes those uninitialised bytes. Decoding is fine; it is
+// the encoding direction that is wrong. A safe explicit codec in render-core replaces both.
+
+pub(crate) fn raw_fill_from_bytes(bytes: [u8; RAW_FILL_DATA_SIZE]) -> RawFillData {
+    unsafe { std::mem::transmute(bytes) }
 }
 
-impl From<RawFillData> for [u8; RAW_FILL_DATA_SIZE] {
-    fn from(fill_data: RawFillData) -> Self {
-        unsafe { std::mem::transmute(fill_data) }
-    }
+pub(crate) fn raw_fill_to_bytes(fill_data: RawFillData) -> [u8; RAW_FILL_DATA_SIZE] {
+    unsafe { std::mem::transmute(fill_data) }
 }
 
-impl TryFrom<&[u8]> for RawFillData {
-    type Error = String;
-    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let data: [u8; RAW_FILL_DATA_SIZE] = bytes
-            .get(0..RAW_FILL_DATA_SIZE)
-            .and_then(|slice| slice.try_into().ok())
-            .ok_or("Invalid fill data".to_string())?;
-        Ok(RawFillData::from(data))
-    }
+pub(crate) fn raw_fill_from_slice(bytes: &[u8]) -> Result<RawFillData, String> {
+    let data: [u8; RAW_FILL_DATA_SIZE] = bytes
+        .get(0..RAW_FILL_DATA_SIZE)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or("Invalid fill data".to_string())?;
+    Ok(raw_fill_from_bytes(data))
 }
 
 // FIXME: return Result
@@ -108,7 +100,7 @@ pub fn read_fills_from_bytes(buffer: &[u8], num_fills: usize) -> Vec<shapes::Fil
         .chunks_exact(RAW_FILL_DATA_SIZE)
         .take(num_fills)
         .map(|bytes| {
-            RawFillData::try_from(bytes)
+            raw_fill_from_slice(bytes)
                 .expect("Invalid fill data")
                 .into()
         })
@@ -134,7 +126,7 @@ pub extern "C" fn set_shape_fills() -> Result<()> {
 pub extern "C" fn add_shape_fill() {
     with_current_shape_mut!(state, |shape: &mut Shape| {
         let bytes = mem::bytes();
-        let raw_fill = RawFillData::try_from(&bytes[..]).expect("Invalid fill data");
+        let raw_fill = raw_fill_from_slice(&bytes[..]).expect("Invalid fill data");
         shape.add_fill(raw_fill.into());
     });
 }
@@ -214,7 +206,7 @@ mod tests {
         bytes[0] = 0x00;
         bytes[4..8].copy_from_slice(&0xfffabada_u32.to_le_bytes());
 
-        let raw_fill = RawFillData::try_from(&bytes[..]);
+        let raw_fill = raw_fill_from_slice(&bytes[..]);
 
         assert!(raw_fill.is_ok());
         assert_eq!(

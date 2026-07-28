@@ -21,4 +21,5 @@
 pub use kurbo;
 pub use peniko;
 
+pub mod abi;
 pub mod model;
