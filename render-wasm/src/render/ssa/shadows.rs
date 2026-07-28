@@ -143,12 +143,23 @@ pub fn render_fill_inner_shadows(ctx: &mut PaintCtx<'_>, shape: &Shape, antialia
     }
     let shape_xform = ctx.tile_and_shape_transform_matrix(shape);
     let shadows: Vec<_> = shape.inner_shadows_visible().cloned().collect();
+    // Cap the inner-shadow blur kernel to the tile margin, exactly like the drop
+    // shadow — the sigma is in local units and Skia scales it by the CTM, so an
+    // uncapped kernel drawn through the image filter per tile dominates the frame
+    // at deep zoom. See `Shadow::get_inner_shadow_paint_capped`.
+    let max_dev_sigma = ctx.margins.width as f32 / 3.0;
+    let scale = ctx.scale;
 
     let canvas = ctx.surface.canvas();
     canvas.save();
     canvas.concat(&shape_xform);
     for shadow in &shadows {
-        let paint = shadow.get_inner_shadow_paint(antialias, shape.image_filter(1.).as_ref());
+        let paint = shadow.get_inner_shadow_paint_capped(
+            antialias,
+            shape.image_filter(1.).as_ref(),
+            scale,
+            max_dev_sigma,
+        );
         draw_silhouette(canvas, shape, &paint);
     }
     canvas.restore();

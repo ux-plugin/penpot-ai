@@ -103,8 +103,34 @@ impl Shadow {
         paint
     }
 
+    /// Like [`get_inner_shadow_paint`], but the blur kernel is clamped so it can't
+    /// exceed `max_dev_sigma` device pixels at the current `scale` — the same cap
+    /// [`get_drop_shadow_filter_capped`](Self::get_drop_shadow_filter_capped)
+    /// applies. The inner-shadow sigma is in local units and Skia scales it by
+    /// the CTM, so at deep zoom an uncapped kernel is drawn (through an image
+    /// filter) per tile and dominates the frame — measured at 66% of a 264 ms
+    /// frame at 200×, dropping the per-call cost from ~5.0 ms to ~1.1 ms.
+    pub fn get_inner_shadow_paint_capped(
+        &self,
+        antialias: bool,
+        blur_filter: Option<&ImageFilter>,
+        scale: f32,
+        max_dev_sigma: f32,
+    ) -> Paint {
+        let mut paint = Paint::default();
+        let sigma = radius_to_sigma(self.blur).min(max_dev_sigma / scale.max(f32::EPSILON));
+        let shadow_filter = self.inner_shadow_filter_with_sigma(sigma);
+        let filter = compose_filters(blur_filter, shadow_filter.as_ref());
+        paint.set_image_filter(filter);
+        paint.set_anti_alias(antialias);
+        paint
+    }
+
     pub fn get_inner_shadow_filter(&self) -> Option<ImageFilter> {
-        let sigma = radius_to_sigma(self.blur);
+        self.inner_shadow_filter_with_sigma(radius_to_sigma(self.blur))
+    }
+
+    fn inner_shadow_filter_with_sigma(&self, sigma: f32) -> Option<ImageFilter> {
         let mut filter = skia::image_filters::drop_shadow_only(
             (self.offset.0, self.offset.1), // DPR?
             (sigma, sigma),
