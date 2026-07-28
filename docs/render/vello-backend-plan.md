@@ -151,6 +151,41 @@ So both engines rasterize in f32, because GPUs do. **f64 is a curve-algorithm ch
 
 *Caveat on the precedent:* Masonry is hundreds of widgets, not 10k shapes, its damage-region handling is still open ([xilem#789](https://github.com/linebender/xilem/issues/789)), and a UI never pans or zooms its whole scene. It validates the pattern, not the scale. The cache-residency numbers above are reasoning from the plan's sizing figures, not measurements.
 
+### D17 — Layer ownership: reuse the payload layouts, keep the calling convention for now
+
+The stack, host to GPU, and who owns each layer:
+
+| # | Layer | Shared? |
+|---|---|---|
+| 1 | TS · document model + geometry resolution | both |
+| 2 | TS · delta computation (`changedKeys`/`wantsKey`) | both |
+| 3 | TS · `api/*.ts` property setters (34 modules) | both |
+| 4 | ABI payload layouts (`Raw*Data` + `ToJs`) | both — **currently in the wrong crate** |
+| 5 | Transport + calling convention | per backend, bridged by a facade |
+| 6 | Decode → engine types | per backend |
+| 7 | Scene store | per backend |
+| 8 | Caches / scheduler | per backend — but see the SSA seam below |
+| 9 | Geometry algorithms | both, via kurbo (D12) |
+| 10 | Rasterization | per backend, by design |
+
+**"Reuse the existing ABI" vs "define a new format" was a false dichotomy.** It decomposes into three independent decisions:
+
+1. **Where do the payload layouts live?** → `render-core`. `RawSolidData`, `RawGradientData` and friends are `#[repr(C)]` over `u32`/`f32`/`u8` with **zero Skia references** — `grep -c skia` returns 0 for both files. Skia appears only in the `From<Raw…> for shapes::Fill` conversions, which stay in render-wasm. So this is a relocation, not a rewrite.
+2. **What calling convention?** → keep render-wasm's for Phase 2. Two reasons. Emscripten's `Module` is just an object of `_name` methods plus `HEAPU8`, so a facade over a raw `WebAssembly.Instance` is ~30 lines and leaves all 34 `api/*.ts` modules untouched — it is not a 170-function port. And an identical wire format buys **differential testing**: capture real buffers from a live session, replay the same bytes into both modules, diff the results. That test does not exist if the formats differ. Revisit in Phase 3 when D7 formalises the `Renderer` interface.
+3. **What does `render-vello` store?** → `render_core::model::Scene`, not a mirror of render-wasm's Skia-typed `Shape` tree. This is what keeps A's one real cost — duplicating the store — from materialising.
+
+Only ~20 of the ~170 entry points matter for Phase 2 (geometry only); text, effects, layout and images arrive with their phases.
+
+**Known debt accepted:** the ABI carries implicit current-shape cursor state (`with_current_shape_mut!`), so ordering is load-bearing and unvalidatable from the payload. Explicit `upsert(id, payload)` / `remove(id)` / `commit()` removes that class of bug and is the Phase-3 target. We accept it now because the sequence is already proven in production.
+
+**The SSA seam.** Skia references per module in `tile_grid/ssa/`: `dep_graph` 0, `dispatcher` 0, `liveness` 0, `validator` 0, `surface_ref` 0 — against `production_sink` 22, `allocator` 6, `schedule_builder` 6, `surface_map` 6. The **scheduler is already backend-neutral**; the coupling is concentrated in the executor. Porting SSA to Vello is therefore parameterising the surface backing and writing a Vello production sink, not rewriting the tile system. Recorded so nobody later assumes it is Skia-bound.
+
+**`render-core`'s target**, identical under either Phase-7 branch: `abi/` (payload layouts), `model/` (neutral scene), kurbo + peniko (geometry), `sched/` (the Skia-free SSA half). Converging (D16) would add the decode and the scene store, shared — and those move together, since the decode's output type *is* the store's type.
+
+**Never `render-core`'s:** transport (Emscripten vs raw wasm is forced by D2), rasterization (the point of two backends), and the SSA executor (`production_sink.rs` does real Skia work). That ceiling bounds the crate.
+
+**Split trigger:** if all four modules land, `render-core` is doing four unrelated jobs and `render-core-{abi,model,sched}` becomes the right shape. One crate is correct while it is this small — one dependency edge, one version.
+
 ---
 
 ## What is already built
@@ -239,7 +274,14 @@ Three things step 4 settled, each recorded in the code:
 - **`Gradient`'s fields are now `pub`** in `shapes/fills.rs` — the first edit to shipping engine code under D6. It is read-only data exposure, not a type swap, so B's guarantee (no behaviour change in the Skia path) holds. `colors`/`offsets` remain parallel; only `add_stops` appends.
 
 ### Phase 2 — live data path
-Feed `render-vello` a real document from `skia-rs-wasm` rather than a hand-built model. Decide the wire format: reuse render-wasm's, or define one on `render-core`. Vello renders a real Penpot page (geometry only). Visual diff against Skia — evaluate `imaging_conformance` and `imaging_snapshot_tests` (D13) before writing our own harness, since they already target skia-safe against vello_hybrid.
+Feed `render-vello` a real document from `skia-rs-wasm` rather than a hand-built model. **Wire format settled by D17**: reuse render-wasm's, with `Raw*Data` relocated into `render-core` so both backends parse identical bytes through identical definitions.
+
+1. Move `Raw*Data` + `ToJs` from `render-wasm/src/wasm/**` into `render-core::abi`; render-wasm keeps its `From<Raw…> for shapes::Fill`.
+2. Facade in `skia-rs-wasm` presenting a `Module`-shaped object (`_name` methods, live `HEAPU8` getter) over a raw `WebAssembly.Instance`, so `api/*.ts` is untouched.
+3. `render-vello`: the ~20 geometry entry points, decoding into `render_core::model::Scene`.
+4. Vello renders a real Penpot page (geometry only).
+
+Visual diff against Skia — replay captured buffers into both modules and diff, which the identical wire format makes possible. Also evaluate `imaging_conformance` and `imaging_snapshot_tests` (D13) before writing our own harness, since they already target skia-safe against vello_hybrid.
 
 ### Phase 3 — common ABI + runtime selection
 Define the `Renderer` interface in `skia-rs-wasm`, shaped after `imaging`'s `PaintSink` (D13) with its streaming/retained split; write the two adapters (Emscripten and wasm-bindgen); capability-detect WebGPU and lazily download the matching `.wasm`. After this phase the two modules are genuinely interchangeable.
