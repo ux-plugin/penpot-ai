@@ -22,6 +22,7 @@ import {
   type Binding,
   type Derived,
   type Json,
+  editableError,
 } from '../../renderer/interactions/ir'
 import { listTriggers, listActions, getAction, isPlanned, type CatalogStatus } from '../../renderer/interactions/catalog'
 import { isSlotShape, isFrameShape } from '../../worker/geometry/shapes'
@@ -38,6 +39,8 @@ import {
   setActionTarget,
   setActionValue,
   setActionParam,
+  getEditable,
+  setEditable,
   addVariable,
   removeVariable,
   makeCollectionVariable,
@@ -556,6 +559,67 @@ function BindRow({
   )
 }
 
+/**
+ * Two-way binding for the selected node: "this field edits <value>".
+ *
+ * Only editable cells are offered. A derived value is deliberately absent
+ * rather than shown-and-rejected — it is a formula, so writing to it is a
+ * category error, not a missing feature. `editableError` is the single source
+ * of that rule, shared with the engine.
+ */
+function EditsSection({
+  nodeId,
+  ir,
+  commit,
+  liveIR,
+}: {
+  nodeId: string
+  ir: PageInteractions
+  commit: Commit
+  liveIR: LiveIR
+}) {
+  const current = getEditable(ir, nodeId)
+  // Anything the engine would accept a write into.
+  const writable = ir.variables.filter((v) => !editableError(ir, v.id))
+  const err = current ? editableError(ir, current.target) : null
+
+  return (
+    <section className="flex flex-col gap-1.5 border-t border-border p-3">
+      <h3 className={sectionHeadCls}>Edits</h3>
+      {writable.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No editable state — add a variable above, then a field can edit it.
+        </p>
+      ) : (
+        <>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">this edits</span>
+            <select
+              className={selectCls}
+              value={current?.target ?? ''}
+              onChange={(e) => commit(setEditable(liveIR(), nodeId, e.target.value))}
+              aria-label="Value this node edits"
+            >
+              <option value="">nothing</option>
+              {writable.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.id}
+                </option>
+              ))}
+            </select>
+          </div>
+          {err && <p className="text-[10px] text-destructive">{err}</p>}
+          {current && !err && (
+            <p className="text-[10px] text-muted-foreground">
+              Typing here sets <span className="font-mono">{current.target}</span>, and it shows the current value.
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
 function BindSection({
   nodeId,
   ir,
@@ -861,6 +925,9 @@ export function InteractionsTab() {
           {isContainer && (
             <ListSection node={node} objects={objects} ir={ir} collections={collections} commit={commit} liveIR={liveIR} />
           )}
+
+          {/* Two-way: this node EDITS a value (a field), rather than only displaying one */}
+          <EditsSection nodeId={node.id} ir={ir} commit={commit} liveIR={liveIR} />
 
           {/* Bind the selected node's props to expressions (per-item when it's a list template) */}
           <BindSection nodeId={node.id} ir={ir} forEachItem={isTemplate} commit={commit} liveIR={liveIR} />

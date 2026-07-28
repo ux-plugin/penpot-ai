@@ -75,6 +75,16 @@ const EVENT_PROP: Record<string, string> = {
  */
 export const STYLE_PROPS = new Set(['background', 'backgroundColor', 'color', 'opacity', 'visibility', 'display', 'borderColor'])
 
+/** HTML elements that take no children — React errors if you give them any. */
+export const VOID_TAGS = new Set(['input', 'img', 'br', 'hr', 'source', 'area', 'col', 'embed', 'track', 'wbr'])
+
+/**
+ * How the web reports a value change. The react-native target swaps this for
+ * `onChangeText`, which hands the value over directly instead of wrapping it in
+ * an event — per-target vocabulary, not a change to the IR.
+ */
+const CHANGE_EVENT = { prop: 'onChange', read: 'e.target.value' }
+
 function tsType(vt: ValueType): string {
   if (typeof vt === 'object') return `${tsType(vt.collection)}[]`
   switch (vt) {
@@ -220,6 +230,14 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
     else props.push(`${b.prop}={${expr}}`)
   }
 
+  // Two-way: the read is a value prop, the write is a change handler. Emitted as
+  // the controlled-component pattern a React developer would have written.
+  for (const e of ir.editable) {
+    if (e.node !== node.nodeId) continue
+    props.push(`${e.prop}={${ident(e.target)}}`)
+    props.push(`${CHANGE_EVENT.prop}={(e) => ${setterName(e.target)}(${CHANGE_EVENT.read})}`)
+  }
+
   for (const it of ir.interactions) {
     if (it.on.node !== node.nodeId) continue
     const ev = EVENT_PROP[it.on.trigger.type]
@@ -236,6 +254,11 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
   const slotDefault = node.slot ? node.slot.views[node.slot.activeView ?? ''] : undefined
   const childSource = slotDefault ? [slotDefault] : (node.children ?? [])
   const childNodes = childSource.map((c) => emitNode(c, ir))
+
+  // A void tag is self-closing and cannot carry children; an <input> with a text
+  // child is a React error, not a styling quirk.
+  if (VOID_TAGS.has(node.tag)) return `<${node.tag} ${props.join(' ')} />`
+
   const open = `<${node.tag} ${props.join(' ')}>`
   const close = `</${node.tag}>`
 

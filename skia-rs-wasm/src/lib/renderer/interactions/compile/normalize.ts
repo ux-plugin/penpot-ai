@@ -66,5 +66,24 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
     }
   })
 
+  // editable -> the three primitives that already exist. This is the whole
+  // argument for storing two-way as sugar: it adds NO graph concept. The read is
+  // a sink fed by the cell's signal; the write is a discrete event folded back
+  // into the same cell. Signal in, Event out — so there is no cycle, for the same
+  // reason a React controlled input terminates rather than looping.
+  ir.editable.forEach((e, i) => {
+    const sink = `sink:edit:${i}`
+    nodes.push({ kind: 'sink', id: sink, from: e.target, node: e.node, prop: e.prop })
+    const from = depId(e.target)
+    if (from) edges.push({ from, to: sink })
+
+    const src = `evt:edit:${i}`
+    nodes.push({ kind: 'source', id: src, produces: 'event', of: { source: 'event', node: e.node, trigger: 'value-change' } })
+
+    const fold = `fold:edit:${i}`
+    nodes.push({ kind: 'fold', id: fold, on: src, state: e.target, reducer: 'event.value' })
+    edges.push({ from: src, to: fold })
+  })
+
   return { nodes, edges }
 }

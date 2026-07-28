@@ -9,7 +9,7 @@
  * their index within an interaction's `do[]`.
  */
 
-import type { PageInteractions, Interaction, Action, Variable, ValueType, Json, Repeater, Binding } from '../ir'
+import type { PageInteractions, Interaction, Action, Variable, ValueType, Json, Repeater, Binding, Editable } from '../ir'
 
 function mapInteraction(
   ir: PageInteractions,
@@ -269,4 +269,28 @@ export function setBindingExpr(ir: PageInteractions, node: string, prop: string,
 
 export function removeBindingProp(ir: PageInteractions, node: string, prop: string): PageInteractions {
   return { ...ir, bindings: ir.bindings.filter((b) => !(b.node === node && b.prop === prop)) }
+}
+
+// ---- editable (two-way: the node edits a state cell) ----
+//
+// Kept in its own collection rather than as a flag on Binding: a Binding is
+// defined as a sink, and making some sinks secretly sources would muddy the one
+// thing that type guarantees. Addressed by `(node, prop)` — a node edits at most
+// one cell through any given property.
+
+export function getEditable(ir: PageInteractions, node: string, prop = 'value'): Editable | undefined {
+  return ir.editable.find((e) => e.node === node && e.prop === prop)
+}
+
+/** Upsert "this node edits `target`". An empty target clears it. */
+export function setEditable(ir: PageInteractions, node: string, target: string, prop = 'value'): PageInteractions {
+  if (!target.trim()) return clearEditable(ir, node, prop)
+  if (ir.editable.some((e) => e.node === node && e.prop === prop)) {
+    return { ...ir, editable: ir.editable.map((e) => (e.node === node && e.prop === prop ? { ...e, target } : e)) }
+  }
+  return { ...ir, editable: [...ir.editable, { node, prop, target }] }
+}
+
+export function clearEditable(ir: PageInteractions, node: string, prop = 'value'): PageInteractions {
+  return { ...ir, editable: ir.editable.filter((e) => !(e.node === node && e.prop === prop)) }
 }

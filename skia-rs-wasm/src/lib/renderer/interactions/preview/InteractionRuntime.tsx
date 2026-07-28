@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState, createElement, type ReactNode } from 'react'
 import type { PageInteractions, Interaction } from '../ir'
-import { STYLE_PROPS, type PNode } from '../compile/emit-react'
+import { STYLE_PROPS, VOID_TAGS, type PNode } from '../compile/emit-react'
 import { parse, evaluate } from '../expression'
 import {
   initRuntime,
@@ -23,10 +23,18 @@ import {
 
 type Env = Record<string, unknown>
 
-/** Runtime state plus the interaction that produced it (null before anything fires). */
+/** Write half of a two-way binding: node id, target cell, new value. */
+type Edit = (node: string, target: string, value: unknown) => void
+
+/**
+ * Runtime state plus what produced it (null before anything fires). The cause is
+ * flattened to node+trigger rather than the Interaction itself, so a two-way
+ * edit — which has no Interaction — reports through the same path and shows up
+ * in the activity log like everything else.
+ */
 interface Snapshot {
   rt: RuntimeState
-  cause: { it: Interaction; before: RuntimeState } | null
+  cause: { node: string; trigger: string; before: RuntimeState } | null
 }
 
 const EVENT_PROP: Record<string, string> = {
@@ -72,7 +80,14 @@ export function InteractionRuntime({
   const fire = (it: Interaction) =>
     setSnap((cur) => ({
       rt: runInteraction(ir, cur.rt, it, buildEnv(ir, cur.rt)),
-      cause: { it, before: cur.rt },
+      cause: { node: it.on.node, trigger: it.on.trigger.type, before: cur.rt },
+    }))
+
+  /** The write half of a two-way binding: a discrete event folding into a cell. */
+  const edit = (node: string, target: string, value: unknown) =>
+    setSnap((cur) => ({
+      rt: { ...cur.rt, store: { ...cur.rt.store, [target]: value } },
+      cause: { node, trigger: 'edit', before: cur.rt },
     }))
 
   useEffect(() => {
@@ -85,14 +100,14 @@ export function InteractionRuntime({
     // An entry with no changes is still worth showing — it's how you see that a
     // guard blocked the interaction rather than the click missing entirely.
     onRuntime(state, {
-      node: cause.it.on.node,
-      trigger: cause.it.on.trigger.type,
+      node: cause.node,
+      trigger: cause.trigger,
       changes: diffRuntime(cause.before, state),
       affected: affectedNodes(ir, cause.before, state),
     })
   }, [snap, ir, onRuntime])
 
-  return <>{renderNode(root, env, ir, fire, rt.slotViews)}</>
+  return <>{renderNode(root, env, ir, fire, edit, rt.slotViews)}</>
 }
 
 function renderNode(
@@ -100,6 +115,7 @@ function renderNode(
   env: Env,
   ir: PageInteractions,
   fire: (it: Interaction) => void,
+  edit: Edit,
   slots: Record<string, string>,
   key?: number | string,
 ): ReactNode {
@@ -110,10 +126,10 @@ function renderNode(
     return coll.map((item, i) => {
       const itemEnv: Env = { ...env, [as]: item }
       const k = rep.key ? safeEval(rep.key, itemEnv) : isRecord(item) && 'id' in item ? (item.id as string) : i
-      return renderElement(node, itemEnv, ir, fire, slots, true, k ?? i)
+      return renderElement(node, itemEnv, ir, fire, edit, slots, true, k ?? i)
     })
   }
-  return renderElement(node, env, ir, fire, slots, false, key)
+  return renderElement(node, env, ir, fire, edit, slots, false, key)
 }
 
 function renderElement(
@@ -121,6 +137,7 @@ function renderElement(
   env: Env,
   ir: PageInteractions,
   fire: (it: Interaction) => void,
+  edit: Edit,
   slots: Record<string, string>,
   instance: boolean,
   key?: number | string,
@@ -144,6 +161,13 @@ function renderElement(
   }
   if (Object.keys(style).length) props.style = style
 
+  // Two-way: read the cell into the value prop, write the change back into it.
+  for (const e of ir.editable) {
+    if (e.node !== node.nodeId) continue
+    props[e.prop] = env[e.target] ?? ''
+    props.onChange = (ev: { target: { value: unknown } }) => edit(e.node, e.target, ev.target.value)
+  }
+
   for (const it of ir.interactions) {
     if (it.on.node !== node.nodeId) continue
     const ev = EVENT_PROP[it.on.trigger.type]
@@ -154,10 +178,14 @@ function renderElement(
   if (node.slot) {
     const activeId = activeSlotView(slots, node.nodeId, node.slot.activeView)
     const view = activeId ? node.slot.views[activeId] : undefined
-    children = view ? renderNode(view, env, ir, fire, slots) : null
+    children = view ? renderNode(view, env, ir, fire, edit, slots) : null
   } else if (textChild !== undefined) children = asText(textChild)
-  else if (node.children) children = node.children.map((c, i) => renderNode(c, env, ir, fire, slots, i))
+  else if (node.children) children = node.children.map((c, i) => renderNode(c, env, ir, fire, edit, slots, i))
   else children = node.text ?? null
+
+  // A void tag (an <input>, say) must be created WITHOUT children — passing any
+  // is a React error, and an editable field is exactly this case.
+  if (VOID_TAGS.has(node.tag)) return createElement(node.tag, props)
 
   return createElement(node.tag, props, children)
 }

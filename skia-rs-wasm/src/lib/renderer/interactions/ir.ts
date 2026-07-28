@@ -157,6 +157,30 @@ export interface NodeStates {
 }
 
 /**
+ * A node that EDITS a state cell — the two-way sugar.
+ *
+ * Read: `node.prop ← target`. Write: the node's change event folds into
+ * `target`. It is stored as sugar rather than as the expanded graph on purpose:
+ * some targets have a NATIVE two-way primitive (SwiftUI `$x`, Vue `v-model`,
+ * Svelte `bind:`) and can only emit it if the emitter can still see that the
+ * author said "this edits that". Recovering that from an expanded
+ * sink+source+fold would mean pattern-matching the graph.
+ *
+ * `normalize` expands it into exactly those three existing primitives, so the
+ * reactive graph stays acyclic and one-directional — there is no bidirectional
+ * edge anywhere. The read is a Signal, the write is Event-driven; that split is
+ * why this is not a feedback loop, and is the same reason a React controlled
+ * input terminates.
+ */
+export interface Editable {
+  node: NodeId
+  /** Semantic property the node edits through — `value` for a text field. */
+  prop: string
+  /** The cell being edited. Writability is a property of the cell — see `editableError`. */
+  target: Ref
+}
+
+/**
  * Marks a node as a template repeated over a collection. The node id is a
  * TEMPLATE anchor; runtime instances carry data-node-id + data-instance-key.
  */
@@ -180,8 +204,27 @@ export interface PageInteractions {
   interactions: Interaction[]
   appRules: AppRule[]
   bindings: Binding[]
+  editable: Editable[]
   states: NodeStates[]
   repeaters: Repeater[]
+}
+
+/**
+ * Why a cell cannot be edited, or null if it can. Writability is a property of
+ * the TARGET, not of the node doing the editing:
+ *   - a `derived` value is a function of other state — writing to it is a
+ *     category error, not a missing feature;
+ *   - a port-sourced variable is owned by business logic, and generated
+ *     components do not take props yet (see `emitReactComponent`), so there is
+ *     nowhere for the write to go.
+ */
+export function editableError(ir: PageInteractions, target: Ref): string | null {
+  if (!target.trim()) return 'Pick a value to edit'
+  if (ir.derived.some((d) => d.id === target)) return `${target} is a formula — computed, not editable`
+  const variable = ir.variables.find((v) => v.id === target)
+  if (!variable) return `${target} is not a variable on this page`
+  if (variable.source === 'port') return `${target} comes from business logic — not editable yet`
+  return null
 }
 
 export function emptyPageInteractions(): PageInteractions {
@@ -193,6 +236,7 @@ export function emptyPageInteractions(): PageInteractions {
     interactions: [],
     appRules: [],
     bindings: [],
+    editable: [],
     states: [],
     repeaters: [],
   }
@@ -202,7 +246,7 @@ export function emptyPageInteractions(): PageInteractions {
 
 export interface MergeReport {
   /** Behavior whose owning node no longer exists in the regenerated presentation. */
-  dangling: { kind: 'interaction' | 'binding' | 'state' | 'repeater'; node: NodeId }[]
+  dangling: { kind: 'interaction' | 'binding' | 'editable' | 'state' | 'repeater'; node: NodeId }[]
   ok: boolean
 }
 
@@ -211,6 +255,7 @@ export function referencedNodeIds(ir: PageInteractions): Set<NodeId> {
   const ids = new Set<NodeId>()
   for (const it of ir.interactions) ids.add(it.on.node)
   for (const b of ir.bindings) ids.add(b.node)
+  for (const e of ir.editable) ids.add(e.node)
   for (const s of ir.states) ids.add(s.node)
   for (const r of ir.repeaters) ids.add(r.node)
   return ids
@@ -225,6 +270,7 @@ export function reconcile(ir: PageInteractions, presentNodeIds: Set<NodeId>): Me
   const dangling: MergeReport['dangling'] = []
   for (const it of ir.interactions) if (!presentNodeIds.has(it.on.node)) dangling.push({ kind: 'interaction', node: it.on.node })
   for (const b of ir.bindings) if (!presentNodeIds.has(b.node)) dangling.push({ kind: 'binding', node: b.node })
+  for (const e of ir.editable) if (!presentNodeIds.has(e.node)) dangling.push({ kind: 'editable', node: e.node })
   for (const s of ir.states) if (!presentNodeIds.has(s.node)) dangling.push({ kind: 'state', node: s.node })
   for (const r of ir.repeaters) if (!presentNodeIds.has(r.node)) dangling.push({ kind: 'repeater', node: r.node })
   return { dangling, ok: dangling.length === 0 }
