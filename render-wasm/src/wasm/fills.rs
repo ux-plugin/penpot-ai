@@ -69,29 +69,20 @@ impl TryFrom<&shapes::Fill> for RawFillData {
     }
 }
 
-// These were `From`/`TryFrom` impls. Now that `RawFillData` lives in render-core they would be
-// foreign-trait-on-foreign-type, which the orphan rule forbids, so they are free functions.
-//
-// They also stay in render-wasm rather than moving with the struct, because render-core is
-// `#![forbid(unsafe_code)]`. Worth flagging while we are here: `raw_fill_to_bytes` is unsound
-// as written — these layouts carry padding (`RawGradientData` documents 24 reserved bits), and
-// transmuting a struct *into* bytes exposes those uninitialised bytes. Decoding is fine; it is
-// the encoding direction that is wrong. A safe explicit codec in render-core replaces both.
+// The codec is render-core's (D17): explicit little-endian, no transmute, shared with the
+// Vello module so both decode identical bytes through identical code. These are thin
+// crate-local aliases so the existing call sites keep reading naturally.
 
-pub(crate) fn raw_fill_from_bytes(bytes: [u8; RAW_FILL_DATA_SIZE]) -> RawFillData {
-    unsafe { std::mem::transmute(bytes) }
+pub(crate) fn raw_fill_from_slice(bytes: &[u8]) -> Result<RawFillData, String> {
+    render_core::abi::decode_fill(bytes).map_err(|e| e.to_string())
 }
 
 pub(crate) fn raw_fill_to_bytes(fill_data: RawFillData) -> [u8; RAW_FILL_DATA_SIZE] {
-    unsafe { std::mem::transmute(fill_data) }
-}
-
-pub(crate) fn raw_fill_from_slice(bytes: &[u8]) -> Result<RawFillData, String> {
-    let data: [u8; RAW_FILL_DATA_SIZE] = bytes
-        .get(0..RAW_FILL_DATA_SIZE)
-        .and_then(|slice| slice.try_into().ok())
-        .ok_or("Invalid fill data".to_string())?;
-    Ok(raw_fill_from_bytes(data))
+    let mut out = [0u8; RAW_FILL_DATA_SIZE];
+    // Infallible: the buffer is exactly the record size.
+    render_core::abi::encode_fill(&fill_data, &mut out)
+        .expect("fill record buffer is exactly RAW_FILL_DATA_SIZE");
+    out
 }
 
 // FIXME: return Result
