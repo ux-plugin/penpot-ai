@@ -4,7 +4,7 @@ use crate::uuid::Uuid;
 use crate::with_state_mut;
 use crate::STATE;
 use crate::{shapes::ImageFill, utils::uuid_from_u32_quartet};
-use macros::wasm_error;
+use render_macros::wasm_error;
 
 const FLAG_KEEP_ASPECT_RATIO: u8 = 1 << 0;
 const FLAG_HAS_DEST: u8 = 1 << 1;

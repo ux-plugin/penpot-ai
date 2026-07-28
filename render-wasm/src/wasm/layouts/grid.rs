@@ -1,4 +1,4 @@
-use macros::{wasm_error, ToJs};
+use render_macros::{wasm_error, ToJs};
 
 use crate::mem;
 use crate::shapes::{GridCell, GridDirection, GridTrack, GridTrackType};

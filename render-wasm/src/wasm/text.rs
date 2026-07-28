@@ -1,4 +1,4 @@
-use macros::{wasm_error, ToJs};
+use render_macros::{wasm_error, ToJs};
 
 use super::{fills::RawFillData, fonts::RawFontStyle};
 

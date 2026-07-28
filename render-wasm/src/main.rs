@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 #[allow(unused_imports)]
 use crate::error::{Error, Result};
-use macros::wasm_error;
+use render_macros::wasm_error;
 use math::{Bounds, Matrix};
 use mem::SerializableResult;
 use shapes::{StructureEntry, StructureEntryType, TransformEntry};

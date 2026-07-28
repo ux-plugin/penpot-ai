@@ -1,4 +1,4 @@
-use macros::{wasm_error, ToJs};
+use render_macros::{wasm_error, ToJs};
 
 use crate::math::{Matrix, Point, Rect};
 use crate::mem;

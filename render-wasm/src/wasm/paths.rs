@@ -1,5 +1,5 @@
 #![allow(unused_mut, unused_variables)]
-use macros::{wasm_error, ToJs};
+use render_macros::{wasm_error, ToJs};
 use mem::SerializableResult;
 use std::mem::size_of;
 use std::sync::{Mutex, OnceLock};

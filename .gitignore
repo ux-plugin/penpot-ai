@@ -80,6 +80,7 @@
 /playwright/.cache/
 /render-wasm/target/
 /render-core/target/
+/render-macros/target/
 /render-vello/target/
 /render-vello/dev/pkg/
 /**/node_modules

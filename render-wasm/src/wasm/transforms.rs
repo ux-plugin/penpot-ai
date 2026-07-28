@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 use crate::error::{Error, Result};
-use macros::{wasm_error, ToJs};
+use render_macros::{wasm_error, ToJs};
 
 use skia_safe as skia;
 

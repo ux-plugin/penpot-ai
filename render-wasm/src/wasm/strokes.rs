@@ -1,4 +1,4 @@
-use macros::ToJs;
+use render_macros::ToJs;
 
 use crate::mem;
 use crate::shapes::{self, StrokeCap, StrokeLineCap, StrokeLineJoin, StrokeStyle};

@@ -8,7 +8,7 @@ use crate::{with_state_mut, STATE};
 
 #[allow(unused_imports)]
 use crate::error::{Error, Result};
-use macros::wasm_error;
+use render_macros::wasm_error;
 
 use super::RawShapeType;
 

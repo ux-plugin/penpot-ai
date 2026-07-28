@@ -4,7 +4,7 @@ use std::ptr;
 #[allow(unused_imports)]
 use crate::error::{Error, Result};
 use crate::mem::{BUFFERU8, LAYOUT_ALIGN};
-use macros::wasm_error;
+use render_macros::wasm_error;
 
 #[no_mangle]
 #[wasm_error]

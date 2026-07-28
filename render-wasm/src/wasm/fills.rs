@@ -1,4 +1,4 @@
-use macros::{wasm_error, ToJs};
+use render_macros::{wasm_error, ToJs};
 
 use crate::error::Error;
 use crate::mem;

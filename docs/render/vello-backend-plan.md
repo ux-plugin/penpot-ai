@@ -170,7 +170,9 @@ The stack, host to GPU, and who owns each layer:
 
 **"Reuse the existing ABI" vs "define a new format" was a false dichotomy.** It decomposes into three independent decisions:
 
-1. **Where do the payload layouts live?** → `render-core`. `RawSolidData`, `RawGradientData` and friends are `#[repr(C)]` over `u32`/`f32`/`u8` with **zero Skia references** — `grep -c skia` returns 0 for both files. Skia appears only in the `From<Raw…> for shapes::Fill` conversions, which stay in render-wasm. So this is a relocation, not a rewrite.
+1. **Where do the payload layouts live?** → `render-core`. `RawSolidData`, `RawGradientData` and friends are `#[repr(C)]` over `u32`/`f32`/`u8` — the *definitions* carry no Skia. The `From<Raw…> for shapes::Fill` conversions in the same files do, via `shapes::Color`, which is `pub type Color = skia::Color` (`shapes.rs:179`) — so a bare `grep skia` on those files misleadingly returns 0. **The files split: definitions move, conversions stay.** Orphan rules permit it, since `impl From<Foreign> for Local` is legal.
+
+   **Consequence to watch:** `ToJs` lives in `render-wasm/macros`. If `render-core` derived it from there, `render-core` would depend *into* `render-wasm` — recreating exactly the wrong-direction dependency D15 removed from the vello submodule. So the macro crate relocates to the repo root as a shared sibling first.
 2. **What calling convention?** → keep render-wasm's for Phase 2. Two reasons. Emscripten's `Module` is just an object of `_name` methods plus `HEAPU8`, so a facade over a raw `WebAssembly.Instance` is ~30 lines and leaves all 34 `api/*.ts` modules untouched — it is not a 170-function port. And an identical wire format buys **differential testing**: capture real buffers from a live session, replay the same bytes into both modules, diff the results. That test does not exist if the formats differ. Revisit in Phase 3 when D7 formalises the `Renderer` interface.
 3. **What does `render-vello` store?** → `render_core::model::Scene`, not a mirror of render-wasm's Skia-typed `Shape` tree. This is what keeps A's one real cost — duplicating the store — from materialising.
 

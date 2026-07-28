@@ -1,4 +1,4 @@
-use macros::ToJs;
+use render_macros::ToJs;
 
 use crate::shapes::{Blur, BlurType};
 use crate::{with_current_shape_mut, STATE};
