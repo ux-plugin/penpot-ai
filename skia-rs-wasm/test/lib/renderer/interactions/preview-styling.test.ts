@@ -57,13 +57,13 @@ describe('nodesToPresentation — shape fill → inline style', () => {
 
 describe('emit-react — style prop', () => {
   it('emits an inline style when the PNode has one', () => {
-    const root: PNode = { nodeId: 'btn', tag: 'button', text: 'Add', style: { background: '#e11d48' } }
+    const root: PNode = { nodeId: 'btn', role: 'button', text: 'Add', style: { background: '#e11d48' } }
     const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
     expect(code).toContain('style={{ "background": "#e11d48" }}')
   })
 
   it('omits style when there is none', () => {
-    const root: PNode = { nodeId: 'btn', tag: 'button', text: 'Add' }
+    const root: PNode = { nodeId: 'btn', role: 'button', text: 'Add' }
     const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
     expect(code).not.toContain('style=')
   })
@@ -74,7 +74,7 @@ describe('emit-react — style-prop bindings (wire fill to state)', () => {
     const ir = emptyPageInteractions()
     ir.variables.push({ id: 'accent', type: 'string', scope: 'page', initial: '#e11d48', source: 'local' })
     ir.bindings.push({ node: 'btn', prop: 'background', from: 'accent' })
-    const root: PNode = { nodeId: 'btn', tag: 'button', text: 'Buy', style: { background: '#999999' } }
+    const root: PNode = { nodeId: 'btn', role: 'button', text: 'Buy', style: { background: '#999999' } }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('"background": accent') // dynamic expression
     expect(code).not.toContain('"background": "#999999"') // static fill overridden, not duplicated
@@ -83,7 +83,7 @@ describe('emit-react — style-prop bindings (wire fill to state)', () => {
   it('a non-CSS binding stays a raw element prop', () => {
     const ir = emptyPageInteractions()
     ir.bindings.push({ node: 'inp', prop: 'value', from: 'query' })
-    const root: PNode = { nodeId: 'inp', tag: 'input' }
+    const root: PNode = { nodeId: 'inp', role: 'field' }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('value={query}')
     expect(code).not.toContain('style=')

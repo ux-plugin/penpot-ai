@@ -26,10 +26,10 @@ function todoIR(): PageInteractions {
 
 const presentation: PNode = {
   nodeId: 'page',
-  tag: 'div',
+  role: 'container',
   children: [
-    { nodeId: 'addBtn', tag: 'button', text: 'Add' },
-    { nodeId: 'list', tag: 'ul', children: [{ nodeId: 'row', tag: 'li' }] },
+    { nodeId: 'addBtn', role: 'button', text: 'Add' },
+    { nodeId: 'list', role: 'list', children: [{ nodeId: 'row', role: 'item' }] },
   ],
 }
 

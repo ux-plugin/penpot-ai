@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState, createElement, type ReactNode } from 'react'
 import type { PageInteractions, Interaction } from '../ir'
-import { STYLE_PROPS, VOID_TAGS, type PNode } from '../compile/emit-react'
+import { STYLE_PROPS, VOID_TAGS, tagForRole, inputTypeFor, type PNode } from '../compile/emit-react'
 import { parse, evaluate } from '../expression'
 import {
   initRuntime,
@@ -164,6 +164,8 @@ function renderElement(
   // Two-way: read the cell into the value prop, write the change back into it.
   for (const e of ir.editable) {
     if (e.node !== node.nodeId) continue
+    const inputType = inputTypeFor(ir, node.nodeId)
+    if (inputType) props.type = inputType
     props[e.prop] = env[e.target] ?? ''
     props.onChange = (ev: { target: { value: unknown } }) => edit(e.node, e.target, ev.target.value)
   }
@@ -183,9 +185,11 @@ function renderElement(
   else if (node.children) children = node.children.map((c, i) => renderNode(c, env, ir, fire, edit, slots, i))
   else children = node.text ?? null
 
+  const tag = tagForRole(node.role)
+
   // A void tag (an <input>, say) must be created WITHOUT children — passing any
   // is a React error, and an editable field is exactly this case.
-  if (VOID_TAGS.has(node.tag)) return createElement(node.tag, props)
+  if (VOID_TAGS.has(tag)) return createElement(tag, props)
 
-  return createElement(node.tag, props, children)
+  return createElement(tag, props, children)
 }

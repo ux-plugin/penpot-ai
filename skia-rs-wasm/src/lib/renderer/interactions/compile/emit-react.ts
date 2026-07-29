@@ -38,10 +38,51 @@ export interface SlotPresentation {
   views: Record<string, PNode>
 }
 
+/**
+ * What a node MEANS, independent of any platform. The presentation carries this
+ * rather than an HTML tag, because there is no `<input>` in React Native — each
+ * target maps roles to its own components (`field` → `input` on web,
+ * `TextInput` on native).
+ *
+ * Roles are always DERIVED, never authored: see `deriveRole`. An explicit role
+ * would be a second source of truth able to contradict the behaviour ("this is
+ * a field" on a node that edits nothing), which is the same category error as a
+ * node-level repeat toggle.
+ */
+export type NodeRole = 'container' | 'text' | 'button' | 'field' | 'list' | 'item' | 'image' | 'link'
+
+/** The web target's vocabulary. A react-native target supplies its own table. */
+const ROLE_TAG: Record<NodeRole, string> = {
+  container: 'div',
+  text: 'span',
+  button: 'button',
+  field: 'input',
+  list: 'ul',
+  item: 'li',
+  image: 'img',
+  link: 'a',
+}
+
+export const tagForRole = (role: NodeRole): string => ROLE_TAG[role] ?? 'div'
+
+/**
+ * A field's control type comes from the TYPE OF THE CELL IT EDITS — wire a node
+ * to a boolean and it is a checkbox. No enum to keep in sync with the variable.
+ * Returns undefined when the default (text) applies.
+ */
+export function inputTypeFor(ir: PageInteractions, nodeId: NodeId): string | undefined {
+  const editable = ir.editable.find((e) => e.node === nodeId)
+  if (!editable) return undefined
+  const type = ir.variables.find((v) => v.id === editable.target)?.type
+  if (type === 'boolean') return 'checkbox'
+  if (type === 'number') return 'number'
+  return undefined
+}
+
 /** Minimal presentation node (stand-in for parsed AI JSX). */
 export interface PNode {
   nodeId: NodeId
-  tag: string
+  role: NodeRole
   text?: string
   children?: PNode[]
   /** Static inline style carried from the design shape (e.g. fill → background). */
@@ -234,6 +275,8 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
   // the controlled-component pattern a React developer would have written.
   for (const e of ir.editable) {
     if (e.node !== node.nodeId) continue
+    const inputType = inputTypeFor(ir, node.nodeId)
+    if (inputType) props.push(`type="${inputType}"`)
     props.push(`${e.prop}={${ident(e.target)}}`)
     props.push(`${CHANGE_EVENT.prop}={(e) => ${setterName(e.target)}(${CHANGE_EVENT.read})}`)
   }
@@ -255,12 +298,14 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
   const childSource = slotDefault ? [slotDefault] : (node.children ?? [])
   const childNodes = childSource.map((c) => emitNode(c, ir))
 
+  const tag = tagForRole(node.role)
+
   // A void tag is self-closing and cannot carry children; an <input> with a text
   // child is a React error, not a styling quirk.
-  if (VOID_TAGS.has(node.tag)) return `<${node.tag} ${props.join(' ')} />`
+  if (VOID_TAGS.has(tag)) return `<${tag} ${props.join(' ')} />`
 
-  const open = `<${node.tag} ${props.join(' ')}>`
-  const close = `</${node.tag}>`
+  const open = `<${tag} ${props.join(' ')}>`
+  const close = `</${tag}>`
 
   let inner: string
   if (textChild !== undefined) inner = `{${textChild}}`

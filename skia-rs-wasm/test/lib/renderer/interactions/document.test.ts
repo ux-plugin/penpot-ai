@@ -45,23 +45,60 @@ describe('serialization — interactions survive flatten/unflatten', () => {
 })
 
 describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
-  it('maps the shape hierarchy to tags + anchors + text', () => {
+  it('maps the shape hierarchy to anchors + text', () => {
     const indexed = flattenPageToIndexed(makePage())
     const root = nodesToPresentation(indexed)
 
     expect(root?.nodeId).toBe(ZERO)
-    expect(root?.tag).toBe('div')
 
-    const kids = root?.children ?? []
-    const addBtn = kids.find((k) => k.nodeId === 'addBtn')
-    const list = kids.find((k) => k.nodeId === 'list')
-    expect(addBtn?.tag).toBe('button') // name "Add button" -> button heuristic
-    expect(list?.tag).toBe('ul') // name "Todo list" -> list heuristic
-
+    const list = (root?.children ?? []).find((k) => k.nodeId === 'list')
     const row = list?.children?.[0]
     expect(row?.nodeId).toBe('row')
-    expect(row?.tag).toBe('li') // name "Row" -> li heuristic
     expect(row?.text).toBe('Item') // text content extracted
+  })
+
+  it('gives a shape with no behaviour a plain role, whatever it is CALLED', () => {
+    // "Add button" and "Todo list" used to become <button> and <ul> purely by
+    // name. A layer name is not behaviour — rename it and the meaning changed.
+    const root = nodesToPresentation(flattenPageToIndexed(makePage()))
+    const kids = root?.children ?? []
+    expect(root?.role).toBe('container')
+    expect(kids.find((k) => k.nodeId === 'addBtn')?.role).toBe('container')
+    expect(kids.find((k) => k.nodeId === 'list')?.role).toBe('container')
+    // a text shape is still text — that comes from the shape, not the name
+    expect(kids.find((k) => k.nodeId === 'list')?.children?.[0]?.role).toBe('text')
+  })
+
+  it('derives roles from the behaviour authored on each node', () => {
+    const ir = emptyPageInteractions()
+    ir.variables.push({ id: 'draft', type: 'string', scope: 'page', initial: '', source: 'local' })
+    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+    ir.editable.push({ node: 'addBtn', prop: 'value', target: 'draft' })
+    ir.repeaters.push({ node: 'row', over: 'items' })
+
+    const root = nodesToPresentation(flattenPageToIndexed(makePage(ir)))
+    const kids = root?.children ?? []
+    expect(kids.find((k) => k.nodeId === 'addBtn')?.role).toBe('field') // it edits a cell
+    expect(kids.find((k) => k.nodeId === 'list')?.role).toBe('list') // its child is a template
+    expect(kids.find((k) => k.nodeId === 'list')?.children?.[0]?.role).toBe('item')
+  })
+
+  it('a press makes a node a button; open-url makes it a link', () => {
+    const ir = emptyPageInteractions()
+    ir.interactions.push({ id: 'i1', on: { node: 'addBtn', trigger: { type: 'press' } }, do: [] })
+    expect(
+      nodesToPresentation(flattenPageToIndexed(makePage(ir)))?.children?.find((k) => k.nodeId === 'addBtn')?.role,
+    ).toBe('button')
+
+    const linkIr = emptyPageInteractions()
+    linkIr.interactions.push({
+      id: 'i1',
+      on: { node: 'addBtn', trigger: { type: 'press' } },
+      do: [{ type: 'open-url', value: '"https://example.com"' }],
+    })
+    expect(
+      nodesToPresentation(flattenPageToIndexed(makePage(linkIr)))?.children?.find((k) => k.nodeId === 'addBtn')?.role,
+    ).toBe('link')
   })
 
   it('returns null for an empty page', () => {
@@ -257,8 +294,8 @@ describe('findPNode — the scoping primitive for "show only the selection"', ()
   it('searches inside a slot’s candidate views, not just children', () => {
     const root = {
       nodeId: 'root',
-      tag: 'div',
-      slot: { activeView: 'viewA', views: { viewA: { nodeId: 'viewA', tag: 'div', children: [{ nodeId: 'deep', tag: 'span' }] } } },
+      role: 'container',
+      slot: { activeView: 'viewA', views: { viewA: { nodeId: 'viewA', role: 'container', children: [{ nodeId: 'deep', role: 'text' }] } } },
     }
     expect(findPNode(root, 'deep')?.nodeId).toBe('deep')
   })

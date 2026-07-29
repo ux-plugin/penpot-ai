@@ -37,8 +37,8 @@ function authorField(): PageInteractions {
   return ir
 }
 
-const field: PNode = { nodeId: 'field', tag: 'input' }
-const page: PNode = { nodeId: 'root', tag: 'div', children: [field] }
+const field: PNode = { nodeId: 'field', role: 'field' }
+const page: PNode = { nodeId: 'root', role: 'container', children: [field] }
 
 describe('editableError — writability is a property of the cell', () => {
   it('accepts a local variable', () => {
@@ -160,5 +160,25 @@ describe('merge contract', () => {
     const report = reconcile(ir, new Set(['root']))
     expect(report.ok).toBe(false)
     expect(report.dangling).toContainEqual({ kind: 'editable', node: 'field' })
+  })
+})
+
+describe('the control type derives from the cell being edited', () => {
+  const emitFor = (type: 'string' | 'number' | 'boolean') => {
+    let ir = addVariable(emptyPageInteractions(), makeScalarVariable('cell', type, type === 'number' ? 0 : type === 'boolean' ? false : ''))
+    ir = setEditable(ir, 'f', 'cell')
+    return emitReactComponent(ir, { nodeId: 'f', role: 'field' })
+  }
+
+  it('boolean becomes a checkbox — no enum to keep in sync', () => {
+    expect(emitFor('boolean')).toContain('type="checkbox"')
+  })
+
+  it('number becomes a number input', () => {
+    expect(emitFor('number')).toContain('type="number"')
+  })
+
+  it('string is the default, so no type attribute is emitted', () => {
+    expect(emitFor('string')).not.toContain('type=')
   })
 })

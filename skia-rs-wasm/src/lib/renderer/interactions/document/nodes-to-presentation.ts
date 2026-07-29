@@ -6,35 +6,46 @@
  * tree: each shape becomes one element carrying its id as the `data-node-id`
  * anchor, nested by the shape hierarchy (`shapes` child-id arrays).
  *
- * The tag mapping is a deterministic baseline (shape type + a light name
- * heuristic). This is the exact seam where AI-authored idiomatic JSX slots in
- * later: it replaces the tag mapping while preserving the one-node-one-anchor
+ * Each node carries a semantic ROLE (see `deriveRole`), not an HTML tag — there
+ * is no `<input>` in React Native, so the tag is resolved per target. Roles are
+ * derived from the shape and the behaviour authored on it, never from the layer
+ * name. This is the seam where AI-authored idiomatic JSX slots in later: it
+ * replaces the role→element mapping while preserving the one-node-one-anchor
  * contract, so behavior weaving keeps working unchanged.
  */
 
 import type { IndexedPage, IndexedShape } from '../../../worker/types'
-import type { PNode, SlotPresentation } from '../compile/emit-react'
+import type { PageInteractions } from '../ir'
+import type { PNode, SlotPresentation, NodeRole } from '../compile/emit-react'
 import { isSlotShape } from '../../../worker/geometry/shapes'
 
-const NAME_TAG: Array<[RegExp, string]> = [
-  [/button|btn/, 'button'],
-  [/heading|title|headline/, 'h2'],
-  [/list/, 'ul'],
-  [/row|item|cell/, 'li'],
-  [/input|field|textbox/, 'input'],
-  [/link/, 'a'],
-]
+/**
+ * What a node MEANS, derived from the shape and the behaviour authored on it —
+ * never from its layer name. A name heuristic (`/input|field/` → a text field)
+ * made the meaning invisible and broke on rename or translation; a node is a
+ * field because it EDITS something, and a button because you can press it.
+ *
+ * Order matters: the most specific behaviour wins. A node that both edits a cell
+ * and has a press is a field first.
+ */
+function deriveRole(shape: IndexedShape, ir: PageInteractions | undefined, childIds: string[]): NodeRole {
+  const id = shape.id
+  const onNode = (it: { on: { node: string } }) => it.on.node === id
 
-function tagFor(shape: IndexedShape): string {
-  const name = (shape.name ?? '').toLowerCase()
-  for (const [re, tag] of NAME_TAG) if (re.test(name)) return tag
+  if (ir?.editable.some((e) => e.node === id)) return 'field'
+  const interactions = ir?.interactions.filter(onNode) ?? []
+  if (interactions.some((it) => it.do.some((a) => a.type === 'open-url'))) return 'link'
+  if (interactions.some((it) => it.on.trigger.type === 'press')) return 'button'
+  if (ir?.repeaters.some((r) => r.node === id)) return 'item'
+  if (childIds.some((cid) => ir?.repeaters.some((r) => r.node === cid))) return 'list'
+
   switch (shape.type) {
     case 'text':
-      return 'span'
+      return 'text'
     case 'image':
-      return 'img'
+      return 'image'
     default:
-      return 'div'
+      return 'container'
   }
 }
 
@@ -201,6 +212,7 @@ function styleFor(shape: IndexedShape, isRoot: boolean, hasChildren: boolean): R
 function slotPresentation(
   slot: { views: string[]; activeView?: string },
   objects: Record<string, IndexedShape>,
+  ir: PageInteractions | undefined,
   projecting: Set<string>,
 ): SlotPresentation {
   const views: Record<string, PNode> = {}
@@ -209,7 +221,7 @@ function slotPresentation(
     const view = objects[viewId]
     if (!view) continue
     projecting.add(viewId)
-    views[viewId] = toPNode(view, objects, projecting)
+    views[viewId] = toPNode(view, objects, ir, projecting)
     projecting.delete(viewId)
   }
   return { activeView: slot.activeView, views }
@@ -218,15 +230,17 @@ function slotPresentation(
 function toPNode(
   shape: IndexedShape,
   objects: Record<string, IndexedShape>,
+  ir: PageInteractions | undefined,
   projecting: Set<string> = new Set(),
 ): PNode {
-  const node: PNode = { nodeId: shape.id, tag: tagFor(shape) }
+  const childIds: string[] = shape.shapes ?? []
+  const node: PNode = { nodeId: shape.id, role: deriveRole(shape, ir, childIds) }
   const isRoot = shape.parentId == null
 
   // A slot owns no children — it references view frames. Emit a slot descriptor
   // carrying each candidate's projected subtree instead of walking `shapes`.
   if (isSlotShape(shape)) {
-    node.slot = slotPresentation(shape, objects, projecting)
+    node.slot = slotPresentation(shape, objects, ir, projecting)
     const style = styleFor(shape, isRoot, false)
     // Clip the shown view to the outlet box when the slot clips (showContent:false).
     node.style = shape.showContent === false ? { ...style, overflow: 'hidden' } : style
@@ -234,10 +248,10 @@ function toPNode(
     return node
   }
 
-  const children = (shape.shapes ?? [])
+  const children = childIds
     .map((id) => objects[id])
     .filter((c): c is IndexedShape => Boolean(c))
-    .map((c) => toPNode(c, objects, projecting))
+    .map((c) => toPNode(c, objects, ir, projecting))
 
   // Style depends on whether this node ends up a container, so it's built after
   // the children are known.
@@ -257,7 +271,7 @@ function toPNode(
 export function nodesToPresentation(page: IndexedPage): PNode | null {
   const objects = page.objects
   const root = Object.values(objects).find((o) => o.parentId == null)
-  return root ? toPNode(root, objects) : null
+  return root ? toPNode(root, objects, page.interactions) : null
 }
 
 /**
