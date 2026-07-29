@@ -11,7 +11,7 @@
  *                        selected shape (must follow renderer-sync so WASM has
  *                        absorbed the new state before the query fires)
  *   3. worker-sync     — feeds the spatial-index update (fire-and-forget per page)
- *   4. history-sync    — pushes a CommitFrame onto the undo stack when applicable
+ *   4. history-sync    — appends a transaction to the journal when applicable
  *
  * Registration is centralized in commit.ts to keep the order explicit and
  * insensitive to import ordering elsewhere — subscribers export their handler

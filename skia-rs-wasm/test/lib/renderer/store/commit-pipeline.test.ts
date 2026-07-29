@@ -3,7 +3,8 @@ import type { Change } from 'penpot-exporter/types'
 import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { toChanges } from '../../../../src/lib/history/journal/codec'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { commitChanges } from '../../../../src/lib/renderer/store/commit'
 
 const PAGE_ID = 'page1'
@@ -63,7 +64,7 @@ describe('commitChanges pipeline', () => {
   beforeEach(() => {
     order.length = 0
     page = structuredClone(makePage())
-    useHistoryStore.setState({ undoStack: [], redoStack: [] })
+    useJournalStore.getState().clear()
 
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, page)
@@ -123,10 +124,10 @@ describe('commitChanges pipeline', () => {
       pageId: PAGE_ID,
       fromHistory: true,
     })
-    expect(useHistoryStore.getState().undoStack).toHaveLength(0)
+    expect(useJournalStore.getState().txns).toHaveLength(0)
   })
 
-  it('pushes undo frame when undoChanges provided', async () => {
+  it('records a journal entry when undoChanges provided', async () => {
     const redo: Change[] = [
       {
         type: 'mod-obj',
@@ -142,8 +143,11 @@ describe('commitChanges pipeline', () => {
       },
     ]
     await commitChanges({ redoChanges: redo, undoChanges: undo, pageId: PAGE_ID })
-    expect(useHistoryStore.getState().undoStack).toHaveLength(1)
-    expect(useHistoryStore.getState().undoStack[0].redoChanges).toEqual(redo)
+    const txns = useJournalStore.getState().txns
+    expect(txns).toHaveLength(1)
+    // The entry stores ops, not the change vectors — so assert it round-trips
+    // back to the forward changes rather than reaching for a `redoChanges` field.
+    expect(toChanges(txns[0].ops).changes).toEqual(redo)
   })
 
   it('applies commits when explicit pageId omitted but document exposes active page', async () => {

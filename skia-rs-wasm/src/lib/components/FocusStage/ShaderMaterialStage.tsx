@@ -94,16 +94,9 @@ export interface ShaderMaterialStageProps {
   nodeId: string
   /** The material as it was when focus mode opened. */
   initialMaterial: Material
-  /**
-   * The session's undo `groupId` (owned by the opener). Every idle-coalesced
-   * commit carries it; the commits land in the focus sub-history buffer while
-   * the stage is open, and on exit fold into one canvas undo entry labelled with
-   * it. See [[project_undo_model]].
-   */
-  groupId: string
 }
 
-export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: ShaderMaterialStageProps) {
+export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialStageProps) {
   const [draft, setDraft] = useState<Material>(initialMaterial)
   const draftRef = useRef<Material>(initialMaterial)
   const dirtyRef = useRef(false)
@@ -212,9 +205,8 @@ export function ShaderMaterialStage({ nodeId, initialMaterial, groupId }: Shader
       before,
       { material: draftRef.current } as Partial<PenpotNode>,
       pid,
-      groupId,
     )
-  }, [nodeId, groupId])
+  }, [nodeId])
 
   const applyChange = useCallback(
     (partial: Partial<Material>) => {

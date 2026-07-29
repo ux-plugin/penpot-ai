@@ -3,7 +3,7 @@ import type { AddObjChange, DelObjChange } from 'penpot-exporter/types'
 import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { applyChanges, undo, redo } from '../../../../src/lib/page-crud'
 
 const PAGE_ID = 'page1'
@@ -19,7 +19,7 @@ function makePage(): IndexedPage {
 
 describe('shape creation is undoable', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [], transaction: null })
+    useJournalStore.getState().clear()
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, makePage())
     docProxy.currentPageId = PAGE_ID
@@ -48,7 +48,7 @@ describe('shape creation is undoable', () => {
     let page = docProxy.pageMap.get(PAGE_ID) as IndexedPage
     expect(page.objects[RECT]).toBeDefined()
     expect(page.objects[ROOT].shapes).toContain(RECT)
-    expect(useHistoryStore.getState().undoStack).toHaveLength(1)
+    expect(useJournalStore.getState().txns).toHaveLength(1)
 
     await undo()
     page = docProxy.pageMap.get(PAGE_ID) as IndexedPage

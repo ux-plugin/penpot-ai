@@ -26,7 +26,7 @@ export function openShaderStage(nodeId: string, material: Material): void {
   openFocusStage({
     id: 'shader-material',
     title: 'Custom shader',
-    center: <ShaderMaterialStage nodeId={nodeId} initialMaterial={material} groupId={groupId} />,
+    center: <ShaderMaterialStage nodeId={nodeId} initialMaterial={material} />,
     right: <ShaderUniformsRail />,
     bottom: <ShaderConsole />,
     onExit: exitScope,

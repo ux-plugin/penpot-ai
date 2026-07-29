@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import {
   commitInteractions,
   currentInteractions,
@@ -30,7 +30,7 @@ function irB(): PageInteractions {
 
 describe('interaction edits are undoable through the global history', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [], transaction: null })
+    useJournalStore.getState().clear()
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, makePage())
     docProxy.currentPageId = PAGE_ID
@@ -47,7 +47,7 @@ describe('interaction edits are undoable through the global history', () => {
     const next = irA()
     await commitInteractions(PAGE_ID, next)
     expect(currentInteractions(PAGE_ID)).toEqual(next)
-    expect(useHistoryStore.getState().undoStack).toHaveLength(1)
+    expect(useJournalStore.getState().txns).toHaveLength(1)
 
     await undo()
     expect(currentInteractions(PAGE_ID)).toBeUndefined()

@@ -21,7 +21,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import { beginHistoryTransaction, commitHistoryTransaction } from '@/lib/history/history-store'
+import { beginJournalTransaction, commitJournalTransaction } from '@/lib/history/journal/journal-store'
 import { clampRound, formatNumber, parseNumericInput, stepValue } from './numeric-field-logic'
 
 let nextInteractionId = 0
@@ -136,7 +136,7 @@ export function NumericField({
   useEffect(() => {
     const txId = txIdRef.current!
     return () => {
-      if (focusedRef.current) commitHistoryTransaction(txId)
+      if (focusedRef.current) commitJournalTransaction(txId)
     }
   }, [])
 
@@ -157,7 +157,7 @@ export function NumericField({
         focusedRef.current = true
         // Open the undo transaction for this focus session; every edit until
         // blur lands in one frame.
-        beginHistoryTransaction(txIdRef.current!)
+        beginJournalTransaction(txIdRef.current!)
         e.currentTarget.select()
       }}
       onBlur={() => {
@@ -166,7 +166,7 @@ export function NumericField({
         // Close the transaction synchronously — the frame is already recorded
         // (commit pipeline records before its await), so there's no race and
         // the next field's focus can't merge into this one.
-        commitHistoryTransaction(txIdRef.current!)
+        commitJournalTransaction(txIdRef.current!)
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {

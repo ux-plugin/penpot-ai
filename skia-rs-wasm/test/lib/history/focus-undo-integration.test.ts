@@ -1,5 +1,5 @@
 /**
- * Focus-scope undo over the REAL history store + commit pipeline.
+ * Focus-scope undo over the REAL journal + commit pipeline.
  *
  * The mechanism changed in Phase 1 step B — a focus stage now pushes a scope
  * tag onto the one journal instead of diverting commits into a parallel
@@ -20,18 +20,17 @@ import { redo, setDocument, undo } from '../../../src/lib/page-crud'
 import { docProxy } from '../../../src/lib/renderer/store/doc-proxy'
 import { commitNodePartialUpdate } from '../../../src/lib/renderer/properties/commit-node-properties'
 import {
-  useHistoryStore,
-  beginHistoryTransaction,
-  commitHistoryTransaction,
-} from '../../../src/lib/history/history-store'
-import { useJournalStore } from '../../../src/lib/history/journal/journal-store'
+  useJournalStore,
+  beginJournalTransaction,
+  commitJournalTransaction,
+} from '../../../src/lib/history/journal/journal-store'
 import { enterScope, exitScope } from '../../../src/lib/history/journal/scope'
 import { canvasLens, localCtx, pickUndo } from '../../../src/lib/history/journal/lens'
 import { makeBaseDocument, resetWorkspace, PAGE_ID, RECT_ID, TEXT_ID } from '../fixtures'
 
 beforeEach(() => {
   resetWorkspace()
-  useHistoryStore.getState().clearHistory()
+  useJournalStore.getState().clear()
   setDocument(makeBaseDocument())
   // A defined baseline material, so edits are v0→v1 rather than undefined→v1
   // (assigning undefined is a no-op in the apply layer).
@@ -147,10 +146,10 @@ describe('focus scope — real commit pipeline', () => {
 
   it('a gesture inside the stage is ONE step', async () => {
     enterScope('s1')
-    beginHistoryTransaction('drag', 0)
+    beginJournalTransaction('drag', 0)
     await editMaterial('v1')
     await editMaterial('v2')
-    commitHistoryTransaction('drag')
+    commitJournalTransaction('drag')
 
     await undo() // one press reverts the whole gesture
     expect(materialA()).toBe('v0')

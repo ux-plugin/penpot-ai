@@ -3,7 +3,7 @@ import type { AddObjChange, Change, DelObjChange } from 'penpot-exporter/types'
 import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { applyChanges, undo, redo } from '../../../../src/lib/page-crud'
 import { PEN_CREATE_TX } from '../../../../src/lib/renderer/handlers/draw-path'
 
@@ -29,7 +29,7 @@ function present(): boolean {
 
 describe('pen create: dot bundles with first edge into one undo entry', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [], transaction: null, transactionHolders: new Set() })
+    useJournalStore.getState().clear()
     docProxy.pageMap.clear()
     docProxy.pageMap.set(PAGE_ID, makePage())
     docProxy.currentPageId = PAGE_ID
@@ -45,19 +45,19 @@ describe('pen create: dot bundles with first edge into one undo entry', () => {
     const del: DelObjChange = { type: 'del-obj', id: PATH, pageId: PAGE_ID }
 
     // createPenStartPath: open the transaction, commit the dot → merges in (no frame yet).
-    useHistoryStore.getState().beginTransaction(PEN_CREATE_TX)
+    useJournalStore.getState().begin(PEN_CREATE_TX)
     await applyChanges([add], { undoChanges: [del] })
-    expect(useHistoryStore.getState().undoStack).toHaveLength(0)
+    expect(useJournalStore.getState().txns).toHaveLength(0)
 
     // First edge: commit, then close the transaction → dot + edge = ONE frame.
     await applyChanges([modContent({ edges: 1 })], { undoChanges: [modContent({ nodes: 1 })] })
-    useHistoryStore.getState().commitTransaction(PEN_CREATE_TX)
-    expect(useHistoryStore.getState().undoStack).toHaveLength(1)
+    useJournalStore.getState().commit(PEN_CREATE_TX)
+    expect(useJournalStore.getState().txns).toHaveLength(1)
     expect(present()).toBe(true)
 
     // Second edge: its own frame (per-node undo preserved).
     await applyChanges([modContent({ edges: 2 })], { undoChanges: [modContent({ edges: 1 })] })
-    expect(useHistoryStore.getState().undoStack).toHaveLength(2)
+    expect(useJournalStore.getState().txns).toHaveLength(2)
 
     await undo() // undo 2nd edge — path stays
     expect(present()).toBe(true)
@@ -73,14 +73,14 @@ describe('pen create: dot bundles with first edge into one undo entry', () => {
     const add: AddObjChange = { type: 'add-obj', id: PATH, obj: pathObj(PATH) as never, frameId: ROOT, parentId: ROOT, index: 0, pageId: PAGE_ID }
     const del: DelObjChange = { type: 'del-obj', id: PATH, pageId: PAGE_ID }
 
-    useHistoryStore.getState().beginTransaction(PEN_CREATE_TX)
+    useJournalStore.getState().begin(PEN_CREATE_TX)
     await applyChanges([add], { undoChanges: [del] })
     expect(present()).toBe(true)
 
     // deleteSelfShape's path: discard the transaction, then remove the shape.
-    useHistoryStore.getState().discardTransactions()
+    useJournalStore.getState().discard()
     await applyChanges([del])
     expect(present()).toBe(false)
-    expect(useHistoryStore.getState().undoStack).toHaveLength(0)
+    expect(useJournalStore.getState().txns).toHaveLength(0)
   })
 })

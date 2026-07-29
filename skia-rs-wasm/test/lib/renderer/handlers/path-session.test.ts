@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IndexedPage } from '../../../../src/lib/worker/types'
 import { useWorkspaceStore } from '../../../../src/lib/renderer/store/workspace-store'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { dropDegeneratePathOnExit } from '../../../../src/lib/renderer/handlers/path-session'
 
 const PAGE_ID = 'page1'
@@ -28,7 +28,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 
 describe('dropDegeneratePathOnExit (pathEditing exit cleanup)', () => {
   beforeEach(() => {
-    useHistoryStore.setState({ undoStack: [], redoStack: [], transaction: null, transactionHolders: new Set() })
+    useJournalStore.getState().clear()
     docProxy.currentPageId = PAGE_ID
     docProxy.selectedIds.clear()
     useWorkspaceStore.setState({

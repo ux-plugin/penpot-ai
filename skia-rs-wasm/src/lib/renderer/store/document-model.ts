@@ -10,7 +10,7 @@ import { flattenPageToIndexed, unflattenIndexedPageToPage } from '../../worker/t
 import { useWorkspaceStore } from './workspace-store'
 import { viewport } from '../signals/pointer'
 import { commitChanges } from './commit'
-import { useHistoryStore } from '../../history/history-store'
+import { useJournalStore } from '../../history/journal/journal-store'
 import { enrichPageWithPositionData } from './enrich-position-data'
 import { setSelectedIds } from './document-selection'
 import { docProxy, getActiveOrSinglePageId, type DocumentMeta } from './doc-proxy'
@@ -70,7 +70,7 @@ export class DocumentModel {
   }
 
   async loadDocument(doc: PenpotDocument): Promise<void> {
-    useHistoryStore.getState().clearHistory()
+    useJournalStore.getState().clear()
     const { children, ...meta } = doc
     docProxy.meta = meta as DocumentMeta
     // Tokens live as a runtime TokensLib at the editor layer. Coerce away any
@@ -114,7 +114,7 @@ export class DocumentModel {
   }
 
   async setActivePage(pageId: string): Promise<void> {
-    useHistoryStore.getState().clearHistory()
+    useJournalStore.getState().clear()
     const page = docProxy.pageMap.get(pageId)
     if (!page) return
     const state = useWorkspaceStore.getState()
@@ -149,7 +149,7 @@ export class DocumentModel {
 
   async deletePage(pageId: string): Promise<void> {
     if (!docProxy.meta) return
-    useHistoryStore.getState().clearHistory()
+    useJournalStore.getState().clear()
     const state = useWorkspaceStore.getState()
     docProxy.pageMap.delete(pageId)
     const nextPageId =

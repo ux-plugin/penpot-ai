@@ -14,12 +14,12 @@ import type { PenpotNode } from 'penpot-exporter/types'
 import { redo, setDocument, undo } from '../../../../src/lib/page-crud'
 import { docProxy } from '../../../../src/lib/renderer/store/doc-proxy'
 import { commitNodePartialUpdate } from '../../../../src/lib/renderer/properties/commit-node-properties'
-import { useHistoryStore } from '../../../../src/lib/history/history-store'
+import { useJournalStore } from '../../../../src/lib/history/journal/journal-store'
 import { makeBaseDocument, resetWorkspace, PAGE_ID, RECT_ID } from '../../fixtures'
 
 beforeEach(() => {
   resetWorkspace()
-  useHistoryStore.getState().clearHistory()
+  useJournalStore.getState().clear()
   setDocument(makeBaseDocument())
   ;(docProxy.pageMap.get(PAGE_ID)!.objects[RECT_ID] as { material?: string }).material = 'v0'
 })

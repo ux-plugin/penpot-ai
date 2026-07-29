@@ -5,7 +5,6 @@
 
 import { documentModel } from './renderer/store/document-model'
 import { commitChanges } from './renderer/store/commit'
-import { useHistoryStore } from './history/history-store'
 import { LOCAL_ACTOR, useJournalStore, type Txn } from './history/journal/journal-store'
 import { canvasLens, localCtx, pickRedo, pickUndo, scopeLens, type HistoryLens } from './history/journal/lens'
 import { rebase, resolve } from './history/journal/rebase'
@@ -123,9 +122,8 @@ export async function undo(): Promise<void> {
   // A focus stage's live draft is not in the log until it flushes, so a Cmd+Z
   // moments after typing must commit it first or it would be skipped over.
   await flushFocusPending()
-  // An in-flight gesture becomes the transaction this undo targets. Drives both
-  // stores while the dual-write lasts.
-  useHistoryStore.getState().flushTransactions()
+  // An in-flight gesture becomes the transaction this undo targets.
+  useJournalStore.getState().flush()
 
   const lens = currentLens()
   const target = pickUndo(useJournalStore.getState().txns, lens, localCtx())
@@ -135,7 +133,7 @@ export async function undo(): Promise<void> {
 
 export async function redo(): Promise<void> {
   await flushFocusPending()
-  useHistoryStore.getState().flushTransactions()
+  useJournalStore.getState().flush()
 
   const lens = currentLens()
   // Redo is undo at the opposite chain parity: reverting the undo re-applies

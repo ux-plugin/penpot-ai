@@ -10,7 +10,7 @@
 import { setSelectedIds } from '../store/document-selection'
 import { getActiveOrSinglePageId, getPage } from '../store/doc-proxy'
 import { applyChanges } from '../../page-crud'
-import { useHistoryStore } from '../../history/history-store'
+import { beginJournalTransaction } from '../../history/journal/journal-store'
 import { createBezierPath } from '../node-factory'
 import type { AddObjChange, DelObjChange } from 'penpot-exporter/types'
 
@@ -51,7 +51,7 @@ export async function createPenStartPath(world: Pt): Promise<string | null> {
   // undo entry: undoing the first segment removes the whole shape and never lands
   // on a lone 1-node path. `commitVN` closes it after the first edge; abandoning
   // the dot before any edge (`deleteSelfShape`) discards it, leaving no orphan.
-  useHistoryStore.getState().beginTransaction(PEN_CREATE_TX)
+  beginJournalTransaction(PEN_CREATE_TX)
   const undoChange: DelObjChange = { type: 'del-obj', id: node.id, pageId }
   await applyChanges([change], { undoChanges: [undoChange] })
   setSelectedIds(new Set([node.id]))
