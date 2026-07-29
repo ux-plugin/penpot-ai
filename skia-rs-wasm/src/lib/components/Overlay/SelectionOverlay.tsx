@@ -47,6 +47,7 @@ import { finiteSelectionOverlayRect } from './finite-selection-overlay-rect'
 import { screenRectToWorld } from './screen-rect-to-world'
 import { useViewBoxSync } from './useViewBoxSync'
 import { useImperativeSelectionRect } from './useImperativeSelectionRect'
+import { useImperativeCenterGizmo } from './useImperativeCenterGizmo'
 import {
   CORNER_HANDLE_POSITIONS,
   useImperativeCornerHandles,
@@ -74,9 +75,11 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
   const dropRectRef = useRef<SVGRectElement>(null)
   const dropLineRef = useRef<SVGLineElement>(null)
   const dropGhostRef = useRef<SVGRectElement>(null)
+  const centerGizmoGRef = useRef<SVGGElement>(null)
 
   useViewBoxSync(svgRef, canvasSize)
   useImperativeSelectionRect(hotGRef, selRectRef)
+  useImperativeCenterGizmo(centerGizmoGRef)
   useImperativeCornerHandles(cornerHandlesGRef, cornerRectRefs, cornerOverrideCursorRef, cornerPointerRef)
   useImperativeDropIntent(dropIntentGRef, dropRectRef, dropLineRef, dropGhostRef)
 
@@ -370,6 +373,7 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
           {wasmSelectionRect != null && (
             <CenterGizmo
               center={wasmSelectionRect.center}
+              groupRef={centerGizmoGRef}
               zoom={safeZoom}
               degenerate={isDegenerate}
               allowRotate={showHandles}
