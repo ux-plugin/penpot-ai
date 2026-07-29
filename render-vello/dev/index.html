@@ -20,7 +20,11 @@
       import init from "./pkg/render-vello.js";
 
       init()
-        .then(() => {
+        .then((exports) => {
+          // wasm-bindgen's init resolves to the raw exports object, which carries our
+          // `#[unsafe(no_mangle)]` ABI functions and `memory` alongside its own bindings.
+          // Phase 2's Module-shaped facade is built on exactly this.
+          window.__renderVello = exports;
           document.title = "render-vello: running";
         })
         .catch((err) => {

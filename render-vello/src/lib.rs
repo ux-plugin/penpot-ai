@@ -323,3 +323,12 @@ impl FocusRenderer {
         self.scenes[self.current].status()
     }
 }
+
+// --- ABI probe -------------------------------------------------------------------------
+// Phase 2 (D17) drives this module through render-wasm's C-style ABI behind a `Module`-shaped
+// facade, which only works if wasm-bindgen's rewrite preserves raw `#[no_mangle]` exports
+// alongside its own. This proves it does. Replace with the real entry points.
+#[unsafe(no_mangle)]
+pub extern "C" fn abi_probe(x: i32) -> i32 {
+    x + 1
+}
