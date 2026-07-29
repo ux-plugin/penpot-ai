@@ -81,6 +81,41 @@ export interface Scene3DDocument {
    *  backdrop). Outside edit mode the scene composites transparently over the
    *  document, so this never affects the final/preview render. */
   background?: string | null
+  /** What resizing the container box DOES to the view. Absent ⇒ `'reframe'` (Scale).
+   *  It has no bearing on what is displayed — see `viewWindow`. */
+  resizeMode?: Scene3DResizeMode
+  /** The region of the camera's view currently on screen. Both modes render exactly this,
+   *  which is why switching between them changes nothing. See `scene3d-viewframe`. */
+  viewWindow?: Scene3DViewWindow
+}
+
+/**
+ * What resizing the container box DOES to the view. It says nothing about what is
+ * displayed — that is always `viewWindow`, which is why switching modes is a no-op.
+ *
+ * - `reframe` (shown as "Scale") — the window is left alone and simply re-fitted to the
+ *   new box, so the whole scene stays in view and changes size with it. The default.
+ * - `crop` — the window grows and shrinks WITH the box, so the world keeps a fixed size on
+ *   screen and the moving edge reveals or hides more of it. Covering part of the lens
+ *   rather than changing the lens.
+ */
+export type Scene3DResizeMode = 'reframe' | 'crop'
+
+/**
+ * The region of the camera's view currently on screen, in units of its reference frustum:
+ * the camera is framed on the unit square, so `{x:0, y:0, w:1, h:1}` is the canonical
+ * framing and the window may extend beyond it (which simply widens the lens).
+ *
+ * This — not the box, and not a fixed "film" — is what the renderer draws. Both resize
+ * modes render it identically; they differ only in what a RESIZE does to it. Storing the
+ * view rather than a reference is what makes flipping modes change nothing at all: there
+ * is no per-mode derivation left to disagree about.
+ */
+export interface Scene3DViewWindow {
+  x: number
+  y: number
+  w: number
+  h: number
 }
 
 /**

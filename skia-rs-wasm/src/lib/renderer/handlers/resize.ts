@@ -14,6 +14,7 @@ import { getCurrentPage } from '../store/doc-proxy'
 import { getModifierKeys } from '../store/shortcuts-store'
 import { isSnapPixelGridEnabled } from '../store/workspace-settings'
 import { applyModifiersAndCommit } from './utils'
+import { bakeScenesDuringGesture } from '../three/scene3d-bake'
 import { collectTextGrowTypes } from './reparent-detection'
 import { pinGrowAxis } from '../../components/RightSidePanel/Sections/text-typography'
 import { moduleUseShape, setShapeGrowType } from '../api/shape'
@@ -194,6 +195,12 @@ export function startResizeSelected(
             latestMatrixRef.current,
           ])
           renderer.setWasmModifiers(entries, { pixelPrecision })
+          // A 3D scene composites through its node's image fill, so the modifier just set
+          // above would stretch whatever texture is currently there. Re-render it HERE,
+          // before the Skia frame is requested, so the two agree; deferring it to the 3D
+          // layer's own rAF leaves Skia a frame behind and the content visibly wobbles.
+          // No-op unless a scene is actually mid-resize.
+          bakeScenesDuringGesture(selectedIds)
           renderer.requestRenderFrame()
           wasmSelRect.value = querySelectionRect(renderer, selectedIds)
         })

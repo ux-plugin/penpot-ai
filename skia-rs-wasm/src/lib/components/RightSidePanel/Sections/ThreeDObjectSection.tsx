@@ -35,14 +35,17 @@ import {
   type CameraProjection,
   type Object3DEntry,
   type Scene3DDocument,
+  type Scene3DResizeMode,
   type Vec3,
 } from '@/lib/renderer/three/scene3d-store'
 import {
   commitCameraPatch,
+  commitFitViewToBox,
   commitObjectMaterial,
   commitObjectTransform,
   commitSceneBackground,
   commitSceneEnv,
+  commitSceneResizeMode,
 } from '@/lib/renderer/three/scene3d-commit'
 import { defaultCameraPose } from '@/lib/renderer/three/three-scene'
 import { perspHalfHeightAtDistance } from '@/lib/renderer/three/camera3d'
@@ -56,6 +59,21 @@ const HOME_DIST = Math.hypot(2.4, 1.8, 2.8)
 const PROJECTIONS: { key: CameraProjection; label: string }[] = [
   { key: 'perspective', label: 'Perspective' },
   { key: 'orthographic', label: 'Ortho' },
+]
+
+const RESIZE_MODES: { key: Scene3DResizeMode; label: string; hint: string; blurb: string }[] = [
+  {
+    key: 'reframe',
+    label: 'Scale',
+    hint: 'The whole scene stays in view and changes size with the box',
+    blurb: 'The whole scene stays in view: a bigger box draws it bigger. Nothing enters or leaves.',
+  },
+  {
+    key: 'crop',
+    label: 'Crop',
+    hint: 'Objects keep their size; the box reveals or hides the world around them',
+    blurb: 'Objects keep their size. Resizing reveals or hides the world around them.',
+  },
 ]
 
 const AXES = ['X', 'Y', 'Z'] as const
@@ -101,6 +119,7 @@ export function ThreeDSceneSection({
   editing: boolean
 }) {
   const nodeId = scene.sceneId
+  const resizeMode = scene.resizeMode ?? 'reframe'
   return (
     <>
       <Separator />
@@ -109,6 +128,42 @@ export function ThreeDSceneSection({
 
         {/* Camera projection + FOV live in the camera popover (bottom edit strip), where
             the whole camera list is managed. The inspector keeps only scene environment. */}
+        <div className="space-y-1">
+          <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+            Resize
+          </p>
+          <div className="flex rounded-md bg-muted p-0.5">
+            {RESIZE_MODES.map((m) => (
+              <button
+                key={m.key}
+                type="button"
+                title={m.hint}
+                onClick={() => void commitSceneResizeMode(nodeId, m.key)}
+                className={cn(
+                  'flex-1 rounded px-2 py-1 text-xs',
+                  resizeMode === m.key
+                    ? 'bg-white font-medium text-foreground shadow-sm dark:bg-background'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {RESIZE_MODES.find((m) => m.key === resizeMode)?.blurb}
+          </p>
+          {/* Re-frames the scene on the box as it stands now — the reset for a Scale box left
+              with empty bands, or a Crop box that has wandered off its framing. */}
+          <button
+            type="button"
+            onClick={() => void commitFitViewToBox(nodeId)}
+            className="w-full rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+          >
+            Fit view to box
+          </button>
+        </div>
+
         <div className="space-y-1">
           <Label htmlFor="td-env">Light intensity</Label>
           <NumericField

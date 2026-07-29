@@ -17,6 +17,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { effect } from '@preact/signals-core'
 import { viewport, movePreviewWorldDelta } from '../signals/pointer'
+import { wasmSelectionRect } from '../signals/selection'
 import { worldToScreen, screenToWorld } from '../viewport'
 import { useWorkspaceStore } from '../store/workspace-store'
 import { docProxy, getNode } from '../store/doc-proxy'
@@ -48,6 +49,8 @@ import {
   pickScene3d,
 } from './three-scene'
 import { isOrtho, isPersp, orthoFrustum } from './camera3d'
+import { boxSizeDiffers, sceneViewPlan, type CropPlan } from './scene3d-viewframe'
+import { nodeBoxRect } from './scene3d-crop-resize'
 import { syncCameraHelpers } from './scene3d-camera-helpers'
 import { recenterOnScene } from './scene3d-recenter'
 import { editPlacement, exitFocus, focusViewportRect } from './scene3d-focus'
@@ -133,14 +136,16 @@ function renderSceneIntoBox(
   sw: number,
   sh: number,
   backdrop: string | null,
+  plan: CropPlan | null = null,
 ): void {
-  const aspect = sw / sh
+  // A plan frames the camera on the scene's FIXED frame and takes a sub-rect of it — the
+  // box's own aspect deliberately never reaches the camera, which is what stops content
+  // moving or rescaling out of the box when it's resized. Both resize modes produce one;
+  // they differ only in which sub-rect. Without a plan (focus mode, which renders into the
+  // canvas hole rather than a box) the camera fits what it's given, as it always has.
+  const aspect = plan ? plan.fullW / plan.fullH : sw / sh
   if (isPersp(inst.camera)) {
-    // Plain centered camera: the box's full frame IS the camera. Vertical FOV is fixed,
-    // so the effective FOV depends only on aspect (never the box's absolute size), and
-    // shapes grow naturally on dolly with no shear; resize reframes like a 3D window.
     inst.camera.aspect = aspect
-    inst.camera.clearViewOffset()
   } else {
     // Orthographic: rebuild the frustum from the stored world half-height + aspect each
     // frame (zoom is applied separately by OrbitControls via camera.zoom).
@@ -150,15 +155,33 @@ function renderSceneIntoBox(
     inst.camera.right = f.right
     inst.camera.top = f.top
     inst.camera.bottom = f.bottom
-    inst.camera.updateProjectionMatrix()
+  }
+  // Both setViewOffset and clearViewOffset call updateProjectionMatrix themselves, so the
+  // frustum edits above land with them.
+  if (plan) {
+    inst.camera.setViewOffset(plan.fullW, plan.fullH, plan.offX, plan.offY, plan.subW, plan.subH)
+  } else {
+    inst.camera.clearViewOffset()
   }
 
   inst.scene.background = null // never rely on three's background (it mutates clearColor)
-  renderer.setViewport(glX, glY, sw, sh)
   renderer.setScissor(glX, glY, sw, sh)
   renderer.setScissorTest(true)
   renderer.setClearColor(backdrop ? new THREE.Color(backdrop) : 0x000000, backdrop ? 1 : 0)
   renderer.clear(true, true, false) // colour + depth, scoped to the scissor box
+  // The viewport is the plan's slice of the box; the clear above already covered the whole
+  // box, so whatever the slice doesn't reach stays as the letterbox (only a crop grown past
+  // its frame leaves any). GL's origin is bottom left, so the plan's top-down fy flips.
+  if (plan) {
+    renderer.setViewport(
+      glX + plan.fx * sw,
+      glY + (1 - plan.fy - plan.fh) * sh,
+      plan.fw * sw,
+      plan.fh * sh,
+    )
+  } else {
+    renderer.setViewport(glX, glY, sw, sh)
+  }
   renderer.render(inst.scene, inst.camera)
 }
 
@@ -232,7 +255,12 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     const disposeVp = effect(() => {
       void viewport.value // pan/zoom
       void movePreviewWorldDelta.value // live move-drag translation (and reset on commit)
-      void scene3dResizePreview.value // live resize-drag bounds
+      void scene3dResizePreview.value // live resize-drag bounds (in-edit handles)
+      // The PLACED 2D handles preview through WASM modifiers instead: the shape is scaled
+      // at render time while the document rect stays put, so without this the baked fill
+      // just stretches like a photo for the length of the drag and only snaps back to a
+      // real render on release. This signal ticks every frame of such a gesture.
+      void wasmSelectionRect.value
       void editPlacement.value // in-place ⇄ focus
       void focusViewportRect.value // central-hole bounds (panels resized)
       scheduleDraw()
@@ -642,6 +670,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     const cssW = canvasSizeRef.current.width
     const focused = editingId != null && editPlacement.value === 'focus'
     let selRect: ScreenRect | null = null
+    let selCrop: CropPlan | null = null
     let didBake = false
 
     // The canvas viewport in document coords — drives viewport-clipped baking (render only
@@ -658,6 +687,10 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // The edited scene in focus mode renders into a fixed centred region (decoupled
       // from its placed box); everything else uses the box's on-screen rect.
       let screen: ScreenRect | null = null
+      // The box's world size, for the crop. Focus mode leaves it null on purpose: focus
+      // renders into the canvas hole rather than the box, so there's no box to crop to —
+      // you get the camera's whole frame, which is what "work on it big" should show.
+      let boxWorld: { x: number; y: number; w: number; h: number } | null = null
       if (isEditing && focused) {
         // Focus FILLS the central canvas hole (between the panels) edge-to-edge and
         // resizes with it — never spilling onto the rails/timeline (the panels paint
@@ -669,11 +702,27 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
           const tl = worldToScreen(vp, world.cx - world.w / 2, world.cy - world.h / 2)
           const sw = world.w * vp.zoom
           const sh = world.h * vp.zoom
-          if (sw >= 1 && sh >= 1) screen = { x: tl.x, y: tl.y, w: sw, h: sh }
+          if (sw >= 1 && sh >= 1) {
+            screen = { x: tl.x, y: tl.y, w: sw, h: sh }
+            boxWorld = {
+              x: world.cx - world.w / 2,
+              y: world.cy - world.h / 2,
+              w: world.w,
+              h: world.h,
+            }
+          }
         }
       }
+      // Null for a reframe-mode scene (the overwhelming default) — every path below then
+      // behaves exactly as before. The committed box goes in alongside the live one so a
+      // crop stays pinned WHILE a left/top edge is dragged, not just once it commits.
+      const committedBox = nodeBoxRect(getNode(sceneId))
+      const crop = boxWorld ? sceneViewPlan(doc, boxWorld, committedBox) : null
       if (!screen) continue
-      if (isSel || isEditing) selRect = screen
+      if (isSel || isEditing) {
+        selRect = screen
+        selCrop = crop
+      }
 
       // Path 1: composite a PLACED (non-editing) scene INTO Skia in z-order via its node's
       // image fill, and skip the overlay for it — a 2D shape above the node now occludes
@@ -684,8 +733,15 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       if (isBakeEnabled() && !isEditing) {
         // Bake at the resolution the current zoom needs (crisp when zoomed in), not the
         // node's doc size — a rendered scene is raster, so this is how it matches vector
-        // sharpness at any zoom.
-        if (bakeSceneToNode(sceneId, doc, vp.zoom, visibleWorld)) {
+        // sharpness at any zoom. `liveAspect` keeps a modifier-previewed resize undistorted
+        // (see renderAndUpload); the gesture itself re-bakes in its own frame through
+        // `bakeScenesDuringGesture`, which is what keeps that correction in phase.
+        const liveAspect = boxWorld ? boxWorld.w / boxWorld.h : null
+        // Mid-drag both this and the gesture bake the same scene each frame, so they have to
+        // reach the same verdict on quality — disagree and their cache keys differ, and each
+        // one re-renders the scene the other just did.
+        const interactive = !!boxWorld && !!committedBox && boxSizeDiffers(committedBox, boxWorld)
+        if (bakeSceneToNode(sceneId, doc, vp.zoom, visibleWorld, crop, liveAspect, interactive)) {
           didBake = true
           continue
         }
@@ -700,7 +756,7 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // while this scene is edited (never in the composited/preview render).
       syncCameraHelpers(inst, doc, {
         visible: isEditing,
-        aspect: screen.w / screen.h,
+        aspect: crop ? crop.fullW / crop.fullH : screen.w / screen.h,
         selectedCameraId: scene3dProxy.selectedCameraId,
       })
 
@@ -716,13 +772,18 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // transparent so it composites over the canvas.
       const backdrop = isEditing ? (doc.background ?? SCENE3D_EDIT_BACKDROP) : null
 
-      const liveEdit = isEditing && isBakeEnabled() && isLiveEditEnabled() && !focused
+      // The in-edit handles preview in a signal, NOT through a WASM modifier, so the shape
+      // — and the baked fill drawn into it — doesn't move at all until the drag commits.
+      // Baking would leave the 3D sitting in the old box while its outline resizes around
+      // it, so hand the gesture to the overlay, which reframes against the live bounds.
+      const resizingHere = scene3dResizePreview.value?.sceneId === sceneId
+      const liveEdit = isEditing && isBakeEnabled() && isLiveEditEnabled() && !focused && !resizingHere
       // Only hand the meshes to the bake if the bake actually SUCCEEDED. It can fail for
       // ordinary reasons (no `_update_image_from_texture` in the loaded wasm, an FBO that
       // won't allocate), and hiding them regardless would leave the scene nowhere at all:
       // not in Skia, not on the overlay — an empty box with only the gizmo. On failure we
       // fall through to the overlay, exactly like the placed path above.
-      const bakedEdit = liveEdit && bakeEditingScene(sceneId, doc, inst, vp.zoom, backdrop)
+      const bakedEdit = liveEdit && bakeEditingScene(sceneId, doc, inst, vp.zoom, backdrop, crop)
       if (bakedEdit) {
         didBake = true
         const restore: boolean[] = []
@@ -730,14 +791,15 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
           restore.push(o.visible)
           o.visible = false
         }
-        renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, null)
+        renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, null, crop)
         let i = 0
         for (const o of inst.objects.values()) o.visible = restore[i++]
       } else {
-        // Classic full overlay (focus mode, bake/live-edit off, or a bake that failed).
-        // Clear any stale baked fill so Skia doesn't draw it under the overlay.
-        if (isEditing && isBakeEnabled()) unbakeNodeFill(sceneId)
-        renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, backdrop)
+        // Classic full overlay (focus mode, a resize gesture, bake/live-edit off, or a bake
+        // that failed). Clear any stale baked fill so Skia doesn't draw it under the overlay
+        // — during a resize that fill is exactly what the modifier would be stretching.
+        if (isBakeEnabled()) unbakeNodeFill(sceneId)
+        renderSceneIntoBox(renderer, inst, glX, glY, screen.w, screen.h, backdrop, crop)
       }
     }
 
@@ -748,22 +810,35 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
     if (didBake) useWorkspaceStore.getState().renderer?.requestRenderFrame()
 
     selRectRef.current = selRect
-    positionEditSurface(selRect, editingId != null)
+    positionEditSurface(selRect, editingId != null, selCrop)
     // Locator + resize are in-place affordances: focus centres the scene (no off-screen)
     // and resizes the render region, not the placed box — so hide them while focused.
     positionOffscreenLocator(selRect, editingId != null && !focused)
     positionResizeBox(selRect, editingId != null && !focused)
   }
 
-  function positionEditSurface(rect: ScreenRect | null, editing: boolean) {
+  function positionEditSurface(rect: ScreenRect | null, editing: boolean, crop: CropPlan | null) {
     const surface = editSurfaceRef.current
     if (!surface) return
     if (rect && editing) {
+      // The surface covers what's actually RENDERED, not the whole box — with a crop those
+      // differ once the box has grown past its frame. Everything that turns a pointer into
+      // a ray measures against this element (our own pick, and TransformControls' internal
+      // maths), so insetting it here keeps clicks and gizmo drags aligned to the render
+      // without any of them having to know about cropping.
+      const r = crop
+        ? {
+            x: rect.x + crop.fx * rect.w,
+            y: rect.y + crop.fy * rect.h,
+            w: crop.fw * rect.w,
+            h: crop.fh * rect.h,
+          }
+        : rect
       surface.style.display = 'block'
-      surface.style.left = `${rect.x}px`
-      surface.style.top = `${rect.y}px`
-      surface.style.width = `${rect.w}px`
-      surface.style.height = `${rect.h}px`
+      surface.style.left = `${r.x}px`
+      surface.style.top = `${r.y}px`
+      surface.style.width = `${r.w}px`
+      surface.style.height = `${r.h}px`
     } else {
       surface.style.display = 'none'
     }

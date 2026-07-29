@@ -29,7 +29,9 @@ import { allocBytes, freeBytes, writeUUIDToDataView } from '../utils'
 import { uuidToU32Tuple } from '../types'
 import { buildSceneInstance, applyDocToInstance, pickScene3d } from './three-scene'
 import { isPersp, isOrtho, orthoFrustum } from './camera3d'
-import { activeCamera, type Scene3DDocument, type Scene3DInstance } from './scene3d-store'
+import { activeCamera, scene3dProxy, type Scene3DDocument, type Scene3DInstance } from './scene3d-store'
+import { boxSizeDiffers, sceneViewPlan, type BoxRect, type CropPlan } from './scene3d-viewframe'
+import { nodeBoxRect } from './scene3d-crop-resize'
 
 const FILL_U8_SIZE = 164 // matches api/constants FILL_U8_SIZE
 
@@ -97,9 +99,6 @@ function superSize(w: number, h: number): [number, number, number] {
   const samples = f > 1.01 ? 0 : BAKE_SAMPLES
   return [Math.round(w * f), Math.round(h * f), samples]
 }
-
-/** Per-scene snapshot of the last bake plan — call window.__bakeDebug() zoomed in. */
-const bakeDebug = new Map<string, unknown>()
 
 /** The visible world rectangle (canvas viewport in document coords), for viewport clipping. */
 export interface VisibleWorld {
@@ -206,6 +205,15 @@ function getBakeRenderer(m: WasmModule): THREE.WebGLRenderer | null {
 }
 
 const MAX_BAKE_PX = 4096 // FBO cap: safe on effectively all GL implementations
+
+/**
+ * Much lower ceiling while a gesture is previewing a resize. The drag re-renders the scene
+ * every frame INSIDE the gesture's own frame (see `bakeScenesDuringGesture`), and a lit
+ * scene at 4096² with MSAA is far too much work to fit there — the drag goes to treacle.
+ * Interaction wants a responsive picture, not a perfect one; the full-resolution bake
+ * happens once when the gesture commits.
+ */
+const INTERACTIVE_BAKE_PX = 1024
 const warnedSize = new Set<string>()
 
 /**
@@ -234,7 +242,7 @@ function clearSamplerBindings(r: THREE.WebGLRenderer): void {
  * MAX_BAKE_PX (memory guard — a raster ceiling, not a vector limit). Guards non-finite /
  * non-positive dims (which make three's texImage2D throw "out of range" → zero-size FBO).
  */
-function bakeResolution(sceneId: string, zoom: number): { w: number; h: number } | null {
+function bakeResolution(sceneId: string, zoom: number, maxPx = MAX_BAKE_PX): { w: number; h: number } | null {
   const node = getNode(sceneId) as { width?: number; height?: number } | undefined
   const w0 = node?.width
   const h0 = node?.height
@@ -255,7 +263,7 @@ function bakeResolution(sceneId: string, zoom: number): { w: number; h: number }
   // overshot by up to 1.41×, which is what produced the quilt.)
   const want = Math.max(1e-3, (zoom > 0 ? zoom : 1) * dpr)
   let mult = Math.pow(2, Math.round(Math.log2(want) * 12) / 12)
-  mult = Math.min(mult, MAX_BAKE_PX / Math.max(w0 as number, h0 as number)) // cap (memory)
+  mult = Math.min(mult, maxPx / Math.max(w0 as number, h0 as number)) // cap (memory, or interaction)
   const pw = Math.max(16, Math.round((w0 as number) * mult))
   const ph = Math.max(16, Math.round((h0 as number) * mult))
   return { w: pw, h: ph }
@@ -315,11 +323,28 @@ function renderAndUpload(
   h: number,
   clip: Clip | null,
   backdrop: string | null = null,
+  crop: CropPlan | null = null,
+  liveAspect: number | null = null,
 ): boolean {
   // Frame the camera. Without a clip the whole node fills the FBO (aspect = w/h). With a
   // clip the camera frames the WHOLE node (aspect = node aspect) and setViewOffset crops it
   // to the on-screen slice — same view/perspective, all the FBO's pixels on what's visible.
-  const aspect = clip ? clip.fullW / clip.fullH : w / h
+  // A CROP-mode scene instead frames its own fixed view frame and crops that, so the box's
+  // size never reaches the camera; it letterboxes into a sub-rect of the FBO below.
+  //
+  // `liveAspect` is the box's aspect RIGHT NOW, which during a handle drag is not the
+  // document's: the shape is previewed by a WASM modifier that scales the committed rect —
+  // and with it our fill — at render time. The FBO's own shape only affects sharpness, so
+  // framing on the live aspect pre-distorts the render by exactly the inverse and the
+  // modifier's stretch cancels it. This is only sound because `bakeScenesDuringGesture`
+  // runs in the SAME frame as the modifier it's correcting for; a frame of skew here shows
+  // up as a per-frame squash, i.e. a wobble. A crop needs no correction — its camera is
+  // pinned to the frame and the plan's fractions are already the live box's.
+  const aspect = crop
+    ? crop.fullW / crop.fullH
+    : clip
+      ? clip.fullW / clip.fullH
+      : (liveAspect ?? w / h)
   const cam = st.inst.camera
   if (isPersp(cam)) {
     cam.aspect = aspect
@@ -331,7 +356,8 @@ function renderAndUpload(
     cam.top = f.top
     cam.bottom = f.bottom
   }
-  if (clip) cam.setViewOffset(clip.fullW, clip.fullH, clip.offX, clip.offY, clip.subW, clip.subH)
+  if (crop) cam.setViewOffset(crop.fullW, crop.fullH, crop.offX, crop.offY, crop.subW, crop.subH)
+  else if (clip) cam.setViewOffset(clip.fullW, clip.fullH, clip.offX, clip.offY, clip.subW, clip.subH)
   else cam.clearViewOffset()
   cam.updateProjectionMatrix()
   // A placed scene bakes transparent so it composites over what's behind the node. The
@@ -346,10 +372,17 @@ function renderAndUpload(
   clearSamplerBindings(r)
   const [sw, sh] = superSize(w, h)
   r.setRenderTarget(st.rt)
-  r.setViewport(0, 0, sw, sh) // render the scene super-sized (SSAA); encode pass box-averages down to w×h
   r.setScissorTest(false)
   r.setClearColor(0x000000, 0)
-  r.clear(true, true, false)
+  r.clear(true, true, false) // whole RT — anything the viewport below misses is letterbox
+  // Render the scene super-sized (SSAA); the encode pass box-averages down to w×h. A crop
+  // covers only its slice of the RT: the FBO maps 1:1 onto the node, so the plan's box
+  // fractions are the RT's, flipped for GL's bottom-left origin.
+  if (crop) {
+    r.setViewport(crop.fx * sw, (1 - crop.fy - crop.fh) * sh, crop.fw * sw, crop.fh * sh)
+  } else {
+    r.setViewport(0, 0, sw, sh)
+  }
   r.render(st.inst.scene, cam)
   r.setRenderTarget(null)
 
@@ -408,7 +441,12 @@ function bakePrep(): { m: WasmModule; r: THREE.WebGLRenderer } | null {
  * on screen (or clipping is off) → whole-node bake (cacheable during pan). When it's zoomed
  * past the viewport → render only the on-screen slice at native resolution (≤ viewport).
  */
-function computeBakePlan(sceneId: string, zoom: number, visible: VisibleWorld | undefined): { w: number; h: number; clip: Clip | null } | null {
+function computeBakePlan(
+  sceneId: string,
+  zoom: number,
+  visible: VisibleWorld | undefined,
+  maxPx = MAX_BAKE_PX,
+): { w: number; h: number; clip: Clip | null } | null {
   const node = getNode(sceneId) as { x?: number; y?: number; width?: number; height?: number } | undefined
   const nx = node?.x
   const ny = node?.y
@@ -417,18 +455,8 @@ function computeBakePlan(sceneId: string, zoom: number, visible: VisibleWorld | 
   if (![nx, ny, nw, nh].every((v) => Number.isFinite(v)) || (nw as number) <= 0 || (nh as number) <= 0) return null
 
   const wholeNode = (): { w: number; h: number; clip: null } | null => {
-    const size = bakeResolution(sceneId, zoom)
-    if (!size) return null
-    const dprW = window.devicePixelRatio || 1
-    bakeDebug.set(sceneId, {
-      path: 'whole-node',
-      node: { x: nx, y: ny, w: nw, h: nh },
-      zoom,
-      dpr: dprW,
-      onScreenNodePx: [Math.round((nw as number) * zoom * dprW), Math.round((nh as number) * zoom * dprW)],
-      fbo: [size.w, size.h],
-    })
-    return { w: size.w, h: size.h, clip: null }
+    const size = bakeResolution(sceneId, zoom, maxPx)
+    return size ? { w: size.w, h: size.h, clip: null } : null
   }
   if (!viewportClipEnabled || !visible) return wholeNode()
 
@@ -453,16 +481,6 @@ function computeBakePlan(sceneId: string, zoom: number, visible: VisibleWorld | 
   pw = Math.max(16, Math.round(pw * scale))
   ph = Math.max(16, Math.round(ph * scale))
   const clip: Clip = { fullW: w0, fullH: h0, offX: sl - x, offY: st - y, subW: sw, subH: sh, dest: [sl, st, sr, sb] }
-  bakeDebug.set(sceneId, {
-    node: { x, y, w: w0, h: h0 },
-    zoom,
-    dpr,
-    visible,
-    slice: { l: sl, t: st, r: sr, b: sb, w: sw, h: sh },
-    onScreenSlicePx: [Math.round(sw * zoom * dpr), Math.round(sh * zoom * dpr)],
-    fbo: [pw, ph],
-    clip,
-  })
   return { w: pw, h: ph, clip }
 }
 
@@ -471,10 +489,27 @@ function computeBakePlan(sceneId: string, zoom: number, visible: VisibleWorld | 
  * node's fill. Call once per frame per placed scene; then request a Skia render. `visible`
  * (canvas viewport in doc coords) drives viewport clipping when enabled.
  */
-export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: number, visible?: VisibleWorld): boolean {
+export function bakeSceneToNode(
+  sceneId: string,
+  doc: Scene3DDocument,
+  zoom: number,
+  visible?: VisibleWorld,
+  crop: CropPlan | null = null,
+  liveAspect: number | null = null,
+  interactive = false,
+): boolean {
   const p = bakePrep()
   if (!p) return false
-  const plan = computeBakePlan(sceneId, zoom, visible)
+  // A crop already owns the camera's view offset, and the viewport clip drives the same
+  // dial — composing the two is its own slice, so a crop-mode scene bakes whole-node.
+  // `interactive` must be decided the same way by every caller in a given frame, or their
+  // cache keys diverge and each one re-renders the scene for the other.
+  const plan = computeBakePlan(
+    sceneId,
+    zoom,
+    crop ? undefined : visible,
+    interactive ? INTERACTIVE_BAKE_PX : MAX_BAKE_PX,
+  )
   if (!plan) return false
   try {
     const st = ensureBakeState(p.r, sceneId, doc, plan.w, plan.h)
@@ -484,7 +519,10 @@ export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: num
     // during pan/move (only position moves — Skia re-composites the fill), while a clipped
     // bake re-renders as the visible slice changes. Re-assert the fill (a node mod-obj may
     // have cleared it) with the SAME dest, and return without touching three.
-    const key = `${plan.w}x${plan.h}|${plan.clip ? plan.clip.dest.join(',') : 'full'}|${JSON.stringify(doc)}`
+    const cropKey = crop ? `${crop.fx},${crop.fy},${crop.fw},${crop.fh},${crop.offX},${crop.offY}` : 'nocrop'
+    // liveAspect is in the key so a drag that only changes the box's PROPORTIONS still
+    // re-renders — the FBO size alone doesn't move until the gesture commits.
+    const key = `${plan.w}x${plan.h}|${plan.clip ? plan.clip.dest.join(',') : 'full'}|${cropKey}|${liveAspect ?? 'na'}|${JSON.stringify(doc)}`
     if (st.contentKey === key && st.texId >= 0) {
       setNodeImageFill(p.m, sceneId, st.imageId, st.w, st.h, st.lastDest ?? null)
       st.filled = true
@@ -495,7 +533,7 @@ export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: num
     // its own state (three, esp. PMREM, must re-bind or it draws with Skia's buffers).
     p.r.resetState()
     applyDocToInstance(st.inst, doc)
-    const ok = renderAndUpload(p.m, p.r, sceneId, st, plan.w, plan.h, plan.clip)
+    const ok = renderAndUpload(p.m, p.r, sceneId, st, plan.w, plan.h, plan.clip, null, crop, liveAspect)
     if (ok) st.contentKey = key
     return ok
   } catch (e) {
@@ -503,6 +541,70 @@ export function bakeSceneToNode(sceneId: string, doc: Scene3DDocument, zoom: num
     warnBakeFail(sceneId, e)
     return false
   }
+}
+
+/**
+ * Is this node the gesture's target, or inside it? A resized GROUP previews its children
+ * through constraint propagation, so a scene being stretched need not be selected itself.
+ * Walks the parent chain with a depth guard so a malformed cycle can't hang a drag frame.
+ */
+function isUnderGesture(nodeId: string, gestureIds: ReadonlySet<string>): boolean {
+  let id: string | undefined = nodeId
+  for (let depth = 0; id && depth < 64; depth++) {
+    if (gestureIds.has(id)) return true
+    id = (getNode(id) as { parentId?: string } | undefined)?.parentId
+  }
+  return false
+}
+
+/**
+ * Re-bake every scene whose box a gesture is currently previewing — IN the caller's frame.
+ *
+ * A 2D handle drag scales the shape through a WASM modifier: the document rect stays put and
+ * the modifier stretches the shape, our image fill included, at render time. Our own redraw
+ * is only SCHEDULED, so left to itself Skia composites the frame with the texture baked for
+ * the PREVIOUS frame's box — one frame of size delta, applied as a squash that changes every
+ * frame. That's a visible wobble, and no amount of correction fixes it from the wrong frame.
+ *
+ * So the gesture calls this directly, after setting its modifiers and before asking Skia to
+ * render. Texture and modifier then come from the same frame, the `liveAspect` pre-distortion
+ * is exact, and the scene keeps compositing in z-order for the whole drag.
+ *
+ * It scans all scenes rather than the selection: a resized GROUP previews its children
+ * through constraint propagation, so a scene being stretched need not be selected itself.
+ * Only scenes whose live box actually disagrees with the committed one do any work.
+ */
+export function bakeScenesDuringGesture(gestureIds: ReadonlySet<string>): void {
+  if (scene3dProxy.scenes.size === 0 || gestureIds.size === 0) return
+  const wsRenderer = useWorkspaceStore.getState().renderer
+  if (!wsRenderer) return
+  const zoom = viewport.value?.zoom ?? 1
+
+  for (const [sceneId, sceneSnap] of scene3dProxy.scenes) {
+    // Only scenes the gesture can actually be moving. `getSelectionRect` is a WASM call
+    // that recomputes a bounding box, so asking it about every scene in the document on
+    // every frame of a drag is exactly the sort of cost that makes a gesture feel heavy.
+    // A parent walk over the proxy is free by comparison.
+    if (!isUnderGesture(sceneId, gestureIds)) continue
+    const doc = sceneSnap as Scene3DDocument
+    const sel = wsRenderer.getSelectionRect?.([sceneId])
+    if (!sel || !(sel.width > 0) || !(sel.height > 0)) continue
+    const committed = nodeBoxRect(getNode(sceneId))
+    if (!committed) continue
+    const live: BoxRect = {
+      x: sel.center.x - sel.width / 2,
+      y: sel.center.y - sel.height / 2,
+      w: sel.width,
+      h: sel.height,
+    }
+    // Same size ⇒ no resize in flight (a MOVE only shifts the fill, which composites fine).
+    if (!boxSizeDiffers(committed, live)) continue
+
+    const crop = sceneViewPlan(doc, live, committed)
+    bakeSceneToNode(sceneId, doc, zoom, undefined, crop, live.w / live.h, true)
+  }
+  // No render is requested here: the caller asks for the Skia frame on the very next line,
+  // and that ordering — fill first, frame second — is the entire point of this function.
 }
 
 /**
@@ -518,6 +620,7 @@ export function bakeEditingScene(
   srcInst: Scene3DInstance,
   zoom: number,
   backdrop: string | null = null,
+  crop: CropPlan | null = null,
 ): boolean {
   const p = bakePrep()
   if (!p) return false
@@ -542,7 +645,7 @@ export function bakeEditingScene(
         dst.scale.copy(src.scale)
       }
     }
-    return renderAndUpload(p.m, p.r, sceneId, st, size.w, size.h, null, backdrop)
+    return renderAndUpload(p.m, p.r, sceneId, st, size.w, size.h, null, backdrop, crop)
   } catch (e) {
     p.r.resetState()
     warnBakeFail(sceneId, e)
@@ -673,8 +776,13 @@ function clearNodeFill(nodeId: string): void {
   ;(m as unknown as { _clear_shape_fills: () => void })._clear_shape_fills()
 }
 
-// Live toggles for verification against a working render target (e.g. localhost:5175).
-;(window as unknown as Record<string, unknown>).__scene3dBake = setBakeEnabled
-;(window as unknown as Record<string, unknown>).__scene3dLiveEdit = setLiveEditEnabled
-;(window as unknown as Record<string, unknown>).__scene3dViewportClip = setViewportClipEnabled
-;(window as unknown as Record<string, unknown>).__bakeDebug = () => Object.fromEntries(bakeDebug)
+// Kill switches, for falling back when a render target misbehaves — and the only way to
+// reach the viewport clip, which is still off by default.
+// Guarded: the 2D resize handler imports this module to keep the bake in step with its
+// modifiers, which drags it into test files that run without a DOM.
+if (typeof window !== 'undefined') {
+  const w = window as unknown as Record<string, unknown>
+  w.__scene3dBake = setBakeEnabled
+  w.__scene3dLiveEdit = setLiveEditEnabled
+  w.__scene3dViewportClip = setViewportClipEnabled
+}
