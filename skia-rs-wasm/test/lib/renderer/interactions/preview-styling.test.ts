@@ -56,16 +56,27 @@ describe('nodesToPresentation — shape fill → inline style', () => {
 })
 
 describe('emit-react — style prop', () => {
-  it('emits an inline style when the PNode has one', () => {
+  it("the design's value wins over the browser reset beneath it", () => {
     const root: PNode = { nodeId: 'btn', role: 'button', text: 'Add', style: { background: '#e11d48' } }
     const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
-    expect(code).toContain('style={{ "background": "#e11d48" }}')
+    // reset lands first, the design overwrites the same key — one entry, design's
+    expect(code).toContain('"background": "#e11d48"')
+    expect(code).not.toContain('"background": "none"')
   })
 
-  it('omits style when there is none', () => {
+  it('neutralizes what the browser would paint on a button', () => {
     const root: PNode = { nodeId: 'btn', role: 'button', text: 'Add' }
     const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
-    expect(code).not.toContain('style=')
+    // a bare <button> would otherwise arrive with a grey face, padding and a border
+    expect(code).toContain('"appearance": "none"')
+    expect(code).toContain('"padding": "0"')
+    expect(code).toContain('"font": "inherit"')
+  })
+
+  it('gives a plain container only the box-sizing base, no invented look', () => {
+    const root: PNode = { nodeId: 'box', role: 'container' }
+    const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
+    expect(code).toContain('style={{ "boxSizing": "border-box" }}')
   })
 })
 
@@ -86,6 +97,7 @@ describe('emit-react — style-prop bindings (wire fill to state)', () => {
     const root: PNode = { nodeId: 'inp', role: 'field' }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })
     expect(code).toContain('value={query}')
-    expect(code).not.toContain('style=')
+    // it is a prop, not a style entry — the only style present is the reset
+    expect(code).not.toContain('"value":')
   })
 })

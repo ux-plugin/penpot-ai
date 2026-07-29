@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState, createElement, type ReactNode } from 'react'
 import type { PageInteractions, Interaction } from '../ir'
-import { STYLE_PROPS, VOID_TAGS, tagForRole, inputTypeFor, type PNode } from '../compile/emit-react'
+import { STYLE_PROPS, VOID_TAGS, tagForRole, inputTypeFor, resetFor, type PNode } from '../compile/emit-react'
 import { parse, evaluate } from '../expression'
 import {
   initRuntime,
@@ -143,7 +143,9 @@ function renderElement(
   key?: number | string,
 ): ReactNode {
   const props: Record<string, unknown> = { 'data-node-id': node.nodeId }
-  const style: Record<string, unknown> = { ...(node.style ?? {}) }
+  // Browser defaults neutralized first, then the design's own values — the
+  // preview and the emitted component apply the same precedence.
+  const style: Record<string, unknown> = { ...resetFor(node.role), ...(node.style ?? {}) }
   if (key !== undefined) {
     props.key = key
     // Only true repeater instances carry data-instance-key (anchor contract);

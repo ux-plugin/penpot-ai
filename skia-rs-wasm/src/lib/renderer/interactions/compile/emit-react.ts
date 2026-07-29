@@ -66,6 +66,63 @@ const ROLE_TAG: Record<NodeRole, string> = {
 export const tagForRole = (role: NodeRole): string => ROLE_TAG[role] ?? 'div'
 
 /**
+ * Undo what the BROWSER paints, so the only source of appearance is the design.
+ *
+ * Semantic elements are worth having — a real <button> is focusable, keyboard
+ * activatable and announced correctly — but they arrive dressed: user-agent
+ * styles give a button a grey face and padding, an input a border, a list
+ * bullets and indentation. None of that is in the design, so a generated
+ * component that inherits it looks like a web page rather than like the file it
+ * came from.
+ *
+ * These land BENEATH the design's own styles, so anything the designer actually
+ * specified still wins. Values are `inherit` rather than concrete, so an
+ * unspecified property falls through to the surrounding app instead of picking
+ * up a default we invented.
+ *
+ * The focus outline is deliberately NOT reset — removing it is an accessibility
+ * regression, and it is not something the design is expressing.
+ *
+ * React Native needs none of this: its components start unstyled. That is why
+ * this table lives in the web target next to ROLE_TAG.
+ */
+const BASE_RESET: Record<string, string> = {
+  // the design's width is the OUTER box; without this a border would inflate it
+  boxSizing: 'border-box',
+}
+
+const ROLE_RESET: Partial<Record<NodeRole, Record<string, string>>> = {
+  button: {
+    appearance: 'none',
+    background: 'none',
+    border: '0',
+    padding: '0',
+    margin: '0',
+    font: 'inherit',
+    color: 'inherit',
+    textAlign: 'inherit',
+    cursor: 'pointer',
+  },
+  field: {
+    appearance: 'none',
+    background: 'none',
+    border: '0',
+    padding: '0',
+    margin: '0',
+    font: 'inherit',
+    color: 'inherit',
+  },
+  list: { listStyle: 'none', margin: '0', padding: '0' },
+  item: { listStyle: 'none' },
+  link: { color: 'inherit', textDecoration: 'none' },
+}
+
+/** Neutralizing styles for a role, to be merged under the design's own. */
+export function resetFor(role: NodeRole): Record<string, string> {
+  return { ...BASE_RESET, ...(ROLE_RESET[role] ?? {}) }
+}
+
+/**
  * A field's control type comes from the TYPE OF THE CELL IT EDITS — wire a node
  * to a boolean and it is a checkbox. No enum to keep in sync with the variable.
  * Returns undefined when the default (text) applies.
@@ -258,8 +315,10 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
     props.push(`key={${keyExpr}}`, instanceKeyAttr(keyExpr))
   }
 
-  // style starts from the static fill; CSS-prop bindings override it (as expressions).
+  // Style order is the precedence order: the browser's defaults are neutralized
+  // first, then the design's own values, then any bound expression.
   const styleMap = new Map<string, string>()
+  for (const [k, v] of Object.entries(resetFor(node.role))) styleMap.set(k, JSON.stringify(v))
   if (node.style) for (const [k, v] of Object.entries(node.style)) styleMap.set(k, JSON.stringify(v))
 
   let textChild: string | undefined

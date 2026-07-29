@@ -41,22 +41,14 @@ import { StatePanel } from './StatePanel'
 const ROOT_UUID = '00000000-0000-0000-0000-000000000000'
 
 /**
- * Default theme for the preview's deterministic baseline elements. A shape's own
- * fill (carried by nodesToPresentation as an inline style) overrides these, and
- * AI-authored JSX will replace them entirely later — this just keeps the bare
- * baseline from looking like raw HTML.
+ * The preview surface contributes NOTHING visual. Appearance comes from the
+ * design alone (via PNode.style) and the browser's own defaults are neutralized
+ * per role by `resetFor` — this used to be a hardcoded theme (indigo buttons,
+ * grey list rows) that made every preview look like a web page rather than like
+ * the file it came from.
  */
 const PREVIEW_CSS = `
-[data-preview-root] { color: #1f2937; font: 14px/1.5 system-ui, -apple-system, sans-serif; }
-[data-preview-root] > div { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
-[data-preview-root] button { background: #4f46e5; color: #fff; border: 0; padding: 8px 16px; border-radius: 8px; font: inherit; font-weight: 500; cursor: pointer; }
-[data-preview-root] button:hover { filter: brightness(0.93); }
-[data-preview-root] button:disabled { opacity: 0.5; cursor: not-allowed; }
-[data-preview-root] ul { list-style: none; margin: 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 6px; }
-[data-preview-root] li { background: #f3f4f6; padding: 8px 12px; border-radius: 6px; }
-[data-preview-root] input { padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; }
-[data-preview-root] h1, [data-preview-root] h2 { margin: 0; font-weight: 600; }
-[data-preview-root] a { color: #4f46e5; }
+[data-preview-root] { font: inherit; color: inherit; }
 `
 
 /** Turn a layer or page name into a valid PascalCase React component identifier. */
