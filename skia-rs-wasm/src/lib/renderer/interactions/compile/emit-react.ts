@@ -51,75 +51,83 @@ export interface SlotPresentation {
  */
 export type NodeRole = 'container' | 'text' | 'button' | 'field' | 'list' | 'item' | 'image' | 'link'
 
-/** The web target's vocabulary. A react-native target supplies its own table. */
+/**
+ * The web target's vocabulary. Almost everything is a BOX: a semantic element is
+ * used only where it does work a div cannot. `<input>` is the one hard case —
+ * a div is not typeable, and contentEditable has no value semantics, no
+ * onChange, no control of the mobile keyboard and broken IME, so two-way
+ * binding would have nothing to bind to.
+ *
+ * Everything else — buttons, links, lists — is a div whose behaviour is emitted
+ * explicitly (see `a11yPropsFor`), so appearance comes from the design alone
+ * with no user-agent styling to undo. A react-native target supplies its own
+ * table, and the split lands in the same place there: View/Text everywhere,
+ * Pressable and TextInput for these two.
+ */
 const ROLE_TAG: Record<NodeRole, string> = {
   container: 'div',
   text: 'span',
-  button: 'button',
+  button: 'div',
   field: 'input',
-  list: 'ul',
-  item: 'li',
+  list: 'div',
+  item: 'div',
   image: 'img',
-  link: 'a',
+  link: 'div',
 }
+
+/** ARIA role carrying the semantics the element used to imply. */
+const ARIA_ROLE: Partial<Record<NodeRole, string>> = {
+  button: 'button',
+  link: 'link',
+  list: 'list',
+  item: 'listitem',
+}
+
+/** Roles that must be reachable and activatable from the keyboard. */
+const ACTIVATABLE = new Set<NodeRole>(['button', 'link'])
 
 export const tagForRole = (role: NodeRole): string => ROLE_TAG[role] ?? 'div'
 
 /**
- * Undo what the BROWSER paints, so the only source of appearance is the design.
+ * Styles the platform needs that the DESIGN does not express. These land beneath
+ * the design's own values, so anything the designer specified still wins.
  *
- * Semantic elements are worth having — a real <button> is focusable, keyboard
- * activatable and announced correctly — but they arrive dressed: user-agent
- * styles give a button a grey face and padding, an input a border, a list
- * bullets and indentation. None of that is in the design, so a generated
- * component that inherits it looks like a web page rather than like the file it
- * came from.
- *
- * These land BENEATH the design's own styles, so anything the designer actually
- * specified still wins. Values are `inherit` rather than concrete, so an
- * unspecified property falls through to the surrounding app instead of picking
- * up a default we invented.
- *
- * The focus outline is deliberately NOT reset — removing it is an accessibility
- * regression, and it is not something the design is expressing.
- *
- * React Native needs none of this: its components start unstyled. That is why
- * this table lives in the web target next to ROLE_TAG.
+ * Now that nearly everything is a box there is almost nothing to undo — the one
+ * exception is `<input>`, which is the only element we still emit that arrives
+ * dressed. `cursor` is not styling the design is withholding; it is interaction
+ * feedback a box cannot express.
  */
-const BASE_RESET: Record<string, string> = {
-  // the design's width is the OUTER box; without this a border would inflate it
-  boxSizing: 'border-box',
+export function baseStyleFor(role: NodeRole): Record<string, string> {
+  // the design's width means the OUTER box, so a border must not inflate it
+  const base: Record<string, string> = { boxSizing: 'border-box' }
+  if (ACTIVATABLE.has(role)) base.cursor = 'pointer'
+  if (role === 'field') {
+    Object.assign(base, {
+      appearance: 'none',
+      background: 'none',
+      border: '0',
+      padding: '0',
+      margin: '0',
+      font: 'inherit',
+      color: 'inherit',
+    })
+  }
+  return base
 }
 
-const ROLE_RESET: Partial<Record<NodeRole, Record<string, string>>> = {
-  button: {
-    appearance: 'none',
-    background: 'none',
-    border: '0',
-    padding: '0',
-    margin: '0',
-    font: 'inherit',
-    color: 'inherit',
-    textAlign: 'inherit',
-    cursor: 'pointer',
-  },
-  field: {
-    appearance: 'none',
-    background: 'none',
-    border: '0',
-    padding: '0',
-    margin: '0',
-    font: 'inherit',
-    color: 'inherit',
-  },
-  list: { listStyle: 'none', margin: '0', padding: '0' },
-  item: { listStyle: 'none' },
-  link: { color: 'inherit', textDecoration: 'none' },
-}
-
-/** Neutralizing styles for a role, to be merged under the design's own. */
-export function resetFor(role: NodeRole): Record<string, string> {
-  return { ...BASE_RESET, ...(ROLE_RESET[role] ?? {}) }
+/**
+ * The behaviour a semantic element would have provided, emitted explicitly.
+ * A div with an onClick is not a button: it is not a tab stop, it is not
+ * activatable by Enter or Space, and a screen reader does not announce it. These
+ * props put that back. `activatable` is false when nothing is authored on the
+ * node, so a decorative box is not announced as a broken button.
+ */
+export function a11yPropsFor(role: NodeRole, activatable: boolean): Record<string, string | number> {
+  const props: Record<string, string | number> = {}
+  const aria = ARIA_ROLE[role]
+  if (aria) props.role = aria
+  if (ACTIVATABLE.has(role) && activatable) props.tabIndex = 0
+  return props
 }
 
 /**
@@ -134,6 +142,12 @@ export function inputTypeFor(ir: PageInteractions, nodeId: NodeId): string | und
   if (type === 'boolean') return 'checkbox'
   if (type === 'number') return 'number'
   return undefined
+}
+
+/** Keys that activate each role — Space scrolls the page on a link, so Enter only. */
+export const ACTIVATION_KEYS: Partial<Record<NodeRole, string[]>> = {
+  button: ['Enter', ' '],
+  link: ['Enter'],
 }
 
 /** Minimal presentation node (stand-in for parsed AI JSX). */
@@ -280,6 +294,14 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
 
   const imports = hooks.length ? `import { useState } from 'react'\n\n` : ''
 
+  // Emitted once, and only when a box-button or box-link exists: keyboard
+  // activation is what a real <button> was giving us for free.
+  const jsxNeedsActivate = /onKeyDown=\{onActivate\(/
+  const helper =
+    '/** Enter/Space activation for role="button" and role="link" boxes. */\n' +
+    'const onActivate = (fn: () => void, keys: string[]) => (e: { key: string; preventDefault: () => void }) => {\n' +
+    '  if (keys.includes(e.key)) {\n    e.preventDefault()\n    fn()\n  }\n}\n\n'
+
   const bodyLines: string[] = [...hooks, ...derived]
   if (handlers.length) bodyLines.push('', ...handlers)
 
@@ -292,7 +314,8 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
     .map((l) => '    ' + l)
     .join('\n')
 
-  return `${imports}export function ${name}() {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
+  const prelude = jsxNeedsActivate.test(jsx) ? helper : ''
+  return `${imports}${prelude}export function ${name}() {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
 }
 
 function emitNode(node: PNode, ir: PageInteractions): string {
@@ -318,7 +341,7 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
   // Style order is the precedence order: the browser's defaults are neutralized
   // first, then the design's own values, then any bound expression.
   const styleMap = new Map<string, string>()
-  for (const [k, v] of Object.entries(resetFor(node.role))) styleMap.set(k, JSON.stringify(v))
+  for (const [k, v] of Object.entries(baseStyleFor(node.role))) styleMap.set(k, JSON.stringify(v))
   if (node.style) for (const [k, v] of Object.entries(node.style)) styleMap.set(k, JSON.stringify(v))
 
   let textChild: string | undefined
@@ -340,11 +363,22 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
     props.push(`${CHANGE_EVENT.prop}={(e) => ${setterName(e.target)}(${CHANGE_EVENT.read})}`)
   }
 
+  let pressHandler: string | undefined
   for (const it of ir.interactions) {
     if (it.on.node !== node.nodeId) continue
     const ev = EVENT_PROP[it.on.trigger.type]
-    if (ev) props.push(`${ev}={${handlerName(it.on.node, it.on.trigger.type)}}`)
+    if (!ev) continue
+    const fn = handlerName(it.on.node, it.on.trigger.type)
+    if (it.on.trigger.type === 'press') pressHandler = fn
+    props.push(`${ev}={${fn}}`)
   }
+
+  // A div with an onClick is not a button — put back what the element gave us.
+  for (const [k, v] of Object.entries(a11yPropsFor(node.role, !!pressHandler))) {
+    props.push(typeof v === 'number' ? `${k}={${v}}` : `${k}="${v}"`)
+  }
+  const keys = ACTIVATION_KEYS[node.role]
+  if (keys && pressHandler) props.push(`onKeyDown={onActivate(${pressHandler}, ${JSON.stringify(keys)})}`)
 
   if (styleMap.size) {
     const entries = [...styleMap].map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')

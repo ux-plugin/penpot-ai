@@ -8,7 +8,16 @@
 
 import { useEffect, useMemo, useState, createElement, type ReactNode } from 'react'
 import type { PageInteractions, Interaction } from '../ir'
-import { STYLE_PROPS, VOID_TAGS, tagForRole, inputTypeFor, resetFor, type PNode } from '../compile/emit-react'
+import {
+  STYLE_PROPS,
+  VOID_TAGS,
+  tagForRole,
+  inputTypeFor,
+  baseStyleFor,
+  a11yPropsFor,
+  ACTIVATION_KEYS,
+  type PNode,
+} from '../compile/emit-react'
 import { parse, evaluate } from '../expression'
 import {
   initRuntime,
@@ -145,7 +154,7 @@ function renderElement(
   const props: Record<string, unknown> = { 'data-node-id': node.nodeId }
   // Browser defaults neutralized first, then the design's own values — the
   // preview and the emitted component apply the same precedence.
-  const style: Record<string, unknown> = { ...resetFor(node.role), ...(node.style ?? {}) }
+  const style: Record<string, unknown> = { ...baseStyleFor(node.role), ...(node.style ?? {}) }
   if (key !== undefined) {
     props.key = key
     // Only true repeater instances carry data-instance-key (anchor contract);
@@ -172,10 +181,25 @@ function renderElement(
     props.onChange = (ev: { target: { value: unknown } }) => edit(e.node, e.target, ev.target.value)
   }
 
+  let press: Interaction | undefined
   for (const it of ir.interactions) {
     if (it.on.node !== node.nodeId) continue
     const ev = EVENT_PROP[it.on.trigger.type]
-    if (ev) props[ev] = () => fire(it)
+    if (!ev) continue
+    if (it.on.trigger.type === 'press') press = it
+    props[ev] = () => fire(it)
+  }
+
+  // The preview must behave like the emitted code: a box-button is a tab stop,
+  // announces itself, and activates on Enter/Space.
+  Object.assign(props, a11yPropsFor(node.role, !!press))
+  const keys = ACTIVATION_KEYS[node.role]
+  if (keys && press) {
+    props.onKeyDown = (e: { key: string; preventDefault: () => void }) => {
+      if (!keys.includes(e.key)) return
+      e.preventDefault()
+      fire(press)
+    }
   }
 
   let children: ReactNode

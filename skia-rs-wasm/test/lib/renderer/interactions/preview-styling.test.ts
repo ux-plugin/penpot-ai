@@ -64,13 +64,30 @@ describe('emit-react — style prop', () => {
     expect(code).not.toContain('"background": "none"')
   })
 
-  it('neutralizes what the browser would paint on a button', () => {
+  it('emits a button as a plain box — nothing to neutralize', () => {
     const root: PNode = { nodeId: 'btn', role: 'button', text: 'Add' }
     const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
-    // a bare <button> would otherwise arrive with a grey face, padding and a border
-    expect(code).toContain('"appearance": "none"')
-    expect(code).toContain('"padding": "0"')
-    expect(code).toContain('"font": "inherit"')
+    expect(code).toContain('<div')
+    expect(code).not.toContain('<button')
+    // no user-agent styling arrives, so there is no reset to carry
+    expect(code).not.toContain('"appearance": "none"')
+    expect(code).toContain('"cursor": "pointer"') // affordance the design cannot express
+  })
+
+  it('puts back, in code, what the <button> element used to provide', () => {
+    const ir = emptyPageInteractions()
+    ir.interactions.push({ id: 'i1', on: { node: 'btn', trigger: { type: 'press' } }, do: [] })
+    const code = emitReactComponent(ir, { nodeId: 'btn', role: 'button', text: 'Add' }, { componentName: 'Screen' })
+    expect(code).toContain('role="button"') // announced
+    expect(code).toContain('tabIndex={0}') // reachable
+    expect(code).toContain('onKeyDown={onActivate(handle_btn_press, ["Enter"," "])}') // activatable
+    expect(code).toContain('const onActivate =') // helper emitted once
+  })
+
+  it('does not announce a decorative box as a broken button', () => {
+    const code = emitReactComponent(emptyPageInteractions(), { nodeId: 'btn', role: 'button' }, { componentName: 'Screen' })
+    expect(code).not.toContain('tabIndex')
+    expect(code).not.toContain('onActivate')
   })
 
   it('gives a plain container only the box-sizing base, no invented look', () => {
