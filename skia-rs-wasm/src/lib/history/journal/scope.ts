@@ -7,13 +7,19 @@
  * carrying that tag, and its own lens reads them back at full granularity. The
  * commit path gains no branch at all.
  *
- * On exit the session still collapses to ONE canvas step, which is what today's
- * `foldFrames` does — but the mechanism differs in a way that matters. The
- * children are not discarded; they stay in the log (it is append-only, nothing
- * can be removed) and simply become unreachable, because re-entering a stage
- * mints a fresh scope tag and no lens queries the old one. That is
- * behaviour-identical to discarding them, and it leaves the sub-history in
- * place for the Phase 3 history tab to surface later.
+ * On exit the session collapses to ONE canvas step. The children are not
+ * discarded, though: they stay in the log (it is append-only) and remain
+ * reachable, because **a scope tag names the SUBJECT, not the visit** —
+ * `shader-material:<shapeId>`, not a session counter. Re-entering a shape's
+ * shader resumes its history, so undo and redo continue where they left off
+ * instead of facing an empty session.
+ *
+ * That is a deliberate departure from the old `FocusBuffer`, which discarded
+ * its contents on exit and started blank on re-entry. The old behaviour meant
+ * exiting, undoing from the canvas, and stepping back in left redo with nothing
+ * to reach — the entry to redo was canvas-scoped and invisible from inside.
+ * Per-subject tags fix that, and match what the Phase 3 tab wants anyway: a
+ * shape's shader has *a* history, not one per visit.
  *
  * The collapse entry restates its children's ops rather than referencing them,
  * so a single canvas undo inverts the whole session with no special casing in
@@ -47,23 +53,27 @@ export function exitScope(): Txn | undefined {
   const to = state.head()
   const live = liveness(state.txns)
 
-  // Only transactions that ASSERT an effect and are still standing.
+  // What the session NET changed — which is not simply "everything still live".
   //
-  // Both halves are load-bearing. Liveness alone is not enough: undoing inside
-  // a session appends revert transactions, which are themselves live, and
-  // concatenating those with the edits yields the session's net *state* rather
-  // than its net *change* — inverting it would then replay the session instead
-  // of reverting it. Filtering to even chain depth (the same parity rule undo
-  // uses) keeps the edits and drops the reverts, so a session fully undone from
-  // inside collapses to nothing at all.
+  // Undoing inside a session appends revert transactions that are themselves
+  // live, so concatenating all live entries yields the session's net *state*
+  // rather than its net *change*; inverting that would replay the session
+  // instead of reverting it. An edit and the undo that cancelled it must both
+  // drop out.
+  //
+  // Parity alone handles that, but not a session that reverts a PREVIOUS
+  // session's work — possible since scope tags are per subject and re-entering
+  // resumes the same tag. Such a revert is odd-depth, yet its target sits
+  // before this session began, so nothing here cancels it and its effect is
+  // real. Hence: keep a live entry when it asserts an effect, OR when it
+  // retracts something from outside this session's range.
+  const inRange = (seq: number): boolean => seq > frame.fromSeq
   const ops = state.txns
-    .filter(
-      (t) =>
-        t.seq > frame.fromSeq &&
-        t.scope === frame.tag &&
-        live.get(t.seq) === true &&
-        chainDepth(state.txns, t) % 2 === 0,
-    )
+    .filter((t) => {
+      if (!inRange(t.seq) || t.scope !== frame.tag || live.get(t.seq) !== true) return false
+      if (chainDepth(state.txns, t) % 2 === 0) return true
+      return t.undoes !== undefined && !inRange(t.undoes)
+    })
     .flatMap((t) => t.ops)
 
   if (ops.length === 0) return undefined

@@ -95,6 +95,21 @@ export function liveness(txns: readonly Txn[]): Map<number, boolean> {
     const undoers = undoersOf.get(t.seq) ?? []
     live.set(t.seq, !undoers.some((u) => live.get(u.seq) === true))
   }
+
+  // A collapse entry restates what its children already applied, so the two
+  // representations must not disagree about what stands. Reverting the collapse
+  // reverts the children's effect, but nothing points at the children — so
+  // without this they stay "live" while the document no longer reflects them,
+  // and a scope lens reading them concludes work is present that is actually
+  // gone. Newest-first so a collapse inside a collapse settles before its own
+  // range is considered.
+  for (let i = txns.length - 1; i >= 0; i -= 1) {
+    const c = txns[i]
+    if (!c.collapses || live.get(c.seq) === true) continue
+    for (const t of txns) {
+      if (t.seq > c.collapses.from && t.seq <= c.collapses.to) live.set(t.seq, false)
+    }
+  }
   return live
 }
 

@@ -26,15 +26,12 @@ import { enterScope, exitScope } from '../../history/journal/scope'
 
 const SCENE3D_STAGE_ID = 'scene-3d'
 
-/** Per-open session counter — each 3D edit session labels its one folded entry. */
-let SCENE3D_SESSION_SEQ = 0
-
 // A fixed title (not the scene's name) on purpose: the machine can switch which
 // scene is edited without leaving 3D-edit (scene cycling), and re-opening the
 // session to refresh a per-scene title would fire the old session's `onExit` and
 // tear edit mode down. A constant is always correct and matches the shader
 // stage's generic header.
-function openScene3dSession(exitMachine: () => void): void {
+function openScene3dSession(exitMachine: () => void, sceneId: string): void {
   // Open the stage FIRST so a replaced session's `onExit` (folding ITS buffer)
   // runs before we open ours; then open the 3D sub-history buffer.
   openFocusStage({
@@ -48,7 +45,12 @@ function openScene3dSession(exitMachine: () => void): void {
       exitScope()
     },
   })
-  enterScope(`scene-3d:${(SCENE3D_SESSION_SEQ += 1)}`)
+  // Per subject, like the shader stage, so re-entering a scene resumes its
+  // history. Note the machine can cycle which scene is edited WITHOUT
+  // re-opening the session (see the note above), in which case later edits land
+  // under the scene that opened it — acceptable while cycling is rare, but the
+  // reason to revisit this if it stops being.
+  enterScope(`scene-3d:${sceneId}`)
 }
 
 /**
@@ -67,7 +69,7 @@ export function useScene3dFocusStageBinding(): void {
     }
     const sync = (editingId: string | null) => {
       const stageOpen = focusStage.peek()?.id === SCENE3D_STAGE_ID
-      if (editingId && !stageOpen) openScene3dSession(exitMachine)
+      if (editingId && !stageOpen) openScene3dSession(exitMachine, editingId)
       else if (!editingId && stageOpen) closeFocusStage()
     }
 

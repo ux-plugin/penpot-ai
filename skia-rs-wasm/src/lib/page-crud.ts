@@ -136,9 +136,21 @@ export async function redo(): Promise<void> {
   useJournalStore.getState().flush()
 
   const lens = currentLens()
+  const txns = useJournalStore.getState().txns
+  const ctx = localCtx()
   // Redo is undo at the opposite chain parity: reverting the undo re-applies
   // what it took away. There is no redo stack to pop.
-  const target = pickRedo(useJournalStore.getState().txns, lens, localCtx())
+  let target = pickRedo(txns, lens, ctx)
+
+  // Redo — and ONLY redo — falls back to the canvas when the open scope has
+  // nothing of its own. Exiting a session, undoing it from the canvas, then
+  // stepping back in leaves the entry to redo canvas-scoped and therefore
+  // invisible from inside, so the press would otherwise do nothing at all.
+  //
+  // Undo deliberately does not fall back: reaching out of a session to revert
+  // canvas work is a surprise, whereas restoring what you just undid is not.
+  if (!target && lens !== canvasLens) target = pickRedo(txns, canvasLens, ctx)
+
   if (!target) return
   await revert(target, lens)
 }

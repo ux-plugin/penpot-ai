@@ -12,15 +12,13 @@ import { ShaderMaterialStage } from './ShaderMaterialStage'
 import { ShaderUniformsRail } from './ShaderUniformsRail'
 import { ShaderConsole } from './ShaderConsole'
 
-/** Per-open session counter — each focus session is its own undo group. */
-let SHADER_SESSION_SEQ = 0
-
 export function openShaderStage(nodeId: string, material: Material): void {
-  // The session owns its scope tag: its commits are tagged with it, its own
-  // lens reads them back step by step, and it labels the single collapsed entry
-  // left on the canvas on exit. A fresh tag per open is what makes re-entering
-  // start clean — no lens queries a closed session's tag.
-  const groupId = `shader-material:${(SHADER_SESSION_SEQ += 1)}`
+  // The scope tag names the SUBJECT, not the visit — so re-opening this shape's
+  // shader resumes its history rather than starting blank, and undo/redo carry
+  // on where they left off. Its commits are tagged with it, its own lens reads
+  // them back step by step, and it labels the collapsed entry left on the
+  // canvas on exit.
+  const scope = `shader-material:${nodeId}`
   // Open the stage first so a replaced session's `onExit` (collapsing its
   // scope) runs BEFORE we enter the fresh one below.
   openFocusStage({
@@ -31,5 +29,5 @@ export function openShaderStage(nodeId: string, material: Material): void {
     bottom: <ShaderConsole />,
     onExit: exitScope,
   })
-  enterScope(groupId)
+  enterScope(scope)
 }
