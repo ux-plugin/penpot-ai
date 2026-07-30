@@ -181,6 +181,24 @@ describe('focus scope — real commit pipeline', () => {
   })
 
   /**
+   * The reach in the test above is exactly one entry wide. A redo pressed in a
+   * stage whose subject has no history must not restore whatever the canvas
+   * happened to undo last — the first version of that fallback went through the
+   * whole `canvasLens` and brought back an unrelated shape's rename.
+   */
+  it('redo inside a scope does not resurrect unrelated canvas work', async () => {
+    await editCanvas('renamed-on-canvas')
+    await undo()
+    expect(nameB()).not.toBe('renamed-on-canvas')
+
+    enterScope('shader:rect') // this subject has no history at all
+    await redo()
+    expect(nameB()).not.toBe('renamed-on-canvas')
+    expect(materialA()).toBe('v0')
+    exitScope()
+  })
+
+  /**
    * A visit that reverts an EARLIER visit's work still has a net effect, so it
    * must leave a canvas entry. The revert is odd-depth and would be dropped by
    * a parity-only collapse filter, but its target predates this visit, so

@@ -76,6 +76,38 @@ export function scopeLens(scope: ScopeTag, conflict: ConflictPolicy = 'refuse'):
 }
 
 /**
+ * The one canvas entry a focus session is allowed to reach: the undo of *its
+ * own* collapse.
+ *
+ * Exiting a session, undoing it from the canvas, then stepping back in leaves
+ * the session's own entries dead — correctly, the edits really were reverted —
+ * so the scope lens has nothing to redo, and the only transaction that can
+ * restore the work is canvas-scoped. Falling back to the whole `canvasLens` for
+ * that is far too wide: it picks the newest live undo from *any* subject, so a
+ * redo pressed inside a shader stage can resurrect a rename on an unrelated
+ * shape. This narrows the reach to undos whose target is a collapse tagged with
+ * this scope — which is precisely the session coming back.
+ *
+ * It needs the log to resolve `undoes` back to a collapse, so it is a factory
+ * over `txns` rather than a constant. Building the seq set once keeps the
+ * filter O(1) per entry.
+ */
+export function collapseRedoLens(tag: ScopeTag, txns: readonly Txn[]): HistoryLens {
+  const mine = new Set(
+    txns.filter((t) => t.collapses !== undefined && t.groupId === tag).map((t) => t.seq),
+  )
+  return {
+    id: `${tag}→canvas`,
+    filter: (txn, ctx) =>
+      txn.actor === ctx.actor &&
+      txn.scope === CANVAS_SCOPE &&
+      txn.undoes !== undefined &&
+      mine.has(txn.undoes),
+    conflict: 'refuse',
+  }
+}
+
+/**
  * Derive liveness for every transaction in one backward pass. See the module
  * header — a transaction is live unless something live undoes it, and undoers
  * always sit later in the log, so newest-first resolves without recursion.

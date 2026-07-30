@@ -6,7 +6,15 @@
 import { documentModel } from './renderer/store/document-model'
 import { commitChanges } from './renderer/store/commit'
 import { LOCAL_ACTOR, useJournalStore, type Txn } from './history/journal/journal-store'
-import { canvasLens, localCtx, pickRedo, pickUndo, scopeLens, type HistoryLens } from './history/journal/lens'
+import {
+  canvasLens,
+  collapseRedoLens,
+  localCtx,
+  pickRedo,
+  pickUndo,
+  scopeLens,
+  type HistoryLens,
+} from './history/journal/lens'
 import { rebase, resolve } from './history/journal/rebase'
 import { invertAll } from './history/journal/op'
 import { toChanges } from './history/journal/codec'
@@ -142,14 +150,19 @@ export async function redo(): Promise<void> {
   // what it took away. There is no redo stack to pop.
   let target = pickRedo(txns, lens, ctx)
 
-  // Redo — and ONLY redo — falls back to the canvas when the open scope has
-  // nothing of its own. Exiting a session, undoing it from the canvas, then
-  // stepping back in leaves the entry to redo canvas-scoped and therefore
-  // invisible from inside, so the press would otherwise do nothing at all.
+  // Redo — and ONLY redo — reaches outside the scope when it has nothing of its
+  // own. Exiting a session, undoing it from the canvas, then stepping back in
+  // leaves the entry to redo canvas-scoped and therefore invisible from inside,
+  // so the press would otherwise do nothing at all.
   //
-  // Undo deliberately does not fall back: reaching out of a session to revert
-  // canvas work is a surprise, whereas restoring what you just undid is not.
-  if (!target && lens !== canvasLens) target = pickRedo(txns, canvasLens, ctx)
+  // The reach is deliberately one entry wide: the undo of THIS session's own
+  // collapse, never the canvas at large. Falling back to `canvasLens` let a redo
+  // pressed inside a shader stage restore an unrelated shape's rename.
+  //
+  // Undo does not reach out at all: reverting canvas work from inside a session
+  // is a surprise, whereas restoring what you just undid is not.
+  const tag = activeScope()
+  if (!target && tag !== undefined) target = pickRedo(txns, collapseRedoLens(tag, txns), ctx)
 
   if (!target) return
   await revert(target, lens)
