@@ -16,6 +16,7 @@
 
 import type { Uuid } from 'penpot-exporter/types'
 import type { DocumentMeta } from '../renderer/store/doc-proxy'
+import type { Material } from '../renderer/api/material'
 import { emptyTokensLib } from '../tokens/types'
 import type { Token, TokenSet, TokenTheme, TokensLib } from '../tokens/types'
 
@@ -73,6 +74,38 @@ export interface SetActiveThemesChange {
   activeThemes: Uuid[]
 }
 
+// ── Shader material variants ─────────────────────────────────────────────────
+
+/**
+ * A material is a document-level object that shapes point at by id, not a field
+ * buried on one shape. Three things follow, and each of them is why it moved:
+ *
+ * - It has an identity, so its version history belongs to the material rather
+ *   than to whichever shape happened to carry it.
+ * - It can be used by several shapes, like the paint and text styles that
+ *   already live at this level.
+ * - Its parts become separate fields, so editing two of them commutes. As one
+ *   opaque field on a node, every edit stored the whole shader twice.
+ *
+ * It is deliberately not a node: it never appears in the layer tree, and the
+ * only way to see it is to open the shape's shader.
+ */
+export interface AddMaterialChange {
+  type: 'add-material'
+  materialId: Uuid
+  material: Material
+}
+export interface ModMaterialChange {
+  type: 'mod-material'
+  materialId: Uuid
+  /** Whole-value replace; the caller has already merged. */
+  material: Material
+}
+export interface DelMaterialChange {
+  type: 'del-material'
+  materialId: Uuid
+}
+
 export type DocMetaChange =
   | AddTokenChange
   | ModTokenChange
@@ -84,6 +117,17 @@ export type DocMetaChange =
   | ModThemeChange
   | DelThemeChange
   | SetActiveThemesChange
+  | AddMaterialChange
+  | ModMaterialChange
+  | DelMaterialChange
+
+/** Immutable helper for the material arm. */
+function withMaterials(
+  meta: DocumentMeta,
+  fn: (materials: Record<Uuid, Material>) => Record<Uuid, Material>,
+): DocumentMeta {
+  return { ...meta, materials: fn(meta.materials ?? {}) }
+}
 
 // Immutable helpers for the token arm — never mutate the input lib/set.
 function withTokens(meta: DocumentMeta, fn: (lib: TokensLib) => TokensLib): DocumentMeta {
@@ -165,6 +209,19 @@ export function processDocMetaChange(
       }))
     case 'set-active-themes':
       return withTokens(meta, (lib) => ({ ...lib, activeThemes: [...change.activeThemes] }))
+    case 'add-material':
+      return withMaterials(meta, (m) => ({ ...m, [change.materialId]: change.material }))
+    case 'mod-material':
+      return withMaterials(meta, (m) => ({ ...m, [change.materialId]: change.material }))
+    case 'del-material':
+      // Shapes pointing at it are left pointing at nothing rather than being
+      // rewritten: the inverse of this change has to restore the material
+      // alone, and a shape whose material is missing simply renders unshaded.
+      return withMaterials(meta, (m) => {
+        const next = { ...m }
+        delete next[change.materialId]
+        return next
+      })
     default: {
       const _exhaustive: never = change
       void _exhaustive

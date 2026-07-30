@@ -2,11 +2,21 @@ import { proxy } from 'valtio'
 import { proxyMap, proxySet } from 'valtio/utils'
 import type { PenpotDocument } from 'penpot-exporter/types'
 import type { TokensLib } from '../../tokens/types'
+import type { Material } from '../api/material'
 import type { IndexedNode, IndexedPage } from '../../worker/types'
 
 // `tokens` is a runtime `TokensLib` at the editor layer, not the serialized DTCG
 // container the exporter declares — the resolver/CRUD operate on the runtime shape.
-export type DocumentMeta = Omit<PenpotDocument, 'children' | 'tokens'> & { tokens?: TokensLib }
+/**
+ * The vendored `PenpotDocument` is extended locally rather than in the exporter
+ * submodule — `tokens` already does this, and `materials` follows it. A material
+ * is document-level because shapes point at one by id and several may share it,
+ * exactly like `paintStyles`.
+ */
+export type DocumentMeta = Omit<PenpotDocument, 'children' | 'tokens'> & {
+  tokens?: TokensLib
+  materials?: Record<string, Material>
+}
 
 export interface DocState {
   meta: DocumentMeta | null
