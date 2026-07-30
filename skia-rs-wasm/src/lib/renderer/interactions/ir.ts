@@ -51,14 +51,19 @@ export type ValueType =
   | 'any'
   | { collection: ValueType }
 
-/** A piece of app state. Lowers to a `source` producing a Signal. */
+/**
+ * A piece of app state the DESIGN owns. Lowers to a `source` producing a Signal.
+ *
+ * "Owns" is the whole distinction from `Port`: a variable's value starts at
+ * `initial` and only ever changes because an interaction on this page changed it.
+ * A value that comes from anywhere else is a Port, not a variable with a flag —
+ * one concept, one representation.
+ */
 export interface Variable {
   id: string
   type: ValueType
   scope: Scope
   initial: Json
-  /** `'port'` => generated as a typed prop/callback at the business-logic seam. */
-  source: 'local' | 'port'
   persist?: Persistence
 }
 
@@ -68,11 +73,32 @@ export interface Derived {
   expr: Expr
 }
 
-/** Typed boundary to frontend business logic. */
+/**
+ * A value the design does NOT own — the typed seam to whatever is outside it.
+ *
+ * This is the only way a design says "I don't decide this." `dir: 'in'` is a
+ * value arriving (a product to display, a list to repeat over); `dir: 'out'` is
+ * this design reporting something happened (`port.call`). On web that is a prop
+ * and a callback prop; the shape is deliberately platform-neutral.
+ *
+ * `sample` and `description` are not decoration — they are the point. What gets
+ * handed over is the DESIGN, so the design has to carry enough for whoever
+ * receives it to bind the real thing: an example of the shape expected, and what
+ * the value means. Without them an in-port is an untyped hole, and a placeholder
+ * baked into the presentation is indistinguishable from deliberate copy — the
+ * design's own knowledge of what it doesn't know is destroyed on the way out.
+ */
 export interface Port {
   id: string
   dir: 'in' | 'out'
   type: ValueType
+  /**
+   * A stand-in the preview runs on and the handover carries as the expected
+   * shape. For an out-port this is an example payload.
+   */
+  sample?: Json
+  /** What this value means, in the designer's words. Prose, for a human or a model. */
+  description?: string
 }
 
 // ---- triggers & actions (open unions; schemas live in ./catalog) ----
@@ -214,16 +240,19 @@ export interface PageInteractions {
  * the TARGET, not of the node doing the editing:
  *   - a `derived` value is a function of other state — writing to it is a
  *     category error, not a missing feature;
- *   - a port-sourced variable is owned by business logic, and generated
- *     components do not take props yet (see `emitReactComponent`), so there is
- *     nowhere for the write to go.
+ *   - an in-port is owned by whoever supplies it, and `Editable` writes back
+ *     into the same cell it reads — a port has no cell here to write into. The
+ *     controlled-port form (read the port, send each change back out an
+ *     out-port) is a real gap, not a hidden feature: it needs a trigger that
+ *     carries the new value as a payload, and no trigger carries a payload yet.
+ *     Displaying a port and sending a CLICK back out both work today.
  */
 export function editableError(ir: PageInteractions, target: Ref): string | null {
   if (!target.trim()) return 'Pick a value to edit'
   if (ir.derived.some((d) => d.id === target)) return `${target} is a formula — computed, not editable`
-  const variable = ir.variables.find((v) => v.id === target)
-  if (!variable) return `${target} is not a variable on this page`
-  if (variable.source === 'port') return `${target} comes from business logic — not editable yet`
+  const port = ir.ports.find((p) => p.id === target)
+  if (port) return `${target} comes from outside — bind it, then send changes back out`
+  if (!ir.variables.some((v) => v.id === target)) return `${target} is not a variable on this page`
   return null
 }
 

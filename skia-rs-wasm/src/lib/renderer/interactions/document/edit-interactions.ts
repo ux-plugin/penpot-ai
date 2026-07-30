@@ -9,7 +9,7 @@
  * their index within an interaction's `do[]`.
  */
 
-import type { PageInteractions, Interaction, Action, Variable, ValueType, Json, Repeater, Binding, Editable } from '../ir'
+import type { PageInteractions, Interaction, Action, Variable, ValueType, Json, Port, Repeater, Binding, Editable } from '../ir'
 
 function mapInteraction(
   ir: PageInteractions,
@@ -103,16 +103,16 @@ export function setActionParam(
 // ---- page variables (page-scoped state the actions read/write) ----
 
 export function makeCollectionVariable(id: string): Variable {
-  return { id, type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' }
+  return { id, type: { collection: 'object' }, scope: 'page', initial: [] }
 }
 
 export function makeScalarVariable(id: string, type: ValueType = 'any', initial: Json = null): Variable {
-  return { id, type, scope: 'page', initial, source: 'local' }
+  return { id, type, scope: 'page', initial }
 }
 
-/** Add a variable if its id is free (no-op otherwise). */
+/** Add a variable if its name is free across all cells (no-op otherwise). */
 export function addVariable(ir: PageInteractions, variable: Variable): PageInteractions {
-  if (ir.variables.some((v) => v.id === variable.id)) return ir
+  if (isNameTaken(ir, variable.id)) return ir
   return { ...ir, variables: [...ir.variables, variable] }
 }
 
@@ -154,6 +154,73 @@ export function setVariableType(ir: PageInteractions, id: string, type: ValueTyp
   return mapVariable(ir, id, (v) => ({ ...v, type, initial: defaultInitial(type) }))
 }
 
+// ---- ports (values the design does NOT own) ----
+//
+// Ports share one namespace with variables and derived values (see
+// ./addressing buildScope), so every add here checks all three: two cells with
+// the same name would make an expression ambiguous.
+
+/** Whether `id` is already taken by a variable, formula, or port. */
+export function isNameTaken(ir: PageInteractions, id: string): boolean {
+  return (
+    ir.variables.some((v) => v.id === id) ||
+    ir.derived.some((d) => d.id === id) ||
+    ir.ports.some((p) => p.id === id)
+  )
+}
+
+/**
+ * Declare a value that comes from outside. `sample` seeds it so the preview has
+ * something to run on and the handover carries the expected shape; an in-port
+ * with no sample renders as nothing, which is indistinguishable from a bug.
+ */
+export function addPort(ir: PageInteractions, id: string, dir: 'in' | 'out', type: ValueType = 'string'): PageInteractions {
+  if (!id || isNameTaken(ir, id)) return ir
+  const port: Port = { id, dir, type }
+  if (dir === 'in') port.sample = defaultInitial(type)
+  return { ...ir, ports: [...ir.ports, port] }
+}
+
+export function removePort(ir: PageInteractions, id: string): PageInteractions {
+  return { ...ir, ports: ir.ports.filter((p) => p.id !== id) }
+}
+
+function mapPort(ir: PageInteractions, id: string, fn: (p: Port) => Port): PageInteractions {
+  return { ...ir, ports: ir.ports.map((p) => (p.id === id ? fn(p) : p)) }
+}
+
+/** Retype a port, resetting its sample to that type's default. */
+export function setPortType(ir: PageInteractions, id: string, type: ValueType): PageInteractions {
+  return mapPort(ir, id, (p) => ({ ...p, type, sample: p.dir === 'in' ? defaultInitial(type) : p.sample }))
+}
+
+/**
+ * Flip a port's direction. The sample follows the direction, because it means
+ * different things on each side: the value arriving, or an example of what goes out.
+ */
+export function setPortDir(ir: PageInteractions, id: string, dir: 'in' | 'out'): PageInteractions {
+  return mapPort(ir, id, (p) => {
+    const next: Port = { ...p, dir }
+    if (dir === 'in') next.sample = p.sample ?? defaultInitial(p.type)
+    else delete next.sample
+    return next
+  })
+}
+
+export function setPortSample(ir: PageInteractions, id: string, sample: Json): PageInteractions {
+  return mapPort(ir, id, (p) => ({ ...p, sample }))
+}
+
+/** Set (or, with a blank string, clear) the prose description. */
+export function setPortDescription(ir: PageInteractions, id: string, description: string): PageInteractions {
+  return mapPort(ir, id, (p) => {
+    const next: Port = { ...p }
+    if (description.trim()) next.description = description.trim()
+    else delete next.description
+    return next
+  })
+}
+
 // ---- derived values (read-only formulas over other state) ----
 //
 // `Derived { id, expr }` already exists in the IR and is evaluated by both the
@@ -161,7 +228,7 @@ export function setVariableType(ir: PageInteractions, id: string, type: ValueTyp
 // reducers just make it authorable.
 
 export function addDerived(ir: PageInteractions, id: string, expr = ''): PageInteractions {
-  if (!id || ir.derived.some((d) => d.id === id) || ir.variables.some((v) => v.id === id)) return ir
+  if (!id || isNameTaken(ir, id)) return ir
   return { ...ir, derived: [...ir.derived, { id, expr }] }
 }
 

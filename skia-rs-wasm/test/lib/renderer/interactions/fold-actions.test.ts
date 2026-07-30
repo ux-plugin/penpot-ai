@@ -20,7 +20,7 @@ import type { Action } from '../../../../src/lib/renderer/interactions/ir'
 
 beforeAll(() => initDefaultCatalog())
 
-const emptyRt = (store: Record<string, unknown>): RuntimeState => ({ store, nodeStates: {}, slotViews: {} })
+const emptyRt = (store: Record<string, unknown>): RuntimeState => ({ store, nodeStates: {}, slotViews: {}, emitted: [] })
 
 /** Run an action through the preview interpreter, returning the target's value. */
 function viaRuntime(a: Action, prev: unknown, target = 'v'): unknown {

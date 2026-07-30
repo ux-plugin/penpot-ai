@@ -17,8 +17,7 @@ describe('runtime clone — proxy-safe (DataCloneError regression)', () => {
       type: { collection: 'object' },
       scope: 'page',
       initial: new Proxy([{ a: 1 }], {}) as unknown as [],
-      source: 'local',
-    })
+          })
     const rt = initRuntime(ir)
     expect(rt.store.items).toEqual([{ a: 1 }])
   })
@@ -100,7 +99,7 @@ describe('emit-react — style prop', () => {
 describe('emit-react — style-prop bindings (wire fill to state)', () => {
   it('routes a background binding into inline style, overriding the static fill', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'accent', type: 'string', scope: 'page', initial: '#e11d48', source: 'local' })
+    ir.variables.push({ id: 'accent', type: 'string', scope: 'page', initial: '#e11d48' })
     ir.bindings.push({ node: 'btn', prop: 'background', from: 'accent' })
     const root: PNode = { nodeId: 'btn', role: 'button', text: 'Buy', style: { background: '#999999' } }
     const code = emitReactComponent(ir, root, { componentName: 'Screen' })

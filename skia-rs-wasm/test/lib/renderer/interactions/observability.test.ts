@@ -25,10 +25,16 @@ import {
 
 beforeAll(() => initDefaultCatalog())
 
-const rtOf = (store: Record<string, unknown>, nodeStates = {}, slotViews = {}): RuntimeState => ({
+const rtOf = (
+  store: Record<string, unknown>,
+  nodeStates = {},
+  slotViews = {},
+  emitted: RuntimeState['emitted'] = [],
+): RuntimeState => ({
   store,
   nodeStates,
   slotViews,
+  emitted,
 })
 
 describe('diffRuntime', () => {
@@ -59,7 +65,7 @@ describe('affectedNodes — where an effect actually lands', () => {
   /** Click Save → status flips; a Badge elsewhere reads status through a binding. */
   function ir(): PageInteractions {
     const it = emptyPageInteractions()
-    it.variables.push({ id: 'status', type: 'string', scope: 'page', initial: 'draft', source: 'local' })
+    it.variables.push({ id: 'status', type: 'string', scope: 'page', initial: 'draft' })
     it.bindings.push({ node: 'badge', prop: 'text', from: 'status' })
     it.bindings.push({ node: 'footer', prop: 'text', from: '"static"' })
     it.interactions.push({
@@ -91,7 +97,7 @@ describe('affectedNodes — where an effect actually lands', () => {
 
   it('flags a repeater template when its collection changes', () => {
     const model = emptyPageInteractions()
-    model.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+    model.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
     model.repeaters.push({ node: 'row', over: 'items' })
     const before = initRuntime(model)
     const after = { ...before, store: { items: [{ id: 1 }] } }

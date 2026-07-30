@@ -22,6 +22,10 @@ export const PHASE0_ACTIONS: ActionCatalogEntry[] = [
 
   // side effects -> effect
   { key: 'open-url', label: 'Open URL', platforms: ['web', 'native'], lowers: 'effect', expects: { value: true } },
+  // Report something outward. The only action whose effect leaves the design, so
+  // the preview cannot "do" it — it records the call instead, which is what makes
+  // it visible in the state panel rather than a click that appears to do nothing.
+  { key: 'port.call', label: 'Send out', platforms: ['web', 'native'], lowers: 'effect', expects: { target: 'port-out', value: true } },
 
   // state mutation -> fold
   { key: 'collection.append', label: 'Add to list', platforms: ['web', 'native'], lowers: 'fold', expects: { target: 'collection', value: true } },
@@ -54,7 +58,10 @@ export const PHASE0_ACTIONS: ActionCatalogEntry[] = [
   { key: 'collection.clear', label: 'Clear list', platforms: ['web', 'native'], lowers: 'fold', expects: { target: 'collection' } },
   { key: 'set-variable', label: 'Set variable', platforms: ['web', 'native'], lowers: 'fold', expects: { target: 'variable', value: true } },
   { key: 'toggle-variable', label: 'Toggle variable', platforms: ['web', 'native'], lowers: 'fold', expects: { target: 'variable' } },
-  { key: 'increment', label: 'Add to number', platforms: ['web', 'native'], lowers: 'fold', expects: { target: 'variable', value: true } },
+  // `value` is optional on purpose: blank means +1, which both the runtime and
+  // the emitter implement. Declaring it required would fail validation on the
+  // commonest stepper.
+  { key: 'increment', label: 'Add to number', platforms: ['web', 'native'], lowers: 'fold', expects: { target: 'variable' } },
 
   // variant state -> setState
   { key: 'node.setState', label: 'Set state', platforms: ['web', 'native'], lowers: 'setState', expects: { target: 'node.state', value: true } },

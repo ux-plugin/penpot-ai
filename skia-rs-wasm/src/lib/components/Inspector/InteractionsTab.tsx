@@ -22,6 +22,7 @@ import {
   type Binding,
   type Derived,
   type Json,
+  type Port,
   editableError,
 } from '../../renderer/interactions/ir'
 import { listTriggers, listActions, getAction, isPlanned, type CatalogStatus } from '../../renderer/interactions/catalog'
@@ -58,6 +59,13 @@ import {
   addDerived,
   setDerivedExpr,
   removeDerived,
+  addPort,
+  removePort,
+  setPortDir,
+  setPortType,
+  setPortSample,
+  setPortDescription,
+  isNameTaken,
 } from '../../renderer/interactions/document/edit-interactions'
 import { commitInteractions, currentInteractions } from '../../renderer/interactions/document/commit-interactions'
 
@@ -108,6 +116,8 @@ function valuePlaceholder(type: string): string {
       return 'amount, blank = 1'
     case 'open-url':
       return 'url, e.g. "https://example.com"'
+    case 'port.call':
+      return 'what to send out, e.g. item.id'
     default:
       return 'value, e.g. { label: "Item " + (items.length + 1) }'
   }
@@ -117,6 +127,7 @@ function ActionRow({
   it,
   index,
   variables,
+  ports,
   nodes,
   commit,
   liveIR,
@@ -124,6 +135,7 @@ function ActionRow({
   it: Interaction
   index: number
   variables: readonly Variable[]
+  ports: readonly Port[]
   nodes: readonly IndexedShape[]
   commit: Commit
   liveIR: LiveIR
@@ -141,6 +153,7 @@ function ActionRow({
 
   // Slot swap ("Show here"): target picks the slot, value picks the view frame.
   // Both are plain node pickers — no routing/history vocabulary (derived at lowering).
+  const outPorts = expectsTarget === 'port-out' ? ports.filter((p) => p.dir === 'out') : []
   const slots = expectsTarget === 'slot' ? nodes.filter(isSlotShape) : []
   const isShowInSlot = action.type === 'show-in-slot'
   const viewFrames = isShowInSlot ? nodes.filter(isFrameShape) : []
@@ -204,6 +217,22 @@ function ActionRow({
             {slots.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name ?? s.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {expectsTarget === 'port-out' && (
+          <select
+            className={selectCls}
+            value={action.target ?? ''}
+            onChange={(e) => commit(setActionTarget(liveIR(), id, index, e.target.value))}
+            aria-label="Outgoing port"
+          >
+            <option value="">{outPorts.length ? 'choose…' : 'add an outgoing value below'}</option>
+            {outPorts.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.id}
               </option>
             ))}
           </select>
@@ -299,6 +328,7 @@ function InteractionCard({
   it,
   triggers,
   variables,
+  ports,
   nodes,
   commit,
   liveIR,
@@ -306,6 +336,7 @@ function InteractionCard({
   it: Interaction
   triggers: ReturnType<typeof listTriggers>
   variables: readonly Variable[]
+  ports: readonly Port[]
   nodes: readonly IndexedShape[]
   commit: Commit
   liveIR: LiveIR
@@ -343,7 +374,16 @@ function InteractionCard({
         <span className="text-[11px] text-muted-foreground">Do</span>
         {it.do.length === 0 && <p className="text-[11px] text-muted-foreground/70">No actions yet.</p>}
         {it.do.map((_, i) => (
-          <ActionRow key={i} it={it} index={i} variables={variables} nodes={nodes} commit={commit} liveIR={liveIR} />
+          <ActionRow
+            key={i}
+            it={it}
+            index={i}
+            variables={variables}
+            ports={ports}
+            nodes={nodes}
+            commit={commit}
+            liveIR={liveIR}
+          />
         ))}
         <button
           type="button"
@@ -383,14 +423,15 @@ function ListSection({
   node,
   objects,
   ir,
-  collections,
+  lists,
   commit,
   liveIR,
 }: {
   node: IndexedShape
   objects: Record<string, IndexedShape>
   ir: PageInteractions
-  collections: readonly Variable[]
+  /** Every list available to repeat over — page state AND lists arriving from outside. */
+  lists: readonly { id: string }[]
   commit: Commit
   liveIR: LiveIR
 }) {
@@ -398,15 +439,15 @@ function ListSection({
   const template = children.find((c) => ir.repeaters.some((r) => r.node === c.id))
   const rep = template ? ir.repeaters.find((r) => r.node === template.id) : undefined
   const on = Boolean(rep && template)
-  const hasCollections = collections.length > 0
+  const hasLists = lists.length > 0
   const over = rep?.over ?? ''
-  const overMissing = on && over !== '' && !collections.some((v) => v.id === over)
+  const overMissing = on && over !== '' && !lists.some((v) => v.id === over)
   const keyErr = exprError(rep?.key)
   const childName = (c: IndexedShape) => c.name ?? c.id.slice(0, 8)
 
   const toggle = () => {
     if (on && template) commit(clearRepeater(liveIR(), template.id))
-    else if (hasCollections && children[0]) commit(setRepeater(liveIR(), children[0].id, { over: collections[0].id, as: 'item' }))
+    else if (hasLists && children[0]) commit(setRepeater(liveIR(), children[0].id, { over: lists[0].id, as: 'item' }))
   }
 
   return (
@@ -416,13 +457,17 @@ function ListSection({
         <input
           type="checkbox"
           checked={on}
-          disabled={!on && !hasCollections}
+          disabled={!on && !hasLists}
           onChange={toggle}
           aria-label="Show a list inside this frame"
         />
         <span>Show a list inside this frame</span>
       </label>
-      {!hasCollections && !on && <p className="mt-1.5 text-[11px] text-muted-foreground/70">Add a list in State first.</p>}
+      {!hasLists && !on && (
+        <p className="mt-1.5 text-[11px] text-muted-foreground/70">
+          Add a list in State, or one that comes in from outside.
+        </p>
+      )}
       {on && rep && template && (
         <div className="mt-2 flex flex-col gap-1.5">
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -434,7 +479,7 @@ function ListSection({
               aria-label="Shows list"
             >
               <option value="">choose…</option>
-              {collections.map((v) => (
+              {lists.map((v) => (
                 <option key={v.id} value={v.id}>
                   {v.id}
                 </option>
@@ -680,48 +725,148 @@ function typeFromKey(k: string): ValueType {
 }
 const TYPE_KEYS = ['text', 'number', 'boolean', 'list']
 
-/** The value editor for a variable's initial value, by type. */
-function VariableValueEditor({ v, commit, liveIR }: { v: Variable; commit: Commit; liveIR: LiveIR }) {
-  const t = v.type
-  const set = (value: Json) => commit(setVariableValue(liveIR(), v.id, value))
-
-  if (typeof t === 'object') {
-    const n = Array.isArray(v.initial) ? v.initial.length : 0
+/**
+ * A JSON value editor keyed to a ValueType. Shared by a variable's initial value
+ * and a port's sample — they're the same edit ("what value does this hold to
+ * begin with"), so they get the same control rather than two that drift.
+ */
+function ValueEditor({
+  id,
+  type,
+  value,
+  placeholder,
+  set,
+}: {
+  /** Only for keying/labelling — the caller owns where the value goes. */
+  id: string
+  type: ValueType
+  value: Json
+  placeholder?: string
+  set: (next: Json) => void
+}) {
+  if (typeof type === 'object') {
+    const n = Array.isArray(value) ? value.length : 0
     return <span className="text-[10px] text-muted-foreground">starts empty · {n}</span>
   }
-  if (t === 'boolean') {
-    return (
-      <input type="checkbox" checked={v.initial === true} onChange={(e) => set(e.target.checked)} aria-label={`${v.id} value`} />
-    )
+  if (type === 'boolean') {
+    return <input type="checkbox" checked={value === true} onChange={(e) => set(e.target.checked)} aria-label={`${id} value`} />
   }
-  if (t === 'number') {
+  if (type === 'number') {
     return (
       <input
         type="number"
-        key={`${v.id}-num-${String(v.initial)}`}
+        key={`${id}-num-${String(value)}`}
         className={varInputCls}
-        defaultValue={typeof v.initial === 'number' ? v.initial : 0}
+        defaultValue={typeof value === 'number' ? value : 0}
         onBlur={(e) => set(e.target.value === '' ? 0 : Number(e.target.value))}
         onKeyDown={(e) => {
           if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
         }}
-        aria-label={`${v.id} value`}
+        aria-label={`${id} value`}
       />
     )
   }
   // string / any
   return (
     <input
-      key={`${v.id}-str-${String(v.initial)}`}
+      key={`${id}-str-${String(value)}`}
       className={varInputCls}
-      defaultValue={v.initial == null ? '' : String(v.initial)}
-      placeholder="value"
+      defaultValue={value == null ? '' : String(value)}
+      placeholder={placeholder ?? 'value'}
       onBlur={(e) => set(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
       }}
-      aria-label={`${v.id} value`}
+      aria-label={`${id} value`}
     />
+  )
+}
+
+/** The value editor for a variable's initial value, by type. */
+function VariableValueEditor({ v, commit, liveIR }: { v: Variable; commit: Commit; liveIR: LiveIR }) {
+  return (
+    <ValueEditor
+      id={v.id}
+      type={v.type}
+      value={v.initial}
+      set={(value) => commit(setVariableValue(liveIR(), v.id, value))}
+    />
+  )
+}
+
+/**
+ * One value the design does not own. Two rows: the name/direction/type/sample
+ * line, then the description.
+ *
+ * The description input is not optional polish. What gets handed over is the
+ * design, so this sentence is what tells whoever binds the real value — a person
+ * or a model — which real value it is. `productTitle: "Sample product"` alone
+ * doesn't say whether that's a database field or deliberate copy.
+ */
+function PortRow({ p, commit, liveIR }: { p: Port; commit: Commit; liveIR: LiveIR }) {
+  const cur = typeKey(p.type)
+  const keys = TYPE_KEYS.includes(cur) ? TYPE_KEYS : [cur, ...TYPE_KEYS]
+  return (
+    <div className="rounded-md border border-border/70 p-2">
+      <div className="flex items-center gap-1.5">
+        <span className="w-14 shrink-0 truncate font-mono text-xs text-foreground" title={p.id}>
+          {p.id}
+        </span>
+        <select
+          className={typeSelectCls}
+          value={p.dir}
+          onChange={(e) => commit(setPortDir(liveIR(), p.id, e.target.value as 'in' | 'out'))}
+          aria-label={`${p.id} direction`}
+        >
+          <option value="in">comes in</option>
+          <option value="out">goes out</option>
+        </select>
+        <select
+          className={typeSelectCls}
+          value={cur}
+          onChange={(e) => commit(setPortType(liveIR(), p.id, typeFromKey(e.target.value)))}
+          aria-label={`${p.id} type`}
+        >
+          {keys.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+        <div className="flex min-w-0 flex-1 justify-end">
+          {p.dir === 'in' ? (
+            <ValueEditor
+              id={`${p.id}-sample`}
+              type={p.type}
+              value={p.sample ?? null}
+              placeholder="example value"
+              set={(sample) => commit(setPortSample(liveIR(), p.id, sample))}
+            />
+          ) : (
+            <span className="text-[10px] text-muted-foreground">sent by an action</span>
+          )}
+        </div>
+        <button
+          type="button"
+          className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
+          aria-label={`Remove ${p.id}`}
+          onClick={() => commit(removePort(liveIR(), p.id))}
+        >
+          ✕
+        </button>
+      </div>
+      <input
+        key={`${p.id}-desc`}
+        className={cn(inputCls, 'mt-1.5 font-sans')}
+        defaultValue={p.description ?? ''}
+        placeholder={p.dir === 'in' ? 'what is this value? e.g. the product shown here' : 'what does this report? e.g. the user added to cart'}
+        onBlur={(e) => commit(setPortDescription(liveIR(), p.id, e.target.value))}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+        }}
+        aria-label={`${p.id} description`}
+      />
+    </div>
   )
 }
 
@@ -825,6 +970,20 @@ export function InteractionsTab() {
     setNewVar('')
   }
 
+  const ports = ir.ports
+  // A repeater only READS its collection, so a list arriving from outside is as
+  // valid a source as page state. (Mutating actions stay variables-only — see
+  // validateAction: you cannot append to a list you don't own.)
+  const lists = [...collections, ...ports.filter((p) => p.dir === 'in' && isCollection(p.type))]
+  const [newPort, setNewPort] = useState('')
+  const portId = toVariableId(newPort)
+  const portNameFree = !!portId && !isNameTaken(ir, portId)
+  const addOutside = (dir: 'in' | 'out') => {
+    if (!portNameFree) return
+    commit(addPort(liveIR(), portId, dir, 'string'))
+    setNewPort('')
+  }
+
   const [newDerived, setNewDerived] = useState('')
   const addFormula = () => {
     const id = toVariableId(newDerived)
@@ -841,6 +1000,56 @@ export function InteractionsTab() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-auto">
+      {/* From outside — the values this design does NOT decide. First, because it
+          reads top-down as the component's own interface: what comes in, what it
+          keeps, what it computes. */}
+      <section className="border-b border-border p-3">
+        <h3 className={sectionHeadCls}>From outside</h3>
+        {ports.length === 0 && (
+          <p className="mb-1.5 text-[11px] text-muted-foreground/70">
+            Nothing yet — add a value the real app supplies, or one this design reports back.
+          </p>
+        )}
+        <div className="mb-2 flex flex-col gap-1.5">
+          {ports.map((p) => (
+            <PortRow key={p.id} p={p} commit={commit} liveIR={liveIR} />
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <input
+            className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus:border-ring"
+            placeholder="new outside value name"
+            value={newPort}
+            onChange={(e) => setNewPort(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') addOutside('in')
+            }}
+            aria-label="New outside value name"
+          />
+          <button
+            type="button"
+            className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+            disabled={!portNameFree}
+            title="A value the real app supplies"
+            onClick={() => addOutside('in')}
+          >
+            + Comes in
+          </button>
+          <button
+            type="button"
+            className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+            disabled={!portNameFree}
+            title="Something this design reports back out"
+            onClick={() => addOutside('out')}
+          >
+            + Goes out
+          </button>
+        </div>
+        {newPort.trim() && !portNameFree && (
+          <p className="mt-1 text-[10px] text-destructive">That name is already used on this page.</p>
+        )}
+      </section>
+
       {/* State — editable input variables */}
       <section className="border-b border-border p-3">
         <h3 className="mb-1.5 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">State</h3>
@@ -923,7 +1132,7 @@ export function InteractionsTab() {
         <>
           {/* A container frame can SHOW a list — author it here; the repeater lands on the template child */}
           {isContainer && (
-            <ListSection node={node} objects={objects} ir={ir} collections={collections} commit={commit} liveIR={liveIR} />
+            <ListSection node={node} objects={objects} ir={ir} lists={lists} commit={commit} liveIR={liveIR} />
           )}
 
           {/* Two-way: this node EDITS a value (a field), rather than only displaying one */}
@@ -943,6 +1152,7 @@ export function InteractionsTab() {
                 it={it}
                 triggers={triggers}
                 variables={variables}
+                ports={ports}
                 nodes={nodes}
                 commit={commit}
                 liveIR={liveIR}

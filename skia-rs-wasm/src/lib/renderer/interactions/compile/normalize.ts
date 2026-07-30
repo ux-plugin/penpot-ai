@@ -24,10 +24,10 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
     return undefined
   }
 
-  // variables -> state signals (or an inbound port when fed by business logic)
+  // variables -> state signals. A variable is always design-owned state; a value
+  // from outside is a Port, so there is no per-variable branch here.
   for (const v of ir.variables) {
-    if (v.source === 'local') nodes.push({ kind: 'source', id: `var:${v.id}`, produces: 'signal', of: { source: 'state', variable: v.id } })
-    else nodes.push({ kind: 'port', id: `var:${v.id}`, dir: 'in' })
+    nodes.push({ kind: 'source', id: `var:${v.id}`, produces: 'signal', of: { source: 'state', variable: v.id } })
   }
 
   for (const p of ir.ports) nodes.push({ kind: 'port', id: `port:${p.id}`, dir: p.dir })
@@ -53,6 +53,11 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
       else if (lowers === 'switch') nodes.push({ kind: 'switch', id: nid, on: src, cases: {} })
       else nodes.push({ kind: 'effect', id: nid, on: src, call: a.type })
       edges.push({ from: src, to: nid })
+      // An out-port call is not an opaque effect: it terminates at a port node,
+      // so the graph shows the value actually leaving.
+      if (a.target && ir.ports.some((p) => p.id === a.target && p.dir === 'out')) {
+        edges.push({ from: nid, to: `port:${a.target}` })
+      }
     })
   })
 

@@ -26,6 +26,7 @@ import {
   addVariable,
   makeScalarVariable,
   addDerived,
+  addPort,
 } from '../../../../src/lib/renderer/interactions/document/edit-interactions'
 
 beforeAll(() => initDefaultCatalog())
@@ -52,15 +53,9 @@ describe('editableError — writability is a property of the cell', () => {
     expect(editableError(ir, 'double')).toMatch(/formula/)
   })
 
-  it('rejects a port-sourced variable — business logic owns it', () => {
-    const ir = addVariable(emptyPageInteractions(), {
-      id: 'customerName',
-      type: 'string',
-      scope: 'page',
-      initial: '',
-      source: 'port',
-    })
-    expect(editableError(ir, 'customerName')).toMatch(/business logic/)
+  it('rejects an in-port — whoever supplies it owns it', () => {
+    const ir = addPort(emptyPageInteractions(), 'customerName', 'in', 'string')
+    expect(editableError(ir, 'customerName')).toMatch(/comes from outside/)
   })
 
   it('rejects an unknown or empty target', () => {

@@ -15,8 +15,16 @@ import { parse, evaluate } from '../expression'
 import { parseRefPath } from '../addressing'
 
 export interface RuntimeState {
-  /** variable id -> value */
+  /** variable id -> value, plus each in-port seeded from its sample */
   store: Record<string, unknown>
+  /**
+   * Out-port calls, in order, append-only. The preview has no outside to call,
+   * so an out-port cannot *do* anything here — recording it is what makes it
+   * observable instead of a click that appears to do nothing. Keeping it in
+   * RuntimeState (rather than firing a side effect) keeps `applyAction` pure and
+   * lets `diffRuntime` report the call with no extra machinery.
+   */
+  emitted: { port: string; value: unknown }[]
   /** node id -> active self-managed variant state */
   nodeStates: Record<string, string>
   /**
@@ -62,9 +70,13 @@ const clone = <T>(x: T): T => (x === undefined ? x : (JSON.parse(JSON.stringify(
 export function initRuntime(ir: PageInteractions): RuntimeState {
   const store: Record<string, unknown> = {}
   for (const v of ir.variables) store[v.id] = clone(v.initial)
+  // In-ports seed from their sample — this is what the sample is FOR. A port with
+  // no sample stays undefined, which renders as nothing; that is the honest
+  // display of "the design doesn't know this value", not a rendering bug.
+  for (const p of ir.ports) if (p.dir === 'in') store[p.id] = clone(p.sample)
   const nodeStates: Record<string, string> = {}
   for (const s of ir.states) if ('from' in s.active) nodeStates[s.node] = s.active.initial ?? s.states[0] ?? ''
-  return { store, nodeStates, slotViews: {} }
+  return { store, nodeStates, slotViews: {}, emitted: [] }
 }
 
 /** Build the evaluation environment: variables + derived values + node states. */
@@ -123,6 +135,9 @@ export function applyAction(a: Action, env: Record<string, unknown>, rt: Runtime
       // expression (a raw UUID wouldn't evaluate). Default in-place swap, no
       // history — back-button/routing is a lowering concern, not a runtime one.
       return { ...rt, slotViews: { ...rt.slotViews, [root]: a.value ?? '' } }
+    case 'port.call':
+      // Nothing to call — record it. `root` is the out-port id.
+      return { ...rt, emitted: [...rt.emitted, { port: root, value }] }
     case 'open-url':
       if (typeof value === 'string' && typeof window !== 'undefined') window.open(value)
       return rt
@@ -161,9 +176,14 @@ export function runInteraction(ir: PageInteractions, rt: RuntimeState, it: Inter
 // what changed can be COMPUTED rather than guessed. These functions back the
 // Build stage's state panel and its "changes outside this view" chip.
 
-/** One cell of runtime state that moved. */
+/**
+ * One cell of runtime state that moved — or, for `port-call`, one value that
+ * left. A call is not a cell, so `before` is always undefined there; it is
+ * reported through the same channel because the panel's job is "what did that
+ * click actually do", and going out is one of the answers.
+ */
 export interface StateChange {
-  kind: 'variable' | 'node-state' | 'slot'
+  kind: 'variable' | 'node-state' | 'slot' | 'port-call'
   id: string
   before: unknown
   after: unknown
@@ -190,12 +210,20 @@ function diffRecord(
   return out
 }
 
-/** Every state cell that differs between two runtime states. */
+/**
+ * Every state cell that differs between two runtime states, plus every out-port
+ * call made in between. `emitted` is append-only, so the new calls are exactly
+ * the tail — diffing it as a record would miss a repeated identical call.
+ */
 export function diffRuntime(before: RuntimeState, after: RuntimeState): StateChange[] {
+  const calls = after.emitted
+    .slice(before.emitted.length)
+    .map((e): StateChange => ({ kind: 'port-call', id: e.port, before: undefined, after: e.value }))
   return [
     ...diffRecord('variable', before.store, after.store),
     ...diffRecord('node-state', before.nodeStates, after.nodeStates),
     ...diffRecord('slot', before.slotViews, after.slotViews),
+    ...calls,
   ]
 }
 

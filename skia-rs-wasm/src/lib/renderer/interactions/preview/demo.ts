@@ -12,7 +12,7 @@ import type { PNode } from '../compile/emit-react'
 
 export function demoIR(): PageInteractions {
   const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
   ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
   ir.interactions.push({
     on: { node: 'addBtn', trigger: { type: 'press' } },

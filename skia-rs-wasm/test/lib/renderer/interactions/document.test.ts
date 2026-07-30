@@ -29,7 +29,7 @@ function makePage(interactions?: PageInteractions): PenpotPage {
 describe('serialization — interactions survive flatten/unflatten', () => {
   it('carries PageInteractions through the round-trip', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
 
     const indexed = flattenPageToIndexed(makePage(ir))
     expect(indexed.interactions?.variables.map((v) => v.id)).toEqual(['items'])
@@ -71,8 +71,8 @@ describe('nodesToPresentation — shapes -> PNode tree with anchors', () => {
 
   it('derives roles from the behaviour authored on each node', () => {
     const ir = emptyPageInteractions()
-    ir.variables.push({ id: 'draft', type: 'string', scope: 'page', initial: '', source: 'local' })
-    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+    ir.variables.push({ id: 'draft', type: 'string', scope: 'page', initial: '' })
+    ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
     ir.editable.push({ node: 'addBtn', prop: 'value', target: 'draft' })
     ir.repeaters.push({ node: 'row', over: 'items' })
 

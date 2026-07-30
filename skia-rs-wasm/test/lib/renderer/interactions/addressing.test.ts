@@ -14,7 +14,7 @@ const NODE_IDS = new Set(['addBtn', 'list', 'card'])
 /** A valid "todo" page: add to list, disable-when-empty, a repeater, a variant. */
 function todoIR(): PageInteractions {
   const ir = emptyPageInteractions()
-  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [], source: 'local' })
+  ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
   ir.ports.push({ id: 'initialItems', dir: 'in', type: { collection: 'object' } })
   ir.ports.push({ id: 'onSave', dir: 'out', type: 'object' })
   ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })

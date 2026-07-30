@@ -2,7 +2,8 @@
  * emit-react — the Phase 0 web emitter: interaction IR → idiomatic React source.
  *
  * Behavior (deterministic, generated entirely from the IR):
- *   - local variables   -> `useState` hooks
+ *   - ports              -> a typed props interface (in: value, out: callback)
+ *   - variables          -> `useState` hooks
  *   - self variant state -> a `useState` per node
  *   - derived values     -> `const x = <expr>`  (via expression.toJs)
  *   - interactions       -> handler functions; actions lower per catalog `lowers`
@@ -212,6 +213,35 @@ function tsType(vt: ValueType): string {
 }
 
 /**
+ * The props interface, generated from the ports — the component's declaration of
+ * what it does not decide. In-ports are values, out-ports are callbacks.
+ *
+ * Each prop carries the port's description and sample as a doc comment, and that
+ * is deliberate rather than decorative: `object` widens to `any`, so the sample
+ * is the only statement of the expected shape that survives. Whoever binds this
+ * component — a person or a model — reads the comment, not the type.
+ *
+ * Returns undefined when the design declares no ports, so a self-contained
+ * component still emits `export function X()` with no empty interface above it.
+ */
+function emitPropsType(ir: PageInteractions, name: string): { decl: string; params: string } | undefined {
+  if (!ir.ports.length) return undefined
+  const lines: string[] = []
+  for (const p of ir.ports) {
+    const notes: string[] = []
+    if (p.description) notes.push(p.description)
+    if (p.sample !== undefined && p.sample !== null) notes.push(`e.g. ${JSON.stringify(p.sample)}`)
+    if (notes.length) lines.push(`  /** ${notes.join(' — ')} */`)
+    lines.push(p.dir === 'in' ? `  ${ident(p.id)}: ${tsType(p.type)}` : `  ${ident(p.id)}: (value: ${tsType(p.type)}) => void`)
+  }
+  const decl = `interface ${name}Props {\n${lines.join('\n')}\n}\n\n`
+  // Destructured, so a port reads as a bare identifier in every expression the
+  // emitter already produces — no `props.` prefix to thread through toJs.
+  const params = `{ ${ir.ports.map((p) => ident(p.id)).join(', ')} }: ${name}Props`
+  return { decl, params }
+}
+
+/**
  * Lower one action to a JS statement. Exported so the catalog-parity tests can
  * check each entry against the preview runtime's `applyAction` directly.
  */
@@ -256,6 +286,9 @@ export function emitAction(a: Action): string {
       return `${set}((prev) => prev + ${a.value ? value : '1'})`
     case 'node.setState':
       return `${stateSetter(targetRoot)}(${value})`
+    case 'port.call':
+      // The out-port is a destructured callback prop, so this is a plain call.
+      return `${ident(targetRoot)}(${value})`
     case 'open-url':
       return `window.open(${value})`
     default: {
@@ -272,7 +305,6 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
 
   const hooks: string[] = []
   for (const v of ir.variables) {
-    if (v.source !== 'local') continue
     hooks.push(`const [${ident(v.id)}, ${setterName(v.id)}] = useState<${tsType(v.type)}>(${JSON.stringify(v.initial)})`)
   }
   for (const s of ir.states) {
@@ -303,7 +335,9 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
     '  if (keys.includes(e.key)) {\n    e.preventDefault()\n    fn()\n  }\n}\n\n'
 
   const bodyLines: string[] = [...hooks, ...derived]
-  if (handlers.length) bodyLines.push('', ...handlers)
+  // The blank line separates handlers from state — with no state to separate
+  // from, it would just open the function body with an empty line.
+  if (handlers.length) bodyLines.push(...(bodyLines.length ? [''] : []), ...handlers)
 
   const jsx = emitNode(root, ir)
   const indentedBody = bodyLines
@@ -315,7 +349,8 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
     .join('\n')
 
   const prelude = jsxNeedsActivate.test(jsx) ? helper : ''
-  return `${imports}${prelude}export function ${name}() {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
+  const props = emitPropsType(ir, name)
+  return `${imports}${props?.decl ?? ''}${prelude}export function ${name}(${props?.params ?? ''}) {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
 }
 
 function emitNode(node: PNode, ir: PageInteractions): string {

@@ -160,9 +160,14 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
         path.segments[0].name === 'state'
       if (!ok) add(where, `target '${a.target}' must be <node>.state`)
     } else if (want === 'collection') {
+      // Deliberately variables only, NOT in-ports: an in-port's collection is
+      // owned outside, so appending to it locally would be a lie the handover
+      // cannot honour. Repeating over one is fine — that only reads.
       if (sym.kind !== 'variable' || !isCollection(sym.valueType)) add(where, `target '${a.target}' must be a collection variable`)
     } else if (want === 'variable') {
       if (sym.kind !== 'variable') add(where, `target '${a.target}' must be a variable`)
+    } else if (want === 'port-out') {
+      if (sym.kind !== 'port-out') add(where, `target '${a.target}' must be an outgoing port`)
     }
   }
 
@@ -195,8 +200,12 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
     const where = `repeater[${i}](${r.node})`
     if (!nodeIds.has(r.node)) add(where, `repeater on unknown node '${r.node}'`)
     const sym = scope.get(r.over)
+    // A list the design owns OR one arriving from outside — the commonest real
+    // case is "repeat over the rows the app gives me", which is an in-port.
+    // Reading is all a repeater does, so ownership doesn't restrict it.
     if (!sym) add(where, `repeats over unknown reference '${r.over}'`)
-    else if (sym.kind !== 'variable' || !isCollection(sym.valueType)) add(where, `repeats over '${r.over}' which is not a collection variable`)
+    else if ((sym.kind !== 'variable' && sym.kind !== 'port-in') || !isCollection(sym.valueType))
+      add(where, `repeats over '${r.over}' which is not a list`)
     if (r.key) checkExpr(r.key, `${where}.key`)
   })
 

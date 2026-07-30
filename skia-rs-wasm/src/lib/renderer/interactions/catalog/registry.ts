@@ -50,7 +50,7 @@ export interface ActionCatalogEntry {
   lowers: ActionLowering
   /** What `Action.target` must address, and whether `Action.value` is required. */
   expects: {
-    target?: 'variable' | 'collection' | 'node.state' | 'screen' | 'overlay' | 'slot' | 'none'
+    target?: 'variable' | 'collection' | 'node.state' | 'screen' | 'overlay' | 'slot' | 'port-out' | 'none'
     value?: boolean
     /**
      * Extra expression params the action reads from `Action.params` (via
