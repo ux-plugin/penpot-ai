@@ -22,10 +22,9 @@ export const PHASE0_ACTIONS: ActionCatalogEntry[] = [
 
   // side effects -> effect
   { key: 'open-url', label: 'Open URL', platforms: ['web', 'native'], lowers: 'effect', expects: { value: true } },
-  // Report something outward. The only action whose effect leaves the design, so
-  // the preview cannot "do" it — it records the call instead, which is what makes
-  // it visible in the state panel rather than a click that appears to do nothing.
-  { key: 'port.call', label: 'Send out', platforms: ['web', 'native'], lowers: 'effect', expects: { target: 'port-out', value: true } },
+  // NOTE there is deliberately no "send out" action. Reporting outward is not
+  // something the designer authors: they write a cell, and the cell being backed
+  // from outside is what makes the write leave. See normalize + emitReactComponent.
 
   // state mutation -> fold
   { key: 'collection.append', label: 'Add to list', platforms: ['web', 'native'], lowers: 'fold', expects: { target: 'collection', value: true } },

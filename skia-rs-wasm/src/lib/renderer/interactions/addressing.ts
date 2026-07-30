@@ -1,9 +1,8 @@
 /**
  * Addressing — the one namespace every condition, binding, and action references.
  *
- *   ref ::= variable            // items, cart.total          (scoped value)
+ *   ref ::= variable            // items, cart.total          (a named cell)
  *         | derived             // isEmpty                    (computed value)
- *         | port                // initialItems, onSave       (business-logic seam)
  *         | node '.' prop       // addBtn.disabled, row.x     (bindable prop)
  *         | node '.' state      // card.state                 (variant signal)
  *         | loopItem '.' field  // item.label                 (inside a repeater)
@@ -25,7 +24,12 @@ import type { PageInteractions, NodeId, ValueType, Action } from './ir'
 import { parse, freeRefs, type ExprNode } from './expression'
 import { getTrigger, getAction } from './catalog'
 
-export type SymbolKind = 'variable' | 'derived' | 'port-in' | 'port-out' | 'node' | 'loop-item'
+/**
+ * There is no `port` kind: a value from outside is a `variable` like any other
+ * (it just carries `outside`), so nothing addressing an expression has to know
+ * where the value came from.
+ */
+export type SymbolKind = 'variable' | 'derived' | 'node' | 'loop-item'
 
 export interface Sym {
   name: string
@@ -43,7 +47,6 @@ export function buildScope(ir: PageInteractions, nodeIds: Set<NodeId>): Scope {
   // data values shadow nodes
   for (const v of ir.variables) scope.set(v.id, { name: v.id, kind: 'variable', valueType: v.type })
   for (const d of ir.derived) scope.set(d.id, { name: d.id, kind: 'derived' })
-  for (const p of ir.ports) scope.set(p.id, { name: p.id, kind: p.dir === 'in' ? 'port-in' : 'port-out', valueType: p.type })
   // loop items (highest precedence). TODO Phase 1: scope these to the repeater
   // subtree via the node hierarchy instead of registering them page-wide.
   for (const r of ir.repeaters) {
@@ -160,14 +163,12 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
         path.segments[0].name === 'state'
       if (!ok) add(where, `target '${a.target}' must be <node>.state`)
     } else if (want === 'collection') {
-      // Deliberately variables only, NOT in-ports: an in-port's collection is
-      // owned outside, so appending to it locally would be a lie the handover
-      // cannot honour. Repeating over one is fine — that only reads.
-      if (sym.kind !== 'variable' || !isCollection(sym.valueType)) add(where, `target '${a.target}' must be a collection variable`)
+      // Any list, wherever its value comes from. A list supplied from outside is
+      // still appendable — what the write has to DO to reach the real source is
+      // derived at lowering, not a reason to refuse the wiring.
+      if (sym.kind !== 'variable' || !isCollection(sym.valueType)) add(where, `target '${a.target}' must be a list`)
     } else if (want === 'variable') {
-      if (sym.kind !== 'variable') add(where, `target '${a.target}' must be a variable`)
-    } else if (want === 'port-out') {
-      if (sym.kind !== 'port-out') add(where, `target '${a.target}' must be an outgoing port`)
+      if (sym.kind !== 'variable') add(where, `target '${a.target}' must be a value`)
     }
   }
 
@@ -200,11 +201,8 @@ export function validatePageInteractions(ir: PageInteractions, nodeIds: Set<Node
     const where = `repeater[${i}](${r.node})`
     if (!nodeIds.has(r.node)) add(where, `repeater on unknown node '${r.node}'`)
     const sym = scope.get(r.over)
-    // A list the design owns OR one arriving from outside — the commonest real
-    // case is "repeat over the rows the app gives me", which is an in-port.
-    // Reading is all a repeater does, so ownership doesn't restrict it.
     if (!sym) add(where, `repeats over unknown reference '${r.over}'`)
-    else if ((sym.kind !== 'variable' && sym.kind !== 'port-in') || !isCollection(sym.valueType))
+    else if (sym.kind !== 'variable' || !isCollection(sym.valueType))
       add(where, `repeats over '${r.over}' which is not a list`)
     if (r.key) checkExpr(r.key, `${where}.key`)
   })

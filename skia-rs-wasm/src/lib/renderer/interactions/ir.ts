@@ -3,7 +3,7 @@
  *
  * Two layers live here:
  *   1. The stored ECA-sugar (what the panel edits, what serializes) — Variable,
- *      Derived, Interaction, AppRule, Binding, NodeStates, Repeater, Port,
+ *      Derived, Interaction, AppRule, Binding, NodeStates, Repeater,
  *      gathered per page in `PageInteractions`.
  *   2. The normalized reactive graph (`GraphNode`) the sugar compiles into —
  *      Signals + Events + a fixed combinator set. A compile artifact, not stored.
@@ -52,18 +52,41 @@ export type ValueType =
   | { collection: ValueType }
 
 /**
- * A piece of app state the DESIGN owns. Lowers to a `source` producing a Signal.
+ * A named cell — the ONE kind of addressable state. Lowers to a `source`
+ * producing a Signal.
  *
- * "Owns" is the whole distinction from `Port`: a variable's value starts at
- * `initial` and only ever changes because an interaction on this page changed it.
- * A value that comes from anywhere else is a Port, not a variable with a flag —
- * one concept, one representation.
+ * There is deliberately no second kind. A value supplied by the real app is this
+ * same cell with `outside` set; a component's private flag is this same cell with
+ * a narrower `scope`. Everything an interaction can read or write is one of
+ * these, so "wire this button to that value" never depends on which sort of
+ * value it is.
+ *
+ * `scope` is set by the DESIGNER and changeable at any time — never inferred,
+ * never auto-promoted. Wiring a component's own `open` flag to something
+ * document-wide is a legitimate thing to want, not a mistake to prevent.
  */
 export interface Variable {
   id: string
   type: ValueType
   scope: Scope
+  /**
+   * What the cell holds to begin with. For a design-owned cell that is its
+   * initial value; for an `outside` cell it is the SAMPLE — the same slot,
+   * because operationally they are the same thing: what the preview starts from.
+   */
   initial: Json
+  /**
+   * Present iff the value is supplied from outside the design. The design still
+   * reads and writes the cell normally; what a write has to DO to reach the real
+   * source (a callback, a mutation, a request) is derived at lowering, never
+   * authored — see `emitReactComponent`.
+   *
+   * `description` is not decoration. What gets handed over is the design, so this
+   * sentence is what tells whoever binds the real value which real value it is:
+   * `productTitle: "Sample product"` alone cannot say whether that is a database
+   * field or deliberate copy.
+   */
+  outside?: { description?: string }
   persist?: Persistence
 }
 
@@ -71,34 +94,6 @@ export interface Variable {
 export interface Derived {
   id: string
   expr: Expr
-}
-
-/**
- * A value the design does NOT own — the typed seam to whatever is outside it.
- *
- * This is the only way a design says "I don't decide this." `dir: 'in'` is a
- * value arriving (a product to display, a list to repeat over); `dir: 'out'` is
- * this design reporting something happened (`port.call`). On web that is a prop
- * and a callback prop; the shape is deliberately platform-neutral.
- *
- * `sample` and `description` are not decoration — they are the point. What gets
- * handed over is the DESIGN, so the design has to carry enough for whoever
- * receives it to bind the real thing: an example of the shape expected, and what
- * the value means. Without them an in-port is an untyped hole, and a placeholder
- * baked into the presentation is indistinguishable from deliberate copy — the
- * design's own knowledge of what it doesn't know is destroyed on the way out.
- */
-export interface Port {
-  id: string
-  dir: 'in' | 'out'
-  type: ValueType
-  /**
-   * A stand-in the preview runs on and the handover carries as the expected
-   * shape. For an out-port this is an example payload.
-   */
-  sample?: Json
-  /** What this value means, in the designer's words. Prose, for a human or a model. */
-  description?: string
 }
 
 // ---- triggers & actions (open unions; schemas live in ./catalog) ----
@@ -226,7 +221,6 @@ export interface PageInteractions {
   version: 1
   variables: Variable[]
   derived: Derived[]
-  ports: Port[]
   interactions: Interaction[]
   appRules: AppRule[]
   bindings: Binding[]
@@ -236,23 +230,18 @@ export interface PageInteractions {
 }
 
 /**
- * Why a cell cannot be edited, or null if it can. Writability is a property of
- * the TARGET, not of the node doing the editing:
- *   - a `derived` value is a function of other state — writing to it is a
- *     category error, not a missing feature;
- *   - an in-port is owned by whoever supplies it, and `Editable` writes back
- *     into the same cell it reads — a port has no cell here to write into. The
- *     controlled-port form (read the port, send each change back out an
- *     out-port) is a real gap, not a hidden feature: it needs a trigger that
- *     carries the new value as a payload, and no trigger carries a payload yet.
- *     Displaying a port and sending a CLICK back out both work today.
+ * Why a cell cannot be edited, or null if it can.
+ *
+ * Only ONE thing is genuinely unwritable: a formula, which is a function of other
+ * cells, so writing to it is a category error rather than a missing feature. An
+ * `outside` cell is editable — the designer decides what wires to what, and what
+ * a write has to do to reach the real source is derived plumbing, not a reason to
+ * refuse the wiring.
  */
 export function editableError(ir: PageInteractions, target: Ref): string | null {
   if (!target.trim()) return 'Pick a value to edit'
   if (ir.derived.some((d) => d.id === target)) return `${target} is a formula — computed, not editable`
-  const port = ir.ports.find((p) => p.id === target)
-  if (port) return `${target} comes from outside — bind it, then send changes back out`
-  if (!ir.variables.some((v) => v.id === target)) return `${target} is not a variable on this page`
+  if (!ir.variables.some((v) => v.id === target)) return `${target} is not a value on this page`
   return null
 }
 
@@ -261,7 +250,6 @@ export function emptyPageInteractions(): PageInteractions {
     version: 1,
     variables: [],
     derived: [],
-    ports: [],
     interactions: [],
     appRules: [],
     bindings: [],
@@ -307,8 +295,14 @@ export function reconcile(ir: PageInteractions, presentNodeIds: Set<NodeId>): Me
 
 // ---- normalized reactive graph (compile artifact; built by ./compile/normalize) ----
 //
-// The semantic target the ECA-sugar compiles into. Shape may be refined when
-// ./compile/normalize lands (Task #4); kept here as the foundation contract.
+// The semantic target the ECA-sugar compiles into.
+//
+// NOTE the asymmetry with the stored sugar above: `port` survives HERE and only
+// here. That is the whole shape of the design — the designer authors one kind of
+// cell and never says "port", while the graph, which is where plumbing lives,
+// still needs to express "this value crosses the boundary". A cell with `outside`
+// set lowers to a port node; a write to it grows an edge out of one. Both are
+// derived, so neither is anything the designer has to name.
 
 export type GraphValueKind = 'signal' | 'event'
 

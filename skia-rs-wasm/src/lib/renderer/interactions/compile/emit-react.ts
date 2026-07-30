@@ -2,8 +2,8 @@
  * emit-react — the Phase 0 web emitter: interaction IR → idiomatic React source.
  *
  * Behavior (deterministic, generated entirely from the IR):
- *   - ports              -> a typed props interface (in: value, out: callback)
- *   - variables          -> `useState` hooks
+ *   - outside cells      -> props, plus an `onXChange` callback if written
+ *   - design-owned cells -> `useState` hooks
  *   - self variant state -> a `useState` per node
  *   - derived values     -> `const x = <expr>`  (via expression.toJs)
  *   - interactions       -> handler functions; actions lower per catalog `lowers`
@@ -17,7 +17,7 @@
  * emitter is an additive sibling.
  */
 
-import type { PageInteractions, NodeId, ValueType, Action, Repeater } from '../ir'
+import type { PageInteractions, NodeId, ValueType, Action, ActionType, Repeater } from '../ir'
 import { actionParam } from '../ir'
 import { getAction } from '../catalog'
 import { parse, toJs, objectBodyJs } from '../expression'
@@ -212,53 +212,153 @@ function tsType(vt: ValueType): string {
   }
 }
 
+/** Cells the design WRITES — every action target plus every two-way field. */
+function writtenCells(ir: PageInteractions): Set<string> {
+  const written = new Set<string>()
+  const add = (target: string | undefined) => {
+    if (!target) return
+    try {
+      written.add(parseRefPath(target).root)
+    } catch {
+      /* an unparseable target is an addressing error, reported elsewhere */
+    }
+  }
+  for (const it of ir.interactions) for (const a of it.do) add(a.target)
+  for (const ar of ir.appRules) for (const a of ar.do) add(a.target)
+  for (const e of ir.editable) add(e.target)
+  return written
+}
+
+/** Callback prop name derived for a written outside cell. */
+const changeProp = (cellId: string) => `on${cap(ident(cellId))}Change`
+
 /**
- * The props interface, generated from the ports — the component's declaration of
- * what it does not decide. In-ports are values, out-ports are callbacks.
+ * The props interface — ENTIRELY DERIVED from which cells are outside-backed and
+ * which of those the design writes. Nothing here was authored:
  *
- * Each prop carries the port's description and sample as a doc comment, and that
- * is deliberate rather than decorative: `object` widens to `any`, so the sample
- * is the only statement of the expected shape that survives. Whoever binds this
- * component — a person or a model — reads the comment, not the type.
+ *   - an outside cell becomes a value prop;
+ *   - an outside cell the design also WRITES additionally becomes an
+ *     `onXChange` callback, because a write to a value you don't own has to be
+ *     reported to whoever does.
  *
- * Returns undefined when the design declares no ports, so a self-contained
- * component still emits `export function X()` with no empty interface above it.
+ * That second rule is the whole "events are indirectly built" idea in one place.
+ * The designer said "when clicked, add to cart.items"; they never declared an
+ * `onAddToCart`, and this is where one appears — as plumbing, at lowering, where
+ * a different target (a store, a mutation, a query invalidation) could just as
+ * well be chosen instead.
+ *
+ * Each prop carries the cell's description and sample as a doc comment, which is
+ * not decoration: `object` widens to `any`, so the sample is the only surviving
+ * statement of the expected shape. Whoever binds this — a person or a model —
+ * reads the comment, not the type.
  */
 function emitPropsType(ir: PageInteractions, name: string): { decl: string; params: string } | undefined {
-  if (!ir.ports.length) return undefined
+  const outside = ir.variables.filter((v) => v.outside)
+  if (!outside.length) return undefined
+  const written = writtenCells(ir)
+
   const lines: string[] = []
-  for (const p of ir.ports) {
+  const params: string[] = []
+  for (const v of outside) {
     const notes: string[] = []
-    if (p.description) notes.push(p.description)
-    if (p.sample !== undefined && p.sample !== null) notes.push(`e.g. ${JSON.stringify(p.sample)}`)
+    if (v.outside?.description) notes.push(v.outside.description)
+    if (v.initial !== undefined && v.initial !== null) notes.push(`e.g. ${JSON.stringify(v.initial)}`)
     if (notes.length) lines.push(`  /** ${notes.join(' — ')} */`)
-    lines.push(p.dir === 'in' ? `  ${ident(p.id)}: ${tsType(p.type)}` : `  ${ident(p.id)}: (value: ${tsType(p.type)}) => void`)
+    lines.push(`  ${ident(v.id)}: ${tsType(v.type)}`)
+    params.push(ident(v.id))
+
+    if (written.has(v.id)) {
+      lines.push(`  /** the design changes ${v.id}; tell whoever owns it */`)
+      lines.push(`  ${changeProp(v.id)}: (next: ${tsType(v.type)}) => void`)
+      params.push(changeProp(v.id))
+    }
   }
+
   const decl = `interface ${name}Props {\n${lines.join('\n')}\n}\n\n`
-  // Destructured, so a port reads as a bare identifier in every expression the
+  // Destructured, so a cell reads as a bare identifier in every expression the
   // emitter already produces — no `props.` prefix to thread through toJs.
-  const params = `{ ${ir.ports.map((p) => ident(p.id)).join(', ')} }: ${name}Props`
-  return { decl, params }
+  return { decl, params: `{ ${params.join(', ')} }: ${name}Props` }
+}
+
+/**
+ * How a write reaches the cell it targets — the seam that makes "the designer
+ * writes a cell, the plumbing is derived" real.
+ *
+ * A design-owned cell is React state, so the write is `setX((prev) => next)` and
+ * `prev` is React's. A cell backed from outside has no local state to update: the
+ * write is a report to whoever owns it, so it becomes `onXChange(next)` and the
+ * current value is read straight off the prop. Same authored action, two
+ * lowerings, neither of them named by the designer.
+ */
+export interface CellWriter {
+  /** Identifier standing for the cell's current value. */
+  prev: string
+  /** Deliver a next value computed from `prev`. */
+  deliver: (next: string) => string
+}
+
+const localWriter = (cellId: string): CellWriter => ({
+  prev: 'prev',
+  deliver: (next) => (next === 'prev' ? `${setterName(cellId)}(prev)` : `${setterName(cellId)}((prev) => ${next})`),
+})
+
+const plainWriter = (cellId: string): CellWriter => ({
+  prev: 'prev',
+  deliver: (next) => `${setterName(cellId)}(${next})`,
+})
+
+const outsideWriter = (cellId: string): CellWriter => ({
+  prev: ident(cellId),
+  deliver: (next) => `${changeProp(cellId)}(${next})`,
+})
+
+/** The writer for `target`, chosen by whether the design owns that cell. */
+export function writerFor(ir: PageInteractions, target: string | undefined, dependsOnPrev: boolean): CellWriter {
+  let root = ''
+  try {
+    root = target ? parseRefPath(target).root : ''
+  } catch {
+    root = ''
+  }
+  if (ir.variables.some((v) => v.id === root && v.outside)) return outsideWriter(root)
+  return dependsOnPrev ? localWriter(root) : plainWriter(root)
+}
+
+/** Whether an action's next value is computed from the cell's current one. */
+export function readsPrev(type: ActionType): boolean {
+  return (
+    type === 'collection.append' ||
+    type === 'collection.insert' ||
+    type === 'collection.remove' ||
+    type === 'collection.update' ||
+    type === 'toggle-variable' ||
+    type === 'increment'
+  )
 }
 
 /**
  * Lower one action to a JS statement. Exported so the catalog-parity tests can
  * check each entry against the preview runtime's `applyAction` directly.
+ *
+ * `writer` defaults to plain React state, which is what the parity tests exercise;
+ * `emitReactComponent` passes one chosen per target via `writerFor`.
  */
-export function emitAction(a: Action): string {
+export function emitAction(a: Action, writer?: CellWriter): string {
   const targetRoot = a.target ? parseRefPath(a.target).root : ''
   const value = a.value ? toJs(parse(a.value)) : 'undefined'
-  const set = setterName(targetRoot)
+  const w = writer ?? (readsPrev(a.type) ? localWriter(targetRoot) : plainWriter(targetRoot))
+  const prev = w.prev
+  const set = (v: string) => w.deliver(v)
   switch (a.type) {
     case 'collection.append':
-      return `${set}((prev) => [...prev, ${value}])`
+      return set(`[...${prev}, ${value}]`)
     case 'collection.insert': {
       const at = actionParam(a, 'at')
       const i = at ? toJs(parse(at)) : '0'
-      return `${set}((prev) => [...prev.slice(0, ${i}), ${value}, ...prev.slice(${i})])`
+      return set(`[...${prev}.slice(0, ${i}), ${value}, ...${prev}.slice(${i})]`)
     }
     case 'collection.remove':
-      return `${set}((prev) => prev.filter((item) => !(${value})))`
+      return set(`${prev}.filter((item) => !(${value}))`)
     case 'collection.update': {
       // An object-literal value is a patch (spliced into a spread merge so the
       // generated line reads like hand-written React); anything else replaces;
@@ -274,21 +374,20 @@ export function emitAction(a: Action): string {
       const mapped = where ? `${toJs(parse(where))} ? ${next} : item` : next
       // The arrow body is ALWAYS parenthesized: an unwrapped `{ ...item, x: 1 }`
       // parses as a block statement, not an object literal.
-      return `${set}((prev) => prev.map((item) => (${mapped})))`
+      return set(`${prev}.map((item) => (${mapped}))`)
     }
     case 'collection.clear':
-      return `${set}([])`
+      return set('[]')
     case 'set-variable':
-      return `${set}(${value})`
+      return set(value)
     case 'toggle-variable':
-      return `${set}((prev) => !prev)`
+      return set(`!${prev}`)
     case 'increment':
-      return `${set}((prev) => prev + ${a.value ? value : '1'})`
+      return set(`${prev} + ${a.value ? value : '1'}`)
     case 'node.setState':
+      // Variant state is always the design's own — a node's state is not a cell
+      // anyone outside could supply, so there is no writer to choose.
       return `${stateSetter(targetRoot)}(${value})`
-    case 'port.call':
-      // The out-port is a destructured callback prop, so this is a plain call.
-      return `${ident(targetRoot)}(${value})`
     case 'open-url':
       return `window.open(${value})`
     default: {
@@ -305,6 +404,10 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
 
   const hooks: string[] = []
   for (const v of ir.variables) {
+    // An outside cell arrives as a prop, so it gets no hook — its value already
+    // exists under the same identifier, which is why every expression the emitter
+    // produces works unchanged either way.
+    if (v.outside) continue
     hooks.push(`const [${ident(v.id)}, ${setterName(v.id)}] = useState<${tsType(v.type)}>(${JSON.stringify(v.initial)})`)
   }
   for (const s of ir.states) {
@@ -317,7 +420,7 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
   const derived = ir.derived.map((d) => `const ${ident(d.id)} = ${toJs(parse(d.expr))}`)
 
   const handlers = ir.interactions.map((it) => {
-    const stmts = it.do.map(emitAction)
+    const stmts = it.do.map((a) => emitAction(a, writerFor(ir, a.target, readsPrev(a.type))))
     let body: string
     if (it.if) body = `  if (${toJs(parse(it.if))}) {\n${stmts.map((s) => '    ' + s).join('\n')}\n  }`
     else body = stmts.map((s) => '  ' + s).join('\n')
@@ -389,13 +492,16 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
   }
 
   // Two-way: the read is a value prop, the write is a change handler. Emitted as
-  // the controlled-component pattern a React developer would have written.
+  // the controlled-component pattern a React developer would have written — and
+  // routed through the same writer, so a field editing an outside cell reports
+  // outward instead of setting local state it doesn't own.
   for (const e of ir.editable) {
     if (e.node !== node.nodeId) continue
     const inputType = inputTypeFor(ir, node.nodeId)
     if (inputType) props.push(`type="${inputType}"`)
     props.push(`${e.prop}={${ident(e.target)}}`)
-    props.push(`${CHANGE_EVENT.prop}={(e) => ${setterName(e.target)}(${CHANGE_EVENT.read})}`)
+    const write = writerFor(ir, e.target, false).deliver(CHANGE_EVENT.read)
+    props.push(`${CHANGE_EVENT.prop}={(e) => ${write}}`)
   }
 
   let pressHandler: string | undefined

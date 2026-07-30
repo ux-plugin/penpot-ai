@@ -15,8 +15,9 @@ const NODE_IDS = new Set(['addBtn', 'list', 'card'])
 function todoIR(): PageInteractions {
   const ir = emptyPageInteractions()
   ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
-  ir.ports.push({ id: 'initialItems', dir: 'in', type: { collection: 'object' } })
-  ir.ports.push({ id: 'onSave', dir: 'out', type: 'object' })
+  // A cell the real app supplies is a cell like any other — same kind in the
+  // scope, so nothing reading an expression has to know where a value came from.
+  ir.variables.push({ id: 'initialItems', type: { collection: 'object' }, scope: 'page', initial: [], outside: {} })
   ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
   ir.interactions.push({
     on: { node: 'addBtn', trigger: { type: 'press' } },
@@ -35,8 +36,7 @@ describe('buildScope / resolveRoot', () => {
   it('classifies every kind of symbol', () => {
     expect(resolveRoot(scope, 'items')?.kind).toBe('variable')
     expect(resolveRoot(scope, 'isEmpty')?.kind).toBe('derived')
-    expect(resolveRoot(scope, 'initialItems')?.kind).toBe('port-in')
-    expect(resolveRoot(scope, 'onSave')?.kind).toBe('port-out')
+    expect(resolveRoot(scope, 'initialItems')?.kind).toBe('variable')
     expect(resolveRoot(scope, 'addBtn')?.kind).toBe('node')
     expect(resolveRoot(scope, 'item')?.kind).toBe('loop-item')
     expect(resolveRoot(scope, 'nope')).toBeUndefined()
@@ -79,7 +79,7 @@ describe('validatePageInteractions', () => {
     // append must target a collection; isEmpty is a derived value
     ir.interactions[0].do = [{ type: 'collection.append', target: 'isEmpty', value: '1' }]
     const issues = validatePageInteractions(ir, NODE_IDS)
-    expect(issues.some((x) => /must be a collection variable/.test(x.message))).toBe(true)
+    expect(issues.some((x) => /must be a list/.test(x.message))).toBe(true)
   })
 
   it('flags unknown action and trigger types', () => {

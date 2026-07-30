@@ -22,7 +22,7 @@ import {
   type Binding,
   type Derived,
   type Json,
-  type Port,
+  type Scope,
   editableError,
 } from '../../renderer/interactions/ir'
 import { listTriggers, listActions, getAction, isPlanned, type CatalogStatus } from '../../renderer/interactions/catalog'
@@ -59,13 +59,9 @@ import {
   addDerived,
   setDerivedExpr,
   removeDerived,
-  addPort,
-  removePort,
-  setPortDir,
-  setPortType,
-  setPortSample,
-  setPortDescription,
-  isNameTaken,
+  setVariableOutside,
+  setVariableDescription,
+  setVariableScope,
 } from '../../renderer/interactions/document/edit-interactions'
 import { commitInteractions, currentInteractions } from '../../renderer/interactions/document/commit-interactions'
 
@@ -116,8 +112,6 @@ function valuePlaceholder(type: string): string {
       return 'amount, blank = 1'
     case 'open-url':
       return 'url, e.g. "https://example.com"'
-    case 'port.call':
-      return 'what to send out, e.g. item.id'
     default:
       return 'value, e.g. { label: "Item " + (items.length + 1) }'
   }
@@ -127,7 +121,6 @@ function ActionRow({
   it,
   index,
   variables,
-  ports,
   nodes,
   commit,
   liveIR,
@@ -135,7 +128,6 @@ function ActionRow({
   it: Interaction
   index: number
   variables: readonly Variable[]
-  ports: readonly Port[]
   nodes: readonly IndexedShape[]
   commit: Commit
   liveIR: LiveIR
@@ -153,7 +145,6 @@ function ActionRow({
 
   // Slot swap ("Show here"): target picks the slot, value picks the view frame.
   // Both are plain node pickers — no routing/history vocabulary (derived at lowering).
-  const outPorts = expectsTarget === 'port-out' ? ports.filter((p) => p.dir === 'out') : []
   const slots = expectsTarget === 'slot' ? nodes.filter(isSlotShape) : []
   const isShowInSlot = action.type === 'show-in-slot'
   const viewFrames = isShowInSlot ? nodes.filter(isFrameShape) : []
@@ -181,7 +172,7 @@ function ActionRow({
             onChange={(e) => commit(setActionTarget(liveIR(), id, index, e.target.value))}
             aria-label="Target variable"
           >
-            <option value="">{targetVars.length ? 'choose…' : 'add state below'}</option>
+            <option value="">{targetVars.length ? 'choose…' : 'add a value below'}</option>
             {targetVars.map((v) => (
               <option key={v.id} value={v.id}>
                 {v.id}
@@ -217,22 +208,6 @@ function ActionRow({
             {slots.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name ?? s.id.slice(0, 8)}
-              </option>
-            ))}
-          </select>
-        )}
-
-        {expectsTarget === 'port-out' && (
-          <select
-            className={selectCls}
-            value={action.target ?? ''}
-            onChange={(e) => commit(setActionTarget(liveIR(), id, index, e.target.value))}
-            aria-label="Outgoing port"
-          >
-            <option value="">{outPorts.length ? 'choose…' : 'add an outgoing value below'}</option>
-            {outPorts.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.id}
               </option>
             ))}
           </select>
@@ -328,7 +303,6 @@ function InteractionCard({
   it,
   triggers,
   variables,
-  ports,
   nodes,
   commit,
   liveIR,
@@ -336,7 +310,6 @@ function InteractionCard({
   it: Interaction
   triggers: ReturnType<typeof listTriggers>
   variables: readonly Variable[]
-  ports: readonly Port[]
   nodes: readonly IndexedShape[]
   commit: Commit
   liveIR: LiveIR
@@ -379,7 +352,6 @@ function InteractionCard({
             it={it}
             index={i}
             variables={variables}
-            ports={ports}
             nodes={nodes}
             commit={commit}
             liveIR={liveIR}
@@ -726,9 +698,9 @@ function typeFromKey(k: string): ValueType {
 const TYPE_KEYS = ['text', 'number', 'boolean', 'list']
 
 /**
- * A JSON value editor keyed to a ValueType. Shared by a variable's initial value
- * and a port's sample — they're the same edit ("what value does this hold to
- * begin with"), so they get the same control rather than two that drift.
+ * A JSON value editor keyed to a ValueType. For a design-owned cell this is its
+ * starting value; for one supplied from outside it is the sample the preview runs
+ * on. Same control, because it is the same edit.
  */
 function ValueEditor({
   id,
@@ -794,52 +766,39 @@ function VariableValueEditor({ v, commit, liveIR }: { v: Variable; commit: Commi
   )
 }
 
+/** Where a cell lives, in the designer's words. */
+const SCOPE_LABEL: Record<Scope, string> = {
+  local: 'this component',
+  page: 'this page',
+  global: 'whole document',
+}
+
 /**
- * One thing the design does not own — data it is given, or an event it reports.
- * Two rows: the name/kind/type/sample line, then the description.
+ * One cell. Name, type, value, where it lives, and whether the real app supplies
+ * it — all on the same row, because they are all facts about one thing.
  *
- * The description input is not optional polish. What gets handed over is the
- * design, so this sentence is what tells whoever binds the real value — a person
- * or a model — which real value it is. `productTitle: "Sample product"` alone
- * doesn't say whether that's a database field or deliberate copy.
+ * "Comes from the app" is a checkbox rather than a separate kind of cell, and
+ * that is the point: ticking it keeps the id, the type, the value and every
+ * interaction already wired to the cell. The value it was holding becomes the
+ * sample, so a design that already had a plausible placeholder in it is already
+ * done. Nothing about the wiring is second-guessed — a component's own flag can
+ * be scoped to the whole document if that is what the designer wants.
  */
-function PortRow({ p, commit, liveIR }: { p: Port; commit: Commit; liveIR: LiveIR }) {
-  const cur = typeKey(p.type)
+function VariableRow({ v, commit, liveIR }: { v: Variable; commit: Commit; liveIR: LiveIR }) {
+  const cur = typeKey(v.type)
   const keys = TYPE_KEYS.includes(cur) ? TYPE_KEYS : [cur, ...TYPE_KEYS]
+  const outside = !!v.outside
   return (
     <div className="rounded-md border border-border/70 p-2">
-      {/* Name and kind get the full width: the inspector is narrow, and a name
-          truncated to `produc…` is the one thing here that must stay readable. */}
       <div className="flex items-center gap-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={p.id}>
-          {p.id}
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={v.id}>
+          {v.id}
         </span>
         <select
           className={typeSelectCls}
-          value={p.dir}
-          onChange={(e) => commit(setPortDir(liveIR(), p.id, e.target.value as 'in' | 'out'))}
-          aria-label={`${p.id} kind`}
-        >
-          <option value="in">data</option>
-          <option value="out">event</option>
-        </select>
-        <button
-          type="button"
-          className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
-          aria-label={`Remove ${p.id}`}
-          onClick={() => commit(removePort(liveIR(), p.id))}
-        >
-          ✕
-        </button>
-      </div>
-
-      <div className="mt-1.5 flex items-center gap-1.5">
-        <span className="shrink-0 text-[10px] text-muted-foreground">{p.dir === 'in' ? 'a' : 'carries a'}</span>
-        <select
-          className={typeSelectCls}
           value={cur}
-          onChange={(e) => commit(setPortType(liveIR(), p.id, typeFromKey(e.target.value)))}
-          aria-label={`${p.id} type`}
+          onChange={(e) => commit(setVariableType(liveIR(), v.id, typeFromKey(e.target.value)))}
+          aria-label={`${v.id} type`}
         >
           {keys.map((k) => (
             <option key={k} value={k}>
@@ -847,67 +806,69 @@ function PortRow({ p, commit, liveIR }: { p: Port; commit: Commit; liveIR: LiveI
             </option>
           ))}
         </select>
-        {/* An event has no sample — it is sent by an action, and there is nothing
-            for the preview to run on. Empty is the honest state, not a caption. */}
-        {p.dir === 'in' && (
-          <div className="flex min-w-0 flex-1 justify-end">
-            <ValueEditor
-              id={`${p.id}-sample`}
-              type={p.type}
-              value={p.sample ?? null}
-              placeholder="example value"
-              set={(sample) => commit(setPortSample(liveIR(), p.id, sample))}
-            />
-          </div>
-        )}
+        <button
+          type="button"
+          className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
+          aria-label={`Remove ${v.id}`}
+          onClick={() => commit(removeVariable(liveIR(), v.id))}
+        >
+          ✕
+        </button>
       </div>
 
-      <input
-        key={`${p.id}-desc`}
-        className={cn(inputCls, 'mt-1.5 font-sans')}
-        defaultValue={p.description ?? ''}
-        placeholder={p.dir === 'in' ? 'what is this value? e.g. the product shown here' : 'what does this report? e.g. the user added to cart'}
-        onBlur={(e) => commit(setPortDescription(liveIR(), p.id, e.target.value))}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-        }}
-        aria-label={`${p.id} description`}
-      />
-    </div>
-  )
-}
-
-function VariableRow({ v, commit, liveIR }: { v: Variable; commit: Commit; liveIR: LiveIR }) {
-  const cur = typeKey(v.type)
-  const keys = TYPE_KEYS.includes(cur) ? TYPE_KEYS : [cur, ...TYPE_KEYS]
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="w-14 shrink-0 truncate font-mono text-xs text-foreground" title={v.id}>
-        {v.id}
-      </span>
-      <select
-        className={typeSelectCls}
-        value={cur}
-        onChange={(e) => commit(setVariableType(liveIR(), v.id, typeFromKey(e.target.value)))}
-        aria-label={`${v.id} type`}
-      >
-        {keys.map((k) => (
-          <option key={k} value={k}>
-            {k}
-          </option>
-        ))}
-      </select>
-      <div className="flex min-w-0 flex-1 justify-end">
-        <VariableValueEditor v={v} commit={commit} liveIR={liveIR} />
+      {/* Wraps rather than overflows: a boolean cell puts a bare checkbox in the
+          value slot, which would otherwise sit flush against the "from the app"
+          one — two unlabelled twins. The value slot carries its own label for the
+          same reason. */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <select
+          className={typeSelectCls}
+          value={v.scope}
+          onChange={(e) => commit(setVariableScope(liveIR(), v.id, e.target.value as Scope))}
+          aria-label={`${v.id} lives in`}
+        >
+          {(Object.keys(SCOPE_LABEL) as Scope[]).map((s) => (
+            <option key={s} value={s}>
+              {SCOPE_LABEL[s]}
+            </option>
+          ))}
+        </select>
+        <label
+          className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-muted-foreground"
+          title="The real app supplies this value; whatever it holds now stays as the example the preview runs on"
+        >
+          <input
+            type="checkbox"
+            checked={outside}
+            onChange={(e) => commit(setVariableOutside(liveIR(), v.id, e.target.checked))}
+            aria-label={`${v.id} comes from the app`}
+          />
+          from the app
+        </label>
+        <div className="ml-auto flex min-w-0 items-center gap-1">
+          <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
+            {outside ? 'example' : 'starts as'}
+          </span>
+          <VariableValueEditor v={v} commit={commit} liveIR={liveIR} />
+        </div>
       </div>
-      <button
-        type="button"
-        className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
-        aria-label={`Remove ${v.id}`}
-        onClick={() => commit(removeVariable(liveIR(), v.id))}
-      >
-        ✕
-      </button>
+
+      {/* Only asked for once it means something. What gets handed over is the
+          design, so for a value the design does not own this sentence is what
+          tells whoever binds the real one which real one it is. */}
+      {outside && (
+        <input
+          key={`${v.id}-desc`}
+          className={cn(inputCls, 'mt-1.5 font-sans')}
+          defaultValue={v.outside?.description ?? ''}
+          placeholder="what is this really? e.g. the product shown here"
+          onBlur={(e) => commit(setVariableDescription(liveIR(), v.id, e.target.value))}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+          }}
+          aria-label={`${v.id} description`}
+        />
+      )}
     </div>
   )
 }
@@ -977,20 +938,6 @@ export function InteractionsTab() {
     setNewVar('')
   }
 
-  const ports = ir.ports
-  // A repeater only READS its collection, so a list arriving from outside is as
-  // valid a source as page state. (Mutating actions stay variables-only — see
-  // validateAction: you cannot append to a list you don't own.)
-  const lists = [...collections, ...ports.filter((p) => p.dir === 'in' && isCollection(p.type))]
-  const [newPort, setNewPort] = useState('')
-  const portId = toVariableId(newPort)
-  const portNameFree = !!portId && !isNameTaken(ir, portId)
-  const addOutside = (dir: 'in' | 'out') => {
-    if (!portNameFree) return
-    commit(addPort(liveIR(), portId, dir, 'string'))
-    setNewPort('')
-  }
-
   const [newDerived, setNewDerived] = useState('')
   const addFormula = () => {
     const id = toVariableId(newDerived)
@@ -1007,63 +954,14 @@ export function InteractionsTab() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-auto">
-      {/* Data & events — what this design does NOT decide. Both are Ports in the
-          IR (one arriving, one leaving), but they are two different things to a
-          designer, so they are named for what they ARE rather than for their
-          direction. First in the panel, because it reads top-down as the
-          component's own interface: what it's given, what it keeps, what it
-          computes. */}
-      <section className="border-b border-border p-3">
-        <h3 className={sectionHeadCls}>Data &amp; events</h3>
-        {ports.length === 0 && (
-          <p className="mb-1.5 text-[11px] text-muted-foreground/70">
-            Nothing yet — add data the real app supplies, or an event this design reports back.
-          </p>
-        )}
-        <div className="mb-2 flex flex-col gap-1.5">
-          {ports.map((p) => (
-            <PortRow key={p.id} p={p} commit={commit} liveIR={liveIR} />
-          ))}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <input
-            className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus:border-ring"
-            placeholder="new data or event name"
-            value={newPort}
-            onChange={(e) => setNewPort(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') addOutside('in')
-            }}
-            aria-label="New data or event name"
-          />
-          <button
-            type="button"
-            className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-            disabled={!portNameFree}
-            title="A value the real app supplies — becomes a prop"
-            onClick={() => addOutside('in')}
-          >
-            + Data
-          </button>
-          <button
-            type="button"
-            className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-            disabled={!portNameFree}
-            title="Something this design reports back — becomes a callback"
-            onClick={() => addOutside('out')}
-          >
-            + Event
-          </button>
-        </div>
-        {newPort.trim() && !portNameFree && (
-          <p className="mt-1 text-[10px] text-destructive">That name is already used on this page.</p>
-        )}
-      </section>
-
       {/* State — editable input variables */}
       <section className="border-b border-border p-3">
-        <h3 className="mb-1.5 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">State</h3>
-        {variables.length === 0 && <p className="mb-1.5 text-[11px] text-muted-foreground/70">No variables yet.</p>}
+        <h3 className={sectionHeadCls}>Values</h3>
+        {variables.length === 0 && (
+          <p className="mb-1.5 text-[11px] text-muted-foreground/70">
+            No values yet — anything an interaction reads or changes lives here.
+          </p>
+        )}
         <div className="mb-2 flex flex-col gap-1.5">
           {variables.map((v) => (
             <VariableRow key={v.id} v={v} commit={commit} liveIR={liveIR} />
@@ -1142,7 +1040,7 @@ export function InteractionsTab() {
         <>
           {/* A container frame can SHOW a list — author it here; the repeater lands on the template child */}
           {isContainer && (
-            <ListSection node={node} objects={objects} ir={ir} lists={lists} commit={commit} liveIR={liveIR} />
+            <ListSection node={node} objects={objects} ir={ir} lists={collections} commit={commit} liveIR={liveIR} />
           )}
 
           {/* Two-way: this node EDITS a value (a field), rather than only displaying one */}
@@ -1162,7 +1060,6 @@ export function InteractionsTab() {
                 it={it}
                 triggers={triggers}
                 variables={variables}
-                ports={ports}
                 nodes={nodes}
                 commit={commit}
                 liveIR={liveIR}

@@ -26,7 +26,6 @@ import {
   addVariable,
   makeScalarVariable,
   addDerived,
-  addPort,
 } from '../../../../src/lib/renderer/interactions/document/edit-interactions'
 
 beforeAll(() => initDefaultCatalog())
@@ -53,14 +52,22 @@ describe('editableError — writability is a property of the cell', () => {
     expect(editableError(ir, 'double')).toMatch(/formula/)
   })
 
-  it('rejects an in-port — whoever supplies it owns it', () => {
-    const ir = addPort(emptyPageInteractions(), 'customerName', 'in', 'string')
-    expect(editableError(ir, 'customerName')).toMatch(/comes from outside/)
+  it('ACCEPTS a cell the app supplies — the designer decides what wires to what', () => {
+    // What a write has to do to reach the real source is derived plumbing (see
+    // cells.test.ts), never a reason to refuse the wiring.
+    const ir = addVariable(emptyPageInteractions(), {
+      id: 'customerName',
+      type: 'string',
+      scope: 'page',
+      initial: '',
+      outside: { description: 'the signed-in customer' },
+    })
+    expect(editableError(ir, 'customerName')).toBeNull()
   })
 
   it('rejects an unknown or empty target', () => {
     const ir = emptyPageInteractions()
-    expect(editableError(ir, 'nope')).toMatch(/not a variable/)
+    expect(editableError(ir, 'nope')).toMatch(/not a value/)
     expect(editableError(ir, '  ')).toMatch(/Pick a value/)
   })
 })

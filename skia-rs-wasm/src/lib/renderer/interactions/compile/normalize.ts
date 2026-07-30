@@ -12,6 +12,7 @@
 import type { PageInteractions, ReactiveGraph, GraphNode } from '../ir'
 import { getAction } from '../catalog'
 import { parse, freeRefs } from '../expression'
+import { parseRefPath } from '../addressing'
 
 export function normalize(ir: PageInteractions): ReactiveGraph {
   const nodes: GraphNode[] = []
@@ -20,17 +21,36 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
   const depId = (ref: string): string | undefined => {
     if (ir.variables.some((v) => v.id === ref)) return `var:${ref}`
     if (ir.derived.some((d) => d.id === ref)) return `derived:${ref}`
-    if (ir.ports.some((p) => p.id === ref)) return `port:${ref}`
     return undefined
   }
 
-  // variables -> state signals. A variable is always design-owned state; a value
-  // from outside is a Port, so there is no per-variable branch here.
-  for (const v of ir.variables) {
-    nodes.push({ kind: 'source', id: `var:${v.id}`, produces: 'signal', of: { source: 'state', variable: v.id } })
+  const isOutside = (ref: string | undefined): boolean =>
+    !!ref && ir.variables.some((v) => v.id === ref && !!v.outside)
+
+  /** Root cell an action target addresses — `cart.items` writes `cart`. */
+  const refRoot = (target: string | undefined): string | undefined => {
+    if (!target) return undefined
+    try {
+      return parseRefPath(target).root
+    } catch {
+      return undefined
+    }
   }
 
-  for (const p of ir.ports) nodes.push({ kind: 'port', id: `port:${p.id}`, dir: p.dir })
+  // One outbound port per cell, however many actions write it.
+  const outPorts = new Set<string>()
+
+  // Cells -> state signals. This is where "comes from outside" first becomes
+  // plumbing: the designer authored one kind of cell, and an outside-backed one
+  // additionally grows an inbound port node feeding its signal. Nothing about
+  // that was named by them.
+  for (const v of ir.variables) {
+    nodes.push({ kind: 'source', id: `var:${v.id}`, produces: 'signal', of: { source: 'state', variable: v.id } })
+    if (v.outside) {
+      nodes.push({ kind: 'port', id: `port:in:${v.id}`, dir: 'in' })
+      edges.push({ from: `port:in:${v.id}`, to: `var:${v.id}` })
+    }
+  }
 
   // derived -> derive nodes, with edges from each input signal
   for (const d of ir.derived) {
@@ -53,10 +73,18 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
       else if (lowers === 'switch') nodes.push({ kind: 'switch', id: nid, on: src, cases: {} })
       else nodes.push({ kind: 'effect', id: nid, on: src, call: a.type })
       edges.push({ from: src, to: nid })
-      // An out-port call is not an opaque effect: it terminates at a port node,
-      // so the graph shows the value actually leaving.
-      if (a.target && ir.ports.some((p) => p.id === a.target && p.dir === 'out')) {
-        edges.push({ from: nid, to: `port:${a.target}` })
+      // The write side of the same derivation: writing a cell that is backed
+      // from outside has to leave, so the graph grows an outbound port and an
+      // edge into it. The designer authored "add to cart.items" and never named
+      // an event — this is where the event comes from.
+      const root = refRoot(a.target)
+      if (root && isOutside(root)) {
+        const out = `port:out:${root}`
+        if (!outPorts.has(root)) {
+          outPorts.add(root)
+          nodes.push({ kind: 'port', id: out, dir: 'out' })
+        }
+        edges.push({ from: nid, to: out })
       }
     })
   })
@@ -70,6 +98,16 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
       if (from) edges.push({ from, to: nid })
     }
   })
+
+  // A two-way field on an outside-backed cell leaves too, for the same reason a
+  // click-driven write does. Same derivation, different trigger.
+  for (const e of ir.editable) {
+    const root = refRoot(e.target)
+    if (root && isOutside(root) && !outPorts.has(root)) {
+      outPorts.add(root)
+      nodes.push({ kind: 'port', id: `port:out:${root}`, dir: 'out' })
+    }
+  }
 
   // editable -> the three primitives that already exist. This is the whole
   // argument for storing two-way as sugar: it adds NO graph concept. The read is

@@ -9,7 +9,7 @@
  * their index within an interaction's `do[]`.
  */
 
-import type { PageInteractions, Interaction, Action, Variable, ValueType, Json, Port, Repeater, Binding, Editable } from '../ir'
+import type { PageInteractions, Interaction, Action, Variable, ValueType, Json, Scope, Repeater, Binding, Editable } from '../ir'
 
 function mapInteraction(
   ir: PageInteractions,
@@ -100,7 +100,7 @@ export function setActionParam(
   })
 }
 
-// ---- page variables (page-scoped state the actions read/write) ----
+// ---- cells (the one kind of state the actions read/write) ----
 
 export function makeCollectionVariable(id: string): Variable {
   return { id, type: { collection: 'object' }, scope: 'page', initial: [] }
@@ -154,70 +154,52 @@ export function setVariableType(ir: PageInteractions, id: string, type: ValueTyp
   return mapVariable(ir, id, (v) => ({ ...v, type, initial: defaultInitial(type) }))
 }
 
-// ---- ports (values the design does NOT own) ----
-//
-// Ports share one namespace with variables and derived values (see
-// ./addressing buildScope), so every add here checks all three: two cells with
-// the same name would make an expression ambiguous.
-
-/** Whether `id` is already taken by a variable, formula, or port. */
+/**
+ * Whether `id` is already taken. Cells and formulas share one namespace (see
+ * ./addressing buildScope), so two of either with the same name would make an
+ * expression ambiguous.
+ */
 export function isNameTaken(ir: PageInteractions, id: string): boolean {
-  return (
-    ir.variables.some((v) => v.id === id) ||
-    ir.derived.some((d) => d.id === id) ||
-    ir.ports.some((p) => p.id === id)
-  )
+  return ir.variables.some((v) => v.id === id) || ir.derived.some((d) => d.id === id)
 }
 
 /**
- * Declare a value that comes from outside. `sample` seeds it so the preview has
- * something to run on and the handover carries the expected shape; an in-port
- * with no sample renders as nothing, which is indistinguishable from a bug.
+ * Where a cell lives. Set by the designer, changeable at any time — wiring a
+ * component's own flag to something document-wide is a legitimate thing to want,
+ * so this never second-guesses the choice.
  */
-export function addPort(ir: PageInteractions, id: string, dir: 'in' | 'out', type: ValueType = 'string'): PageInteractions {
-  if (!id || isNameTaken(ir, id)) return ir
-  const port: Port = { id, dir, type }
-  if (dir === 'in') port.sample = defaultInitial(type)
-  return { ...ir, ports: [...ir.ports, port] }
-}
-
-export function removePort(ir: PageInteractions, id: string): PageInteractions {
-  return { ...ir, ports: ir.ports.filter((p) => p.id !== id) }
-}
-
-function mapPort(ir: PageInteractions, id: string, fn: (p: Port) => Port): PageInteractions {
-  return { ...ir, ports: ir.ports.map((p) => (p.id === id ? fn(p) : p)) }
-}
-
-/** Retype a port, resetting its sample to that type's default. */
-export function setPortType(ir: PageInteractions, id: string, type: ValueType): PageInteractions {
-  return mapPort(ir, id, (p) => ({ ...p, type, sample: p.dir === 'in' ? defaultInitial(type) : p.sample }))
+export function setVariableScope(ir: PageInteractions, id: string, scope: Scope): PageInteractions {
+  return mapVariable(ir, id, (v) => ({ ...v, scope }))
 }
 
 /**
- * Flip a port's direction. The sample follows the direction, because it means
- * different things on each side: the value arriving, or an example of what goes out.
+ * Mark a cell as supplied from outside the design, or take the mark off.
+ *
+ * This is the whole "I don't decide this" statement, and it is one boolean rather
+ * than a second kind of thing: the cell keeps its id, type, value and every
+ * interaction already wired to it. Turning it on preserves the current value as
+ * the SAMPLE, which is why they share a slot — a design that had a plausible
+ * placeholder in it already has its sample.
  */
-export function setPortDir(ir: PageInteractions, id: string, dir: 'in' | 'out'): PageInteractions {
-  return mapPort(ir, id, (p) => {
-    const next: Port = { ...p, dir }
-    if (dir === 'in') next.sample = p.sample ?? defaultInitial(p.type)
-    else delete next.sample
+export function setVariableOutside(ir: PageInteractions, id: string, outside: boolean): PageInteractions {
+  return mapVariable(ir, id, (v) => {
+    const next: Variable = { ...v }
+    if (outside) next.outside = v.outside ?? {}
+    else delete next.outside
     return next
   })
 }
 
-export function setPortSample(ir: PageInteractions, id: string, sample: Json): PageInteractions {
-  return mapPort(ir, id, (p) => ({ ...p, sample }))
-}
-
-/** Set (or, with a blank string, clear) the prose description. */
-export function setPortDescription(ir: PageInteractions, id: string, description: string): PageInteractions {
-  return mapPort(ir, id, (p) => {
-    const next: Port = { ...p }
-    if (description.trim()) next.description = description.trim()
-    else delete next.description
-    return next
+/**
+ * Set (or, with a blank string, clear) what an outside value MEANS. Prose, aimed
+ * at whoever binds the real value — a person or a model. No-op on a cell the
+ * design owns, where there is nothing to explain to anyone downstream.
+ */
+export function setVariableDescription(ir: PageInteractions, id: string, description: string): PageInteractions {
+  return mapVariable(ir, id, (v) => {
+    if (!v.outside) return v
+    const text = description.trim()
+    return { ...v, outside: text ? { description: text } : {} }
   })
 }
 
