@@ -66,44 +66,35 @@ export const canvasLens: HistoryLens = {
   conflict: 'refuse',
 }
 
-/** A mode's view: my own work inside one scope, at that scope's own granularity. */
-export function scopeLens(scope: ScopeTag, conflict: ConflictPolicy = 'refuse'): HistoryLens {
+/**
+ * A mode's view: my own work inside one scope, at that scope's own granularity.
+ *
+ * Bounded to the **current visit** by `fromSeq` — the head the scope was opened
+ * at. A tag names the subject (`shader-material:<shapeId>`), so re-entering a
+ * shape's shader lands on the same tag and the log still holds every earlier
+ * visit's entries; without the bound the lens would see them and undo would
+ * walk backwards out of this session into work the user finished minutes ago.
+ *
+ * Keeping undo inside the visit is a deliberate decision, not a limitation. It
+ * is what lets the scope machinery stay small: nothing has to reach across a
+ * session boundary, so there is no fallback lens, and the earlier states of a
+ * subject are reached through its version list instead of by pressing Cmd+Z.
+ *
+ * Omitting `fromSeq` gives an unbounded view of the tag, which is what a history
+ * panel wants — every visit, in order.
+ */
+export function scopeLens(
+  scope: ScopeTag,
+  fromSeq?: number,
+  conflict: ConflictPolicy = 'refuse',
+): HistoryLens {
   return {
     id: scope,
-    filter: (txn, ctx) => txn.actor === ctx.actor && txn.scope === scope,
-    conflict,
-  }
-}
-
-/**
- * The one canvas entry a focus session is allowed to reach: the undo of *its
- * own* collapse.
- *
- * Exiting a session, undoing it from the canvas, then stepping back in leaves
- * the session's own entries dead — correctly, the edits really were reverted —
- * so the scope lens has nothing to redo, and the only transaction that can
- * restore the work is canvas-scoped. Falling back to the whole `canvasLens` for
- * that is far too wide: it picks the newest live undo from *any* subject, so a
- * redo pressed inside a shader stage can resurrect a rename on an unrelated
- * shape. This narrows the reach to undos whose target is a collapse tagged with
- * this scope — which is precisely the session coming back.
- *
- * It needs the log to resolve `undoes` back to a collapse, so it is a factory
- * over `txns` rather than a constant. Building the seq set once keeps the
- * filter O(1) per entry.
- */
-export function collapseRedoLens(tag: ScopeTag, txns: readonly Txn[]): HistoryLens {
-  const mine = new Set(
-    txns.filter((t) => t.collapses !== undefined && t.groupId === tag).map((t) => t.seq),
-  )
-  return {
-    id: `${tag}→canvas`,
     filter: (txn, ctx) =>
       txn.actor === ctx.actor &&
-      txn.scope === CANVAS_SCOPE &&
-      txn.undoes !== undefined &&
-      mine.has(txn.undoes),
-    conflict: 'refuse',
+      txn.scope === scope &&
+      (fromSeq === undefined || txn.seq > fromSeq),
+    conflict,
   }
 }
 
@@ -128,20 +119,11 @@ export function liveness(txns: readonly Txn[]): Map<number, boolean> {
     live.set(t.seq, !undoers.some((u) => live.get(u.seq) === true))
   }
 
-  // A collapse entry restates what its children already applied, so the two
-  // representations must not disagree about what stands. Reverting the collapse
-  // reverts the children's effect, but nothing points at the children — so
-  // without this they stay "live" while the document no longer reflects them,
-  // and a scope lens reading them concludes work is present that is actually
-  // gone. Newest-first so a collapse inside a collapse settles before its own
-  // range is considered.
-  for (let i = txns.length - 1; i >= 0; i -= 1) {
-    const c = txns[i]
-    if (!c.collapses || live.get(c.seq) === true) continue
-    for (const t of txns) {
-      if (t.seq > c.collapses.from && t.seq <= c.collapses.to) live.set(t.seq, false)
-    }
-  }
+  // No second pass over `collapses` here on purpose. A collapse entry restates
+  // what its children applied, so the two disagree once the collapse is undone —
+  // but nothing reads the children after their visit closes, because every lens
+  // is bounded to the visit that wrote them. The rule that reconciled them was
+  // needed only while undo could reach back into a finished session.
   return live
 }
 

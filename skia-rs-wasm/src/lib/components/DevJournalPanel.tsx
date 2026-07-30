@@ -15,7 +15,6 @@
 import { useEffect, useState } from 'react'
 import { useJournalStore, CANVAS_SCOPE, type ScopeTag, type Txn } from '../history/journal/journal-store'
 import { canvasLens, chainDepth, liveness, localCtx, pickRedo, pickUndo, scopeLens } from '../history/journal/lens'
-import { activeScope } from '../history/journal/scope'
 
 /** Rows are grouped by the scope that wrote them, newest scope last. */
 function groupByScope(txns: readonly Txn[]): Array<{ scope: ScopeTag; rows: Txn[] }> {
@@ -53,8 +52,11 @@ export function DevJournalPanel() {
 
   // The lens the next Cmd+Z will actually use — the same resolution page-crud
   // does, so what this shows is what will happen, not an approximation.
-  const tag = activeScope()
-  const lens = tag === undefined ? canvasLens : scopeLens(tag)
+  // From the subscribed `scopes` rather than a getState() read, so the panel
+  // re-renders the moment a stage opens or closes.
+  const frame = scopes[scopes.length - 1]
+  const tag = frame?.tag
+  const lens = frame === undefined ? canvasLens : scopeLens(frame.tag, frame.fromSeq)
   const ctx = localCtx()
   const undoTarget = pickUndo(txns, lens, ctx)
   const redoTarget = pickRedo(txns, lens, ctx)

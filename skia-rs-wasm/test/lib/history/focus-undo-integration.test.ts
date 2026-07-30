@@ -133,18 +133,35 @@ describe('focus scope — real commit pipeline', () => {
     expect(materialA()).toBe('v0')
   })
 
-  // Scope tags name the SUBJECT, not the visit, so a shape's shader has one
-  // history across visits. This is a deliberate change from the old
-  // FocusBuffer, which discarded its contents on exit.
-  it('re-entering the same subject resumes its history', async () => {
+  /**
+   * Undo does not cross a session boundary. The tag still names the subject, so
+   * the previous visit's entries are right there under the same tag — the lens
+   * is bounded to the current visit on purpose, and earlier states are reached
+   * through the subject's version list rather than by pressing Cmd+Z.
+   */
+  it('re-entering a subject starts with nothing to undo', async () => {
     enterScope('shader:rect')
     await editMaterial('v1')
     exitScope()
 
     enterScope('shader:rect')
-    await undo() // reaches back into the previous visit
-    expect(materialA()).toBe('v0')
+    await undo() // must NOT reach back into the previous visit
+    expect(materialA()).toBe('v1')
     await redo()
+    expect(materialA()).toBe('v1')
+    exitScope()
+  })
+
+  it('a second visit undoes only its own edits', async () => {
+    enterScope('shader:rect')
+    await editMaterial('v1')
+    exitScope()
+
+    enterScope('shader:rect')
+    await editMaterial('v2')
+    await undo()
+    expect(materialA()).toBe('v1') // back to where this visit started, no further
+    await undo()
     expect(materialA()).toBe('v1')
     exitScope()
   })
@@ -161,12 +178,11 @@ describe('focus scope — real commit pipeline', () => {
   })
 
   /**
-   * The case that motivated per-subject tags: exit, undo from the canvas, step
-   * back in, and redo must reach the work again. Under per-visit tags the new
-   * session was empty and the entry to redo was canvas-scoped, so redo had
-   * nothing to target and the press did nothing.
+   * Exit, canvas-undo, step back in: redo inside the stage does nothing, and
+   * the work is not stranded — the collapsed entry is canvas-scoped, so canvas
+   * redo restores the whole session as one step.
    */
-  it('redo works after exiting, undoing on the canvas, and stepping back in', async () => {
+  it('after a canvas undo, the session is restored from the canvas, not the stage', async () => {
     enterScope('shader:rect')
     await editMaterial('v1')
     exitScope()
@@ -175,17 +191,15 @@ describe('focus scope — real commit pipeline', () => {
     expect(materialA()).toBe('v0')
 
     enterScope('shader:rect')
-    await redo()
-    expect(materialA()).toBe('v1')
+    await redo() // nothing of this visit's, so nothing happens
+    expect(materialA()).toBe('v0')
     exitScope()
+
+    await redo() // the canvas can still put it back
+    expect(materialA()).toBe('v1')
   })
 
-  /**
-   * The reach in the test above is exactly one entry wide. A redo pressed in a
-   * stage whose subject has no history must not restore whatever the canvas
-   * happened to undo last — the first version of that fallback went through the
-   * whole `canvasLens` and brought back an unrelated shape's rename.
-   */
+  /** No lens reaches outside the open scope, so unrelated work is untouchable. */
   it('redo inside a scope does not resurrect unrelated canvas work', async () => {
     await editCanvas('renamed-on-canvas')
     await undo()
@@ -196,27 +210,6 @@ describe('focus scope — real commit pipeline', () => {
     expect(nameB()).not.toBe('renamed-on-canvas')
     expect(materialA()).toBe('v0')
     exitScope()
-  })
-
-  /**
-   * A visit that reverts an EARLIER visit's work still has a net effect, so it
-   * must leave a canvas entry. The revert is odd-depth and would be dropped by
-   * a parity-only collapse filter, but its target predates this visit, so
-   * nothing in range cancels it.
-   */
-  it('a visit that undoes an earlier visit still collapses to a canvas step', async () => {
-    enterScope('shader:rect')
-    await editMaterial('v1')
-    exitScope()
-
-    enterScope('shader:rect')
-    await undo()
-    expect(materialA()).toBe('v0')
-    exitScope()
-
-    // The canvas can put it back — the second visit's effect was recorded.
-    await undo()
-    expect(materialA()).toBe('v1')
   })
 
   it('a gesture inside the stage is ONE step', async () => {

@@ -8,7 +8,6 @@ import { commitChanges } from './renderer/store/commit'
 import { LOCAL_ACTOR, useJournalStore, type Txn } from './history/journal/journal-store'
 import {
   canvasLens,
-  collapseRedoLens,
   localCtx,
   pickRedo,
   pickUndo,
@@ -18,7 +17,6 @@ import {
 import { rebase, resolve } from './history/journal/rebase'
 import { invertAll } from './history/journal/op'
 import { toChanges } from './history/journal/codec'
-import { activeScope } from './history/journal/scope'
 import { flushFocusPending } from './history/focus-pending'
 import type { IndexedPage } from './worker/types'
 import { flattenPageToIndexed } from './worker/types'
@@ -99,8 +97,8 @@ export async function commitChangesPublic(params: CommitChangesParams): Promise<
  * case, reachable with a single actor. One resolver, one answer.
  */
 function currentLens(): HistoryLens {
-  const tag = activeScope()
-  return tag === undefined ? canvasLens : scopeLens(tag)
+  const frame = useJournalStore.getState().currentScopeFrame()
+  return frame === undefined ? canvasLens : scopeLens(frame.tag, frame.fromSeq)
 }
 
 /**
@@ -144,26 +142,15 @@ export async function redo(): Promise<void> {
   useJournalStore.getState().flush()
 
   const lens = currentLens()
-  const txns = useJournalStore.getState().txns
-  const ctx = localCtx()
   // Redo is undo at the opposite chain parity: reverting the undo re-applies
   // what it took away. There is no redo stack to pop.
-  let target = pickRedo(txns, lens, ctx)
-
-  // Redo — and ONLY redo — reaches outside the scope when it has nothing of its
-  // own. Exiting a session, undoing it from the canvas, then stepping back in
-  // leaves the entry to redo canvas-scoped and therefore invisible from inside,
-  // so the press would otherwise do nothing at all.
   //
-  // The reach is deliberately one entry wide: the undo of THIS session's own
-  // collapse, never the canvas at large. Falling back to `canvasLens` let a redo
-  // pressed inside a shader stage restore an unrelated shape's rename.
-  //
-  // Undo does not reach out at all: reverting canvas work from inside a session
-  // is a surprise, whereas restoring what you just undid is not.
-  const tag = activeScope()
-  if (!target && tag !== undefined) target = pickRedo(txns, collapseRedoLens(tag, txns), ctx)
-
+  // Neither verb reaches outside the open scope. Re-entering a subject's stage
+  // starts with nothing to undo or redo even though the log still holds the
+  // earlier visits — those are reached through the subject's version list, not
+  // by pressing Cmd+Z across a session boundary. The work is not stranded: the
+  // collapsed entry is canvas-scoped, so canvas redo restores it as one step.
+  const target = pickRedo(useJournalStore.getState().txns, lens, localCtx())
   if (!target) return
   await revert(target, lens)
 }

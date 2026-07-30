@@ -7,19 +7,22 @@
  * carrying that tag, and its own lens reads them back at full granularity. The
  * commit path gains no branch at all.
  *
- * On exit the session collapses to ONE canvas step. The children are not
- * discarded, though: they stay in the log (it is append-only) and remain
- * reachable, because **a scope tag names the SUBJECT, not the visit** —
- * `shader-material:<shapeId>`, not a session counter. Re-entering a shape's
- * shader resumes its history, so undo and redo continue where they left off
- * instead of facing an empty session.
+ * On exit the session collapses to ONE canvas step. The children stay in the
+ * log (it is append-only) and a tag still names the SUBJECT rather than the
+ * visit — `shader-material:<shapeId>`, not a session counter — so a shape's
+ * shader accumulates one ordered history across every visit, which is what the
+ * Phase 3 tab reads.
  *
- * That is a deliberate departure from the old `FocusBuffer`, which discarded
- * its contents on exit and started blank on re-entry. The old behaviour meant
- * exiting, undoing from the canvas, and stepping back in left redo with nothing
- * to reach — the entry to redo was canvas-scoped and invisible from inside.
- * Per-subject tags fix that, and match what the Phase 3 tab wants anyway: a
- * shape's shader has *a* history, not one per visit.
+ * Undo and redo do **not** cross a session boundary, though. The lens is bounded
+ * to the current visit, so re-entering a stage starts with nothing to undo even
+ * though earlier entries are right there under the same tag. Earlier states of a
+ * subject are reached through its version list instead.
+ *
+ * That boundary is what keeps this module small. Letting Cmd+Z reach back into a
+ * finished session meant the collapse entry and its children could disagree
+ * about what stands, which cost a liveness rule, an extra clause in the collapse
+ * filter, and a fallback lens — three derived rules holding up one idea, each
+ * one found by a bug. None of them is needed once undo stays inside the visit.
  *
  * The collapse entry restates its children's ops rather than referencing them,
  * so a single canvas undo inverts the whole session with no special casing in
@@ -59,21 +62,20 @@ export function exitScope(): Txn | undefined {
   // live, so concatenating all live entries yields the session's net *state*
   // rather than its net *change*; inverting that would replay the session
   // instead of reverting it. An edit and the undo that cancelled it must both
-  // drop out.
+  // drop out, which is what the parity check does.
   //
-  // Parity alone handles that, but not a session that reverts a PREVIOUS
-  // session's work — possible since scope tags are per subject and re-entering
-  // resumes the same tag. Such a revert is odd-depth, yet its target sits
-  // before this session began, so nothing here cancels it and its effect is
-  // real. Hence: keep a live entry when it asserts an effect, OR when it
-  // retracts something from outside this session's range.
-  const inRange = (seq: number): boolean => seq > frame.fromSeq
+  // Every entry considered is from this visit alone. A visit cannot revert an
+  // earlier visit's work — the lens is bounded by `fromSeq` — so an odd-depth
+  // entry in range always cancels an even-depth one in range, and dropping both
+  // is exactly right.
   const ops = state.txns
-    .filter((t) => {
-      if (!inRange(t.seq) || t.scope !== frame.tag || live.get(t.seq) !== true) return false
-      if (chainDepth(state.txns, t) % 2 === 0) return true
-      return t.undoes !== undefined && !inRange(t.undoes)
-    })
+    .filter(
+      (t) =>
+        t.seq > frame.fromSeq &&
+        t.scope === frame.tag &&
+        live.get(t.seq) === true &&
+        chainDepth(state.txns, t) % 2 === 0,
+    )
     .flatMap((t) => t.ops)
 
   if (ops.length === 0) return undefined
