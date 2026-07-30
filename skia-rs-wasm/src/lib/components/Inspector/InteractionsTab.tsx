@@ -465,7 +465,7 @@ function ListSection({
       </label>
       {!hasLists && !on && (
         <p className="mt-1.5 text-[11px] text-muted-foreground/70">
-          Add a list in State, or one that comes in from outside.
+          Add a list in State, or one the app supplies.
         </p>
       )}
       {on && rep && template && (
@@ -795,8 +795,8 @@ function VariableValueEditor({ v, commit, liveIR }: { v: Variable; commit: Commi
 }
 
 /**
- * One value the design does not own. Two rows: the name/direction/type/sample
- * line, then the description.
+ * One thing the design does not own — data it is given, or an event it reports.
+ * Two rows: the name/kind/type/sample line, then the description.
  *
  * The description input is not optional polish. What gets handed over is the
  * design, so this sentence is what tells whoever binds the real value — a person
@@ -808,19 +808,33 @@ function PortRow({ p, commit, liveIR }: { p: Port; commit: Commit; liveIR: LiveI
   const keys = TYPE_KEYS.includes(cur) ? TYPE_KEYS : [cur, ...TYPE_KEYS]
   return (
     <div className="rounded-md border border-border/70 p-2">
+      {/* Name and kind get the full width: the inspector is narrow, and a name
+          truncated to `produc…` is the one thing here that must stay readable. */}
       <div className="flex items-center gap-1.5">
-        <span className="w-14 shrink-0 truncate font-mono text-xs text-foreground" title={p.id}>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={p.id}>
           {p.id}
         </span>
         <select
           className={typeSelectCls}
           value={p.dir}
           onChange={(e) => commit(setPortDir(liveIR(), p.id, e.target.value as 'in' | 'out'))}
-          aria-label={`${p.id} direction`}
+          aria-label={`${p.id} kind`}
         >
-          <option value="in">comes in</option>
-          <option value="out">goes out</option>
+          <option value="in">data</option>
+          <option value="out">event</option>
         </select>
+        <button
+          type="button"
+          className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
+          aria-label={`Remove ${p.id}`}
+          onClick={() => commit(removePort(liveIR(), p.id))}
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <span className="shrink-0 text-[10px] text-muted-foreground">{p.dir === 'in' ? 'a' : 'carries a'}</span>
         <select
           className={typeSelectCls}
           value={cur}
@@ -833,8 +847,10 @@ function PortRow({ p, commit, liveIR }: { p: Port; commit: Commit; liveIR: LiveI
             </option>
           ))}
         </select>
-        <div className="flex min-w-0 flex-1 justify-end">
-          {p.dir === 'in' ? (
+        {/* An event has no sample — it is sent by an action, and there is nothing
+            for the preview to run on. Empty is the honest state, not a caption. */}
+        {p.dir === 'in' && (
+          <div className="flex min-w-0 flex-1 justify-end">
             <ValueEditor
               id={`${p.id}-sample`}
               type={p.type}
@@ -842,19 +858,10 @@ function PortRow({ p, commit, liveIR }: { p: Port; commit: Commit; liveIR: LiveI
               placeholder="example value"
               set={(sample) => commit(setPortSample(liveIR(), p.id, sample))}
             />
-          ) : (
-            <span className="text-[10px] text-muted-foreground">sent by an action</span>
-          )}
-        </div>
-        <button
-          type="button"
-          className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
-          aria-label={`Remove ${p.id}`}
-          onClick={() => commit(removePort(liveIR(), p.id))}
-        >
-          ✕
-        </button>
+          </div>
+        )}
       </div>
+
       <input
         key={`${p.id}-desc`}
         className={cn(inputCls, 'mt-1.5 font-sans')}
@@ -1000,14 +1007,17 @@ export function InteractionsTab() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-auto">
-      {/* From outside — the values this design does NOT decide. First, because it
-          reads top-down as the component's own interface: what comes in, what it
-          keeps, what it computes. */}
+      {/* Data & events — what this design does NOT decide. Both are Ports in the
+          IR (one arriving, one leaving), but they are two different things to a
+          designer, so they are named for what they ARE rather than for their
+          direction. First in the panel, because it reads top-down as the
+          component's own interface: what it's given, what it keeps, what it
+          computes. */}
       <section className="border-b border-border p-3">
-        <h3 className={sectionHeadCls}>From outside</h3>
+        <h3 className={sectionHeadCls}>Data &amp; events</h3>
         {ports.length === 0 && (
           <p className="mb-1.5 text-[11px] text-muted-foreground/70">
-            Nothing yet — add a value the real app supplies, or one this design reports back.
+            Nothing yet — add data the real app supplies, or an event this design reports back.
           </p>
         )}
         <div className="mb-2 flex flex-col gap-1.5">
@@ -1018,31 +1028,31 @@ export function InteractionsTab() {
         <div className="flex items-center gap-1.5">
           <input
             className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus:border-ring"
-            placeholder="new outside value name"
+            placeholder="new data or event name"
             value={newPort}
             onChange={(e) => setNewPort(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') addOutside('in')
             }}
-            aria-label="New outside value name"
+            aria-label="New data or event name"
           />
           <button
             type="button"
             className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
             disabled={!portNameFree}
-            title="A value the real app supplies"
+            title="A value the real app supplies — becomes a prop"
             onClick={() => addOutside('in')}
           >
-            + Comes in
+            + Data
           </button>
           <button
             type="button"
             className="h-7 shrink-0 rounded-md border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
             disabled={!portNameFree}
-            title="Something this design reports back out"
+            title="Something this design reports back — becomes a callback"
             onClick={() => addOutside('out')}
           >
-            + Goes out
+            + Event
           </button>
         </div>
         {newPort.trim() && !portNameFree && (

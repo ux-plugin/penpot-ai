@@ -6,10 +6,10 @@
  * before/after of every click is fully diffable — see runtime.ts):
  *   - State:    every variable and derived value, live, with the ones that just
  *               moved flagged.
- *   - Outside:  every port — in-ports showing the sample the preview is running
- *               on, out-ports showing whether anything has actually been sent.
- *               An out-port call is the one effect with nowhere to land here, so
- *               without this row it would look like a click that did nothing.
+ *   - Data & events: every port — data showing the sample the preview is running
+ *               on, events showing whether anything has actually been sent. An
+ *               event is the one effect with nowhere to land here, so without
+ *               this row it would look like a click that did nothing.
  *   - Activity: what fired and what it changed, newest first. Each line names
  *               the affected nodes that are NOT in the current scope, with one
  *               click to jump to them — the case where the preview appears to do
@@ -99,7 +99,7 @@ export function StatePanel({
         <div className="max-h-56 overflow-auto px-3 pb-3">
           {/* Only a true blank slate gets the prompt. A design that declares
               ports but keeps no state of its own is complete, not empty — the
-              "From outside" group below is the whole story. */}
+              data & events group below is the whole story. */}
           {!hasState ? (
             ir.ports.length === 0 && (
               <p className="py-1 text-[11px] text-muted-foreground">
@@ -135,7 +135,7 @@ export function StatePanel({
           {ir.ports.length > 0 && (
             <div className="mb-2">
               <div className="mb-1 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
-                From outside
+                Data &amp; events
               </div>
               {inPorts.map((p) => (
                 <div key={p.id} className={rowCls}>
@@ -155,7 +155,7 @@ export function StatePanel({
                   <span className="text-foreground">
                     {callCount.has(p.id) ? `called ${callCount.get(p.id)}×` : 'not called yet'}
                   </span>
-                  <span className="text-[10px] text-muted-foreground" title={p.description ?? 'goes out of this design'}>
+                  <span className="text-[10px] text-muted-foreground" title={p.description ?? 'an event this design reports'}>
                     ↗
                   </span>
                 </div>
