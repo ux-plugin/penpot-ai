@@ -33,16 +33,49 @@ export interface RawWasmExports {
   readonly [name: string]: unknown
 }
 
+export interface FacadeOptions {
+  /**
+   * Stand in for entry points the module has not implemented yet, instead of letting
+   * `module._foo(...)` fail with "is not a function".
+   *
+   * The Vello backend implements a fraction of render-wasm's ~150 entry points — text, layouts,
+   * effects and materials are all later phases — but the host calls them unconditionally while
+   * syncing a page. Without this, the first text shape kills the renderer.
+   *
+   * The stub returns 0, not undefined: callers treat these as numbers or pointers, and
+   * `undefined` propagates into arithmetic as NaN, which fails somewhere far from the cause.
+   *
+   * **This is Phase-2 scaffolding, and it hides real errors by design.** Keep it off for the
+   * Skia backend, where a missing export is a genuine bug. `onMissing` fires once per name, so
+   * a run doubles as a census of what a real document actually needs.
+   */
+  readonly stubMissingExports?: boolean
+  /** Called once per distinct missing export name. */
+  readonly onMissing?: (name: string) => void
+}
+
 /**
  * Wrap raw wasm exports in an Emscripten-shaped facade.
  *
  * `exports` is what wasm-bindgen's `init()` resolves to — it carries both the generated
  * bindings and any raw `#[unsafe(no_mangle)]` functions.
  */
-export function createModuleFacade(exports: RawWasmExports): EmscriptenLikeModule {
+export function createModuleFacade(
+  exports: RawWasmExports,
+  options: FacadeOptions = {}
+): EmscriptenLikeModule {
   const memory = exports.memory
   if (!(memory instanceof WebAssembly.Memory)) {
     throw new TypeError('wasm exports have no `memory`; cannot build a Module facade')
+  }
+
+  const reportedMissing = new Set<string>()
+  const stubFor = (name: string): (() => number) => {
+    if (!reportedMissing.has(name)) {
+      reportedMissing.add(name)
+      options.onMissing?.(name)
+    }
+    return () => 0
   }
 
   // Cache the views but key them on buffer identity: after a grow, `memory.buffer` is a new
@@ -83,7 +116,14 @@ export function createModuleFacade(exports: RawWasmExports): EmscriptenLikeModul
       // can still reach wasm-bindgen's own exports if they need to.
       const name = prop.startsWith('_') ? prop.slice(1) : prop
       const value = exports[name]
-      if (value === undefined) return undefined
+      if (value === undefined) {
+        // Only stub the C-ABI namespace. A bare name is a wasm-bindgen export, and inventing
+        // one would mask a genuine wiring mistake.
+        if (!options.stubMissingExports || !prop.startsWith('_')) return undefined
+        const stub = stubFor(name)
+        bound.set(prop, stub)
+        return stub
+      }
 
       bound.set(prop, value)
       return value
@@ -93,7 +133,8 @@ export function createModuleFacade(exports: RawWasmExports): EmscriptenLikeModul
       if (typeof prop !== 'string') return Reflect.has(target, prop)
       if (prop === 'HEAPU8' || prop === 'HEAP8') return true
       const name = prop.startsWith('_') ? prop.slice(1) : prop
-      return name in exports
+      if (name in exports) return true
+      return options.stubMissingExports === true && prop.startsWith('_')
     },
   }) as unknown as EmscriptenLikeModule
 }

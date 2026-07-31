@@ -69,6 +69,38 @@ describe('createModuleFacade', () => {
     expect(new Uint8Array(exports.memory.buffer)[70000]).toBe(0x5c)
   })
 
+  /**
+   * The Vello backend implements a fraction of render-wasm's entry points, but the host calls
+   * them unconditionally while syncing a page. Without a stub the first one kills the renderer.
+   */
+  it('stubs missing C-ABI exports when asked, and reports each once', () => {
+    const missing: string[] = []
+    const m = createModuleFacade(fakeExports(), {
+      stubMissingExports: true,
+      onMissing: (name) => missing.push(name),
+    })
+
+    // Returns 0 rather than undefined: callers do arithmetic on these, and a NaN surfaces far
+    // from the cause.
+    expect((m._set_shape_blur as () => number)()).toBe(0)
+    expect((m._set_shape_blur as () => number)()).toBe(0)
+    expect((m._clear_shape_shadows as () => number)()).toBe(0)
+
+    expect(missing).toEqual(['set_shape_blur', 'clear_shape_shadows'])
+  })
+
+  /** A bare name is a wasm-bindgen export; inventing one would mask a real wiring mistake. */
+  it('never stubs non-underscore names', () => {
+    const m = createModuleFacade(fakeExports(), { stubMissingExports: true })
+    expect(m.create_focus_renderer).toBeTypeOf('function')
+    expect(m.no_such_bindgen_export).toBeUndefined()
+  })
+
+  it('does not stub by default, so a missing export in the Skia path still fails loudly', () => {
+    const m = createModuleFacade(fakeExports())
+    expect(m._set_shape_blur).toBeUndefined()
+  })
+
   it('rejects exports without a memory rather than failing later', () => {
     const broken = { alloc_bytes: () => 0 } as unknown as RawWasmExports
     expect(() => createModuleFacade(broken)).toThrow(/no `memory`/)
