@@ -17,6 +17,10 @@ import {
   type ShaderNode,
 } from '../../../../src/lib/renderer/shader-lang/nodegraph/model'
 import { compileGraph } from '../../../../src/lib/renderer/shader-lang/nodegraph/compile'
+import {
+  TEMPLATE_BY_KIND,
+  instantiate,
+} from '../../../../src/lib/renderer/shader-lang/nodegraph/palette'
 
 type NodeInit = Partial<ShaderNode> & Pick<ShaderNode, 'id' | 'name' | 'returns'>
 
@@ -206,6 +210,44 @@ describe('codegen', () => {
     const { source, error } = compileGraph(g)
     expect(error).toBeDefined()
     expect(source).toContain('half4 main(')
+  })
+
+  it('pulls in only the helpers and engine uniforms the bodies mention', () => {
+    // Material(p) → Normalize → Noise → result. Noise calls _vnoise, which calls
+    // _hash21; Normalize reads u_resolution. Nothing here touches u_phase.
+    const nodes = [
+      node({ id: 'r', name: 'Material', returns: 'vec4', params: [{ name: 'p', type: 'vec2' }] }),
+      instantiate(TEMPLATE_BY_KIND.normalize, 'norm', 'r', 'a', { x: 0, y: 0 }),
+      instantiate(TEMPLATE_BY_KIND.noise, 'noi', 'r', 'b', { x: 0, y: 0 }),
+    ]
+    const edges = [
+      edge(['r', 'p'], ['norm', 'p']),
+      edge(['norm', OUT], ['noi', 'uv']),
+      edge(['noi', OUT], ['r', OUT]),
+    ]
+    const { source, error } = compileGraph(graphOf(nodes, edges))
+
+    expect(error).toBeUndefined()
+    expect(source).toContain('uniform float2 u_resolution;')
+    expect(source).not.toContain('u_phase')
+    // The dependency is emitted before the helper that calls it.
+    expect(source.indexOf('float _hash21(')).toBeLessThan(source.indexOf('float _vnoise('))
+    // And before any function that uses it.
+    expect(source.indexOf('float _vnoise(')).toBeLessThan(source.indexOf('half4 main('))
+  })
+
+  it('declares no helpers when nothing references them', () => {
+    const { source } = compileGraph(example())
+    expect(source).not.toContain('_hash21')
+    expect(source).not.toContain('u_resolution')
+  })
+
+  it('instantiates a template with its defaults as unwired constants', () => {
+    const n = instantiate(TEMPLATE_BY_KIND.mix, 'm', 'r', 'a', { x: 4, y: 5 })
+    expect(n.returns).toBe('color')
+    expect(n.values.t).toEqual({ value: 0.5 })
+    expect(n.body).toContain('mix(a, b, t)')
+    expect(n.position).toEqual({ x: 4, y: 5 })
   })
 
   it('handles a shader that is one hand-written node', () => {

@@ -35,6 +35,65 @@ export interface CompileResult {
 
 const FALLBACK = 'half4 main(float2 uv) {\n  return half4(0.0, 0.0, 0.0, 1.0);\n}'
 
+/**
+ * Uniforms the engine provides. A body that mentions one gets the declaration;
+ * a body that does not, does not — so the compiled source only ever declares
+ * what the graph actually uses.
+ */
+const ENGINE_UNIFORMS: Record<string, PortType> = {
+  u_resolution: 'vec2',
+  u_phase: 'float',
+}
+
+/** Shared functions emitted once at file scope, with their own dependencies. */
+const HELPER_SOURCE: Record<string, string> = {
+  _hash21: `float _hash21(float2 p) {
+  float2 q = fract(p * float2(123.34, 456.21));
+  q += dot(q, q + 45.32);
+  return fract(q.x * q.y);
+}`,
+  _vnoise: `float _vnoise(float2 p) {
+  float2 i = floor(p);
+  float2 fr = fract(p);
+  float a = _hash21(i);
+  float b = _hash21(i + float2(1.0, 0.0));
+  float c = _hash21(i + float2(0.0, 1.0));
+  float d = _hash21(i + float2(1.0, 1.0));
+  float2 u = fr * fr * (3.0 - 2.0 * fr);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) + (d - d);
+}`,
+}
+
+const HELPER_DEPS: Record<string, string[]> = {
+  _hash21: [],
+  _vnoise: ['_hash21'],
+}
+
+/**
+ * What the emitted source references, found by scanning it.
+ *
+ * Deliberately a scan rather than metadata declared on each node. A node you
+ * wrote yourself is the normal case here, and requiring it to also declare
+ * "this body uses `u_phase`" is bookkeeping that will be forgotten — the symptom
+ * being a shader that fails to compile for a reason the author cannot see. The
+ * scan cannot be forgotten.
+ */
+function referenced(source: string, names: string[]): string[] {
+  return names.filter((n) => new RegExp(`\\b${n}\\b`).test(source))
+}
+
+/** Helpers used, plus what those helpers need, in declaration order. */
+function helpersFor(source: string): string[] {
+  const out: string[] = []
+  const add = (name: string): void => {
+    if (out.includes(name)) return
+    for (const dep of HELPER_DEPS[name] ?? []) add(dep)
+    out.push(name)
+  }
+  for (const name of referenced(source, Object.keys(HELPER_SOURCE))) add(name)
+  return out
+}
+
 const SKSL_TYPE: Record<PortType, string> = {
   float: 'float',
   vec2: 'float2',
@@ -190,11 +249,22 @@ export function compileGraph(graph: ShaderGraph): CompileResult {
 
   const root = graph.nodes[graph.root]
   const uniforms = uniformsOf(graph)
-  const decls = uniforms.map((u) => `uniform ${SKSL_TYPE[u.type]} ${u.name};`)
   const fns = emit(graph, root, true)
+  const body = fns.join('\n')
 
-  return {
-    source: [...decls, ...(decls.length > 0 ? [''] : []), ...fns].join('\n'),
-    uniforms,
-  }
+  // Engine uniforms come from scanning what the bodies mention; exposed ones are
+  // declared by the graph. Both are emitted before any function that reads them.
+  const engine = referenced(body, Object.keys(ENGINE_UNIFORMS)).map(
+    (n) => `uniform ${SKSL_TYPE[ENGINE_UNIFORMS[n]]} ${n};`,
+  )
+  const declared = uniforms.map((u) => `uniform ${SKSL_TYPE[u.type]} ${u.name};`)
+  const helpers = helpersFor(body).map((n) => HELPER_SOURCE[n])
+
+  const sections = [
+    [...engine, ...declared].join('\n'),
+    helpers.join('\n'),
+    body,
+  ].filter((s) => s.length > 0)
+
+  return { source: sections.join('\n\n'), uniforms }
 }
