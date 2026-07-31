@@ -51,6 +51,7 @@ impl SceneState {
     }
 
     /// Project into the flat draw list the renderer consumes, in insertion order.
+    #[allow(dead_code)]
     fn to_scene(&self) -> Scene {
         let mut scene = Scene::new();
         for id in &self.order {
@@ -68,6 +69,7 @@ fn blank_node(id: u128) -> Node {
         kind: ShapeKind::Rect,
         bounds: Rect::ZERO,
         path: None,
+        corners: None,
         transform: Affine::IDENTITY,
         fills: Vec::new(),
         strokes: Vec::new(),
@@ -94,7 +96,10 @@ fn take_bytes() -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// The scene as the renderer wants it. Not part of the ABI — used by `lib.rs`.
+/// The scene as the renderer wants it. Not part of the ABI.
+///
+/// Dead code until slice D hands it to `renderer.rs` in place of the demo scene.
+#[allow(dead_code)]
 pub(crate) fn current_scene() -> Scene {
     with_state(|state| state.to_scene())
 }
@@ -160,16 +165,84 @@ pub extern "C" fn set_shape_hidden(hidden: bool) {
     with_current(|node| node.hidden = hidden);
 }
 
-/// Shape kind as render-wasm serializes it (docs/serialization.md): 3 = Rect, 4 = Path,
-/// 6 = Circle. Anything else is not yet renderable here and stays a rect.
+/// Shape kind, as render-wasm's `RawShapeType`: 0 Frame, 1 Group, 2 Bool, 3 Rect, 4 Path,
+/// 5 Text, 6 Circle, 7 SVGRaw. Anything this module cannot draw yet stays a rect.
+///
+/// Named `set_shape_type` rather than anything more descriptive because the export name *is*
+/// the contract — the host calls `module._set_shape_type(…)` and the facade strips the
+/// underscore, so a divergent name here is simply a function the host never reaches.
 #[unsafe(no_mangle)]
-pub extern "C" fn set_shape_kind(kind: u8) {
+pub extern "C" fn set_shape_type(shape_type: u8) {
     with_current(|node| {
-        node.kind = match kind {
+        node.kind = match shape_type {
             4 => ShapeKind::Path,
             6 => ShapeKind::Circle,
             _ => ShapeKind::Rect,
         };
+    });
+}
+
+/// Corner radii for a rect: top-left, top-right, bottom-right, bottom-left. All-zero collapses
+/// to `None`, mirroring render-wasm's `make_corners`.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_corners(r1: f32, r2: f32, r3: f32, r4: f32) {
+    let corners = render_core::model::corners_from_raw(r1, r2, r3, r4);
+    with_current(|node| node.corners = corners);
+}
+
+// --- path geometry ---------------------------------------------------------------------
+
+/// Accumulator for chunked path uploads, mirroring render-wasm's `PATH_UPLOAD_BUFFER`. Paths
+/// can exceed one `alloc_bytes` window, so the host streams them: start, N chunks, then commit.
+static PATH_BUFFER: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+#[unsafe(no_mangle)]
+pub extern "C" fn start_shape_path_buffer() {
+    PATH_BUFFER.lock().expect("path buffer poisoned").clear();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_path_chunk_buffer() {
+    let bytes = take_bytes();
+    PATH_BUFFER
+        .lock()
+        .expect("path buffer poisoned")
+        .extend_from_slice(&bytes);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_path_buffer() {
+    let bytes = {
+        let mut buffer = PATH_BUFFER.lock().expect("path buffer poisoned");
+        std::mem::take(&mut *buffer)
+    };
+    apply_path_bytes(&bytes);
+}
+
+/// The single-shot form, for paths small enough to fit one `alloc_bytes` window.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_path_content() {
+    let bytes = take_bytes();
+    apply_path_bytes(&bytes);
+}
+
+/// Decode a packed segment buffer onto the current shape.
+///
+/// Applies only when the shape is a path, which is what render-wasm's `set_path_segments` does
+/// — it matches on `Type::Path`/`Type::Bool` and silently ignores anything else. Mirroring that
+/// keeps the two backends in step on call ordering; the host sets the type first.
+///
+/// A malformed buffer drops the geometry rather than panicking. This module has no
+/// panic-to-JS channel yet, and a missing shape is a better failure than a dead renderer.
+fn apply_path_bytes(bytes: &[u8]) {
+    let Ok(segments) = render_core::abi::decode_path(bytes) else {
+        return;
+    };
+    let path = render_core::model::bez_path_from_raw(&segments);
+    with_current(|node| {
+        if node.kind == ShapeKind::Path {
+            node.path = Some(path);
+        }
     });
 }
 
@@ -208,7 +281,7 @@ pub extern "C" fn clear_shape_fills() {
 /// `From<RawFillData> for shapes::Fill` — same input, different construction.
 fn brush_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::peniko::Brush> {
     use render_core::abi::RawFillData as R;
-    use render_core::peniko::{Brush, Color, ColorStop, Gradient};
+    use render_core::peniko::{Brush, ColorStop, Gradient};
 
     let stops = |g: &render_core::abi::RawGradientData| {
         g.active_stops()
@@ -311,7 +384,7 @@ mod tests {
         use_shape(0, 0, 0, 7);
         set_shape_selrect(1.0, 2.0, 11.0, 22.0);
         set_shape_opacity(0.5);
-        set_shape_kind(6);
+        set_shape_type(6);
 
         let scene = current_scene();
         let node = &scene.nodes[0];
@@ -362,6 +435,113 @@ mod tests {
                 0x11, 0x22, 0x33, 0xff
             ))]
         );
+    }
+
+    /// Write `payload` through the real transport, as the host's `HEAPU8.set(bytes, ptr)` does.
+    fn upload(payload: &[u8]) {
+        let ptr = alloc_bytes(payload.len());
+        assert!(!ptr.is_null());
+        let mut guard = BUFFER.lock().unwrap();
+        guard.as_mut().unwrap().copy_from_slice(payload);
+    }
+
+    fn triangle_bytes() -> Vec<u8> {
+        use render_core::abi::{
+            RAW_SEGMENT_DATA_SIZE, RawLineCommand, RawMoveCommand, RawSegmentData, encode_segment,
+        };
+        let segments = [
+            RawSegmentData::MoveTo(RawMoveCommand::new((0.0, 0.0))),
+            RawSegmentData::LineTo(RawLineCommand::new((10.0, 0.0))),
+            RawSegmentData::LineTo(RawLineCommand::new((5.0, 8.0))),
+            RawSegmentData::Close,
+        ];
+        let mut buf = vec![0u8; RAW_SEGMENT_DATA_SIZE * segments.len()];
+        for (i, s) in segments.iter().enumerate() {
+            encode_segment(s, &mut buf[i * RAW_SEGMENT_DATA_SIZE..]).unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn path_content_decodes_from_the_shared_buffer() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_type(4); // Path
+
+        upload(&triangle_bytes());
+        set_shape_path_content();
+
+        let scene = current_scene();
+        let path = scene.nodes[0].path.as_ref().expect("path must be set");
+        assert_eq!(path.elements().len(), 4);
+    }
+
+    /// The chunked form: the host streams a path that does not fit one allocation window.
+    #[test]
+    fn path_buffer_accumulates_chunks() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_type(4);
+
+        let bytes = triangle_bytes();
+        let (head, tail) = bytes.split_at(render_core::abi::RAW_SEGMENT_DATA_SIZE * 2);
+
+        start_shape_path_buffer();
+        upload(head);
+        set_shape_path_chunk_buffer();
+        upload(tail);
+        set_shape_path_chunk_buffer();
+        set_shape_path_buffer();
+
+        let scene = current_scene();
+        assert_eq!(scene.nodes[0].path.as_ref().unwrap().elements().len(), 4);
+
+        // Committing drains the accumulator, so a second commit does not replay the path.
+        use_shape(0, 0, 0, 2);
+        set_shape_type(4);
+        set_shape_path_buffer();
+        let scene = current_scene();
+        assert!(scene.nodes[1].path.as_ref().unwrap().is_empty());
+    }
+
+    /// Mirrors render-wasm's `set_path_segments`, which ignores anything that is not a path.
+    #[test]
+    fn path_content_is_ignored_on_a_non_path_shape() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_type(3); // Rect
+
+        upload(&triangle_bytes());
+        set_shape_path_content();
+
+        assert!(current_scene().nodes[0].path.is_none());
+    }
+
+    /// A ragged buffer must drop the geometry, not panic — there is no panic-to-JS channel.
+    #[test]
+    fn a_malformed_path_buffer_is_dropped() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_type(4);
+
+        upload(&[0u8; render_core::abi::RAW_SEGMENT_DATA_SIZE + 5]);
+        set_shape_path_content();
+
+        assert!(current_scene().nodes[0].path.is_none());
+    }
+
+    #[test]
+    fn corners_collapse_when_square() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+
+        set_shape_corners(0.0, 0.0, 0.0, 0.0);
+        assert!(current_scene().nodes[0].corners.is_none());
+
+        set_shape_corners(1.0, 2.0, 3.0, 4.0);
+        let corners = current_scene().nodes[0].corners.expect("radii must be set");
+        assert_eq!(corners.top_left, 1.0);
+        assert_eq!(corners.bottom_left, 4.0);
     }
 
     #[test]

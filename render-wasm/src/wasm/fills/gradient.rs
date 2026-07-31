@@ -2,7 +2,7 @@ use crate::shapes::{Color, Gradient};
 
 // Layout in render-core (D17), Skia-facing conversion here. Re-exported so
 // `gradient::RawGradientData` still resolves for existing call sites.
-pub use render_core::abi::{RawGradientData, RawStopData};
+pub use render_core::abi::RawGradientData;
 
 impl From<RawGradientData> for Gradient {
     fn from(raw_gradient: RawGradientData) -> Self {

@@ -59,7 +59,11 @@ pub fn free_bytes() -> Result<()> {
     Ok(())
 }
 
-pub trait SerializableResult: From<Self::BytesType> + Into<Self::BytesType> {
+// The `From<BytesType> + Into<BytesType>` supertrait bounds this used to carry were dropped
+// when the path and fill layouts moved to `render_core::abi` (D17): those types are now foreign
+// here, so the orphan rules forbid the conversion impls, and nothing needed them — `write_vec`
+// only ever calls `clone_to_slice` and sizes by `BytesType`.
+pub trait SerializableResult {
     type BytesType;
     fn clone_to_slice(&self, slice: &mut [u8]);
 }

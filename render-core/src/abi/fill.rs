@@ -1,25 +1,10 @@
-//! Wire-format payload structs — the bytes the host writes and both backends read.
+//! Fill payloads: solid, the four gradient flavours, and image.
 //!
-//! D17: these definitions live here rather than in render-wasm so that the Skia and Vello
-//! modules parse *identical bytes through identical definitions*, which is what makes
-//! differential testing possible — capture a buffer from a live session, replay it into both,
-//! diff the result.
-//!
-//! What is here and what is not:
-//! - **Here:** the `#[repr(C)]` layouts and pure accessors. Primitives only, no engine types.
-//! - **Not here:** `From<Raw…> for shapes::Fill` and friends. Those target Skia types
-//!   (`shapes::Color` is `skia::Color`) and stay in render-wasm; the Vello module gets its own
-//!   conversions into [`crate::model`]. That divergence is the point — same bytes, different
-//!   construction.
-//! - **Not here yet:** the byte codec. render-wasm decodes with `std::mem::transmute`, which
-//!   this crate cannot host (`#![forbid(unsafe_code)]`), and which is unsound in the
-//!   struct-to-bytes direction anyway because these layouts contain padding. A safe explicit
-//!   codec belongs here; until it exists the codec stays in render-wasm as free functions.
-//!
-//! Fields are `pub` because these are wire types: the whole point is that other crates read
-//! them field by field. They are not an abstraction, they are a memory layout.
+//! See the [module docs](super) for why the codec is hand-written.
 
 use render_macros::ToJs;
+
+use super::{f32_at, i32_at, u32_at, AbiError};
 
 /// Maximum stops carried inline by a gradient payload. The layout is fixed-size, so this is
 /// part of the wire format — changing it is a breaking change on both sides.
@@ -107,8 +92,12 @@ impl RawImageFillData {
 
     #[inline]
     pub fn dest(&self) -> Option<[f32; 4]> {
-        (self.flags & FLAG_HAS_DEST != 0)
-            .then_some([self.dest_l, self.dest_t, self.dest_r, self.dest_b])
+        (self.flags & FLAG_HAS_DEST != 0).then_some([
+            self.dest_l,
+            self.dest_t,
+            self.dest_r,
+            self.dest_b,
+        ])
     }
 }
 
@@ -128,25 +117,10 @@ pub enum RawFillData {
 /// Size of one fill record on the wire. Both backends must agree, and the host strides by it.
 pub const RAW_FILL_DATA_SIZE: usize = core::mem::size_of::<RawFillData>();
 
-// ---------------------------------------------------------------------------------------
-// Codec
-// ---------------------------------------------------------------------------------------
-//
-// Explicit, safe, little-endian. This replaces a `std::mem::transmute` pair in render-wasm,
-// for three reasons:
-//
-// 1. This crate is `#![forbid(unsafe_code)]`, and both backends need to decode.
-// 2. The encode direction was unsound. These layouts carry padding — `RawGradientData` has
-//    three reserved bytes after `opacity` and three after `stop_count` — and transmuting a
-//    struct into bytes exposes uninitialised memory. Here padding is written as zero.
-// 3. A wire format shared by two separately-compiled binaries should be *stated*, not
-//    inherited from whatever the compiler happened to lay out.
-//
-// The offsets below reproduce the existing `#[repr(C)]` layout exactly, so this is not a wire
-// change. `layout_matches_repr_c` pins that with `offset_of!` — if a field is added or
-// reordered, that test fails rather than the format silently drifting.
-
 /// Byte offsets within a fill record. Part of the wire contract.
+///
+/// `RawGradientData` has three reserved bytes after `opacity` and three after `stop_count`;
+/// those are the padding the encoder zeroes.
 mod layout {
     /// Variant tag.
     pub const TAG: usize = 0;
@@ -198,40 +172,6 @@ mod layout {
 const _: () = assert!(RAW_FILL_DATA_SIZE == layout::PAYLOAD + layout::gradient::SIZE);
 const _: () = assert!(layout::solid::SIZE <= layout::gradient::SIZE);
 const _: () = assert!(layout::image::SIZE <= layout::gradient::SIZE);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AbiError {
-    /// The buffer ended before a full record.
-    Truncated { need: usize, got: usize },
-    /// A tag this build does not know. Carries the byte so the caller can report it.
-    UnknownFillTag(u8),
-}
-
-impl core::fmt::Display for AbiError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Truncated { need, got } => {
-                write!(f, "truncated fill record: need {need} bytes, got {got}")
-            }
-            Self::UnknownFillTag(t) => write!(f, "unknown fill tag {t:#04x}"),
-        }
-    }
-}
-
-#[inline]
-fn u32_at(b: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
-#[inline]
-fn i32_at(b: &[u8], off: usize) -> i32 {
-    i32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
-#[inline]
-fn f32_at(b: &[u8], off: usize) -> f32 {
-    f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
 
 /// Decode one fill record. `bytes` may be longer; the tail is ignored.
 pub fn decode_fill(bytes: &[u8]) -> Result<RawFillData, AbiError> {
@@ -588,11 +528,7 @@ mod tests {
         assert_eq!(decode_fill(&unknown), Err(AbiError::UnknownFillTag(0x42)));
 
         let mut out = vec![0u8; 3];
-        assert!(encode_fill(
-            &RawFillData::Solid(RawSolidData { color: 0 }),
-            &mut out
-        )
-        .is_err());
+        assert!(encode_fill(&RawFillData::Solid(RawSolidData { color: 0 }), &mut out).is_err());
     }
 
     /// A longer buffer is fine — the host packs records back to back and strides by the size.

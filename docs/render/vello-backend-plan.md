@@ -285,6 +285,13 @@ Feed `render-vello` a real document from `skia-rs-wasm` rather than a hand-built
 
 Visual diff against Skia — replay captured buffers into both modules and diff, which the identical wire format makes possible. Also evaluate `imaging_conformance` and `imaging_snapshot_tests` (D13) before writing our own harness, since they already target skia-safe against vello_hybrid.
 
+**Status: steps 1 and 2 done; step 3 in progress.** Step 3 is being taken in slices, ordered so that the shortest path to a real page comes first — paths, then hierarchy, then lifecycle, then host wiring; strokes and the differential harness follow the first pixels.
+
+- **Slice A (done)** — path segments and corners. `RawSegmentData` and its three command layouts moved into `render_core::abi::path` with the same safe codec treatment the fills got, and the *same* padding bug fixed (`RawMoveCommand`/`RawLineCommand` carry sixteen explicit bytes of it). `decode_path` is strict where the code it replaces printed a warning and carried on — a ragged buffer misreads every segment after it, which shows up as subtly wrong geometry rather than an error. `Node` gained `corners: Option<RoundedRectRadii>`; Penpot's `r1..r4` is already TL/TR/BR/BL, matching both Skia's `RRect` array and kurbo's field order, so nothing is reordered anywhere. render-vello gained five entry points, and `set_shape_kind` was renamed `set_shape_type` — the host calls `_set_shape_type`, so the old name was a function it could never reach.
+- **Slices B–F** — hierarchy + clipping (needs a tree in `model`), lifecycle + viewport, host wiring through the facade, strokes, differential harness.
+
+One casualty worth recording: `SerializableResult` lost its `From<BytesType> + Into<BytesType>` supertrait bounds. Those types are foreign to render-wasm now, so the orphan rules forbid the conversion impls; nothing used the bounds (`write_vec` only calls `clone_to_slice`).
+
 ### Phase 3 — common ABI + runtime selection
 Define the `Renderer` interface in `skia-rs-wasm`, shaped after `imaging`'s `PaintSink` (D13) with its streaming/retained split; write the two adapters (Emscripten and wasm-bindgen); capability-detect WebGPU and lazily download the matching `.wasm`. After this phase the two modules are genuinely interchangeable.
 
@@ -312,5 +319,6 @@ Genuinely open, not leaning (D6 as amended by D16). Note that `model_export` dis
 - **Does `imaging_conformance` run without its desktop GPU features?** `imaging_skia`'s `gpu` feature pulls wgpu 28, ash, Metal and D3D. The CPU path is what we would want; unverified.
 - ~~**`render-core`'s home**~~ — settled by D15: repo root, sibling to both backends.
 - **`vello_hybrid` has no threading.** If CPU-side encode becomes the bottleneck, that work has to be added.
+- **`shared.js` now comes from two crates.** The `ToJs` derive appends to `$OUT_DIR/render_wasm_shared.js`, one file per crate that uses it. Since the `Raw*` layouts moved to render-core there are two such files, and both `render-wasm/_build_env` and `.github/workflows/tests.yml` pick one with `find … | head -n 1` — so the Penpot frontend's generated `shared.js` loses either `RawFillData`/`RawSegmentData` or everything else, depending which is found first. Confirmed by inspecting both `OUT_DIR`s. Not fixed here: it is frontend-build-only, out of this work's scope, and untestable without the emscripten container.
 - **Feature parity surface:** inner shadow, backdrop blur, all blend modes, exact gradient semantics.
 - **Download cost** of the Vello module vs Skia, and how the host chooses when WebGPU is present but the document is effect-light.

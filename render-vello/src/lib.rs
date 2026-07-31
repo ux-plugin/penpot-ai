@@ -26,4 +26,4 @@ mod renderer;
 mod scene;
 
 #[cfg(target_arch = "wasm32")]
-pub use renderer::{create_focus_renderer, FocusRenderer};
+pub use renderer::{FocusRenderer, create_focus_renderer};

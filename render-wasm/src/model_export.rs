@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use crate::core_convert::{affine_to_core, color_to_core, rect_to_core};
-use crate::shapes::{Fill, Gradient, Path, Segment, Shape, StrokeKind, Type};
+use crate::shapes::{Corners, Fill, Gradient, Path, Segment, Shape, StrokeKind, Type};
 use crate::shapes::{StrokeLineCap, StrokeLineJoin};
 use render_core::kurbo::{self, BezPath, Point};
 use render_core::model as m;
@@ -33,11 +33,21 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         kind,
         bounds: rect_to_core(shape.selrect),
         path,
+        corners: corners_to_core(shape.shape_type.corners()),
         transform: affine_to_core(&shape.transform),
         fills,
         strokes,
         opacity: shape.opacity,
         hidden: shape.hidden,
+    })
+}
+
+/// Skia's `Corners` is four `Point`s, so it can express elliptical corners; Penpot only ever
+/// builds them from a single scalar per corner (`make_corners` writes `(r, r)`), and
+/// `RoundedRectRadii` is scalar too. The `y` component is therefore dropped rather than lost.
+fn corners_to_core(corners: Option<Corners>) -> Option<kurbo::RoundedRectRadii> {
+    corners.map(|c| {
+        kurbo::RoundedRectRadii::new(c[0].x as f64, c[1].x as f64, c[2].x as f64, c[3].x as f64)
     })
 }
 
@@ -156,7 +166,9 @@ mod tests {
         shape.transform = Matrix::translate((5.0, 7.0));
         shape.opacity = 0.5;
         // ARGB: a=255, r=10, g=20, b=30
-        shape.add_fill(Fill::Solid(SolidColor(skia::Color::from_argb(255, 10, 20, 30))));
+        shape.add_fill(Fill::Solid(SolidColor(skia::Color::from_argb(
+            255, 10, 20, 30,
+        ))));
 
         let node = node_from_shape(&shape).expect("a solid rect must project");
 
@@ -280,10 +292,11 @@ mod tests {
 
     #[test]
     fn projects_a_centre_stroke() {
-        use crate::shapes::{StrokeStyle, SolidColor};
+        use crate::shapes::{SolidColor, StrokeStyle};
 
         let mut shape = rect_shape();
-        let mut stroke = crate::shapes::Stroke::new_center_stroke(4.0, StrokeStyle::Solid, None, None);
+        let mut stroke =
+            crate::shapes::Stroke::new_center_stroke(4.0, StrokeStyle::Solid, None, None);
         stroke.fill = Fill::Solid(SolidColor(skia::Color::from_argb(255, 1, 2, 3)));
         stroke.dashes = vec![6.0, 2.0];
         stroke.miter_limit = Some(9.0);
@@ -302,10 +315,11 @@ mod tests {
     /// render them in the wrong place, so they are dropped instead.
     #[test]
     fn inner_stroke_is_dropped_rather_than_mis_projected() {
-        use crate::shapes::{StrokeStyle, SolidColor};
+        use crate::shapes::{SolidColor, StrokeStyle};
 
         let mut shape = rect_shape();
-        let mut stroke = crate::shapes::Stroke::new_inner_stroke(4.0, StrokeStyle::Solid, None, None);
+        let mut stroke =
+            crate::shapes::Stroke::new_inner_stroke(4.0, StrokeStyle::Solid, None, None);
         stroke.fill = Fill::Solid(SolidColor(skia::Color::from_argb(255, 1, 2, 3)));
         shape.add_stroke(stroke);
 

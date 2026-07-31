@@ -8,6 +8,10 @@
 //! input — calling the module's `render()` / `resize()` / `key()` from the outside.
 //! The renderer itself owns none of this; that separation is the Phase-0 point.
 
+// The whole file is wasm-only. A host `cargo build` therefore fails on this bin target for want
+// of a `main` — a fallback cannot live here, because this attribute strips the file before it
+// would be seen. `cargo test` is unaffected (the harness supplies its own entry point), so the
+// host-side `abi` tests run regardless.
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
@@ -34,7 +38,9 @@ async fn host() {
     let window = web_sys::window().unwrap();
     let document = window.document().unwrap();
     let body = document.body().unwrap();
-    body.style().set_property("background-color", "#111").unwrap();
+    body.style()
+        .set_property("background-color", "#111")
+        .unwrap();
     body.style().set_property("margin", "0").unwrap();
 
     let dpr = window.device_pixel_ratio();

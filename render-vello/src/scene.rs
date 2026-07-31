@@ -10,7 +10,7 @@
 //! helpers left: `Affine`, `Rect` and `BezPath` arrive ready to draw. render-core and
 //! vello_common resolve to the same kurbo/peniko, so the types unify with no bridging.
 
-use render_core::kurbo::{Affine, BezPath, Ellipse, Rect, Shape as _};
+use render_core::kurbo::{Affine, BezPath, Ellipse, Rect, RoundedRect, Shape as _};
 use render_core::model as m;
 use render_core::peniko::{Brush, Color};
 use vello_example_scenes::{ExampleScene, RenderingContext};
@@ -60,7 +60,12 @@ impl ExampleScene for NeutralModelScene {
             ctx.set_paint(color);
 
             match node.kind {
-                m::ShapeKind::Rect => ctx.fill_rect(&node.bounds),
+                m::ShapeKind::Rect => match node.corners {
+                    Some(radii) => {
+                        ctx.fill_path(&RoundedRect::from_rect(node.bounds, radii).to_path(0.1))
+                    }
+                    None => ctx.fill_rect(&node.bounds),
+                },
                 m::ShapeKind::Circle => ctx.fill_path(&ellipse_path(node.bounds)),
                 m::ShapeKind::Path => {
                     if let Some(path) = &node.path {
@@ -94,6 +99,10 @@ fn demo_model() -> m::Scene {
         kind: m::ShapeKind::Rect,
         bounds: Rect::new(0.0, 0.0, 160.0, 100.0),
         path: None,
+        // Asymmetric on purpose: it shows at a glance that the radii are not being reordered.
+        corners: Some(render_core::kurbo::RoundedRectRadii::new(
+            24.0, 4.0, 24.0, 4.0,
+        )),
         transform: Affine::translate((40.0, 60.0)),
         fills: vec![Brush::Solid(Color::from_rgba8(56, 152, 236, 255))],
         strokes: vec![],
@@ -106,6 +115,7 @@ fn demo_model() -> m::Scene {
         kind: m::ShapeKind::Circle,
         bounds: Rect::new(0.0, 0.0, 110.0, 110.0),
         path: None,
+        corners: None,
         transform: Affine::translate((250.0, 55.0)),
         fills: vec![Brush::Solid(Color::from_rgba8(240, 90, 40, 255))],
         strokes: vec![],
@@ -125,6 +135,7 @@ fn demo_model() -> m::Scene {
         kind: m::ShapeKind::Path,
         bounds: Rect::new(0.0, 0.0, 120.0, 150.0),
         path: Some(path),
+        corners: None,
         transform: Affine::translate((430.0, 40.0)),
         fills: vec![Brush::Solid(Color::from_rgba8(70, 190, 120, 255))],
         strokes: vec![],
