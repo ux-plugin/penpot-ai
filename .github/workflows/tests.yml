@@ -197,9 +197,15 @@ jobs:
       - name: Copy shared.js artifact
         working-directory: ./render-wasm
         run: |
-          SHARED_FILE=$(find target -name render_wasm_shared.js | head -n 1);
+          # One generated file per crate deriving `ToJs` — two since the `Raw*` layouts moved
+          # to render-core. Concatenate and keep the first declaration of each name; see
+          # render-wasm/_build_env for why duplicates occur.
           mkdir -p ../frontend/src/app/render_wasm/api;
-          cp $SHARED_FILE ../frontend/src/app/render_wasm/api/shared.js;
+          find target -name render_wasm_shared.js -exec cat {} + \
+            | awk 'BEGIN { RS = "export const "; ORS = "" }
+                   NR > 1 && !($1 in seen) { seen[$1] = 1; print "export const " $0 }' \
+            > ../frontend/src/app/render_wasm/api/shared.js;
+          test -s ../frontend/src/app/render_wasm/api/shared.js;
 
       - name: Cache shared.js
         uses: actions/cache@v5
