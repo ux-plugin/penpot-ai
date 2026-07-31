@@ -306,7 +306,25 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   Verified by driving the C ABI from JavaScript in a browser: `clean_up` → `init` → `set_render_options` → `set_canvas_background` → shape tree with fills through the shared buffer → `set_view` → `render`. A `1280×720` probe rect at identity filled exactly the top-left quadrant of the `2560×1440` canvas, which pins the scene's coordinate space to device pixels and rules out a double-counted `dpr`.
 
-- **Slices D–F** — host wiring through the facade, strokes, differential harness.
+- **Slice D (done, with one thread open)** — host wiring. `api/*.ts` drives render-vello unmodified, checked by execution: `vello-instance.ts` instantiates the real wasm in Node with all ~600 bindgen glue imports stubbed as throwers (the ABI path calls none of them), and the real `node-factory` → `orchestration::setObject` → `viewport::setViewBox` chain runs against it. In the app, `?renderer=vello` loads the Vello artifact, acquires a WebGPU adapter and syncs shapes into its scene. **It does not paint yet** — that is the open thread, and the last measurement was taken with the browser pane backgrounded, where `requestAnimationFrame` does not fire, so it needs re-taking before it means anything.
+
+  The census this produced is the useful number: a page sync of frames, groups, rects and circles reaches exactly **thirteen** unimplemented entry points, all effects/layout/cache, none geometry. The raw count of 118-of-153 missing exports badly overstates the gap.
+
+  Traps found: build the **cdylib**, not the bin (the bin's `main()` is a mock host that hijacks the page); Vite will not import from `public/` in source even with `@vite-ignore`, so the specifier is computed at runtime; and the backend marker must not start with `_`, or `stubMissingExports` turns it into a no-op function and the backend check silently fails.
+
+- **Slice F (done)** — the differential harness. Built ahead of strokes because it is what makes strokes checkable.
+
+  **The diff is at the model, not at pixels.** `Scene::digest` in render-core fingerprints everything that would be drawn; both backends can compute it from the *same* recorded byte stream — render-vello directly, render-wasm by projecting its Skia shapes through `model_export`. Equal digests mean the two agree on what the document *is*, which separates "we read the wire differently" from "our rasterisers differ". A pixel diff conflates those, and two rasterisers always disagree slightly on antialiasing.
+
+  The digest ignores storage order (it walks the tree, never the map), respects paint order, and covers only what is reachable and visible — so an orphan one backend has collected and another has not is not a false positive.
+
+  `abi-recorder.ts` captures the call stream — names, arguments, and the bytes staged in the shared buffer, without which every fill and path would be missing — and replays it into any backend. Replay re-runs `alloc_bytes` rather than trusting recorded pointers, which is precisely the indirection that lets one capture drive two different allocators. Recordings are JSON, so a capture from a live browser session becomes a fixture.
+
+  **The trap worth knowing:** the digest covers only what is reachable from `ROOT_ID`, so a scene whose root children were never set hashes identically to an empty one — every comparison would pass while proving nothing. Every assertion in the suite is guarded against the empty digest.
+
+  Still open: render-wasm's side. It cannot be driven in Node (its `_init` brings up a GL context), so the cross-backend comparison has to run in a browser, and it needs a `scene_digest` export built over `model_export`'s projection.
+
+- **Slice E** — strokes, now checkable against the harness above.
 
 Two casualties of the relocation, both fixed in place:
 - `SerializableResult` lost its `From<BytesType> + Into<BytesType>` supertrait bounds. Those types are foreign to render-wasm now, so the orphan rules forbid the conversion impls; nothing used the bounds (`write_vec` only calls `clone_to_slice`).

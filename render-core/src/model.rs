@@ -199,6 +199,163 @@ impl Scene {
     pub fn roots(&self) -> &[u128] {
         self.get(ROOT_ID).map_or(&[], |root| &root.children)
     }
+
+    /// A stable fingerprint of everything that would be drawn.
+    ///
+    /// This is the differential harness's primitive. Both backends build a
+    /// [`Scene`] from the *same* recorded byte stream — render-vello directly in its ABI,
+    /// render-wasm by projecting its Skia shapes through `model_export` — so equal digests mean
+    /// the two agree on what the document *is*, independently of how either paints it. That
+    /// separates "the wire format is being read differently" from "the rasterisers differ",
+    /// which a pixel diff alone cannot do.
+    ///
+    /// Three properties it needs, and how they are obtained:
+    ///
+    /// - **Insensitive to storage order.** It walks the tree from [`ROOT_ID`] rather than
+    ///   iterating the map, whose order is not stable between runs, let alone between backends.
+    /// - **Sensitive to paint order.** Sibling order is hashed as encountered; swapping two
+    ///   children changes the result, because it changes the picture.
+    /// - **Covers only what paints.** Nodes unreachable from the root are skipped, as are
+    ///   hidden subtrees — a backend that has garbage-collected an orphan and one that has not
+    ///   still agree.
+    ///
+    /// Floats are hashed by bit pattern, so this is exact rather than tolerant. That is the
+    /// right default for a format check; comparing rasterised output is a separate question.
+    pub fn digest(&self) -> u64 {
+        let mut hash = FNV_OFFSET;
+        // Depth cap for the same reason the renderer has one: the tree comes off the wire and a
+        // cycle would otherwise spin forever.
+        for id in self.roots() {
+            self.digest_node(*id, &mut hash, 0);
+        }
+        hash
+    }
+
+    fn digest_node(&self, id: u128, hash: &mut u64, depth: u32) {
+        if depth >= MAX_DIGEST_DEPTH {
+            return;
+        }
+        let Some(node) = self.get(id) else {
+            // A child listed but not yet delivered. Hash the id anyway: "referenced but absent"
+            // is a real difference between two scenes, not something to paper over.
+            fnv_u128(hash, id);
+            fnv_u64(hash, MISSING_NODE_TAG);
+            return;
+        };
+        if node.hidden {
+            return;
+        }
+
+        fnv_u128(hash, node.id);
+        fnv_u64(hash, node.kind as u64);
+        for v in [
+            node.bounds.x0,
+            node.bounds.y0,
+            node.bounds.x1,
+            node.bounds.y1,
+        ] {
+            fnv_f64(hash, v);
+        }
+        for v in node.effective_transform().as_coeffs() {
+            fnv_f64(hash, v);
+        }
+        fnv_f64(hash, f64::from(node.opacity));
+        fnv_u64(hash, u64::from(node.clip));
+
+        match node.corners {
+            Some(r) => {
+                fnv_u64(hash, 1);
+                for v in [r.top_left, r.top_right, r.bottom_right, r.bottom_left] {
+                    fnv_f64(hash, v);
+                }
+            }
+            None => fnv_u64(hash, 0),
+        }
+
+        if let Some(path) = &node.path {
+            for el in path.elements() {
+                digest_path_el(hash, *el);
+            }
+        }
+
+        fnv_u64(hash, node.fills.len() as u64);
+        for brush in &node.fills {
+            digest_brush(hash, brush);
+        }
+        fnv_u64(hash, node.strokes.len() as u64);
+        for stroke in &node.strokes {
+            fnv_f64(hash, stroke.style.width);
+            digest_brush(hash, &stroke.brush);
+        }
+
+        for child in &node.children {
+            self.digest_node(*child, hash, depth + 1);
+        }
+    }
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x1000_0000_01b3;
+const MISSING_NODE_TAG: u64 = 0xdead_beef;
+const MAX_DIGEST_DEPTH: u32 = 128;
+
+#[inline]
+fn fnv_u64(hash: &mut u64, value: u64) {
+    for byte in value.to_le_bytes() {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+}
+
+#[inline]
+fn fnv_u128(hash: &mut u64, value: u128) {
+    fnv_u64(hash, value as u64);
+    fnv_u64(hash, (value >> 64) as u64);
+}
+
+/// By bit pattern, so the check is exact. `-0.0` and `0.0` hash differently, which is a
+/// difference the two sides genuinely could have and worth surfacing.
+#[inline]
+fn fnv_f64(hash: &mut u64, value: f64) {
+    fnv_u64(hash, value.to_bits());
+}
+
+fn digest_path_el(hash: &mut u64, el: kurbo::PathEl) {
+    use kurbo::PathEl as E;
+    let (tag, points): (u64, &[kurbo::Point]) = match &el {
+        E::MoveTo(p) => (1, std::slice::from_ref(p)),
+        E::LineTo(p) => (2, std::slice::from_ref(p)),
+        E::QuadTo(a, b) => (3, &[*a, *b]),
+        E::CurveTo(a, b, c) => (4, &[*a, *b, *c]),
+        E::ClosePath => (5, &[]),
+    };
+    fnv_u64(hash, tag);
+    for p in points {
+        fnv_f64(hash, p.x);
+        fnv_f64(hash, p.y);
+    }
+}
+
+fn digest_brush(hash: &mut u64, brush: &Brush) {
+    match brush {
+        Brush::Solid(c) => {
+            fnv_u64(hash, 1);
+            for component in c.components {
+                fnv_f64(hash, f64::from(component));
+            }
+        }
+        Brush::Gradient(g) => {
+            fnv_u64(hash, 2);
+            fnv_u64(hash, g.stops.len() as u64);
+            for stop in g.stops.iter() {
+                fnv_f64(hash, f64::from(stop.offset));
+                for component in stop.color.components {
+                    fnv_f64(hash, f64::from(component));
+                }
+            }
+        }
+        Brush::Image(_) => fnv_u64(hash, 3),
+    }
 }
 
 /// Build a [`BezPath`] from decoded wire segments.
@@ -350,6 +507,99 @@ mod tests {
         let mut n = node(1, ShapeKind::Rect);
         n.bounds = Rect::new(5.0, 5.0, 15.0, 25.0);
         assert_eq!(n.effective_transform(), Affine::IDENTITY);
+    }
+
+    /// Builds the same little tree twice, inserting in different orders.
+    fn tree(order: &[usize]) -> Scene {
+        let mut root = node(ROOT_ID, ShapeKind::Group);
+        root.children = vec![1, 2];
+
+        let mut a = node(1, ShapeKind::Rect);
+        a.bounds = Rect::new(0.0, 0.0, 10.0, 10.0);
+        a.fills = vec![Brush::Solid(Color::from_rgba8(1, 2, 3, 255))];
+
+        let mut b = node(2, ShapeKind::Circle);
+        b.bounds = Rect::new(20.0, 20.0, 40.0, 40.0);
+
+        let parts = [root, a, b];
+        let mut scene = Scene::new();
+        for i in order {
+            scene.insert(parts[*i].clone());
+        }
+        scene
+    }
+
+    /// The property the whole harness rests on: two backends storing the same scene in
+    /// different orders must agree. A digest that iterated the map would fail this at random.
+    #[test]
+    fn digest_ignores_insertion_order() {
+        assert_eq!(tree(&[0, 1, 2]).digest(), tree(&[2, 1, 0]).digest());
+        assert_eq!(tree(&[1, 0, 2]).digest(), tree(&[0, 2, 1]).digest());
+    }
+
+    /// …and it must still notice paint order, because that changes the picture.
+    #[test]
+    fn digest_notices_sibling_order() {
+        let mut swapped = tree(&[0, 1, 2]);
+        swapped.get_mut(ROOT_ID).unwrap().children = vec![2, 1];
+        assert_ne!(tree(&[0, 1, 2]).digest(), swapped.digest());
+    }
+
+    #[test]
+    fn digest_notices_every_drawable_property() {
+        let base = tree(&[0, 1, 2]).digest();
+
+        let mutate = |f: &dyn Fn(&mut Node)| {
+            let mut s = tree(&[0, 1, 2]);
+            f(s.get_mut(1).unwrap());
+            s.digest()
+        };
+
+        assert_ne!(
+            base,
+            mutate(&|n| n.bounds = Rect::new(0.0, 0.0, 10.0, 11.0))
+        );
+        assert_ne!(base, mutate(&|n| n.opacity = 0.5));
+        assert_ne!(base, mutate(&|n| n.clip = true));
+        assert_ne!(base, mutate(&|n| n.transform = Affine::rotate(0.1)));
+        assert_ne!(base, mutate(&|n| n.kind = ShapeKind::Path));
+        assert_ne!(
+            base,
+            mutate(&|n| n.corners = Some(RoundedRectRadii::new(1.0, 1.0, 1.0, 1.0)))
+        );
+        assert_ne!(
+            base,
+            mutate(&|n| n.fills = vec![Brush::Solid(Color::from_rgba8(9, 9, 9, 255))])
+        );
+        assert_ne!(base, mutate(&|n| n.fills.clear()));
+    }
+
+    /// Unreachable nodes are memory, not picture. One backend garbage-collecting an orphan and
+    /// another keeping it around is not a divergence worth failing a diff over.
+    #[test]
+    fn digest_skips_orphans_and_hidden_subtrees() {
+        let mut with_orphan = tree(&[0, 1, 2]);
+        with_orphan.insert(node(99, ShapeKind::Rect));
+        assert_eq!(tree(&[0, 1, 2]).digest(), with_orphan.digest());
+
+        let mut hidden = tree(&[0, 1, 2]);
+        hidden.get_mut(1).unwrap().hidden = true;
+        assert_ne!(tree(&[0, 1, 2]).digest(), hidden.digest());
+    }
+
+    /// A child listed but not delivered is a real difference, not something to smooth over —
+    /// it is exactly the mid-sync state where the two backends could disagree.
+    #[test]
+    fn digest_notices_a_missing_child() {
+        let mut incomplete = tree(&[0, 1, 2]);
+        incomplete.get_mut(ROOT_ID).unwrap().children = vec![1, 2, 3];
+        assert_ne!(tree(&[0, 1, 2]).digest(), incomplete.digest());
+    }
+
+    #[test]
+    fn digest_of_an_empty_scene_is_stable() {
+        assert_eq!(Scene::new().digest(), Scene::new().digest());
+        assert_ne!(Scene::new().digest(), tree(&[0, 1, 2]).digest());
     }
 
     #[test]

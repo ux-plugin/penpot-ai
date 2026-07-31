@@ -680,6 +680,22 @@ pub extern "C" fn scene_node_count() -> u32 {
     with_state(|state| state.scene.len() as u32)
 }
 
+/// A fingerprint of everything that would be drawn — see [`Scene::digest`].
+///
+/// The differential harness's read-out: replay one recorded byte stream into both backends and
+/// compare this. Equal digests mean they agree on what the document *is*, which separates a
+/// wire-format divergence from a rasteriser difference.
+///
+/// Folded to 32 bits so it crosses the ABI as a plain `i32`. A 64-bit return arrives in JS as a
+/// `BigInt`, which is a papercut for callers and buys nothing at this collision domain.
+#[unsafe(no_mangle)]
+pub extern "C" fn scene_digest() -> u32 {
+    with_state(|state| {
+        let full = state.scene.digest();
+        (full as u32) ^ ((full >> 32) as u32)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_scene() {
     with_state(|state| {
