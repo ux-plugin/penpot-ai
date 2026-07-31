@@ -28,20 +28,22 @@ static BUFFER: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 static STATE: Mutex<Option<SceneState>> = Mutex::new(None);
 
-/// Nodes keyed by id, plus insertion order, plus the cursor the property setters apply to.
+/// Nodes keyed by id, plus the cursor the property setters apply to.
+///
+/// There is no insertion order here: paint order comes from the tree, walked from
+/// [`render_core::model::ROOT_ID`] through each node's `children`. The host sends nodes in no
+/// guaranteed order — a child can arrive before the parent that lists it.
 #[derive(Default)]
 struct SceneState {
     nodes: HashMap<u128, Node>,
-    order: Vec<u128>,
     current: Option<u128>,
 }
 
 impl SceneState {
     fn upsert(&mut self, id: u128) {
-        if !self.nodes.contains_key(&id) {
-            self.order.push(id);
-            self.nodes.insert(id, blank_node(id));
-        }
+        self.nodes
+            .entry(id)
+            .or_insert_with(|| Node::new(id, ShapeKind::Rect));
         self.current = Some(id);
     }
 
@@ -50,31 +52,25 @@ impl SceneState {
         self.nodes.get_mut(&id)
     }
 
-    /// Project into the flat draw list the renderer consumes, in insertion order.
+    /// Replace the current shape's children.
+    ///
+    /// render-wasm additionally diffs against the previous list to mark dropped children
+    /// deleted and invalidate their tiles. Here a dropped child simply stops being reachable
+    /// from the root, so it stops painting; it does linger in the map, which is a leak this
+    /// module accepts until Phase 3 gives it a real lifecycle.
+    fn set_children(&mut self, children: Vec<u128>) {
+        if let Some(node) = self.current_mut() {
+            node.children = children;
+        }
+    }
+
     #[allow(dead_code)]
     fn to_scene(&self) -> Scene {
         let mut scene = Scene::new();
-        for id in &self.order {
-            if let Some(node) = self.nodes.get(id) {
-                scene.push(node.clone());
-            }
+        for node in self.nodes.values() {
+            scene.insert(node.clone());
         }
         scene
-    }
-}
-
-fn blank_node(id: u128) -> Node {
-    Node {
-        id,
-        kind: ShapeKind::Rect,
-        bounds: Rect::ZERO,
-        path: None,
-        corners: None,
-        transform: Affine::IDENTITY,
-        fills: Vec::new(),
-        strokes: Vec::new(),
-        opacity: 1.0,
-        hidden: false,
     }
 }
 
@@ -175,11 +171,187 @@ pub extern "C" fn set_shape_hidden(hidden: bool) {
 pub extern "C" fn set_shape_type(shape_type: u8) {
     with_current(|node| {
         node.kind = match shape_type {
+            0 => ShapeKind::Frame,
+            1 => ShapeKind::Group,
             4 => ShapeKind::Path,
             6 => ShapeKind::Circle,
+            // Bool, Text and SVGRaw have no model kind yet; a rect is the least surprising
+            // stand-in, and they carry no children, so nothing below them is lost.
             _ => ShapeKind::Rect,
         };
     });
+}
+
+/// Whether this node clips its children to its own geometry.
+///
+/// Projected verbatim, with no type check: render-wasm gates only on this flag, and it is the
+/// host that decides only frames and slots may clip.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_clip_content(clip_content: bool) {
+    with_current(|node| node.clip = clip_content);
+}
+
+// --- hierarchy -------------------------------------------------------------------------
+//
+// Paint order comes from each container's `children`, which is what `set_children*` writes.
+// `set_parent` records the back-reference only — that is all render-wasm does with it too
+// (it uses the parent link to invalidate cached bounds, which this module does not cache).
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_parent(a: u32, b: u32, c: u32, d: u32) {
+    let parent = uuid_u128(a, b, c, d);
+    with_current(|node| node.parent = Some(parent));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn add_shape_child(a: u32, b: u32, c: u32, d: u32) {
+    let child = uuid_u128(a, b, c, d);
+    with_current(|node| node.children.push(child));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_children_0() {
+    with_state(|state| state.set_children(Vec::new()));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_children_1(a1: u32, b1: u32, c1: u32, d1: u32) {
+    with_state(|state| state.set_children(vec![uuid_u128(a1, b1, c1, d1)]));
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn set_children_2(
+    a1: u32,
+    b1: u32,
+    c1: u32,
+    d1: u32,
+    a2: u32,
+    b2: u32,
+    c2: u32,
+    d2: u32,
+) {
+    with_state(|state| {
+        state.set_children(vec![uuid_u128(a1, b1, c1, d1), uuid_u128(a2, b2, c2, d2)])
+    });
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn set_children_3(
+    a1: u32,
+    b1: u32,
+    c1: u32,
+    d1: u32,
+    a2: u32,
+    b2: u32,
+    c2: u32,
+    d2: u32,
+    a3: u32,
+    b3: u32,
+    c3: u32,
+    d3: u32,
+) {
+    with_state(|state| {
+        state.set_children(vec![
+            uuid_u128(a1, b1, c1, d1),
+            uuid_u128(a2, b2, c2, d2),
+            uuid_u128(a3, b3, c3, d3),
+        ])
+    });
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn set_children_4(
+    a1: u32,
+    b1: u32,
+    c1: u32,
+    d1: u32,
+    a2: u32,
+    b2: u32,
+    c2: u32,
+    d2: u32,
+    a3: u32,
+    b3: u32,
+    c3: u32,
+    d3: u32,
+    a4: u32,
+    b4: u32,
+    c4: u32,
+    d4: u32,
+) {
+    with_state(|state| {
+        state.set_children(vec![
+            uuid_u128(a1, b1, c1, d1),
+            uuid_u128(a2, b2, c2, d2),
+            uuid_u128(a3, b3, c3, d3),
+            uuid_u128(a4, b4, c4, d4),
+        ])
+    });
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn set_children_5(
+    a1: u32,
+    b1: u32,
+    c1: u32,
+    d1: u32,
+    a2: u32,
+    b2: u32,
+    c2: u32,
+    d2: u32,
+    a3: u32,
+    b3: u32,
+    c3: u32,
+    d3: u32,
+    a4: u32,
+    b4: u32,
+    c4: u32,
+    d4: u32,
+    a5: u32,
+    b5: u32,
+    c5: u32,
+    d5: u32,
+) {
+    with_state(|state| {
+        state.set_children(vec![
+            uuid_u128(a1, b1, c1, d1),
+            uuid_u128(a2, b2, c2, d2),
+            uuid_u128(a3, b3, c3, d3),
+            uuid_u128(a4, b4, c4, d4),
+            uuid_u128(a5, b5, c5, d5),
+        ])
+    });
+}
+
+/// The unbounded form: ids packed into the shared buffer, sixteen bytes each.
+///
+/// A UUID is four little-endian `u32`s in the same order the quartet entry points take, so this
+/// and `use_shape` agree by construction. A ragged buffer drops the whole list rather than
+/// building a half-tree out of misaligned ids.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_children() {
+    const UUID_SIZE: usize = 16;
+    let bytes = take_bytes();
+
+    if !bytes.len().is_multiple_of(UUID_SIZE) {
+        return;
+    }
+    let children = bytes
+        .chunks_exact(UUID_SIZE)
+        .map(|c| {
+            uuid_u128(
+                u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                u32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                u32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+                u32::from_le_bytes([c[12], c[13], c[14], c[15]]),
+            )
+        })
+        .collect();
+
+    with_state(|state| state.set_children(children));
 }
 
 /// Corner radii for a rect: top-left, top-right, bottom-right, bottom-left. All-zero collapses
@@ -338,14 +510,13 @@ fn uuid_u128(a: u32, b: u32, c: u32, d: u32) -> u128 {
 /// Node count, so the host and tests can assert the scene took without reading pixels.
 #[unsafe(no_mangle)]
 pub extern "C" fn scene_node_count() -> u32 {
-    with_state(|state| state.order.len() as u32)
+    with_state(|state| state.nodes.len() as u32)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_scene() {
     with_state(|state| {
         state.nodes.clear();
-        state.order.clear();
         state.current = None;
     });
 }
@@ -353,6 +524,7 @@ pub extern "C" fn clear_scene() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render_core::model::ROOT_ID;
     use render_core::peniko::Brush;
 
     /// The ABI is built on module-global state — the implicit current-shape cursor D17 accepts
@@ -387,7 +559,7 @@ mod tests {
         set_shape_type(6);
 
         let scene = current_scene();
-        let node = &scene.nodes[0];
+        let node = scene.get(7).unwrap();
         assert_eq!(node.bounds, Rect::new(1.0, 2.0, 11.0, 22.0));
         assert_eq!(node.opacity, 0.5);
         assert_eq!(node.kind, ShapeKind::Circle);
@@ -402,7 +574,7 @@ mod tests {
         set_shape_transform(2.0, 3.0, 5.0, 7.0, 11.0, 13.0);
         let scene = current_scene();
         assert_eq!(
-            scene.nodes[0].transform.as_coeffs(),
+            scene.get(1).unwrap().transform.as_coeffs(),
             [2.0, 3.0, 5.0, 7.0, 11.0, 13.0]
         );
     }
@@ -430,7 +602,7 @@ mod tests {
 
         let scene = current_scene();
         assert_eq!(
-            scene.nodes[0].fills,
+            scene.get(1).unwrap().fills,
             vec![Brush::Solid(render_core::peniko::Color::from_rgba8(
                 0x11, 0x22, 0x33, 0xff
             ))]
@@ -472,7 +644,12 @@ mod tests {
         set_shape_path_content();
 
         let scene = current_scene();
-        let path = scene.nodes[0].path.as_ref().expect("path must be set");
+        let path = scene
+            .get(1)
+            .unwrap()
+            .path
+            .as_ref()
+            .expect("path must be set");
         assert_eq!(path.elements().len(), 4);
     }
 
@@ -494,14 +671,24 @@ mod tests {
         set_shape_path_buffer();
 
         let scene = current_scene();
-        assert_eq!(scene.nodes[0].path.as_ref().unwrap().elements().len(), 4);
+        assert_eq!(
+            scene
+                .get(1)
+                .unwrap()
+                .path
+                .as_ref()
+                .unwrap()
+                .elements()
+                .len(),
+            4
+        );
 
         // Committing drains the accumulator, so a second commit does not replay the path.
         use_shape(0, 0, 0, 2);
         set_shape_type(4);
         set_shape_path_buffer();
         let scene = current_scene();
-        assert!(scene.nodes[1].path.as_ref().unwrap().is_empty());
+        assert!(scene.get(2).unwrap().path.as_ref().unwrap().is_empty());
     }
 
     /// Mirrors render-wasm's `set_path_segments`, which ignores anything that is not a path.
@@ -514,7 +701,7 @@ mod tests {
         upload(&triangle_bytes());
         set_shape_path_content();
 
-        assert!(current_scene().nodes[0].path.is_none());
+        assert!(current_scene().get(1).unwrap().path.is_none());
     }
 
     /// A ragged buffer must drop the geometry, not panic — there is no panic-to-JS channel.
@@ -527,7 +714,7 @@ mod tests {
         upload(&[0u8; render_core::abi::RAW_SEGMENT_DATA_SIZE + 5]);
         set_shape_path_content();
 
-        assert!(current_scene().nodes[0].path.is_none());
+        assert!(current_scene().get(1).unwrap().path.is_none());
     }
 
     #[test]
@@ -536,12 +723,122 @@ mod tests {
         use_shape(0, 0, 0, 1);
 
         set_shape_corners(0.0, 0.0, 0.0, 0.0);
-        assert!(current_scene().nodes[0].corners.is_none());
+        assert!(current_scene().get(1).unwrap().corners.is_none());
 
         set_shape_corners(1.0, 2.0, 3.0, 4.0);
-        let corners = current_scene().nodes[0].corners.expect("radii must be set");
+        let corners = current_scene()
+            .get(1)
+            .unwrap()
+            .corners
+            .expect("radii must be set");
         assert_eq!(corners.top_left, 1.0);
         assert_eq!(corners.bottom_left, 4.0);
+    }
+
+    /// The shape the host addresses as `use_shape(0,0,0,0)` is the root; `roots()` reads its
+    /// children, and the root itself never paints.
+    #[test]
+    fn the_nil_uuid_is_the_root() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 0);
+        set_shape_type(1); // Group
+        set_children_2(0, 0, 0, 10, 0, 0, 0, 20);
+
+        use_shape(0, 0, 0, 10);
+        use_shape(0, 0, 0, 20);
+
+        let scene = current_scene();
+        assert_eq!(scene.roots(), &[10, 20]);
+        assert_eq!(scene.get(ROOT_ID).unwrap().kind, ShapeKind::Group);
+    }
+
+    /// The host sends nodes in no guaranteed order, so a parent may list children that have
+    /// not arrived yet. The tree must survive that rather than dropping them.
+    #[test]
+    fn children_may_be_listed_before_they_arrive() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 0);
+        set_children_1(0, 0, 0, 42);
+
+        assert_eq!(current_scene().roots(), &[42]);
+        assert!(current_scene().get(42).is_none());
+
+        use_shape(0, 0, 0, 42);
+        assert!(current_scene().get(42).is_some());
+    }
+
+    #[test]
+    fn set_children_replaces_and_add_shape_child_appends() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+
+        set_children_3(0, 0, 0, 7, 0, 0, 0, 8, 0, 0, 0, 9);
+        assert_eq!(current_scene().get(1).unwrap().children, vec![7, 8, 9]);
+
+        add_shape_child(0, 0, 0, 10);
+        assert_eq!(current_scene().get(1).unwrap().children, vec![7, 8, 9, 10]);
+
+        // Replace, not merge — and the dropped ids simply stop being reachable.
+        set_children_1(0, 0, 0, 99);
+        assert_eq!(current_scene().get(1).unwrap().children, vec![99]);
+
+        set_children_0();
+        assert!(current_scene().get(1).unwrap().children.is_empty());
+    }
+
+    /// The buffered form must agree with the quartet form byte for byte: a UUID on the wire is
+    /// four little-endian u32s in the same order `use_shape` takes them.
+    #[test]
+    fn buffered_set_children_matches_the_quartet_form() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+
+        let ids: [[u32; 4]; 2] = [[1, 2, 3, 4], [0, 0, 0, 77]];
+        let mut payload = Vec::new();
+        for id in ids {
+            for word in id {
+                payload.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        upload(&payload);
+        set_children();
+
+        let children = current_scene().get(1).unwrap().children.clone();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[1], 77);
+
+        // Same id via the quartet entry point lands on the same u128.
+        use_shape(0, 0, 0, 2);
+        set_children_1(1, 2, 3, 4);
+        assert_eq!(current_scene().get(2).unwrap().children[0], children[0]);
+    }
+
+    /// A ragged buffer must not produce a half-tree of misaligned ids.
+    #[test]
+    fn buffered_set_children_rejects_a_ragged_buffer() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_children_1(0, 0, 0, 5);
+
+        upload(&[0u8; 20]);
+        set_children();
+
+        assert_eq!(current_scene().get(1).unwrap().children, vec![5]);
+    }
+
+    #[test]
+    fn parent_and_clip_are_recorded() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 3);
+        set_parent(0, 0, 0, 1);
+        set_shape_clip_content(true);
+
+        let scene = current_scene();
+        assert_eq!(scene.get(3).unwrap().parent, Some(1));
+        assert!(scene.get(3).unwrap().clip);
+
+        set_shape_clip_content(false);
+        assert!(!current_scene().get(3).unwrap().clip);
     }
 
     #[test]

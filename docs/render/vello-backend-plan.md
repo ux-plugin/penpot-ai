@@ -288,7 +288,15 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 **Status: steps 1 and 2 done; step 3 in progress.** Step 3 is being taken in slices, ordered so that the shortest path to a real page comes first — paths, then hierarchy, then lifecycle, then host wiring; strokes and the differential harness follow the first pixels.
 
 - **Slice A (done)** — path segments and corners. `RawSegmentData` and its three command layouts moved into `render_core::abi::path` with the same safe codec treatment the fills got, and the *same* padding bug fixed (`RawMoveCommand`/`RawLineCommand` carry sixteen explicit bytes of it). `decode_path` is strict where the code it replaces printed a warning and carried on — a ragged buffer misreads every segment after it, which shows up as subtly wrong geometry rather than an error. `Node` gained `corners: Option<RoundedRectRadii>`; Penpot's `r1..r4` is already TL/TR/BR/BL, matching both Skia's `RRect` array and kurbo's field order, so nothing is reordered anywhere. render-vello gained five entry points, and `set_shape_kind` was renamed `set_shape_type` — the host calls `_set_shape_type`, so the old name was a function it could never reach.
-- **Slices B–F** — hierarchy + clipping (needs a tree in `model`), lifecycle + viewport, host wiring through the facade, strokes, differential harness.
+- **Slice B (done)** — hierarchy and clipping. `Scene` became a tree: nodes keyed by id, walked from `ROOT_ID` (the nil UUID, which the host addresses like any other node) through each node's `children`. Keyed rather than ordered because the wire delivers nodes in no particular order — a child routinely arrives before the parent listing it. `ShapeKind` gained `Frame` and `Group`; `Node` gained `children`, `parent` and `clip`. render-vello gained ten entry points (`set_parent`, `add_shape_child`, `set_children_0..5`, `set_children`, `set_shape_clip_content`) and a recursive walk.
+
+  **Two findings from reading render-wasm's traversal, both of which would have silently produced wrong pixels:**
+  - **Parent transforms are not accumulated.** Penpot stores absolute `selrect`s, so a child is already in page space; render-wasm applies `scale · viewport · shape_matrix` from scratch per shape and never carries a parent CTM. Containers contribute layers and nothing else. Composing a parent matrix in — the obvious thing to write — double-transforms every nested shape.
+  - **Each shape's matrix is centred on its own bounds:** `translate(c) · transform · translate(-c)`. render-vello had been applying the raw transform since Phase 1, which makes a rotation orbit the page origin. Now `Node::effective_transform`.
+
+  Clip and opacity take separate layers: opacity wraps the node's own paint *and* its subtree, clipping covers only the children (a frame is not clipped by itself, which starts to matter once strokes straddle the boundary).
+
+- **Slices C–F** — lifecycle + viewport, host wiring through the facade, strokes, differential harness.
 
 Two casualties of the relocation, both fixed in place:
 - `SerializableResult` lost its `From<BytesType> + Into<BytesType>` supertrait bounds. Those types are foreign to render-wasm now, so the orphan rules forbid the conversion impls; nothing used the bounds (`write_vec` only calls `clone_to_slice`).

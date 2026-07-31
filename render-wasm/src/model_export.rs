@@ -21,7 +21,9 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         Type::Rect(_) => (m::ShapeKind::Rect, None),
         Type::Circle => (m::ShapeKind::Circle, None),
         Type::Path(path) => (m::ShapeKind::Path, Some(path_to_core(path))),
-        // Frame/Group/Text/Bool/SVGRaw are deferred to later increments.
+        Type::Frame(_) => (m::ShapeKind::Frame, None),
+        Type::Group(_) => (m::ShapeKind::Group, None),
+        // Text/Bool/SVGRaw are deferred to later increments.
         _ => return None,
     };
 
@@ -35,6 +37,13 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         path,
         corners: corners_to_core(shape.shape_type.corners()),
         transform: affine_to_core(&shape.transform),
+        children: shape.children.iter().map(|id| id.as_u128()).collect(),
+        parent: shape.parent_id.map(|id| id.as_u128()),
+        // Projected verbatim. render-wasm clips on `clip_content` alone, with no type check —
+        // it is the *host* that decides only frames and slots may clip
+        // (`orchestration.ts`: `clips = type === 'frame' || type === 'slot'`), sending false
+        // for everything else. Re-deriving that rule here would be a second, divergent copy.
+        clip: shape.clip_content,
         fills,
         strokes,
         opacity: shape.opacity,
@@ -185,11 +194,47 @@ mod tests {
         );
     }
 
+    /// Text, Bool and SVGRaw have no model kind yet. Frame and Group do, as of the hierarchy
+    /// slice — a container that projected to `None` would take its whole subtree with it.
     #[test]
     fn unsupported_kind_projects_to_none() {
         let mut shape = Shape::new(Uuid::nil());
-        shape.set_shape_type(Type::Group(Group { masked: false }));
+        shape.set_shape_type(Type::SVGRaw(crate::shapes::SVGRaw::default()));
         assert!(node_from_shape(&shape).is_none());
+    }
+
+    #[test]
+    fn containers_project_with_their_children() {
+        let parent = Uuid::new_v4();
+        let child = Uuid::new_v4();
+
+        let mut shape = Shape::new(parent);
+        shape.set_shape_type(Type::Group(Group { masked: false }));
+        shape.add_child(child);
+
+        let node = node_from_shape(&shape).expect("a group must project");
+        assert_eq!(node.kind, m::ShapeKind::Group);
+        assert_eq!(node.children, vec![child.as_u128()]);
+    }
+
+    /// `clip_content` is projected verbatim — the frame-only rule lives in the host, and
+    /// re-deriving it here would be a second, divergent copy.
+    #[test]
+    fn frames_carry_clip_and_parent() {
+        let parent = Uuid::new_v4();
+
+        let mut shape = Shape::new(Uuid::new_v4());
+        shape.set_shape_type(Type::Frame(crate::shapes::Frame::default()));
+        shape.parent_id = Some(parent);
+        shape.set_clip(true);
+
+        let node = node_from_shape(&shape).expect("a frame must project");
+        assert_eq!(node.kind, m::ShapeKind::Frame);
+        assert_eq!(node.parent, Some(parent.as_u128()));
+        assert!(node.clip);
+
+        shape.set_clip(false);
+        assert!(!node_from_shape(&shape).unwrap().clip);
     }
 
     #[test]
