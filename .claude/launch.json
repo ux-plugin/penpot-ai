@@ -4,8 +4,8 @@
     {
       "name": "skia-rs-wasm",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "skia-rs-wasm", "run", "dev", "--port", "5191", "--strictPort"],
-      "port": 5191
+      "runtimeArgs": ["--dir", "skia-rs-wasm", "run", "dev", "--port", "5192", "--strictPort"],
+      "port": 5192
     },
     {
       "name": "figma_plugin_fe",

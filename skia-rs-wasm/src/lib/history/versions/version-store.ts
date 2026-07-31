@@ -70,7 +70,7 @@ const MAX_SUBJECTS = 200
  * would appear to change the subject whenever a field happened to be rebuilt in
  * a different order.
  */
-function stableStringify(value: unknown): string {
+export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
   const entries = Object.entries(value as Record<string, unknown>)
