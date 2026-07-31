@@ -78,14 +78,6 @@ export function docMetaField(change: DocMetaChange): string {
       return `theme:${change.id}`
     case 'set-active-themes':
       return 'active-themes'
-    // Whole-material granularity: two edits to one material collide, edits to
-    // two materials commute. Splitting further — a key per function, per uniform
-    // — is what makes two edits *inside* one shader commute, and it arrives with
-    // the function-map storage rather than here.
-    case 'add-material':
-    case 'mod-material':
-    case 'del-material':
-      return `material:${change.materialId}`
   }
 }
 
