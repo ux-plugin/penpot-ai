@@ -27,3 +27,15 @@ mod scene;
 
 #[cfg(target_arch = "wasm32")]
 pub use renderer::{FocusRenderer, create_focus_renderer};
+
+/// Whether the host asked for a frame since this was last called, clearing the request.
+///
+/// The C-ABI `render()` records a request rather than drawing: Phase 0 deliberately left the
+/// frame loop with the host (D3), and render-wasm's own `render()` schedules rather than draws.
+/// A host driving this module through the facade polls this from its `requestAnimationFrame`
+/// and calls `FocusRenderer::render()` when it returns true.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn frame_requested() -> bool {
+    abi::take_needs_frame()
+}

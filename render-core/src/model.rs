@@ -168,6 +168,24 @@ impl Scene {
     }
 
     #[inline]
+    pub fn get_mut(&mut self, id: u128) -> Option<&mut Node> {
+        self.nodes.get_mut(&id)
+    }
+
+    /// Pre-size the map. The host announces its shape count up front
+    /// (`init_shapes_pool`), and a scene built one `use_shape` at a time would otherwise
+    /// rehash its way up to that size.
+    #[inline]
+    pub fn reserve(&mut self, additional: usize) {
+        self.nodes.reserve(additional);
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.nodes.len()
     }

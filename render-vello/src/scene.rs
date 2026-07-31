@@ -37,16 +37,19 @@ const MAX_DEPTH: u32 = 128;
 const TOLERANCE: f64 = 0.1;
 
 /// A focus scene that draws a neutral model via the backend-agnostic `RenderingContext`.
+///
+/// The model comes from the ABI — whatever the host has sent through `use_shape` and friends.
+/// The hand-built [`demo_model`] stands in only while the ABI is empty, so the dev harness has
+/// something to show with no host attached.
 #[derive(Debug)]
 pub struct NeutralModelScene {
-    model: m::Scene,
+    fallback: m::Scene,
 }
 
 impl NeutralModelScene {
-    /// Create the scene with a hand-built demo model (using the converter's output types).
     pub fn new() -> Self {
         Self {
-            model: demo_model(),
+            fallback: demo_model(),
         }
     }
 }
@@ -64,16 +67,41 @@ impl ExampleScene for NeutralModelScene {
         _resources: &mut T::Resources,
         root: Affine,
     ) {
-        for id in self.model.roots() {
-            draw_node(ctx, &self.model, *id, root, 0);
+        // The page background, if the host set one. Drawn in canvas space, under everything.
+        let background = crate::abi::background();
+        if background.components[3] > 0.0 {
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.set_paint(background);
+            ctx.fill_rect(&Rect::new(
+                0.0,
+                0.0,
+                f64::from(ctx.width()),
+                f64::from(ctx.height()),
+            ));
         }
+
+        crate::abi::with_scene(|live, viewport| {
+            // `root` is the harness's own pan/zoom; `viewport` is what the host set through
+            // `set_view`. They compose — the harness stays at identity when a host is driving.
+            let (model, view) = if live.is_empty() {
+                (&self.fallback, root)
+            } else {
+                (live, root * viewport)
+            };
+            for id in model.roots() {
+                draw_node(ctx, model, *id, view, 0);
+            }
+        });
     }
 
     fn status(&self) -> Option<String> {
-        Some(format!(
-            "neutral model → vello · {} nodes",
-            self.model.len()
-        ))
+        let live = crate::abi::with_scene(|scene, _| scene.len());
+        let (source, count) = if live == 0 {
+            ("demo", self.fallback.len())
+        } else {
+            ("host", live)
+        };
+        Some(format!("neutral model → vello · {source} · {count} nodes"))
     }
 }
 

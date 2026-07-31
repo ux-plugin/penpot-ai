@@ -296,7 +296,17 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   Clip and opacity take separate layers: opacity wraps the node's own paint *and* its subtree, clipping covers only the children (a frame is not clipped by itself, which starts to matter once strokes straddle the boundary).
 
-- **Slices C–F** — lifecycle + viewport, host wiring through the facade, strokes, differential harness.
+- **Slice C (done)** — lifecycle and viewport. Twelve entry points: `init`, `set_render_options`, `resize_viewbox`, `set_view`, `set_view_start`/`end`, `render`, `render_sync`, `set_canvas_background`, `reset_canvas`, `init_shapes_pool`, `clean_up`. The scene now reads from the ABI, with the hand-built demo kept only as a fallback for when no host is attached.
+
+  **`init` does not create the drawing surface, and that asymmetry is structural.** Emscripten binds a GL context to a canvas in its JS glue, so render-wasm's `init(width, height)` is synchronous and canvas-free. Acquiring a wgpu adapter and device is async and needs the canvas element, so surface creation stays at `create_focus_renderer(canvas)` — a wasm-bindgen call the facade already passes through untouched. Phase 3's `Renderer` interface is where this gets absorbed, as an async `create` both backends implement.
+
+  **`render()` records a request rather than drawing.** render-wasm's own `render()` schedules too, and Phase 0 deliberately left the frame loop with the host (D3), so the host polls `frame_requested()` from its `requestAnimationFrame`.
+
+  Viewport maths is `scale(zoom · dpr) · translate(pan)`, reached from render-wasm's `Viewbox` by a different route but putting page point `(-pan_x, -pan_y)` at the canvas origin either way. Zero or negative zoom/dpr falls back to 1 — a degenerate matrix renders as a blank canvas, which is indistinguishable from a broken module.
+
+  Verified by driving the C ABI from JavaScript in a browser: `clean_up` → `init` → `set_render_options` → `set_canvas_background` → shape tree with fills through the shared buffer → `set_view` → `render`. A `1280×720` probe rect at identity filled exactly the top-left quadrant of the `2560×1440` canvas, which pins the scene's coordinate space to device pixels and rules out a double-counted `dpr`.
+
+- **Slices D–F** — host wiring through the facade, strokes, differential harness.
 
 Two casualties of the relocation, both fixed in place:
 - `SerializableResult` lost its `From<BytesType> + Into<BytesType>` supertrait bounds. Those types are foreign to render-wasm now, so the orphan rules forbid the conversion impls; nothing used the bounds (`write_vec` only calls `clone_to_slice`).

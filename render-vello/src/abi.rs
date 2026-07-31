@@ -15,12 +15,12 @@
 //! host's existing call sequence is proven, and matching it is what lets the two modules be
 //! driven interchangeably. Explicit `upsert(id, payload)` is the Phase-3 target.
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 
 use render_core::abi::decode_fill;
 use render_core::kurbo::{Affine, Rect};
 use render_core::model::{Node, Scene, ShapeKind};
+use render_core::peniko::Color;
 
 /// The shared byte buffer. The host allocates, writes through `HEAPU8`, then calls a no-arg
 /// export that drains it — exactly render-wasm's protocol.
@@ -35,21 +35,68 @@ static STATE: Mutex<Option<SceneState>> = Mutex::new(None);
 /// guaranteed order — a child can arrive before the parent that lists it.
 #[derive(Default)]
 struct SceneState {
-    nodes: HashMap<u128, Node>,
+    scene: Scene,
     current: Option<u128>,
+    viewport: Viewport,
+    /// Set by `render`/`render_sync`, cleared when the host's frame loop picks it up.
+    needs_frame: bool,
+}
+
+/// Pan, zoom and surface metrics — everything needed to place the page on the canvas.
+///
+/// Mirrors render-wasm's `Viewbox` plus the `dpr` from its render options. `zoom` and `dpr` are
+/// separate because they arrive from different entry points and mean different things, even
+/// though rendering only ever uses the product.
+#[derive(Debug, Clone, Copy)]
+struct Viewport {
+    zoom: f32,
+    pan_x: f32,
+    pan_y: f32,
+    dpr: f32,
+    width: i32,
+    height: i32,
+    background: Color,
+}
+
+impl Default for Viewport {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            dpr: 1.0,
+            width: 0,
+            height: 0,
+            background: Color::from_rgba8(0, 0, 0, 0),
+        }
+    }
+}
+
+impl Viewport {
+    /// The page-to-canvas matrix: `scale(zoom · dpr) · translate(pan)`.
+    ///
+    /// render-wasm arrives at the same thing by a different route — its `Viewbox::set_all`
+    /// stores the visible page rect as `(-pan_x, -pan_y, width/zoom, height/zoom)` and the
+    /// canvas is then set up with `scale(zoom · dpr)` and a translation of `-area.left`. Both
+    /// put page point `(-pan_x, -pan_y)` at the canvas origin.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn transform(&self) -> Affine {
+        let scale = (self.zoom * self.dpr) as f64;
+        Affine::scale(scale) * Affine::translate((self.pan_x as f64, self.pan_y as f64))
+    }
 }
 
 impl SceneState {
     fn upsert(&mut self, id: u128) {
-        self.nodes
-            .entry(id)
-            .or_insert_with(|| Node::new(id, ShapeKind::Rect));
+        if self.scene.get(id).is_none() {
+            self.scene.insert(Node::new(id, ShapeKind::Rect));
+        }
         self.current = Some(id);
     }
 
     fn current_mut(&mut self) -> Option<&mut Node> {
         let id = self.current?;
-        self.nodes.get_mut(&id)
+        self.scene.get_mut(id)
     }
 
     /// Replace the current shape's children.
@@ -62,15 +109,6 @@ impl SceneState {
         if let Some(node) = self.current_mut() {
             node.children = children;
         }
-    }
-
-    #[allow(dead_code)]
-    fn to_scene(&self) -> Scene {
-        let mut scene = Scene::new();
-        for node in self.nodes.values() {
-            scene.insert(node.clone());
-        }
-        scene
     }
 }
 
@@ -92,12 +130,34 @@ fn take_bytes() -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// The scene as the renderer wants it. Not part of the ABI.
+/// Borrow the live scene and viewport for the duration of `f`. Not part of the ABI — this is
+/// how `scene.rs` reads what the host has sent.
 ///
-/// Dead code until slice D hands it to `renderer.rs` in place of the demo scene.
-#[allow(dead_code)]
-pub(crate) fn current_scene() -> Scene {
-    with_state(|state| state.to_scene())
+/// Borrowed rather than returned by value because this runs once a frame, and cloning the whole
+/// node map per frame is exactly the cost this backend exists to avoid.
+// `scene.rs` is wasm-only, so a host build sees no caller outside the tests.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn with_scene<R>(f: impl FnOnce(&Scene, Affine) -> R) -> R {
+    with_state(|state| {
+        let transform = state.viewport.transform();
+        f(&state.scene, transform)
+    })
+}
+
+/// The canvas clear colour the host set, if any.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn background() -> Color {
+    with_state(|state| state.viewport.background)
+}
+
+/// Whether a frame was requested since the last check, clearing the flag.
+///
+/// The Vello module does not own a frame loop — Phase 0 put that in the host deliberately
+/// (D3), and render-wasm's own `render()` schedules rather than draws. So the C entry point
+/// records the request and the host's `requestAnimationFrame` picks it up.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn take_needs_frame() -> bool {
+    with_state(|state| std::mem::take(&mut state.needs_frame))
 }
 
 // --- transport -------------------------------------------------------------------------
@@ -122,6 +182,113 @@ pub extern "C" fn alloc_bytes(len: usize) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn free_bytes() {
     *BUFFER.lock().expect("byte buffer poisoned") = None;
+}
+
+// --- module lifecycle and viewport ------------------------------------------------------
+//
+// One asymmetry with render-wasm, and it is not incidental: **`init` does not create the
+// drawing surface here.** Emscripten binds a GL context to a canvas in its JS glue, so
+// render-wasm's `init(width, height)` can be synchronous and canvas-free. Acquiring a wgpu
+// adapter and device is asynchronous and needs the canvas element itself, so surface creation
+// stays where Phase 0 put it — `create_focus_renderer(canvas)`, a wasm-bindgen call the host
+// makes once, reachable through the facade because it passes non-underscore names straight
+// through. Everything after that goes through this ABI.
+//
+// Phase 3's `Renderer` interface is where that difference gets absorbed, as an async `create`
+// both backends implement.
+
+/// Record the surface size. See the note above on why this does not create the surface.
+#[unsafe(no_mangle)]
+pub extern "C" fn init(width: i32, height: i32) {
+    with_state(|state| {
+        state.viewport.width = width;
+        state.viewport.height = height;
+    });
+}
+
+/// `debug` is render-wasm's debug-flag bitset, which this module has nothing to draw for yet.
+/// `dpr` matters: it multiplies zoom to give the device scale.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_render_options(_debug: u32, dpr: f32) {
+    with_state(|state| state.viewport.dpr = if dpr > 0.0 { dpr } else { 1.0 });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn resize_viewbox(width: i32, height: i32) {
+    with_state(|state| {
+        state.viewport.width = width;
+        state.viewport.height = height;
+        state.needs_frame = true;
+    });
+}
+
+/// Pan and zoom. `x`/`y` are the pan offset, so page point `(-x, -y)` lands at the canvas
+/// origin — the same convention as render-wasm's `Viewbox::set_all`.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_view(zoom: f32, x: f32, y: f32) {
+    with_state(|state| {
+        state.viewport.zoom = if zoom > 0.0 { zoom } else { 1.0 };
+        state.viewport.pan_x = x;
+        state.viewport.pan_y = y;
+        state.needs_frame = true;
+    });
+}
+
+/// Bracket an interactive pan/zoom. render-wasm uses these to switch to a cheaper cached path
+/// and to time the interaction; this module has no such path yet, so they are accepted and
+/// ignored rather than left undefined for the host to trip over.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_view_start() {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_view_end() {}
+
+/// Request a frame.
+///
+/// This does not draw. render-wasm's `render()` also schedules rather than drawing, and Phase 0
+/// deliberately left the frame loop with the host — so the request is recorded and the host's
+/// `requestAnimationFrame` performs it. The `i32` argument is a timestamp render-wasm ignores.
+#[unsafe(no_mangle)]
+pub extern "C" fn render(_timestamp: i32) {
+    with_state(|state| state.needs_frame = true);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn render_sync() {
+    with_state(|state| state.needs_frame = true);
+}
+
+/// Packed ARGB, matching Skia's word order — the same convention as a solid fill.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_canvas_background(raw_color: u32) {
+    with_state(|state| {
+        state.viewport.background = argb_to_color(raw_color);
+        state.needs_frame = true;
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn reset_canvas() {
+    with_state(|state| state.needs_frame = true);
+}
+
+/// Pre-size the node map. render-wasm allocates a real pool of `Shape`s; here it only avoids
+/// rehashing on the way up to a known shape count.
+#[unsafe(no_mangle)]
+pub extern "C" fn init_shapes_pool(capacity: usize) {
+    with_state(|state| state.scene.reserve(capacity));
+}
+
+/// Drop everything. The surface is owned by the host's `FocusRenderer`, so this clears document
+/// state only.
+#[unsafe(no_mangle)]
+pub extern "C" fn clean_up() {
+    with_state(|state| {
+        state.scene.clear();
+        state.current = None;
+        state.viewport = Viewport::default();
+        state.needs_frame = false;
+    });
 }
 
 // --- shape lifecycle -------------------------------------------------------------------
@@ -510,13 +677,13 @@ fn uuid_u128(a: u32, b: u32, c: u32, d: u32) -> u128 {
 /// Node count, so the host and tests can assert the scene took without reading pixels.
 #[unsafe(no_mangle)]
 pub extern "C" fn scene_node_count() -> u32 {
-    with_state(|state| state.nodes.len() as u32)
+    with_state(|state| state.scene.len() as u32)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_scene() {
     with_state(|state| {
-        state.nodes.clear();
+        state.scene.clear();
         state.current = None;
     });
 }
@@ -524,6 +691,7 @@ pub extern "C" fn clear_scene() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render_core::kurbo::Point;
     use render_core::model::ROOT_ID;
     use render_core::peniko::Brush;
 
@@ -533,10 +701,19 @@ mod tests {
     /// the failure looks flaky. Every test holds this for its duration.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    /// A snapshot of the live scene. Production reads it by reference through `with_scene`;
+    /// cloning is fine in a test and keeps the assertions readable.
+    fn current_scene() -> Scene {
+        with_scene(|scene, _| scene.clone())
+    }
+
     fn reset() -> std::sync::MutexGuard<'static, ()> {
         // A panicking test poisons the lock; the state is reset here anyway, so recover.
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_scene();
+        // `clean_up` rather than `clear_scene`: the viewport and the pending-frame flag are
+        // module-global too, and a leftover `set_view` from the previous test would otherwise
+        // leak into this one.
+        clean_up();
         free_bytes();
         guard
     }
@@ -839,6 +1016,107 @@ mod tests {
 
         set_shape_clip_content(false);
         assert!(!current_scene().get(3).unwrap().clip);
+    }
+
+    // --- lifecycle and viewport ---------------------------------------------------------
+
+    fn viewport_transform() -> Affine {
+        with_scene(|_, t| t)
+    }
+
+    /// The load-bearing viewport property: page point `(-pan_x, -pan_y)` must land on the canvas
+    /// origin, which is what render-wasm's `Viewbox::set_all` encodes as the visible area's
+    /// top-left. Get the sign wrong and the page slides the wrong way under a pan.
+    #[test]
+    fn pan_puts_the_view_origin_at_the_canvas_origin() {
+        let _guard = reset();
+        set_view(1.0, -300.0, -200.0);
+
+        let origin = viewport_transform() * Point::new(300.0, 200.0);
+        assert!((origin - Point::ZERO).hypot() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_and_dpr_multiply() {
+        let _guard = reset();
+        set_view(2.0, 0.0, 0.0);
+        set_render_options(0, 3.0);
+
+        // A 10-unit page span becomes 60 device pixels.
+        let t = viewport_transform();
+        let span = (t * Point::new(10.0, 0.0)) - (t * Point::ZERO);
+        assert!((span.x - 60.0).abs() < 1e-9);
+    }
+
+    /// Pan is applied in page units *before* the scale, so panning by one page unit at 4×
+    /// moves the image four device pixels — not one.
+    #[test]
+    fn pan_is_scaled_by_zoom() {
+        let _guard = reset();
+        set_view(4.0, 5.0, 0.0);
+
+        let at_origin = viewport_transform() * Point::ZERO;
+        assert!((at_origin.x - 20.0).abs() < 1e-9);
+    }
+
+    /// Nonsense from the host must not produce a degenerate matrix that collapses the page to a
+    /// point — that renders as a blank canvas, which is indistinguishable from a broken module.
+    #[test]
+    fn a_zero_or_negative_scale_falls_back_to_one() {
+        let _guard = reset();
+        set_view(0.0, 0.0, 0.0);
+        set_render_options(0, 0.0);
+        assert_eq!(viewport_transform(), Affine::IDENTITY);
+    }
+
+    #[test]
+    fn render_requests_a_frame_and_the_request_is_taken_once() {
+        let _guard = reset();
+        assert!(!take_needs_frame());
+
+        render(0);
+        assert!(take_needs_frame());
+        assert!(!take_needs_frame());
+
+        // Anything that changes what is on screen also requests one.
+        set_view(1.5, 0.0, 0.0);
+        assert!(take_needs_frame());
+        resize_viewbox(800, 600);
+        assert!(take_needs_frame());
+    }
+
+    #[test]
+    fn background_decodes_as_argb() {
+        let _guard = reset();
+        set_canvas_background(0xff_11_22_33);
+        assert_eq!(background(), Color::from_rgba8(0x11, 0x22, 0x33, 0xff));
+    }
+
+    #[test]
+    fn clean_up_resets_document_and_viewport() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_view(3.0, 10.0, 20.0);
+        set_canvas_background(0xff_ff_ff_ff);
+
+        clean_up();
+
+        assert_eq!(scene_node_count(), 0);
+        assert_eq!(viewport_transform(), Affine::IDENTITY);
+        assert_eq!(background().components[3], 0.0);
+        assert!(!take_needs_frame());
+    }
+
+    /// The host announces its shape count before sending shapes; reserving must not invent
+    /// nodes.
+    #[test]
+    fn init_shapes_pool_reserves_without_adding_nodes() {
+        let _guard = reset();
+        init_shapes_pool(512);
+        assert_eq!(scene_node_count(), 0);
+
+        use_shape(0, 0, 0, 1);
+        assert_eq!(scene_node_count(), 1);
     }
 
     #[test]
