@@ -5,6 +5,20 @@
 
 import type { WasmModule } from './wasm-types'
 import initWasmModuleFactory from '../../../public/wasm/render-wasm.js'
+import { loadVelloModule } from './vello-module'
+
+/**
+ * Which rendering backend to load. Exactly one wasm artifact is downloaded (D2), so this has to
+ * be decided before anything is fetched.
+ *
+ * Opt in with `?renderer=vello`. Skia stays the default while the Vello backend is missing
+ * text, effects and images — it is a Phase-2 preview, not an alternative anyone should land on
+ * by accident.
+ */
+function velloRequested(): boolean {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('renderer') === 'vello'
+}
 
 let wasmModuleInstance: WasmModule | null = null
 let wasmModulePromise: Promise<WasmModule> | null = null
@@ -44,6 +58,13 @@ export async function ensureWasmModule(wasmPathParam?: string): Promise<WasmModu
   // Start loading
   wasmModulePromise = (async () => {
     try {
+      if (velloRequested()) {
+        const vello = (await loadVelloModule()) as unknown as WasmModule
+        wasmModuleInstance = vello
+        wasmModuleError = null
+        return vello
+      }
+
       const module = await initWasmModuleFactory({
         locateFile: (filePath: string) => {
           // Check if path includes .wasm (handles query strings like ?version=develop)

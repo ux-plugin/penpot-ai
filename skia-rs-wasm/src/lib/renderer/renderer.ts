@@ -20,7 +20,8 @@ import {
   setRenderOptions,
 } from './api/canvas'
 import { setViewBox, resizeViewbox, initializeViewport } from './api/viewport'
-import { getContextInitialized } from './api/context'
+import { getContextInitialized, setContextInitialized } from './api/context'
+import { isVelloModule } from './vello-module'
 import { processObject } from './api/orchestration'
 import { requestRender, renderSync } from './api/rendering'
 import { moduleUseShape, setShapeChildren } from './api/shape'
@@ -104,6 +105,14 @@ export class Renderer {
     if (!getContextInitialized()) {
       return
     }
+    // `clearCanvas` unregisters the Emscripten GL context, which the Vello backend does not
+    // have — it owns a wgpu surface instead. Stopping its frame loop is the equivalent.
+    if (isVelloModule(this.module)) {
+      this.module.velloBackend.detach()
+      this.module._clean_up()
+      setContextInitialized(false)
+      return
+    }
     clearCanvas(this.module, this.canvas, releaseContext ?? false)
   }
 
@@ -149,15 +158,30 @@ export class Renderer {
 
     this.destroyContext()
 
-    const success = initCanvasContext(
-      this.module,
-      this.canvas,
-      this.options.dpr,
-      this.options.debug,
-      this.options.debugPip
-    )
-    if (!success) {
-      throw new Error('Failed to initialize WebGL context')
+    // The one place the backends genuinely diverge (D2). Emscripten binds a GL context to the
+    // canvas in its JS glue, so the Skia path is synchronous; wgpu's adapter and device are
+    // acquired asynchronously from the canvas element, so the Vello path is not. Everything
+    // after this line is backend-agnostic — `api/*.ts` is driven identically either way.
+    if (isVelloModule(this.module)) {
+      await this.module.velloBackend.attachCanvas(this.canvas)
+      const dprScale = this.options.dpr
+      this.module._init(
+        Math.floor(this.canvas.width / dprScale),
+        Math.floor(this.canvas.height / dprScale)
+      )
+      this.module._set_render_options(0, dprScale)
+      setContextInitialized(true)
+    } else {
+      const success = initCanvasContext(
+        this.module,
+        this.canvas,
+        this.options.dpr,
+        this.options.debug,
+        this.options.debugPip
+      )
+      if (!success) {
+        throw new Error('Failed to initialize WebGL context')
+      }
     }
 
     const canvasWidth = this.canvas.clientWidth || this.canvas.width
