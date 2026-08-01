@@ -163,8 +163,19 @@ export class Renderer {
     // acquired asynchronously from the canvas element, so the Vello path is not. Everything
     // after this line is backend-agnostic — `api/*.ts` is driven identically either way.
     if (isVelloModule(this.module)) {
-      await this.module.velloBackend.attachCanvas(this.canvas)
       const dprScale = this.options.dpr
+      // Give the canvas its device-pixel backing store first, and *before* the surface is
+      // created — `create_focus_renderer` reads `canvas.width/height` to size the wgpu surface,
+      // so a later resize would be a reconfigure rather than a correct first frame.
+      //
+      // The Skia path gets this from `initCanvasContext`, which ends in the same call. Leaving
+      // it out here left the canvas at its CSS size while `_set_render_options` still announced
+      // the real dpr, so the viewport scaled by a factor the canvas did not have and the whole
+      // scene drew exactly `dpr` times too large. It corrected itself on the first window
+      // resize, because `Renderer.resize` calls this too — which is what made it look
+      // intermittent rather than systematic.
+      setCanvasSize(this.module, this.canvas, dprScale)
+      await this.module.velloBackend.attachCanvas(this.canvas)
       this.module._init(
         Math.floor(this.canvas.width / dprScale),
         Math.floor(this.canvas.height / dprScale)
