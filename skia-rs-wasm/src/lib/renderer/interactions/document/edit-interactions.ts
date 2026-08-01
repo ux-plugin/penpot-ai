@@ -9,7 +9,7 @@
  * their index within an interaction's `do[]`.
  */
 
-import type { PageInteractions, Interaction, Action, Variable, ValueType, Json, Scope, Repeater, Binding, Editable } from '../ir'
+import type { PageInteractions, Interaction, Action, Variable, Store, ValueType, Json, Scope, Repeater, Binding, Editable } from '../ir'
 
 function mapInteraction(
   ir: PageInteractions,
@@ -155,12 +155,16 @@ export function setVariableType(ir: PageInteractions, id: string, type: ValueTyp
 }
 
 /**
- * Whether `id` is already taken. Cells and formulas share one namespace (see
- * ./addressing buildScope), so two of either with the same name would make an
- * expression ambiguous.
+ * Whether `id` is already taken. Stores, cells and formulas share one namespace
+ * (cells are referenced by bare name in expressions — see ./addressing
+ * buildScope), so any collision would make a reference ambiguous.
  */
 export function isNameTaken(ir: PageInteractions, id: string): boolean {
-  return ir.variables.some((v) => v.id === id) || ir.derived.some((d) => d.id === id)
+  return (
+    ir.variables.some((v) => v.id === id) ||
+    ir.derived.some((d) => d.id === id) ||
+    ir.stores.some((s) => s.id === id)
+  )
 }
 
 /**
@@ -173,33 +177,80 @@ export function setVariableScope(ir: PageInteractions, id: string, scope: Scope)
 }
 
 /**
- * Mark a cell as supplied from outside the design, or take the mark off.
- *
- * This is the whole "I don't decide this" statement, and it is one boolean rather
- * than a second kind of thing: the cell keeps its id, type, value and every
- * interaction already wired to it. Turning it on preserves the current value as
- * the SAMPLE, which is why they share a slot — a design that had a plausible
- * placeholder in it already has its sample.
+ * Set (or, with a blank string, clear) what a cell MEANS. Prose, aimed at whoever
+ * binds the real value at handover. Only meaningful on a store cell, but harmless
+ * on any cell — the emitter only reads it for store cells.
  */
-export function setVariableOutside(ir: PageInteractions, id: string, outside: boolean): PageInteractions {
+export function setVariableDescription(ir: PageInteractions, id: string, description: string): PageInteractions {
   return mapVariable(ir, id, (v) => {
     const next: Variable = { ...v }
-    if (outside) next.outside = v.outside ?? {}
-    else delete next.outside
+    const text = description.trim()
+    if (text) next.description = text
+    else delete next.description
     return next
   })
 }
 
+// ---- stores (named containers the designer creates; the seam to real data) ----
+//
+// A store groups cells and marks them as supplied from outside. It shares the one
+// namespace with cells and formulas, so a store name can't collide with a value.
+
+function mapStore(ir: PageInteractions, id: string, fn: (s: Store) => Store): PageInteractions {
+  return { ...ir, stores: ir.stores.map((s) => (s.id === id ? fn(s) : s)) }
+}
+
+/** Create a store if its name is free (no-op otherwise). */
+export function addStore(ir: PageInteractions, id: string): PageInteractions {
+  if (!id || isNameTaken(ir, id)) return ir
+  return { ...ir, stores: [...ir.stores, { id }] }
+}
+
 /**
- * Set (or, with a blank string, clear) what an outside value MEANS. Prose, aimed
- * at whoever binds the real value — a person or a model. No-op on a cell the
- * design owns, where there is nothing to explain to anyone downstream.
+ * Delete a store. Its cells are NOT deleted — they become component-local, which
+ * keeps every interaction already wired to them working. Removing the container
+ * is "this data isn't external after all", not "throw the wiring away".
  */
-export function setVariableDescription(ir: PageInteractions, id: string, description: string): PageInteractions {
-  return mapVariable(ir, id, (v) => {
-    if (!v.outside) return v
+export function removeStore(ir: PageInteractions, id: string): PageInteractions {
+  return {
+    ...ir,
+    stores: ir.stores.filter((s) => s.id !== id),
+    variables: ir.variables.map((v) => {
+      if (v.store !== id) return v
+      const next = { ...v }
+      delete next.store
+      return next
+    }),
+  }
+}
+
+export function setStoreDescription(ir: PageInteractions, id: string, description: string): PageInteractions {
+  return mapStore(ir, id, (s) => {
+    const next: Store = { ...s }
     const text = description.trim()
-    return { ...v, outside: text ? { description: text } : {} }
+    if (text) next.description = text
+    else delete next.description
+    return next
+  })
+}
+
+/** Add a cell to a store — a value the store supplies. `initial` is its sample. */
+export function addStoreField(ir: PageInteractions, store: string, id: string, type: ValueType = 'string'): PageInteractions {
+  if (!id || isNameTaken(ir, id) || !ir.stores.some((s) => s.id === store)) return ir
+  return { ...ir, variables: [...ir.variables, { id, type, scope: 'global', initial: defaultInitial(type), store }] }
+}
+
+/**
+ * Move a cell into a store (or, with undefined, back out to component-local). The
+ * cell keeps its id, type, value and wiring — membership is the only change,
+ * which is the whole point: "from the app" is where a value lives, not a flag.
+ */
+export function setVariableStore(ir: PageInteractions, id: string, store: string | undefined): PageInteractions {
+  return mapVariable(ir, id, (v) => {
+    const next: Variable = { ...v }
+    if (store && ir.stores.some((s) => s.id === store)) next.store = store
+    else delete next.store
+    return next
   })
 }
 

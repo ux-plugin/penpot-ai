@@ -1,16 +1,18 @@
 /**
- * Cells — the one kind of addressable state, and the plumbing derived from them.
+ * Cells & stores — the one kind of addressable state, and the plumbing derived
+ * from where it lives.
  *
- * The design rule these tests exist to hold: a designer authors ONE kind of thing
- * and only ever wires it (this trigger changes that cell, this text reads that
- * cell). Everything about how a value reaches the real app — props, callbacks,
- * whether a write leaves at all — is derived at lowering and never named by them.
+ * The design rule these tests hold: a designer authors ONE kind of value and only
+ * ever wires it (this trigger changes that cell, this text reads that cell). A
+ * value the real app supplies isn't a second kind and isn't a flag — it is a cell
+ * that lives in a STORE the designer created. Everything about how a value reaches
+ * the real app — props, callbacks, whether a write leaves at all — is derived at
+ * lowering from that membership, and never named.
  *
- * So the assertions come in two halves. The authoring half checks that marking a
- * cell "from outside" changes nothing about its identity or its wiring. The
+ * So the assertions come in two halves. The authoring half checks that moving a
+ * cell into a store changes nothing about its identity or its wiring. The
  * derivation half checks that the SAME authored interaction lowers two different
- * ways depending only on that mark — which is what makes an outward event exist
- * without anyone declaring one.
+ * ways depending only on where the cell lives.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest'
@@ -18,16 +20,19 @@ import { initDefaultCatalog, listActions } from '../../../../src/lib/renderer/in
 import {
   emptyPageInteractions,
   editableError,
+  isBacked,
   type Action,
   type PageInteractions,
 } from '../../../../src/lib/renderer/interactions/ir'
 import {
   addVariable,
-  removeVariable,
   addDerived,
   makeScalarVariable,
   makeCollectionVariable,
-  setVariableOutside,
+  addStore,
+  removeStore,
+  addStoreField,
+  setVariableStore,
   setVariableDescription,
   setVariableScope,
   setVariableType,
@@ -52,65 +57,85 @@ const card: PNode = {
   children: [{ nodeId: 'title', role: 'text', text: 'Sample product' }],
 }
 
-/** A cell the app supplies, holding `value` as the sample the preview runs on. */
-function outsideCell(ir: PageInteractions, id: string, value: string | number, description?: string): PageInteractions {
-  let next = addVariable(ir, makeScalarVariable(id, typeof value === 'number' ? 'number' : 'string', value))
-  next = setVariableOutside(next, id, true)
+/** A cell that lives in an `app` store, holding `value` as the sample. */
+function backedCell(ir: PageInteractions, id: string, value: string | number, description?: string): PageInteractions {
+  let next = addStore(ir, 'app')
+  next = addVariable(next, makeScalarVariable(id, typeof value === 'number' ? 'number' : 'string', value))
+  next = setVariableStore(next, id, 'app')
   return description ? setVariableDescription(next, id, description) : next
 }
 
-describe('authoring — marking a cell "from outside" changes nothing else about it', () => {
-  it('keeps the id, type, value and scope; only adds the mark', () => {
-    const before = addVariable(emptyPageInteractions(), makeScalarVariable('productTitle', 'string', 'Sample product'))
-    const after = setVariableOutside(before, 'productTitle', true)
-    expect(after.variables[0]).toMatchObject({ id: 'productTitle', type: 'string', scope: 'page', initial: 'Sample product' })
-    expect(after.variables[0].outside).toEqual({})
-    // and unticking it is a clean round trip — nothing was consumed on the way
-    expect(setVariableOutside(after, 'productTitle', false).variables[0]).toEqual(before.variables[0])
+describe('authoring — moving a cell into a store changes nothing else about it', () => {
+  it('keeps the id, type, value and scope; only adds membership', () => {
+    let ir = addStore(emptyPageInteractions(), 'app')
+    ir = addVariable(ir, makeScalarVariable('productTitle', 'string', 'Sample product'))
+    const before = ir.variables[0]
+    const moved = setVariableStore(ir, 'productTitle', 'app')
+    expect(moved.variables[0]).toMatchObject({ id: 'productTitle', type: 'string', scope: 'page', initial: 'Sample product' })
+    expect(moved.variables[0].store).toBe('app')
+    // and moving it back out is a clean round trip — nothing was consumed
+    expect(setVariableStore(moved, 'productTitle', undefined).variables[0]).toEqual(before)
+  })
+
+  it('a cell in a store IS backed; a cell on its own is not', () => {
+    const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product')
+    expect(isBacked(ir.variables[0])).toBe(true)
+    const local = addVariable(emptyPageInteractions(), makeScalarVariable('n', 'number', 0))
+    expect(isBacked(local.variables[0])).toBe(false)
   })
 
   it('preserves the value as the sample — a design with a placeholder already has one', () => {
-    expect(outsideCell(emptyPageInteractions(), 'productTitle', 'Sample product').variables[0].initial).toBe('Sample product')
+    expect(backedCell(emptyPageInteractions(), 'productTitle', 'Sample product').variables[0].initial).toBe('Sample product')
   })
 
-  it('takes a description only on an outside cell — a design-owned value owes no one an explanation', () => {
-    let ir = addVariable(emptyPageInteractions(), makeScalarVariable('n', 'number', 0))
-    ir = setVariableDescription(ir, 'n', 'ignored')
-    expect(ir.variables[0]).not.toHaveProperty('outside')
-
-    ir = setVariableOutside(ir, 'n', true)
+  it('carries a description and clears a blank one', () => {
+    let ir = backedCell(emptyPageInteractions(), 'n', 1)
     ir = setVariableDescription(ir, 'n', '  the quantity  ')
-    expect(ir.variables[0].outside).toEqual({ description: 'the quantity' })
+    expect(ir.variables[0].description).toBe('the quantity')
     ir = setVariableDescription(ir, 'n', '   ')
-    expect(ir.variables[0].outside).toEqual({})
+    expect(ir.variables[0]).not.toHaveProperty('description')
   })
 
-  it('lets the designer put a cell anywhere, including a component flag document-wide', () => {
+  it('adds a field straight into a store, seeded from its type', () => {
+    let ir = addStore(emptyPageInteractions(), 'products')
+    ir = addStoreField(ir, 'products', 'title', 'string')
+    expect(ir.variables[0]).toMatchObject({ id: 'title', store: 'products', initial: '' })
+    // and refuses to add to a store that doesn't exist
+    expect(addStoreField(ir, 'nope', 'x', 'string').variables).toHaveLength(1)
+  })
+
+  it('lets the designer put a local cell anywhere, including a component flag document-wide', () => {
     let ir = addVariable(emptyPageInteractions(), makeScalarVariable('menuOpen', 'boolean', false))
     ir = setVariableScope(ir, 'menuOpen', 'global')
-    // No second-guessing: this is a legitimate thing to want, not a mistake.
     expect(ir.variables[0].scope).toBe('global')
     expect(validatePageInteractions(ir, new Set())).toEqual([])
   })
 
-  it('shares one namespace with formulas', () => {
-    let ir = addVariable(emptyPageInteractions(), makeScalarVariable('n', 'number', 0))
+  it('shares one namespace across stores, formulas and cells', () => {
+    let ir = addStore(emptyPageInteractions(), 'cart')
+    ir = addVariable(ir, makeScalarVariable('n', 'number', 0))
     ir = addDerived(ir, 'double', 'n * 2')
-    expect(isNameTaken(ir, 'n')).toBe(true)
-    expect(isNameTaken(ir, 'double')).toBe(true)
-    expect(addVariable(ir, makeScalarVariable('double', 'string', '')).variables).toHaveLength(1)
-    expect(removeVariable(ir, 'n').variables).toEqual([])
+    for (const taken of ['cart', 'n', 'double']) expect(isNameTaken(ir, taken)).toBe(true)
+    expect(addStore(ir, 'n').stores).toHaveLength(1) // a store can't shadow a cell
+    expect(addVariable(ir, makeScalarVariable('cart', 'string', '')).variables).toHaveLength(1) // nor vice versa
   })
 
-  it('retypes like any other cell', () => {
-    let ir = outsideCell(emptyPageInteractions(), 'x', 'hello')
+  it('deleting a store keeps its cells, as local — the wiring survives', () => {
+    let ir = backedCell(emptyPageInteractions(), 'title', 'x')
+    ir = removeStore(ir, 'app')
+    expect(ir.stores).toEqual([])
+    expect(ir.variables[0]).toMatchObject({ id: 'title' })
+    expect(ir.variables[0]).not.toHaveProperty('store')
+  })
+
+  it('retypes a store cell like any other, staying in the store', () => {
+    let ir = backedCell(emptyPageInteractions(), 'x', 'hello')
     ir = setVariableType(ir, 'x', 'number')
-    expect(ir.variables[0]).toMatchObject({ type: 'number', initial: 0 })
-    expect(ir.variables[0].outside).toBeDefined()
+    expect(ir.variables[0]).toMatchObject({ type: 'number', initial: 0, store: 'app' })
   })
 
-  it('refuses only formulas as edit targets — an outside cell is editable', () => {
-    let ir = outsideCell(emptyPageInteractions(), 'query', '')
+  it('refuses only formulas as edit targets — a store cell is editable', () => {
+    let ir = backedCell(emptyPageInteractions(), 'query', '')
     ir = addDerived(ir, 'double', 'query')
     expect(editableError(ir, 'query')).toBeNull()
     expect(editableError(ir, 'double')).toMatch(/formula/)
@@ -125,9 +150,12 @@ describe('authoring — marking a cell "from outside" changes nothing else about
 
 describe('derivation — one authored write, two lowerings', () => {
   /** "When the card is clicked, add to `items`." Authored once, reused below. */
-  function clickAppends(outside: boolean): PageInteractions {
+  function clickAppends(backed: boolean): PageInteractions {
     let ir = addVariable(emptyPageInteractions(), makeCollectionVariable('items'))
-    if (outside) ir = setVariableOutside(ir, 'items', true)
+    if (backed) {
+      ir = addStore(ir, 'app')
+      ir = setVariableStore(ir, 'items', 'app')
+    }
     ir.interactions.push({
       on: { node: 'card', trigger: { type: 'press' } },
       do: [{ type: 'collection.append', target: 'items', value: '1' }],
@@ -135,7 +163,7 @@ describe('derivation — one authored write, two lowerings', () => {
     return ir
   }
 
-  it('a design-owned cell becomes state, and the write becomes setState', () => {
+  it('a component-local cell becomes state, and the write becomes setState', () => {
     const src = emitReactComponent(clickAppends(false), card, { componentName: 'Card' })
     expect(src).toContain('const [items, setItems] = useState')
     expect(src).toContain('setItems((prev) => [...prev, 1])')
@@ -143,7 +171,7 @@ describe('derivation — one authored write, two lowerings', () => {
     expect(src).not.toContain('interface CardProps')
   })
 
-  it('the SAME write on an outside cell becomes a prop and a derived callback', () => {
+  it('the SAME write on a store cell becomes a prop and a derived callback', () => {
     const src = emitReactComponent(clickAppends(true), card, { componentName: 'Card' })
     expect(src).not.toContain('useState') // no local state — the value arrives
     expect(src).toContain('  items: any[]')
@@ -153,8 +181,8 @@ describe('derivation — one authored write, two lowerings', () => {
     expect(src).toContain('onItemsChange([...items, 1])')
   })
 
-  it('an outside cell the design never writes gets a value prop and NO callback', () => {
-    const ir = outsideCell(emptyPageInteractions(), 'productTitle', 'Sample product', 'the product shown here')
+  it('a store cell the design never writes gets a value prop and NO callback', () => {
+    const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product', 'the product shown here')
     ir.bindings.push({ node: 'title', prop: 'text', from: 'productTitle' })
     const src = emitReactComponent(ir, card, { componentName: 'Card' })
     expect(src).toContain('  productTitle: string')
@@ -162,7 +190,7 @@ describe('derivation — one authored write, two lowerings', () => {
   })
 
   it('carries the description and sample into the doc comment', () => {
-    const ir = outsideCell(emptyPageInteractions(), 'productTitle', 'Sample product', 'the product shown here')
+    const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product', 'the product shown here')
     // `object` widens to `any`, so this comment is the only surviving statement
     // of the expected shape — the thing that stops a reader from guessing.
     expect(emitReactComponent(ir, card, { componentName: 'Card' })).toContain(
@@ -171,7 +199,7 @@ describe('derivation — one authored write, two lowerings', () => {
   })
 
   it('reads a cell as a bare identifier either way, so expressions never change', () => {
-    const ir = outsideCell(emptyPageInteractions(), 'productTitle', 'Sample product')
+    const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product')
     ir.bindings.push({ node: 'title', prop: 'text', from: 'productTitle' })
     const src = emitReactComponent(ir, card, { componentName: 'Card' })
     expect(src).toContain('{productTitle}')
@@ -179,7 +207,7 @@ describe('derivation — one authored write, two lowerings', () => {
   })
 
   it('routes a two-way field outward too — same derivation, different trigger', () => {
-    const ir = outsideCell(emptyPageInteractions(), 'query', '')
+    const ir = backedCell(emptyPageInteractions(), 'query', '')
     ir.editable.push({ node: 'title', prop: 'value', target: 'query' })
     expect(emitReactComponent(ir, card, { componentName: 'Card' })).toContain(
       'onChange={(e) => onQueryChange(e.target.value)}',
@@ -191,8 +219,8 @@ describe('derivation — one authored write, two lowerings', () => {
     expect(emitAction(a)).toBe('setCardState("open")')
   })
 
-  it('grows an inbound port in the graph for an outside cell, and an outbound one when written', () => {
-    const read = normalize(outsideCell(emptyPageInteractions(), 'productTitle', 'x'))
+  it('grows an inbound port for a store cell, and an outbound one when written', () => {
+    const read = normalize(backedCell(emptyPageInteractions(), 'productTitle', 'x'))
     expect(read.nodes.some((n) => n.kind === 'port' && n.dir === 'in')).toBe(true)
     expect(read.nodes.some((n) => n.kind === 'port' && n.dir === 'out')).toBe(false)
 
@@ -207,50 +235,53 @@ describe('derivation — one authored write, two lowerings', () => {
     expect(normalize(ir).nodes.filter((n) => n.kind === 'port' && n.dir === 'out')).toHaveLength(1)
   })
 
-  it('keeps a design-owned cell free of ports entirely', () => {
+  it('keeps a component-local cell free of ports entirely', () => {
     expect(normalize(clickAppends(false)).nodes.some((n) => n.kind === 'port')).toBe(false)
   })
 })
 
 describe('preview — every cell runs on its own value', () => {
-  it('seeds an outside cell from its sample, so the design shows something real', () => {
-    const ir = outsideCell(emptyPageInteractions(), 'productTitle', 'Sample product')
+  it('seeds a store cell from its sample, so the design shows something real', () => {
+    const ir = backedCell(emptyPageInteractions(), 'productTitle', 'Sample product')
     expect(buildEnv(ir, initRuntime(ir)).productTitle).toBe('Sample product')
   })
 
   it('leaves a sample-less cell empty rather than inventing a value', () => {
-    const ir = setVariableOutside(
-      addVariable(emptyPageInteractions(), { id: 'productTitle', type: 'string', scope: 'page', initial: null }),
-      'productTitle',
-      true,
-    )
+    let ir = addStore(emptyPageInteractions(), 'app')
+    ir = addVariable(ir, { id: 'productTitle', type: 'string', scope: 'page', initial: null, store: 'app' })
     expect(initRuntime(ir).store.productTitle).toBeNull()
   })
 
-  it('writes an outside cell locally — the preview is the design, not the real app', () => {
-    const ir = outsideCell(emptyPageInteractions(), 'n', 1)
+  it('writes a store cell locally — the preview is the design, not the real app', () => {
+    const ir = backedCell(emptyPageInteractions(), 'n', 1)
     expect(applyAction({ type: 'increment', target: 'n' }, {}, initRuntime(ir)).store.n).toBe(2)
   })
 
-  it('reports that the write left the design — derived from the cell, not a log', () => {
-    const ir = outsideCell(emptyPageInteractions(), 'n', 1)
+  it('reports that the write left the design — derived from where the cell lives', () => {
+    const ir = backedCell(emptyPageInteractions(), 'n', 1)
     const changes = diffRuntime(initRuntime(ir), applyAction({ type: 'increment', target: 'n' }, {}, initRuntime(ir)))
     expect(changes).toHaveLength(1)
     expect(leavesDesign(ir, changes[0])).toBe(true)
   })
 
-  it('does not report a design-owned write as leaving', () => {
+  it('does not report a local write as leaving', () => {
     const ir = addVariable(emptyPageInteractions(), makeScalarVariable('n', 'number', 1))
     const changes = diffRuntime(initRuntime(ir), applyAction({ type: 'increment', target: 'n' }, {}, initRuntime(ir)))
     expect(leavesDesign(ir, changes[0])).toBe(false)
   })
 })
 
-describe('addressing — a cell is a cell, wherever its value comes from', () => {
+describe('addressing — a cell is a cell, wherever it lives', () => {
   const nodes = new Set(['btn', 'row'])
 
-  it('appends to a list the app supplies — the write leaving is plumbing, not a veto', () => {
-    const ir = setVariableOutside(addVariable(emptyPageInteractions(), makeCollectionVariable('rows')), 'rows', true)
+  function backedList(id: string): PageInteractions {
+    let ir = addStore(emptyPageInteractions(), 'app')
+    ir = addVariable(ir, makeCollectionVariable(id))
+    return setVariableStore(ir, id, 'app')
+  }
+
+  it('appends to a list a store supplies — the write leaving is plumbing, not a veto', () => {
+    const ir = backedList('rows')
     ir.interactions.push({
       on: { node: 'btn', trigger: { type: 'press' } },
       do: [{ type: 'collection.append', target: 'rows', value: '1' }],
@@ -258,8 +289,8 @@ describe('addressing — a cell is a cell, wherever its value comes from', () =>
     expect(validatePageInteractions(ir, nodes)).toEqual([])
   })
 
-  it('repeats over a list the app supplies', () => {
-    const ir = setVariableOutside(addVariable(emptyPageInteractions(), makeCollectionVariable('rows')), 'rows', true)
+  it('repeats over a list a store supplies', () => {
+    const ir = backedList('rows')
     ir.repeaters.push({ node: 'row', over: 'rows' })
     expect(validatePageInteractions(ir, nodes)).toEqual([])
   })

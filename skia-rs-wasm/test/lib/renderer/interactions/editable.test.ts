@@ -60,7 +60,8 @@ describe('editableError — writability is a property of the cell', () => {
       type: 'string',
       scope: 'page',
       initial: '',
-      outside: { description: 'the signed-in customer' },
+      store: 'app',
+      description: 'the signed-in customer',
     })
     expect(editableError(ir, 'customerName')).toBeNull()
   })

@@ -52,42 +52,66 @@ export type ValueType =
   | { collection: ValueType }
 
 /**
+ * A named container the designer CREATES — a store, table, or "app state" — the
+ * same way they create a component. It holds cells (`Variable`s tagged with its
+ * id) filled with sample data.
+ *
+ * A store is the seam to real data: it is the thing a real database or API binds
+ * to at handover, and its cells are supplied from outside rather than decided by
+ * the design. That is why membership replaces the old per-cell `outside` flag —
+ * "comes from outside" is not a checkbox on a value, it is the value living in a
+ * container the designer built for exactly that.
+ *
+ * `description` says what real data the store maps to, for whoever binds it.
+ */
+export interface Store {
+  id: string
+  description?: string
+}
+
+/**
  * A named cell — the ONE kind of addressable state. Lowers to a `source`
  * producing a Signal.
  *
- * There is deliberately no second kind. A value supplied by the real app is this
- * same cell with `outside` set; a component's private flag is this same cell with
- * a narrower `scope`. Everything an interaction can read or write is one of
- * these, so "wire this button to that value" never depends on which sort of
- * value it is.
+ * There is deliberately no second kind of value and no "is this external" flag.
+ * A cell either lives on its own (a component's private state) or in a `store`
+ * the designer created — and *that membership* is the whole "comes from outside"
+ * statement. Everything an interaction can read or write is one of these, so
+ * "wire this button to that value" never depends on which sort of value it is.
  *
  * `scope` is set by the DESIGNER and changeable at any time — never inferred,
- * never auto-promoted. Wiring a component's own `open` flag to something
- * document-wide is a legitimate thing to want, not a mistake to prevent.
+ * never auto-promoted. Wiring a component's own `open` flag to a store is a
+ * legitimate thing to want, not a mistake to prevent.
  */
 export interface Variable {
   id: string
   type: ValueType
   scope: Scope
   /**
-   * What the cell holds to begin with. For a design-owned cell that is its
-   * initial value; for an `outside` cell it is the SAMPLE — the same slot,
-   * because operationally they are the same thing: what the preview starts from.
+   * What the cell holds to begin with. On its own that is the initial value; in a
+   * store it is the SAMPLE — the same slot, because operationally they are the
+   * same thing: what the preview starts from.
    */
   initial: Json
   /**
-   * Present iff the value is supplied from outside the design. The design still
-   * reads and writes the cell normally; what a write has to DO to reach the real
-   * source (a callback, a mutation, a request) is derived at lowering, never
-   * authored — see `emitReactComponent`.
-   *
-   * `description` is not decoration. What gets handed over is the design, so this
-   * sentence is what tells whoever binds the real value which real value it is:
-   * `productTitle: "Sample product"` alone cannot say whether that is a database
-   * field or deliberate copy.
+   * The `Store` this cell lives in, or absent for a component's own state.
+   * Present ⇔ the value is supplied from outside; what a write has to DO to reach
+   * the real source is derived at lowering, never authored (see `emitReactComponent`).
    */
-  outside?: { description?: string }
+  store?: string
+  /**
+   * Optional prose for a store cell: what real value this is, in the designer's
+   * words. What gets handed over is the design, so this is what tells whoever
+   * binds it that `productTitle: "Sample product"` is a database field and not
+   * deliberate copy. Meaningless on a component-local cell.
+   */
+  description?: string
   persist?: Persistence
+}
+
+/** Whether a cell is supplied from outside — i.e. lives in a store. */
+export function isBacked(v: Variable): boolean {
+  return v.store != null
 }
 
 /** A computed, read-only value. Lowers to a `derive` node. */
@@ -219,6 +243,8 @@ export interface Repeater {
 
 export interface PageInteractions {
   version: 1
+  /** Named containers the designer created; cells reference one via `Variable.store`. */
+  stores: Store[]
   variables: Variable[]
   derived: Derived[]
   interactions: Interaction[]
@@ -248,6 +274,7 @@ export function editableError(ir: PageInteractions, target: Ref): string | null 
 export function emptyPageInteractions(): PageInteractions {
   return {
     version: 1,
+    stores: [],
     variables: [],
     derived: [],
     interactions: [],

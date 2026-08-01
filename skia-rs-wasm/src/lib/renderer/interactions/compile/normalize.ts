@@ -10,6 +10,7 @@
  */
 
 import type { PageInteractions, ReactiveGraph, GraphNode } from '../ir'
+import { isBacked } from '../ir'
 import { getAction } from '../catalog'
 import { parse, freeRefs } from '../expression'
 import { parseRefPath } from '../addressing'
@@ -25,7 +26,7 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
   }
 
   const isOutside = (ref: string | undefined): boolean =>
-    !!ref && ir.variables.some((v) => v.id === ref && !!v.outside)
+    !!ref && ir.variables.some((v) => v.id === ref && isBacked(v))
 
   /** Root cell an action target addresses — `cart.items` writes `cart`. */
   const refRoot = (target: string | undefined): string | undefined => {
@@ -41,12 +42,12 @@ export function normalize(ir: PageInteractions): ReactiveGraph {
   const outPorts = new Set<string>()
 
   // Cells -> state signals. This is where "comes from outside" first becomes
-  // plumbing: the designer authored one kind of cell, and an outside-backed one
-  // additionally grows an inbound port node feeding its signal. Nothing about
-  // that was named by them.
+  // plumbing: the designer authored one kind of cell, and one that lives in a
+  // store additionally grows an inbound port node feeding its signal. Nothing
+  // about that was named by them.
   for (const v of ir.variables) {
     nodes.push({ kind: 'source', id: `var:${v.id}`, produces: 'signal', of: { source: 'state', variable: v.id } })
-    if (v.outside) {
+    if (isBacked(v)) {
       nodes.push({ kind: 'port', id: `port:in:${v.id}`, dir: 'in' })
       edges.push({ from: `port:in:${v.id}`, to: `var:${v.id}` })
     }

@@ -17,7 +17,8 @@ function todoIR(): PageInteractions {
   ir.variables.push({ id: 'items', type: { collection: 'object' }, scope: 'page', initial: [] })
   // A cell the real app supplies is a cell like any other — same kind in the
   // scope, so nothing reading an expression has to know where a value came from.
-  ir.variables.push({ id: 'initialItems', type: { collection: 'object' }, scope: 'page', initial: [], outside: {} })
+  ir.stores.push({ id: 'app' })
+  ir.variables.push({ id: 'initialItems', type: { collection: 'object' }, scope: 'page', initial: [], store: 'app' })
   ir.derived.push({ id: 'isEmpty', expr: 'items.length == 0' })
   ir.interactions.push({
     on: { node: 'addBtn', trigger: { type: 'press' } },

@@ -18,6 +18,7 @@ import {
   type Interaction,
   type Action,
   type Variable,
+  type Store,
   type ValueType,
   type Binding,
   type Derived,
@@ -59,8 +60,7 @@ import {
   addDerived,
   setDerivedExpr,
   removeDerived,
-  setVariableOutside,
-  setVariableDescription,
+  setVariableStore,
   setVariableScope,
 } from '../../renderer/interactions/document/edit-interactions'
 import { commitInteractions, currentInteractions } from '../../renderer/interactions/document/commit-interactions'
@@ -774,20 +774,27 @@ const SCOPE_LABEL: Record<Scope, string> = {
 }
 
 /**
- * One cell. Name, type, value, where it lives, and whether the real app supplies
- * it — all on the same row, because they are all facts about one thing.
+ * One component-local cell — the design's own state. Name, type, where it lives,
+ * starting value.
  *
- * "Comes from the app" is a checkbox rather than a separate kind of cell, and
- * that is the point: ticking it keeps the id, the type, the value and every
- * interaction already wired to the cell. The value it was holding becomes the
- * sample, so a design that already had a plausible placeholder in it is already
- * done. Nothing about the wiring is second-guessed — a component's own flag can
- * be scoped to the whole document if that is what the designer wants.
+ * There is no "from the app" control here anymore: a value the real app supplies
+ * lives in a STORE, which the designer creates in the Data panel. "Comes from
+ * outside" is where a value lives, not a checkbox on it. `stores` lets the row
+ * offer "move into a store" — the designer decides what wires to what.
  */
-function VariableRow({ v, commit, liveIR }: { v: Variable; commit: Commit; liveIR: LiveIR }) {
+function VariableRow({
+  v,
+  stores,
+  commit,
+  liveIR,
+}: {
+  v: Variable
+  stores: readonly Store[]
+  commit: Commit
+  liveIR: LiveIR
+}) {
   const cur = typeKey(v.type)
   const keys = TYPE_KEYS.includes(cur) ? TYPE_KEYS : [cur, ...TYPE_KEYS]
-  const outside = !!v.outside
   return (
     <div className="rounded-md border border-border/70 p-2">
       <div className="flex items-center gap-1.5">
@@ -816,10 +823,6 @@ function VariableRow({ v, commit, liveIR }: { v: Variable; commit: Commit; liveI
         </button>
       </div>
 
-      {/* Wraps rather than overflows: a boolean cell puts a bare checkbox in the
-          value slot, which would otherwise sit flush against the "from the app"
-          one — two unlabelled twins. The value slot carries its own label for the
-          same reason. */}
       <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <select
           className={typeSelectCls}
@@ -833,42 +836,27 @@ function VariableRow({ v, commit, liveIR }: { v: Variable; commit: Commit; liveI
             </option>
           ))}
         </select>
-        <label
-          className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-muted-foreground"
-          title="The real app supplies this value; whatever it holds now stays as the example the preview runs on"
-        >
-          <input
-            type="checkbox"
-            checked={outside}
-            onChange={(e) => commit(setVariableOutside(liveIR(), v.id, e.target.checked))}
-            aria-label={`${v.id} comes from the app`}
-          />
-          from the app
-        </label>
+        {stores.length > 0 && (
+          <select
+            className={typeSelectCls}
+            value=""
+            onChange={(e) => e.target.value && commit(setVariableStore(liveIR(), v.id, e.target.value))}
+            aria-label={`Move ${v.id} into a store`}
+            title="Move this value into a store — mark it as supplied by the real app"
+          >
+            <option value="">move to store…</option>
+            {stores.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.id}
+              </option>
+            ))}
+          </select>
+        )}
         <div className="ml-auto flex min-w-0 items-center gap-1">
-          <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
-            {outside ? 'example' : 'starts as'}
-          </span>
+          <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">starts as</span>
           <VariableValueEditor v={v} commit={commit} liveIR={liveIR} />
         </div>
       </div>
-
-      {/* Only asked for once it means something. What gets handed over is the
-          design, so for a value the design does not own this sentence is what
-          tells whoever binds the real one which real one it is. */}
-      {outside && (
-        <input
-          key={`${v.id}-desc`}
-          className={cn(inputCls, 'mt-1.5 font-sans')}
-          defaultValue={v.outside?.description ?? ''}
-          placeholder="what is this really? e.g. the product shown here"
-          onBlur={(e) => commit(setVariableDescription(liveIR(), v.id, e.target.value))}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-          }}
-          aria-label={`${v.id} description`}
-        />
-      )}
     </div>
   )
 }
@@ -916,6 +904,9 @@ export function InteractionsTab() {
 
   const ir = page?.interactions ?? emptyPageInteractions()
   const variables = ir.variables
+  // Store cells are authored in the Data panel; this section is the design's own
+  // local state. Both remain one namespace an interaction can name.
+  const localCells = variables.filter((v) => !v.store)
   const collections = variables.filter((v) => isCollection(v.type))
   const triggers = useMemo(() => listTriggers().filter((t) => t.scope === 'node'), [])
   const nodes: IndexedShape[] = page
@@ -957,14 +948,14 @@ export function InteractionsTab() {
       {/* State — editable input variables */}
       <section className="border-b border-border p-3">
         <h3 className={sectionHeadCls}>Values</h3>
-        {variables.length === 0 && (
+        {localCells.length === 0 && (
           <p className="mb-1.5 text-[11px] text-muted-foreground/70">
-            No values yet — anything an interaction reads or changes lives here.
+            No local values yet. App data lives in a store — see the Data panel on the left.
           </p>
         )}
         <div className="mb-2 flex flex-col gap-1.5">
-          {variables.map((v) => (
-            <VariableRow key={v.id} v={v} commit={commit} liveIR={liveIR} />
+          {localCells.map((v) => (
+            <VariableRow key={v.id} v={v} stores={ir.stores} commit={commit} liveIR={liveIR} />
           ))}
         </div>
         <div className="flex items-center gap-1.5">

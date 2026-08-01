@@ -18,7 +18,7 @@
  */
 
 import type { PageInteractions, NodeId, ValueType, Action, ActionType, Repeater } from '../ir'
-import { actionParam } from '../ir'
+import { actionParam, isBacked } from '../ir'
 import { getAction } from '../catalog'
 import { parse, toJs, objectBodyJs } from '../expression'
 import { parseRefPath } from '../addressing'
@@ -253,15 +253,15 @@ const changeProp = (cellId: string) => `on${cap(ident(cellId))}Change`
  * reads the comment, not the type.
  */
 function emitPropsType(ir: PageInteractions, name: string): { decl: string; params: string } | undefined {
-  const outside = ir.variables.filter((v) => v.outside)
-  if (!outside.length) return undefined
+  const backed = ir.variables.filter(isBacked)
+  if (!backed.length) return undefined
   const written = writtenCells(ir)
 
   const lines: string[] = []
   const params: string[] = []
-  for (const v of outside) {
+  for (const v of backed) {
     const notes: string[] = []
-    if (v.outside?.description) notes.push(v.outside.description)
+    if (v.description) notes.push(v.description)
     if (v.initial !== undefined && v.initial !== null) notes.push(`e.g. ${JSON.stringify(v.initial)}`)
     if (notes.length) lines.push(`  /** ${notes.join(' — ')} */`)
     lines.push(`  ${ident(v.id)}: ${tsType(v.type)}`)
@@ -320,7 +320,7 @@ export function writerFor(ir: PageInteractions, target: string | undefined, depe
   } catch {
     root = ''
   }
-  if (ir.variables.some((v) => v.id === root && v.outside)) return outsideWriter(root)
+  if (ir.variables.some((v) => v.id === root && isBacked(v))) return outsideWriter(root)
   return dependsOnPrev ? localWriter(root) : plainWriter(root)
 }
 
@@ -404,10 +404,10 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
 
   const hooks: string[] = []
   for (const v of ir.variables) {
-    // An outside cell arrives as a prop, so it gets no hook — its value already
+    // A store cell arrives as a prop, so it gets no hook — its value already
     // exists under the same identifier, which is why every expression the emitter
     // produces works unchanged either way.
-    if (v.outside) continue
+    if (isBacked(v)) continue
     hooks.push(`const [${ident(v.id)}, ${setterName(v.id)}] = useState<${tsType(v.type)}>(${JSON.stringify(v.initial)})`)
   }
   for (const s of ir.states) {

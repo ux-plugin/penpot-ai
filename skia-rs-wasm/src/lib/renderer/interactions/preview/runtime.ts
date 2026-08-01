@@ -10,7 +10,7 @@
  */
 
 import type { PageInteractions, Interaction, Action, NodeId } from '../ir'
-import { actionParam } from '../ir'
+import { actionParam, isBacked } from '../ir'
 import { parse, evaluate } from '../expression'
 import { parseRefPath } from '../addressing'
 
@@ -213,7 +213,7 @@ export function diffRuntime(before: RuntimeState, after: RuntimeState): StateCha
  * and `emitReactComponent` answers by emitting a callback.
  */
 export function leavesDesign(ir: PageInteractions, change: StateChange): boolean {
-  return change.kind === 'variable' && ir.variables.some((v) => v.id === change.id && !!v.outside)
+  return change.kind === 'variable' && ir.variables.some((v) => v.id === change.id && isBacked(v))
 }
 
 /**

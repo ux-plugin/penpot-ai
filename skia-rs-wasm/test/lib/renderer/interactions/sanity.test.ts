@@ -42,9 +42,10 @@ describe('Phase 0 sanity gate — future needs are catalog-only, zero core chang
 
   it('GESTURE (continuous): a drag value is an outside cell + a binding — already expressible', () => {
     const ir = emptyPageInteractions()
-    // A continuous gesture value is an external signal, i.e. a cell the design
-    // does not own — one flag on the ordinary cell, not a second kind of thing.
-    ir.variables.push({ id: 'dragX', type: 'number', scope: 'local', initial: 0, outside: {} })
+    // A continuous gesture value is an external signal, i.e. a cell that lives in
+    // a store the designer made — not a second kind of thing, just where it lives.
+    ir.stores.push({ id: 'gesture' })
+    ir.variables.push({ id: 'dragX', type: 'number', scope: 'local', initial: 0, store: 'gesture' })
     ir.bindings.push({ node: 'row', prop: 'x', from: 'dragX' })
     expect(validatePageInteractions(ir, new Set(['row']))).toEqual([])
     // lowers to an inbound port node — derived plumbing, no new IR kind needed

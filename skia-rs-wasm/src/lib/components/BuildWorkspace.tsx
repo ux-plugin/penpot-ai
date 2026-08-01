@@ -1,7 +1,7 @@
 /**
  * Build-mode workspace — the surface shown when the editor is in Build mode.
  *
- *   left   — component tree (live) + chat
+ *   left   — component tree (live) + data stores + chat
  *   center — live React preview + generated code
  *
  * The inspector is NOT here: the same floating rail (RightSidePanel) overlays
@@ -10,6 +10,7 @@
  */
 
 import { ComponentTree } from './BuildMode/ComponentTree'
+import { StoresPanel } from './BuildMode/StoresPanel'
 import { PreviewStage } from './BuildMode/PreviewStage'
 import { ChatPanel } from './BuildMode/ChatPanel'
 
@@ -29,10 +30,13 @@ export function BuildWorkspace() {
         <PreviewStage />
       </div>
 
-      {/* Left floating rail: components (live) + chat */}
+      {/* Left floating rail: components (live) + data stores + chat */}
       <aside className="pointer-events-auto absolute top-3 bottom-3 left-3 flex w-64 flex-col overflow-hidden rounded-2xl border border-border/80 bg-white shadow-md">
         <div className="min-h-0 flex-1 overflow-auto">
           <ComponentTree />
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto border-t border-border">
+          <StoresPanel />
         </div>
         <div className="min-h-0 flex-1 overflow-auto border-t border-border">
           <ChatPanel />

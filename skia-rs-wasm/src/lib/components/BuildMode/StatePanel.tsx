@@ -99,21 +99,21 @@ export function StatePanel({
                 <div key={v.id} className={rowCls}>
                   <span className="text-muted-foreground">{v.id}</span>
                   <span className="text-foreground">{fmt(env[v.id])}</span>
-                  {v.outside && (
+                  {v.store && (
                     <span
                       className="rounded bg-muted px-1.5 text-[10px] text-muted-foreground"
                       title={
-                        v.outside.description
-                          ? `${v.outside.description} — showing the sample`
-                          : 'comes from outside; showing the sample'
+                        v.description
+                          ? `${v.description} — from the ${v.store} store, showing the sample`
+                          : `from the ${v.store} store, showing the sample`
                       }
                     >
-                      sample
+                      {v.store}
                     </span>
                   )}
                   {justChanged.has(v.id) && (
                     <span className="rounded bg-amber-100 px-1.5 text-[10px] text-amber-900">
-                      {v.outside ? 'changed ↗ leaves the design' : 'changed'}
+                      {v.store ? 'changed ↗ leaves the design' : 'changed'}
                     </span>
                   )}
                 </div>

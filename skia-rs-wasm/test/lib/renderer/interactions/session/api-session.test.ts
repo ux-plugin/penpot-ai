@@ -37,9 +37,9 @@ function sseResponse(contentChunks: string[]): Response {
 function envelopeChunks(): string[] {
   const ir = {
     version: 1,
+    stores: [],
     variables: [],
     derived: [],
-    ports: [],
     interactions: [{ id: 'i1', on: { node: 'btn', trigger: { type: 'click' } }, do: [{ type: 'set', target: 'open', value: 'true' }] }],
     appRules: [],
     bindings: [],
