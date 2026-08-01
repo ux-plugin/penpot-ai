@@ -305,6 +305,40 @@ impl Scene {
         hash
     }
 
+    /// How many nodes reachable from the root would actually put paint on the canvas.
+    ///
+    /// The companion to [`Scene::digest`], and the question a digest cannot answer: when a
+    /// document renders blank, this separates "the host never delivered the shapes" (zero
+    /// nodes) from "they arrived carrying nothing to draw" (nodes, but nothing paintable).
+    /// Same reachability rules as the digest, so the two always describe the same subtree.
+    pub fn paintable_count(&self) -> u32 {
+        let mut count = 0;
+        for id in self.roots() {
+            self.count_paintable(*id, &mut count, 0);
+        }
+        count
+    }
+
+    fn count_paintable(&self, id: u128, count: &mut u32, depth: u32) {
+        if depth >= MAX_DIGEST_DEPTH {
+            return;
+        }
+        let Some(node) = self.get(id) else {
+            return;
+        };
+        if node.hidden {
+            return;
+        }
+        // Matches `scene::paint_self`: a group carries a layer, never geometry, and anything
+        // with neither fill nor stroke is skipped before a path is even built.
+        if node.kind != ShapeKind::Group && !(node.fills.is_empty() && node.strokes.is_empty()) {
+            *count += 1;
+        }
+        for child in &node.children {
+            self.count_paintable(*child, count, depth + 1);
+        }
+    }
+
     fn digest_node(&self, id: u128, hash: &mut u64, depth: u32) {
         if depth >= MAX_DIGEST_DEPTH {
             return;
@@ -690,6 +724,39 @@ mod tests {
     fn digest_of_an_empty_scene_is_stable() {
         assert_eq!(Scene::new().digest(), Scene::new().digest());
         assert_ne!(Scene::new().digest(), tree(&[0, 1, 2]).digest());
+    }
+
+    /// The diagnostic this exists for: a blank canvas with a healthy node count. In `tree`, only
+    /// node 1 carries a fill — node 2 has bounds and nothing to draw with, so it is delivered but
+    /// not paintable, and the count says so.
+    #[test]
+    fn paintable_count_counts_only_what_would_draw() {
+        assert_eq!(tree(&[0, 1, 2]).paintable_count(), 1);
+        assert_eq!(Scene::new().paintable_count(), 0);
+
+        // A scene the host filled in but never parented: every node present, nothing drawn.
+        let mut unrooted = tree(&[0, 1, 2]);
+        unrooted.get_mut(ROOT_ID).unwrap().children.clear();
+        assert_eq!(unrooted.paintable_count(), 0);
+
+        let mut hidden = tree(&[0, 1, 2]);
+        hidden.get_mut(1).unwrap().hidden = true;
+        assert_eq!(hidden.paintable_count(), 0);
+
+        // A group is a layer, never geometry — a fill on one paints nothing, matching
+        // `scene::paint_self`.
+        let mut group = tree(&[0, 1, 2]);
+        group.get_mut(1).unwrap().kind = ShapeKind::Group;
+        assert_eq!(group.paintable_count(), 0);
+
+        // A stroke alone is enough to put paint down.
+        let mut stroked = tree(&[0, 1, 2]);
+        let n = stroked.get_mut(2).unwrap();
+        n.strokes = vec![Stroke {
+            style: kurbo::Stroke::new(2.0),
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+        }];
+        assert_eq!(stroked.paintable_count(), 2);
     }
 
     #[test]

@@ -821,6 +821,17 @@ pub extern "C" fn scene_node_count() -> u32 {
     with_state(|state| state.scene.len() as u32)
 }
 
+/// How many delivered nodes would actually put paint on the canvas — see
+/// [`Scene::paintable_count`].
+///
+/// `scene_node_count` counts what the host *sent*; this counts what would be *drawn*. A blank
+/// canvas with a healthy node count means the shapes arrived unreachable from the root, or with
+/// no fill and no stroke — a distinction no screenshot can make.
+#[unsafe(no_mangle)]
+pub extern "C" fn scene_paintable_count() -> u32 {
+    with_state(|state| state.scene.paintable_count())
+}
+
 /// A fingerprint of everything that would be drawn — see [`Scene::digest`].
 ///
 /// The differential harness's read-out: replay one recorded byte stream into both backends and
@@ -1262,6 +1273,41 @@ mod tests {
         assert_eq!(viewport_transform(), Affine::IDENTITY);
         assert_eq!(background().components[3], 0.0);
         assert!(!take_needs_frame());
+    }
+
+    /// The two counts answer different questions, and a blank canvas is diagnosed by their gap:
+    /// `scene_node_count` is what the host sent, `scene_paintable_count` is what would be drawn.
+    ///
+    /// This is the shape of the real false alarm it was written for — a delivered, filled shape
+    /// that paints nothing because it was never parented to the root.
+    #[test]
+    fn paintable_count_separates_delivered_from_drawn() {
+        let _guard = reset();
+
+        use_shape(0, 0, 0, 1);
+        set_shape_type(2);
+        set_shape_selrect(0.0, 0.0, 10.0, 10.0);
+        let mut fills = vec![0u8; 4 + render_core::abi::RAW_FILL_DATA_SIZE];
+        fills[0] = 1; // count header
+        fills[8..12].copy_from_slice(&0xff_ff_00_00_u32.to_le_bytes());
+        upload(&fills);
+        set_shape_fills();
+
+        assert_eq!(scene_node_count(), 1);
+        assert_eq!(scene_paintable_count(), 0, "unreachable from the root");
+
+        use_shape(0, 0, 0, 0);
+        add_shape_child(0, 0, 0, 1);
+        assert_eq!(scene_paintable_count(), 1);
+
+        use_shape(0, 0, 0, 1);
+        clear_shape_fills();
+        assert_eq!(
+            scene_paintable_count(),
+            0,
+            "reachable, but with nothing to draw with"
+        );
+        assert_eq!(scene_node_count(), 2, "still delivered");
     }
 
     /// The host announces its shape count before sending shapes; reserving must not invent

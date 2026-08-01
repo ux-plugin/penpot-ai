@@ -306,11 +306,22 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   Verified by driving the C ABI from JavaScript in a browser: `clean_up` → `init` → `set_render_options` → `set_canvas_background` → shape tree with fills through the shared buffer → `set_view` → `render`. A `1280×720` probe rect at identity filled exactly the top-left quadrant of the `2560×1440` canvas, which pins the scene's coordinate space to device pixels and rules out a double-counted `dpr`.
 
-- **Slice D (done, with one thread open)** — host wiring. `api/*.ts` drives render-vello unmodified, checked by execution: `vello-instance.ts` instantiates the real wasm in Node with all ~600 bindgen glue imports stubbed as throwers (the ABI path calls none of them), and the real `node-factory` → `orchestration::setObject` → `viewport::setViewBox` chain runs against it. In the app, `?renderer=vello` loads the Vello artifact, acquires a WebGPU adapter and syncs shapes into its scene. **It does not paint yet** — that is the open thread, and the last measurement was taken with the browser pane backgrounded, where `requestAnimationFrame` does not fire, so it needs re-taking before it means anything.
+- **Slice D (done)** — host wiring. `api/*.ts` drives render-vello unmodified, checked by execution: `vello-instance.ts` instantiates the real wasm in Node with all ~600 bindgen glue imports stubbed as throwers (the ABI path calls none of them), and the real `node-factory` → `orchestration::setObject` → `viewport::setViewBox` chain runs against it. In the app, `?renderer=vello` loads the Vello artifact, acquires a WebGPU adapter and syncs shapes into its scene.
+
+  **It paints.** Re-measured in a real Chrome with the tab in front, which is what the earlier "zero frames" reading was missing: `requestAnimationFrame` does not fire in a hidden tab, and the module owns no frame loop by design (D3), so a backgrounded tab reports a healthy scene and zero frames forever. The demo model renders in full — clipped children, half-transparent group, dashed frame stroke straddling the edge, dotted stroke rotating with its rect — and shapes fed through the C ABI paint alongside it.
+
+  **The measurement lesson is the durable part.** Every symptom of "the backend is broken" was also a symptom of "nobody asked it to draw", and the two are told apart by looking at the tab, not at the code. The same hidden-pane state now reads 5 nodes delivered, 4 paintable, 0 frames — a complete scene that simply never gets a tick.
+
+  `scene_paintable_count` was added for the other half of that ambiguity: `scene_node_count` counts what the host *sent*, this counts what would be *drawn*, using the digest's reachability rules. A blank canvas with a healthy node count means the shapes arrived unreachable from the root, or with no fill and no stroke — a distinction no screenshot can make.
 
   The census this produced is the useful number: a page sync of frames, groups, rects and circles reaches exactly **thirteen** unimplemented entry points, all effects/layout/cache, none geometry. The raw count of 118-of-153 missing exports badly overstates the gap.
 
   Traps found: build the **cdylib**, not the bin (the bin's `main()` is a mock host that hijacks the page); Vite will not import from `public/` in source even with `@vite-ignore`, so the specifier is computed at runtime; and the backend marker must not start with `_`, or `stubMissingExports` turns it into a no-op function and the backend check silently fails.
+
+  Two hazards the paint investigation exposed, neither yet fixed:
+
+  - **A malformed buffer yields zero fills, silently.** `set_shape_fills` reads a 4-byte header whose first byte is the count, then fixed-size records; a wrong offset makes the count read as zero, and `decode_fill(..).ok()` drops undecodable records without a word. The shape then arrives complete in every respect except that it has nothing to draw with, which looks exactly like a broken renderer. This is what `scene_paintable_count` is for, and it argues for the codec reporting rejects rather than swallowing them.
+  - **`alloc_bytes` returns null while a buffer is still pending**, where render-wasm's simply replaces it. Any host that allocates twice without a consumer in between — a stubbed entry point that never drains the buffer would do it — gets a null pointer and writes into address 0. Not currently reached: after a full page sync the buffer is free.
 
 - **Slice F (done)** — the differential harness. Built ahead of strokes because it is what makes strokes checkable.
 
