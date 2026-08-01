@@ -276,6 +276,49 @@ function newNodeId(graph: ShaderGraph): string {
   }
 }
 
+/**
+ * Turn a leaf into a group so a sibling can be added beside its content.
+ *
+ * A leaf has a body and no children; adding a node under it would give it both,
+ * which the model forbids. So its body moves into a new child (its name kept, or
+ * "Main"), wired from the group's inputs through to its output, and the node
+ * itself becomes an empty-bodied group. Returns the graph unchanged when `id` is
+ * already a group.
+ */
+function groupifyLeaf(graph: ShaderGraph, id: string): ShaderGraph {
+  const leaf = graph.nodes[id]
+  if (!leaf || leaf.body === undefined) return graph
+
+  const childId = `${id}_main`
+  const child: ShaderNode = {
+    ...leaf,
+    id: childId,
+    name: leaf.id === graph.root ? 'Main' : leaf.name,
+    parentId: id,
+    pos: 'a',
+    position: { x: 220, y: 60 },
+  }
+  const group: ShaderNode = { ...leaf, body: undefined, values: {} }
+
+  const edges: Record<string, Edge> = { ...graph.edges }
+  for (const p of leaf.params) {
+    const e: Edge = {
+      id: `${id}.${p.name}->${childId}.${p.name}`,
+      from: { node: id, port: p.name },
+      to: { node: childId, port: p.name },
+    }
+    edges[e.id] = e
+  }
+  const out: Edge = {
+    id: `${childId}.${OUT}->${id}.${OUT}`,
+    from: { node: childId, port: OUT },
+    to: { node: id, port: OUT },
+  }
+  edges[out.id] = out
+
+  return { ...graph, nodes: { ...graph.nodes, [id]: group, [childId]: child }, edges }
+}
+
 /** Every node beneath `id`, inclusive — what a delete has to take with it. */
 function subtree(graph: ShaderGraph, id: string): Set<string> {
   const out = new Set([id])
@@ -306,8 +349,31 @@ function toRfNodes(
   viewId: string,
   handlers: Pick<NodeData, 'onParam' | 'onDelete' | 'onEnter'>,
 ): AnyRFNode[] {
-  const kids = childrenOf(graph, viewId)
   const view = graph.nodes[viewId]
+
+  // A leaf view (a shader that is a single function — e.g. any imported code)
+  // has no children to draw. Rendering only the boundary cards left an empty
+  // canvas with the whole shader invisible. Show the node itself instead; its
+  // own params and output are the boundary, so no cards are needed.
+  if (view && view.body !== undefined) {
+    return [
+      {
+        id: view.id,
+        type: 'shaderNode',
+        position: view.position,
+        data: {
+          node: view,
+          wired: Object.values(graph.edges)
+            .filter((e) => e.to.node === view.id)
+            .map((e) => e.to.port),
+          group: false,
+          ...handlers,
+        },
+      },
+    ]
+  }
+
+  const kids = childrenOf(graph, viewId)
   const xs = kids.map((k) => k.position.x)
   const ys = kids.map((k) => k.position.y)
   const left = (xs.length > 0 ? Math.min(...xs) : 200) - 220
@@ -529,7 +595,9 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
 
   const addNode = useCallback(
     (template: NodeTemplate | 'blank' | 'group') => {
-      const g = graphRef.current
+      // Adding beside a single-function shader first splits that function into a
+      // child, so the view becomes a group that can hold siblings.
+      const g = groupifyLeaf(graphRef.current, viewRef.current)
       const view = viewRef.current
       const id = newNodeId(g)
       const pos = String.fromCharCode(97 + childrenOf(g, view).length)

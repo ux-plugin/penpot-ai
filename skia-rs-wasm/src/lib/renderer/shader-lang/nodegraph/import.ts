@@ -76,11 +76,16 @@ function splitMain(source: string): { param: string; body: string; rest: string 
 
 /**
  * A graph equivalent to `source`. Never fails: source we cannot find a `main` in
- * becomes a graph whose single node holds it verbatim, which still compiles and
- * still opens for editing.
+ * becomes a graph whose single node holds a neutral body, with the unparsed
+ * source kept in the preamble, which still compiles and still opens for editing.
  */
 export function graphFromSource(source: string): ShaderGraph {
   const split = splitMain(source)
+
+  // The root is a LEAF holding main's body directly, which compiles to `main`
+  // verbatim — no wrapper function, no half/float conversions to get wrong. The
+  // editor renders this single-node case specially (a leaf root IS the shader),
+  // so it is visible and editable despite having no children to draw.
   const root: ShaderNode = {
     id: ROOT,
     name: 'Material',

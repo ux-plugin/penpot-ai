@@ -28,9 +28,11 @@ half4 main(float2 p) {
 }`
 
 describe('graphFromSource', () => {
-  it('produces a valid one-node graph', () => {
+  it('produces a valid one-node graph holding main directly', () => {
     const g = graphFromSource(SOURCE)
     expect(validate(g)).toEqual([])
+    // A leaf root, so it compiles to `main` verbatim with no wrapper function.
+    // The editor renders this single-node case specially so it is still visible.
     expect(Object.keys(g.nodes)).toHaveLength(1)
     expect(g.nodes[g.root].body).toContain('float2 uv = p / u_resolution')
   })
