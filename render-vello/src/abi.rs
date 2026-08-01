@@ -825,12 +825,10 @@ static RESULT: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// The selection's bounding box, as ten little-endian `f32`s:
 /// `width, height, cx, cy, a, b, c, d, e, f`.
 ///
-/// Mirrors render-wasm's `get_selection_rect`, including the part that is easy to miss: a
-/// *single* selected shape reports its own **oriented** box — width and height are the shape's
-/// own dimensions and the rotation lives in the matrix — while a multi-selection reports the
-/// axis-aligned union with an identity rotation. Selecting one rotated rect and selecting it
-/// together with a neighbour are therefore not the same shape of answer, and a handle overlay
-/// that assumes otherwise draws a tilted box around two shapes.
+/// The rule itself is [`render_core::selection::selection_rect`] — shared rather than mirrored,
+/// because its wire layout and its single-vs-multi asymmetry are exactly the sort of arbitrary
+/// convention two backends drift apart on. All that is left here is transport: ids in, quads
+/// across, floats out.
 #[unsafe(no_mangle)]
 pub extern "C" fn get_selection_rect() -> *mut u8 {
     let ids: Vec<u128> = take_bytes()
@@ -844,84 +842,15 @@ pub extern "C" fn get_selection_rect() -> *mut u8 {
     let quads: Vec<[kurbo::Point; 4]> = with_state(|state| {
         ids.iter()
             .filter_map(|id| state.scene.get(*id))
-            .map(|node| {
-                let m = node.effective_transform();
-                let b = node.bounds;
-                [
-                    m * kurbo::Point::new(b.x0, b.y0),
-                    m * kurbo::Point::new(b.x1, b.y0),
-                    m * kurbo::Point::new(b.x1, b.y1),
-                    m * kurbo::Point::new(b.x0, b.y1),
-                ]
-            })
+            .map(render_core::selection::node_quad)
             .collect()
     });
 
-    let values = match quads.as_slice() {
-        [] => [0.0f32; 10],
-        [single] => oriented_rect(single),
-        many => {
-            // `Bounds::join_bounds`: the axis-aligned hull of every corner, unrotated.
-            let (mut x0, mut y0) = (f64::MAX, f64::MAX);
-            let (mut x1, mut y1) = (f64::MIN, f64::MIN);
-            for quad in many {
-                for p in quad {
-                    x0 = x0.min(p.x);
-                    y0 = y0.min(p.y);
-                    x1 = x1.max(p.x);
-                    y1 = y1.max(p.y);
-                }
-            }
-            oriented_rect(&[
-                kurbo::Point::new(x0, y0),
-                kurbo::Point::new(x1, y0),
-                kurbo::Point::new(x1, y1),
-                kurbo::Point::new(x0, y1),
-            ])
-        }
-    };
+    let values = render_core::selection::selection_rect(&quads);
 
     let mut guard = RESULT.lock().expect("result buffer poisoned");
     *guard = values.iter().map(|v| v.to_bits()).collect();
     guard.as_mut_ptr().cast()
-}
-
-/// Describe a parallelogram as `width, height, cx, cy` plus the affine that maps a centred,
-/// axis-aligned box of that size onto it — render-wasm's `Bounds::transform_matrix`, which it
-/// reaches by solving a 3×3 system. With an axis-aligned source box the solution is just the
-/// normalised edge vectors, so it is written out directly here.
-fn oriented_rect(quad: &[kurbo::Point; 4]) -> [f32; 10] {
-    let (nw, ne, se, sw) = (quad[0], quad[1], quad[2], quad[3]);
-    let width = (ne - nw).hypot();
-    let height = (sw - nw).hypot();
-    let cx = (nw.x + se.x) * 0.5;
-    let cy = (nw.y + se.y) * 0.5;
-
-    // A degenerate edge has no direction to recover; fall back to the identity rather than
-    // dividing by zero and handing the host NaNs, which it would reject wholesale.
-    let (a, b) = if width > 0.0 {
-        ((ne.x - nw.x) / width, (ne.y - nw.y) / width)
-    } else {
-        (1.0, 0.0)
-    };
-    let (c, d) = if height > 0.0 {
-        ((sw.x - nw.x) / height, (sw.y - nw.y) / height)
-    } else {
-        (0.0, 1.0)
-    };
-
-    [
-        width as f32,
-        height as f32,
-        cx as f32,
-        cy as f32,
-        a as f32,
-        b as f32,
-        c as f32,
-        d as f32,
-        cx as f32,
-        cy as f32,
-    ]
 }
 
 // --- introspection ---------------------------------------------------------------------

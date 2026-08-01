@@ -23,3 +23,4 @@ pub use peniko;
 
 pub mod abi;
 pub mod model;
+pub mod selection;
