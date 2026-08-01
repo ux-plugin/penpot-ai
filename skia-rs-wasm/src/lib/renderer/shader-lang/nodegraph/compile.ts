@@ -199,8 +199,13 @@ function groupBody(graph: ShaderGraph, group: ShaderNode, isRoot: boolean): stri
   const result = Object.values(graph.edges).find(
     (e) => e.to.node === group.id && e.to.port === OUT,
   )
-  const value = result ? (vars.get(result.from.node) ?? ZERO[group.returns]) : ZERO[group.returns]
-  lines.push(`  return ${isRoot ? wrapAsColor(graph, result?.from.node, value) : value};`)
+  const raw = result ? (vars.get(result.from.node) ?? ZERO[group.returns]) : ZERO[group.returns]
+  // A group declares its own return type, so what leaves it is converted too —
+  // wiring a float node to a group that returns color has to widen, exactly as
+  // it would across any other wire.
+  const from = result ? graph.nodes[result.from.node]?.returns : undefined
+  const value = from ? coerce(raw, from, group.returns) : raw
+  lines.push(`  return ${isRoot ? wrapAsColor(graph, result?.from.node, raw) : value};`)
   return lines.join('\n')
 }
 
@@ -227,6 +232,40 @@ function wrapAsColor(graph: ShaderGraph, sourceId: string | undefined, value: st
   return wrap ? wrap(value) : 'half4(0.0, 0.0, 0.0, 1.0)'
 }
 
+/** Component count per type, for widening and narrowing across a wire. */
+const WIDTH: Record<PortType, number> = {
+  float: 1,
+  vec2: 2,
+  vec3: 3,
+  color: 3,
+  vec4: 4,
+  shader: 0,
+}
+
+/**
+ * Convert `expr` from one port type to another.
+ *
+ * Wires between mismatched types are normal in a node editor — dropping a noise
+ * scalar onto a colour input is a thing people do on purpose — so the compiler
+ * adapts rather than refusing. Without this a mismatched wire emits SkSL that
+ * fails to compile, which was a regression against the older graph compiler
+ * that the type-per-port model made easy to overlook.
+ *
+ * Narrowing takes the leading components; widening splats a scalar and pads
+ * anything else with zero.
+ */
+function coerce(expr: string, from: PortType, to: PortType): string {
+  if (from === to) return expr
+  if (from === 'shader' || to === 'shader') return expr // nothing sensible to do
+  const [a, b] = [WIDTH[from], WIDTH[to]]
+
+  if (a === b) return b === 1 ? expr : `${SKSL_TYPE[to]}(${expr})` // color ↔ vec3
+  if (b === 1) return from === 'color' ? `dot(${expr}, half3(0.2126, 0.7152, 0.0722))` : `(${expr}).x`
+  if (a === 1) return `${SKSL_TYPE[to]}(${expr})` // splat
+  if (a > b) return `(${expr}).${'xyzw'.slice(0, b)}`
+  return `${SKSL_TYPE[to]}(${expr}${', 0.0'.repeat(b - a - 1)}, ${to === 'vec4' ? '1.0' : '0.0'})`
+}
+
 /** One argument: a wired upstream call, the group's own parameter, a uniform, or a constant. */
 function resolve(
   graph: ShaderGraph,
@@ -239,9 +278,12 @@ function resolve(
   const edge = incoming(graph, child.id, param)
   if (edge) {
     // Sourced from the enclosing group means "this group's parameter".
-    if (edge.from.node === group.id) return edge.from.port
+    if (edge.from.node === group.id) {
+      const from = group.params.find((p) => p.name === edge.from.port)?.type
+      return from ? coerce(edge.from.port, from, type) : edge.from.port
+    }
     const v = vars.get(edge.from.node)
-    if (v) return v
+    if (v) return coerce(v, graph.nodes[edge.from.node]?.returns ?? type, type)
   }
   const state = child.values[param]
   if (state?.exposed) return state.exposed.uniform

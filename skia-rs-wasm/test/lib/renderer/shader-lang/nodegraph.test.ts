@@ -235,6 +235,42 @@ describe('codegen', () => {
     expect(ret.startsWith('return half4(')).toBe(true)
   })
 
+  /**
+   * Ported from the older graph compiler's suite, which this replaced. Wiring a
+   * scalar onto a colour input is something people do on purpose, so the
+   * compiler adapts instead of emitting SkSL that will not build.
+   */
+  it.each([
+    ['float', 'color', 'half3(v_'],
+    ['float', 'vec2', 'float2(v_'],
+    ['color', 'float', 'dot(v_'],
+    ['vec2', 'float', ').x'],
+    ['vec4', 'vec2', ').xy'],
+    ['vec3', 'color', 'half3(v_'],
+  ] as const)('coerces a %s output wired into a %s input', (from, to, expected) => {
+    const nodes = [
+      node({ id: 'r', name: 'Material', returns: 'vec4', params: [{ name: 'p', type: 'vec2' }] }),
+      node({ id: 'src', name: 'Src', parentId: 'r', pos: 'a', returns: from, params: [], body: 'return 0;' }),
+      node({ id: 'dst', name: 'Dst', parentId: 'r', pos: 'b', returns: 'color', params: [{ name: 'x', type: to }], body: 'return half3(0.0);' }),
+    ]
+    const { source } = compileGraph(
+      graphOf(nodes, [edge(['src', OUT], ['dst', 'x']), edge(['dst', OUT], ['r', OUT])]),
+    )
+    expect(source).toContain(expected)
+  })
+
+  it('passes a matching type through untouched', () => {
+    const nodes = [
+      node({ id: 'r', name: 'Material', returns: 'vec4', params: [{ name: 'p', type: 'vec2' }] }),
+      node({ id: 'src', name: 'Src', parentId: 'r', pos: 'a', returns: 'color', params: [], body: 'return half3(0.0);' }),
+      node({ id: 'dst', name: 'Dst', parentId: 'r', pos: 'b', returns: 'color', params: [{ name: 'x', type: 'color' }], body: 'return x;' }),
+    ]
+    const { source } = compileGraph(
+      graphOf(nodes, [edge(['src', OUT], ['dst', 'x']), edge(['dst', OUT], ['r', OUT])]),
+    )
+    expect(source).toContain('Dst_dst(v_Src_src)')
+  })
+
   it('pulls in only the helpers and engine uniforms the bodies mention', () => {
     // Material(p) → Normalize → Noise → result. Noise calls _vnoise, which calls
     // _hash21; Normalize reads u_resolution. Nothing here touches u_phase.

@@ -14,7 +14,7 @@
  */
 
 import type { WasmModule } from '../wasm-types'
-import type { ShaderGraph } from '../shader-lang/graph/types'
+import type { ShaderGraph } from '../shader-lang/nodegraph/model'
 import { checkContext } from './context'
 import { allocBytes, freeBytes } from '../utils'
 
@@ -56,10 +56,10 @@ export interface Material {
   hidden?: boolean
   /**
    * Node-graph authoring model. When present the graph is the SOURCE OF TRUTH and
-   * `source` is its compiled output (`compileGraphToSksl`) — the renderer still only
+   * `source` is its compiled output (`compileGraph`) — the renderer still only
    * ever consumes `source`, so nothing below this layer knows about graphs. Absent
-   * ⇒ the material was authored as code. Type-only import: `graph/types` is pure
-   * declarations, so this doesn't pull the editor stack into the WASM layer.
+   * ⇒ the material was authored as code. Type-only import: `nodegraph/model` is
+   * pure declarations, so this doesn't pull the editor stack into the WASM layer.
    */
   graph?: ShaderGraph
 }

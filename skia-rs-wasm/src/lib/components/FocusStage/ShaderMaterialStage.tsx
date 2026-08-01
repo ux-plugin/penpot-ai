@@ -57,9 +57,9 @@ import {
 import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
 import { ShaderGraphEditor } from './ShaderGraphEditor'
 import { shaderLanguage } from '../../renderer/shader-lang'
-import { compileGraphToSksl } from '../../renderer/shader-lang/graph/compile'
-import { starterGraph } from '../../renderer/shader-lang/graph/starter'
-import type { ShaderGraph } from '../../renderer/shader-lang/graph/types'
+import { compileGraph } from '../../renderer/shader-lang/nodegraph/compile'
+import { starterGraph } from '../../renderer/shader-lang/nodegraph/starter'
+import type { ShaderGraph } from '../../renderer/shader-lang/nodegraph/model'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
 import { shaderConsoleBridge } from '../../renderer/signals/shader-console-bridge'
@@ -283,14 +283,14 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   const applyGraph = useCallback(
     (next: ShaderGraph, opts?: { layoutOnly?: boolean }) => {
       if (opts?.layoutOnly) applyChange({ graph: next })
-      else applyChange({ graph: next, source: compileGraphToSksl(next).source })
+      else applyChange({ graph: next, source: compileGraph(next).source })
     },
     [applyChange],
   )
 
   const startGraph = useCallback(() => {
     const g = starterGraph()
-    applyChange({ graph: g, source: compileGraphToSksl(g).source })
+    applyChange({ graph: g, source: compileGraph(g).source })
   }, [applyChange])
 
   /** Keep the generated source, drop the graph — it becomes hand-authored code. */
