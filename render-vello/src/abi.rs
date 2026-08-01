@@ -18,6 +18,7 @@
 use std::sync::Mutex;
 
 use render_core::abi::decode_fill;
+use render_core::kurbo;
 use render_core::kurbo::{Affine, Rect};
 use render_core::model::{Node, Scene, ShapeKind};
 use render_core::peniko::Color;
@@ -813,6 +814,116 @@ fn cap_from_wire(value: u8) -> Option<render_core::kurbo::Cap> {
     }
 }
 
+// --- queries ----------------------------------------------------------------------------
+
+/// The last query result, kept alive for the host to read.
+///
+/// `Vec<u32>` rather than `Vec<u8>` on purpose: the host divides the returned pointer by four to
+/// index `HEAPF32`, so it must be four-byte aligned, and a `Vec<u8>` only promises alignment 1.
+static RESULT: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// The selection's bounding box, as ten little-endian `f32`s:
+/// `width, height, cx, cy, a, b, c, d, e, f`.
+///
+/// Mirrors render-wasm's `get_selection_rect`, including the part that is easy to miss: a
+/// *single* selected shape reports its own **oriented** box — width and height are the shape's
+/// own dimensions and the rotation lives in the matrix — while a multi-selection reports the
+/// axis-aligned union with an identity rotation. Selecting one rotated rect and selecting it
+/// together with a neighbour are therefore not the same shape of answer, and a handle overlay
+/// that assumes otherwise draws a tilted box around two shapes.
+#[unsafe(no_mangle)]
+pub extern "C" fn get_selection_rect() -> *mut u8 {
+    let ids: Vec<u128> = take_bytes()
+        .chunks_exact(16)
+        .map(|c| {
+            let word = |i: usize| u32::from_le_bytes([c[i], c[i + 1], c[i + 2], c[i + 3]]);
+            uuid_u128(word(0), word(4), word(8), word(12))
+        })
+        .collect();
+
+    let quads: Vec<[kurbo::Point; 4]> = with_state(|state| {
+        ids.iter()
+            .filter_map(|id| state.scene.get(*id))
+            .map(|node| {
+                let m = node.effective_transform();
+                let b = node.bounds;
+                [
+                    m * kurbo::Point::new(b.x0, b.y0),
+                    m * kurbo::Point::new(b.x1, b.y0),
+                    m * kurbo::Point::new(b.x1, b.y1),
+                    m * kurbo::Point::new(b.x0, b.y1),
+                ]
+            })
+            .collect()
+    });
+
+    let values = match quads.as_slice() {
+        [] => [0.0f32; 10],
+        [single] => oriented_rect(single),
+        many => {
+            // `Bounds::join_bounds`: the axis-aligned hull of every corner, unrotated.
+            let (mut x0, mut y0) = (f64::MAX, f64::MAX);
+            let (mut x1, mut y1) = (f64::MIN, f64::MIN);
+            for quad in many {
+                for p in quad {
+                    x0 = x0.min(p.x);
+                    y0 = y0.min(p.y);
+                    x1 = x1.max(p.x);
+                    y1 = y1.max(p.y);
+                }
+            }
+            oriented_rect(&[
+                kurbo::Point::new(x0, y0),
+                kurbo::Point::new(x1, y0),
+                kurbo::Point::new(x1, y1),
+                kurbo::Point::new(x0, y1),
+            ])
+        }
+    };
+
+    let mut guard = RESULT.lock().expect("result buffer poisoned");
+    *guard = values.iter().map(|v| v.to_bits()).collect();
+    guard.as_mut_ptr().cast()
+}
+
+/// Describe a parallelogram as `width, height, cx, cy` plus the affine that maps a centred,
+/// axis-aligned box of that size onto it — render-wasm's `Bounds::transform_matrix`, which it
+/// reaches by solving a 3×3 system. With an axis-aligned source box the solution is just the
+/// normalised edge vectors, so it is written out directly here.
+fn oriented_rect(quad: &[kurbo::Point; 4]) -> [f32; 10] {
+    let (nw, ne, se, sw) = (quad[0], quad[1], quad[2], quad[3]);
+    let width = (ne - nw).hypot();
+    let height = (sw - nw).hypot();
+    let cx = (nw.x + se.x) * 0.5;
+    let cy = (nw.y + se.y) * 0.5;
+
+    // A degenerate edge has no direction to recover; fall back to the identity rather than
+    // dividing by zero and handing the host NaNs, which it would reject wholesale.
+    let (a, b) = if width > 0.0 {
+        ((ne.x - nw.x) / width, (ne.y - nw.y) / width)
+    } else {
+        (1.0, 0.0)
+    };
+    let (c, d) = if height > 0.0 {
+        ((sw.x - nw.x) / height, (sw.y - nw.y) / height)
+    } else {
+        (0.0, 1.0)
+    };
+
+    [
+        width as f32,
+        height as f32,
+        cx as f32,
+        cy as f32,
+        a as f32,
+        b as f32,
+        c as f32,
+        d as f32,
+        cx as f32,
+        cy as f32,
+    ]
+}
+
 // --- introspection ---------------------------------------------------------------------
 
 /// Node count, so the host and tests can assert the scene took without reading pixels.
@@ -1308,6 +1419,86 @@ mod tests {
             "reachable, but with nothing to draw with"
         );
         assert_eq!(scene_node_count(), 2, "still delivered");
+    }
+
+    /// Read back the ten `f32`s `get_selection_rect` leaves for the host.
+    fn selection_rect(ids: &[u128]) -> [f32; 10] {
+        let mut payload = Vec::new();
+        for id in ids {
+            // The host writes each uuid as four little-endian u32s, most significant first.
+            for shift in [96, 64, 32, 0] {
+                payload.extend_from_slice(&(((*id >> shift) as u32).to_le_bytes()));
+            }
+        }
+        upload(&payload);
+
+        let ptr = get_selection_rect();
+        let words = unsafe { std::slice::from_raw_parts(ptr.cast::<u32>(), 10) };
+        let mut out = [0.0f32; 10];
+        for (slot, word) in out.iter_mut().zip(words) {
+            *slot = f32::from_bits(*word);
+        }
+        out
+    }
+
+    /// One rotated shape reports its *own* box with the rotation in the matrix — not the
+    /// axis-aligned hull, which would make the width jump the moment a shape is turned.
+    #[test]
+    fn selection_rect_of_one_shape_is_oriented() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_selrect(0.0, 0.0, 100.0, 50.0);
+        // A quarter turn about the shape's own centre. These are kurbo's column-major
+        // coefficients, so this sends the x-basis to (0, -1) and the y-basis to (1, 0).
+        set_shape_transform(0.0, -1.0, 1.0, 0.0, 0.0, 0.0);
+
+        let [w, h, cx, cy, a, b, c, d, e, f] = selection_rect(&[1]);
+        assert!((w - 100.0).abs() < 1e-3, "width stays the shape's own: {w}");
+        assert!((h - 50.0).abs() < 1e-3, "height stays the shape's own: {h}");
+        assert!((cx - 50.0).abs() < 1e-3 && (cy - 25.0).abs() < 1e-3);
+        // The rotation lives in the matrix, following the bases set above.
+        assert!((a - 0.0).abs() < 1e-3 && (b + 1.0).abs() < 1e-3, "{a},{b}");
+        assert!((c - 1.0).abs() < 1e-3 && (d - 0.0).abs() < 1e-3, "{c},{d}");
+        assert!((e - cx).abs() < 1e-3 && (f - cy).abs() < 1e-3);
+    }
+
+    /// Two shapes report the axis-aligned hull, unrotated — render-wasm's `join_bounds`.
+    #[test]
+    fn selection_rect_of_several_shapes_is_the_axis_aligned_hull() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_selrect(0.0, 0.0, 10.0, 10.0);
+        use_shape(0, 0, 0, 2);
+        set_shape_selrect(30.0, 20.0, 50.0, 60.0);
+
+        let [w, h, cx, cy, a, b, c, d, ..] = selection_rect(&[1, 2]);
+        assert!((w - 50.0).abs() < 1e-3 && (h - 60.0).abs() < 1e-3, "{w}x{h}");
+        assert!((cx - 25.0).abs() < 1e-3 && (cy - 30.0).abs() < 1e-3);
+        assert_eq!((a, b, c, d), (1.0, 0.0, 0.0, 1.0), "hull is never rotated");
+    }
+
+    /// Ids the host has not delivered must not produce a rect — the caller's finite-check turns
+    /// this into "no selection box" rather than one anchored at the origin.
+    #[test]
+    fn selection_rect_of_unknown_ids_is_empty() {
+        let _guard = reset();
+        assert_eq!(selection_rect(&[404]), [0.0; 10]);
+    }
+
+    /// The host divides the returned pointer by four to index `HEAPF32`; a misaligned buffer
+    /// would silently read from the wrong place.
+    #[test]
+    fn selection_rect_result_is_four_byte_aligned() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_selrect(0.0, 0.0, 10.0, 10.0);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        upload(&payload);
+        assert_eq!(get_selection_rect() as usize % 4, 0);
     }
 
     /// The host announces its shape count before sending shapes; reserving must not invent
