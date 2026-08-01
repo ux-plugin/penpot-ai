@@ -80,7 +80,7 @@ impl ExampleScene for NeutralModelScene {
             ));
         }
 
-        crate::abi::with_scene(|live, viewport| {
+        crate::abi::with_scene(|live, viewport, modifiers| {
             // `root` is the harness's own pan/zoom; `viewport` is what the host set through
             // `set_view`. They compose — the harness stays at identity when a host is driving.
             let (model, view) = if live.is_empty() {
@@ -89,13 +89,13 @@ impl ExampleScene for NeutralModelScene {
                 (live, root * viewport)
             };
             for id in model.roots() {
-                draw_node(ctx, model, *id, view, 0);
+                draw_node(ctx, model, *id, view, modifiers, 0);
             }
         });
     }
 
     fn status(&self) -> Option<String> {
-        let live = crate::abi::with_scene(|scene, _| scene.len());
+        let live = crate::abi::with_scene(|scene, _, _| scene.len());
         let (source, count) = if live == 0 {
             ("demo", self.fallback.len())
         } else {
@@ -114,6 +114,7 @@ fn draw_node<T: RenderingContext>(
     scene: &m::Scene,
     id: u128,
     root: Affine,
+    modifiers: &crate::abi::Modifiers,
     depth: u32,
 ) {
     if depth >= MAX_DEPTH {
@@ -127,7 +128,16 @@ fn draw_node<T: RenderingContext>(
         return;
     }
 
-    let matrix = root * node.effective_transform();
+    // The gesture transform sits between the viewport and the shape's own matrix: it is
+    // expressed in page space, so it must be applied to the shape's page-space geometry and
+    // then viewed, not folded into the shape's centred transform.
+    //
+    // It is *not* inherited down the tree. The host propagates a container's gesture to each
+    // descendant explicitly (`propagate_modifiers`), exactly as it does for the committed
+    // transforms, which are absolute per shape — inheriting here would apply a group's drag
+    // twice to everything inside it.
+    let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+    let matrix = root * modifier * node.effective_transform();
 
     // Clip and opacity cannot share one layer, because they cover different things.
     //
@@ -152,7 +162,7 @@ fn draw_node<T: RenderingContext>(
     }
 
     for child in &node.children {
-        draw_node(ctx, scene, *child, root, depth + 1);
+        draw_node(ctx, scene, *child, root, modifiers, depth + 1);
     }
 
     if clip.is_some() {

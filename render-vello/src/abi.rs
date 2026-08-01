@@ -41,7 +41,17 @@ struct SceneState {
     viewport: Viewport,
     /// Set by `render`/`render_sync`, cleared when the host's frame loop picks it up.
     needs_frame: bool,
+    /// Gesture-time transforms, in page space, keyed by shape.
+    ///
+    /// Deliberately beside the scene rather than on `Node`: these are *preview* state, alive
+    /// only for the duration of a drag, and the document is what `Scene` means. render-wasm
+    /// draws the same line — its modifiers live in the shapes pool and are applied on `get`,
+    /// not written into the shape.
+    modifiers: Modifiers,
 }
+
+/// Page-space gesture transforms by shape id. Empty except during a drag.
+pub(crate) type Modifiers = std::collections::HashMap<u128, Affine>;
 
 /// Pan, zoom and surface metrics — everything needed to place the page on the canvas.
 ///
@@ -138,10 +148,10 @@ fn take_bytes() -> Vec<u8> {
 /// node map per frame is exactly the cost this backend exists to avoid.
 // `scene.rs` is wasm-only, so a host build sees no caller outside the tests.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn with_scene<R>(f: impl FnOnce(&Scene, Affine) -> R) -> R {
+pub(crate) fn with_scene<R>(f: impl FnOnce(&Scene, Affine, &Modifiers) -> R) -> R {
     with_state(|state| {
         let transform = state.viewport.transform();
-        f(&state.scene, transform)
+        f(&state.scene, transform, &state.modifiers)
     })
 }
 
@@ -289,6 +299,9 @@ pub extern "C" fn clean_up() {
         state.current = None;
         state.viewport = Viewport::default();
         state.needs_frame = false;
+        // A gesture left in flight across a page change would displace whichever shapes happened
+        // to inherit those ids.
+        state.modifiers.clear();
     });
 }
 
@@ -814,6 +827,148 @@ fn cap_from_wire(value: u8) -> Option<render_core::kurbo::Cap> {
     }
 }
 
+// --- modifiers --------------------------------------------------------------------------
+//
+// Move, resize and rotate are all the same mechanism: rather than committing to the document on
+// every pointer move, the host pushes a per-shape transform here and commits once, at the end.
+// So all three gestures are dead until these exist — a stubbed `set_modifiers` means the shape
+// simply never leaves its committed position.
+//
+// The host's gesture block is `clean` → `set_structure_modifiers` → `propagate_modifiers` →
+// `set_modifiers(propagated)`, and it *uses the value propagate returns* — so propagate cannot
+// be a no-op that returns nothing, or the final `set_modifiers` is handed an empty list.
+
+/// One wire entry: uuid (four `u32`) then six `f32`, optionally followed by a `u32` kind.
+const MODIFIER_ENTRY: usize = 40;
+const PROPAGATE_ENTRY: usize = 44;
+
+/// Decode `uuid + matrix` at the start of a chunk.
+///
+/// The six floats are `a, b, c, d, e, f` in CSS-matrix order, which is *already* kurbo's
+/// column-major `Affine::new` layout — `a, b` is the x-basis and `c, d` the y-basis. No swap
+/// here, unlike the Skia side, which reorders them into its row-major `Matrix::new_all`.
+fn decode_modifier_entry(chunk: &[u8]) -> (u128, Affine) {
+    let word = |i: usize| u32::from_le_bytes([chunk[i], chunk[i + 1], chunk[i + 2], chunk[i + 3]]);
+    let float = |i: usize| f32::from_le_bytes([chunk[i], chunk[i + 1], chunk[i + 2], chunk[i + 3]]);
+    let id = uuid_u128(word(0), word(4), word(8), word(12));
+    let m = Affine::new([
+        float(16) as f64,
+        float(20) as f64,
+        float(24) as f64,
+        float(28) as f64,
+        float(32) as f64,
+        float(36) as f64,
+    ]);
+    (id, m)
+}
+
+/// Apply gesture transforms to shapes. Replaces the whole set, matching render-wasm.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_modifiers() {
+    let bytes = take_bytes();
+    let entries: Vec<(u128, Affine)> = bytes
+        .chunks_exact(MODIFIER_ENTRY)
+        .map(decode_modifier_entry)
+        .collect();
+
+    with_state(|state| {
+        state.modifiers = entries.into_iter().collect();
+        state.needs_frame = true;
+    });
+}
+
+/// Drop every gesture transform, returning the scene to its committed geometry.
+#[unsafe(no_mangle)]
+pub extern "C" fn clean_modifiers() {
+    with_state(|state| {
+        state.modifiers.clear();
+        state.needs_frame = true;
+    });
+}
+
+/// Expand the host's entries into the full set of shapes a gesture moves.
+///
+/// **This is the rigid slice.** A `Child` entry carries its transform to every descendant, which
+/// is what makes dragging a group or a frame move its contents. What it does *not* do is
+/// render-wasm's constraint and layout work: a child pinned to its container's right edge will
+/// not stretch when the container is resized, and flex/grid containers do not reflow. Those need
+/// the constraint solver, and doing half of it would be worse than doing none — a shape that
+/// moves *nearly* right is harder to trust than one that plainly does not move at all.
+///
+/// `pixel_precision` is accepted and ignored: it asks for integral snapping, which is a
+/// refinement of a result we do not yet compute.
+#[unsafe(no_mangle)]
+pub extern "C" fn propagate_modifiers(_pixel_precision: bool) -> *mut u8 {
+    let bytes = take_bytes();
+
+    let mut out: Vec<(u128, Affine)> = Vec::new();
+    with_state(|state| {
+        for chunk in bytes.chunks_exact(PROPAGATE_ENTRY) {
+            let (id, matrix) = decode_modifier_entry(chunk);
+            out.push((id, matrix));
+
+            // kind: 0 = Parent (descendants already accounted for), 1 = Child (walk them).
+            let kind = u32::from_le_bytes([chunk[40], chunk[41], chunk[42], chunk[43]]);
+            if kind == 1 {
+                collect_descendants(&state.scene, id, matrix, &mut out, 0);
+            }
+        }
+    });
+
+    // `[len, (uuid, matrix)…]`, which is what `mem::write_vec` produces on the Skia side.
+    let mut words = Vec::with_capacity(1 + out.len() * (MODIFIER_ENTRY / 4));
+    words.push(out.len() as u32);
+    for (id, m) in &out {
+        for shift in [96, 64, 32, 0] {
+            words.push((*id >> shift) as u32);
+        }
+        for coeff in m.as_coeffs() {
+            words.push((coeff as f32).to_bits());
+        }
+    }
+
+    let mut guard = RESULT.lock().expect("result buffer poisoned");
+    *guard = words;
+    guard.as_mut_ptr().cast()
+}
+
+/// Carry a transform down to every descendant, depth-capped like the renderer's own walk — the
+/// tree comes off the wire and a cycle would otherwise spin here instead of on screen.
+fn collect_descendants(
+    scene: &Scene,
+    id: u128,
+    matrix: Affine,
+    out: &mut Vec<(u128, Affine)>,
+    depth: u32,
+) {
+    if depth >= 128 {
+        return;
+    }
+    let Some(node) = scene.get(id) else {
+        return;
+    };
+    for child in &node.children {
+        out.push((*child, matrix));
+        collect_descendants(scene, *child, matrix, out, depth + 1);
+    }
+}
+
+/// Reparenting and layout-track edits mid-gesture. Accepted and ignored — this backend has no
+/// layout engine, so there is no track to edit and no flow to opt out of.
+///
+/// It still *drains* the buffer. A handler that ignores its input without taking it leaves the
+/// shared buffer occupied, and the next `alloc_bytes` then returns null.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_structure_modifiers() {
+    let _ = take_bytes();
+}
+
+/// Shapes to treat as layout-absolute for this gesture. Same reasoning as above.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_absolute_modifiers() {
+    let _ = take_bytes();
+}
+
 // --- queries ----------------------------------------------------------------------------
 
 /// The last query result, kept alive for the host to read.
@@ -839,10 +994,15 @@ pub extern "C" fn get_selection_rect() -> *mut u8 {
         })
         .collect();
 
+    // Modifier-aware on purpose: mid-drag the host expects the *displaced* box, so the handles
+    // travel with the shape instead of staying at its committed position.
     let quads: Vec<[kurbo::Point; 4]> = with_state(|state| {
         ids.iter()
-            .filter_map(|id| state.scene.get(*id))
-            .map(render_core::selection::node_quad)
+            .filter_map(|id| state.scene.get(*id).map(|node| (id, node)))
+            .map(|(id, node)| {
+                let modifier = state.modifiers.get(id).copied().unwrap_or(Affine::IDENTITY);
+                render_core::selection::node_quad(node, modifier)
+            })
             .collect()
     });
 
@@ -912,7 +1072,7 @@ mod tests {
     /// A snapshot of the live scene. Production reads it by reference through `with_scene`;
     /// cloning is fine in a test and keeps the assertions readable.
     fn current_scene() -> Scene {
-        with_scene(|scene, _| scene.clone())
+        with_scene(|scene, _, _| scene.clone())
     }
 
     fn reset() -> std::sync::MutexGuard<'static, ()> {
@@ -1229,7 +1389,7 @@ mod tests {
     // --- lifecycle and viewport ---------------------------------------------------------
 
     fn viewport_transform() -> Affine {
-        with_scene(|_, t| t)
+        with_scene(|_, t, _| t)
     }
 
     /// The load-bearing viewport property: page point `(-pan_x, -pan_y)` must land on the canvas
@@ -1348,6 +1508,133 @@ mod tests {
             "reachable, but with nothing to draw with"
         );
         assert_eq!(scene_node_count(), 2, "still delivered");
+    }
+
+    // --- modifiers -----------------------------------------------------------------------
+
+    fn uuid_bytes(id: u128) -> Vec<u8> {
+        let mut out = Vec::new();
+        for shift in [96, 64, 32, 0] {
+            out.extend_from_slice(&((id >> shift) as u32).to_le_bytes());
+        }
+        out
+    }
+
+    fn matrix_bytes(m: Affine) -> Vec<u8> {
+        let mut out = Vec::new();
+        for coeff in m.as_coeffs() {
+            out.extend_from_slice(&(coeff as f32).to_le_bytes());
+        }
+        out
+    }
+
+    fn upload_modifiers(entries: &[(u128, Affine)]) {
+        let mut payload = Vec::new();
+        for (id, m) in entries {
+            payload.extend_from_slice(&uuid_bytes(*id));
+            payload.extend_from_slice(&matrix_bytes(*m));
+        }
+        upload(&payload);
+    }
+
+    /// Read back what `propagate_modifiers` left for the host: `[len, (uuid, matrix)…]`.
+    fn read_propagated(ptr: *mut u8, len_hint: usize) -> Vec<(u128, Affine)> {
+        let words = unsafe { std::slice::from_raw_parts(ptr.cast::<u32>(), 1 + len_hint * 10) };
+        let count = words[0] as usize;
+        (0..count)
+            .map(|i| {
+                let e = &words[1 + i * 10..1 + i * 10 + 10];
+                let id = ((e[0] as u128) << 96)
+                    | ((e[1] as u128) << 64)
+                    | ((e[2] as u128) << 32)
+                    | (e[3] as u128);
+                let c: Vec<f64> = e[4..10].iter().map(|w| f32::from_bits(*w) as f64).collect();
+                (id, Affine::new([c[0], c[1], c[2], c[3], c[4], c[5]]))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn modifiers_round_trip_and_clear() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_selrect(0.0, 0.0, 10.0, 10.0);
+
+        upload_modifiers(&[(1, Affine::translate((5.0, 7.0)))]);
+        set_modifiers();
+        let moved = with_state(|s| s.modifiers.get(&1).copied());
+        assert_eq!(moved, Some(Affine::translate((5.0, 7.0))));
+        assert!(take_needs_frame(), "a gesture must schedule a frame");
+
+        clean_modifiers();
+        assert!(with_state(|s| s.modifiers.is_empty()));
+    }
+
+    /// A `Child` entry must reach every descendant, which is what makes dragging a group move
+    /// its contents; a `Parent` entry must not, or a container's drag lands on its children
+    /// twice.
+    #[test]
+    fn propagation_reaches_descendants_only_for_child_entries() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        add_shape_child(0, 0, 0, 2);
+        use_shape(0, 0, 0, 2);
+        add_shape_child(0, 0, 0, 3);
+        use_shape(0, 0, 0, 3);
+
+        let drag = Affine::translate((4.0, 0.0));
+        let entry = |kind: u32| {
+            let mut payload = uuid_bytes(1);
+            payload.extend_from_slice(&matrix_bytes(drag));
+            payload.extend_from_slice(&kind.to_le_bytes());
+            payload
+        };
+
+        upload(&entry(1));
+        let child = read_propagated(propagate_modifiers(false), 8);
+        assert_eq!(child.len(), 3, "the container and both descendants");
+        assert!(child.iter().all(|(_, m)| *m == drag));
+        assert_eq!(child.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [1, 2, 3]);
+
+        upload(&entry(0));
+        let parent = read_propagated(propagate_modifiers(false), 8);
+        assert_eq!(parent.len(), 1, "parent entries stand alone");
+    }
+
+    /// The selection box has to follow the gesture; a box left at the committed position is the
+    /// bug this whole entry point exists to avoid.
+    #[test]
+    fn selection_rect_follows_a_modifier() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_selrect(0.0, 0.0, 100.0, 50.0);
+
+        let at_rest = selection_rect(&[1]);
+        assert!((at_rest[2] - 50.0).abs() < 1e-3);
+
+        upload_modifiers(&[(1, Affine::translate((30.0, -10.0)))]);
+        set_modifiers();
+
+        let dragged = selection_rect(&[1]);
+        assert!((dragged[2] - 80.0).abs() < 1e-3, "centre followed: {dragged:?}");
+        assert!((dragged[3] - 15.0).abs() < 1e-3, "centre followed: {dragged:?}");
+        assert!((dragged[0] - 100.0).abs() < 1e-3, "a drag is not a resize");
+    }
+
+    /// These two are accepted and ignored, but they must still drain the shared buffer —
+    /// otherwise the next `alloc_bytes` returns null and every later upload silently fails.
+    #[test]
+    fn ignored_modifier_entry_points_still_drain_the_buffer() {
+        let _guard = reset();
+        upload(&[0u8; 44]);
+        set_structure_modifiers();
+        assert!(!alloc_bytes(8).is_null(), "buffer left occupied");
+        free_bytes();
+
+        upload(&[0u8; 16]);
+        set_absolute_modifiers();
+        assert!(!alloc_bytes(8).is_null(), "buffer left occupied");
+        free_bytes();
     }
 
     /// Read back the ten `f32`s `get_selection_rect` leaves for the host.
