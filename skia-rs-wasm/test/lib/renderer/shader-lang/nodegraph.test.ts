@@ -212,6 +212,29 @@ describe('codegen', () => {
     expect(source).toContain('half4 main(')
   })
 
+  /**
+   * Found by running the output through the real SkSL compiler: a `vec2`
+   * terminal produced `half4(float2)`, rejected for having two scalars where
+   * four were wanted. Every return type has to be padded explicitly.
+   */
+  it.each([
+    ['vec4', 'return half4(v_'],
+    ['vec3', ', 1.0);'],
+    ['color', ', 1.0);'],
+    ['vec2', ', 0.0, 1.0);'],
+    ['float', 'half4(half3(v_'],
+  ] as const)('pads a %s result to four components in main', (returns, expected) => {
+    const nodes = [
+      node({ id: 'r', name: 'Material', returns: 'vec4', params: [{ name: 'p', type: 'vec2' }] }),
+      node({ id: 'x', name: 'Term', parentId: 'r', pos: 'a', returns, params: [], body: 'return 0;' }),
+    ]
+    const { source } = compileGraph(graphOf(nodes, [edge(['x', OUT], ['r', OUT])]))
+    const ret = source.slice(source.lastIndexOf('return '))
+    expect(ret).toContain(expected)
+    // Whatever the type, main returns a half4 constructor and nothing else.
+    expect(ret.startsWith('return half4(')).toBe(true)
+  })
+
   it('pulls in only the helpers and engine uniforms the bodies mention', () => {
     // Material(p) → Normalize → Noise → result. Noise calls _vnoise, which calls
     // _hash21; Normalize reads u_resolution. Nothing here touches u_phase.

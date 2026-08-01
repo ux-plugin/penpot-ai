@@ -204,13 +204,27 @@ function groupBody(graph: ShaderGraph, group: ShaderNode, isRoot: boolean): stri
   return lines.join('\n')
 }
 
-/** `main` must return half4 whatever the last node produced. */
+/**
+ * `main` must return half4 whatever the last node produced, so every type gets
+ * padded to four components explicitly.
+ *
+ * Every case is spelled out rather than falling through to `half4(value)`,
+ * because that only happens to be right for vec4 — a `vec2` result produced
+ * `half4(float2)` and SkSL rejected it for having two scalars where it wanted
+ * four. An unknown type returns opaque black rather than something unparseable.
+ */
+const AS_COLOR: Partial<Record<PortType, (v: string) => string>> = {
+  vec4: (v) => `half4(${v})`,
+  vec3: (v) => `half4(${v}, 1.0)`,
+  color: (v) => `half4(${v}, 1.0)`,
+  vec2: (v) => `half4(${v}, 0.0, 1.0)`,
+  float: (v) => `half4(half3(${v}), 1.0)`,
+}
+
 function wrapAsColor(graph: ShaderGraph, sourceId: string | undefined, value: string): string {
   const type = sourceId ? graph.nodes[sourceId]?.returns : undefined
-  if (type === 'vec4') return `half4(${value})`
-  if (type === 'color' || type === 'vec3') return `half4(${value}, 1.0)`
-  if (type === 'float') return `half4(half3(${value}), 1.0)`
-  return type === undefined ? 'half4(0.0, 0.0, 0.0, 1.0)' : `half4(${value})`
+  const wrap = type ? AS_COLOR[type] : undefined
+  return wrap ? wrap(value) : 'half4(0.0, 0.0, 0.0, 1.0)'
 }
 
 /** One argument: a wired upstream call, the group's own parameter, a uniform, or a constant. */
