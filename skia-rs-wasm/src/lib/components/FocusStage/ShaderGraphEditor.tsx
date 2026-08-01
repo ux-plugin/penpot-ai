@@ -372,6 +372,7 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [viewId, setViewId] = useState(graph.root)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [showPreamble, setShowPreamble] = useState(false)
   const rfRef = useRef<ReactFlowInstance<AnyRFNode, RFEdge> | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
 
@@ -580,6 +581,11 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
   const selected = selectedId ? graph.nodes[selectedId] : undefined
   const editing = selected && selected.body !== undefined ? selected : undefined
 
+  const setPreamble = useCallback((text: string) => {
+    const g = graphRef.current
+    onChangeRef.current({ ...g, preamble: text })
+  }, [])
+
   const setBody = useCallback((nodeId: string, body: string) => {
     const g = graphRef.current
     const n = g.nodes[nodeId]
@@ -626,25 +632,31 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
           makes "a custom node holding any SkSL" real rather than a node type
           with a body nobody can reach. The signature above it is generated from
           `params`/`returns`, so the code here is statements only. */}
-      {editing && (
+      {(editing || showPreamble) && (
         <div className="flex h-[42%] min-h-[140px] shrink-0 flex-col border-t border-border">
           <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/40 px-2 py-1">
             <span className="truncate font-mono text-[11px]">
-              {editing.returns} {editing.name}(
-              {editing.params.map((p) => `${p.type} ${p.name}`).join(', ')})
+              {editing
+                ? `${editing.returns} ${editing.name}(${editing.params
+                    .map((p) => `${p.type} ${p.name}`)
+                    .join(', ')})`
+                : 'declarations — emitted above every function'}
             </span>
             <button
               type="button"
               className="rounded px-1 text-[11px] text-muted-foreground hover:text-foreground"
-              onClick={() => setSelectedId(null)}
+              onClick={() => {
+                setSelectedId(null)
+                setShowPreamble(false)
+              }}
             >
               Close
             </button>
           </div>
           <ShaderCodeEditor
             language={skslLanguage}
-            value={editing.body ?? ''}
-            onChange={(v) => setBody(editing.id, v)}
+            value={editing ? (editing.body ?? '') : (graph.preamble ?? '')}
+            onChange={(v) => (editing ? setBody(editing.id, v) : setPreamble(v))}
             diagnostics={[]}
             className="min-h-0 flex-1"
           />
@@ -660,6 +672,22 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
           onClick={() => setPaletteOpen((o) => !o)}
         >
           <Plus className="size-3" /> Add node
+        </Button>
+
+        {/* Not everything in a shader is a function. Uniforms, constants and
+            hand-written helpers live here, and without an editor the only way to
+            reach them was to leave the graph entirely. */}
+        <Button
+          type="button"
+          size="sm"
+          variant={showPreamble ? 'default' : 'secondary'}
+          className="h-7 px-2 text-[11px]"
+          onClick={() => {
+            setShowPreamble((v) => !v)
+            setSelectedId(null)
+          }}
+        >
+          Declarations
         </Button>
 
         {trail.length > 1 && (

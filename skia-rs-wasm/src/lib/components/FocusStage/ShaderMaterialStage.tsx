@@ -297,7 +297,18 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     [applyChange],
   )
 
-  /** Keep the generated source, drop the graph — it becomes hand-authored code. */
+  /**
+   * Flatten: drop the stored graph and hand the whole file back to the editor.
+   *
+   * This used to be "detach", meaning the graph was discarded and you escaped
+   * it. It cannot mean that any more — a shader is always a graph, so reopening
+   * the tab reads the source back as a single node. What you actually lose is
+   * the structure: the nodes and wiring collapse into one body.
+   *
+   * It stays because editing the file as a whole is sometimes what you want —
+   * restructuring, pasting a shader in wholesale. Reaching the declarations no
+   * longer requires it, since the graph edits those directly.
+   */
   const detachGraph = useCallback(() => {
     applyChange({ graph: undefined })
     setMode('code')
@@ -451,9 +462,9 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
                 size="sm"
                 className="ml-auto h-6 px-2 text-[11px]"
                 onClick={detachGraph}
-                title="Keep this source and edit it by hand — the graph is discarded"
+                title="Edit the whole file by hand. Reopening the graph shows it as a single node — the wiring is not kept."
               >
-                Detach
+                Flatten
               </Button>
             </>
           )}
