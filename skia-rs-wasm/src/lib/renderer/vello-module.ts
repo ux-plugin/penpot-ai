@@ -45,6 +45,15 @@ export interface VelloModule extends EmscriptenLikeModule {
     /** Frames actually drawn — distinguishes "never asked" from "asked and failed". */
     frameCount(): number
     hasRenderer(): boolean
+    /**
+     * Draw one frame immediately, bypassing the frame loop.
+     *
+     * The loop runs on `requestAnimationFrame`, which a browser does not fire for a hidden
+     * tab — so an automated check has no way to make the backend draw, and a healthy scene
+     * with zero frames is indistinguishable from a broken one. This is the escape hatch for
+     * that; the app itself never calls it.
+     */
+    renderNow(): void
   }
 }
 
@@ -82,8 +91,32 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
   })
 
   let renderer: VelloFocusRenderer | null = null
+  let canvasEl: HTMLCanvasElement | null = null
+  let surfaceWidth = 0
+  let surfaceHeight = 0
   let frameHandle: number | null = null
   let frames = 0
+
+  /**
+   * Keep the renderer's surface in step with the canvas's backing store.
+   *
+   * Nothing in the app announces a resize to the backend: layout changes the canvas's `width`
+   * and `height` directly, and a WebGPU canvas silently re-creates its drawing buffer to match.
+   * Vello's depth texture does not follow — it is rebuilt only when the `RenderSize` handed to
+   * `render()` changes — so the next frame fails validation with a depth attachment sized for
+   * the old canvas, and every frame after it is rejected too. Polling here rather than adding a
+   * resize entry point catches every source of the change (window, panel drag, DPR) and keeps
+   * the frame loop the only thing that talks to the renderer, per D3.
+   */
+  const syncSurfaceSize = (): void => {
+    if (!renderer || !canvasEl) return
+    const { width, height } = canvasEl
+    if (width === surfaceWidth && height === surfaceHeight) return
+    if (width === 0 || height === 0) return
+    renderer.resize(width, height)
+    surfaceWidth = width
+    surfaceHeight = height
+  }
 
   const loop = (): void => {
     frameHandle = requestAnimationFrame(loop)
@@ -92,6 +125,9 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
     // Phase 0 deliberately left the frame loop with the host (D3). Drawing only when something
     // asked keeps an idle document off the GPU.
     if (exports.frame_requested()) {
+      // Before drawing, never after: a frame encoded against a stale surface is the failure
+      // this guards.
+      syncSurfaceSize()
       renderer.render()
       frames += 1
     }
@@ -101,6 +137,9 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
     async attachCanvas(canvas: HTMLCanvasElement): Promise<void> {
       if (renderer) return
       renderer = await exports.create_focus_renderer(canvas)
+      canvasEl = canvas
+      surfaceWidth = canvas.width
+      surfaceHeight = canvas.height
       if (frameHandle === null) {
         frameHandle = requestAnimationFrame(loop)
       }
@@ -111,10 +150,19 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
         frameHandle = null
       }
       renderer = null
+      canvasEl = null
+      surfaceWidth = 0
+      surfaceHeight = 0
     },
     missingExports: () => [...missing],
     frameCount: () => frames,
     hasRenderer: () => renderer !== null,
+    renderNow(): void {
+      if (!renderer) return
+      syncSurfaceSize()
+      renderer.render()
+      frames += 1
+    },
   }
 
   // The facade is a Proxy whose `get` trap answers for every string key, so a member attached
