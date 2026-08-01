@@ -122,7 +122,13 @@ fn stops(g: &Gradient) -> Vec<ColorStop> {
 fn stroke_to_core(stroke: &crate::shapes::Stroke) -> Option<m::Stroke> {
     let brush = fill_to_core(&stroke.fill)?;
 
-    let mut style = kurbo::Stroke::new(stroke.width as f64);
+    // Skia's defaults, not kurbo's: `kurbo::Stroke::new` gives a round join and round caps,
+    // while Skia gives miter and butt — and `Stroke::to_paint` leaves those alone when the
+    // shape carries no explicit join or cap. Projecting kurbo's defaults would make an
+    // unstyled stroke render differently from how this very engine draws it.
+    let mut style = kurbo::Stroke::new(stroke.width as f64)
+        .with_join(kurbo::Join::Miter)
+        .with_caps(kurbo::Cap::Butt);
 
     if let Some(join) = stroke.line_join {
         style.join = match join {
@@ -143,9 +149,22 @@ fn stroke_to_core(stroke: &crate::shapes::Stroke) -> Option<m::Stroke> {
         style.start_cap = cap;
         style.end_cap = cap;
     }
-    if !stroke.dashes.is_empty() {
-        style.dash_pattern = stroke.dashes.iter().map(|d| *d as f64).collect();
-    }
+    // Dash pattern comes from the shared helper, not from `stroke.dashes` alone. Penpot's
+    // Dotted/Dashed/Mixed styles imply a pattern built from the width (`width + 10`, and so on),
+    // and reading only the custom dashes here dropped those three styles entirely — a dotted
+    // border projected as solid. `apply_stroke_style` is the one place those constants live, so
+    // the two backends cannot drift apart on them.
+    m::apply_stroke_style(
+        &mut style,
+        match stroke.style {
+            crate::shapes::StrokeStyle::Solid => m::StrokeStyle::Solid,
+            crate::shapes::StrokeStyle::Dotted => m::StrokeStyle::Dotted,
+            crate::shapes::StrokeStyle::Dashed => m::StrokeStyle::Dashed,
+            crate::shapes::StrokeStyle::Mixed => m::StrokeStyle::Mixed,
+        },
+        stroke.width,
+        &stroke.dashes,
+    );
 
     // `StrokeKind` (inner/outer/center) is an offsetting decision, not a stroke style, and
     // kurbo has no slot for it. Centre needs nothing; inner/outer need the path offset before
@@ -343,7 +362,10 @@ mod tests {
         let mut stroke =
             crate::shapes::Stroke::new_center_stroke(4.0, StrokeStyle::Solid, None, None);
         stroke.fill = Fill::Solid(SolidColor(skia::Color::from_argb(255, 1, 2, 3)));
-        stroke.dashes = vec![6.0, 2.0];
+        // Through `set_dashes`, which forces `Dashed` — a solid stroke ignores its dash list,
+        // both here and in `to_paint`, so the combination the field-assignment version of this
+        // test used is one the host cannot actually produce.
+        stroke.set_dashes(vec![6.0, 2.0]);
         stroke.miter_limit = Some(9.0);
         shape.add_stroke(stroke);
 
@@ -354,6 +376,32 @@ mod tests {
         assert_eq!(s.style.miter_limit, 9.0);
         assert_eq!(s.style.dash_pattern.as_slice(), &[6.0, 2.0]);
         assert_eq!(s.brush, Brush::Solid(Color::from_rgba8(1, 2, 3, 255)));
+        // Skia's defaults, not kurbo's — see `stroke_to_core`.
+        assert_eq!(s.style.join, kurbo::Join::Miter);
+        assert_eq!(s.style.start_cap, kurbo::Cap::Butt);
+    }
+
+    /// A style with no custom dashes still implies a pattern, built from the width. Reading
+    /// only `stroke.dashes` — as this projection used to — dropped Dotted, Dashed and Mixed
+    /// entirely, projecting a dotted border as solid.
+    #[test]
+    fn stroke_styles_project_to_their_dash_patterns() {
+        use crate::shapes::StrokeStyle as SS;
+        let pattern = |style: SS| {
+            let mut shape = rect_shape();
+            let mut stroke = crate::shapes::Stroke::new_center_stroke(4.0, style, None, None);
+            stroke.fill = Fill::Solid(SolidColor(skia::Color::from_argb(255, 1, 2, 3)));
+            shape.add_stroke(stroke);
+            node_from_shape(&shape).unwrap().strokes[0]
+                .style
+                .dash_pattern
+                .to_vec()
+        };
+
+        assert!(pattern(SS::Solid).is_empty());
+        assert_eq!(pattern(SS::Dashed), vec![14.0, 14.0]);
+        assert_eq!(pattern(SS::Mixed), vec![9.0, 9.0, 5.0, 9.0]);
+        assert_eq!(pattern(SS::Dotted), vec![0.01, 8.99]);
     }
 
     /// Inner/outer need the path offset before this model; projecting them as centred would

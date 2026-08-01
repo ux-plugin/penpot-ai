@@ -672,6 +672,147 @@ fn uuid_u128(a: u32, b: u32, c: u32, d: u32) -> u128 {
     ((a as u128) << 96) | ((b as u128) << 64) | ((c as u128) << 32) | (d as u128)
 }
 
+// --- strokes ----------------------------------------------------------------------------
+//
+// Penpot's stroke arrives in pieces: `add_shape_*_stroke` opens one, then `add_shape_stroke_fill`
+// gives it paint and `set_shape_stroke_props`/`set_shape_stroke_dashes` refine it — all three
+// acting on "the last stroke added". That implicit cursor is the same accepted debt as the
+// current-shape one (D17), and mirroring it is what lets the host drive both backends.
+//
+// **Inner and outer strokes are dropped, not approximated.** They are offsetting decisions —
+// the outline is displaced by half the width before it is stroked — and kurbo has no slot for
+// that. Drawing them centred would put paint visibly in the wrong place, which is worse than
+// drawing nothing, because it looks like a rendering bug rather than a missing feature. They
+// come back with path offsetting.
+
+/// Open a centred stroke. `style` is `RawStrokeStyle`; the cap bytes are `RawStrokeCap`.
+#[unsafe(no_mangle)]
+pub extern "C" fn add_shape_center_stroke(width: f32, style: u8, cap_start: u8, cap_end: u8) {
+    // Start from **Skia's** defaults, not kurbo's. `kurbo::Stroke::new` gives a round join and
+    // round caps; Skia gives a miter join and butt caps, and render-wasm leaves those untouched
+    // when the host sends nothing (`_ => {} // Miter / None → Skia default`). Inheriting kurbo's
+    // would make every unstyled stroke differ between the two backends — round-ended and
+    // round-cornered on one side, square on the other — with nothing in the document to explain
+    // it.
+    let mut kstroke = render_core::kurbo::Stroke::new(f64::from(width))
+        .with_join(render_core::kurbo::Join::Miter)
+        .with_caps(render_core::kurbo::Cap::Butt);
+    if let Some(cap) = cap_from_wire(cap_start) {
+        kstroke.start_cap = cap;
+    }
+    if let Some(cap) = cap_from_wire(cap_end) {
+        kstroke.end_cap = cap;
+    }
+    render_core::model::apply_stroke_style(
+        &mut kstroke,
+        render_core::model::StrokeStyle::from_wire(style),
+        width,
+        &[],
+    );
+
+    with_current(|node| {
+        node.strokes.push(render_core::model::Stroke {
+            style: kstroke.clone(),
+            // Penpot sends the paint separately, in `add_shape_stroke_fill`. Black is the
+            // stand-in until it arrives, matching what an unpainted stroke defaults to.
+            brush: render_core::peniko::Brush::Solid(render_core::peniko::Color::BLACK),
+        });
+    });
+}
+
+/// Inner and outer strokes are accepted and dropped — see the note above.
+#[unsafe(no_mangle)]
+pub extern "C" fn add_shape_inner_stroke(_width: f32, _style: u8, _cap_start: u8, _cap_end: u8) {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn add_shape_outer_stroke(_width: f32, _style: u8, _cap_start: u8, _cap_end: u8) {}
+
+/// Paint for the most recently added stroke, read from the shared buffer as one fill record.
+#[unsafe(no_mangle)]
+pub extern "C" fn add_shape_stroke_fill() {
+    let bytes = take_bytes();
+    let Some(brush) = decode_fill(&bytes).ok().and_then(brush_from_raw) else {
+        return;
+    };
+    with_current(|node| {
+        if let Some(stroke) = node.strokes.last_mut() {
+            stroke.brush = brush;
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_strokes() {
+    with_current(|node| node.strokes.clear());
+}
+
+/// Override join, cap and miter limit on the last stroke.
+///
+/// `join` and `cap` use `-1` for "leave unchanged", and `miter` any negative value — the host's
+/// convention, not ours. Reading `-1` as an enum index would silently pick a join.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_stroke_props(join: i32, cap: i32, miter: f32) {
+    use render_core::kurbo::{Cap, Join};
+    with_current(|node| {
+        let Some(stroke) = node.strokes.last_mut() else {
+            return;
+        };
+        match join {
+            0 => stroke.style.join = Join::Miter,
+            1 => stroke.style.join = Join::Round,
+            2 => stroke.style.join = Join::Bevel,
+            _ => {}
+        }
+        match cap {
+            0 => {
+                stroke.style.start_cap = Cap::Butt;
+                stroke.style.end_cap = Cap::Butt;
+            }
+            1 => {
+                stroke.style.start_cap = Cap::Round;
+                stroke.style.end_cap = Cap::Round;
+            }
+            2 => {
+                stroke.style.start_cap = Cap::Square;
+                stroke.style.end_cap = Cap::Square;
+            }
+            _ => {}
+        }
+        if miter >= 0.0 {
+            stroke.style.miter_limit = f64::from(miter);
+        }
+    });
+}
+
+/// A custom dash pattern for the last stroke: `[dash, gap, …]` as little-endian `f32`s in the
+/// shared buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_stroke_dashes() {
+    let bytes = take_bytes();
+    let dashes: Vec<f64> = bytes
+        .chunks_exact(4)
+        .map(|c| f64::from(f32::from_le_bytes([c[0], c[1], c[2], c[3]])))
+        .collect();
+
+    with_current(|node| {
+        if let Some(stroke) = node.strokes.last_mut() {
+            stroke.style.dash_pattern = dashes.iter().copied().collect();
+        }
+    });
+}
+
+/// `RawStrokeCap` to a kurbo cap. The marker caps — arrows, diamonds, squares — are decorations
+/// stamped at the ends rather than cap styles, so they have no kurbo equivalent and leave the
+/// cap alone; they belong with the Phase-4 effect work.
+fn cap_from_wire(value: u8) -> Option<render_core::kurbo::Cap> {
+    use render_core::kurbo::Cap;
+    match value {
+        6 => Some(Cap::Round),
+        7 => Some(Cap::Square),
+        _ => None,
+    }
+}
+
 // --- introspection ---------------------------------------------------------------------
 
 /// Node count, so the host and tests can assert the scene took without reading pixels.
@@ -1133,6 +1274,154 @@ mod tests {
 
         use_shape(0, 0, 0, 1);
         assert_eq!(scene_node_count(), 1);
+    }
+
+    // --- strokes -------------------------------------------------------------------------
+
+    /// One solid fill record in the shared buffer, as `add_shape_stroke_fill` expects — no
+    /// count header, unlike `set_shape_fills`.
+    fn upload_solid_fill(argb: u32) {
+        let mut payload = vec![0u8; render_core::abi::RAW_FILL_DATA_SIZE];
+        payload[0] = 0x00;
+        payload[4..8].copy_from_slice(&argb.to_le_bytes());
+        upload(&payload);
+    }
+
+    #[test]
+    fn a_centre_stroke_takes_width_caps_and_paint() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+
+        // RawStrokeCap: 6 = Round, 7 = Square. Style 0 = Solid.
+        add_shape_center_stroke(4.0, 0, 6, 7);
+        upload_solid_fill(0xff_11_22_33);
+        add_shape_stroke_fill();
+
+        let scene = current_scene();
+        let strokes = &scene.get(1).unwrap().strokes;
+        assert_eq!(strokes.len(), 1);
+        assert_eq!(strokes[0].style.width, 4.0);
+        assert_eq!(strokes[0].style.start_cap, render_core::kurbo::Cap::Round);
+        assert_eq!(strokes[0].style.end_cap, render_core::kurbo::Cap::Square);
+        assert_eq!(
+            strokes[0].brush,
+            Brush::Solid(render_core::peniko::Color::from_rgba8(
+                0x11, 0x22, 0x33, 0xff
+            ))
+        );
+    }
+
+    /// Inner and outer strokes are offsetting decisions kurbo cannot express. Drawing them
+    /// centred would put paint visibly in the wrong place — worse than drawing nothing, because
+    /// it reads as a rendering bug rather than a missing feature.
+    #[test]
+    fn inner_and_outer_strokes_are_dropped_not_centred() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+
+        add_shape_inner_stroke(4.0, 0, 0, 0);
+        add_shape_outer_stroke(4.0, 0, 0, 0);
+        assert!(current_scene().get(1).unwrap().strokes.is_empty());
+
+        add_shape_center_stroke(4.0, 0, 0, 0);
+        assert_eq!(current_scene().get(1).unwrap().strokes.len(), 1);
+    }
+
+    /// `add_shape_stroke_fill`, `set_shape_stroke_props` and `set_shape_stroke_dashes` all act
+    /// on the *last* stroke. Getting that cursor wrong paints the second stroke's colour onto
+    /// the first, which looks like a colour bug rather than an ordering one.
+    #[test]
+    fn stroke_refinements_apply_to_the_last_stroke() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+
+        add_shape_center_stroke(2.0, 0, 0, 0);
+        upload_solid_fill(0xff_ff_00_00);
+        add_shape_stroke_fill();
+
+        add_shape_center_stroke(8.0, 0, 0, 0);
+        upload_solid_fill(0xff_00_ff_00);
+        add_shape_stroke_fill();
+        set_shape_stroke_props(2, -1, 3.5); // join = Bevel, cap unchanged, miter = 3.5
+
+        let scene = current_scene();
+        let strokes = &scene.get(1).unwrap().strokes;
+        assert_eq!(strokes.len(), 2);
+        assert_eq!(strokes[0].style.width, 2.0);
+        assert_eq!(strokes[0].style.join, render_core::kurbo::Join::Miter);
+        assert_eq!(strokes[1].style.join, render_core::kurbo::Join::Bevel);
+        assert_eq!(strokes[1].style.miter_limit, 3.5);
+        assert_eq!(
+            strokes[0].brush,
+            Brush::Solid(render_core::peniko::Color::from_rgba8(0xff, 0, 0, 0xff))
+        );
+    }
+
+    /// `-1` means "leave unchanged"; reading it as an enum index would silently pick a join.
+    #[test]
+    fn negative_stroke_props_leave_the_style_alone() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        add_shape_center_stroke(2.0, 0, 6, 6);
+        set_shape_stroke_props(1, 1, 9.0);
+        set_shape_stroke_props(-1, -1, -1.0);
+
+        let scene = current_scene();
+        let stroke = &scene.get(1).unwrap().strokes[0];
+        assert_eq!(stroke.style.join, render_core::kurbo::Join::Round);
+        assert_eq!(stroke.style.start_cap, render_core::kurbo::Cap::Round);
+        assert_eq!(stroke.style.miter_limit, 9.0);
+    }
+
+    /// The style constants live in render-core so both backends derive the same pattern.
+    #[test]
+    fn stroke_styles_become_dash_patterns() {
+        let _guard = reset();
+
+        let pattern_for = |style: u8, width: f32| {
+            use_shape(0, 0, 0, 1);
+            clear_shape_strokes();
+            add_shape_center_stroke(width, style, 0, 0);
+            current_scene().get(1).unwrap().strokes[0]
+                .style
+                .dash_pattern
+                .to_vec()
+        };
+
+        assert!(pattern_for(0, 4.0).is_empty()); // Solid
+        assert_eq!(pattern_for(2, 4.0), vec![14.0, 14.0]); // Dashed: width + 10
+        assert_eq!(pattern_for(3, 4.0), vec![9.0, 9.0, 5.0, 9.0]); // Mixed
+        assert_eq!(pattern_for(1, 4.0), vec![0.01, 8.99]); // Dotted: near-zero dash, round caps
+    }
+
+    #[test]
+    fn custom_dashes_replace_the_style_pattern() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        add_shape_center_stroke(4.0, 2, 0, 0);
+
+        let mut payload = Vec::new();
+        for v in [3.0f32, 7.0] {
+            payload.extend_from_slice(&v.to_le_bytes());
+        }
+        upload(&payload);
+        set_shape_stroke_dashes();
+
+        let scene = current_scene();
+        assert_eq!(
+            scene.get(1).unwrap().strokes[0].style.dash_pattern.to_vec(),
+            vec![3.0, 7.0]
+        );
+    }
+
+    #[test]
+    fn clear_shape_strokes_empties_them() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        add_shape_center_stroke(4.0, 0, 0, 0);
+        add_shape_center_stroke(2.0, 0, 0, 0);
+        clear_shape_strokes();
+        assert!(current_scene().get(1).unwrap().strokes.is_empty());
     }
 
     #[test]

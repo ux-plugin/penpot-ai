@@ -169,30 +169,47 @@ fn paint_self<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) 
     if node.kind == m::ShapeKind::Group {
         return;
     }
+    if node.fills.is_empty() && node.strokes.is_empty() {
+        return;
+    }
+
+    ctx.set_transform(matrix);
 
     // First solid fill wins. `Brush` also carries gradients and images; those are drawn in a
     // later increment, and need no new model type (D12).
-    let Some(color) = node.fills.iter().find_map(|f| match f {
+    if let Some(color) = node.fills.iter().find_map(|f| match f {
         Brush::Solid(c) => Some(*c),
         _ => None,
-    }) else {
-        return;
-    };
-
-    ctx.set_transform(matrix);
-    ctx.set_paint(color);
-
-    match node.kind {
-        // The one case worth a fast path: a square-cornered rect needs no path at all.
-        m::ShapeKind::Rect | m::ShapeKind::Frame if node.corners.is_none() => {
-            ctx.fill_rect(&node.bounds)
-        }
-        m::ShapeKind::Path => {
-            if let Some(path) = &node.path {
-                ctx.fill_path(path);
+    }) {
+        ctx.set_paint(color);
+        match node.kind {
+            // The one case worth a fast path: a square-cornered rect needs no path at all.
+            m::ShapeKind::Rect | m::ShapeKind::Frame if node.corners.is_none() => {
+                ctx.fill_rect(&node.bounds)
             }
+            m::ShapeKind::Path => {
+                if let Some(path) = &node.path {
+                    ctx.fill_path(path);
+                }
+            }
+            _ => ctx.fill_path(&outline(node)),
         }
-        _ => ctx.fill_path(&outline(node)),
+    }
+
+    // Strokes go over the fills, back to front. They are drawn on this node's own outline —
+    // a frame's stroke straddles its edge and is *not* clipped by the frame's own clip, which
+    // is why clip and opacity take separate layers in `draw_node`.
+    if node.strokes.is_empty() {
+        return;
+    }
+    let path = outline(node);
+    for stroke in &node.strokes {
+        let Brush::Solid(color) = &stroke.brush else {
+            continue;
+        };
+        ctx.set_paint(*color);
+        ctx.set_stroke(stroke.style.clone());
+        ctx.stroke_path(&path);
     }
 }
 
@@ -242,6 +259,19 @@ fn demo_model() -> m::Scene {
         72.0, 12.0, 72.0, 12.0,
     ));
     frame.fills = vec![Brush::Solid(Color::from_rgba8(56, 152, 236, 255))];
+    // A dashed stroke, straddling the frame's edge. It must *not* be clipped by the frame's own
+    // clip — that is why clip and opacity take separate layers — so half of it sits outside.
+    let mut frame_stroke = render_core::kurbo::Stroke::new(12.0);
+    render_core::model::apply_stroke_style(
+        &mut frame_stroke,
+        render_core::model::StrokeStyle::Dashed,
+        12.0,
+        &[],
+    );
+    frame.strokes = vec![m::Stroke {
+        style: frame_stroke,
+        brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+    }];
     frame.clip = true;
     frame.children = vec![2, 3];
     s.insert(frame);
@@ -255,6 +285,19 @@ fn demo_model() -> m::Scene {
     rect.bounds = Rect::new(180.0, 240.0, 420.0, 360.0);
     rect.transform = Affine::rotate(0.3);
     rect.fills = vec![Brush::Solid(Color::from_rgba8(250, 250, 250, 255))];
+    // A dotted stroke: kurbo has no `path_1d` equivalent, so it is a zero-length dash with
+    // round caps, which draws dots of diameter equal to the width — the same as Skia's circles.
+    let mut dots = render_core::kurbo::Stroke::new(6.0);
+    render_core::model::apply_stroke_style(
+        &mut dots,
+        render_core::model::StrokeStyle::Dotted,
+        6.0,
+        &[],
+    );
+    rect.strokes = vec![m::Stroke {
+        style: dots,
+        brush: Brush::Solid(Color::from_rgba8(20, 20, 20, 255)),
+    }];
     s.insert(rect);
 
     let mut group = m::Node::new(5, m::ShapeKind::Group);

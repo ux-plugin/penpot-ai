@@ -28,6 +28,80 @@ pub struct Stroke {
     pub brush: Brush,
 }
 
+/// Penpot's stroke styles, as `RawStrokeStyle` puts them on the wire (0..3).
+///
+/// Neutral rather than per-backend because the *pattern each implies* has to be identical on
+/// both sides or a dashed stroke diverges silently — see [`apply_stroke_style`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrokeStyle {
+    Solid,
+    Dotted,
+    Dashed,
+    Mixed,
+}
+
+impl StrokeStyle {
+    /// Decode the wire byte. Anything unknown is solid, which draws something plausible rather
+    /// than nothing — the alternative is an invisible stroke that reads as a missing shape.
+    pub fn from_wire(value: u8) -> Self {
+        match value {
+            1 => Self::Dotted,
+            2 => Self::Dashed,
+            3 => Self::Mixed,
+            _ => Self::Solid,
+        }
+    }
+}
+
+/// Dash length standing in for a dot. See [`apply_stroke_style`]'s `Dotted` arm.
+const DOT_LENGTH: f64 = 0.01;
+
+/// Give `stroke` the dash pattern its style implies.
+///
+/// The numbers come from render-wasm's `Stroke::to_paint`, and they are arbitrary in the way
+/// only shared constants can be — `width + 10`, `width + 5`, `width + 1`. Deriving them
+/// separately on each side is how two backends end up drawing visibly different dashes from the
+/// same document, so they live here once.
+///
+/// **Dotted is the interesting one.** Skia stamps circles along the path with a `path_1d`
+/// effect, which kurbo has no equivalent for. A zero-length dash with round caps draws a dot of
+/// diameter equal to the stroke width — and Skia's centre-stroke dot is a circle of radius
+/// `width / 2`, so the two agree. That equivalence only holds for centre strokes, which are the
+/// only kind this model carries (inner/outer are dropped until path offsetting exists).
+pub fn apply_stroke_style(
+    stroke: &mut kurbo::Stroke,
+    style: StrokeStyle,
+    width: f32,
+    custom_dashes: &[f32],
+) {
+    let w = f64::from(width);
+    match style {
+        StrokeStyle::Solid => {}
+        StrokeStyle::Dotted => {
+            // A round-capped dash of (almost) no length draws a dot of diameter equal to the
+            // stroke width, which is what Skia's stamped circles come to for a centre stroke.
+            //
+            // The length has to be *nearly* zero rather than zero: an exactly-zero dash is
+            // dropped rather than drawn — verified in the browser, where the dotted stroke
+            // simply did not appear — so the caps never get their chance. `DOT_LENGTH` is small
+            // enough to read as round at any zoom and large enough to survive.
+            stroke.dash_pattern = [DOT_LENGTH, w + 5.0 - DOT_LENGTH].into_iter().collect();
+            stroke.start_cap = kurbo::Cap::Round;
+            stroke.end_cap = kurbo::Cap::Round;
+        }
+        StrokeStyle::Dashed => {
+            stroke.dash_pattern = if custom_dashes.is_empty() {
+                [w + 10.0, w + 10.0].into_iter().collect()
+            } else {
+                custom_dashes.iter().map(|d| f64::from(*d)).collect()
+            };
+        }
+        StrokeStyle::Mixed => {
+            stroke.dash_pattern = [w + 5.0, w + 5.0, w + 1.0, w + 5.0].into_iter().collect();
+        }
+    }
+}
+
 /// The geometry family of a node. `Text` and the rest follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -284,7 +358,7 @@ impl Scene {
         }
         fnv_u64(hash, node.strokes.len() as u64);
         for stroke in &node.strokes {
-            fnv_f64(hash, stroke.style.width);
+            digest_stroke_style(hash, &stroke.style);
             digest_brush(hash, &stroke.brush);
         }
 
@@ -333,6 +407,22 @@ fn digest_path_el(hash: &mut u64, el: kurbo::PathEl) {
     for p in points {
         fnv_f64(hash, p.x);
         fnv_f64(hash, p.y);
+    }
+}
+
+/// Every field of the stroke style, because every one of them is visible. Hashing only the
+/// width — as this did before strokes landed — would let a dash pattern or a join change slip
+/// through a comparison unnoticed, which is the one thing the harness exists to prevent.
+fn digest_stroke_style(hash: &mut u64, style: &kurbo::Stroke) {
+    fnv_f64(hash, style.width);
+    fnv_u64(hash, style.join as u64);
+    fnv_u64(hash, style.start_cap as u64);
+    fnv_u64(hash, style.end_cap as u64);
+    fnv_f64(hash, style.miter_limit);
+    fnv_f64(hash, style.dash_offset);
+    fnv_u64(hash, style.dash_pattern.len() as u64);
+    for d in style.dash_pattern.iter() {
+        fnv_f64(hash, *d);
     }
 }
 

@@ -324,7 +324,18 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   Still open: render-wasm's side. It cannot be driven in Node (its `_init` brings up a GL context), so the cross-backend comparison has to run in a browser, and it needs a `scene_digest` export built over `model_export`'s projection.
 
-- **Slice E** — strokes, now checkable against the harness above.
+- **Slice E (done)** — strokes. Seven entry points; centre strokes drawn, inner and outer accepted and dropped (they are offsetting decisions kurbo cannot express, and drawing them centred puts paint visibly in the wrong place — worse than nothing, because it reads as a rendering bug rather than a missing feature).
+
+  **The style→dash mapping lives in render-core**, in `apply_stroke_style`. Penpot's Dotted/Dashed/Mixed each imply a pattern built from the width (`width + 10`, `width + 5`, `width + 1`) — constants arbitrary enough that deriving them separately on each side is exactly how two backends end up drawing visibly different dashes from the same document.
+
+  Three divergences this surfaced, none of which would have shown up without doing both sides at once:
+  - **kurbo and Skia have different stroke defaults.** `kurbo::Stroke::new` gives a round join and round caps; Skia gives miter and butt, and render-wasm leaves those alone when the host sends nothing. Both the ABI and `model_export` now start from Skia's, or every unstyled stroke would differ with nothing in the document to explain it.
+  - **`model_export` was dropping three of the four stroke styles.** It read `stroke.dashes` alone, so Dotted, Dashed and Mixed all projected as solid.
+  - **It was also honouring dashes on a Solid stroke**, which render-wasm's own `to_paint` does not. (`set_dashes` forces `Dashed`, so the combination is unreachable from the host — but the projection disagreed with the renderer.)
+
+  **Dotted needed a fix found only by looking.** Skia stamps circles with a `path_1d` effect; the kurbo equivalent is a round-capped dash of no length. An *exactly* zero-length dash is dropped rather than drawn — the dotted stroke simply did not appear in the browser — so it is `DOT_LENGTH = 0.01` instead.
+
+  `Scene::digest` now covers the whole stroke style, not just the width: a dash pattern or join change would otherwise slip through a comparison unnoticed, which is the one thing the harness exists to prevent.
 
 Two casualties of the relocation, both fixed in place:
 - `SerializableResult` lost its `From<BytesType> + Into<BytesType>` supertrait bounds. Those types are foreign to render-wasm now, so the orphan rules forbid the conversion impls; nothing used the bounds (`write_vec` only calls `clone_to_slice`).
