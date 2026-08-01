@@ -55,6 +55,8 @@ import {
   type ShaderGraph,
   type ShaderNode,
 } from '../../renderer/shader-lang/nodegraph/model'
+import { ShaderCodeEditor } from '../RightSidePanel/ShaderCodeEditor'
+import { skslLanguage } from '../../renderer/shader-lang/sksl'
 import {
   NODE_TEMPLATES,
   blankNode,
@@ -369,6 +371,7 @@ function toRfEdges(graph: ShaderGraph, viewId: string): RFEdge[] {
 export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [viewId, setViewId] = useState(graph.root)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const rfRef = useRef<ReactFlowInstance<AnyRFNode, RFEdge> | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
 
@@ -573,6 +576,17 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
     [dropPosition],
   )
 
+  /** The leaf whose code is open below the canvas, if any. */
+  const selected = selectedId ? graph.nodes[selectedId] : undefined
+  const editing = selected && selected.body !== undefined ? selected : undefined
+
+  const setBody = useCallback((nodeId: string, body: string) => {
+    const g = graphRef.current
+    const n = g.nodes[nodeId]
+    if (!n) return
+    onChangeRef.current({ ...g, nodes: { ...g.nodes, [nodeId]: { ...n, body } } })
+  }, [])
+
   /** Root → … → current, for the breadcrumb. */
   const trail = useMemo(() => {
     const out: ShaderNode[] = []
@@ -585,24 +599,57 @@ export function ShaderGraphEditor({ graph, onChange }: ShaderGraphEditorProps) {
   }, [graph, viewId])
 
   return (
-    <div ref={wrapperRef} className="relative h-full w-full">
-      <ReactFlow
-        nodes={rfNodes}
-        edges={rfEdges}
-        nodeTypes={nodeTypes}
-        onInit={(inst) => (rfRef.current = inst)}
-        onNodesChange={onNodesChange}
-        onNodeDragStop={onNodeDragStop}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        fitView
-        minZoom={0.2}
-        maxZoom={2}
-        deleteKeyCode={['Backspace', 'Delete']}
-      >
-        <Background />
-        <Controls showInteractive={false} />
-      </ReactFlow>
+    <div ref={wrapperRef} className="relative flex h-full w-full flex-col">
+      <div className="relative min-h-0 flex-1">
+        <ReactFlow
+          nodes={rfNodes}
+          edges={rfEdges}
+          nodeTypes={nodeTypes}
+          onInit={(inst) => (rfRef.current = inst)}
+          onNodesChange={onNodesChange}
+          onNodeDragStop={onNodeDragStop}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeClick={(_, n) => setSelectedId(n.id)}
+          onPaneClick={() => setSelectedId(null)}
+          fitView
+          minZoom={0.2}
+          maxZoom={2}
+          deleteKeyCode={['Backspace', 'Delete']}
+        >
+          <Background />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </div>
+
+      {/* A node IS a function, so selecting one opens its body. This is what
+          makes "a custom node holding any SkSL" real rather than a node type
+          with a body nobody can reach. The signature above it is generated from
+          `params`/`returns`, so the code here is statements only. */}
+      {editing && (
+        <div className="flex h-[42%] min-h-[140px] shrink-0 flex-col border-t border-border">
+          <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/40 px-2 py-1">
+            <span className="truncate font-mono text-[11px]">
+              {editing.returns} {editing.name}(
+              {editing.params.map((p) => `${p.type} ${p.name}`).join(', ')})
+            </span>
+            <button
+              type="button"
+              className="rounded px-1 text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() => setSelectedId(null)}
+            >
+              Close
+            </button>
+          </div>
+          <ShaderCodeEditor
+            language={skslLanguage}
+            value={editing.body ?? ''}
+            onChange={(v) => setBody(editing.id, v)}
+            diagnostics={[]}
+            className="min-h-0 flex-1"
+          />
+        </div>
+      )}
 
       <div className="absolute left-2 top-2 z-10 flex items-center gap-2">
         <Button

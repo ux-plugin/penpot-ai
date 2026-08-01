@@ -30,7 +30,7 @@
  * [[project_undo_model]] for the full focus-mode undo design.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PenpotNode } from 'penpot-exporter/types'
 import type { EditorView } from '@codemirror/view'
 import { Pause, Play, Repeat, RotateCcw } from 'lucide-react'
@@ -58,7 +58,7 @@ import { MaterialEditor } from '../RightSidePanel/MaterialEditor'
 import { ShaderGraphEditor } from './ShaderGraphEditor'
 import { shaderLanguage } from '../../renderer/shader-lang'
 import { compileGraph } from '../../renderer/shader-lang/nodegraph/compile'
-import { starterGraph } from '../../renderer/shader-lang/nodegraph/starter'
+import { graphFromSource } from '../../renderer/shader-lang/nodegraph/import'
 import type { ShaderGraph } from '../../renderer/shader-lang/nodegraph/model'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { shaderUniformsBridge } from '../../renderer/signals/shader-uniforms-bridge'
@@ -269,10 +269,19 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
   )
 
   // ---- Graph authoring -----------------------------------------------------
-  // A material either carries a graph (visual authoring; `source` is generated)
-  // or not (hand-written code). Both feed the exact same draft/commit/preview
-  // machinery above — the graph only changes how `source` is produced.
+  // Every shader IS a graph. A material that carries one uses it; one authored
+  // as code is read into an equivalent graph whose single node holds `main`'s
+  // body, with its declarations kept in the preamble. There is no "no graph"
+  // state, because the alternative was an empty pane offering to replace your
+  // source, which is backwards — the graph is the model.
+  //
+  // Derived, not committed: opening the Graph tab does not rewrite the material.
+  // The conversion lands only when you actually edit something.
   const hasGraph = draft.graph != null
+  const graph = useMemo(
+    () => draft.graph ?? graphFromSource(draft.source ?? ''),
+    [draft.graph, draft.source],
+  )
   const [mode, setMode] = useState<'code' | 'graph'>(initialMaterial.graph ? 'graph' : 'code')
 
   /**
@@ -287,11 +296,6 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
     },
     [applyChange],
   )
-
-  const startGraph = useCallback(() => {
-    const g = starterGraph()
-    applyChange({ graph: g, source: compileGraph(g).source })
-  }, [applyChange])
 
   /** Keep the generated source, drop the graph — it becomes hand-authored code. */
   const detachGraph = useCallback(() => {
@@ -456,23 +460,9 @@ export function ShaderMaterialStage({ nodeId, initialMaterial }: ShaderMaterialS
         </div>
 
         {mode === 'graph' ? (
-          hasGraph && draft.graph ? (
-            <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/60">
-              <ShaderGraphEditor graph={draft.graph} onChange={applyGraph} />
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border/60 p-6 text-center">
-              <p className="text-xs text-muted-foreground">
-                Build this shader visually by wiring nodes together.
-              </p>
-              <Button type="button" size="sm" onClick={startGraph}>
-                Start a graph
-              </Button>
-              <p className="max-w-[16rem] text-[10px] text-muted-foreground/70">
-                Replaces the current source, which is then generated from the graph.
-              </p>
-            </div>
-          )
+          <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/60">
+            <ShaderGraphEditor graph={graph} onChange={applyGraph} />
+          </div>
         ) : hasGraph ? (
           // Read-only: the graph owns this source. Detach to take it over.
           <pre className="min-h-0 flex-1 overflow-auto rounded-lg border border-border/60 bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">

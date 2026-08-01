@@ -96,6 +96,16 @@ export interface ShaderGraph {
   root: string
   nodes: Record<string, ShaderNode>
   edges: Record<string, Edge>
+  /**
+   * Declarations emitted verbatim above every function — uniforms, structs,
+   * constants, and any helper the author wrote by hand.
+   *
+   * Not everything in a shader is a function, so without this there would be
+   * nowhere to put the top of a hand-written file and code authoring could not
+   * round-trip. It is also what lets an existing source become a graph without
+   * a parser that understands expressions: split off `main`, keep the rest here.
+   */
+  preamble?: string
 }
 
 // ------------------------------------------------------------------ queries

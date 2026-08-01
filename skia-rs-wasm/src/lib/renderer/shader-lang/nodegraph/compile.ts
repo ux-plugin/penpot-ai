@@ -310,14 +310,27 @@ export function compileGraph(graph: ShaderGraph): CompileResult {
 
   // Engine uniforms come from scanning what the bodies mention; exposed ones are
   // declared by the graph. Both are emitted before any function that reads them.
-  const engine = referenced(body, Object.keys(ENGINE_UNIFORMS)).map(
-    (n) => `uniform ${SKSL_TYPE[ENGINE_UNIFORMS[n]]} ${n};`,
-  )
-  const declared = uniforms.map((u) => `uniform ${SKSL_TYPE[u.type]} ${u.name};`)
+  //
+  // Imported source declares its own uniforms in the preamble, so anything
+  // already declared there is skipped — emitting it again is a redefinition
+  // error, and the scan cannot tell "mentions u_resolution" from "declares it".
+  const preamble = graph.preamble ?? ''
+  const alreadyDeclared = (name: string): boolean =>
+    new RegExp(`\\buniform\\s+\\w+\\s+${name}\\s*;`).test(preamble)
+
+  const engine = referenced(body, Object.keys(ENGINE_UNIFORMS))
+    .filter((n) => !alreadyDeclared(n))
+    .map((n) => `uniform ${SKSL_TYPE[ENGINE_UNIFORMS[n]]} ${n};`)
+  const declared = uniforms
+    .filter((u) => !alreadyDeclared(u.name))
+    .map((u) => `uniform ${SKSL_TYPE[u.type]} ${u.name};`)
   const helpers = helpersFor(body).map((n) => HELPER_SOURCE[n])
 
   const sections = [
     [...engine, ...declared].join('\n'),
+    // The author's own declarations sit above every generated function, so a
+    // hand-written node body can call a helper or read a constant it declared.
+    (graph.preamble ?? '').trim(),
     helpers.join('\n'),
     body,
   ].filter((s) => s.length > 0)
