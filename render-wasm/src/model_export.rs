@@ -13,7 +13,8 @@ use crate::shapes::{Corners, Fill, Gradient, Path, Segment, Shape, StrokeKind, T
 use crate::shapes::{StrokeLineCap, StrokeLineJoin};
 use render_core::kurbo::{self, BezPath, Point};
 use render_core::model as m;
-use render_core::peniko::{Brush, ColorStop, Gradient as PGradient};
+use render_core::gradient::{GradientGeometry, GradientShape, gradient_paint};
+use render_core::peniko::{Brush, ColorStop};
 
 /// Project the whole document into a neutral scene, for [`render_core::model::Scene::digest`].
 ///
@@ -97,21 +98,30 @@ fn path_to_core(path: &Path) -> BezPath {
     bp
 }
 
-fn fill_to_core(fill: &Fill) -> Option<Brush> {
+/// Project a Skia-side fill into neutral paint.
+///
+/// The gradient maths is **not** re-derived here. `render_core::gradient` builds the peniko
+/// gradient and its unit-box transform together, and `shapes/fills.rs` builds the equivalent
+/// Skia shaders for this engine's own rendering — two implementations is already one more than
+/// ideal, and a third, subtly different one in the projection is how the backends drift.
+fn fill_to_core(fill: &Fill) -> Option<m::Paint> {
+    let geometry = |g: &Gradient| GradientGeometry {
+        start: g.start,
+        end: g.end,
+        width: g.width,
+    };
+    let gradient = |shape: GradientShape, g: &Gradient| {
+        gradient_paint(shape, geometry(g), &stops(g)[..]).map(|(gradient, transform)| m::Paint {
+            brush: Brush::Gradient(gradient),
+            transform,
+        })
+    };
+
     match fill {
-        Fill::Solid(solid) => Some(Brush::Solid(color_to_core(solid.0))),
-        Fill::LinearGradient(g) => Some(Brush::Gradient(
-            PGradient::new_linear(pt(g.start), pt(g.end)).with_stops(&stops(g)[..]),
-        )),
-        // `width.0` is the radius scalar for radial (see `Gradient::width`).
-        Fill::RadialGradient(g) => Some(Brush::Gradient(
-            PGradient::new_radial(pt(g.start), g.width.0).with_stops(&stops(g)[..]),
-        )),
-        // Angular is peniko's sweep. Penpot's angular stops are already normalised over a
-        // full turn, so the sweep spans 0..2π.
-        Fill::AngularGradient(g) => Some(Brush::Gradient(
-            PGradient::new_sweep(pt(g.start), 0.0, std::f32::consts::TAU).with_stops(&stops(g)[..]),
-        )),
+        Fill::Solid(solid) => Some(m::Paint::plain(Brush::Solid(color_to_core(solid.0)))),
+        Fill::LinearGradient(g) => gradient(GradientShape::Linear, g),
+        Fill::RadialGradient(g) => gradient(GradientShape::Radial, g),
+        Fill::AngularGradient(g) => gradient(GradientShape::Angular, g),
         // Diamond has no peniko equivalent — it is a Penpot/Figma construct, not a CSS/SVG
         // one. It is already on the SkSL->WGSL list for Phase 4 via `FilterPrimitive::Custom`
         // (D10), and rides along with the other custom shaders rather than getting a model type.
@@ -140,7 +150,7 @@ fn stops(g: &Gradient) -> Vec<ColorStop> {
 }
 
 fn stroke_to_core(stroke: &crate::shapes::Stroke) -> Option<m::Stroke> {
-    let brush = fill_to_core(&stroke.fill)?;
+    let paint = fill_to_core(&stroke.fill)?;
 
     // Skia's defaults, not kurbo's: `kurbo::Stroke::new` gives a round join and round caps,
     // while Skia gives miter and butt — and `Stroke::to_paint` leaves those alone when the
@@ -191,7 +201,7 @@ fn stroke_to_core(stroke: &crate::shapes::Stroke) -> Option<m::Stroke> {
     // it reaches this model, which is not done yet — so they are dropped rather than projected
     // as if they were centred.
     match stroke.kind {
-        StrokeKind::Center => Some(m::Stroke { style, brush }),
+        StrokeKind::Center => Some(m::Stroke { style, paint }),
         StrokeKind::Inner | StrokeKind::Outer => None,
     }
 }
@@ -229,7 +239,7 @@ mod tests {
         assert!(!node.hidden);
         assert_eq!(
             node.fills,
-            vec![Brush::Solid(Color::from_rgba8(10, 20, 30, 255))]
+            vec![m::Paint::plain(Brush::Solid(Color::from_rgba8(10, 20, 30, 255)))]
         );
     }
 
@@ -341,7 +351,7 @@ mod tests {
         shape.add_fill(Fill::LinearGradient(two_stop_gradient()));
 
         let node = node_from_shape(&shape).expect("rect projects");
-        let Brush::Gradient(g) = &node.fills[0] else {
+        let Brush::Gradient(g) = &node.fills[0].brush else {
             panic!("expected a gradient brush, got {:?}", node.fills[0]);
         };
         assert_eq!(g.stops.len(), 2);
@@ -349,19 +359,58 @@ mod tests {
         assert_eq!(g.stops[1].offset, 1.0);
     }
 
-    /// Angular is peniko's sweep; radial carries its radius from `width.0`. Both must produce
-    /// a gradient rather than silently dropping, which is what the old converter did.
+    /// Radial and angular both project — the old converter dropped them.
+    ///
+    /// Angular needs a genuine second axis. `width` is `pointAt90`, the end of the gradient's
+    /// other axis, so a `width` collinear with `end` describes a gradient with no area: Skia
+    /// builds a singular matrix from it and paints something arbitrary, and we decline instead.
     #[test]
     fn radial_and_angular_both_project() {
+        let mut angular = two_stop_gradient();
+        angular.width = (50.0, 50.0);
+
         for fill in [
             Fill::RadialGradient(two_stop_gradient()),
-            Fill::AngularGradient(two_stop_gradient()),
+            Fill::AngularGradient(angular),
         ] {
             let mut shape = rect_shape();
             shape.add_fill(fill);
             let node = node_from_shape(&shape).expect("rect projects");
-            assert!(matches!(node.fills[0], Brush::Gradient(_)));
+            assert!(matches!(node.fills[0].brush, Brush::Gradient(_)));
         }
+    }
+
+    /// The degenerate angular case, stated: collinear axes are dropped rather than painted from
+    /// a singular matrix.
+    #[test]
+    fn an_angular_gradient_with_collinear_axes_is_dropped() {
+        let mut shape = rect_shape();
+        // `two_stop_gradient` has `end` and `width` both on the x axis.
+        shape.add_fill(Fill::AngularGradient(two_stop_gradient()));
+        let node = node_from_shape(&shape).expect("rect projects");
+        assert!(node.fills.is_empty());
+    }
+
+    /// Radial and angular carry their placement in the paint transform; linear does not need one.
+    #[test]
+    fn only_the_shaped_gradients_carry_a_transform() {
+        let linear = {
+            let mut shape = rect_shape();
+            shape.add_fill(Fill::LinearGradient(two_stop_gradient()));
+            node_from_shape(&shape).unwrap().fills.remove(0)
+        };
+        assert_eq!(linear.transform, render_core::kurbo::Affine::IDENTITY);
+
+        let radial = {
+            let mut shape = rect_shape();
+            shape.add_fill(Fill::RadialGradient(two_stop_gradient()));
+            node_from_shape(&shape).unwrap().fills.remove(0)
+        };
+        assert_ne!(
+            radial.transform,
+            render_core::kurbo::Affine::IDENTITY,
+            "a radial's rotation and ellipse live in the transform"
+        );
     }
 
     /// Diamond has no peniko equivalent and rides along with the Phase-4 custom shaders.
@@ -395,7 +444,7 @@ mod tests {
         assert_eq!(s.style.width, 4.0);
         assert_eq!(s.style.miter_limit, 9.0);
         assert_eq!(s.style.dash_pattern.as_slice(), &[6.0, 2.0]);
-        assert_eq!(s.brush, Brush::Solid(Color::from_rgba8(1, 2, 3, 255)));
+        assert_eq!(s.paint.brush, Brush::Solid(Color::from_rgba8(1, 2, 3, 255)));
         // Skia's defaults, not kurbo's — see `stroke_to_core`.
         assert_eq!(s.style.join, kurbo::Join::Miter);
         assert_eq!(s.style.start_cap, kurbo::Cap::Butt);
@@ -502,7 +551,7 @@ mod tests {
         let mut rect = m::Node::new(0x1234, m::ShapeKind::Rect);
         rect.bounds = Rect::new(10.0, 20.0, 110.0, 70.0);
         rect.parent = Some(m::ROOT_ID);
-        rect.fills = vec![Brush::Solid(Color::from_rgba8(10, 20, 30, 255))];
+        rect.fills = vec![m::Paint::plain(Brush::Solid(Color::from_rgba8(10, 20, 30, 255)))];
         scene.insert(rect);
 
         scene

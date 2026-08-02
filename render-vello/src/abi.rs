@@ -617,7 +617,7 @@ pub extern "C" fn set_shape_fills() {
             body.chunks_exact(render_core::abi::RAW_FILL_DATA_SIZE)
                 .take(count)
                 .filter_map(|chunk| decode_fill(chunk).ok())
-                .filter_map(brush_from_raw)
+                .filter_map(paint_from_raw)
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -632,9 +632,11 @@ pub extern "C" fn clear_shape_fills() {
 
 /// Raw fill payload to a peniko brush. The Vello counterpart of render-wasm's
 /// `From<RawFillData> for shapes::Fill` — same input, different construction.
-fn brush_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::peniko::Brush> {
+fn paint_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::model::Paint> {
     use render_core::abi::RawFillData as R;
-    use render_core::peniko::{Brush, ColorStop, Gradient};
+    use render_core::gradient::{GradientGeometry, GradientShape, gradient_paint};
+    use render_core::model::Paint;
+    use render_core::peniko::{Brush, ColorStop};
 
     let stops = |g: &render_core::abi::RawGradientData| {
         g.active_stops()
@@ -645,29 +647,30 @@ fn brush_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::pen
             })
             .collect::<Vec<_>>()
     };
+    let geometry = |g: &render_core::abi::RawGradientData| GradientGeometry {
+        start: g.start(),
+        end: g.end(),
+        width: (g.width_x, g.width_y),
+    };
+    // Both halves come from render-core, so the rotation, the ellipse ratio and the seam are
+    // computed once for both backends rather than mirrored here.
+    let gradient = |shape: GradientShape, g: &render_core::abi::RawGradientData| {
+        gradient_paint(shape, geometry(g), &stops(g)[..]).map(|(gradient, transform)| Paint {
+            brush: Brush::Gradient(gradient),
+            transform,
+        })
+    };
 
-    Some(match raw {
-        R::Solid(s) => Brush::Solid(argb_to_color(s.color)),
-        R::Linear(g) => Brush::Gradient(
-            Gradient::new_linear(kpoint(g.start()), kpoint(g.end())).with_stops(&stops(&g)[..]),
-        ),
-        R::Radial(g) => Brush::Gradient(
-            Gradient::new_radial(kpoint(g.start()), g.width_x).with_stops(&stops(&g)[..]),
-        ),
-        R::Angular(g) => Brush::Gradient(
-            Gradient::new_sweep(kpoint(g.start()), 0.0, std::f32::consts::TAU)
-                .with_stops(&stops(&g)[..]),
-        ),
+    match raw {
+        R::Solid(s) => Some(Paint::plain(Brush::Solid(argb_to_color(s.color)))),
+        R::Linear(g) => gradient(GradientShape::Linear, &g),
+        R::Radial(g) => gradient(GradientShape::Radial, &g),
+        R::Angular(g) => gradient(GradientShape::Angular, &g),
         // Diamond has no peniko equivalent; it rides with the Phase-4 custom shaders (D10).
-        R::Diamond(_) => return None,
+        R::Diamond(_) => None,
         // Image fills need the texture path, which this module does not have yet.
-        R::Image(_) => return None,
-    })
-}
-
-#[inline]
-fn kpoint(p: (f32, f32)) -> render_core::kurbo::Point {
-    render_core::kurbo::Point::new(p.0 as f64, p.1 as f64)
+        R::Image(_) => None,
+    }
 }
 
 /// The wire carries packed ARGB, matching Skia's word order.
@@ -729,7 +732,9 @@ pub extern "C" fn add_shape_center_stroke(width: f32, style: u8, cap_start: u8, 
             style: kstroke.clone(),
             // Penpot sends the paint separately, in `add_shape_stroke_fill`. Black is the
             // stand-in until it arrives, matching what an unpainted stroke defaults to.
-            brush: render_core::peniko::Brush::Solid(render_core::peniko::Color::BLACK),
+            paint: render_core::model::Paint::plain(render_core::peniko::Brush::Solid(
+                render_core::peniko::Color::BLACK,
+            )),
         });
     });
 }
@@ -745,12 +750,12 @@ pub extern "C" fn add_shape_outer_stroke(_width: f32, _style: u8, _cap_start: u8
 #[unsafe(no_mangle)]
 pub extern "C" fn add_shape_stroke_fill() {
     let bytes = take_bytes();
-    let Some(brush) = decode_fill(&bytes).ok().and_then(brush_from_raw) else {
+    let Some(paint) = decode_fill(&bytes).ok().and_then(paint_from_raw) else {
         return;
     };
     with_current(|node| {
         if let Some(stroke) = node.strokes.last_mut() {
-            stroke.brush = brush;
+            stroke.paint = paint;
         }
     });
 }
@@ -1148,8 +1153,8 @@ mod tests {
         let scene = current_scene();
         assert_eq!(
             scene.get(1).unwrap().fills,
-            vec![Brush::Solid(render_core::peniko::Color::from_rgba8(
-                0x11, 0x22, 0x33, 0xff
+            vec![render_core::model::Paint::plain(Brush::Solid(
+                render_core::peniko::Color::from_rgba8(0x11, 0x22, 0x33, 0xff)
             ))]
         );
     }
@@ -1757,7 +1762,7 @@ mod tests {
         assert_eq!(strokes[0].style.start_cap, render_core::kurbo::Cap::Round);
         assert_eq!(strokes[0].style.end_cap, render_core::kurbo::Cap::Square);
         assert_eq!(
-            strokes[0].brush,
+            strokes[0].paint.brush,
             Brush::Solid(render_core::peniko::Color::from_rgba8(
                 0x11, 0x22, 0x33, 0xff
             ))
@@ -1805,7 +1810,7 @@ mod tests {
         assert_eq!(strokes[1].style.join, render_core::kurbo::Join::Bevel);
         assert_eq!(strokes[1].style.miter_limit, 3.5);
         assert_eq!(
-            strokes[0].brush,
+            strokes[0].paint.brush,
             Brush::Solid(render_core::peniko::Color::from_rgba8(0xff, 0, 0, 0xff))
         );
     }

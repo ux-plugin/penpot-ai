@@ -16,6 +16,33 @@ use peniko::Brush;
 
 use crate::abi::RawSegmentData;
 
+/// What to paint with, and where that paint sits.
+///
+/// The transform exists because peniko's `Gradient` has nowhere to put a matrix, and Penpot's
+/// radial and angular gradients need one: a rotation and an ellipse ratio for radial, and for
+/// angular a pair of axes that need not be perpendicular. `render_core::gradient` builds both
+/// halves together, so neither backend has to re-derive the matrix from the raw fields.
+///
+/// It is expressed in the shape's **unit box** — the `0..1` space Penpot's gradient coordinates
+/// live in — so a renderer applies `unit_box_to(bounds) · transform`. Solid paint leaves it at
+/// the identity and costs nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Paint {
+    pub brush: Brush,
+    pub transform: Affine,
+}
+
+impl Paint {
+    /// Paint with no placement of its own — every solid fill, and every linear gradient, whose
+    /// endpoints already say everything about where it goes.
+    pub fn plain(brush: Brush) -> Self {
+        Self {
+            brush,
+            transform: Affine::IDENTITY,
+        }
+    }
+}
+
 /// A stroke: how to expand the outline, and what to paint it with.
 ///
 /// `kurbo::Stroke` already carries width, join, caps, miter limit, dash pattern and dash
@@ -25,7 +52,7 @@ use crate::abi::RawSegmentData;
 #[derive(Clone, Debug)]
 pub struct Stroke {
     pub style: kurbo::Stroke,
-    pub brush: Brush,
+    pub paint: Paint,
 }
 
 /// Penpot's stroke styles, as `RawStrokeStyle` puts them on the wire (0..3).
@@ -166,7 +193,7 @@ pub struct Node {
     pub clip: bool,
     /// Paints, back to front. `peniko::Brush` already covers solid, gradient and image, so
     /// gradients need no new type here — only a converter in `model_export`.
-    pub fills: Vec<Brush>,
+    pub fills: Vec<Paint>,
     /// Strokes, back to front, painted over the fills.
     pub strokes: Vec<Stroke>,
     pub opacity: f32,
@@ -388,12 +415,12 @@ impl Scene {
 
         fnv_u64(hash, node.fills.len() as u64);
         for brush in &node.fills {
-            digest_brush(hash, brush);
+            digest_paint(hash, brush);
         }
         fnv_u64(hash, node.strokes.len() as u64);
         for stroke in &node.strokes {
             digest_stroke_style(hash, &stroke.style);
-            digest_brush(hash, &stroke.brush);
+            digest_paint(hash, &stroke.paint);
         }
 
         for child in &node.children {
@@ -494,6 +521,18 @@ fn digest_gradient_kind(hash: &mut u64, kind: &peniko::GradientKind) {
                 fnv_f64(hash, v);
             }
         }
+    }
+}
+
+/// Hash paint: the brush and where it sits.
+///
+/// The transform matters as much as the colours — it places a radial gradient's ellipse and an
+/// angular one's shear, so two backends agreeing on stops while disagreeing on the matrix would
+/// otherwise compare equal.
+fn digest_paint(hash: &mut u64, paint: &Paint) {
+    digest_brush(hash, &paint.brush);
+    for coefficient in paint.transform.as_coeffs() {
+        fnv_f64(hash, coefficient);
     }
 }
 
@@ -601,14 +640,14 @@ mod tests {
         let mut scene = Scene::new();
         let mut n = node(42, ShapeKind::Rect);
         n.bounds = Rect::new(0.0, 0.0, 100.0, 50.0);
-        n.fills = vec![Brush::Solid(Color::from_rgba8(255, 0, 0, 255))];
+        n.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(255, 0, 0, 255)))];
         scene.insert(n);
 
         assert_eq!(scene.len(), 1);
         let got = scene.get(42).unwrap();
         assert_eq!(
             got.fills[0],
-            Brush::Solid(Color::from_rgba8(255, 0, 0, 255))
+            Paint::plain(Brush::Solid(Color::from_rgba8(255, 0, 0, 255)))
         );
         assert_eq!(got.bounds.width(), 100.0);
     }
@@ -682,7 +721,7 @@ mod tests {
 
         let mut a = node(1, ShapeKind::Rect);
         a.bounds = Rect::new(0.0, 0.0, 10.0, 10.0);
-        a.fills = vec![Brush::Solid(Color::from_rgba8(1, 2, 3, 255))];
+        a.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(1, 2, 3, 255)))];
 
         let mut b = node(2, ShapeKind::Circle);
         b.bounds = Rect::new(20.0, 20.0, 40.0, 40.0);
@@ -735,7 +774,7 @@ mod tests {
         );
         assert_ne!(
             base,
-            mutate(&|n| n.fills = vec![Brush::Solid(Color::from_rgba8(9, 9, 9, 255))])
+            mutate(&|n| n.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(9, 9, 9, 255)))])
         );
         assert_ne!(base, mutate(&|n| n.fills.clear()));
     }
@@ -789,7 +828,7 @@ mod tests {
             let mut s = tree(&[0, 1, 2]);
             let mut g = Gradient::new_linear((0.0, 0.0), (1.0, 0.0));
             g.kind = kind;
-            s.get_mut(1).unwrap().fills = vec![Brush::Gradient(g.with_stops(&stops[..]))];
+            s.get_mut(1).unwrap().fills = vec![Paint::plain(Brush::Gradient(g.with_stops(&stops[..])))];
             s.digest()
         };
 
@@ -841,7 +880,7 @@ mod tests {
         let n = stroked.get_mut(2).unwrap();
         n.strokes = vec![Stroke {
             style: kurbo::Stroke::new(2.0),
-            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            paint: Paint::plain(Brush::Solid(Color::from_rgba8(0, 0, 0, 255))),
         }];
         assert_eq!(stroked.paintable_count(), 2);
     }

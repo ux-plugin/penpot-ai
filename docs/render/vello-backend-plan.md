@@ -380,7 +380,13 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   Fill selection is now "the first fill this backend can *paint*", not "the first fill". A shape whose top fill is an image would otherwise render as nothing while a usable solid sat underneath it.
 
-  **Radial and angular are decoded but not painted.** They are in the model, so the digest sees them and the harness can compare them, but painting them needs more than this mapping: render-wasm's `to_radial_shader` and `to_angular_shader` build matrices carrying a rotation and an ellipse/shear factor, and a peniko `Gradient` has nowhere to put a transform. Drawing them with the linear mapping would put recognisable but *wrong* paint on screen — the same call as inner and outer strokes. Doing them properly wants a per-fill paint transform in the model.
+  **All three kinds now paint**, via a per-fill transform in the model. `Node.fills` is `Vec<Paint>` and `Stroke` carries a `Paint`, where `Paint { brush, transform }` — the transform is in *unit-box* space, so a renderer applies `unit_box_to(bounds) · paint.transform`. Solid paint and linear gradients leave it at the identity and cost nothing.
+
+  **The gradient maths lives in `render_core::gradient`**, for the third time the same argument has come up: a radial's radius comes from the *distance* between its two points (not from `width`, which the field name invites), it is rotated by `atan2` of that span plus 90°, and squashed by `width.0`; an angular is a fixed sweep at `(0.5, 0.5)` with everything in a matrix built from two axes that need not be perpendicular. Deriving that twice is how the backends drift on a rotation nobody notices until a design looks subtly wrong.
+
+  Two behaviours worth knowing, both pinned by tests: a radial whose start and end coincide is **dropped** rather than painted, since there is no direction to rotate to; and an angular whose two axes are collinear is dropped too — Skia builds a singular matrix there and paints something arbitrary. `wrap_angular_stops` moved across as well, closing the sweep's seam with an interpolated stop at each end. It interpolates component-wise in sRGB because that is what Skia's `lerp_color` does — a perceptually better blend here would be a worse match, and the two must agree on the pixel.
+
+  Verified across both backends in a browser: identical digests for linear, radial and angular (`1569249000`, `599815916`, `494599920`), and the demo scene's radial renders with a visibly off-centre, squashed hot-spot — which is the rotation and ellipse arriving through the transform rather than being lost.
 
   **`digest_brush` now hashes gradient geometry**, not just stops. Colours alone would let two backends disagree about a gradient's direction — the same stops running left-to-right on one and top-to-bottom on the other — and report a match.
 

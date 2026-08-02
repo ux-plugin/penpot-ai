@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 3846661256
+const CANONICAL_DIGEST = 2568426414
 
 /**
  * Fixed ids, because the digest hashes them.

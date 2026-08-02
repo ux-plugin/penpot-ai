@@ -187,7 +187,7 @@ fn paint_self<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) 
 
     // The first fill this backend can paint wins — not simply the first fill, or a shape whose
     // top fill is an image would render as nothing while a solid underneath it went unused.
-    let painted = node.fills.iter().any(|f| set_brush(ctx, f, node.bounds));
+    let painted = node.fills.iter().any(|f| set_paint(ctx, f, node.bounds));
     if painted {
         match node.kind {
             // The one case worth a fast path: a square-cornered rect needs no path at all.
@@ -212,7 +212,7 @@ fn paint_self<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) 
     }
     let path = outline(node);
     for stroke in &node.strokes {
-        if !set_brush(ctx, &stroke.brush, node.bounds) {
+        if !set_paint(ctx, &stroke.paint, node.bounds) {
             continue;
         }
         ctx.set_stroke(stroke.style.clone());
@@ -224,34 +224,32 @@ fn paint_self<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) 
     ctx.set_paint_transform(Affine::IDENTITY);
 }
 
-/// Install a brush as the current paint. Returns false when this backend cannot draw it yet, so
-/// the caller can fall through to the next fill rather than drawing nothing.
+/// Install a paint as the current one. Returns false when this backend cannot draw it, so the
+/// caller can fall through to the next fill rather than drawing nothing.
 ///
 /// **Gradient coordinates are normalised to the shape's own box**, not page space — Penpot's
 /// exporter emits `0..1` and render-wasm maps them with `translate(rect.origin) · scale(rect.size)`
 /// as a shader-local matrix. Vello's paint transform has exactly those semantics (applied to the
 /// paint after the geometry's transform), so the same mapping is expressed the same way. Drawn
 /// without it, every gradient collapses into the top-left pixel of the page.
-fn set_brush<T: RenderingContext>(ctx: &mut T, brush: &Brush, bounds: Rect) -> bool {
-    match brush {
+///
+/// The paint's own transform composes *inside* that: it carries a radial gradient's rotation and
+/// ellipse ratio, and an angular one's shear, all in unit-box space. `render_core::gradient`
+/// builds it alongside the gradient so neither backend re-derives the matrix.
+fn set_paint<T: RenderingContext>(ctx: &mut T, paint: &m::Paint, bounds: Rect) -> bool {
+    match &paint.brush {
         Brush::Solid(color) => {
             ctx.set_paint_transform(Affine::IDENTITY);
             ctx.set_paint(*color);
             true
         }
-        // Only linear so far. Radial and angular are *decoded* into the model — so the digest
-        // sees them and the harness can compare them — but painting them needs more than this
-        // mapping: render-wasm builds a shader matrix carrying a rotation and an ellipse factor
-        // (`to_radial_shader`, `to_angular_shader`), and neither survives a peniko `Gradient`,
-        // which has nowhere to put a transform. Drawing them with the linear mapping would put
-        // recognisable but wrong paint on screen, which reads as a rendering bug rather than as
-        // a missing feature — the same call as inner and outer strokes.
-        Brush::Gradient(g) if matches!(g.kind, GradientKind::Linear(_)) => {
-            ctx.set_paint_transform(unit_box_to(bounds));
+        Brush::Gradient(g) => {
+            ctx.set_paint_transform(unit_box_to(bounds) * paint.transform);
             ctx.set_paint(g.clone());
             true
         }
-        _ => false,
+        // Image fills need the texture path, which this module does not have yet.
+        Brush::Image(_) => false,
     }
 }
 
@@ -317,7 +315,7 @@ fn demo_model() -> m::Scene {
     frame.corners = Some(render_core::kurbo::RoundedRectRadii::new(
         72.0, 12.0, 72.0, 12.0,
     ));
-    frame.fills = vec![Brush::Solid(Color::from_rgba8(56, 152, 236, 255))];
+    frame.fills = vec![m::Paint::plain(Brush::Solid(Color::from_rgba8(56, 152, 236, 255)))];
     // A dashed stroke, straddling the frame's edge. It must *not* be clipped by the frame's own
     // clip — that is why clip and opacity take separate layers — so half of it sits outside.
     let mut frame_stroke = render_core::kurbo::Stroke::new(12.0);
@@ -329,7 +327,7 @@ fn demo_model() -> m::Scene {
     );
     frame.strokes = vec![m::Stroke {
         style: frame_stroke,
-        brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+        paint: m::Paint::plain(Brush::Solid(Color::from_rgba8(255, 255, 255, 255))),
     }];
     frame.clip = true;
     frame.children = vec![2, 3];
@@ -337,13 +335,38 @@ fn demo_model() -> m::Scene {
 
     let mut circle = m::Node::new(2, m::ShapeKind::Circle);
     circle.bounds = Rect::new(540.0, 420.0, 870.0, 750.0);
-    circle.fills = vec![Brush::Solid(Color::from_rgba8(240, 90, 40, 255))];
+    // A radial gradient, deliberately squashed and rotated: the ellipse ratio and the angle
+    // both live in the paint transform, so a circle filled with a plain circular gradient would
+    // prove nothing about that path.
+    let (radial, radial_transform) = render_core::gradient::gradient_paint(
+        render_core::gradient::GradientShape::Radial,
+        render_core::gradient::GradientGeometry {
+            start: (0.5, 0.5),
+            end: (0.95, 0.25),
+            width: (0.55, 0.0),
+        },
+        &[
+            render_core::peniko::ColorStop {
+                offset: 0.0,
+                color: Color::from_rgba8(255, 220, 120, 255).into(),
+            },
+            render_core::peniko::ColorStop {
+                offset: 1.0,
+                color: Color::from_rgba8(240, 90, 40, 255).into(),
+            },
+        ],
+    )
+    .expect("the demo gradient is not degenerate");
+    circle.fills = vec![m::Paint {
+        brush: Brush::Gradient(radial),
+        transform: radial_transform,
+    }];
     s.insert(circle);
 
     let mut rect = m::Node::new(3, m::ShapeKind::Rect);
     rect.bounds = Rect::new(180.0, 240.0, 420.0, 360.0);
     rect.transform = Affine::rotate(0.3);
-    rect.fills = vec![Brush::Solid(Color::from_rgba8(250, 250, 250, 255))];
+    rect.fills = vec![m::Paint::plain(Brush::Solid(Color::from_rgba8(250, 250, 250, 255)))];
     // A dotted stroke: kurbo has no `path_1d` equivalent, so it is a zero-length dash with
     // round caps, which draws dots of diameter equal to the width — the same as Skia's circles.
     let mut dots = render_core::kurbo::Stroke::new(6.0);
@@ -355,7 +378,7 @@ fn demo_model() -> m::Scene {
     );
     rect.strokes = vec![m::Stroke {
         style: dots,
-        brush: Brush::Solid(Color::from_rgba8(20, 20, 20, 255)),
+        paint: m::Paint::plain(Brush::Solid(Color::from_rgba8(20, 20, 20, 255))),
     }];
     s.insert(rect);
 
@@ -375,7 +398,7 @@ fn demo_model() -> m::Scene {
     path_node.bounds = Rect::new(0.0, 0.0, 360.0, 450.0);
     path_node.path = Some(path);
     path_node.transform = Affine::translate((860.0, 160.0));
-    path_node.fills = vec![Brush::Solid(Color::from_rgba8(70, 190, 120, 255))];
+    path_node.fills = vec![m::Paint::plain(Brush::Solid(Color::from_rgba8(70, 190, 120, 255)))];
     s.insert(path_node);
 
     s

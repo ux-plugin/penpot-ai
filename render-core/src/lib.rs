@@ -22,5 +22,6 @@ pub use kurbo;
 pub use peniko;
 
 pub mod abi;
+pub mod gradient;
 pub mod model;
 pub mod selection;
