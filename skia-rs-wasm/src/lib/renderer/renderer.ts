@@ -147,17 +147,32 @@ export class Renderer {
       throw new Error('Renderer not built. Use Renderer.builder() first.')
     }
 
-    this.destroyContext()
-
-    const success = initCanvasContext(
-      this.module,
-      this.canvas,
-      this.options.dpr,
-      this.options.debug,
-      this.options.debugPip
-    )
-    if (!success) {
-      throw new Error('Failed to initialize WebGL context')
+    // Build the GL context and Rust state exactly once per canvas.
+    //
+    // This used to tear the context down and rebuild it on every page switch,
+    // which cannot work: a canvas hands out one WebGL2 context for its whole
+    // lifetime — `getContext('webgl2')` returns the *same* object every time —
+    // so "release the handle and get a new context" (see `clearCanvas`) really
+    // meant "hand Skia back the context the previous surface was using",
+    // complete with whatever it left bound (samplers, FBOs, scissor). The first
+    // page looked right because that context was genuinely fresh; every page
+    // after it drew over dirty GL state.
+    //
+    // Reloading a page needs none of that. `initializeViewport` below sets the
+    // background, resets the shapes pool — `ShapesPool::initialize` clears the
+    // id→index map, so the previous page's shapes are dropped — and loads the
+    // new objects, all against the live surface.
+    if (!getContextInitialized()) {
+      const success = initCanvasContext(
+        this.module,
+        this.canvas,
+        this.options.dpr,
+        this.options.debug,
+        this.options.debugPip
+      )
+      if (!success) {
+        throw new Error('Failed to initialize WebGL context')
+      }
     }
 
     const canvasWidth = this.canvas.clientWidth || this.canvas.width
@@ -175,6 +190,17 @@ export class Renderer {
       { x: 0, y: 0 },
       background
     )
+
+    // Mirror the view state we just pushed into WASM. `applyViewport` diffs the
+    // incoming zoom against `prevZoom` to decide pan-vs-zoom, and the zoom branch
+    // paints from the tile cache (`_render_from_cache`). Leaving a stale zoom here
+    // — `destroyContext` doesn't reset it, only `destroy` does — makes the first
+    // view update after a page switch take the zoom path against a cache that
+    // belongs to the page we just left, so the canvas paints at the old scale
+    // while the selection chrome (which reads the viewport signal) sits at the
+    // new one.
+    this.viewport = null
+    this.prevZoom = 1
   }
 
   /**
