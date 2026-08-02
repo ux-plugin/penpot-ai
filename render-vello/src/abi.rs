@@ -486,7 +486,7 @@ pub extern "C" fn set_shape_hidden(hidden: bool) {
 }
 
 /// Shape kind, as render-wasm's `RawShapeType`: 0 Frame, 1 Group, 2 Bool, 3 Rect, 4 Path,
-/// 5 Text, 6 Circle, 7 SVGRaw. Anything this module cannot draw yet stays a rect.
+/// 5 Text, 6 Circle, 7 SVGRaw. Anything this module cannot draw yet becomes `Unsupported`.
 ///
 /// Named `set_shape_type` rather than anything more descriptive because the export name *is*
 /// the contract — the host calls `module._set_shape_type(…)` and the facade strips the
@@ -497,11 +497,14 @@ pub extern "C" fn set_shape_type(shape_type: u8) {
         node.kind = match shape_type {
             0 => ShapeKind::Frame,
             1 => ShapeKind::Group,
+            3 => ShapeKind::Rect,
             4 => ShapeKind::Path,
             6 => ShapeKind::Circle,
-            // Bool, Text and SVGRaw have no model kind yet; a rect is the least surprising
-            // stand-in, and they carry no children, so nothing below them is lost.
-            _ => ShapeKind::Rect,
+            // Bool, Text and SVGRaw have no model kind yet. Marking them `Unsupported` (rather
+            // than standing in a rect) is what lets the digest agree with render-wasm, which
+            // drops these shapes entirely — see `ShapeKind::Unsupported`. Both the renderer and
+            // the digest then treat the node, and its subtree, as inert.
+            _ => ShapeKind::Unsupported,
         };
     });
 }
@@ -1318,6 +1321,44 @@ mod tests {
         );
     }
 
+    /// Text (5), Bool (2) and SVGRaw (7) have no model kind yet; each becomes `Unsupported`,
+    /// not a stand-in rect. A rect would paint a phantom box that could never match render-wasm
+    /// — which drops these shapes — so the node must read as inert even though it arrived
+    /// carrying a fill. The rect-vs-text contrast below is what makes the paintable count mean
+    /// something: the same fill draws as a rect and draws nothing once the kind is Text.
+    #[test]
+    fn unknown_shape_types_become_unsupported_and_paint_nothing() {
+        let _guard = reset();
+
+        // Deliver a child carrying a solid fill, then link it under the root.
+        use_shape(0, 0, 0, 1);
+        set_shape_selrect(0.0, 0.0, 50.0, 50.0);
+        let mut fill = vec![0u8; 4 + render_core::abi::RAW_FILL_DATA_SIZE];
+        fill[0] = 1; // one fill
+        fill[8..12].copy_from_slice(&0xff112233u32.to_le_bytes());
+        upload(&fill);
+        set_shape_fills();
+        use_shape(0, 0, 0, 0);
+        add_shape_child(0, 0, 0, 1);
+
+        // The same fill paints as a rect and paints nothing once the kind is Text — the
+        // contrast is what makes the count mean anything.
+        use_shape(0, 0, 0, 1);
+        set_shape_type(3); // Rect
+        assert_eq!(scene_paintable_count(), 1);
+
+        set_shape_type(5); // Text
+        assert_eq!(current_scene().get(1).unwrap().kind, ShapeKind::Unsupported);
+        assert_eq!(scene_paintable_count(), 0, "unsupported draws nothing, fill or not");
+
+        // Bool and SVGRaw map the same way.
+        for raw in [2u8, 7] {
+            use_shape(0, 0, 0, 1);
+            set_shape_type(raw);
+            assert_eq!(current_scene().get(1).unwrap().kind, ShapeKind::Unsupported);
+        }
+    }
+
     /// Write `payload` through the real transport, as the host's `HEAPU8.set(bytes, ptr)` does.
     fn upload(payload: &[u8]) {
         let ptr = alloc_bytes(payload.len());
@@ -1649,7 +1690,7 @@ mod tests {
         let _guard = reset();
 
         use_shape(0, 0, 0, 1);
-        set_shape_type(2);
+        set_shape_type(3); // Rect — a kind that actually draws (Bool is now Unsupported).
         set_shape_selrect(0.0, 0.0, 10.0, 10.0);
         let mut fills = vec![0u8; 4 + render_core::abi::RAW_FILL_DATA_SIZE];
         fills[0] = 1; // count header

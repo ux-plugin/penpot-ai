@@ -227,6 +227,18 @@ pub enum ShapeKind {
     /// A container with no geometry of its own. Never clips; exists to group and to carry
     /// opacity, blend and masking over its children.
     Group,
+    /// A shape whose kind neither backend draws yet — Text, Bool, SVGRaw. It exists so the two
+    /// projection styles can agree: render-wasm's batch projection *drops* an unsupported shape
+    /// (`node_from_shape` returns `None`, so the parent lists an absent child), while
+    /// render-vello's streaming ABI has already created the node and instead *marks* it. The
+    /// digest hashes this variant exactly like a missing node (see [`Scene::digest`]), so the
+    /// drop and the mark reconcile to the same hash. Renderers and the paintable/diamond walks
+    /// treat it as inert.
+    ///
+    /// **Keep this appended last.** The digest hashes `kind as u64`, so inserting a variant
+    /// mid-enum shifts every discriminant and silently changes every digest — the same
+    /// ordering trap as render-wasm's `RawShapeType`.
+    Unsupported,
 }
 
 impl ShapeKind {
@@ -441,6 +453,10 @@ impl Scene {
         if node.hidden {
             return;
         }
+        if node.kind == ShapeKind::Unsupported {
+            // Inert, and its subtree with it — mirrors `digest_node` and `scene::draw_node`.
+            return;
+        }
         // Matches `scene::paint_self`: a group carries a layer, never geometry, and anything
         // with neither fill nor stroke is skipped before a path is even built.
         if node.kind != ShapeKind::Group && !(node.fills.is_empty() && node.strokes.is_empty()) {
@@ -474,6 +490,10 @@ impl Scene {
         if node.hidden {
             return;
         }
+        if node.kind == ShapeKind::Unsupported {
+            // Inert, and its subtree with it — mirrors `digest_node` and `scene::draw_node`.
+            return;
+        }
         for paint in &node.fills {
             if let Brush::Diamond(d) = &paint.brush {
                 out.push(d.clone());
@@ -501,6 +521,13 @@ impl Scene {
             return;
         };
         if node.hidden {
+            return;
+        }
+        if node.kind == ShapeKind::Unsupported {
+            // A shape neither backend draws. Hash it exactly as the missing-child branch above,
+            // so render-vello's marked node and render-wasm's dropped one land on one hash.
+            fnv_u128(hash, node.id);
+            fnv_u64(hash, MISSING_NODE_TAG);
             return;
         }
 
@@ -962,6 +989,69 @@ mod tests {
     fn digest_of_an_empty_scene_is_stable() {
         assert_eq!(Scene::new().digest(), Scene::new().digest());
         assert_ne!(Scene::new().digest(), tree(&[0, 1, 2]).digest());
+    }
+
+    /// The whole reason `ShapeKind::Unsupported` exists. render-wasm *drops* a text/bool/svg
+    /// shape (its parent lists an absent child); render-vello's streaming ABI has already made
+    /// the node, so it *marks* it. The digest has to fold both onto one hash, or the harness can
+    /// never reach parity on a document that contains text.
+    #[test]
+    fn an_unsupported_node_digests_as_the_dropped_hole_it_replaces() {
+        const X: u128 = 0x5555;
+
+        let root_frame = || {
+            let mut r = node(ROOT_ID, ShapeKind::Frame);
+            r.bounds = Rect::new(0.0, 0.0, 400.0, 300.0);
+            r.children = vec![X];
+            r
+        };
+
+        // A — render-wasm's projection: the child is listed but never inserted.
+        let mut a = Scene::new();
+        a.insert(root_frame());
+
+        // B — render-vello's projection: the child is present and marked, carrying whatever
+        // bounds and fills arrived on the wire before the kind did. None of it must count.
+        let mut b = Scene::new();
+        b.insert(root_frame());
+        let mut x = node(X, ShapeKind::Unsupported);
+        x.bounds = Rect::new(10.0, 10.0, 90.0, 40.0);
+        x.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(9, 9, 9, 255)))];
+        b.insert(x);
+
+        assert_eq!(a.digest(), b.digest(), "drop and mark must reconcile");
+
+        // C — the safety property: the day a backend really draws this shape, parity must break.
+        let mut c = Scene::new();
+        c.insert(root_frame());
+        let mut real = node(X, ShapeKind::Rect);
+        real.bounds = Rect::new(10.0, 10.0, 90.0, 40.0);
+        c.insert(real);
+        assert_ne!(a.digest(), c.digest(), "a supported shape is not a hole");
+
+        // D — a hole is still distinct from never referencing the child at all.
+        let mut d = Scene::new();
+        let mut childless = root_frame();
+        childless.children = vec![];
+        d.insert(childless);
+        assert_ne!(a.digest(), d.digest(), "referenced-but-absent != not referenced");
+    }
+
+    /// An unsupported node draws nothing, so it is not paintable — even when it arrived with
+    /// fills attached. Mirrors what `scene::draw_node` does with it.
+    #[test]
+    fn an_unsupported_node_is_not_paintable() {
+        let mut scene = Scene::new();
+        let mut root = node(ROOT_ID, ShapeKind::Frame);
+        root.children = vec![1];
+        scene.insert(root);
+
+        let mut x = node(1, ShapeKind::Unsupported);
+        x.bounds = Rect::new(0.0, 0.0, 50.0, 50.0);
+        x.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(1, 2, 3, 255)))];
+        scene.insert(x);
+
+        assert_eq!(scene.paintable_count(), 0);
     }
 
     /// Colours alone are not a gradient. Two fills with identical stops running in different

@@ -128,6 +128,11 @@ fn draw_node<T: RenderingContext>(
     if node.hidden {
         return;
     }
+    if node.kind == m::ShapeKind::Unsupported {
+        // A kind this backend does not draw yet (Text, Bool, SVGRaw). Skip it and its subtree,
+        // matching the digest's reachability so the picture and the hash count the same nodes.
+        return;
+    }
 
     // The gesture transform sits between the viewport and the shape's own matrix: it is
     // expressed in page space, so it must be applied to the shape's page-space geometry and

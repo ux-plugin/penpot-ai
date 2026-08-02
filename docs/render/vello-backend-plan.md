@@ -394,7 +394,7 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   Two things this turned up:
 
-  - **Shape type ids are not what a reader guesses.** `2` is *bool*; rect is `3` (`serializers.ts`). More importantly, render-vello maps every unknown id to `Rect` while render-wasm's projection returns `None`, so a text or bool shape is a rect on one side and absent on the other. Real documents containing text therefore cannot be compared yet — the fix is for render-vello to omit unsupported kinds too, which needs `set_shape_type` to be able to retract a node `use_shape` already created.
+  - **Shape type ids are not what a reader guesses.** `2` is *bool*; rect is `3` (`serializers.ts`). More importantly, render-vello mapped every unknown id to `Rect` while render-wasm's projection returns `None`, so a text or bool shape was a rect on one side and absent on the other — real documents containing text could not be compared. **Closed by Slice F.**
   - **The clip default divergence is not theoretical.** Driving the ABI directly, with no `set_shape_clip_content`, the two backends disagreed on *every* shape — including one with no fill at all. The host always sends the flag, so documents are fine, but any harness that drives the wire by hand must send it too.
 
 - **Image fills (slice 1 of 2 done)** — the reference is in the model and the digest; the pixels are not yet drawn.
@@ -439,6 +439,20 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
   **Dotted needed a fix found only by looking.** Skia stamps circles with a `path_1d` effect; the kurbo equivalent is a round-capped dash of no length. An *exactly* zero-length dash is dropped rather than drawn — the dotted stroke simply did not appear in the browser — so it is `DOT_LENGTH = 0.01` instead.
 
   `Scene::digest` now covers the whole stroke style, not just the width: a dash pattern or join change would otherwise slip through a comparison unnoticed, which is the one thing the harness exists to prevent.
+
+- **Slice F (done)** — the unsupported-shape-kind divergence, the thing that blocked the harness on any real document. render-wasm's `node_from_shape` *drops* a Text/Bool/SVGRaw shape (returns `None`, so the parent lists an absent child hashing as `MISSING_NODE_TAG`); render-vello's streaming ABI has already created the node at `use_shape` and cannot cleanly drop it, so it mapped the unknown type to `Rect` — a shape that was a rect on one side and a hole on the other, and that Vello *painted* as a phantom solid box where glyphs belong.
+
+  **The fix is a shared `ShapeKind::Unsupported`, digested as a hole.** render-wasm keeps dropping; render-vello now *marks* the node `Unsupported`; `digest_node` hashes that variant with the exact `id + MISSING_NODE_TAG` bytes the missing-child branch uses, so the drop and the mark reconcile to one hash. `count_paintable`, `collect_diamonds` and `scene::draw_node` treat it (and its subtree) as inert, so the picture and the digest count the same nodes.
+
+  This is deliberately *not* the retraction the earlier note above predicted. Retracting a node `use_shape` created would fight the streaming ABI (later setters and `with_current` still address it); marking is local and needs no new machinery.
+
+  Two traps worth recording:
+  - **The variant is appended last on purpose.** `digest_node` hashes `kind as u64`, so inserting it mid-enum would shift every existing discriminant and silently move every digest — including the browser anchor `CANONICAL_DIGEST`. Same family as `RawShapeType`'s ordering.
+  - **Rect had no explicit ABI arm.** `set_shape_type` matched only Frame/Group/Path/Circle and let *everything else* — including Rect (`3`) — fall to `_ => Rect`. Flipping the default to `Unsupported` therefore swept Rect in with Text/Bool/SVGRaw until a `3 => Rect` arm was added. Caught by two paintable-count tests going to zero.
+
+  **Known limitation, left unsolved:** an unsupported kind that is *also a container* (Bool, with operand children) has its subtree dropped on both sides. Symmetric, so it cannot fake a cross-backend match for anything actually drawn — but the neutral model then doesn't represent whatever render-wasm's real Skia path might draw for a boolean result. Acceptable because the in-scope deferred kinds (Text, SVGRaw) carry no independently-painted children.
+
+  Verified without a browser: the crux is a render-core test asserting a scene whose root lists an *absent* child digests identically to one where that child is *present but `Unsupported`* — i.e. render-wasm's projection and render-vello's agree — while a real `Rect` in the same slot still breaks parity (the safety property for the day a backend gains real support). The `cross-backend-digest` anchor is unmoved (`2568426414`), and the emscripten gate still builds.
 
 Two casualties of the relocation, both fixed in place:
 - `SerializableResult` lost its `From<BytesType> + Into<BytesType>` supertrait bounds. Those types are foreign to render-wasm now, so the orphan rules forbid the conversion impls; nothing used the bounds (`write_vec` only calls `clone_to_slice`).
