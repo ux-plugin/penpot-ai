@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 2568426414
+const CANONICAL_DIGEST = 3081092446
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -57,7 +57,8 @@ const IDS = {
 
 /**
  * A document exercising the parts of the model both backends implement: a clipping frame, a
- * plain rect, and a circle overflowing its parent. Deliberately small — the digest's job is to
+ * rect with a non-default (Multiply) blend, and a circle overflowing its parent. Deliberately
+ * small — the digest's job is to
  * be exact, not broad, and a fixture nobody can hold in their head stops being a fixture.
  */
 function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void {
@@ -81,6 +82,9 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
     height: rectHeight,
     fillColor: '#3d8bfd',
   })
+  // A non-default blend, so the anchor exercises the real wire path end to end:
+  // `_set_shape_blend_mode` through the facade → render-vello's ABI → `node.blend` → digest.
+  ;(rect as { blendMode?: string }).blendMode = 'multiply'
   const circle = createCircle({
     id: IDS.circle,
     parentId: frame.id,

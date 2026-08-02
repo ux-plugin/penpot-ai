@@ -9,8 +9,9 @@
 #![allow(dead_code)]
 
 use crate::core_convert::{affine_to_core, color_to_core, rect_to_core};
-use crate::shapes::{Corners, Fill, Gradient, Path, Segment, Shape, StrokeKind, Type};
+use crate::shapes::{BlendMode, Corners, Fill, Gradient, Path, Segment, Shape, StrokeKind, Type};
 use crate::shapes::{StrokeLineCap, StrokeLineJoin};
+use skia_safe as skia;
 use render_core::kurbo::{self, BezPath, Point};
 use render_core::model as m;
 use render_core::gradient::{GradientGeometry, GradientShape, gradient_paint};
@@ -69,8 +70,40 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         fills,
         strokes,
         opacity: shape.opacity,
+        blend: skia_blend_to_peniko(shape.blend_mode.0),
         hidden: shape.hidden,
     })
+}
+
+/// Map render-wasm's Skia blend mode to the neutral one.
+///
+/// render-wasm holds a `skia::BlendMode` (converted from the wire `RawBlendMode` at set time),
+/// while render-vello goes straight from the wire byte through [`render_core::blend::blend_from_raw`].
+/// For the digest to agree, this adapter must land on the *same* neutral value as that function
+/// does for the same document — pinned by `skia_and_raw_blend_agree`. The sixteen Penpot modes
+/// are all mixes composited source-over; anything else is normal, matching the wire default.
+fn skia_blend_to_peniko(mode: skia::BlendMode) -> render_core::peniko::BlendMode {
+    use render_core::peniko::{BlendMode as PBlend, Compose, Mix};
+    let mix = match mode {
+        skia::BlendMode::SrcOver => Mix::Normal,
+        skia::BlendMode::Screen => Mix::Screen,
+        skia::BlendMode::Overlay => Mix::Overlay,
+        skia::BlendMode::Darken => Mix::Darken,
+        skia::BlendMode::Lighten => Mix::Lighten,
+        skia::BlendMode::ColorDodge => Mix::ColorDodge,
+        skia::BlendMode::ColorBurn => Mix::ColorBurn,
+        skia::BlendMode::HardLight => Mix::HardLight,
+        skia::BlendMode::SoftLight => Mix::SoftLight,
+        skia::BlendMode::Difference => Mix::Difference,
+        skia::BlendMode::Exclusion => Mix::Exclusion,
+        skia::BlendMode::Multiply => Mix::Multiply,
+        skia::BlendMode::Hue => Mix::Hue,
+        skia::BlendMode::Saturation => Mix::Saturation,
+        skia::BlendMode::Color => Mix::Color,
+        skia::BlendMode::Luminosity => Mix::Luminosity,
+        _ => Mix::Normal,
+    };
+    PBlend::new(mix, Compose::SrcOver)
 }
 
 /// Skia's `Corners` is four `Point`s, so it can express elliptical corners; Penpot only ever
@@ -261,6 +294,42 @@ mod tests {
         assert_eq!(
             node.fills,
             vec![m::Paint::plain(Brush::Solid(Color::from_rgba8(10, 20, 30, 255)))]
+        );
+    }
+
+    /// The crux of blend parity: the two projections must land on the *same* neutral value for
+    /// every wire byte. render-vello goes byte → peniko via `blend_from_raw`; render-wasm goes
+    /// byte → skia → peniko via `skia_blend_to_peniko`. If these two ever disagreed, a document
+    /// with a non-default blend would fail the diff with nothing wrong in the picture.
+    #[test]
+    fn skia_and_raw_blend_agree() {
+        use crate::wasm::blend::RawBlendMode::*;
+        for raw in [
+            Normal, Screen, Overlay, Darken, Lighten, ColorDodge, ColorBurn, HardLight, SoftLight,
+            Difference, Exclusion, Multiply, Hue, Saturation, Color, Luminosity,
+        ] {
+            let via_skia = skia_blend_to_peniko(BlendMode::from(raw).0);
+            let via_raw = render_core::blend::blend_from_raw(raw as u8);
+            assert_eq!(via_skia, via_raw, "blend byte {}", raw as u8);
+        }
+    }
+
+    /// A blend mode set on a shape rides through to the neutral node; an unset one is the default.
+    #[test]
+    fn blend_mode_projects() {
+        let mut shape = Shape::new(Uuid::nil());
+        shape.set_shape_type(Type::Rect(ShapeRect::default()));
+        shape.set_blend_mode(crate::wasm::blend::RawBlendMode::Multiply.into());
+        let node = node_from_shape(&shape).expect("a rect must project");
+        assert_eq!(node.blend, render_core::blend::blend_from_raw(24));
+        assert_ne!(node.blend, render_core::blend::DEFAULT_BLEND);
+
+        let mut plain = Shape::new(Uuid::nil());
+        plain.set_shape_type(Type::Rect(ShapeRect::default()));
+        assert_eq!(
+            node_from_shape(&plain).unwrap().blend,
+            render_core::blend::DEFAULT_BLEND,
+            "no blend set → default"
         );
     }
 

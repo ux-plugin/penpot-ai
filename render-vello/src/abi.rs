@@ -509,6 +509,18 @@ pub extern "C" fn set_shape_type(shape_type: u8) {
     });
 }
 
+/// How this node composites against the backdrop.
+///
+/// `mode` is Penpot's `RawBlendMode` byte. The neutral value comes from
+/// [`render_core::blend::blend_from_raw`] — the same authority render-wasm's projection is pinned
+/// to — so the two backends cannot disagree on what a given byte means. Without this entry point
+/// the facade would stub the call to a no-op, leaving every blend at the default and silently
+/// desyncing the digest the moment the host set one.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_blend_mode(mode: u8) {
+    with_current(|node| node.blend = render_core::blend::blend_from_raw(mode));
+}
+
 /// Whether this node clips its children to its own geometry.
 ///
 /// Projected verbatim, with no type check: render-wasm gates only on this flag, and it is the
@@ -1275,6 +1287,27 @@ mod tests {
         assert_eq!(node.bounds, Rect::new(1.0, 2.0, 11.0, 22.0));
         assert_eq!(node.opacity, 0.5);
         assert_eq!(node.kind, ShapeKind::Circle);
+    }
+
+    /// A blend byte maps through the shared authority, so this side lands on the exact value
+    /// render-wasm projects; an unset shape carries the default. If this entry point were missing,
+    /// the facade would stub it and every blend would silently stay default.
+    #[test]
+    fn blend_mode_maps_through_the_shared_authority() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_blend_mode(24); // Multiply
+        assert_eq!(
+            current_scene().get(1).unwrap().blend,
+            render_core::blend::blend_from_raw(24)
+        );
+
+        use_shape(0, 0, 0, 2);
+        assert_eq!(
+            current_scene().get(2).unwrap().blend,
+            render_core::blend::DEFAULT_BLEND,
+            "unset → default"
+        );
     }
 
     /// The element-order trap, from the Vello side. An asymmetric matrix is required —

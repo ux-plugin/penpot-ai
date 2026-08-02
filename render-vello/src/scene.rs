@@ -23,6 +23,7 @@
 //! rotation orbit the page origin instead of spinning in place, which reads as a shape flying
 //! off-screen rather than as a wrong matrix.
 
+use render_core::blend::DEFAULT_BLEND;
 use render_core::kurbo::{Affine, BezPath, Ellipse, Rect, RoundedRect, Shape as _};
 use render_core::model as m;
 use render_core::model::Brush;
@@ -145,16 +146,19 @@ fn draw_node<T: RenderingContext>(
     let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
     let matrix = root * modifier * node.effective_transform();
 
-    // Clip and opacity cannot share one layer, because they cover different things.
+    // Clip and the composite layer cannot share one layer, because they cover different things.
     //
-    // Opacity wraps this node's own paint *and* its children — a half-transparent group must
-    // composite as one image, not per child. Clipping covers only the children: render-wasm
-    // builds the clip in `get_children_clip_bounds`, and a frame is not clipped by itself
-    // (which matters once strokes land, since a stroke straddles the boundary).
+    // Opacity and blend both wrap this node's own paint *and* its children — a half-transparent
+    // or multiplied group must composite as one image against the backdrop, not per child, so
+    // they ride the *same* outer layer. Clipping covers only the children: render-wasm builds the
+    // clip in `get_children_clip_bounds`, and a frame is not clipped by itself (which matters once
+    // strokes land, since a stroke straddles the boundary).
     let alpha = (node.opacity < 1.0).then_some(node.opacity);
-    if alpha.is_some() {
+    let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
+    let composite = alpha.is_some() || blend.is_some();
+    if composite {
         ctx.set_transform(matrix);
-        ctx.push_layer(None, None, alpha, None, None);
+        ctx.push_layer(None, blend, alpha, None, None);
     }
 
     paint_self(ctx, node, matrix);
@@ -174,7 +178,7 @@ fn draw_node<T: RenderingContext>(
     if clip.is_some() {
         ctx.pop_layer();
     }
-    if alpha.is_some() {
+    if composite {
         ctx.pop_layer();
     }
 }

@@ -294,6 +294,10 @@ pub struct Node {
     /// Strokes, back to front, painted over the fills.
     pub strokes: Vec<Stroke>,
     pub opacity: f32,
+    /// How this node (its own paint *and* its children) composites against the backdrop. The
+    /// default is [`crate::blend::DEFAULT_BLEND`] — plain source-over — which needs no layer at
+    /// all; anything else is drawn under a blend layer.
+    pub blend: peniko::BlendMode,
     pub hidden: bool,
 }
 
@@ -316,6 +320,7 @@ impl Node {
             fills: Vec::new(),
             strokes: Vec::new(),
             opacity: 1.0,
+            blend: crate::blend::DEFAULT_BLEND,
             hidden: false,
         }
     }
@@ -546,6 +551,11 @@ impl Scene {
         }
         fnv_f64(hash, f64::from(node.opacity));
         fnv_u64(hash, u64::from(node.clip));
+        // Blend is two `#[repr(u8)]` enums; hashing both discriminants catches a mix *or* a
+        // compose change. Hashed unconditionally, so the default source-over is part of the
+        // fingerprint — cheap, and it keeps the two projections honest about the field existing.
+        fnv_u64(hash, u64::from(node.blend.mix as u8));
+        fnv_u64(hash, u64::from(node.blend.compose as u8));
 
         match node.corners {
             Some(r) => {
@@ -950,6 +960,7 @@ mod tests {
         );
         assert_ne!(base, mutate(&|n| n.opacity = 0.5));
         assert_ne!(base, mutate(&|n| n.clip = true));
+        assert_ne!(base, mutate(&|n| n.blend = crate::blend::blend_from_raw(24)));
         assert_ne!(base, mutate(&|n| n.transform = Affine::rotate(0.1)));
         assert_ne!(base, mutate(&|n| n.kind = ShapeKind::Path));
         assert_ne!(
@@ -961,6 +972,20 @@ mod tests {
             mutate(&|n| n.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(9, 9, 9, 255)))])
         );
         assert_ne!(base, mutate(&|n| n.fills.clear()));
+    }
+
+    /// Two different mixes must hash differently — otherwise a document set to Multiply would look
+    /// like parity against one set to Screen. Guards against hashing only the compose operator
+    /// (which is `SrcOver` for every Penpot mode) and dropping the mix.
+    #[test]
+    fn digest_notices_which_blend_mode() {
+        let with = |raw: u8| {
+            let mut s = tree(&[0, 1, 2]);
+            s.get_mut(1).unwrap().blend = crate::blend::blend_from_raw(raw);
+            s.digest()
+        };
+        assert_ne!(with(24), with(14), "Multiply and Screen must differ");
+        assert_eq!(with(3), tree(&[0, 1, 2]).digest(), "Normal is the default — no change");
     }
 
     /// Unreachable nodes are memory, not picture. One backend garbage-collecting an orphan and
