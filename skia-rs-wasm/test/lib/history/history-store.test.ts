@@ -150,6 +150,44 @@ describe('undo transactions', () => {
     }
   })
 
+  /**
+   * The coalescing timer *is* the commit, so it must be silent. It shares a code path with the
+   * leak watchdog that guards begin/commit pairs, and warning on both turned every colour edit
+   * into a console warning that read like a bug.
+   */
+  it('does not warn when the idle window closes a coalesced interaction', () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      markHistoryInteraction('color-edit', 350)
+      useHistoryStore.getState().pushCommitFrame(frame('a'))
+      vi.advanceTimersByTime(351)
+
+      expect(useHistoryStore.getState().undoStack).toHaveLength(1)
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  /** …while a begin/commit pair that never commits is still a leak, and still says so. */
+  it('warns when an explicit transaction is force-committed', () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      useHistoryStore.getState().beginTransaction('drag', 1000)
+      useHistoryStore.getState().pushCommitFrame(frame('a'))
+      vi.advanceTimersByTime(1001)
+
+      expect(useHistoryStore.getState().undoStack).toHaveLength(1)
+      expect(warn).toHaveBeenCalledOnce()
+    } finally {
+      warn.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it('re-begin with the same id resets the watchdog instead of stacking holders', () => {
     vi.useFakeTimers()
     try {

@@ -138,7 +138,13 @@ export interface HistoryState {
    * frame is pushed when every holder has committed. Re-beginning with the
    * same id is idempotent and resets that holder's watchdog.
    */
-  beginTransaction: (id: string, timeoutMs?: number) => void
+  /**
+   * `onTimeout` says what the timer *means*. A begin/commit pair that never
+   * commits is a leak worth warning about; the idle-coalescing path in
+   * {@link markHistoryInteraction} uses the same timer as its normal commit
+   * mechanism, and warning there reports healthy behaviour as a fault.
+   */
+  beginTransaction: (id: string, timeoutMs?: number, onTimeout?: 'warn' | 'expected') => void
   /** Release one holder; the last release pushes the accumulated frame as ONE undo entry. */
   commitTransaction: (id: string) => void
   /**
@@ -234,7 +240,7 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
     }))
   },
 
-  beginTransaction: (id, timeoutMs = TRANSACTION_TIMEOUT_MS) => {
+  beginTransaction: (id, timeoutMs = TRANSACTION_TIMEOUT_MS, onTimeout = 'warn') => {
     set((s) => ({
       transaction: s.transaction ?? { redoChanges: [], undoChanges: [] },
       transactionHolders: new Set([...s.transactionHolders, id]),
@@ -245,7 +251,9 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
         id,
         setTimeout(() => {
           transactionTimers.delete(id)
-          console.warn(`[history] transaction "${id}" open for ${timeoutMs}ms — force-committing`)
+          if (onTimeout === 'warn') {
+            console.warn(`[history] transaction "${id}" open for ${timeoutMs}ms — force-committing`)
+          }
           get().commitTransaction(id)
         }, timeoutMs),
       )
@@ -365,5 +373,6 @@ export function discardHistoryTransactions(): void {
  * undo/redo flush the in-progress frame early (which is the desired behavior).
  */
 export function markHistoryInteraction(id = 'interaction', idleMs = INTERACTION_IDLE_MS): void {
-  useHistoryStore.getState().beginTransaction(id, idleMs)
+  // 'expected': here the timer *is* the commit, not a missed one.
+  useHistoryStore.getState().beginTransaction(id, idleMs, 'expected')
 }
