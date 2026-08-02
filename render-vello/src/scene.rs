@@ -271,13 +271,36 @@ fn set_paint<T: RenderingContext>(ctx: &mut T, paint: &m::Paint, bounds: Rect) -
             });
             true
         }
-        // Diamond is in the model and the digest, but its L1 metric is not a peniko gradient and
-        // Vello has no built-in for it. Correct rendering is the D10 custom-shader path (or baking
-        // the field to a texture and reusing the image atlas — blocked today by the upload
-        // happening before the scene draws, not during paint). Drawn wrong it would read as a
-        // rendering bug, so it draws nothing — the same call as radial before its transform, and
-        // as inner/outer strokes.
-        Brush::Diamond(_) => false,
+        Brush::Diamond(d) => {
+            // Diamond has no peniko kind, so it is baked to a tile and drawn as an image. The
+            // renderer's pre-pass (`stage_diamond_bakes`) rasterises the L1 field and uploads it
+            // under this content key; here it resolves exactly like an image fill. Absent means
+            // the bake has not landed yet — draw nothing this frame, painted the next.
+            let Some(image_id) = crate::abi::resolve_image(d.content_key()) else {
+                return false;
+            };
+            // The bake covers the unit box, but it is an *image* now, sampled in pixel space —
+            // so the transform maps the whole tile `[0, TILE]²` onto the shape, exactly the
+            // stretch a plain image uses. (Mapping unit space `[0,1]` here samples only the tile's
+            // first pixel across the whole shape — which is how the first cut rendered solid.)
+            // The non-square-shape distortion comes from this stretch, matching render-wasm's
+            // normalised-space shader. Stop alphas are baked in; the sampler adds none.
+            let tile = f64::from(crate::abi::DIAMOND_TILE);
+            ctx.set_paint_transform(
+                Affine::translate((bounds.x0, bounds.y0))
+                    * Affine::scale_non_uniform(bounds.width() / tile, bounds.height() / tile),
+            );
+            ctx.set_paint(vello_common::paint::Image {
+                image: vello_common::paint::ImageSource::opaque_id(image_id),
+                sampler: vello_common::peniko::ImageSampler {
+                    x_extend: vello_common::peniko::Extend::Pad,
+                    y_extend: vello_common::peniko::Extend::Pad,
+                    quality: vello_common::peniko::ImageQuality::Medium,
+                    alpha: 1.0,
+                },
+            });
+            true
+        }
     }
 }
 

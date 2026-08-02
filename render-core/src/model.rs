@@ -50,6 +50,35 @@ pub struct DiamondGradient {
     pub stops: peniko::ColorStops,
 }
 
+impl DiamondGradient {
+    /// A stable id for the *baked* tile of this diamond, so a backend that draws it by baking to a
+    /// texture (Vello) caches the bake and reuses it while the parameters are unchanged.
+    ///
+    /// It is a content hash of the geometry and stops, in the top nibble of an id space real
+    /// image uuids do not occupy (Penpot's are v4, whose high bits are not this marker) — so a
+    /// baked diamond and a fetched image never resolve to each other's atlas slot. The collision
+    /// risk beyond that is a full 64-bit hash match, which is negligible.
+    pub fn content_key(&self) -> u128 {
+        let mut hash = FNV_OFFSET;
+        let g = &self.geometry;
+        for (x, y) in [g.start, g.end, g.width] {
+            fnv_f64(&mut hash, f64::from(x));
+            fnv_f64(&mut hash, f64::from(y));
+        }
+        fnv_u64(&mut hash, self.stops.len() as u64);
+        for stop in self.stops.iter() {
+            fnv_f64(&mut hash, f64::from(stop.offset));
+            for component in stop.color.components {
+                fnv_f64(&mut hash, f64::from(component));
+            }
+        }
+        (DIAMOND_KEY_MARKER << 64) | u128::from(hash)
+    }
+}
+
+/// Top 64 bits of a baked-diamond id — see [`DiamondGradient::content_key`].
+const DIAMOND_KEY_MARKER: u128 = 0xD1A;
+
 /// An image fill as a reference, not pixels — see [`Brush::Image`].
 ///
 /// Mirrors render-wasm's `shapes::ImageFill` and the `RawImageFillData` wire record field for
@@ -419,6 +448,44 @@ impl Scene {
         }
         for child in &node.children {
             self.count_paintable(*child, count, depth + 1);
+        }
+    }
+
+    /// Every diamond gradient reachable from the root, fills and strokes both.
+    ///
+    /// A backend that paints diamonds by baking (Vello) needs this before it draws, to bake the
+    /// ones it has not seen — the walk mirrors the digest's, so it visits exactly what would be
+    /// drawn and nothing orphaned.
+    pub fn diamonds(&self) -> Vec<DiamondGradient> {
+        let mut out = Vec::new();
+        for id in self.roots() {
+            self.collect_diamonds(*id, &mut out, 0);
+        }
+        out
+    }
+
+    fn collect_diamonds(&self, id: u128, out: &mut Vec<DiamondGradient>, depth: u32) {
+        if depth >= MAX_DIGEST_DEPTH {
+            return;
+        }
+        let Some(node) = self.get(id) else {
+            return;
+        };
+        if node.hidden {
+            return;
+        }
+        for paint in &node.fills {
+            if let Brush::Diamond(d) = &paint.brush {
+                out.push(d.clone());
+            }
+        }
+        for stroke in &node.strokes {
+            if let Brush::Diamond(d) = &stroke.paint.brush {
+                out.push(d.clone());
+            }
+        }
+        for child in &node.children {
+            self.collect_diamonds(*child, out, depth + 1);
         }
     }
 

@@ -183,6 +183,113 @@ fn wrap_angular_stops(stops: &[ColorStop]) -> Vec<ColorStop> {
     out
 }
 
+// --- diamond -----------------------------------------------------------------------------
+//
+// The diamond gradient is Penpot's, not CSS's: the ramp sampled along the L1 (Manhattan)
+// distance `|x| + |y|` instead of a radius or an angle. peniko has no such kind, so Vello draws
+// it by *baking* the field to a texture and sampling it as an image. Both the field transform
+// and the bake live here — shared and testable without a GPU — so render-vello only stages the
+// bytes, and there is no second, divergent copy of the maths (the same argument as the gradients
+// and the selection rect).
+
+/// The map from unit-box space into diamond-local space, where `|p.x| + |p.y| = 1` is the
+/// gradient's outer edge. `None` when the span is degenerate — no direction to build the field
+/// along, so painting it would be a guess.
+///
+/// Mirrors render-wasm's `to_diamond_shader` inverse matrix: rotate by the span's angle, squash
+/// by `width.0`, and divide by the span length so distance 1 lands at the far stop. The element
+/// order is the angular-gradient trap again — `a`/`b` is the x-basis, `c`/`d` the y-basis.
+pub fn diamond_transform(g: GradientGeometry) -> Option<Affine> {
+    let dx = f64::from(g.end.0 - g.start.0);
+    let dy = f64::from(g.end.1 - g.start.1);
+    let r = (dx * dx + dy * dy).sqrt();
+    if r < 1e-6 {
+        return None;
+    }
+    let angle = dy.atan2(dx);
+    let (cos_a, sin_a) = (angle.cos(), angle.sin());
+    let aspect = if g.width.0 > 0.0 { f64::from(g.width.0) } else { 1.0 };
+
+    // local = M_inv · (coord − centre). kurbo's column-major `[a, b, c, d, e, f]` maps
+    // `(x, y) → (a·x + c·y + e, b·x + d·y + f)`, so the linear rows go in as (a, c) then (b, d).
+    let linear = Affine::new([
+        cos_a / r,          // a: local.x from coord.x
+        -sin_a / (r * aspect), // b: local.y from coord.x
+        sin_a / r,          // c: local.x from coord.y
+        cos_a / (r * aspect),  // d: local.y from coord.y
+        0.0,
+        0.0,
+    ]);
+    let centre = point(g.start);
+    Some(linear * Affine::translate((-centre.x, -centre.y)))
+}
+
+/// The colour at ramp position `t`, as straight (unpremultiplied) `RGBA8`.
+///
+/// Component-wise linear interpolation in sRGB, matching Skia's shader sampling and the seam
+/// wrapping above — a perceptually smarter blend would be a worse match, and the point is to
+/// agree with how this very engine draws the gradient.
+pub fn sample_stops(stops: &[ColorStop], t: f32) -> [u8; 4] {
+    if stops.is_empty() {
+        return [0, 0, 0, 0];
+    }
+    let t = t.clamp(0.0, 1.0);
+    // Before the first / after the last stop, clamp to the end colour (Skia's `TileMode::Clamp`).
+    if t <= stops[0].offset {
+        return srgb_u8(stops[0]);
+    }
+    if t >= stops[stops.len() - 1].offset {
+        return srgb_u8(stops[stops.len() - 1]);
+    }
+    let hi = stops.iter().position(|s| s.offset >= t).unwrap_or(stops.len() - 1);
+    let (a, b) = (stops[hi - 1], stops[hi]);
+    let span = b.offset - a.offset;
+    let f = if span > f32::EPSILON { (t - a.offset) / span } else { 0.0 };
+
+    let ca = a.color.to_alpha_color::<Srgb>().components;
+    let cb = b.color.to_alpha_color::<Srgb>().components;
+    let mut out = [0u8; 4];
+    for i in 0..4 {
+        out[i] = ((ca[i] + (cb[i] - ca[i]) * f) * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+fn srgb_u8(stop: ColorStop) -> [u8; 4] {
+    let c = stop.color.to_alpha_color::<Srgb>().components;
+    [
+        (c[0] * 255.0).round() as u8,
+        (c[1] * 255.0).round() as u8,
+        (c[2] * 255.0).round() as u8,
+        (c[3] * 255.0).round() as u8,
+    ]
+}
+
+/// Bake the diamond field into a `size × size` tile of straight RGBA, row-major, top-left origin.
+///
+/// The tile is unit-box space, so a caller draws it with `unit_box_to(bounds)` exactly like a
+/// gradient — the aspect distortion of a non-square shape comes from that mapping, matching
+/// render-wasm, which evaluates its shader in the shape's normalised space too. `None` when the
+/// gradient is degenerate.
+pub fn bake_diamond_rgba(g: GradientGeometry, stops: &[ColorStop], size: u32) -> Option<Vec<u8>> {
+    let inv = diamond_transform(g)?;
+    let mut out = vec![0u8; (size as usize) * (size as usize) * 4];
+    let s = f64::from(size);
+    for y in 0..size {
+        for x in 0..size {
+            // Sample at pixel centres so the field is symmetric about the tile.
+            let u = (f64::from(x) + 0.5) / s;
+            let v = (f64::from(y) + 0.5) / s;
+            let p = inv * Point::new(u, v);
+            let t = (p.x.abs() + p.y.abs()) as f32;
+            let rgba = sample_stops(stops, t);
+            let i = ((y as usize) * (size as usize) + (x as usize)) * 4;
+            out[i..i + 4].copy_from_slice(&rgba);
+        }
+    }
+    Some(out)
+}
+
 fn point(p: (f32, f32)) -> Point {
     Point::new(f64::from(p.0), f64::from(p.1))
 }
@@ -346,5 +453,55 @@ mod tests {
         )
         .unwrap();
         assert_eq!(g.stops.len(), 2);
+    }
+
+    /// The bake must put the ramp's start colour at the centre and the end colour at the L1 edge,
+    /// with a diamond (not circular) contour between — that is the whole point of the metric.
+    #[test]
+    fn diamond_bake_puts_the_ramp_along_the_l1_distance() {
+        let stops = &[
+            ColorStop {
+                offset: 0.0,
+                color: Color::from_rgba8(255, 0, 0, 255).into(),
+            },
+            ColorStop {
+                offset: 1.0,
+                color: Color::from_rgba8(0, 0, 255, 255).into(),
+            },
+        ];
+        let g = GradientGeometry {
+            start: (0.5, 0.5), // centre of the unit tile
+            end: (1.0, 0.5),   // radius 0.5 along +x, no rotation
+            width: (1.0, 0.0), // square metric
+        };
+        let size = 64u32;
+        let rgba = bake_diamond_rgba(g, stops, size).expect("not degenerate");
+        let at = |x: u32, y: u32| {
+            let i = ((y * size + x) * 4) as usize;
+            [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+        };
+        let c = size / 2;
+
+        // Centre: t≈0 → red.
+        let [r, _, b, _] = at(c, c);
+        assert!(r > 200 && b < 60, "centre should be the start colour, got {:?}", at(c, c));
+
+        // A diamond, not a circle: with the span 0.5 along x, the edge (t=1) is at x=1.0 on the
+        // axis but pulled in on the diagonal. So the point straight out along x at distance ~0.5
+        // is near the end colour, while a diagonal point the *same Euclidean* distance is further
+        // along the ramp — the L1 metric reaches 1 sooner on the diagonal.
+        let axis = at((0.98 * f64::from(size)) as u32, c); // far along +x → blue-ish
+        assert!(axis[2] > axis[0], "far along the axis should trend to the end colour: {axis:?}");
+    }
+
+    /// A degenerate diamond has no span to build the field along, so there is nothing to bake.
+    #[test]
+    fn a_degenerate_diamond_does_not_bake() {
+        let g = GradientGeometry {
+            start: (0.5, 0.5),
+            end: (0.5, 0.5),
+            width: (1.0, 0.0),
+        };
+        assert!(bake_diamond_rgba(g, &[], 16).is_none());
     }
 }

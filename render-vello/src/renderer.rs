@@ -227,6 +227,8 @@ impl FocusRenderer {
     /// its own submitted encoder, before the draw, so the atlas is populated when the frame reads
     /// it.
     fn upload_pending_images(&mut self) {
+        // Bake any new diamonds first, so they ride the same upload as real images.
+        crate::abi::stage_diamond_bakes();
         let pending = crate::abi::take_pending_images();
         if pending.is_empty() {
             return;

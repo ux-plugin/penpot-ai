@@ -282,6 +282,57 @@ pub(crate) fn resolve_image(id: u128) -> Option<vello_common::paint::ImageId> {
         .and_then(|m| m.get(&id).copied())
 }
 
+/// Side of the square tile each diamond is baked into. 512² keeps a smooth ramp crisp at normal
+/// zoom; the tradeoff is softness far in, which is the documented cost of baking rather than a
+/// live shader.
+pub(crate) const DIAMOND_TILE: u32 = 512;
+
+/// Bake any reachable diamond gradient that has not been baked yet, staging it as an image.
+///
+/// A diamond has no peniko kind, so it is drawn by rasterising its L1 field to a tile and
+/// sampling it through the image atlas. This runs in the renderer's pre-pass, *before*
+/// `take_pending_images`, so the bakes ride the same upload path as real images — keyed by
+/// [`DiamondGradient::content_key`], so an unchanged diamond is baked once and reused.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn stage_diamond_bakes() {
+    let diamonds = with_state(|state| state.scene.diamonds());
+    if diamonds.is_empty() {
+        return;
+    }
+    let mut seen = std::collections::HashSet::new();
+    for d in diamonds {
+        let key = d.content_key();
+        if !seen.insert(key) {
+            continue; // same diamond on two shapes — bake once
+        }
+        if resolve_image(key).is_some() {
+            continue; // already in the atlas
+        }
+        let already_pending = PENDING_IMAGES
+            .lock()
+            .expect("pending images poisoned")
+            .iter()
+            .any(|p| p.id == key);
+        if already_pending {
+            continue;
+        }
+        let stops: Vec<_> = d.stops.iter().copied().collect();
+        let Some(rgba) = render_core::gradient::bake_diamond_rgba(d.geometry, &stops, DIAMOND_TILE)
+        else {
+            continue; // degenerate — nothing to draw
+        };
+        PENDING_IMAGES
+            .lock()
+            .expect("pending images poisoned")
+            .push(PendingImage {
+                id: key,
+                width: DIAMOND_TILE,
+                height: DIAMOND_TILE,
+                rgba,
+            });
+    }
+}
+
 // --- module lifecycle and viewport ------------------------------------------------------
 //
 // One asymmetry with render-wasm, and it is not incidental: **`init` does not create the
