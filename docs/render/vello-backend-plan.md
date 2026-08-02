@@ -460,8 +460,18 @@ Two casualties of the relocation, both fixed in place:
 
 **The emscripten build is the gate that matters here** (D2: render-wasm must keep building for `wasm32-unknown-emscripten` against prebuilt Skia). Run it with `pnpm run build:wasm` from `skia-rs-wasm` — it drives `render-wasm/build` inside `penpotapp/devenv`. Slice A passes it.
 
-### Phase 3 — common ABI + runtime selection
-Define the `Renderer` interface in `skia-rs-wasm`, shaped after `imaging`'s `PaintSink` (D13) with its streaming/retained split; write the two adapters (Emscripten and wasm-bindgen); capability-detect WebGPU and lazily download the matching `.wasm`. After this phase the two modules are genuinely interchangeable.
+### Phase 3 — common backend interface + runtime selection
+
+**Done (the seam and selection; Skia stays the default).** The plan here read "define the `Renderer` interface … write the two adapters … capability-detect WebGPU and lazily download the matching `.wasm`." Exploring the code first collapsed the scope: the ~150-call setter surface was *already* unified by `vello-module-facade.ts` (the wasm-bindgen→Emscripten `Module` proxy), and the download was *already* lazy — only the chosen backend's `.wasm` loads. The abstraction leaked in exactly **three** places, the `isVelloModule(...)` branches: surface bring-up (`initPage`), teardown (`destroyContext`), and image upload (`fetchImage`).
+
+What shipped:
+- **`RenderBackend` (new `backend.ts`)** — one interface owning exactly those three operations (`attachSurface`, `detachSurface`, `storeImage`). `SkiaBackend` and `VelloBackend` implement it (the Vello one wrapping the existing low-level `velloBackend`), and the backend is carried on the module as an own property `renderBackend` (same Proxy-surviving trick as `velloBackend`). `backendOf(module).op(...)` replaces every `isVelloModule` branch — `isVelloModule` is no longer a control-flow branch anywhere.
+- **The context-init asymmetry now lives in the backends.** `initCanvasContext`/`clearCanvas` set the shared context flag internally; the Vello methods set it explicitly. Preserved 1:1.
+- **Capability-gated selection seam** — `chooseBackendKind()` + `probeWebGPU()`. `?renderer=vello` on a browser *without* WebGPU now falls back to Skia with a warning instead of failing deep in wgpu bring-up.
+
+**Deliberately not done: auto-select.** `AUTO_SELECT_VELLO` is a `false` constant; the default stays Skia. Auto-routing WebGPU users onto Vello would render text and effects blank until Phases 4–5. Flipping it later is one line. This is *not* a `PaintSink` port (D13): that is a Rust trait that cannot span two wasm targets (D2), and the streaming setter surface it describes already exists as `api/*.ts`; the retained half is Phase 6.
+
+Verified in real Chrome (the in-app browser has no working GL surface, and this app's *workspace* canvas renders through a worker — the main-thread `Renderer` path is focus-mode only — so the seam was exercised directly): `chooseBackendKind()` returns `skia` by default even with WebGPU present, `vello` under `?renderer=vello` with an adapter, and `probeWebGPU()` goes `false` when `navigator.gpu` is masked (the fallback signal). Types clean; 593 unit tests pass with the cross-backend digest anchor unmoved (`2568426414`). A live Vello frame through the focus-mode `Renderer` was not driven — the selection + dispatch are behavior-preserving and unit/type-verified, but a visual focus-mode render remains unproven here.
 
 ### Phase 4 — effects parity
 Blur, drop/inner shadow, blend modes, masks, clips onto Vello's filter graph. Port the SkSL RuntimeEffects to WGSL via `FilterPrimitive::Custom`. Fuse pointwise runs between convolution barriers. Known Vello gaps to close: inner shadow, backdrop/background-blur semantics.

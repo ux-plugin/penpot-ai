@@ -24,7 +24,7 @@ import {
   isImageFill,
 } from './constants'
 import { getWebGLContext } from './webgl-helpers'
-import { isVelloModule } from '../vello-module'
+import { backendOf } from '../backend'
 
 /**
  * Creates a WebGL texture from an ImageBitmap
@@ -75,12 +75,12 @@ async function retrieveImage(url: string): Promise<ImageBitmap> {
  * render-vello builds a `Pixmap`, uploads it to the hybrid atlas, and resolves the image fill
  * against it. This is the one place the host branches on *which backend* for data, not just init.
  */
-function storeImageRgbaForVello(
+export function storeImageRgbaForVello(
   module: WasmModule,
   shapeId: string,
   imageId: string,
   img: ImageBitmap
-): void {
+): boolean {
   const { width, height } = img
   // `willReadFrequently` keeps the 2D context on the CPU, where the immediate `getImageData`
   // read is cheap; a GPU-backed canvas would stall on readback.
@@ -88,7 +88,7 @@ function storeImageRgbaForVello(
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) {
     console.warn('2D context unavailable for image RGBA readback')
-    return
+    return false
   }
   ctx.drawImage(img, 0, 0)
   const rgba = ctx.getImageData(0, 0, width, height).data // straight (unpremultiplied) alpha
@@ -106,6 +106,57 @@ function storeImageRgbaForVello(
   // `shapeId` is unused here: render-vello attaches the image by id at paint time, not by
   // touching a shape as the Skia path does. Kept in the signature for call-site symmetry.
   void shapeId
+  return true
+}
+
+/**
+ * Upload a decoded image to the Skia backend as a WebGL texture and hand render-wasm its GL
+ * texture id. Emscripten-GL end to end. Returns false if the GL context is unavailable.
+ */
+export function storeImageViaTexture(
+  module: WasmModule,
+  shapeId: string,
+  imageId: string,
+  thumbnail: boolean,
+  img: ImageBitmap
+): boolean {
+  const gl = getWebGLContext(module)
+  if (!gl) {
+    console.warn('WebGL context not available for image loading')
+    return false
+  }
+
+  const texture = createWebGLTextureFromImage(gl, img)
+  const textureId = getTextureIdForGLObject(module, texture)
+  const width = img.width
+  const height = img.height
+
+  // Header: 32 bytes (2 UUIDs) + 4 bytes (thumbnail) + 4 bytes (texture ID) + 8 bytes (dimensions)
+  const totalBytes = 48
+  const offset = allocBytes(module, totalBytes)
+  const dataView = new DataView(module.HEAPU8.buffer, module.HEAPU8.byteOffset)
+
+  // 1. Set shape id (offset + 0 to offset + 15)
+  writeUUIDToDataView(dataView, offset, shapeId)
+
+  // 2. Set image id (offset + 16 to offset + 31)
+  writeUUIDToDataView(dataView, offset + 16, imageId)
+
+  // 3. Set thumbnail flag as u32 (offset + 32)
+  dataView.setUint32(offset + 32, thumbnail ? 1 : 0, true)
+
+  // 4. Set texture ID (offset + 36)
+  dataView.setUint32(offset + 36, textureId, true)
+
+  // 5. Set width (offset + 40)
+  dataView.setUint32(offset + 40, width, true)
+
+  // 6. Set height (offset + 44)
+  dataView.setUint32(offset + 44, height, true)
+
+  module._store_image_from_texture()
+  freeBytes(module)
+  return true
 }
 
 /**
@@ -130,52 +181,9 @@ export function fetchImage(
     callback: async (): Promise<boolean> => {
       try {
         const img = await retrieveImage(url)
-
-        // Vello has no Emscripten GL context; hand it the pixels instead of a texture id.
-        if (isVelloModule(module)) {
-          storeImageRgbaForVello(module, shapeId, imageId, img)
-          return true
-        }
-
-        const gl = getWebGLContext(module)
-
-        if (!gl) {
-          console.warn('WebGL context not available for image loading')
-          return false
-        }
-
-        const texture = createWebGLTextureFromImage(gl, img)
-        const textureId = getTextureIdForGLObject(module, texture)
-        const width = img.width
-        const height = img.height
-        
-        // Header: 32 bytes (2 UUIDs) + 4 bytes (thumbnail) + 4 bytes (texture ID) + 8 bytes (dimensions)
-        const totalBytes = 48
-        const offset = allocBytes(module, totalBytes)
-        const dataView = new DataView(module.HEAPU8.buffer, module.HEAPU8.byteOffset)
-        
-        // 1. Set shape id (offset + 0 to offset + 15)
-        writeUUIDToDataView(dataView, offset, shapeId)
-        
-        // 2. Set image id (offset + 16 to offset + 31)
-        writeUUIDToDataView(dataView, offset + 16, imageId)
-        
-        // 3. Set thumbnail flag as u32 (offset + 32)
-        dataView.setUint32(offset + 32, thumbnail ? 1 : 0, true)
-        
-        // 4. Set texture ID (offset + 36)
-        dataView.setUint32(offset + 36, textureId, true)
-        
-        // 5. Set width (offset + 40)
-        dataView.setUint32(offset + 40, width, true)
-        
-        // 6. Set height (offset + 44)
-        dataView.setUint32(offset + 44, height, true)
-        
-        module._store_image_from_texture()
-        freeBytes(module)
-        
-        return true
+        // Which store the pixels go to — a WebGL texture id (Skia) or raw RGBA for the wgpu
+        // atlas (Vello) — is the backend's own business now.
+        return backendOf(module).storeImage(module, shapeId, imageId, thumbnail, img)
       } catch (error) {
         console.error('Could not fetch image', {
           imageId,

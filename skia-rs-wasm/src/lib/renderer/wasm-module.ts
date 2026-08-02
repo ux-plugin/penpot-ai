@@ -6,18 +6,29 @@
 import type { WasmModule } from './wasm-types'
 import initWasmModuleFactory from '../../../public/wasm/render-wasm.js'
 import { loadVelloModule } from './vello-module'
+import { attachBackend, chooseBackendKind, type RenderBackend } from './backend'
+import { initCanvasContext, clearCanvas } from './api/canvas'
+import { storeImageViaTexture } from './api/fills'
 
 /**
- * Which rendering backend to load. Exactly one wasm artifact is downloaded (D2), so this has to
- * be decided before anything is fetched.
- *
- * Opt in with `?renderer=vello`. Skia stays the default while the Vello backend is missing
- * text, effects and images — it is a Phase-2 preview, not an alternative anyone should land on
- * by accident.
+ * The Skia backend seam (see `backend.ts`). Its three operations are the existing Emscripten-GL
+ * paths — a synchronous GL context, its teardown, and a WebGL-texture image upload — each of
+ * which already sets/clears the shared context flag internally.
  */
-function velloRequested(): boolean {
-  if (typeof window === 'undefined') return false
-  return new URLSearchParams(window.location.search).get('renderer') === 'vello'
+function createSkiaBackend(): RenderBackend {
+  return {
+    kind: 'skia',
+    async attachSurface(module, canvas, { dpr, debug, debugPip }): Promise<void> {
+      const ok = initCanvasContext(module, canvas, dpr, debug, debugPip)
+      if (!ok) throw new Error('Failed to initialize WebGL context')
+    },
+    detachSurface(module, canvas, releaseContext): void {
+      clearCanvas(module, canvas, releaseContext)
+    },
+    storeImage(module, shapeId, imageId, thumbnail, img): boolean {
+      return storeImageViaTexture(module, shapeId, imageId, thumbnail, img)
+    },
+  }
 }
 
 let wasmModuleInstance: WasmModule | null = null
@@ -58,7 +69,10 @@ export async function ensureWasmModule(wasmPathParam?: string): Promise<WasmModu
   // Start loading
   wasmModulePromise = (async () => {
     try {
-      if (velloRequested()) {
+      // Exactly one wasm artifact is downloaded (D2); the seam decides which before anything is
+      // fetched. Default is Skia — the Vello backend is opt-in until it reaches text/effects
+      // parity (see `AUTO_SELECT_VELLO` in `backend.ts`).
+      if ((await chooseBackendKind()) === 'vello') {
         const vello = (await loadVelloModule()) as unknown as WasmModule
         wasmModuleInstance = vello
         wasmModuleError = null
@@ -76,7 +90,8 @@ export async function ensureWasmModule(wasmPathParam?: string): Promise<WasmModu
           return filePath
         }
       })
-      
+
+      attachBackend(module, createSkiaBackend())
       wasmModuleInstance = module
       wasmModuleError = null
       return module

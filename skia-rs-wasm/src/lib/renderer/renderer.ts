@@ -11,18 +11,16 @@ import type { Matrix, Fill } from 'penpot-exporter/types'
 import { getDPR } from './utils'
 import { Viewport } from './viewport'
 import {
-  initCanvasContext,
   sceneDigest,
   setCanvasSize,
   setCanvasBackground,
-  clearCanvas,
   clearCanvasPixels,
   getSelectionRect,
   setRenderOptions,
 } from './api/canvas'
 import { setViewBox, resizeViewbox, initializeViewport } from './api/viewport'
-import { getContextInitialized, setContextInitialized } from './api/context'
-import { isVelloModule } from './vello-module'
+import { getContextInitialized } from './api/context'
+import { backendOf } from './backend'
 import { processObject } from './api/orchestration'
 import { requestRender, renderSync } from './api/rendering'
 import { moduleUseShape, setShapeChildren } from './api/shape'
@@ -106,15 +104,9 @@ export class Renderer {
     if (!getContextInitialized()) {
       return
     }
-    // `clearCanvas` unregisters the Emscripten GL context, which the Vello backend does not
-    // have — it owns a wgpu surface instead. Stopping its frame loop is the equivalent.
-    if (isVelloModule(this.module)) {
-      this.module.velloBackend.detach()
-      this.module._clean_up()
-      setContextInitialized(false)
-      return
-    }
-    clearCanvas(this.module, this.canvas, releaseContext ?? false)
+    // Skia unregisters its Emscripten GL context; Vello stops its wgpu frame loop. The backend
+    // owns the difference — and resets the shared context-initialized flag either way.
+    backendOf(this.module).detachSurface(this.module, this.canvas, releaseContext ?? false)
   }
 
   /**
@@ -159,42 +151,15 @@ export class Renderer {
 
     this.destroyContext()
 
-    // The one place the backends genuinely diverge (D2). Emscripten binds a GL context to the
-    // canvas in its JS glue, so the Skia path is synchronous; wgpu's adapter and device are
-    // acquired asynchronously from the canvas element, so the Vello path is not. Everything
-    // after this line is backend-agnostic — `api/*.ts` is driven identically either way.
-    if (isVelloModule(this.module)) {
-      const dprScale = this.options.dpr
-      // Give the canvas its device-pixel backing store first, and *before* the surface is
-      // created — `create_focus_renderer` reads `canvas.width/height` to size the wgpu surface,
-      // so a later resize would be a reconfigure rather than a correct first frame.
-      //
-      // The Skia path gets this from `initCanvasContext`, which ends in the same call. Leaving
-      // it out here left the canvas at its CSS size while `_set_render_options` still announced
-      // the real dpr, so the viewport scaled by a factor the canvas did not have and the whole
-      // scene drew exactly `dpr` times too large. It corrected itself on the first window
-      // resize, because `Renderer.resize` calls this too — which is what made it look
-      // intermittent rather than systematic.
-      setCanvasSize(this.module, this.canvas, dprScale)
-      await this.module.velloBackend.attachCanvas(this.canvas)
-      this.module._init(
-        Math.floor(this.canvas.width / dprScale),
-        Math.floor(this.canvas.height / dprScale)
-      )
-      this.module._set_render_options(0, dprScale)
-      setContextInitialized(true)
-    } else {
-      const success = initCanvasContext(
-        this.module,
-        this.canvas,
-        this.options.dpr,
-        this.options.debug,
-        this.options.debugPip
-      )
-      if (!success) {
-        throw new Error('Failed to initialize WebGL context')
-      }
-    }
+    // Surface bring-up is the one place the backends genuinely diverge (D2): Emscripten binds a
+    // GL context synchronously in its JS glue, while wgpu acquires an adapter and device
+    // asynchronously from the canvas. The backend owns that difference; everything after this
+    // line is backend-agnostic — `api/*.ts` is driven identically either way.
+    await backendOf(this.module).attachSurface(this.module, this.canvas, {
+      dpr: this.options.dpr,
+      debug: this.options.debug,
+      debugPip: this.options.debugPip,
+    })
 
     const canvasWidth = this.canvas.clientWidth || this.canvas.width
     const canvasHeight = this.canvas.clientHeight || this.canvas.height

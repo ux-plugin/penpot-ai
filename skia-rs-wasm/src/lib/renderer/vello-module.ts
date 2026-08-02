@@ -19,6 +19,10 @@
 
 import { createModuleFacade, type EmscriptenLikeModule, type RawWasmExports } from './vello-module-facade'
 import type { WasmModule } from './wasm-types'
+import { attachBackend, type RenderBackend, type SurfaceOptions } from './backend'
+import { setCanvasSize } from './api/canvas'
+import { setContextInitialized } from './api/context'
+import { storeImageRgbaForVello } from './api/fills'
 
 /** Default location of the wasm-bindgen bundle, copied here by `scripts/build-vello.sh`. */
 const VELLO_GLUE_PATH = '/wasm-vello/render-vello.js'
@@ -176,6 +180,38 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
   const module = Object.assign(Object.create(base) as EmscriptenLikeModule, {
     velloBackend: vello,
   }) as VelloModule
+
+  // The host-facing backend seam (see `backend.ts`). It wraps the low-level `vello` object above
+  // and owns the three operations that diverge from Skia — surface bring-up, teardown and image
+  // upload. Attached as an own property on the same wrapper, for the same reason `velloBackend`
+  // is: it must be found before the facade's Proxy trap.
+  const renderBackend: RenderBackend = {
+    kind: 'vello',
+    async attachSurface(m: WasmModule, canvas: HTMLCanvasElement, { dpr }: SurfaceOptions): Promise<void> {
+      // Size the canvas backing store *before* the surface is created: `create_focus_renderer`
+      // reads `canvas.width/height` to size the wgpu surface, so doing it after would make the
+      // first frame a reconfigure. (The Skia path gets this from `initCanvasContext`.) Leaving
+      // it out drew the whole scene `dpr` times too large until the first window resize.
+      setCanvasSize(m, canvas, dpr)
+      await vello.attachCanvas(canvas)
+      m._init(Math.floor(canvas.width / dpr), Math.floor(canvas.height / dpr))
+      m._set_render_options(0, dpr)
+      setContextInitialized(true)
+    },
+    detachSurface(m: WasmModule): void {
+      // No Emscripten GL context to unregister — Vello owns a wgpu surface. Stopping the frame
+      // loop is the equivalent.
+      vello.detach()
+      m._clean_up()
+      setContextInitialized(false)
+    },
+    storeImage(m: WasmModule, shapeId: string, imageId: string, _thumbnail: boolean, img: ImageBitmap): boolean {
+      // The wgpu atlas takes raw RGBA, not an Emscripten GL texture id; thumbnail-vs-full is not
+      // a distinction render-vello makes at upload time.
+      return storeImageRgbaForVello(m, shapeId, imageId, img)
+    },
+  }
+  attachBackend(module, renderBackend)
 
   if (import.meta.env.DEV) {
     // The backend is a preview behind `?renderer=vello`; a handle makes it inspectable from the
