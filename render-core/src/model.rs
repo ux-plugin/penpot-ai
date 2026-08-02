@@ -460,6 +460,43 @@ fn digest_stroke_style(hash: &mut u64, style: &kurbo::Stroke) {
     }
 }
 
+/// Hash a gradient's geometry. The discriminant goes in first, so a linear and a radial that
+/// happen to agree on their numbers still hash apart.
+fn digest_gradient_kind(hash: &mut u64, kind: &peniko::GradientKind) {
+    match kind {
+        peniko::GradientKind::Linear(p) => {
+            fnv_u64(hash, 1);
+            for v in [p.start.x, p.start.y, p.end.x, p.end.y] {
+                fnv_f64(hash, v);
+            }
+        }
+        peniko::GradientKind::Radial(p) => {
+            fnv_u64(hash, 2);
+            for v in [
+                p.start_center.x,
+                p.start_center.y,
+                f64::from(p.start_radius),
+                p.end_center.x,
+                p.end_center.y,
+                f64::from(p.end_radius),
+            ] {
+                fnv_f64(hash, v);
+            }
+        }
+        peniko::GradientKind::Sweep(p) => {
+            fnv_u64(hash, 3);
+            for v in [
+                p.center.x,
+                p.center.y,
+                f64::from(p.start_angle),
+                f64::from(p.end_angle),
+            ] {
+                fnv_f64(hash, v);
+            }
+        }
+    }
+}
+
 fn digest_brush(hash: &mut u64, brush: &Brush) {
     match brush {
         Brush::Solid(c) => {
@@ -470,6 +507,11 @@ fn digest_brush(hash: &mut u64, brush: &Brush) {
         }
         Brush::Gradient(g) => {
             fnv_u64(hash, 2);
+            // Geometry as well as stops. Hashing colours alone would let two backends disagree
+            // about a gradient's *direction* — the same stops running left-to-right on one and
+            // top-to-bottom on the other — and report a match.
+            digest_gradient_kind(hash, &g.kind);
+            fnv_u64(hash, g.extend as u64);
             fnv_u64(hash, g.stops.len() as u64);
             for stop in g.stops.iter() {
                 fnv_f64(hash, f64::from(stop.offset));
@@ -724,6 +766,51 @@ mod tests {
     fn digest_of_an_empty_scene_is_stable() {
         assert_eq!(Scene::new().digest(), Scene::new().digest());
         assert_ne!(Scene::new().digest(), tree(&[0, 1, 2]).digest());
+    }
+
+    /// Colours alone are not a gradient. Two fills with identical stops running in different
+    /// directions are visibly different documents, and a digest that missed it would let the
+    /// backends drift on exactly the thing gradients are for.
+    #[test]
+    fn digest_notices_a_gradient_direction() {
+        use peniko::{Gradient, GradientKind};
+
+        let stops = [
+            peniko::ColorStop {
+                offset: 0.0,
+                color: Color::from_rgba8(255, 0, 0, 255).into(),
+            },
+            peniko::ColorStop {
+                offset: 1.0,
+                color: Color::from_rgba8(0, 0, 255, 255).into(),
+            },
+        ];
+        let with = |kind: GradientKind| {
+            let mut s = tree(&[0, 1, 2]);
+            let mut g = Gradient::new_linear((0.0, 0.0), (1.0, 0.0));
+            g.kind = kind;
+            s.get_mut(1).unwrap().fills = vec![Brush::Gradient(g.with_stops(&stops[..]))];
+            s.digest()
+        };
+
+        let left_to_right = with(GradientKind::Linear(peniko::LinearGradientPosition {
+            start: (0.0, 0.0).into(),
+            end: (1.0, 0.0).into(),
+        }));
+        let top_to_bottom = with(GradientKind::Linear(peniko::LinearGradientPosition {
+            start: (0.0, 0.0).into(),
+            end: (0.0, 1.0).into(),
+        }));
+        assert_ne!(left_to_right, top_to_bottom, "direction must be hashed");
+
+        // …and a radial with numerically similar parameters is still a different picture.
+        let radial = with(GradientKind::Radial(peniko::RadialGradientPosition {
+            start_center: (0.0, 0.0).into(),
+            start_radius: 0.0,
+            end_center: (1.0, 0.0).into(),
+            end_radius: 1.0,
+        }));
+        assert_ne!(left_to_right, radial, "the kind must be hashed");
     }
 
     /// The diagnostic this exists for: a blank canvas with a healthy node count. In `tree`, only

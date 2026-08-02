@@ -25,7 +25,7 @@
 
 use render_core::kurbo::{Affine, BezPath, Ellipse, Rect, RoundedRect, Shape as _};
 use render_core::model as m;
-use render_core::peniko::{Brush, Color};
+use render_core::peniko::{Brush, Color, GradientKind};
 use vello_example_scenes::{ExampleScene, RenderingContext};
 
 /// Depth cap for the walk. The tree comes off the wire, and a cycle would otherwise recurse
@@ -185,13 +185,10 @@ fn paint_self<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) 
 
     ctx.set_transform(matrix);
 
-    // First solid fill wins. `Brush` also carries gradients and images; those are drawn in a
-    // later increment, and need no new model type (D12).
-    if let Some(color) = node.fills.iter().find_map(|f| match f {
-        Brush::Solid(c) => Some(*c),
-        _ => None,
-    }) {
-        ctx.set_paint(color);
+    // The first fill this backend can paint wins — not simply the first fill, or a shape whose
+    // top fill is an image would render as nothing while a solid underneath it went unused.
+    let painted = node.fills.iter().any(|f| set_brush(ctx, f, node.bounds));
+    if painted {
         match node.kind {
             // The one case worth a fast path: a square-cornered rect needs no path at all.
             m::ShapeKind::Rect | m::ShapeKind::Frame if node.corners.is_none() => {
@@ -210,17 +207,69 @@ fn paint_self<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) 
     // a frame's stroke straddles its edge and is *not* clipped by the frame's own clip, which
     // is why clip and opacity take separate layers in `draw_node`.
     if node.strokes.is_empty() {
+        ctx.set_paint_transform(Affine::IDENTITY);
         return;
     }
     let path = outline(node);
     for stroke in &node.strokes {
-        let Brush::Solid(color) = &stroke.brush else {
+        if !set_brush(ctx, &stroke.brush, node.bounds) {
             continue;
-        };
-        ctx.set_paint(*color);
+        }
         ctx.set_stroke(stroke.style.clone());
         ctx.stroke_path(&path);
     }
+
+    // The paint transform is context state, not an argument: left set, the next shape's solid
+    // fill would be drawn through this shape's gradient mapping.
+    ctx.set_paint_transform(Affine::IDENTITY);
+}
+
+/// Install a brush as the current paint. Returns false when this backend cannot draw it yet, so
+/// the caller can fall through to the next fill rather than drawing nothing.
+///
+/// **Gradient coordinates are normalised to the shape's own box**, not page space — Penpot's
+/// exporter emits `0..1` and render-wasm maps them with `translate(rect.origin) · scale(rect.size)`
+/// as a shader-local matrix. Vello's paint transform has exactly those semantics (applied to the
+/// paint after the geometry's transform), so the same mapping is expressed the same way. Drawn
+/// without it, every gradient collapses into the top-left pixel of the page.
+fn set_brush<T: RenderingContext>(ctx: &mut T, brush: &Brush, bounds: Rect) -> bool {
+    match brush {
+        Brush::Solid(color) => {
+            ctx.set_paint_transform(Affine::IDENTITY);
+            ctx.set_paint(*color);
+            true
+        }
+        // Only linear so far. Radial and angular are *decoded* into the model — so the digest
+        // sees them and the harness can compare them — but painting them needs more than this
+        // mapping: render-wasm builds a shader matrix carrying a rotation and an ellipse factor
+        // (`to_radial_shader`, `to_angular_shader`), and neither survives a peniko `Gradient`,
+        // which has nowhere to put a transform. Drawing them with the linear mapping would put
+        // recognisable but wrong paint on screen, which reads as a rendering bug rather than as
+        // a missing feature — the same call as inner and outer strokes.
+        Brush::Gradient(g) if matches!(g.kind, GradientKind::Linear(_)) => {
+            ctx.set_paint_transform(unit_box_to(bounds));
+            ctx.set_paint(g.clone());
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Maps the unit box onto `bounds` — the space Penpot's gradient coordinates live in.
+fn unit_box_to(bounds: Rect) -> Affine {
+    // A zero-extent axis would collapse the paint onto a line and hand the rasteriser a
+    // singular matrix; leaving that axis unscaled keeps the fill finite and visible.
+    let sx = if bounds.width().abs() > f64::EPSILON {
+        bounds.width()
+    } else {
+        1.0
+    };
+    let sy = if bounds.height().abs() > f64::EPSILON {
+        bounds.height()
+    } else {
+        1.0
+    };
+    Affine::translate((bounds.x0, bounds.y0)) * Affine::scale_non_uniform(sx, sy)
 }
 
 /// The node's geometry as a path — what it fills, and what it clips its children to.

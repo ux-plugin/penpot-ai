@@ -372,6 +372,25 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
   - **The two models disagree on the default `clip`.** `Shape::new` defaults `clip_content` to true, `Node::new` to false. Every shape the host syncs carries an explicit value, so no real document is affected — but any path that creates a shape without the flag would have one backend hide its children and the other not. The defaults are deliberately left unaligned: failing open is safer, since an unclipped shape spills visibly while a wrongly-clipped one makes content vanish with nothing on screen to explain it.
   - **A fixture built from `node-factory` is not canonical.** It mints a fresh uuid per call and the digest hashes ids, so a document that looks fixed digests differently every run. Both backends must be driven with the *same ids*; a replayed recording gives that for free, a hand-built fixture has to state it.
 
+- **Gradients (done, linear)** — fills and strokes.
+
+  **The coordinate convention is the whole problem.** Penpot's exporter emits gradient endpoints normalised to `0..1` of the shape's own box, and render-wasm maps them with `translate(rect.origin) · scale(rect.size)` as a shader-local matrix. Vello's `set_paint_transform` has exactly those semantics — applied to the paint *after* the geometry's transform — so the same mapping is expressed the same way. Drawn without it, every gradient collapses into the top-left pixel of the page, which looks like a missing feature rather than a wrong matrix.
+
+  The paint transform is context state, not an argument: left set, the next shape's solid fill is drawn through the previous shape's gradient mapping. It is reset after each node.
+
+  Fill selection is now "the first fill this backend can *paint*", not "the first fill". A shape whose top fill is an image would otherwise render as nothing while a usable solid sat underneath it.
+
+  **Radial and angular are decoded but not painted.** They are in the model, so the digest sees them and the harness can compare them, but painting them needs more than this mapping: render-wasm's `to_radial_shader` and `to_angular_shader` build matrices carrying a rotation and an ellipse/shear factor, and a peniko `Gradient` has nowhere to put a transform. Drawing them with the linear mapping would put recognisable but *wrong* paint on screen — the same call as inner and outer strokes. Doing them properly wants a per-fill paint transform in the model.
+
+  **`digest_brush` now hashes gradient geometry**, not just stops. Colours alone would let two backends disagree about a gradient's direction — the same stops running left-to-right on one and top-to-bottom on the other — and report a match.
+
+  Verified across both backends in a browser: identical digests for no-fill, solid, left-to-right and top-to-bottom (`1475261443`, `727853624`, `3649157659`, `1129462453`), and the gradient visibly rotates with its endpoints.
+
+  Two things this turned up:
+
+  - **Shape type ids are not what a reader guesses.** `2` is *bool*; rect is `3` (`serializers.ts`). More importantly, render-vello maps every unknown id to `Rect` while render-wasm's projection returns `None`, so a text or bool shape is a rect on one side and absent on the other. Real documents containing text therefore cannot be compared yet — the fix is for render-vello to omit unsupported kinds too, which needs `set_shape_type` to be able to retract a node `use_shape` already created.
+  - **The clip default divergence is not theoretical.** Driving the ABI directly, with no `set_shape_clip_content`, the two backends disagreed on *every* shape — including one with no fill at all. The host always sends the flag, so documents are fine, but any harness that drives the wire by hand must send it too.
+
 - **Slice E (done)** — strokes. Seven entry points; centre strokes drawn, inner and outer accepted and dropped (they are offsetting decisions kurbo cannot express, and drawing them centred puts paint visibly in the wrong place — worse than nothing, because it reads as a rendering bug rather than a missing feature).
 
   **The style→dash mapping lives in render-core**, in `apply_stroke_style`. Penpot's Dotted/Dashed/Mixed each imply a pattern built from the width (`width + 10`, `width + 5`, `width + 1`) — constants arbitrary enough that deriving them separately on each side is exactly how two backends end up drawing visibly different dashes from the same document.
