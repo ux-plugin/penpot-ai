@@ -9,7 +9,14 @@ import { RightSidePanel } from './lib/components/RightSidePanel/RightSidePanel'
 import { undo, redo } from './lib/page-crud'
 import { focusUndo, focusRedo } from './lib/history/focus-undo'
 import { isFocusBufferOpen } from './lib/history/history-store'
-import { getPersistenceProvider, loadInitialDocument, startDocumentAutosave } from './lib/persistence'
+import {
+  activeDocumentId,
+  getPersistenceProvider,
+  openDocument,
+  startDocumentAutosave,
+} from './lib/persistence'
+import { navigate, route, startRouting } from './lib/routing/route'
+import { DocumentsHome } from './lib/components/DocumentsHome/DocumentsHome'
 import { useWorkspaceStore } from './lib/renderer/store/workspace-store'
 import { SettingsDialog } from './lib/components/Settings/SettingsDialog'
 import { TopBar } from './lib/components/TopBar'
@@ -22,6 +29,7 @@ import { editorMode } from './lib/renderer/signals/editor-mode'
 import { focusStage } from './lib/renderer/signals/focus-stage'
 import { FocusStage } from './lib/components/FocusStage/FocusStage'
 import { useSignalCoalesced } from './lib/renderer/signals/use-signal-coalesced'
+import { useSignalValue } from './lib/renderer/signals/use-signal-value'
 
 /**
  * Read the initial value of the render-wasm cache PiP debug overlay
@@ -50,7 +58,9 @@ function BuildLeftRail() {
   )
 }
 
-function App() {
+/** The editor shell: top bar, canvas, rails. Mounted once the first document is
+ *  opened and then kept mounted — see `App` below for why. */
+function Editor() {
   const mode = useSignalCoalesced(editorMode)
   const [error, setError] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -68,34 +78,51 @@ function App() {
     console.error('Error:', err)
   }, [])
 
-  // Load the initial document on first render. We can't do this on plain mount
+  // Load whichever document the URL names. We can't do this on plain mount
   // because the WASM renderer is initialised asynchronously inside CanvasWorkspace
   // — `loadDocument` only calls `renderer.initPage` once `state.renderer` exists,
   // so loading too early populates the model but never paints. Wait for the
-  // renderer to come up, then load exactly once: the persisted document if the
-  // environment can restore one (capability-gated), else a blank document. Once
-  // loaded, start the debounced autosave (a no-op when the provider can't persist).
+  // renderer, then open the routed document; re-runs when the route names a
+  // different one. A document that no longer exists sends you home with a notice
+  // rather than leaving a blank canvas behind a dead URL.
   const renderer = useWorkspaceStore((s) => s.renderer)
-  const didLoadInitialDocument = useRef(false)
+  const currentRoute = useSignalValue(route)
+  const loadedIdRef = useRef<string | null>(null)
   const autosaveDisposeRef = useRef<(() => void) | null>(null)
   useEffect(() => {
-    if (!renderer || didLoadInitialDocument.current) return
-    didLoadInitialDocument.current = true
+    if (!renderer || currentRoute?.kind !== 'doc') return
+    const { id } = currentRoute
+    if (loadedIdRef.current === id) return
+    loadedIdRef.current = id
     void (async () => {
-      await loadInitialDocument()
-      autosaveDisposeRef.current = startDocumentAutosave(getPersistenceProvider())
+      if (!(await openDocument(id))) {
+        loadedIdRef.current = null
+        navigate(
+          { kind: 'home' },
+          { replace: true, notice: `That document no longer exists (${id}).` },
+        )
+        return
+      }
+      autosaveDisposeRef.current ??= startDocumentAutosave(getPersistenceProvider())
     })()
-    return () => {
+  }, [renderer, currentRoute])
+
+  useEffect(
+    () => () => {
       autosaveDisposeRef.current?.()
       autosaveDisposeRef.current = null
-    }
-  }, [renderer])
+    },
+    [],
+  )
 
   // Once back online, retry any fonts that fell back to the default while offline.
   useFontReconnect()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The documents screen renders *over* a still-mounted editor, so without
+      // this Cmd+Z on the list would undo an edit on the canvas underneath.
+      if (route.peek().kind !== 'doc') return
       const t = e.target as HTMLElement | null
       if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
       const mod = e.metaKey || e.ctrlKey
@@ -206,6 +233,46 @@ function App() {
         />
       </div>
     </div>
+  )
+}
+
+/**
+ * The route switch.
+ *
+ * The editor is lazy-mounted on the first document open and then never
+ * unmounted: unmounting would tear down and re-initialise the WASM renderer on
+ * every trip home, while mounting it up-front would pay that cost just to browse
+ * a list.
+ *
+ * It's hidden with `visibility`, not by stacking the documents screen over it.
+ * Stacking doesn't work — the editor's chrome (top bar, tool bar, overlays) is
+ * `position: fixed` with a higher z-index, so it escapes any covering layer and
+ * paints over the list. `visibility: hidden` hides the whole subtree including
+ * those fixed children, and blocks pointer events, while *keeping layout* — so
+ * the canvas holds its size and the GL surface never sees a resize.
+ */
+function App() {
+  const currentRoute = useSignalValue(route)
+  // "A document is, or has been, open." Navigating home doesn't clear
+  // `activeDocumentId`, so this latches on its own — no effect, no extra state.
+  const openId = useSignalValue(activeDocumentId)
+  const editorMounted = currentRoute?.kind === 'doc' || openId !== null
+  const editorVisible = currentRoute?.kind === 'doc'
+
+  useEffect(() => startRouting(), [])
+
+  return (
+    <>
+      {editorMounted && (
+        <div
+          style={{ visibility: editorVisible ? 'visible' : 'hidden' }}
+          aria-hidden={!editorVisible}
+        >
+          <Editor />
+        </div>
+      )}
+      {!editorVisible && <DocumentsHome />}
+    </>
   )
 }
 

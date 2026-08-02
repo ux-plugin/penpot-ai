@@ -45,6 +45,10 @@ export function createIndexedDbKvStore(dbName: string, storeName: string): KvSto
       const v = await run<unknown>('readonly', (s) => s.get(key))
       return typeof v === 'string' ? v : null
     },
+    async keys() {
+      const ks = await run<IDBValidKey[]>('readonly', (s) => s.getAllKeys())
+      return ks.filter((k): k is string => typeof k === 'string')
+    },
     async set(key, value) {
       await run('readwrite', (s) => s.put(value, key))
     },

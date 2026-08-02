@@ -12,12 +12,13 @@
  * here; this bar is the document/global surface.
  */
 
-import { Undo2, Redo2, FilePlus2, Settings, Frame, Blocks, Minus, Plus } from 'lucide-react'
+import { Undo2, Redo2, FilePlus2, Settings, Frame, Blocks, Minus, Plus, ChevronLeft } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { undo, redo } from '../page-crud'
-import { resetToNewDocument } from '../persistence'
+import { createDocument } from '../persistence'
+import { navigate } from '../routing/route'
 import { editorMode, setEditorMode, type EditorMode } from '../renderer/signals/editor-mode'
 import { viewport } from '../renderer/signals/pointer'
 import { zoomInAtCenter, zoomOutAtCenter, setZoomLevel } from '../renderer/viewport-zoom'
@@ -85,8 +86,19 @@ export function TopBar({ onOpenSettings }: { onOpenSettings: () => void }) {
       className="pointer-events-auto fixed inset-x-0 top-0 z-80 flex h-(--top-bar-height,2.75rem) items-center justify-between gap-3 border-b border-border/80 bg-white px-2"
       role="banner"
     >
-      {/* Left zone — reserved for document name / breadcrumb. */}
-      <div className="flex flex-1 items-center gap-2 overflow-hidden" />
+      {/* Left zone — back to the library, then room for a document breadcrumb. */}
+      <div className="flex flex-1 items-center gap-2 overflow-hidden">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          title="Back to documents"
+          onClick={() => navigate({ kind: 'home' })}
+        >
+          <ChevronLeft className="size-4" />
+          Documents
+        </Button>
+      </div>
 
       {/* Center zone — workspace mode switcher (segmented control). */}
       <nav
@@ -130,13 +142,12 @@ export function TopBar({ onOpenSettings }: { onOpenSettings: () => void }) {
           className="h-8 w-8"
           aria-label="New document"
           title="New document"
-          onClick={() => {
-            if (window.confirm('Start a new document? The current one will be discarded.')) {
-              // Also clears any persisted document — the escape hatch from a
-              // stale/corrupt saved state.
-              void resetToNewDocument()
-            }
-          }}
+          // No confirm any more: this adds a document to the library and opens
+          // it. The one you were in stays saved under its own id. Routing to the
+          // new id is what keeps the URL honest about what's on screen.
+          onClick={() =>
+            void createDocument().then((s) => navigate({ kind: 'doc', id: s.id }))
+          }
         >
           <FilePlus2 className="size-4" />
         </Button>
