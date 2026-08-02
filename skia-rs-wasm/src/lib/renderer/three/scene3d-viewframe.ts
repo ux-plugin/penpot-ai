@@ -145,6 +145,109 @@ export function windowFittedToBox(
   return { x: cx - w / 2, y: cy - h / 2, w, h }
 }
 
+/**
+ * Narrow a plan to the part of the box that is actually on screen — the ONE mechanism
+ * behind viewport-clipped baking.
+ *
+ * A placed scene is baked into a texture, and a texture is raster: zoom past the render
+ * target's resolution and Skia magnifies texels. Rendering only the visible slice, at that
+ * slice's own device pixels, keeps the bake 1:1 however far you zoom — the target then
+ * bounds the SCREEN rather than the node, so it stops being a resolution ceiling.
+ *
+ * The slice is a sub-rect of the box; the answer is a sub-rect of the window. That is the
+ * whole trick, and it is why a clip composes with a resize for free: both are windows onto
+ * the same reference frustum, so the camera never learns which one it is looking through.
+ * An earlier version framed the clip on the NODE's aspect instead — a different reference
+ * frame from the one the window lives in — and every scene whose window wasn't the default
+ * rendered stretched, which is why the feature sat behind a flag.
+ *
+ * The camera does NOT move. A dolly would change parallax and foreshortening, so the scene
+ * would look different at different zooms; cropping the frustum yields the identical image
+ * with more pixels in it.
+ *
+ * `slice` is in box-local coords. Returns null when it misses what's drawn entirely, and
+ * otherwise the plan to render plus the box-local rect to place it at — the intersection,
+ * NOT the slice, since a letterboxed window doesn't reach the box's edges.
+ */
+export function narrowPlanToSlice(
+  plan: CropPlan,
+  boxW: number,
+  boxH: number,
+  slice: BoxRect,
+): { plan: CropPlan; dest: BoxRect } | null {
+  if (!(boxW > 0) || !(boxH > 0) || !(plan.fw > 0) || !(plan.fh > 0)) return null
+  // Where the window actually lands in the box: the box itself when the proportions agree,
+  // inset by the letterbox bands when they don't — which is why the slice is clamped to
+  // THIS rect rather than to the box.
+  const dx = plan.fx * boxW
+  const dy = plan.fy * boxH
+  const dw = plan.fw * boxW
+  const dh = plan.fh * boxH
+  const l = Math.max(dx, slice.x)
+  const t = Math.max(dy, slice.y)
+  const r = Math.min(dx + dw, slice.x + slice.w)
+  const b = Math.min(dy + dh, slice.y + slice.h)
+  if (!(r > l) || !(b > t)) return null
+  return {
+    plan: {
+      fullW: plan.fullW,
+      fullH: plan.fullH,
+      offX: plan.offX + ((l - dx) / dw) * plan.subW,
+      offY: plan.offY + ((t - dy) / dh) * plan.subH,
+      subW: ((r - l) / dw) * plan.subW,
+      subH: ((b - t) / dh) * plan.subH,
+      // The sub-window is a proportional sub-rect of what was drawn, so it matches the
+      // dest's proportions exactly: no letterbox, the render fills its whole target.
+      fx: 0,
+      fy: 0,
+      fw: 1,
+      fh: 1,
+    },
+    dest: { x: l, y: t, w: r - l, h: b - t },
+  }
+}
+
+/**
+ * Snap a slice OUTWARD to a grid and clamp it to the box — what keeps panning affordable
+ * once a node has outgrown the viewport.
+ *
+ * Only that case needs it. While the whole node still fits on screen the bake covers all of
+ * it and panning is already free: the render is cached and merely re-composited, because
+ * nothing in its content key moves with the viewport. It is at extreme zoom, where the node
+ * is larger than the screen, that a pan starts revealing scene the last render didn't cover.
+ *
+ * There, rendering a quantised SUPERSET means a pan within a cell still needs no new render:
+ * the last one already reaches where the view moved to. At 60fps a fast drag crosses a 512px
+ * cell every ten frames or so, an order of magnitude fewer renders for one rect comparison.
+ *
+ * It is never a freshness tradeoff — the region always contains the view or it is replaced.
+ * The only price is slack: up to one cell per EDGE, so two per axis on the render target.
+ *
+ * `cell` is in the same units as the box. Callers convert from device pixels, so the grid is
+ * anchored in screen space and a cell always costs the same amount of render work.
+ */
+export function quantiseSlice(slice: BoxRect, boxW: number, boxH: number, cell: number): BoxRect {
+  if (!(cell > 0) || !Number.isFinite(cell)) return slice
+  const l = Math.max(0, Math.floor(slice.x / cell) * cell)
+  const t = Math.max(0, Math.floor(slice.y / cell) * cell)
+  const r = Math.min(boxW, Math.ceil((slice.x + slice.w) / cell) * cell)
+  const b = Math.min(boxH, Math.ceil((slice.y + slice.h) / cell) * cell)
+  return { x: l, y: t, w: Math.max(0, r - l), h: Math.max(0, b - t) }
+}
+
+/** Whether `inner` is fully covered by `outer` — the test that decides if a pan can reuse
+ *  the region already rendered instead of asking for a new one. */
+export function rectCovers(outer: BoxRect | null | undefined, inner: BoxRect): boolean {
+  if (!outer) return false
+  const eps = 0.01
+  return (
+    inner.x >= outer.x - eps &&
+    inner.y >= outer.y - eps &&
+    inner.x + inner.w <= outer.x + outer.w + eps &&
+    inner.y + inner.h <= outer.y + outer.h + eps
+  )
+}
+
 /** Whether this scene crops rather than scales on resize. */
 export function isCropMode(doc: Scene3DDocument | undefined | null): boolean {
   return doc?.resizeMode === 'crop'

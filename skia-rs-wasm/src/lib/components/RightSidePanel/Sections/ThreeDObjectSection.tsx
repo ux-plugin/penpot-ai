@@ -403,10 +403,16 @@ export function ThreeDCameraInspector({
       ) : (
         <div className="space-y-1">
           <Label htmlFor="td-cam-size">Ortho size</Label>
+          {/* Half-height of the ortho frustum. Shrinking it IS zooming in, and because the
+              projection is linear that costs nothing in sharpness — the geometry is simply
+              re-rasterised at the target's resolution. So the floor is set by float precision,
+              not by image quality: 1e-4 still leaves ample headroom in a unit-scale scene.
+              `step` follows the current value so the arrows stay usable across that range. */}
           <NumericField
             id="td-cam-size"
-            min={0.1}
-            step={0.1}
+            min={0.0001}
+            precision={4}
+            step={Math.max(0.0001, Math.abs(orthoSize) / 10)}
             value={orthoSize}
             onCommit={(v) => void commitCameraPatch(sceneId, camera.id, { orthoSize: v })}
           />

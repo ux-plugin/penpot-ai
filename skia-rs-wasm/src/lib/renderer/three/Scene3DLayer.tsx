@@ -727,8 +727,6 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
       // Path 1: composite a PLACED (non-editing) scene INTO Skia in z-order via its node's
       // image fill, and skip the overlay for it — a 2D shape above the node now occludes
       // the 3D, and it exports. The edited scene keeps the live overlay (gizmos, backdrop,
-      // orbit). Flag-gated (window.__scene3dBake) while it's verified against a real render
-      // target; off ⇒ the overlay path below runs for every scene as before.
       // A PLACED scene composites into Skia in z-order → skip the overlay entirely.
       if (isBakeEnabled() && !isEditing) {
         // Bake at the resolution the current zoom needs (crisp when zoomed in), not the
@@ -741,7 +739,10 @@ export function Scene3DLayer({ canvasSize }: { canvasSize: { width: number; heig
         // reach the same verdict on quality — disagree and their cache keys differ, and each
         // one re-renders the scene the other just did.
         const interactive = !!boxWorld && !!committedBox && boxSizeDiffers(committedBox, boxWorld)
-        if (bakeSceneToNode(sceneId, doc, vp.zoom, visibleWorld, crop, liveAspect, interactive)) {
+        // `boxWorld` (not the committed rect) is what the slice must be planned against:
+        // render-wasm's modifiers mutate `selrect`, so mid-drag that is the rect our `dest`
+        // lands in. See computeBakePlan.
+        if (bakeSceneToNode(sceneId, doc, vp.zoom, visibleWorld, crop, liveAspect, interactive, boxWorld)) {
           didBake = true
           continue
         }
