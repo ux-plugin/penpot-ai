@@ -14,8 +14,6 @@ import {
   tagForRole,
   inputTypeFor,
   baseStyleFor,
-  a11yPropsFor,
-  ACTIVATION_KEYS,
   type PNode,
 } from '../compile/emit-react'
 import { parse, evaluate } from '../expression'
@@ -181,25 +179,13 @@ function renderElement(
     props.onChange = (ev: { target: { value: unknown } }) => edit(e.node, e.target, ev.target.value)
   }
 
-  let press: Interaction | undefined
+  // Only the events the design authored — matching the emitted code, which adds
+  // no role, tab stop or keyboard activation on top of an authored click.
   for (const it of ir.interactions) {
     if (it.on.node !== node.nodeId) continue
     const ev = EVENT_PROP[it.on.trigger.type]
     if (!ev) continue
-    if (it.on.trigger.type === 'press') press = it
     props[ev] = () => fire(it)
-  }
-
-  // The preview must behave like the emitted code: a box-button is a tab stop,
-  // announces itself, and activates on Enter/Space.
-  Object.assign(props, a11yPropsFor(node.role, !!press))
-  const keys = ACTIVATION_KEYS[node.role]
-  if (keys && press) {
-    props.onKeyDown = (e: { key: string; preventDefault: () => void }) => {
-      if (!keys.includes(e.key)) return
-      e.preventDefault()
-      fire(press)
-    }
   }
 
   let children: ReactNode

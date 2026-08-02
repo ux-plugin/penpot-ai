@@ -63,29 +63,27 @@ describe('emit-react — style prop', () => {
     expect(code).not.toContain('"background": "none"')
   })
 
-  it('emits a button as a plain box — nothing to neutralize', () => {
+  it('emits a button as a plain box — no affordance added on top', () => {
     const root: PNode = { nodeId: 'btn', role: 'button', text: 'Add' }
     const code = emitReactComponent(emptyPageInteractions(), root, { componentName: 'Screen' })
     expect(code).toContain('<div')
     expect(code).not.toContain('<button')
     // no user-agent styling arrives, so there is no reset to carry
     expect(code).not.toContain('"appearance": "none"')
-    expect(code).toContain('"cursor": "pointer"') // affordance the design cannot express
+    // and nothing the designer didn't author: no cursor, no role, no tab stop
+    expect(code).not.toContain('cursor')
+    expect(code).not.toContain('role=')
+    expect(code).not.toContain('tabIndex')
   })
 
-  it('puts back, in code, what the <button> element used to provide', () => {
+  it('emits ONLY the authored click on a button — no keyboard or ARIA assumed', () => {
     const ir = emptyPageInteractions()
     ir.interactions.push({ id: 'i1', on: { node: 'btn', trigger: { type: 'press' } }, do: [] })
     const code = emitReactComponent(ir, { nodeId: 'btn', role: 'button', text: 'Add' }, { componentName: 'Screen' })
-    expect(code).toContain('role="button"') // announced
-    expect(code).toContain('tabIndex={0}') // reachable
-    expect(code).toContain('onKeyDown={onActivate(handle_btn_press, ["Enter"," "])}') // activatable
-    expect(code).toContain('const onActivate =') // helper emitted once
-  })
-
-  it('does not announce a decorative box as a broken button', () => {
-    const code = emitReactComponent(emptyPageInteractions(), { nodeId: 'btn', role: 'button' }, { componentName: 'Screen' })
+    expect(code).toContain('onClick={handle_btn_press}') // what the designer authored
+    expect(code).not.toContain('role=') // and nothing else on top
     expect(code).not.toContain('tabIndex')
+    expect(code).not.toContain('onKeyDown')
     expect(code).not.toContain('onActivate')
   })
 

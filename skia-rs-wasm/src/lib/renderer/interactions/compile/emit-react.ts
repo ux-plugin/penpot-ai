@@ -59,11 +59,13 @@ export type NodeRole = 'container' | 'text' | 'button' | 'field' | 'list' | 'ite
  * onChange, no control of the mobile keyboard and broken IME, so two-way
  * binding would have nothing to bind to.
  *
- * Everything else — buttons, links, lists — is a div whose behaviour is emitted
- * explicitly (see `a11yPropsFor`), so appearance comes from the design alone
- * with no user-agent styling to undo. A react-native target supplies its own
- * table, and the split lands in the same place there: View/Text everywhere,
- * Pressable and TextInput for these two.
+ * Everything else — buttons, links, lists — is a plain div carrying only what
+ * the design authored (its style, its onClick). Nothing about being a "button"
+ * is added on top: no ARIA role, no tab stop, no keyboard activation, no cursor.
+ * Those are affordances the DESIGNER authors as interactions (an on-hover that
+ * sets the cursor, and so on) or that the receiving codebase supplies — never
+ * guessed here. A react-native target supplies its own tag table; the one split
+ * that survives is the typeable element (`<input>` / `TextInput`).
  */
 const ROLE_TAG: Record<NodeRole, string> = {
   container: 'div',
@@ -76,32 +78,22 @@ const ROLE_TAG: Record<NodeRole, string> = {
   link: 'div',
 }
 
-/** ARIA role carrying the semantics the element used to imply. */
-const ARIA_ROLE: Partial<Record<NodeRole, string>> = {
-  button: 'button',
-  link: 'link',
-  list: 'list',
-  item: 'listitem',
-}
-
-/** Roles that must be reachable and activatable from the keyboard. */
-const ACTIVATABLE = new Set<NodeRole>(['button', 'link'])
-
 export const tagForRole = (role: NodeRole): string => ROLE_TAG[role] ?? 'div'
 
 /**
- * Styles the platform needs that the DESIGN does not express. These land beneath
- * the design's own values, so anything the designer specified still wins.
+ * The ONLY styles emitted that the design didn't author, and both exist to make
+ * the box match the design rather than to add anything to it:
+ *   - `boxSizing: border-box` so a border counts inside the design's width;
+ *   - the `<input>` reset, because it is the one element that still arrives with
+ *     user-agent chrome that would otherwise sit on top of the design.
  *
- * Now that nearly everything is a box there is almost nothing to undo — the one
- * exception is `<input>`, which is the only element we still emit that arrives
- * dressed. `cursor` is not styling the design is withholding; it is interaction
- * feedback a box cannot express.
+ * Nothing here is an affordance or a behaviour. A pointer cursor, a hover effect,
+ * a focus ring — those are things the DESIGNER authors as interactions on the
+ * node (an on-hover that sets the cursor), never guessed here.
  */
 export function baseStyleFor(role: NodeRole): Record<string, string> {
   // the design's width means the OUTER box, so a border must not inflate it
   const base: Record<string, string> = { boxSizing: 'border-box' }
-  if (ACTIVATABLE.has(role)) base.cursor = 'pointer'
   if (role === 'field') {
     Object.assign(base, {
       appearance: 'none',
@@ -117,21 +109,6 @@ export function baseStyleFor(role: NodeRole): Record<string, string> {
 }
 
 /**
- * The behaviour a semantic element would have provided, emitted explicitly.
- * A div with an onClick is not a button: it is not a tab stop, it is not
- * activatable by Enter or Space, and a screen reader does not announce it. These
- * props put that back. `activatable` is false when nothing is authored on the
- * node, so a decorative box is not announced as a broken button.
- */
-export function a11yPropsFor(role: NodeRole, activatable: boolean): Record<string, string | number> {
-  const props: Record<string, string | number> = {}
-  const aria = ARIA_ROLE[role]
-  if (aria) props.role = aria
-  if (ACTIVATABLE.has(role) && activatable) props.tabIndex = 0
-  return props
-}
-
-/**
  * A field's control type comes from the TYPE OF THE CELL IT EDITS — wire a node
  * to a boolean and it is a checkbox. No enum to keep in sync with the variable.
  * Returns undefined when the default (text) applies.
@@ -143,12 +120,6 @@ export function inputTypeFor(ir: PageInteractions, nodeId: NodeId): string | und
   if (type === 'boolean') return 'checkbox'
   if (type === 'number') return 'number'
   return undefined
-}
-
-/** Keys that activate each role — Space scrolls the page on a link, so Enter only. */
-export const ACTIVATION_KEYS: Partial<Record<NodeRole, string[]>> = {
-  button: ['Enter', ' '],
-  link: ['Enter'],
 }
 
 /** Minimal presentation node (stand-in for parsed AI JSX). */
@@ -429,14 +400,6 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
 
   const imports = hooks.length ? `import { useState } from 'react'\n\n` : ''
 
-  // Emitted once, and only when a box-button or box-link exists: keyboard
-  // activation is what a real <button> was giving us for free.
-  const jsxNeedsActivate = /onKeyDown=\{onActivate\(/
-  const helper =
-    '/** Enter/Space activation for role="button" and role="link" boxes. */\n' +
-    'const onActivate = (fn: () => void, keys: string[]) => (e: { key: string; preventDefault: () => void }) => {\n' +
-    '  if (keys.includes(e.key)) {\n    e.preventDefault()\n    fn()\n  }\n}\n\n'
-
   const bodyLines: string[] = [...hooks, ...derived]
   // The blank line separates handlers from state — with no state to separate
   // from, it would just open the function body with an empty line.
@@ -451,9 +414,8 @@ export function emitReactComponent(ir: PageInteractions, root: PNode, opts: Emit
     .map((l) => '    ' + l)
     .join('\n')
 
-  const prelude = jsxNeedsActivate.test(jsx) ? helper : ''
   const props = emitPropsType(ir, name)
-  return `${imports}${props?.decl ?? ''}${prelude}export function ${name}(${props?.params ?? ''}) {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
+  return `${imports}${props?.decl ?? ''}export function ${name}(${props?.params ?? ''}) {\n${indentedBody}\n\n  return (\n${indentedJsx}\n  )\n}\n`
 }
 
 function emitNode(node: PNode, ir: PageInteractions): string {
@@ -504,22 +466,15 @@ function emitElement(node: PNode, ir: PageInteractions, rep?: Repeater): string 
     props.push(`${CHANGE_EVENT.prop}={(e) => ${write}}`)
   }
 
-  let pressHandler: string | undefined
+  // Just the events the design authored. A box with an onClick stays exactly
+  // that — no ARIA role, tab stop or keyboard activation added on top; those are
+  // the designer's to author (or the receiving codebase's to add).
   for (const it of ir.interactions) {
     if (it.on.node !== node.nodeId) continue
     const ev = EVENT_PROP[it.on.trigger.type]
     if (!ev) continue
-    const fn = handlerName(it.on.node, it.on.trigger.type)
-    if (it.on.trigger.type === 'press') pressHandler = fn
-    props.push(`${ev}={${fn}}`)
+    props.push(`${ev}={${handlerName(it.on.node, it.on.trigger.type)}}`)
   }
-
-  // A div with an onClick is not a button — put back what the element gave us.
-  for (const [k, v] of Object.entries(a11yPropsFor(node.role, !!pressHandler))) {
-    props.push(typeof v === 'number' ? `${k}={${v}}` : `${k}="${v}"`)
-  }
-  const keys = ACTIVATION_KEYS[node.role]
-  if (keys && pressHandler) props.push(`onKeyDown={onActivate(${pressHandler}, ${JSON.stringify(keys)})}`)
 
   if (styleMap.size) {
     const entries = [...styleMap].map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')
