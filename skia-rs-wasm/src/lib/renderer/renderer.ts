@@ -12,6 +12,7 @@ import { getDPR } from './utils'
 import { Viewport } from './viewport'
 import {
   initCanvasContext,
+  sceneDigest,
   setCanvasSize,
   setCanvasBackground,
   clearCanvas,
@@ -404,6 +405,19 @@ export class Renderer {
   getSelectionRect(shapeIds: string[]): SelectionRectResult | null {
     if (!getContextInitialized() || !this.module) return null
     return getSelectionRect(this.module, shapeIds)
+  }
+
+  /**
+   * A fingerprint of the document as the active backend understands it — see `sceneDigest`.
+   *
+   * The point of comparison for the differential harness: load the same document under
+   * `?renderer=vello` and without it, and these two numbers must match. They are computed from
+   * the same neutral model but reached by different routes, so a mismatch localises to the wire
+   * format rather than to the rasteriser.
+   */
+  sceneDigest(): number | null {
+    if (!getContextInitialized() || !this.module) return null
+    return sceneDigest(this.module)
   }
 
   /**

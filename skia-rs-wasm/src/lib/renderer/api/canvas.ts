@@ -391,6 +391,29 @@ export function clearCanvasPixels(module: WasmModule, canvas: HTMLCanvasElement)
 }
 
 /**
+ * A fingerprint of everything the active backend would draw.
+ *
+ * Both backends compute it from the same `render_core::model::Scene::digest`, reached by
+ * different routes — Vello builds the neutral model straight from the wire, Skia projects its
+ * shapes through `model_export`. So driving both with one call stream and comparing this answers
+ * "do the two agree on what the document is", which is the question a screenshot cannot: two
+ * rasterisers always differ slightly on antialiasing, and that noise drowns real divergence.
+ *
+ * Returns `null` when the module has no such export — an older Skia build, say — so a caller can
+ * tell "they differ" from "one of them did not answer". That guard does not cover the Vello
+ * facade, whose `stubMissingExports` hands back a function returning 0; a digest of exactly 0 is
+ * worth distrusting there, and `velloBackend.missingExports()` says whether it was stubbed.
+ */
+export function sceneDigest(module: WasmModule): number | null {
+  checkContext()
+  const fn = (module as unknown as { _scene_digest?: () => number })._scene_digest
+  if (typeof fn !== 'function') return null
+  // The Rust side folds 64 bits down to 32 and returns it as a signed i32; compare unsigned so
+  // the two backends cannot disagree over a sign bit rather than over the document.
+  return fn.call(module) >>> 0
+}
+
+/**
  * Get selection rectangle
  */
 export function getSelectionRect(module: WasmModule, entries: string[]): SelectionRectResult | null {

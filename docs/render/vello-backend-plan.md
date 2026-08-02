@@ -357,7 +357,14 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   **The trap worth knowing:** the digest covers only what is reachable from `ROOT_ID`, so a scene whose root children were never set hashes identically to an empty one — every comparison would pass while proving nothing. Every assertion in the suite is guarded against the empty digest.
 
-  Still open: render-wasm's side. It cannot be driven in Node (its `_init` brings up a GL context), so the cross-backend comparison has to run in a browser, and it needs a `scene_digest` export built over `model_export`'s projection.
+  **Both sides now answer it.** render-wasm's `scene_digest` projects its whole shapes pool through `model_export` and digests that, so the two backends reach one model by different routes. Committed geometry only — `shapes.iter()` rather than `shapes.get()`, so modifiers are deliberately excluded: mid-drag the backends are *meant* to differ from the document, and a digest that moved during a gesture would compare two moving targets.
+
+  render-wasm still cannot run in Node — `_init` brings up a GL context — so the Vello side is pinned to a constant in `cross-backend-digest.test.ts` and the browser step is `renderer.sceneDigest()` against that number.
+
+  Two things the harness caught immediately, which is the argument for having built it:
+
+  - **The two models disagree on the default `clip`.** `Shape::new` defaults `clip_content` to true, `Node::new` to false. Every shape the host syncs carries an explicit value, so no real document is affected — but any path that creates a shape without the flag would have one backend hide its children and the other not. The defaults are deliberately left unaligned: failing open is safer, since an unclipped shape spills visibly while a wrongly-clipped one makes content vanish with nothing on screen to explain it.
+  - **A fixture built from `node-factory` is not canonical.** It mints a fresh uuid per call and the digest hashes ids, so a document that looks fixed digests differently every run. Both backends must be driven with the *same ids*; a replayed recording gives that for free, a hand-built fixture has to state it.
 
 - **Slice E (done)** — strokes. Seven entry points; centre strokes drawn, inner and outer accepted and dropped (they are offsetting decisions kurbo cannot express, and drawing them centred puts paint visibly in the wrong place — worse than nothing, because it reads as a rendering bug rather than a missing feature).
 

@@ -1,0 +1,159 @@
+/**
+ * The cross-backend anchor.
+ *
+ * Both backends now answer `scene_digest`, computed from the same
+ * `render_core::model::Scene::digest` but reached by different routes: render-vello builds the
+ * neutral model straight from the wire, render-wasm projects its Skia shapes through
+ * `model_export`. Drive both with one call stream and an equal digest means they agree on what
+ * the document *is* — the question a screenshot cannot settle, because two rasterisers always
+ * differ slightly on antialiasing and that noise drowns real divergence.
+ *
+ * Only one of them can run here. render-wasm's `_init` brings up a GL context, so it needs a
+ * browser; this file pins the Vello side to a constant so the browser step is a one-liner:
+ *
+ *   1. load the app with the document `canonicalDocument()` describes
+ *   2. `useWorkspaceStore.getState().renderer.sceneDigest()`
+ *   3. compare against `CANONICAL_DIGEST` below
+ *
+ * A mismatch localises to the wire format rather than to the rasteriser, which is the whole
+ * point of diffing at the model.
+ */
+
+import { beforeAll, describe, expect, it } from 'vitest'
+import { loadVello, velloWasmAvailable, type VelloInstance } from './vello-instance'
+import { setContextInitialized } from '../../../src/lib/renderer/api/context'
+import { setObject } from '../../../src/lib/renderer/api/orchestration'
+import { sceneDigest } from '../../../src/lib/renderer/api/canvas'
+import { createCircle, createFrame, createRect } from '../../../src/lib/renderer/node-factory'
+import { setShapeChildren } from '../../../src/lib/renderer/api/shape'
+import type { EmscriptenLikeModule } from '../../../src/lib/renderer/vello-module-facade'
+import type { WasmModule } from '../../../src/lib/renderer/wasm-types'
+
+beforeAll(() => setContextInitialized(true))
+
+/**
+ * The digest both backends must produce for `canonicalDocument()`.
+ *
+ * Deliberately a hard-coded constant rather than something recomputed at test time: a value
+ * derived from the same code it checks would follow any drift instead of catching it. When this
+ * changes, either the wire format changed — in which case update it here *and* re-check the
+ * browser side — or something regressed.
+ */
+const CANONICAL_DIGEST = 1308393699
+
+/**
+ * Fixed ids, because the digest hashes them.
+ *
+ * `node-factory` mints a fresh uuid per call, which makes a document that *looks* canonical
+ * digest differently on every run — the anchor would have been noise. Both backends must be
+ * driven with the same ids for the comparison to mean anything, which a replayed recording gives
+ * for free and a hand-built fixture has to state.
+ */
+const IDS = {
+  frame: '11111111-1111-4111-8111-111111111111',
+  rect: '22222222-2222-4222-8222-222222222222',
+  circle: '33333333-3333-4333-8333-333333333333',
+} as const
+
+/**
+ * A document exercising the parts of the model both backends implement: a clipping frame, a
+ * plain rect, and a circle overflowing its parent. Deliberately small — the digest's job is to
+ * be exact, not broad, and a fixture nobody can hold in their head stops being a fixture.
+ */
+function canonicalDocument(module: EmscriptenLikeModule): void {
+  const frame = createFrame({ id: IDS.frame, x: 0, y: 0, width: 400, height: 300 })
+  const rect = createRect({
+    id: IDS.rect,
+    parentId: frame.id,
+    x: 20,
+    y: 20,
+    width: 100,
+    height: 60,
+    fillColor: '#3d8bfd',
+  })
+  const circle = createCircle({
+    id: IDS.circle,
+    parentId: frame.id,
+    x: 200,
+    y: 100,
+    width: 80,
+    height: 80,
+    fillColor: '#f05a28',
+  })
+
+  for (const shape of [frame, rect, circle]) setObject(module, shape)
+  module._use_shape(0, 0, 0, 0)
+  setShapeChildren(module, [frame.id])
+}
+
+const suite = velloWasmAvailable() ? describe : describe.skip
+
+suite('cross-backend digest', () => {
+  let vello: VelloInstance
+
+  beforeAll(async () => {
+    vello = await loadVello()
+  })
+
+  /**
+   * Read it the way the app does, through `api/canvas`, rather than by poking the export —
+   * otherwise the accessor the browser step depends on is never exercised.
+   */
+  function digestThroughPublicApi(): number | null {
+    return sceneDigest(vello.module as unknown as WasmModule)
+  }
+
+  it('anchors the Vello digest for the canonical document', () => {
+    vello.exports.clean_up()
+    const empty = digestThroughPublicApi()
+
+    canonicalDocument(vello.module)
+    const actual = digestThroughPublicApi()
+
+    // The trap this harness has to guard against: a scene whose root children were never set
+    // hashes exactly like an empty one, so every comparison would pass while proving nothing.
+    expect(actual, 'the canonical document must not digest as an empty scene').not.toBe(empty)
+    expect(vello.exports.scene_node_count()).toBeGreaterThan(3)
+
+    expect(actual).toBe(CANONICAL_DIGEST)
+  })
+
+  it('is reproducible across a rebuild of the same document', () => {
+    vello.exports.clean_up()
+    canonicalDocument(vello.module)
+    const first = digestThroughPublicApi()
+
+    vello.exports.clean_up()
+    canonicalDocument(vello.module)
+
+    expect(digestThroughPublicApi()).toBe(first)
+  })
+
+  /**
+   * The anchor is only worth having if it can fail. A digest insensitive to a one-unit geometry
+   * change would let the two backends drift on exactly the differences worth catching.
+   */
+  it('moves when the document does', () => {
+    vello.exports.clean_up()
+    canonicalDocument(vello.module)
+    const base = digestThroughPublicApi()
+
+    vello.exports.clean_up()
+    const frame = createFrame({ id: IDS.frame, x: 0, y: 0, width: 400, height: 301 })
+    setObject(vello.module, frame)
+    vello.module._use_shape(0, 0, 0, 0)
+    setShapeChildren(vello.module, [frame.id])
+
+    expect(digestThroughPublicApi()).not.toBe(base)
+  })
+
+  it('is unsigned, so the two backends cannot disagree over a sign bit', () => {
+    vello.exports.clean_up()
+    canonicalDocument(vello.module)
+
+    const value = digestThroughPublicApi()
+    expect(value).not.toBeNull()
+    expect(value).toBeGreaterThanOrEqual(0)
+    expect(Number.isInteger(value)).toBe(true)
+  })
+})

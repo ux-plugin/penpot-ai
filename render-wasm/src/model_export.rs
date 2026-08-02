@@ -15,6 +15,26 @@ use render_core::kurbo::{self, BezPath, Point};
 use render_core::model as m;
 use render_core::peniko::{Brush, ColorStop, Gradient as PGradient};
 
+/// Project the whole document into a neutral scene, for [`render_core::model::Scene::digest`].
+///
+/// Shapes this projection does not understand yet — text, bools, svg-raw — are skipped rather
+/// than faked. That is visible in the digest as a *missing child*: the parent still lists the
+/// id, and the neutral model hashes "referenced but absent" distinctly. So an unsupported shape
+/// reads as a known hole rather than as agreement, which is the honest answer while the
+/// projection is incomplete.
+///
+/// Unreachable shapes cost nothing: the digest walks the tree from the root, so pool slots left
+/// over from a previous page are skipped without needing to be swept first.
+pub fn scene_from_shapes<'a>(shapes: impl Iterator<Item = &'a Shape>) -> m::Scene {
+    let mut scene = m::Scene::new();
+    for shape in shapes {
+        if let Some(node) = node_from_shape(shape) {
+            scene.insert(node);
+        }
+    }
+    scene
+}
+
 /// Project a shape into the neutral model. Returns `None` for shape kinds not yet supported.
 pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
     let (kind, path) = match &shape.shape_type {
@@ -428,5 +448,149 @@ mod tests {
         let node = node_from_shape(&shape).expect("rect projects");
         assert!(node.fills.is_empty());
         assert!(node.strokes.is_empty());
+    }
+
+    // --- digest parity -------------------------------------------------------------------
+    //
+    // The Skia half of the differential harness. render-vello builds a neutral scene straight
+    // from the wire; this side reaches the same model through Skia shapes. These tests assert
+    // the two meet — stated as a digest, because that is the value the two backends actually
+    // compare at runtime.
+
+    /// A small document, built the long way round: Skia shapes projected through this module.
+    ///
+    /// One builder, so a second fixture cannot quietly drift from the first.
+    fn document_shapes() -> Vec<Shape> {
+        let child = Uuid::from_u64_pair(0, 0x1234);
+
+        let mut root = Shape::new(Uuid::nil());
+        root.set_shape_type(Type::Frame(crate::shapes::Frame::default()));
+        root.set_selrect(0.0, 0.0, 400.0, 300.0);
+        root.add_child(child);
+
+        let mut rect = Shape::new(child);
+        rect.set_shape_type(Type::Rect(ShapeRect::default()));
+        rect.set_selrect(10.0, 20.0, 110.0, 70.0);
+        rect.parent_id = Some(Uuid::nil());
+        rect.add_fill(Fill::Solid(SolidColor(skia::Color::from_argb(
+            255, 10, 20, 30,
+        ))));
+
+        // Set explicitly on both, exactly as the host does for every shape it syncs
+        // (`orchestration.ts`). Left to the constructors these two disagree — see
+        // `the_two_models_disagree_on_the_default_clip`.
+        root.set_clip(false);
+        rect.set_clip(false);
+
+        vec![root, rect]
+    }
+
+    fn projected_document() -> m::Scene {
+        scene_from_shapes(document_shapes().iter())
+    }
+
+    /// The same document, hand-built in the neutral model — what render-vello would hold after
+    /// reading the equivalent wire bytes.
+    fn neutral_document() -> m::Scene {
+        let mut scene = m::Scene::new();
+
+        let mut root = m::Node::new(m::ROOT_ID, m::ShapeKind::Frame);
+        root.bounds = Rect::new(0.0, 0.0, 400.0, 300.0);
+        root.children = vec![0x1234];
+        scene.insert(root);
+
+        let mut rect = m::Node::new(0x1234, m::ShapeKind::Rect);
+        rect.bounds = Rect::new(10.0, 20.0, 110.0, 70.0);
+        rect.parent = Some(m::ROOT_ID);
+        rect.fills = vec![Brush::Solid(Color::from_rgba8(10, 20, 30, 255))];
+        scene.insert(rect);
+
+        scene
+    }
+
+    /// The whole point of the harness: two routes to the same document must agree exactly.
+    #[test]
+    fn a_projected_document_digests_the_same_as_a_hand_built_one() {
+        assert_eq!(projected_document().digest(), neutral_document().digest());
+    }
+
+    /// The first thing the harness caught, pinned so it is not rediscovered.
+    ///
+    /// `Shape::new` defaults `clip_content` to **true**; `Node::new` defaults it to false. Every
+    /// shape the host syncs carries an explicit value (`orchestration.ts` sends
+    /// `type === 'frame' || type === 'slot'` for all of them), so no real document is affected —
+    /// but any path that creates a shape without the flag would have the two backends disagree
+    /// about whether it hides its children.
+    ///
+    /// The defaults are deliberately *not* aligned to Skia's. Failing open is the safer of the
+    /// two: an unclipped shape spills visibly, while a wrongly-clipped one makes content vanish
+    /// with nothing on screen to explain it.
+    #[test]
+    fn the_two_models_disagree_on_the_default_clip() {
+        let mut shape = Shape::new(Uuid::nil());
+        shape.set_shape_type(Type::Frame(crate::shapes::Frame::default()));
+
+        assert!(
+            node_from_shape(&shape).unwrap().clip,
+            "Skia's shape defaults to clipping"
+        );
+        assert!(
+            !m::Node::new(0, m::ShapeKind::Frame).clip,
+            "the neutral model defaults to not clipping"
+        );
+    }
+
+    /// …and the digest must be able to *fail*. A test that only ever compares equal things
+    /// proves nothing about the comparison itself.
+    #[test]
+    fn the_digest_notices_a_difference_between_the_two_routes() {
+        let mut altered = neutral_document();
+        altered.get_mut(0x1234).unwrap().bounds = Rect::new(10.0, 20.0, 111.0, 70.0);
+        assert_ne!(projected_document().digest(), altered.digest());
+    }
+
+    /// Pool slots left over from a previous page must not change the answer — the digest walks
+    /// the tree, so anything the root cannot reach is not part of the picture.
+    #[test]
+    fn unreachable_pool_shapes_do_not_affect_the_digest() {
+        let mut stale = Shape::new(Uuid::from_u64_pair(0, 0x9999));
+        stale.set_shape_type(Type::Rect(ShapeRect::default()));
+        stale.set_selrect(500.0, 500.0, 600.0, 600.0);
+
+        let mut shapes = document_shapes();
+        shapes.push(stale);
+
+        assert_eq!(
+            scene_from_shapes(shapes.iter()).digest(),
+            projected_document().digest()
+        );
+    }
+
+    /// A shape kind this projection does not understand yet must read as a *hole*, not as
+    /// agreement: the parent still lists the id, and the neutral model hashes "referenced but
+    /// absent" distinctly. Otherwise adding text to a document would silently look like parity.
+    #[test]
+    fn an_unsupported_shape_reads_as_a_missing_child_not_as_agreement() {
+        let text_id = Uuid::from_u64_pair(0, 0x5555);
+
+        let mut root = Shape::new(Uuid::nil());
+        root.set_shape_type(Type::Frame(crate::shapes::Frame::default()));
+        root.set_selrect(0.0, 0.0, 400.0, 300.0);
+        root.add_child(text_id);
+
+        let mut text = Shape::new(text_id);
+        text.set_shape_type(Type::SVGRaw(crate::shapes::SVGRaw::default()));
+
+        let projected = scene_from_shapes([root, text].iter());
+        assert!(projected.get(text_id.as_u128()).is_none(), "not projected");
+
+        // A scene whose root lists nothing at all must not hash the same as one listing a child
+        // that never arrived.
+        let mut empty_root = m::Scene::new();
+        let mut r = m::Node::new(m::ROOT_ID, m::ShapeKind::Frame);
+        r.bounds = Rect::new(0.0, 0.0, 400.0, 300.0);
+        empty_root.insert(r);
+
+        assert_ne!(projected.digest(), empty_root.digest());
     }
 }
