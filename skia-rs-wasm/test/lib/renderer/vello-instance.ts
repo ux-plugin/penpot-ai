@@ -18,11 +18,17 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createModuleFacade, type EmscriptenLikeModule } from '../../../src/lib/renderer/vello-module-facade'
 
-const WASM_PATH = fileURLToPath(
-  new URL('../../../../render-vello/dev/pkg/render-vello_bg.wasm', import.meta.url)
-)
+/**
+ * The *published* artifact — the same file the app fetches — not `render-vello/dev/pkg/`.
+ *
+ * They are two different builds, and testing against the one the app does not load is how a
+ * suite goes green against a binary nobody runs. This was not hypothetical: the dev copy sat
+ * several entry points behind, and every Node test kept passing because it only touched the
+ * exports both happened to have.
+ */
+const WASM_PATH = fileURLToPath(new URL('../../../public/wasm-vello/render-vello_bg.wasm', import.meta.url))
 
-/** Built by `render-vello/dev/build.sh`; skip rather than fail when it has not been run. */
+/** Built by `scripts/build-vello.sh`; skip rather than fail when it has not been run. */
 export function velloWasmAvailable(): boolean {
   try {
     readFileSync(WASM_PATH)

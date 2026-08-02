@@ -120,15 +120,33 @@ suite('ABI record/replay', () => {
    * The resolution the harness actually needs. A digest that only notices whole shapes appearing
    * and disappearing would miss the divergences worth catching — a rounding difference in a
    * selrect, a corner radius read from the wrong offset.
+   *
+   * Two things this has to control for, both of which made an earlier version of this test pass
+   * without exercising geometry at all:
+   *
+   * - **Fixed ids.** `node-factory` mints a fresh uuid per call and the digest hashes ids, so
+   *   two rebuilds differ no matter what the geometry does.
+   * - **A listed child.** `setObject` takes a container's children from its own `shapes` array;
+   *   `parentId` alone leaves the rect unreachable from the root, and the digest never sees it.
    */
-  it('notices a one-unit geometry difference', () => {
+  it('notices a one-unit geometry difference in a nested child', () => {
     const empty = emptyDigest()
+    const FRAME = '44444444-4444-4444-8444-444444444444'
+    const RECT = '55555555-5555-4555-8555-555555555555'
 
     const sync = (height: number): number => {
       vello.exports.clean_up()
-      const frame = createFrame({ x: 0, y: 0, width: 400, height: 300 })
+      const frame = createFrame({
+        id: FRAME,
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+        shapes: [RECT],
+      })
       const rect = createRect({
-        parentId: frame.id,
+        id: RECT,
+        parentId: FRAME,
         x: 20,
         y: 20,
         width: 100,
@@ -138,14 +156,16 @@ suite('ABI record/replay', () => {
       setObject(vello.module, frame)
       setObject(vello.module, rect)
       vello.module._use_shape(0, 0, 0, 0)
-      setShapeChildren(vello.module, [frame.id])
+      setShapeChildren(vello.module, [FRAME])
       return digest()
     }
 
     const a = sync(60)
-    const b = sync(61)
     expect(a).not.toBe(empty)
-    expect(b).not.toBe(a)
+    expect(vello.exports.scene_paintable_count(), 'the rect must be reachable').toBe(1)
+
+    const b = sync(61)
+    expect(b, 'one unit of child geometry must move the digest').not.toBe(a)
   })
 
   it('survives a JSON round trip, so a browser capture can become a fixture', () => {

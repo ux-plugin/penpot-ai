@@ -359,7 +359,13 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   **Both sides now answer it.** render-wasm's `scene_digest` projects its whole shapes pool through `model_export` and digests that, so the two backends reach one model by different routes. Committed geometry only — `shapes.iter()` rather than `shapes.get()`, so modifiers are deliberately excluded: mid-drag the backends are *meant* to differ from the document, and a digest that moved during a gesture would compare two moving targets.
 
-  render-wasm still cannot run in Node — `_init` brings up a GL context — so the Vello side is pinned to a constant in `cross-backend-digest.test.ts` and the browser step is `renderer.sceneDigest()` against that number.
+  **Verified in a browser: both backends report `3846661256` for the canonical document.** Same call stream, two engines, two routes to the neutral model, one number. render-wasm still cannot run in Node — `_init` brings up a GL context — so the Vello side is pinned to that constant in `cross-backend-digest.test.ts`, and the Skia side is re-checked by driving the same document through `api/*.ts` in a page and reading `renderer.sceneDigest()`.
+
+  Getting there turned up three faults in the harness itself, all of the same family — a check that passes without testing what it claims:
+
+  - **A child needs listing, not just parenting.** `setObject` takes a container's children from its own `shapes` array, so setting `parentId` alone leaves the child unreachable from the root and invisible to the digest. The first anchor covered the frame and nothing else, and read as parity.
+  - **`node-factory` ids are random.** The digest hashes ids, so any two rebuilds differ regardless of geometry. `notices a one-unit geometry difference` had been passing on that alone; with fixed ids it failed, and now asserts reachability before asserting the difference.
+  - **The Node harness loaded a different binary from the app** — `render-vello/dev/pkg/` rather than the published `public/wasm-vello/`. It sat several entry points behind and every test still passed, because they only touched exports both builds happened to have. Both now load the published artifact.
 
   Two things the harness caught immediately, which is the argument for having built it:
 

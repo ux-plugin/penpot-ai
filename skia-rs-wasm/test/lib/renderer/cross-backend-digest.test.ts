@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 1308393699
+const CANONICAL_DIGEST = 3846661256
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -60,15 +60,25 @@ const IDS = {
  * plain rect, and a circle overflowing its parent. Deliberately small — the digest's job is to
  * be exact, not broad, and a fixture nobody can hold in their head stops being a fixture.
  */
-function canonicalDocument(module: EmscriptenLikeModule): void {
-  const frame = createFrame({ id: IDS.frame, x: 0, y: 0, width: 400, height: 300 })
+function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void {
+  // The frame must *list* its children. `setObject` takes a container's children from its own
+  // `shapes` array — setting `parentId` on the child is not enough, and a document built that
+  // way leaves both children unreachable from the root, where the digest cannot see them.
+  const frame = createFrame({
+    id: IDS.frame,
+    x: 0,
+    y: 0,
+    width: 400,
+    height: 300,
+    shapes: [IDS.rect, IDS.circle],
+  })
   const rect = createRect({
     id: IDS.rect,
     parentId: frame.id,
     x: 20,
     y: 20,
     width: 100,
-    height: 60,
+    height: rectHeight,
     fillColor: '#3d8bfd',
   })
   const circle = createCircle({
@@ -114,6 +124,9 @@ suite('cross-backend digest', () => {
     // hashes exactly like an empty one, so every comparison would pass while proving nothing.
     expect(actual, 'the canonical document must not digest as an empty scene').not.toBe(empty)
     expect(vello.exports.scene_node_count()).toBeGreaterThan(3)
+    // Reachability is the trap: an unlisted child is invisible to the digest, so an anchor
+    // built from one would silently cover only the frame.
+    expect(vello.exports.scene_paintable_count(), 'both children must be reachable').toBe(2)
 
     expect(actual).toBe(CANONICAL_DIGEST)
   })
@@ -130,19 +143,18 @@ suite('cross-backend digest', () => {
   })
 
   /**
-   * The anchor is only worth having if it can fail. A digest insensitive to a one-unit geometry
-   * change would let the two backends drift on exactly the differences worth catching.
+   * The anchor is only worth having if it can fail — and it has to fail on a change to a
+   * *child*, not just to the root. Ids are fixed for exactly this reason: with the factory's
+   * random uuids the digest changes on every rebuild, so a test like this passes without ever
+   * exercising the geometry it claims to.
    */
-  it('moves when the document does', () => {
+  it('moves when a nested child changes by one unit', () => {
     vello.exports.clean_up()
-    canonicalDocument(vello.module)
+    canonicalDocument(vello.module, 60)
     const base = digestThroughPublicApi()
 
     vello.exports.clean_up()
-    const frame = createFrame({ id: IDS.frame, x: 0, y: 0, width: 400, height: 301 })
-    setObject(vello.module, frame)
-    vello.module._use_shape(0, 0, 0, 0)
-    setShapeChildren(vello.module, [frame.id])
+    canonicalDocument(vello.module, 61)
 
     expect(digestThroughPublicApi()).not.toBe(base)
   })
