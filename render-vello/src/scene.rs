@@ -271,6 +271,13 @@ fn set_paint<T: RenderingContext>(ctx: &mut T, paint: &m::Paint, bounds: Rect) -
             });
             true
         }
+        // Diamond is in the model and the digest, but its L1 metric is not a peniko gradient and
+        // Vello has no built-in for it. Correct rendering is the D10 custom-shader path (or baking
+        // the field to a texture and reusing the image atlas — blocked today by the upload
+        // happening before the scene draws, not during paint). Drawn wrong it would read as a
+        // rendering bug, so it draws nothing — the same call as radial before its transform, and
+        // as inner/outer strokes.
+        Brush::Diamond(_) => false,
     }
 }
 

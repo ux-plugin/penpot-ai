@@ -413,6 +413,14 @@ Visual diff against Skia — replay captured buffers into both modules and diff,
 
   **Superseded note — painting it is slice 2, and it needs the host.** The only image path today is `fetch → createImageBitmap → WebGL texture → store_image_from_texture(glTextureId)` — Emscripten-GL end to end, meaningless to wgpu. Decision (asked and taken): the host will read the decoded `ImageBitmap` back to RGBA (`getImageData`) and upload it through a new `store_image_rgba` entry; render-vello builds a `Pixmap::from_parts`, registers it in the hybrid `ImageCache` atlas, and resolves `Brush::Image` against it. This is the first place the host branches on *which backend* for data rather than only for init — a deliberate, scoped crack in D17's "one wire format", justified because the GL-texture handoff simply has no wgpu equivalent.
 
+- **Diamond gradient (carried, paint deferred)** — no longer a silent hole.
+
+  Diamond is Penpot's fourth gradient: the same stops sampled along the L1 distance `|x| + |y|` rather than a radius or an angle. peniko has no such kind and Vello no built-in; render-wasm draws it with a small SkSL runtime effect. Both backends used to **drop** it (`None`), which meant a diamond fill hashed identically to *no fill* — the harness was blind to it, and a document where diamond silently vanished on both sides read as parity.
+
+  So it is now carried like an image: `Brush::Diamond(DiamondGradient)` holds its geometry and stops un-resolved, both projections build it, and `digest_brush` hashes it under its own tag. Verified in a browser: a diamond and a radial with *identical* geometry and stops digest apart (`2600502185` vs `219270083`) and match across backends.
+
+  **Painting it in Vello is still open**, and the lifecycle is why it is not done here. The correct render is the D10 WGSL custom-shader path, or baking the L1 field to a texture and reusing the image atlas — but the atlas upload runs in a pass *before* the scene draws, while a bake would need to happen *during* paint, so the bake wants a scene pre-pass that is its own change. Until then render-vello draws diamond as nothing rather than as a wrong-metric radial. render-wasm is unaffected — it never rendered from the neutral model, only projects into it.
+
 - **Slice E (done)** — strokes. Seven entry points; centre strokes drawn, inner and outer accepted and dropped (they are offsetting decisions kurbo cannot express, and drawing them centred puts paint visibly in the wrong place — worse than nothing, because it reads as a rendering bug rather than a missing feature).
 
   **The style→dash mapping lives in render-core**, in `apply_stroke_style`. Penpot's Dotted/Dashed/Mixed each imply a pattern built from the width (`width + 10`, `width + 5`, `width + 1`) — constants arbitrary enough that deriving them separately on each side is exactly how two backends end up drawing visibly different dashes from the same document.

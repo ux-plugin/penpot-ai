@@ -33,7 +33,7 @@ pub enum GradientShape {
 /// `width` is overloaded by kind, which is the wire format's doing rather than ours: for radial
 /// it is `(ellipse_ratio, unused)`, and for angular it is a *point* — the end of the second axis,
 /// which need not be perpendicular to the first, so angular gradients can shear.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GradientGeometry {
     pub start: (f32, f32),
     pub end: (f32, f32),

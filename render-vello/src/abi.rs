@@ -758,8 +758,13 @@ fn paint_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::mod
         R::Linear(g) => gradient(GradientShape::Linear, &g),
         R::Radial(g) => gradient(GradientShape::Radial, &g),
         R::Angular(g) => gradient(GradientShape::Angular, &g),
-        // Diamond has no peniko equivalent; it rides with the Phase-4 custom shaders (D10).
-        R::Diamond(_) => None,
+        // Diamond has no peniko equivalent, so it is carried un-resolved: its geometry and stops
+        // go into the model and the digest, and painting it is the D10 custom-shader path. Dropped
+        // (as it was) a diamond fill hashes the same as no fill, and the harness cannot see it.
+        R::Diamond(g) => Some(Paint::plain(Brush::Diamond(render_core::model::DiamondGradient {
+            geometry: geometry(&g),
+            stops: stops(&g)[..].into(),
+        }))),
         // An image *reference*. The pixels arrive separately (`store_image_rgba`) and are
         // resolved against the image store at paint time — the model carries only the id and
         // placement, so the digest can compare an image fill without either backend's texture.

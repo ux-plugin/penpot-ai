@@ -123,10 +123,14 @@ fn fill_to_core(fill: &Fill) -> Option<m::Paint> {
         Fill::LinearGradient(g) => gradient(GradientShape::Linear, g),
         Fill::RadialGradient(g) => gradient(GradientShape::Radial, g),
         Fill::AngularGradient(g) => gradient(GradientShape::Angular, g),
-        // Diamond has no peniko equivalent — it is a Penpot/Figma construct, not a CSS/SVG
-        // one. It is already on the SkSL->WGSL list for Phase 4 via `FilterPrimitive::Custom`
-        // (D10), and rides along with the other custom shaders rather than getting a model type.
-        Fill::DiamondGradient(_) => None,
+        // Diamond has no peniko equivalent, so it is carried un-resolved — geometry and stops —
+        // for the digest to compare and the D10 custom-shader path to paint later. render-wasm
+        // keeps drawing it with its own SkSL; this projection is only for the neutral model. Not
+        // dropped: a dropped diamond hashes the same as no fill, and the harness goes blind to it.
+        Fill::DiamondGradient(g) => Some(m::Paint::plain(Brush::Diamond(m::DiamondGradient {
+            geometry: geometry(g),
+            stops: stops(g)[..].into(),
+        }))),
         // An image *reference* — id and placement, not pixels. render-wasm's ImageStore owns
         // the texture; here the projection carries only what the neutral model and the digest
         // can share, matching what `RawImageFillData` puts on the wire.
@@ -430,14 +434,35 @@ mod tests {
         );
     }
 
-    /// Diamond has no peniko equivalent and rides along with the Phase-4 custom shaders.
+    /// Diamond is carried, not dropped: painting it is deferred (D10 custom shader), but the
+    /// model and the digest must see it, or a diamond fill is indistinguishable from no fill.
     #[test]
-    fn diamond_gradient_is_not_projected() {
+    fn diamond_gradient_projects_as_a_carried_reference() {
         let mut shape = rect_shape();
         shape.add_fill(Fill::DiamondGradient(two_stop_gradient()));
 
-        let node = node_from_shape(&shape).expect("rect still projects");
-        assert!(node.fills.is_empty());
+        let node = node_from_shape(&shape).expect("rect projects");
+        assert_eq!(node.fills.len(), 1);
+        assert!(matches!(node.fills[0].brush, Brush::Diamond(_)));
+    }
+
+    /// …and a diamond is not a radial with the same numbers — they project to different brushes,
+    /// so the digest tells them apart rather than seeing one gradient twice.
+    #[test]
+    fn diamond_and_radial_with_the_same_geometry_differ() {
+        let brush = |fill: Fill| {
+            let mut s = rect_shape();
+            s.add_fill(fill);
+            node_from_shape(&s).unwrap().fills.remove(0).brush
+        };
+        assert!(matches!(
+            brush(Fill::DiamondGradient(two_stop_gradient())),
+            Brush::Diamond(_)
+        ));
+        assert!(matches!(
+            brush(Fill::RadialGradient(two_stop_gradient())),
+            Brush::Gradient(_)
+        ));
     }
 
     /// An image fill projects to a *reference* — id, dimensions, opacity, keep-aspect, dest —

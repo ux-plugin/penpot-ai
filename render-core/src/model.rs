@@ -23,12 +23,31 @@ use kurbo::{Affine, BezPath, Rect, RoundedRectRadii};
 /// owns the pixels.
 ///
 /// It shadows `peniko::Brush` deliberately, with the same `Solid`/`Gradient` shapes, so every
-/// existing construction site compiles unchanged; only the `Image` case is new.
+/// existing construction site compiles unchanged; `Image` and `Diamond` are the additions.
+///
+/// **Diamond** is Penpot's fourth gradient — the same stops sampled along the L1 (Manhattan)
+/// distance `|x| + |y|` instead of a radius or an angle. peniko has no such kind and Vello no
+/// built-in for it; render-wasm draws it with a small SkSL shader. So like an image it is carried
+/// here as data both backends can hash — its geometry and stops — even though painting it in
+/// Vello needs the D10 custom-shader path (or a bake). Dropping it, as both sides used to, made a
+/// diamond fill hash identically to *no fill at all*, so the harness was blind to it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Brush {
     Solid(peniko::Color),
     Gradient(peniko::Gradient),
     Image(ImageFill),
+    Diamond(DiamondGradient),
+}
+
+/// A diamond (L1-distance) gradient, carried as its raw geometry and stops — see [`Brush::Diamond`].
+///
+/// The geometry is the same `start`/`end`/`width` triple every Penpot gradient uses; only the
+/// distance metric at paint time differs. Held un-resolved because the resolution *is* the
+/// shader, which the neutral model cannot express.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiamondGradient {
+    pub geometry: crate::gradient::GradientGeometry,
+    pub stops: peniko::ColorStops,
 }
 
 /// An image fill as a reference, not pixels — see [`Brush::Image`].
@@ -614,6 +633,23 @@ fn digest_brush(hash: &mut u64, brush: &Brush) {
                 fnv_u64(hash, 0);
             }
         }
+        Brush::Diamond(d) => {
+            fnv_u64(hash, 4);
+            // Geometry and stops — enough that a diamond differs from a radial with the same
+            // numbers (the tag) and from another diamond with a different sweep or ramp.
+            let g = &d.geometry;
+            for (x, y) in [g.start, g.end, g.width] {
+                fnv_f64(hash, f64::from(x));
+                fnv_f64(hash, f64::from(y));
+            }
+            fnv_u64(hash, d.stops.len() as u64);
+            for stop in d.stops.iter() {
+                fnv_f64(hash, f64::from(stop.offset));
+                for component in stop.color.components {
+                    fnv_f64(hash, f64::from(component));
+                }
+            }
+        }
     }
 }
 
@@ -948,6 +984,56 @@ mod tests {
             with(ImageFill { dest: Some(Rect::new(0.0, 0.0, 1.0, 1.0)), ..base.clone() }),
             with(ImageFill { dest: Some(Rect::new(0.0, 0.0, 2.0, 1.0)), ..base.clone() }),
             "dest geometry"
+        );
+    }
+
+    /// Diamond must hash apart from nothing and from a radial with the same numbers — the whole
+    /// reason it is carried rather than dropped.
+    #[test]
+    fn digest_distinguishes_diamond_from_nothing_and_from_radial() {
+        use crate::gradient::GradientGeometry;
+
+        let stops: peniko::ColorStops = [
+            peniko::ColorStop {
+                offset: 0.0,
+                color: Color::from_rgba8(255, 0, 0, 255).into(),
+            },
+            peniko::ColorStop {
+                offset: 1.0,
+                color: Color::from_rgba8(0, 0, 255, 255).into(),
+            },
+        ][..]
+            .into();
+        let geometry = GradientGeometry {
+            start: (0.5, 0.5),
+            end: (1.0, 0.5),
+            width: (1.0, 0.0),
+        };
+
+        let base = tree(&[0, 1, 2]).digest();
+        let with = |brush: Brush| {
+            let mut s = tree(&[0, 1, 2]);
+            s.get_mut(1).unwrap().fills = vec![Paint::plain(brush)];
+            s.digest()
+        };
+
+        let diamond = with(Brush::Diamond(DiamondGradient {
+            geometry,
+            stops: stops.clone(),
+        }));
+        assert_ne!(diamond, base, "a diamond fill is not an empty node");
+
+        // A radial built from the same geometry and stops must still hash apart — the tag differs.
+        let (radial, _) = crate::gradient::gradient_paint(
+            crate::gradient::GradientShape::Radial,
+            geometry,
+            &stops,
+        )
+        .unwrap();
+        assert_ne!(
+            diamond,
+            with(Brush::Gradient(radial)),
+            "diamond and radial with identical numbers must not collide"
         );
     }
 
