@@ -14,7 +14,8 @@ use crate::shapes::{StrokeLineCap, StrokeLineJoin};
 use render_core::kurbo::{self, BezPath, Point};
 use render_core::model as m;
 use render_core::gradient::{GradientGeometry, GradientShape, gradient_paint};
-use render_core::peniko::{Brush, ColorStop};
+use render_core::model::{Brush, ImageFill};
+use render_core::peniko::ColorStop;
 
 /// Project the whole document into a neutral scene, for [`render_core::model::Scene::digest`].
 ///
@@ -126,8 +127,24 @@ fn fill_to_core(fill: &Fill) -> Option<m::Paint> {
         // one. It is already on the SkSL->WGSL list for Phase 4 via `FilterPrimitive::Custom`
         // (D10), and rides along with the other custom shaders rather than getting a model type.
         Fill::DiamondGradient(_) => None,
-        // Image fills map onto `Brush::Image`; deferred with the rest of the image work.
-        Fill::Image(_) => None,
+        // An image *reference* — id and placement, not pixels. render-wasm's ImageStore owns
+        // the texture; here the projection carries only what the neutral model and the digest
+        // can share, matching what `RawImageFillData` puts on the wire.
+        Fill::Image(image) => Some(m::Paint::plain(Brush::Image(ImageFill {
+            id: image.id().as_u128(),
+            width: image.width().max(0) as u32,
+            height: image.height().max(0) as u32,
+            opacity: image.opacity(),
+            keep_aspect: image.keep_aspect_ratio(),
+            dest: image
+                .dest()
+                .map(|r| render_core::kurbo::Rect::new(
+                    r.left as f64,
+                    r.top as f64,
+                    r.right as f64,
+                    r.bottom as f64,
+                )),
+        }))),
     }
 }
 
@@ -421,6 +438,34 @@ mod tests {
 
         let node = node_from_shape(&shape).expect("rect still projects");
         assert!(node.fills.is_empty());
+    }
+
+    /// An image fill projects to a *reference* — id, dimensions, opacity, keep-aspect, dest —
+    /// carrying no pixels, since the neutral model cannot hold Skia's texture. This is what the
+    /// digest compares against render-vello's, which reads the same fields off the wire.
+    #[test]
+    fn image_fill_projects_to_a_reference() {
+        use crate::shapes::ImageFill as SkiaImageFill;
+
+        let id = Uuid::from_u64_pair(0, 0xabcd);
+        let fill = SkiaImageFill::new(id, 200, 640, 480, true)
+            .with_dest(Some([10.0, 20.0, 110.0, 220.0]));
+
+        let mut shape = rect_shape();
+        shape.add_fill(Fill::Image(fill));
+
+        let node = node_from_shape(&shape).expect("rect projects");
+        assert_eq!(
+            node.fills,
+            vec![m::Paint::plain(Brush::Image(ImageFill {
+                id: id.as_u128(),
+                width: 640,
+                height: 480,
+                opacity: 200,
+                keep_aspect: true,
+                dest: Some(render_core::kurbo::Rect::new(10.0, 20.0, 110.0, 220.0)),
+            }))]
+        );
     }
 
     #[test]

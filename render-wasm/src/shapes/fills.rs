@@ -366,6 +366,14 @@ impl ImageFill {
         self.opacity
     }
 
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
     pub fn keep_aspect_ratio(&self) -> bool {
         self.keep_aspect_ratio
     }

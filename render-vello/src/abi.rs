@@ -635,8 +635,8 @@ pub extern "C" fn clear_shape_fills() {
 fn paint_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::model::Paint> {
     use render_core::abi::RawFillData as R;
     use render_core::gradient::{GradientGeometry, GradientShape, gradient_paint};
-    use render_core::model::Paint;
-    use render_core::peniko::{Brush, ColorStop};
+    use render_core::model::{Brush, ImageFill, Paint};
+    use render_core::peniko::ColorStop;
 
     let stops = |g: &render_core::abi::RawGradientData| {
         g.active_stops()
@@ -668,8 +668,19 @@ fn paint_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::mod
         R::Angular(g) => gradient(GradientShape::Angular, &g),
         // Diamond has no peniko equivalent; it rides with the Phase-4 custom shaders (D10).
         R::Diamond(_) => None,
-        // Image fills need the texture path, which this module does not have yet.
-        R::Image(_) => None,
+        // An image *reference*. The pixels arrive separately (`store_image_rgba`) and are
+        // resolved against the image store at paint time — the model carries only the id and
+        // placement, so the digest can compare an image fill without either backend's texture.
+        R::Image(i) => Some(Paint::plain(Brush::Image(ImageFill {
+            id: uuid_u128(i.a, i.b, i.c, i.d),
+            width: i.width.max(0) as u32,
+            height: i.height.max(0) as u32,
+            opacity: i.opacity,
+            keep_aspect: i.keep_aspect_ratio(),
+            dest: i.dest().map(|[l, t, r, b]| {
+                render_core::kurbo::Rect::new(f64::from(l), f64::from(t), f64::from(r), f64::from(b))
+            }),
+        }))),
     }
 }
 
@@ -732,7 +743,7 @@ pub extern "C" fn add_shape_center_stroke(width: f32, style: u8, cap_start: u8, 
             style: kstroke.clone(),
             // Penpot sends the paint separately, in `add_shape_stroke_fill`. Black is the
             // stand-in until it arrives, matching what an unpainted stroke defaults to.
-            paint: render_core::model::Paint::plain(render_core::peniko::Brush::Solid(
+            paint: render_core::model::Paint::plain(render_core::model::Brush::Solid(
                 render_core::peniko::Color::BLACK,
             )),
         });
@@ -1066,7 +1077,7 @@ mod tests {
     use super::*;
     use render_core::kurbo::Point;
     use render_core::model::ROOT_ID;
-    use render_core::peniko::Brush;
+    use render_core::model::Brush;
 
     /// The ABI is built on module-global state — the implicit current-shape cursor D17 accepts
     /// as debt. The test harness runs tests in parallel threads, so without serialising them

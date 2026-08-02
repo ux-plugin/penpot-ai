@@ -25,7 +25,8 @@
 
 use render_core::kurbo::{Affine, BezPath, Ellipse, Rect, RoundedRect, Shape as _};
 use render_core::model as m;
-use render_core::peniko::{Brush, Color, GradientKind};
+use render_core::model::Brush;
+use render_core::peniko::{Color, GradientKind};
 use vello_example_scenes::{ExampleScene, RenderingContext};
 
 /// Depth cap for the walk. The tree comes off the wire, and a cycle would otherwise recurse
@@ -248,7 +249,10 @@ fn set_paint<T: RenderingContext>(ctx: &mut T, paint: &m::Paint, bounds: Rect) -
             ctx.set_paint(g.clone());
             true
         }
-        // Image fills need the texture path, which this module does not have yet.
+        // An image reference is in the model and in the digest, but painting it needs the pixels
+        // — uploaded through `store_image_rgba` and resolved against the image store. Until that
+        // store is wired, an image fill draws nothing rather than a wrong colour. Deferred, the
+        // same call as radial-before-its-transform.
         Brush::Image(_) => false,
     }
 }

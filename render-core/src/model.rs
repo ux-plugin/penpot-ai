@@ -12,7 +12,44 @@
 //! identity, the geometry family, and the draw list.
 
 use kurbo::{Affine, BezPath, Rect, RoundedRectRadii};
-use peniko::Brush;
+
+/// Paint colour or pattern, backend-neutral.
+///
+/// Solid and gradient are peniko's — they carry their own pixels and both backends draw them
+/// straight. An **image** cannot be: render-wasm holds a Skia texture and render-vello a wgpu
+/// one, and the shared model can hold neither. So [`Brush::Image`] is a *reference* — the image's
+/// id and where it sits — that each backend resolves against its own image store at paint time.
+/// This is exactly how render-wasm already works internally: a fill names an id, the `ImageStore`
+/// owns the pixels.
+///
+/// It shadows `peniko::Brush` deliberately, with the same `Solid`/`Gradient` shapes, so every
+/// existing construction site compiles unchanged; only the `Image` case is new.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Brush {
+    Solid(peniko::Color),
+    Gradient(peniko::Gradient),
+    Image(ImageFill),
+}
+
+/// An image fill as a reference, not pixels — see [`Brush::Image`].
+///
+/// Mirrors render-wasm's `shapes::ImageFill` and the `RawImageFillData` wire record field for
+/// field, so the projection from either side lands on identical values and the digest agrees.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageFill {
+    /// The image's stable id — render-wasm packs its UUID as a u128.
+    pub id: u128,
+    /// Native pixel dimensions, as the wire reports them.
+    pub width: u32,
+    pub height: u32,
+    /// `0..=255`; Penpot stores fill opacity as a byte.
+    pub opacity: u8,
+    /// Whether the image is letterboxed to its aspect ratio rather than stretched to the box.
+    pub keep_aspect: bool,
+    /// Optional destination sub-rect in the shape's local (selrect) coords. When set, the image
+    /// draws only there — used to composite a viewport-clipped 3D bake at its correct place.
+    pub dest: Option<Rect>,
+}
 
 use crate::abi::RawSegmentData;
 
@@ -191,8 +228,8 @@ pub struct Node {
     pub parent: Option<u128>,
     /// Whether this node clips its children to its own geometry (Penpot's `clip_content`).
     pub clip: bool,
-    /// Paints, back to front. `peniko::Brush` already covers solid, gradient and image, so
-    /// gradients need no new type here — only a converter in `model_export`.
+    /// Paints, back to front. Solid and gradient carry their own pixels; an image is a
+    /// reference each backend resolves against its own store — see [`Brush`].
     pub fills: Vec<Paint>,
     /// Strokes, back to front, painted over the fills.
     pub strokes: Vec<Stroke>,
@@ -559,7 +596,24 @@ fn digest_brush(hash: &mut u64, brush: &Brush) {
                 }
             }
         }
-        Brush::Image(_) => fnv_u64(hash, 3),
+        Brush::Image(image) => {
+            fnv_u64(hash, 3);
+            // The id is the identity both backends share; the pixels are each backend's own.
+            // Dimensions, placement and opacity round out what would change the picture.
+            fnv_u128(hash, image.id);
+            fnv_u64(hash, u64::from(image.width));
+            fnv_u64(hash, u64::from(image.height));
+            fnv_u64(hash, u64::from(image.opacity));
+            fnv_u64(hash, u64::from(image.keep_aspect));
+            if let Some(dest) = image.dest {
+                fnv_u64(hash, 1);
+                for v in [dest.x0, dest.y0, dest.x1, dest.y1] {
+                    fnv_f64(hash, v);
+                }
+            } else {
+                fnv_u64(hash, 0);
+            }
+        }
     }
 }
 
@@ -850,6 +904,51 @@ mod tests {
             end_radius: 1.0,
         }));
         assert_ne!(left_to_right, radial, "the kind must be hashed");
+    }
+
+    /// An image fill is compared by *reference*, so the digest must see every field of that
+    /// reference — a different id, a different size, or a moved dest-rect is a different picture,
+    /// even though neither backend's pixels are in the model.
+    #[test]
+    fn digest_notices_every_field_of_an_image_reference() {
+        let base = ImageFill {
+            id: 0xAA,
+            width: 640,
+            height: 480,
+            opacity: 255,
+            keep_aspect: true,
+            dest: None,
+        };
+        let with = |image: ImageFill| {
+            let mut s = tree(&[0, 1, 2]);
+            s.get_mut(1).unwrap().fills = vec![Paint::plain(Brush::Image(image))];
+            s.digest()
+        };
+
+        let d = with(base.clone());
+        assert_ne!(d, with(ImageFill { id: 0xBB, ..base.clone() }), "id");
+        assert_ne!(d, with(ImageFill { width: 641, ..base.clone() }), "width");
+        assert_ne!(d, with(ImageFill { height: 481, ..base.clone() }), "height");
+        assert_ne!(d, with(ImageFill { opacity: 254, ..base.clone() }), "opacity");
+        assert_ne!(
+            d,
+            with(ImageFill { keep_aspect: false, ..base.clone() }),
+            "keep_aspect"
+        );
+        assert_ne!(
+            d,
+            with(ImageFill {
+                dest: Some(Rect::new(0.0, 0.0, 1.0, 1.0)),
+                ..base.clone()
+            }),
+            "dest presence"
+        );
+        // …and a *moved* dest, not just its presence.
+        assert_ne!(
+            with(ImageFill { dest: Some(Rect::new(0.0, 0.0, 1.0, 1.0)), ..base.clone() }),
+            with(ImageFill { dest: Some(Rect::new(0.0, 0.0, 2.0, 1.0)), ..base.clone() }),
+            "dest geometry"
+        );
     }
 
     /// The diagnostic this exists for: a blank canvas with a healthy node count. In `tree`, only
