@@ -249,11 +249,49 @@ fn set_paint<T: RenderingContext>(ctx: &mut T, paint: &m::Paint, bounds: Rect) -
             ctx.set_paint(g.clone());
             true
         }
-        // An image reference is in the model and in the digest, but painting it needs the pixels
-        // — uploaded through `store_image_rgba` and resolved against the image store. Until that
-        // store is wired, an image fill draws nothing rather than a wrong colour. Deferred, the
-        // same call as radial-before-its-transform.
-        Brush::Image(_) => false,
+        Brush::Image(image) => {
+            // Resolve the reference against the atlas the renderer filled from `store_image_rgba`.
+            // Absent means the pixels have not arrived yet — draw nothing this frame rather than a
+            // placeholder, and the next frame after the upload will show it.
+            let Some(image_id) = crate::abi::resolve_image(image.id) else {
+                return false;
+            };
+            let target = image.dest.unwrap_or(bounds);
+            ctx.set_paint_transform(image_paint_transform(image, target));
+            ctx.set_paint(vello_common::paint::Image {
+                image: vello_common::paint::ImageSource::opaque_id(image_id),
+                sampler: vello_common::peniko::ImageSampler {
+                    // Clamp at the edges: with the cover/stretch transform the fill never samples
+                    // outside the image, so the extend mode only matters at sub-pixel borders.
+                    x_extend: vello_common::peniko::Extend::Pad,
+                    y_extend: vello_common::peniko::Extend::Pad,
+                    quality: vello_common::peniko::ImageQuality::Medium,
+                    alpha: f32::from(image.opacity) / 255.0,
+                },
+            });
+            true
+        }
+    }
+}
+
+/// Map the image's pixel space onto its target rect, in the shape's local coordinates.
+///
+/// Two placements, matching render-wasm's `get_source_rect`:
+/// - **stretch** (default): the image fills the box exactly, distorting aspect if it must.
+/// - **cover** (`keep_aspect`): the image is scaled by the larger axis ratio and centred, so it
+///   covers the box with no letterboxing; the overflow is clipped by the fill to `target`.
+fn image_paint_transform(image: &m::ImageFill, target: Rect) -> Affine {
+    let (iw, ih) = (f64::from(image.width.max(1)), f64::from(image.height.max(1)));
+    let (tw, th) = (target.width(), target.height());
+
+    if image.keep_aspect {
+        let scale = (tw / iw).max(th / ih);
+        // Centre the scaled image over the target; the fill clips whatever spills past it.
+        let ox = target.x0 + (tw - iw * scale) * 0.5;
+        let oy = target.y0 + (th - ih * scale) * 0.5;
+        Affine::translate((ox, oy)) * Affine::scale(scale)
+    } else {
+        Affine::translate((target.x0, target.y0)) * Affine::scale_non_uniform(tw / iw, th / ih)
     }
 }
 

@@ -195,6 +195,93 @@ pub extern "C" fn free_bytes() {
     *BUFFER.lock().expect("byte buffer poisoned") = None;
 }
 
+// --- image store ------------------------------------------------------------------------
+//
+// Images take a different door from every other fill. Solid, gradient and even the image
+// *reference* are self-describing bytes the ABI decodes inline; the image *pixels* are not —
+// they must land in the renderer's GPU atlas, and the atlas needs the wgpu device/queue that
+// only the renderer owns (D2). So the ABI cannot upload; it can only stage.
+//
+// `store_image_rgba` pushes decoded RGBA into `PENDING_IMAGES`. The renderer drains that queue
+// each frame, uploads to the atlas, and records `id -> ImageId` in `RESOLVED_IMAGES`, which
+// `scene.rs` reads to resolve a `Brush::Image` at paint time. An id absent from the resolved map
+// is an image that has not finished loading — it draws nothing that frame rather than guessing.
+
+/// An image whose pixels have arrived but are not yet in the atlas.
+pub(crate) struct PendingImage {
+    pub id: u128,
+    pub width: u32,
+    pub height: u32,
+    /// Straight (unpremultiplied) RGBA, row-major, top-left origin — exactly what `getImageData`
+    /// yields. Premultiplied when the `Pixmap` is built, in Rust rather than in a JS pixel loop.
+    pub rgba: Vec<u8>,
+}
+
+static PENDING_IMAGES: Mutex<Vec<PendingImage>> = Mutex::new(Vec::new());
+static RESOLVED_IMAGES: Mutex<Option<std::collections::HashMap<u128, vello_common::paint::ImageId>>> =
+    Mutex::new(None);
+
+/// Stage one image's pixels for upload. Buffer layout: id (four LE `u32`), width and height
+/// (`u32` each), then `width * height * 4` bytes of RGBA.
+///
+/// The host reaches this only for the Vello backend. render-wasm's image path hands over a WebGL
+/// texture id, which is meaningless to wgpu — so the host decodes the `ImageBitmap` it already
+/// holds back to RGBA and sends the pixels here instead. See the plan's image-fill decision.
+#[unsafe(no_mangle)]
+pub extern "C" fn store_image_rgba() {
+    let bytes = take_bytes();
+    let word = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+    if bytes.len() < 24 {
+        return;
+    }
+    let id = uuid_u128(word(0), word(4), word(8), word(12));
+    let width = word(16);
+    let height = word(20);
+    let expected = 24 + (width as usize) * (height as usize) * 4;
+    if bytes.len() < expected {
+        // A short buffer would upload garbage past the end; drop it rather than corrupt the atlas.
+        return;
+    }
+    let rgba = bytes[24..expected].to_vec();
+
+    PENDING_IMAGES
+        .lock()
+        .expect("pending images poisoned")
+        .push(PendingImage {
+            id,
+            width,
+            height,
+            rgba,
+        });
+    with_state(|state| state.needs_frame = true);
+}
+
+/// Hand the renderer everything staged since the last call, leaving the queue empty.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn take_pending_images() -> Vec<PendingImage> {
+    std::mem::take(&mut *PENDING_IMAGES.lock().expect("pending images poisoned"))
+}
+
+/// Record where an uploaded image landed, so `scene.rs` can resolve it.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn record_image(id: u128, image_id: vello_common::paint::ImageId) {
+    RESOLVED_IMAGES
+        .lock()
+        .expect("resolved images poisoned")
+        .get_or_insert_with(Default::default)
+        .insert(id, image_id);
+}
+
+/// The atlas slot for an image, if it has been uploaded.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn resolve_image(id: u128) -> Option<vello_common::paint::ImageId> {
+    RESOLVED_IMAGES
+        .lock()
+        .expect("resolved images poisoned")
+        .as_ref()
+        .and_then(|m| m.get(&id).copied())
+}
+
 // --- module lifecycle and viewport ------------------------------------------------------
 //
 // One asymmetry with render-wasm, and it is not incidental: **`init` does not create the
@@ -303,6 +390,11 @@ pub extern "C" fn clean_up() {
         // to inherit those ids.
         state.modifiers.clear();
     });
+    // The atlas slots leak until Phase 3 gives the module a real lifecycle — the same debt as
+    // orphaned nodes — but the *maps* must clear, or a new page's image ids resolve to the old
+    // page's pixels.
+    PENDING_IMAGES.lock().expect("pending images poisoned").clear();
+    *RESOLVED_IMAGES.lock().expect("resolved images poisoned") = None;
 }
 
 // --- shape lifecycle -------------------------------------------------------------------

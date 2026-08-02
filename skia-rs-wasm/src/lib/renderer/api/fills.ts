@@ -24,6 +24,7 @@ import {
   isImageFill,
 } from './constants'
 import { getWebGLContext } from './webgl-helpers'
+import { isVelloModule } from '../vello-module'
 
 /**
  * Creates a WebGL texture from an ImageBitmap
@@ -66,6 +67,48 @@ async function retrieveImage(url: string): Promise<ImageBitmap> {
 }
 
 /**
+ * Hand a decoded image to the Vello backend as straight RGBA pixels.
+ *
+ * The Skia path uploads a WebGL texture and passes render-wasm a GL texture id — Emscripten-GL
+ * end to end, meaningless to Vello's wgpu atlas. So for Vello the host reads the `ImageBitmap`
+ * it already holds back to RGBA (via a canvas) and sends the pixels through `store_image_rgba`;
+ * render-vello builds a `Pixmap`, uploads it to the hybrid atlas, and resolves the image fill
+ * against it. This is the one place the host branches on *which backend* for data, not just init.
+ */
+function storeImageRgbaForVello(
+  module: WasmModule,
+  shapeId: string,
+  imageId: string,
+  img: ImageBitmap
+): void {
+  const { width, height } = img
+  // `willReadFrequently` keeps the 2D context on the CPU, where the immediate `getImageData`
+  // read is cheap; a GPU-backed canvas would stall on readback.
+  const canvas = new OffscreenCanvas(width, height)
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) {
+    console.warn('2D context unavailable for image RGBA readback')
+    return
+  }
+  ctx.drawImage(img, 0, 0)
+  const rgba = ctx.getImageData(0, 0, width, height).data // straight (unpremultiplied) alpha
+
+  // Layout mirrors `store_image_rgba`: image id (16), width (4), height (4), then the pixels.
+  const header = 24
+  const offset = allocBytes(module, header + rgba.byteLength)
+  const dataView = new DataView(module.HEAPU8.buffer, module.HEAPU8.byteOffset)
+  writeUUIDToDataView(dataView, offset, imageId)
+  dataView.setUint32(offset + 16, width, true)
+  dataView.setUint32(offset + 20, height, true)
+  module.HEAPU8.set(rgba, offset + header)
+  ;(module as unknown as { _store_image_rgba: () => void })._store_image_rgba()
+  freeBytes(module)
+  // `shapeId` is unused here: render-vello attaches the image by id at paint time, not by
+  // touching a shape as the Skia path does. Kept in the signature for call-site symmetry.
+  void shapeId
+}
+
+/**
  * Fetches an image and creates a WebGL texture, storing it in WASM
  * Returns a pending callback object for async image loading
  */
@@ -87,13 +130,20 @@ export function fetchImage(
     callback: async (): Promise<boolean> => {
       try {
         const img = await retrieveImage(url)
+
+        // Vello has no Emscripten GL context; hand it the pixels instead of a texture id.
+        if (isVelloModule(module)) {
+          storeImageRgbaForVello(module, shapeId, imageId, img)
+          return true
+        }
+
         const gl = getWebGLContext(module)
-        
+
         if (!gl) {
           console.warn('WebGL context not available for image loading')
           return false
         }
-        
+
         const texture = createWebGLTextureFromImage(gl, img)
         const textureId = getTextureIdForGLObject(module, texture)
         const width = img.width

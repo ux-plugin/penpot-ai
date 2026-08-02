@@ -219,8 +219,44 @@ pub async fn create_focus_renderer(canvas: HtmlCanvasElement) -> FocusRenderer {
 
 #[wasm_bindgen]
 impl FocusRenderer {
+    /// Drain images staged by `store_image_rgba` into the GPU atlas.
+    ///
+    /// Runs here, not in the ABI, because the atlas needs the wgpu device and queue this struct
+    /// owns (D2). Each image is uploaded once — the ABI only stages *new* ids — and the resulting
+    /// `ImageId` is recorded so `scene.rs` can resolve a `Brush::Image` against it. Uploading is
+    /// its own submitted encoder, before the draw, so the atlas is populated when the frame reads
+    /// it.
+    fn upload_pending_images(&mut self) {
+        let pending = crate::abi::take_pending_images();
+        if pending.is_empty() {
+            return;
+        }
+        let mut encoder = self
+            .wrapper
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("upload images"),
+            });
+        let resources = self.scenes[self.current].resources_mut();
+        for image in pending {
+            let Some(pixmap) = pixmap_from_rgba(&image) else {
+                continue;
+            };
+            let image_id = self.wrapper.renderer.upload_image(
+                resources,
+                &self.wrapper.device,
+                &self.wrapper.queue,
+                &mut encoder,
+                &pixmap,
+            );
+            crate::abi::record_image(image.id, image_id);
+        }
+        self.wrapper.queue.submit([encoder.finish()]);
+    }
+
     /// Render one frame into the host canvas. The host decides when to call this.
     pub fn render(&mut self) {
+        self.upload_pending_images();
         self.scene.reset();
         self.scenes[self.current].render(&mut self.scene, self.transform);
 
@@ -319,4 +355,41 @@ impl FocusRenderer {
     pub fn status(&self) -> Option<String> {
         self.scenes[self.current].status()
     }
+}
+
+/// Pack an ABI-staged image into a `Pixmap` the atlas can upload.
+///
+/// The wire bytes are **straight** (unpremultiplied) RGBA, top-left origin — that is what the
+/// host's `getImageData` yields, and premultiplying it in JS would mean a per-pixel loop the
+/// browser can't vectorise. The atlas wants premultiplied, so the multiply happens here, once,
+/// in Rust. `None` when the byte count does not match the dimensions, which would panic in
+/// `from_parts`.
+fn pixmap_from_rgba(image: &crate::abi::PendingImage) -> Option<vello_common::pixmap::Pixmap> {
+    let (w, h) = (image.width, image.height);
+    if w == 0 || h == 0 || w > u32::from(u16::MAX) || h > u32::from(u16::MAX) {
+        return None;
+    }
+    let expected = (w as usize) * (h as usize) * 4;
+    if image.rgba.len() != expected {
+        return None;
+    }
+    // Premultiply: `c · a / 255`, rounded. `+ 127` is the standard round-to-nearest for an
+    // integer divide by 255; plain truncation darkens edges by up to a level.
+    let mul = |c: u8, a: u8| ((u16::from(c) * u16::from(a) + 127) / 255) as u8;
+    let pixels: Vec<vello_common::color::PremulRgba8> = image
+        .rgba
+        .chunks_exact(4)
+        .map(|c| {
+            let a = c[3];
+            vello_common::color::PremulRgba8 {
+                r: mul(c[0], a),
+                g: mul(c[1], a),
+                b: mul(c[2], a),
+                a,
+            }
+        })
+        .collect();
+    Some(vello_common::pixmap::Pixmap::from_parts(
+        pixels, w as u16, h as u16,
+    ))
 }

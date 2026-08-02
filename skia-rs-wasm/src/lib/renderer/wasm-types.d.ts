@@ -277,6 +277,8 @@ export interface WasmModule {
   // Images
   _store_image(): void
   _store_image_from_texture(): void
+  /** Vello only: stage decoded RGBA pixels for the image atlas. */
+  _store_image_rgba(): void
   _update_image_from_texture(): void
   _is_image_cached(a: number, b: number, c: number, d: number, is_thumbnail: boolean): number
 
