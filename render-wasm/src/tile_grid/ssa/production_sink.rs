@@ -106,6 +106,12 @@ pub struct ProductionSink<'a> {
     /// Acquire/release counters surfaced via `perf_trace`.
     acquire_count: u64,
     release_count: u64,
+    /// Final composite destination — `Target` for the on-screen frame,
+    /// `Export` when the same scheduler is driven to produce a thumbnail
+    /// / raster export. Only the final `Composite`-to-accumulator and the
+    /// `Snapshot`-from-accumulator touchpoints consult it; everything
+    /// else paints into pooled tile surfaces regardless.
+    output: crate::render::SurfaceId,
 }
 
 // SAFETY: `SurfaceMap<'static>` here is a misuse of the 'a parameter —
@@ -121,6 +127,7 @@ impl<'a> ProductionSink<'a> {
         state: &'a mut crate::render::RenderState,
         shapes: ShapesPoolRef<'a>,
         default_tile_size: (i32, i32),
+        output: crate::render::SurfaceId,
     ) -> Self {
         Self {
             map: empty_map_static(),
@@ -132,6 +139,7 @@ impl<'a> ProductionSink<'a> {
             backdrop_extents: FxHashMap::default(),
             acquire_count: 0,
             release_count: 0,
+            output,
         }
     }
 
@@ -300,7 +308,9 @@ impl<'a> DispatchSink for ProductionSink<'a> {
         } = step
         {
             let img = if from.is_target() {
-                self.state.surfaces.target_image_snapshot_for_rect(*rect)
+                self.state
+                    .surfaces
+                    .surface_image_snapshot_for_rect(self.output, *rect)
             } else {
                 // Direct map access — no swap-into-Current adapter.
                 self.map
@@ -549,7 +559,7 @@ impl<'a> DispatchSink for ProductionSink<'a> {
                 if let Some(img) = img {
                     self.state
                         .surfaces
-                        .ssa_composite_image_to_target(&img, device_rect);
+                        .ssa_composite_image_to(self.output, &img, device_rect);
                 }
                 Ok(())
             } else {
@@ -601,6 +611,14 @@ impl<'a> DispatchSink for ProductionSink<'a> {
             let r = *from;
             let tile = *tile;
             if r.is_target() {
+                return Ok(());
+            }
+            // Export renders share the cross-frame tile cache with the
+            // on-screen frame but use a different viewbox/scale and their
+            // own tile coords — writing them would corrupt the on-screen
+            // cache (read by `render_from_cache`). Export never reads the
+            // cache either (single-shot), so skip cache writes entirely.
+            if self.output != crate::render::SurfaceId::Target {
                 return Ok(());
             }
             // Cache uses the **tile-snapped** offset that legacy
@@ -697,6 +715,11 @@ impl<'a> DispatchSink for ProductionSink<'a> {
     fn clear_tile_cache_region(&mut self, step: &Step) -> Result<()> {
         if let Step::ClearTileCacheRegion { tile, rect } = step {
             let _ = rect;
+            // Export shares the on-screen cache surface; never touch it
+            // from an export render (see `write_tile_cache`).
+            if self.output != crate::render::SurfaceId::Target {
+                return Ok(());
+            }
             // Mirror the tile-snapped cache-rect formula used by
             // `write_tile_cache` — same coord convention or the wipe
             // will hit the wrong cache pixels.
