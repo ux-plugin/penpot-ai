@@ -23,6 +23,7 @@ pub use peniko;
 
 pub mod abi;
 pub mod blend;
+pub mod blur;
 pub mod gradient;
 pub mod model;
 pub mod selection;

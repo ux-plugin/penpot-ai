@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 3081092446
+const CANONICAL_DIGEST = 2592162645
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -82,9 +82,24 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
     height: rectHeight,
     fillColor: '#3d8bfd',
   })
-  // A non-default blend, so the anchor exercises the real wire path end to end:
-  // `_set_shape_blend_mode` through the facade → render-vello's ABI → `node.blend` → digest.
+  // Non-default effects, so the anchor exercises the real wire paths end to end through the
+  // facade → render-vello's ABI → the neutral node → digest: blend, a layer blur, and a drop
+  // shadow (`_set_shape_blend_mode`, `_set_shape_blur`, `_add_shape_shadow`).
   ;(rect as { blendMode?: string }).blendMode = 'multiply'
+  ;(rect as { blur?: unknown }).blur = { type: 'layer-blur', hidden: false, value: 12 }
+  // Penpot's shadow array property is `shadow` (singular) — `shadows` is silently ignored by
+  // `setObject`, which would drop the effect from the wire without any error.
+  ;(rect as { shadow?: unknown }).shadow = [
+    {
+      color: { color: '#000000', opacity: 0.5 },
+      blur: 6,
+      spread: 0,
+      offsetX: 4,
+      offsetY: 5,
+      style: 'drop-shadow',
+      hidden: false,
+    },
+  ]
   const circle = createCircle({
     id: IDS.circle,
     parentId: frame.id,

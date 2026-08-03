@@ -140,6 +140,20 @@ pub struct Stroke {
     pub paint: Paint,
 }
 
+/// A drop shadow: a blurred, offset silhouette of the shape in [`Shadow::color`], drawn behind it.
+///
+/// Only *drop* shadows reach this model — inner shadows are dropped at projection on both sides
+/// (like inner/outer strokes) until the backend can draw them, so there is no `style` field. The
+/// blur is a **radius** (see [`crate::blur::radius_to_sigma`]); `spread` is carried for the
+/// digest even though the first Vello slice cannot dilate by it yet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shadow {
+    pub color: peniko::Color,
+    pub blur: f32,
+    pub spread: f32,
+    pub offset: kurbo::Vec2,
+}
+
 /// Penpot's stroke styles, as `RawStrokeStyle` puts them on the wire (0..3).
 ///
 /// Neutral rather than per-backend because the *pattern each implies* has to be identical on
@@ -298,6 +312,12 @@ pub struct Node {
     /// default is [`crate::blend::DEFAULT_BLEND`] — plain source-over — which needs no layer at
     /// all; anything else is drawn under a blend layer.
     pub blend: peniko::BlendMode,
+    /// Layer-blur **radius**, `None` when the shape has no layer blur. Blurs the node's own paint
+    /// and its children together, like [`opacity`](Node::opacity). Backdrop blur is a separate
+    /// concern and is not carried yet.
+    pub blur: Option<f32>,
+    /// Drop shadows, back to front, drawn behind the shape. Inner shadows do not reach here.
+    pub shadows: Vec<Shadow>,
     pub hidden: bool,
 }
 
@@ -321,6 +341,8 @@ impl Node {
             strokes: Vec::new(),
             opacity: 1.0,
             blend: crate::blend::DEFAULT_BLEND,
+            blur: None,
+            shadows: Vec::new(),
             hidden: false,
         }
     }
@@ -556,6 +578,25 @@ impl Scene {
         // fingerprint — cheap, and it keeps the two projections honest about the field existing.
         fnv_u64(hash, u64::from(node.blend.mix as u8));
         fnv_u64(hash, u64::from(node.blend.compose as u8));
+
+        match node.blur {
+            Some(radius) => {
+                fnv_u64(hash, 1);
+                fnv_f64(hash, f64::from(radius));
+            }
+            None => fnv_u64(hash, 0),
+        }
+
+        fnv_u64(hash, node.shadows.len() as u64);
+        for shadow in &node.shadows {
+            for component in shadow.color.components {
+                fnv_f64(hash, f64::from(component));
+            }
+            fnv_f64(hash, f64::from(shadow.blur));
+            fnv_f64(hash, f64::from(shadow.spread));
+            fnv_f64(hash, shadow.offset.x);
+            fnv_f64(hash, shadow.offset.y);
+        }
 
         match node.corners {
             Some(r) => {
@@ -961,6 +1002,16 @@ mod tests {
         assert_ne!(base, mutate(&|n| n.opacity = 0.5));
         assert_ne!(base, mutate(&|n| n.clip = true));
         assert_ne!(base, mutate(&|n| n.blend = crate::blend::blend_from_raw(24)));
+        assert_ne!(base, mutate(&|n| n.blur = Some(8.0)));
+        assert_ne!(
+            base,
+            mutate(&|n| n.shadows = vec![Shadow {
+                color: Color::from_rgba8(0, 0, 0, 128),
+                blur: 4.0,
+                spread: 0.0,
+                offset: kurbo::Vec2::new(2.0, 3.0),
+            }])
+        );
         assert_ne!(base, mutate(&|n| n.transform = Affine::rotate(0.1)));
         assert_ne!(base, mutate(&|n| n.kind = ShapeKind::Path));
         assert_ne!(
@@ -986,6 +1037,33 @@ mod tests {
         };
         assert_ne!(with(24), with(14), "Multiply and Screen must differ");
         assert_eq!(with(3), tree(&[0, 1, 2]).digest(), "Normal is the default — no change");
+    }
+
+    /// Every field of a shadow is part of the picture: a shadow offset one way is a different
+    /// document from the same shadow offset the other, and a soft shadow differs from a hard one.
+    /// A digest that hashed only the count would let the two backends drift on all of it.
+    #[test]
+    fn digest_notices_every_field_of_a_shadow() {
+        let base = Shadow {
+            color: Color::from_rgba8(0, 0, 0, 128),
+            blur: 4.0,
+            spread: 0.0,
+            offset: kurbo::Vec2::new(2.0, 3.0),
+        };
+        let with = |s: Shadow| {
+            let mut t = tree(&[0, 1, 2]);
+            t.get_mut(1).unwrap().shadows = vec![s];
+            t.digest()
+        };
+        let b = with(base);
+        assert_ne!(b, with(Shadow { color: Color::from_rgba8(255, 0, 0, 128), ..base }));
+        assert_ne!(b, with(Shadow { blur: 9.0, ..base }));
+        assert_ne!(b, with(Shadow { spread: 2.0, ..base }));
+        assert_ne!(b, with(Shadow { offset: kurbo::Vec2::new(-2.0, 3.0), ..base }));
+        // Two shadows are not one.
+        let mut two = tree(&[0, 1, 2]);
+        two.get_mut(1).unwrap().shadows = vec![base, base];
+        assert_ne!(b, two.digest());
     }
 
     /// Unreachable nodes are memory, not picture. One backend garbage-collecting an orphan and

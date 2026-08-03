@@ -24,11 +24,22 @@
 //! off-screen rather than as a wrong matrix.
 
 use render_core::blend::DEFAULT_BLEND;
+use render_core::blur::radius_to_sigma;
 use render_core::kurbo::{Affine, BezPath, Ellipse, Rect, RoundedRect, Shape as _};
 use render_core::model as m;
 use render_core::model::Brush;
 use render_core::peniko::{Color, GradientKind};
+use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_example_scenes::{ExampleScene, RenderingContext};
+
+/// A Gaussian-blur filter of the given sigma. `EdgeMode::None` fades to transparent at the edges,
+/// which is what a blur or a soft shadow wants.
+fn gaussian_blur(sigma: f32) -> Filter {
+    Filter::from_primitive(FilterPrimitive::GaussianBlur {
+        std_deviation: sigma,
+        edge_mode: EdgeMode::None,
+    })
+}
 
 /// Depth cap for the walk. The tree comes off the wire, and a cycle would otherwise recurse
 /// until the wasm stack gives out — a hang rather than a diagnosable failure. Real documents
@@ -153,12 +164,20 @@ fn draw_node<T: RenderingContext>(
     // they ride the *same* outer layer. Clipping covers only the children: render-wasm builds the
     // clip in `get_children_clip_bounds`, and a frame is not clipped by itself (which matters once
     // strokes land, since a stroke straddles the boundary).
+    // Drop shadows sit behind the shape, and *outside* the layer-blur/opacity/blend layer — a
+    // layer blur blurs the shape, not its shadow. Each is its own soft, offset, coloured
+    // silhouette; multiple shadows are just multiple passes (no multi-primitive filter needed).
+    draw_drop_shadows(ctx, node, matrix);
+
     let alpha = (node.opacity < 1.0).then_some(node.opacity);
     let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
-    let composite = alpha.is_some() || blend.is_some();
+    // Layer blur rides the same outer layer as opacity/blend, via `push_layer`'s filter slot, so
+    // it covers this node's paint and its children as one image.
+    let blur = node.blur.map(|radius| gaussian_blur(radius_to_sigma(radius)));
+    let composite = alpha.is_some() || blend.is_some() || blur.is_some();
     if composite {
         ctx.set_transform(matrix);
-        ctx.push_layer(None, blend, alpha, None, None);
+        ctx.push_layer(None, blend, alpha, None, blur);
     }
 
     paint_self(ctx, node, matrix);
@@ -180,6 +199,38 @@ fn draw_node<T: RenderingContext>(
     }
     if composite {
         ctx.pop_layer();
+    }
+}
+
+/// Draw a node's drop shadows, back to front, behind its own paint.
+///
+/// A drop shadow is the shape's silhouette, offset, filled with the shadow colour and softened by
+/// a Gaussian blur — built from the single upstream `GaussianBlur` primitive rather than the
+/// fork's compound `DropShadow` (which bundles the source and so cannot stack). One
+/// `push_filter_layer` per shadow keeps every filter graph single-primitive.
+///
+/// Not done yet, and dropped rather than faked: **spread** (needs a dilate/morphology the fork
+/// does not implement) and **inner** shadows (never reach the model). The offset is applied in
+/// the shape's own space (`matrix · translate(offset)`), so it rotates with the shape; that
+/// composition is not yet pixel-checked against render-wasm.
+fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) {
+    if node.shadows.is_empty() || node.kind == m::ShapeKind::Group {
+        return;
+    }
+    let silhouette = outline(node);
+    for shadow in &node.shadows {
+        let sigma = radius_to_sigma(shadow.blur);
+        let softened = sigma > 0.0;
+        if softened {
+            ctx.push_filter_layer(gaussian_blur(sigma));
+        }
+        ctx.set_transform(matrix * Affine::translate((shadow.offset.x, shadow.offset.y)));
+        ctx.set_paint_transform(Affine::IDENTITY);
+        ctx.set_paint(shadow.color);
+        ctx.fill_path(&silhouette);
+        if softened {
+            ctx.pop_layer();
+        }
     }
 }
 

@@ -521,6 +521,64 @@ pub extern "C" fn set_shape_blend_mode(mode: u8) {
     with_current(|node| node.blend = render_core::blend::blend_from_raw(mode));
 }
 
+/// A blur on this shape. `blur_type` is Penpot's `RawBlurType` — `0` layer, `1` background;
+/// `value` is a radius. Only the *layer* blur is carried (backdrop blur needs the source behind
+/// the shape and is a later slice), and a hidden one clears it.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_blur(blur_type: u8, hidden: bool, value: f32) {
+    if blur_type != 0 {
+        return; // background blur — not carried yet
+    }
+    with_current(|node| node.blur = (!hidden).then_some(value));
+}
+
+/// Clear every blur. render-wasm clears both slots; here there is only the layer one.
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_blur() {
+    with_current(|node| node.blur = None);
+}
+
+/// Clear one blur kind. Only the layer kind (`0`) is carried, so a background clear is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_blur_of_kind(blur_type: u8) {
+    if blur_type != 0 {
+        return;
+    }
+    with_current(|node| node.blur = None);
+}
+
+/// Append a shadow. `raw_style` is Penpot's `RawShadowStyle` — `0` drop, `1` inner; `blur` is a
+/// radius, `(x, y)` the offset. Only visible *drop* shadows are carried; inner shadows need a
+/// backend the fork does not have yet and are dropped, like inner strokes.
+#[unsafe(no_mangle)]
+pub extern "C" fn add_shape_shadow(
+    raw_color: u32,
+    blur: f32,
+    spread: f32,
+    x: f32,
+    y: f32,
+    raw_style: u8,
+    hidden: bool,
+) {
+    if raw_style != 0 || hidden {
+        return; // inner or hidden — dropped at the wire, matching model_export
+    }
+    with_current(|node| {
+        node.shadows.push(render_core::model::Shadow {
+            color: argb_to_color(raw_color),
+            blur,
+            spread,
+            offset: render_core::kurbo::Vec2::new(f64::from(x), f64::from(y)),
+        });
+    });
+}
+
+/// Drop every shadow on this shape.
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_shadows() {
+    with_current(|node| node.shadows.clear());
+}
+
 /// Whether this node clips its children to its own geometry.
 ///
 /// Projected verbatim, with no type check: render-wasm gates only on this flag, and it is the
@@ -1308,6 +1366,35 @@ mod tests {
             render_core::blend::DEFAULT_BLEND,
             "unset → default"
         );
+    }
+
+    /// Layer blur and drop shadows reach the model; background blur, inner shadows and hidden
+    /// ones are dropped at the wire — matching what `model_export` drops on the render-wasm side.
+    #[test]
+    fn blur_and_drop_shadows_reach_the_model_but_the_undrawable_do_not() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+        set_shape_blur(0, false, 12.0); // layer
+        add_shape_shadow(0xff_00_00_00, 6.0, 1.0, 4.0, 5.0, 0, false); // drop
+        add_shape_shadow(0xff_00_00_00, 6.0, 0.0, 1.0, 1.0, 1, false); // inner → dropped
+        add_shape_shadow(0xff_00_00_00, 6.0, 0.0, 1.0, 1.0, 0, true); // hidden → dropped
+        set_shape_blur(1, false, 9.0); // background → ignored, does not touch the layer blur
+
+        {
+            let scene = current_scene();
+            let node = scene.get(1).unwrap();
+            assert_eq!(node.blur, Some(12.0));
+            assert_eq!(node.shadows.len(), 1, "only the visible drop shadow");
+            assert_eq!(node.shadows[0].blur, 6.0);
+            assert_eq!(node.shadows[0].spread, 1.0);
+            assert_eq!(node.shadows[0].offset, render_core::kurbo::Vec2::new(4.0, 5.0));
+        }
+
+        // A hidden layer blur clears it; clearing drops the shadows.
+        set_shape_blur(0, true, 12.0);
+        assert_eq!(current_scene().get(1).unwrap().blur, None);
+        clear_shape_shadows();
+        assert!(current_scene().get(1).unwrap().shadows.is_empty());
     }
 
     /// The element-order trap, from the Vello side. An asymmetric matrix is required —

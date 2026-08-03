@@ -10,7 +10,7 @@
 
 use crate::core_convert::{affine_to_core, color_to_core, rect_to_core};
 use crate::shapes::{BlendMode, Corners, Fill, Gradient, Path, Segment, Shape, StrokeKind, Type};
-use crate::shapes::{StrokeLineCap, StrokeLineJoin};
+use crate::shapes::{BlurType, Shadow, ShadowStyle, StrokeLineCap, StrokeLineJoin};
 use skia_safe as skia;
 use render_core::kurbo::{self, BezPath, Point};
 use render_core::model as m;
@@ -53,6 +53,14 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
     let fills = shape.fills.iter().filter_map(fill_to_core).collect();
     let strokes = shape.strokes.iter().filter_map(stroke_to_core).collect();
 
+    // Layer blur only — a visible one — carried as its radius. Backdrop blur (`background_blur`)
+    // is a separate concern and is not projected yet.
+    let blur = shape
+        .blur
+        .filter(|b| !b.hidden && b.blur_type == BlurType::LayerBlur)
+        .map(|b| b.value);
+    let shadows = shape.shadows.iter().filter_map(shadow_to_core).collect();
+
     Some(m::Node {
         id: shape.id.as_u128(),
         kind,
@@ -71,7 +79,24 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         strokes,
         opacity: shape.opacity,
         blend: skia_blend_to_peniko(shape.blend_mode.0),
+        blur,
+        shadows,
         hidden: shape.hidden,
+    })
+}
+
+/// Project a drop shadow. Inner shadows and hidden ones are dropped — the same "drop at
+/// projection on both sides" contract as inner/outer strokes, so the digest still agrees while
+/// the Vello backend cannot draw them.
+fn shadow_to_core(shadow: &Shadow) -> Option<m::Shadow> {
+    if shadow.hidden() || shadow.style() != ShadowStyle::Drop {
+        return None;
+    }
+    Some(m::Shadow {
+        color: color_to_core(shadow.color),
+        blur: shadow.blur,
+        spread: shadow.spread,
+        offset: kurbo::Vec2::new(f64::from(shadow.offset.0), f64::from(shadow.offset.1)),
     })
 }
 
@@ -331,6 +356,64 @@ mod tests {
             render_core::blend::DEFAULT_BLEND,
             "no blend set → default"
         );
+    }
+
+    /// Layer blur (as a radius) and drop shadows ride through to the neutral node.
+    #[test]
+    fn layer_blur_and_drop_shadow_project() {
+        use crate::shapes::{Blur, BlurType, Shadow, ShadowStyle};
+        let mut shape = Shape::new(Uuid::nil());
+        shape.set_shape_type(Type::Rect(ShapeRect::default()));
+        shape.set_blur_of_kind(BlurType::LayerBlur, Some(Blur::new(BlurType::LayerBlur, false, 12.0)));
+        shape.add_shadow(Shadow::new(
+            skia::Color::from_argb(128, 0, 0, 0),
+            6.0,
+            1.0,
+            (4.0, 5.0),
+            ShadowStyle::Drop,
+            false,
+        ));
+
+        let node = node_from_shape(&shape).expect("a rect projects");
+        assert_eq!(node.blur, Some(12.0));
+        assert_eq!(node.shadows.len(), 1);
+        let s = node.shadows[0];
+        assert_eq!(s.blur, 6.0);
+        assert_eq!(s.spread, 1.0);
+        assert_eq!(s.offset, render_core::kurbo::Vec2::new(4.0, 5.0));
+    }
+
+    /// The three things the Vello backend cannot draw yet are dropped at projection, so the
+    /// digest still agrees: background blur (not a *layer* blur), inner shadows, and hidden ones.
+    #[test]
+    fn undrawable_blur_and_shadows_are_dropped() {
+        use crate::shapes::{Blur, BlurType, Shadow, ShadowStyle};
+        let mut shape = Shape::new(Uuid::nil());
+        shape.set_shape_type(Type::Rect(ShapeRect::default()));
+        shape.set_blur_of_kind(
+            BlurType::BackgroundBlur,
+            Some(Blur::new(BlurType::BackgroundBlur, false, 9.0)),
+        );
+        let black = skia::Color::from_argb(255, 0, 0, 0);
+        shape.add_shadow(Shadow::new(black, 5.0, 0.0, (1.0, 1.0), ShadowStyle::Inner, false));
+        shape.add_shadow(Shadow::new(black, 5.0, 0.0, (1.0, 1.0), ShadowStyle::Drop, true));
+
+        let node = node_from_shape(&shape).expect("a rect projects");
+        assert_eq!(node.blur, None, "background blur is not a layer blur");
+        assert!(node.shadows.is_empty(), "inner and hidden shadows are dropped");
+    }
+
+    /// The radius→sigma conversion must be byte-identical on both sides, or the same document
+    /// blurs by different amounts. render-vello uses render-core's; render-wasm its Skia copy.
+    #[test]
+    fn radius_to_sigma_agrees_with_render_core() {
+        for r in [0.0f32, 1.0, 8.0, 20.0, 100.0] {
+            assert_eq!(
+                crate::shapes::radius_to_sigma(r),
+                render_core::blur::radius_to_sigma(r),
+                "radius {r}"
+            );
+        }
     }
 
     /// Text, Bool and SVGRaw have no model kind yet. Frame and Group do, as of the hierarchy
