@@ -75,6 +75,9 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         // (`orchestration.ts`: `clips = type === 'frame' || type === 'slot'`), sending false
         // for everything else. Re-deriving that rule here would be a second, divergent copy.
         clip: shape.clip_content,
+        // Only a group is ever masked; every other kind projects `false`. `matches!` reads the
+        // flag straight off the `Group` payload, so a non-group shape can never carry it.
+        masked: matches!(&shape.shape_type, Type::Group(g) if g.masked),
         fills,
         strokes,
         opacity: shape.opacity,
@@ -437,6 +440,19 @@ mod tests {
         let node = node_from_shape(&shape).expect("a group must project");
         assert_eq!(node.kind, m::ShapeKind::Group);
         assert_eq!(node.children, vec![child.as_u128()]);
+        assert!(!node.masked, "a plain group is not masked");
+    }
+
+    /// The masked flag rides straight off the `Group` payload, and only a group can carry it.
+    #[test]
+    fn a_masked_group_projects_its_flag() {
+        let mut group = Shape::new(Uuid::new_v4());
+        group.set_shape_type(Type::Group(Group { masked: true }));
+        assert!(node_from_shape(&group).expect("a group projects").masked);
+
+        // No other kind has the concept — a rect is never masked, whatever else it carries.
+        let rect = Shape::new(Uuid::new_v4());
+        assert!(!node_from_shape(&rect).expect("a rect projects").masked);
     }
 
     /// `clip_content` is projected verbatim — the frame-only rule lives in the host, and

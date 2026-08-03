@@ -302,6 +302,16 @@ pub struct Node {
     pub parent: Option<u128>,
     /// Whether this node clips its children to its own geometry (Penpot's `clip_content`).
     pub clip: bool,
+    /// Whether this node is a **masked group**: its first (bottom-most) child is a mask that clips
+    /// the rest to its silhouette. Only ever true on a [`ShapeKind::Group`] — Penpot sets it via
+    /// `set_shape_masked_group`, and every other kind leaves it `false`.
+    ///
+    /// This is the *interpretation* of the existing `children` list, not new geometry: `children`
+    /// still lists mask and content together in paint order, so the digest already sees them; this
+    /// flag records that the first is consumed as the mask rather than drawn. The neutral model
+    /// stops there — how faithfully a backend honours the mask (a hard clip for an opaque mask, a
+    /// true DstIn alpha for a soft one) is a rendering decision, not part of what the document *is*.
+    pub masked: bool,
     /// Paints, back to front. Solid and gradient carry their own pixels; an image is a
     /// reference each backend resolves against its own store — see [`Brush`].
     pub fills: Vec<Paint>,
@@ -337,6 +347,7 @@ impl Node {
             children: Vec::new(),
             parent: None,
             clip: false,
+            masked: false,
             fills: Vec::new(),
             strokes: Vec::new(),
             opacity: 1.0,
@@ -573,6 +584,10 @@ impl Scene {
         }
         fnv_f64(hash, f64::from(node.opacity));
         fnv_u64(hash, u64::from(node.clip));
+        // A masked group and a plain one with the same children are different pictures — the
+        // first hides its bottom child and clips the rest to it. Hashed unconditionally (like
+        // `clip`), so the default `false` is part of every node's fingerprint.
+        fnv_u64(hash, u64::from(node.masked));
         // Blend is two `#[repr(u8)]` enums; hashing both discriminants catches a mix *or* a
         // compose change. Hashed unconditionally, so the default source-over is part of the
         // fingerprint — cheap, and it keeps the two projections honest about the field existing.
@@ -1001,6 +1016,7 @@ mod tests {
         );
         assert_ne!(base, mutate(&|n| n.opacity = 0.5));
         assert_ne!(base, mutate(&|n| n.clip = true));
+        assert_ne!(base, mutate(&|n| n.masked = true));
         assert_ne!(base, mutate(&|n| n.blend = crate::blend::blend_from_raw(24)));
         assert_ne!(base, mutate(&|n| n.blur = Some(8.0)));
         assert_ne!(

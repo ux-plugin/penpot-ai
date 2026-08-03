@@ -24,7 +24,7 @@ import { loadVello, velloWasmAvailable, type VelloInstance } from './vello-insta
 import { setContextInitialized } from '../../../src/lib/renderer/api/context'
 import { setObject } from '../../../src/lib/renderer/api/orchestration'
 import { sceneDigest } from '../../../src/lib/renderer/api/canvas'
-import { createCircle, createFrame, createRect } from '../../../src/lib/renderer/node-factory'
+import { createCircle, createFrame, createGroup, createRect } from '../../../src/lib/renderer/node-factory'
 import { setShapeChildren } from '../../../src/lib/renderer/api/shape'
 import type { EmscriptenLikeModule } from '../../../src/lib/renderer/vello-module-facade'
 import type { WasmModule } from '../../../src/lib/renderer/wasm-types'
@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 2592162645
+const CANONICAL_DIGEST = 1240504707
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -53,6 +53,11 @@ const IDS = {
   frame: '11111111-1111-4111-8111-111111111111',
   rect: '22222222-2222-4222-8222-222222222222',
   circle: '33333333-3333-4333-8333-333333333333',
+  // A masked group and its two children: the first child is the mask, the second the content it
+  // clips. Exercises `_set_shape_masked_group` through the real wire.
+  maskGroup: '44444444-4444-4444-8444-444444444444',
+  maskShape: '55555555-5555-4555-8555-555555555555',
+  maskContent: '66666666-6666-4666-8666-666666666666',
 } as const
 
 /**
@@ -71,7 +76,7 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
     y: 0,
     width: 400,
     height: 300,
-    shapes: [IDS.rect, IDS.circle],
+    shapes: [IDS.rect, IDS.circle, IDS.maskGroup],
   })
   const rect = createRect({
     id: IDS.rect,
@@ -110,7 +115,39 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
     fillColor: '#f05a28',
   })
 
-  for (const shape of [frame, rect, circle]) setObject(module, shape)
+  // A masked group: `maskShape` (first child) is the mask, `maskContent` the shape it clips. The
+  // group carries `maskedGroup: true`, which orchestration turns into `_set_shape_masked_group`.
+  const maskGroup = createGroup({
+    id: IDS.maskGroup,
+    parentId: frame.id,
+    x: 40,
+    y: 160,
+    width: 120,
+    height: 100,
+    shapes: [IDS.maskShape, IDS.maskContent],
+  })
+  ;(maskGroup as { maskedGroup?: boolean }).maskedGroup = true
+  const maskShape = createCircle({
+    id: IDS.maskShape,
+    parentId: maskGroup.id,
+    x: 40,
+    y: 160,
+    width: 100,
+    height: 100,
+    fillColor: '#ffffff',
+  })
+  const maskContent = createRect({
+    id: IDS.maskContent,
+    parentId: maskGroup.id,
+    x: 60,
+    y: 180,
+    width: 120,
+    height: 80,
+    fillColor: '#28a745',
+  })
+
+  for (const shape of [frame, rect, circle, maskGroup, maskShape, maskContent])
+    setObject(module, shape)
   module._use_shape(0, 0, 0, 0)
   setShapeChildren(module, [frame.id])
 }
@@ -144,8 +181,9 @@ suite('cross-backend digest', () => {
     expect(actual, 'the canonical document must not digest as an empty scene').not.toBe(empty)
     expect(vello.exports.scene_node_count()).toBeGreaterThan(3)
     // Reachability is the trap: an unlisted child is invisible to the digest, so an anchor
-    // built from one would silently cover only the frame.
-    expect(vello.exports.scene_paintable_count(), 'both children must be reachable').toBe(2)
+    // built from one would silently cover only the frame. Four shapes paint — the rect, the
+    // circle, and the masked group's mask and content (the group itself paints nothing).
+    expect(vello.exports.scene_paintable_count(), 'every leaf must be reachable').toBe(4)
 
     expect(actual).toBe(CANONICAL_DIGEST)
   })

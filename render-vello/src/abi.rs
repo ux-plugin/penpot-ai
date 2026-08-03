@@ -588,6 +588,17 @@ pub extern "C" fn set_shape_clip_content(clip_content: bool) {
     with_current(|node| node.clip = clip_content);
 }
 
+/// Mark this node a masked group: its first child becomes a mask over the rest.
+///
+/// The host only calls this for groups; the flag is stored on whatever node is current, exactly
+/// as render-wasm's `set_shape_masked_group` does. Without this export the facade would stub the
+/// call to a silent no-op, so a masked group would reach Vello as a plain one and the digest would
+/// disagree with render-wasm's projection.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_masked_group(masked: bool) {
+    with_current(|node| node.masked = masked);
+}
+
 // --- hierarchy -------------------------------------------------------------------------
 //
 // Paint order comes from each container's `children`, which is what `set_children*` writes.
@@ -1709,6 +1720,21 @@ mod tests {
 
         set_shape_clip_content(false);
         assert!(!current_scene().get(3).unwrap().clip);
+    }
+
+    /// The masked flag must reach the node — without this export the facade stubs the call and a
+    /// masked group would silently arrive as a plain one, disagreeing with render-wasm's digest.
+    #[test]
+    fn masked_group_flag_is_recorded() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 4);
+        assert!(!current_scene().get(4).unwrap().masked, "default is unmasked");
+
+        set_shape_masked_group(true);
+        assert!(current_scene().get(4).unwrap().masked);
+
+        set_shape_masked_group(false);
+        assert!(!current_scene().get(4).unwrap().masked);
     }
 
     // --- lifecycle and viewport ---------------------------------------------------------

@@ -28,7 +28,7 @@ use render_core::blur::radius_to_sigma;
 use render_core::kurbo::{Affine, BezPath, Ellipse, Rect, RoundedRect, Shape as _};
 use render_core::model as m;
 use render_core::model::Brush;
-use render_core::peniko::{Color, GradientKind};
+use render_core::peniko::Color;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_example_scenes::{ExampleScene, RenderingContext};
 
@@ -190,14 +190,63 @@ fn draw_node<T: RenderingContext>(
         ctx.push_layer(clip.as_ref(), None, None, None, None);
     }
 
-    for child in &node.children {
-        draw_node(ctx, scene, *child, root, modifiers, depth + 1);
-    }
+    draw_children(ctx, scene, node, root, modifiers, depth);
 
     if clip.is_some() {
         ctx.pop_layer();
     }
     if composite {
+        ctx.pop_layer();
+    }
+}
+
+/// Draw a container's children, honouring a masked group.
+///
+/// For a masked group the first (bottom-most) child is Penpot's mask: it clips the rest to its
+/// silhouette instead of being drawn itself. An **opaque** mask makes that exactly a clip to the
+/// silhouette, which is what happens here — the mask child's outline becomes a clip layer around
+/// the content. A **soft** mask (a gradient, an image, or a partly transparent fill) needs a true
+/// DstIn *alpha* mask, which `push_layer`'s mask slot wants as a screen-space raster built from an
+/// offscreen render the neutral `RenderingContext` cannot yet produce — so it is deferred and, for
+/// now, approximated by this hard clip, the same "carry it in the model, approximate the pixels"
+/// contract as shadow spread and inner shadows. The digest already agrees regardless, because the
+/// mask flag and the children are in the model either way.
+fn draw_children<T: RenderingContext>(
+    ctx: &mut T,
+    scene: &m::Scene,
+    node: &m::Node,
+    root: Affine,
+    modifiers: &crate::abi::Modifiers,
+    depth: u32,
+) {
+    // The mask is the first child, the content the rest. A masked group with no children has
+    // nothing to mask; one with only the mask draws nothing at all (the content is empty).
+    let mask_id = (node.masked && node.kind == m::ShapeKind::Group)
+        .then(|| node.children.first().copied())
+        .flatten();
+
+    let Some(mask_id) = mask_id else {
+        for child in &node.children {
+            draw_node(ctx, scene, *child, root, modifiers, depth + 1);
+        }
+        return;
+    };
+
+    // Clip to the mask child's silhouette, captured in that child's own page-space matrix — the
+    // same way a frame's clip carries the matrix current at push time. If the mask child has not
+    // arrived yet, draw the content unclipped rather than hiding it, matching how a not-yet-sent
+    // child is tolerated elsewhere.
+    let clipped = scene.get(mask_id).map(|mask| {
+        let modifier = modifiers.get(&mask_id).copied().unwrap_or(Affine::IDENTITY);
+        ctx.set_transform(root * modifier * mask.effective_transform());
+        ctx.push_layer(Some(&outline(mask)), None, None, None, None);
+    });
+
+    for child in node.children.iter().skip(1) {
+        draw_node(ctx, scene, *child, root, modifiers, depth + 1);
+    }
+
+    if clipped.is_some() {
         ctx.pop_layer();
     }
 }
