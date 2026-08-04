@@ -867,6 +867,27 @@ pub extern "C" fn clear_shape_shadows() {
     with_current(|node| node.shadows.clear());
 }
 
+/// Set a custom (Tier-1) shader effect on this shape. `effect` selects the WGSL branch in the
+/// fork's `custom_effect` hook (effect `0` = tint); the uniform params are read from the shared byte
+/// buffer as little-endian `f32`s — the host `alloc_bytes` + writes them first, exactly as it does
+/// for fills. The fork forwards up to ten; extras are ignored by the shader.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_custom_effect(effect: u32) {
+    let params: Vec<f32> = take_bytes()
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    with_current(|node| {
+        node.custom_effect = Some(render_core::model::CustomEffect { id: effect, params });
+    });
+}
+
+/// Remove any custom effect from this shape.
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_custom_effect() {
+    with_current(|node| node.custom_effect = None);
+}
+
 /// Whether this node clips its children to its own geometry.
 ///
 /// Projected verbatim, with no type check: render-wasm gates only on this flag, and it is the
@@ -1758,6 +1779,35 @@ mod tests {
                 render_core::peniko::Color::from_rgba8(0x11, 0x22, 0x33, 0xff)
             ))]
         );
+    }
+
+    /// The custom-effect setter records its id and reads the param floats from the shared buffer;
+    /// clearing removes it. If this entry point were missing the facade would stub it and every
+    /// custom effect would silently vanish.
+    #[test]
+    fn custom_effect_decodes_its_id_and_params() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 1);
+
+        let params = [1.0_f32, 0.45, 0.0, 0.7];
+        let mut payload = Vec::new();
+        for p in params {
+            payload.extend_from_slice(&p.to_le_bytes());
+        }
+        let ptr = alloc_bytes(payload.len());
+        assert!(!ptr.is_null());
+        {
+            let mut guard = BUFFER.lock().unwrap();
+            guard.as_mut().unwrap().copy_from_slice(&payload);
+        }
+        set_shape_custom_effect(3);
+
+        let effect = current_scene().get(1).unwrap().custom_effect.clone().unwrap();
+        assert_eq!(effect.id, 3);
+        assert_eq!(effect.params, params.to_vec());
+
+        clear_shape_custom_effect();
+        assert!(current_scene().get(1).unwrap().custom_effect.is_none());
     }
 
     /// Text (5), Bool (2) and SVGRaw (7) have no model kind yet; each becomes `Unsupported`,

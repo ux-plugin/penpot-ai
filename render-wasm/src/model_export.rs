@@ -93,6 +93,11 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         blend: skia_blend_to_peniko(shape.blend_mode.0),
         blur,
         shadows,
+        // Custom (Tier-1) shader effects are a Vello-first feature: there is no Penpot shape field
+        // for them yet, so the Skia projection carries `None` — the same "dropped at projection"
+        // stance as inner shadows. When a Skia custom-effect path (author + SkSL draw) lands, this
+        // reads it from the shape and both routes hash the same `(id, params)`.
+        custom_effect: None,
         hidden: shape.hidden,
     })
 }

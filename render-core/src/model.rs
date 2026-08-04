@@ -154,6 +154,24 @@ pub struct Shadow {
     pub offset: kurbo::Vec2,
 }
 
+/// A custom (Tier-1) shader effect: one of a curated, backend-authored library of effects, selected
+/// by [`id`](CustomEffect::id) and driven by [`params`](CustomEffect::params).
+///
+/// This is deliberately *not* an arbitrary user shader. render-vello lowers it to the vello fork's
+/// `FilterPrimitive::Custom { effect, params }`, whose body is a WGSL branch compiled into
+/// `filters.wgsl` (effect 0 = tint: `params = [r, g, b, amount]`); render-wasm would implement the
+/// same `id` in SkSL. Carrying the neutral `(id, params)` — not compiled shader bytes — is what lets
+/// the digest agree across backends that speak different shader languages, exactly as text hashes
+/// its input rather than the shaped glyphs.
+///
+/// `params` is a flat float vector because the fork forwards a fixed-size `array<f32, N>` to the
+/// shader; structured uniforms (colours, vec2s) lower to it in an order both backends agree on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomEffect {
+    pub id: u32,
+    pub params: Vec<f32>,
+}
+
 /// Penpot's stroke styles, as `RawStrokeStyle` puts them on the wire (0..3).
 ///
 /// Neutral rather than per-backend because the *pattern each implies* has to be identical on
@@ -337,6 +355,9 @@ pub struct Node {
     pub blur: Option<f32>,
     /// Drop shadows, back to front, drawn behind the shape. Inner shadows do not reach here.
     pub shadows: Vec<Shadow>,
+    /// A custom (Tier-1) shader effect wrapping the shape, or `None`. Drawn via a single custom
+    /// filter layer (the fork allows one primitive per layer), like [`blur`](Node::blur).
+    pub custom_effect: Option<CustomEffect>,
     pub hidden: bool,
 }
 
@@ -364,6 +385,7 @@ impl Node {
             blend: crate::blend::DEFAULT_BLEND,
             blur: None,
             shadows: Vec::new(),
+            custom_effect: None,
             hidden: false,
         }
     }
@@ -628,6 +650,21 @@ impl Scene {
             fnv_f64(hash, f64::from(shadow.spread));
             fnv_f64(hash, shadow.offset.x);
             fnv_f64(hash, shadow.offset.y);
+        }
+
+        // The custom effect's id and params. Hashing the neutral selector + uniforms (not any
+        // compiled shader) is what keeps the two backends — WGSL on one, SkSL on the other — in
+        // digest agreement, the same way text hashes its input rather than the shaped result.
+        match &node.custom_effect {
+            Some(effect) => {
+                fnv_u64(hash, 1);
+                fnv_u64(hash, u64::from(effect.id));
+                fnv_u64(hash, effect.params.len() as u64);
+                for p in &effect.params {
+                    fnv_f64(hash, f64::from(*p));
+                }
+            }
+            None => fnv_u64(hash, 0),
         }
 
         match node.corners {
@@ -1146,6 +1183,24 @@ mod tests {
         let mut two = tree(&[0, 1, 2]);
         two.get_mut(1).unwrap().shadows = vec![base, base];
         assert_ne!(b, two.digest());
+    }
+
+    /// The custom effect is hashed as its neutral selector + uniforms, so a backend that lowers it
+    /// to WGSL and one that lowers it to SkSL still agree — the id, the param values, and the param
+    /// count are each part of the fingerprint, and having one at all differs from having none.
+    #[test]
+    fn digest_notices_the_custom_effect() {
+        let none = tree(&[0, 1, 2]).digest();
+        let with = |effect: CustomEffect| {
+            let mut t = tree(&[0, 1, 2]);
+            t.get_mut(1).unwrap().custom_effect = Some(effect);
+            t.digest()
+        };
+        let base = with(CustomEffect { id: 0, params: vec![1.0, 0.45, 0.0, 0.7] });
+        assert_ne!(none, base, "an effect differs from no effect");
+        assert_ne!(base, with(CustomEffect { id: 1, params: vec![1.0, 0.45, 0.0, 0.7] }), "id matters");
+        assert_ne!(base, with(CustomEffect { id: 0, params: vec![1.0, 0.45, 0.0, 0.9] }), "params matter");
+        assert_ne!(base, with(CustomEffect { id: 0, params: vec![1.0, 0.45, 0.0] }), "param count matters");
     }
 
     /// A text block is hashed as its input — every character and style attribute is part of the

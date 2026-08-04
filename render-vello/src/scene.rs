@@ -319,6 +319,16 @@ fn draw_node<T: RenderingContext>(
     // silhouette; multiple shadows are just multiple passes (no multi-primitive filter needed).
     draw_drop_shadows(ctx, node, matrix);
 
+    // A custom (Tier-1) shader effect wraps this node's composited paint *and* its children as one
+    // image — the outermost of this node's layers, so it filters the finished shape rather than each
+    // child, and it sits outside the drop shadow (which is drawn behind). One primitive per layer,
+    // matching the fork's single-primitive filter graph.
+    let has_custom = node.custom_effect.is_some();
+    if let Some(effect) = &node.custom_effect {
+        ctx.set_transform(matrix);
+        ctx.push_filter_layer(custom_filter(effect));
+    }
+
     let alpha = (node.opacity < 1.0).then_some(node.opacity);
     let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
     // Layer blur rides the same outer layer as opacity/blend, via `push_layer`'s filter slot, so
@@ -354,6 +364,20 @@ fn draw_node<T: RenderingContext>(
     if composite {
         ctx.pop_layer();
     }
+    if has_custom {
+        ctx.pop_layer();
+    }
+}
+
+/// The vello-fork filter for a custom (Tier-1) effect: its `id` selects the WGSL branch in the
+/// fork's `custom_effect` hook and its params are the uniforms (effect 0 = tint, `[r, g, b, amount]`).
+/// No bounds expansion — a colour effect stays within the source, unlike a blur or a drop shadow.
+fn custom_filter(effect: &m::CustomEffect) -> Filter {
+    Filter::from_primitive(FilterPrimitive::Custom {
+        effect: effect.id,
+        params: effect.params.iter().copied().collect(),
+        expansion: [0.0, 0.0, 0.0, 0.0],
+    })
 }
 
 /// Draw a container's children, honouring a masked group.

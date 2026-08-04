@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 1318113828
+const CANONICAL_DIGEST = 2172659934
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -182,6 +182,17 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
 
   for (const shape of [frame, rect, circle, maskGroup, maskShape, maskContent, text])
     setObject(module, shape)
+
+  // A Tier-1 custom shader effect (tint, effect 0, params [r,g,b,amount]) on the text node — the
+  // last shape `setObject` selected — driving the real `_set_shape_custom_effect` wire so the anchor
+  // covers the param-buffer decode end to end. It's Vello-only for now (render-wasm has no author
+  // path and projects `None`), but the wire + the neutral `(id, params)` digest still cross here.
+  const effectParams = new Float32Array([1, 0.45, 0, 0.7])
+  const effectBytes = new Uint8Array(effectParams.buffer)
+  const effectPtr = module._alloc_bytes(effectBytes.length)
+  module.HEAPU8.set(effectBytes, effectPtr)
+  module._set_shape_custom_effect(0)
+
   module._use_shape(0, 0, 0, 0)
   setShapeChildren(module, [frame.id])
 }
