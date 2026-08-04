@@ -867,25 +867,69 @@ pub extern "C" fn clear_shape_shadows() {
     with_current(|node| node.shadows.clear());
 }
 
-/// Set a custom (Tier-1) shader effect on this shape. `effect` selects the WGSL branch in the
-/// fork's `custom_effect` hook (effect `0` = tint); the uniform params are read from the shared byte
-/// buffer as little-endian `f32`s — the host `alloc_bytes` + writes them first, exactly as it does
-/// for fills. The fork forwards up to ten; extras are ignored by the shader.
+/// Set this shape's filter graph — a chain of custom passes, drawn Vello-only as nested filter
+/// layers. The graph is read from the shared byte buffer (host `alloc_bytes` + writes it first) as a
+/// little-endian stream:
+///
+/// ```text
+/// [u32 node_count]
+/// per node: [u32 tag]
+///   tag 0 Blur:   [f32 sigma]
+///   tag 1 Offset: [f32 dx][f32 dy]
+///   tag 2 Custom: [u32 effect][u32 param_count][f32 × param_count]
+/// ```
+///
+/// A malformed stream or zero nodes clears the graph, so a truncated write never leaves a
+/// half-decoded chain applied.
 #[unsafe(no_mangle)]
-pub extern "C" fn set_shape_custom_effect(effect: u32) {
-    let params: Vec<f32> = take_bytes()
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
-    with_current(|node| {
-        node.custom_effect = Some(render_core::model::CustomEffect { id: effect, params });
-    });
+pub extern "C" fn set_shape_filter_graph() {
+    let graph = parse_filter_graph(&take_bytes());
+    with_current(|node| node.filter_graph = graph);
 }
 
-/// Remove any custom effect from this shape.
+/// Remove any filter graph from this shape.
 #[unsafe(no_mangle)]
-pub extern "C" fn clear_shape_custom_effect() {
-    with_current(|node| node.custom_effect = None);
+pub extern "C" fn clear_shape_filter_graph() {
+    with_current(|node| node.filter_graph = None);
+}
+
+/// Decode the filter-graph wire stream. Returns `None` on any truncation or unknown tag, and on an
+/// empty chain — the node carries `Option`, so "no graph" and "empty graph" are the same thing.
+fn parse_filter_graph(bytes: &[u8]) -> Option<render_core::model::FilterGraph> {
+    use render_core::model::{FilterGraph, FilterNode};
+
+    let mut cur = 0usize;
+    let u32_at = |cur: &mut usize| -> Option<u32> {
+        let c = bytes.get(*cur..*cur + 4)?;
+        *cur += 4;
+        Some(u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    };
+    let f32_at = |cur: &mut usize| -> Option<f32> {
+        let c = bytes.get(*cur..*cur + 4)?;
+        *cur += 4;
+        Some(f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    };
+
+    let count = u32_at(&mut cur)? as usize;
+    let mut nodes = Vec::with_capacity(count);
+    for _ in 0..count {
+        let node = match u32_at(&mut cur)? {
+            0 => FilterNode::Blur { sigma: f32_at(&mut cur)? },
+            1 => FilterNode::Offset { dx: f32_at(&mut cur)?, dy: f32_at(&mut cur)? },
+            2 => {
+                let effect = u32_at(&mut cur)?;
+                let param_count = u32_at(&mut cur)? as usize;
+                let mut params = Vec::with_capacity(param_count);
+                for _ in 0..param_count {
+                    params.push(f32_at(&mut cur)?);
+                }
+                FilterNode::Custom { effect, params }
+            }
+            _ => return None, // unknown node tag — drop the whole graph rather than guess
+        };
+        nodes.push(node);
+    }
+    (!nodes.is_empty()).then_some(FilterGraph { nodes })
 }
 
 /// Whether this node clips its children to its own geometry.
@@ -1781,33 +1825,52 @@ mod tests {
         );
     }
 
-    /// The custom-effect setter records its id and reads the param floats from the shared buffer;
-    /// clearing removes it. If this entry point were missing the facade would stub it and every
-    /// custom effect would silently vanish.
+    /// The filter-graph setter decodes a chain of mixed node types (blur · offset · custom) from the
+    /// shared buffer, in order; clearing removes it. If this entry point were missing the facade
+    /// would stub it and every effect would silently vanish.
     #[test]
-    fn custom_effect_decodes_its_id_and_params() {
+    fn filter_graph_decodes_a_mixed_node_chain() {
+        use render_core::model::FilterNode;
         let _guard = reset();
         use_shape(0, 0, 0, 1);
 
-        let params = [1.0_f32, 0.45, 0.0, 0.7];
+        // blur(sigma 4) → offset(10, 0) → custom(effect 0, [1, 0.45, 0, 0.7]).
         let mut payload = Vec::new();
-        for p in params {
-            payload.extend_from_slice(&p.to_le_bytes());
+        let push_u32 = |p: &mut Vec<u8>, v: u32| p.extend_from_slice(&v.to_le_bytes());
+        let push_f32 = |p: &mut Vec<u8>, v: f32| p.extend_from_slice(&v.to_le_bytes());
+        push_u32(&mut payload, 3); // node count
+        push_u32(&mut payload, 0); // Blur
+        push_f32(&mut payload, 4.0);
+        push_u32(&mut payload, 1); // Offset
+        push_f32(&mut payload, 10.0);
+        push_f32(&mut payload, 0.0);
+        push_u32(&mut payload, 2); // Custom
+        push_u32(&mut payload, 0); // effect id
+        push_u32(&mut payload, 4); // param count
+        for v in [1.0_f32, 0.45, 0.0, 0.7] {
+            push_f32(&mut payload, v);
         }
+
         let ptr = alloc_bytes(payload.len());
         assert!(!ptr.is_null());
         {
             let mut guard = BUFFER.lock().unwrap();
             guard.as_mut().unwrap().copy_from_slice(&payload);
         }
-        set_shape_custom_effect(3);
+        set_shape_filter_graph();
 
-        let effect = current_scene().get(1).unwrap().custom_effect.clone().unwrap();
-        assert_eq!(effect.id, 3);
-        assert_eq!(effect.params, params.to_vec());
+        let graph = current_scene().get(1).unwrap().filter_graph.clone().unwrap();
+        assert_eq!(
+            graph.nodes,
+            vec![
+                FilterNode::Blur { sigma: 4.0 },
+                FilterNode::Offset { dx: 10.0, dy: 0.0 },
+                FilterNode::Custom { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] },
+            ]
+        );
 
-        clear_shape_custom_effect();
-        assert!(current_scene().get(1).unwrap().custom_effect.is_none());
+        clear_shape_filter_graph();
+        assert!(current_scene().get(1).unwrap().filter_graph.is_none());
     }
 
     /// Text (5), Bool (2) and SVGRaw (7) have no model kind yet; each becomes `Unsupported`,

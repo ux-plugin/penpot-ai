@@ -319,15 +319,11 @@ fn draw_node<T: RenderingContext>(
     // silhouette; multiple shadows are just multiple passes (no multi-primitive filter needed).
     draw_drop_shadows(ctx, node, matrix);
 
-    // A custom (Tier-1) shader effect wraps this node's composited paint *and* its children as one
-    // image — the outermost of this node's layers, so it filters the finished shape rather than each
-    // child, and it sits outside the drop shadow (which is drawn behind). One primitive per layer,
-    // matching the fork's single-primitive filter graph.
-    let has_custom = node.custom_effect.is_some();
-    if let Some(effect) = &node.custom_effect {
-        ctx.set_transform(matrix);
-        ctx.push_filter_layer(custom_filter(effect));
-    }
+    // A filter graph wraps this node's composited paint *and* its children as one image — the
+    // outermost of this node's layers, so it filters the finished shape rather than each child, and
+    // it sits outside the drop shadow (which is drawn behind). A linear chain lowers to nested filter
+    // layers; the shape draws inside all of them and we pop the same count afterward.
+    let filter_layers = push_filter_graph(ctx, node, matrix);
 
     let alpha = (node.opacity < 1.0).then_some(node.opacity);
     let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
@@ -364,20 +360,43 @@ fn draw_node<T: RenderingContext>(
     if composite {
         ctx.pop_layer();
     }
-    if has_custom {
+    for _ in 0..filter_layers {
         ctx.pop_layer();
     }
 }
 
-/// The vello-fork filter for a custom (Tier-1) effect: its `id` selects the WGSL branch in the
-/// fork's `custom_effect` hook and its params are the uniforms (effect 0 = tint, `[r, g, b, amount]`).
-/// No bounds expansion — a colour effect stays within the source, unlike a blur or a drop shadow.
-fn custom_filter(effect: &m::CustomEffect) -> Filter {
-    Filter::from_primitive(FilterPrimitive::Custom {
-        effect: effect.id,
-        params: effect.params.iter().copied().collect(),
-        expansion: [0.0, 0.0, 0.0, 0.0],
-    })
+/// Push one nested filter layer per node in the shape's filter graph, and return how many were
+/// pushed so the caller pops the same number. The chain is in application order (`nodes[0]` first),
+/// but the *last* filter layer pushed is the innermost — closest to the shape, applied first (see
+/// the fork's `filter_offset_nested`) — so the nodes are pushed in reverse. Nothing pushed when the
+/// node has no graph.
+fn push_filter_graph<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) -> u32 {
+    let Some(graph) = &node.filter_graph else {
+        return 0;
+    };
+    for filter_node in graph.nodes.iter().rev() {
+        ctx.set_transform(matrix);
+        ctx.push_filter_layer(lower_node(filter_node));
+    }
+    graph.nodes.len() as u32
+}
+
+/// Lower one neutral filter node to a vello-fork filter primitive. `Custom` selects a WGSL branch in
+/// the fork's `custom_effect` hook (effect 0 = tint, `[r, g, b, amount]`) — no bounds expansion,
+/// since a colour effect stays within the source, unlike the offset/blur the fork sizes itself.
+fn lower_node(filter_node: &m::FilterNode) -> Filter {
+    match filter_node {
+        m::FilterNode::Blur { sigma } => gaussian_blur(*sigma),
+        m::FilterNode::Offset { dx, dy } => Filter::from_primitive(FilterPrimitive::Offset {
+            dx: *dx,
+            dy: *dy,
+        }),
+        m::FilterNode::Custom { effect, params } => Filter::from_primitive(FilterPrimitive::Custom {
+            effect: *effect,
+            params: params.iter().copied().collect(),
+            expansion: [0.0, 0.0, 0.0, 0.0],
+        }),
+    }
 }
 
 /// Draw a container's children, honouring a masked group.

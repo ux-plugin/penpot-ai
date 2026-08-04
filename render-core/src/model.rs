@@ -154,22 +154,33 @@ pub struct Shadow {
     pub offset: kurbo::Vec2,
 }
 
-/// A custom (Tier-1) shader effect: one of a curated, backend-authored library of effects, selected
-/// by [`id`](CustomEffect::id) and driven by [`params`](CustomEffect::params).
+/// One pass in a [`FilterGraph`]. render-vello lowers each to a vello-fork filter primitive and
+/// nests them (the linear chain becomes nested filter layers). This is a Vello-only feature — the
+/// backends no longer share a shader language, and there are no Skia users of effects — so the
+/// neutral model carries only what render-vello needs and render-wasm projects `None`.
 ///
-/// This is deliberately *not* an arbitrary user shader. render-vello lowers it to the vello fork's
-/// `FilterPrimitive::Custom { effect, params }`, whose body is a WGSL branch compiled into
-/// `filters.wgsl` (effect 0 = tint: `params = [r, g, b, amount]`); render-wasm would implement the
-/// same `id` in SkSL. Carrying the neutral `(id, params)` — not compiled shader bytes — is what lets
-/// the digest agree across backends that speak different shader languages, exactly as text hashes
-/// its input rather than the shaped glyphs.
-///
-/// `params` is a flat float vector because the fork forwards a fixed-size `array<f32, N>` to the
-/// shader; structured uniforms (colours, vec2s) lower to it in an order both backends agree on.
+/// `Custom` is the raw-shader escape hatch: `effect` selects a WGSL branch in the fork's
+/// `custom_effect` hook (effect 0 = tint, `params = [r, g, b, amount]`). The typed variants
+/// (`Blur`, `Offset`) exist so the engine can reason about them (bounds expansion, algorithm,
+/// caching) rather than treating them as opaque code. Branching/merge nodes come later — they need
+/// the fork's multi-primitive graph, which linear nesting does not.
 #[derive(Clone, Debug, PartialEq)]
-pub struct CustomEffect {
-    pub id: u32,
-    pub params: Vec<f32>,
+pub enum FilterNode {
+    /// Gaussian blur by `sigma` (already a sigma, not a radius).
+    Blur { sigma: f32 },
+    /// Translate the input by `(dx, dy)` in the shape's own space.
+    Offset { dx: f32, dy: f32 },
+    /// A raw custom-effect branch: `effect` index + flat uniform params.
+    Custom { effect: u32, params: Vec<f32> },
+}
+
+/// A linear chain of filter passes wrapping a shape and its children. `nodes` is in **application
+/// order** — `nodes[0]` runs first (innermost), the last runs last (outermost) — which render-vello
+/// realises by pushing nested filter layers in reverse. Empty means no effect (kept as `None` on the
+/// node instead).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FilterGraph {
+    pub nodes: Vec<FilterNode>,
 }
 
 /// Penpot's stroke styles, as `RawStrokeStyle` puts them on the wire (0..3).
@@ -355,9 +366,9 @@ pub struct Node {
     pub blur: Option<f32>,
     /// Drop shadows, back to front, drawn behind the shape. Inner shadows do not reach here.
     pub shadows: Vec<Shadow>,
-    /// A custom (Tier-1) shader effect wrapping the shape, or `None`. Drawn via a single custom
-    /// filter layer (the fork allows one primitive per layer), like [`blur`](Node::blur).
-    pub custom_effect: Option<CustomEffect>,
+    /// A chain of custom filter passes wrapping the shape + children, or `None`. Vello-only —
+    /// render-wasm projects `None`. Drawn as nested filter layers ([`FilterGraph`]).
+    pub filter_graph: Option<FilterGraph>,
     pub hidden: bool,
 }
 
@@ -385,7 +396,7 @@ impl Node {
             blend: crate::blend::DEFAULT_BLEND,
             blur: None,
             shadows: Vec::new(),
-            custom_effect: None,
+            filter_graph: None,
             hidden: false,
         }
     }
@@ -652,16 +663,33 @@ impl Scene {
             fnv_f64(hash, shadow.offset.y);
         }
 
-        // The custom effect's id and params. Hashing the neutral selector + uniforms (not any
-        // compiled shader) is what keeps the two backends — WGSL on one, SkSL on the other — in
-        // digest agreement, the same way text hashes its input rather than the shaped result.
-        match &node.custom_effect {
-            Some(effect) => {
+        // The filter graph — its node sequence and each node's params. The picture depends on the
+        // order of passes, so the chain is hashed in order; a Vello-only feature, but hashed
+        // unconditionally so a graphed and an ungraphed node never collide.
+        match &node.filter_graph {
+            Some(graph) => {
                 fnv_u64(hash, 1);
-                fnv_u64(hash, u64::from(effect.id));
-                fnv_u64(hash, effect.params.len() as u64);
-                for p in &effect.params {
-                    fnv_f64(hash, f64::from(*p));
+                fnv_u64(hash, graph.nodes.len() as u64);
+                for node in &graph.nodes {
+                    match node {
+                        FilterNode::Blur { sigma } => {
+                            fnv_u64(hash, 0);
+                            fnv_f64(hash, f64::from(*sigma));
+                        }
+                        FilterNode::Offset { dx, dy } => {
+                            fnv_u64(hash, 1);
+                            fnv_f64(hash, f64::from(*dx));
+                            fnv_f64(hash, f64::from(*dy));
+                        }
+                        FilterNode::Custom { effect, params } => {
+                            fnv_u64(hash, 2);
+                            fnv_u64(hash, u64::from(*effect));
+                            fnv_u64(hash, params.len() as u64);
+                            for p in params {
+                                fnv_f64(hash, f64::from(*p));
+                            }
+                        }
+                    }
                 }
             }
             None => fnv_u64(hash, 0),
@@ -1185,22 +1213,26 @@ mod tests {
         assert_ne!(b, two.digest());
     }
 
-    /// The custom effect is hashed as its neutral selector + uniforms, so a backend that lowers it
-    /// to WGSL and one that lowers it to SkSL still agree — the id, the param values, and the param
-    /// count are each part of the fingerprint, and having one at all differs from having none.
+    /// The filter graph is hashed as its ordered node sequence — the pass order changes the picture,
+    /// so the digest notices node kind, params, count, *and* order; having a graph at all differs
+    /// from none.
     #[test]
-    fn digest_notices_the_custom_effect() {
+    fn digest_notices_the_filter_graph() {
         let none = tree(&[0, 1, 2]).digest();
-        let with = |effect: CustomEffect| {
+        let with = |nodes: Vec<FilterNode>| {
             let mut t = tree(&[0, 1, 2]);
-            t.get_mut(1).unwrap().custom_effect = Some(effect);
+            t.get_mut(1).unwrap().filter_graph = Some(FilterGraph { nodes });
             t.digest()
         };
-        let base = with(CustomEffect { id: 0, params: vec![1.0, 0.45, 0.0, 0.7] });
-        assert_ne!(none, base, "an effect differs from no effect");
-        assert_ne!(base, with(CustomEffect { id: 1, params: vec![1.0, 0.45, 0.0, 0.7] }), "id matters");
-        assert_ne!(base, with(CustomEffect { id: 0, params: vec![1.0, 0.45, 0.0, 0.9] }), "params matter");
-        assert_ne!(base, with(CustomEffect { id: 0, params: vec![1.0, 0.45, 0.0] }), "param count matters");
+        let blur = FilterNode::Blur { sigma: 4.0 };
+        let offset = FilterNode::Offset { dx: 10.0, dy: 0.0 };
+        let tint = FilterNode::Custom { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] };
+
+        let base = with(vec![blur.clone(), offset.clone(), tint.clone()]);
+        assert_ne!(none, base, "a graph differs from no graph");
+        assert_ne!(base, with(vec![offset.clone(), blur.clone(), tint.clone()]), "order matters");
+        assert_ne!(base, with(vec![blur.clone(), tint.clone()]), "node count matters");
+        assert_ne!(base, with(vec![FilterNode::Blur { sigma: 9.0 }, offset, tint]), "params matter");
     }
 
     /// A text block is hashed as its input — every character and style attribute is part of the

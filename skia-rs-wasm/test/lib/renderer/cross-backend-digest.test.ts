@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 2172659934
+const CANONICAL_DIGEST = 1295223549
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -183,15 +183,24 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
   for (const shape of [frame, rect, circle, maskGroup, maskShape, maskContent, text])
     setObject(module, shape)
 
-  // A Tier-1 custom shader effect (tint, effect 0, params [r,g,b,amount]) on the text node — the
-  // last shape `setObject` selected — driving the real `_set_shape_custom_effect` wire so the anchor
-  // covers the param-buffer decode end to end. It's Vello-only for now (render-wasm has no author
-  // path and projects `None`), but the wire + the neutral `(id, params)` digest still cross here.
-  const effectParams = new Float32Array([1, 0.45, 0, 0.7])
-  const effectBytes = new Uint8Array(effectParams.buffer)
-  const effectPtr = module._alloc_bytes(effectBytes.length)
-  module.HEAPU8.set(effectBytes, effectPtr)
-  module._set_shape_custom_effect(0)
+  // A 3-node filter graph on the text node (the last shape `setObject` selected): blur(4) →
+  // offset(10,0) → custom tint(effect 0, [r,g,b,amount]), driving the real `_set_shape_filter_graph`
+  // wire so the anchor covers the node-stream decode end to end. Vello-only (render-wasm projects
+  // `None`), but the wire + the ordered-node digest still cross here.
+  const gw: number[] = []
+  const u32 = (v: number) => gw.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff)
+  const f32 = (v: number) => {
+    const b = new Uint8Array(new Float32Array([v]).buffer)
+    gw.push(b[0], b[1], b[2], b[3])
+  }
+  u32(3) // node count
+  u32(0); f32(4) // Blur sigma 4
+  u32(1); f32(10); f32(0) // Offset (10, 0)
+  u32(2); u32(0); u32(4); f32(1); f32(0.45); f32(0); f32(0.7) // Custom tint
+  const graphBytes = new Uint8Array(gw)
+  const graphPtr = module._alloc_bytes(graphBytes.length)
+  module.HEAPU8.set(graphBytes, graphPtr)
+  module._set_shape_filter_graph()
 
   module._use_shape(0, 0, 0, 0)
   setShapeChildren(module, [frame.id])
