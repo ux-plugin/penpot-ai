@@ -431,12 +431,22 @@ fn layout_paragraph(
     max_advance: Option<f32>,
 ) -> Layout<TextBrush> {
     // Concatenate the spans into one string, remembering each span's byte range so its style is
-    // pushed over exactly the characters it covers.
+    // pushed over exactly the characters it covers. The span text is folded by its case transform
+    // here (the model keeps it raw); ranges track the folded length, which `to_uppercase` can grow.
+    //
+    // A right-to-left paragraph is forced by prepending a RIGHT-TO-LEFT MARK: Parley resolves the
+    // bidi algorithm from content and has no explicit base-direction knob, so this zero-width,
+    // unstyled control char sets the base level to RTL the way render-wasm's `set_text_direction`
+    // does. Real RTL scripts (Arabic/Hebrew) already reorder on their own; this only fixes the base
+    // for neutral or mixed text.
     let mut text = String::new();
+    if paragraph.direction == render_core::text::TextDirection::Rtl {
+        text.push('\u{200F}');
+    }
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(paragraph.spans.len());
     for span in &paragraph.spans {
         let start = text.len();
-        text.push_str(&span.text);
+        text.push_str(&span.transform.apply(&span.text));
         ranges.push(start..text.len());
     }
 
@@ -475,7 +485,8 @@ fn layout_paragraph(
 }
 
 /// Penpot's absolute horizontal alignment → Parley's. Penpot's `Left`/`Right` are edges, not
-/// direction-relative, so they map to `Left`/`Right` rather than `Start`/`End` (RTL is deferred).
+/// direction-relative, so they map to `Left`/`Right` rather than `Start`/`End` — they stay put
+/// under an RTL base direction, which only reorders the glyphs within the line.
 fn alignment_of(align: render_core::text::TextAlign) -> Alignment {
     match align {
         render_core::text::TextAlign::Left => Alignment::Left,

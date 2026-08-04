@@ -126,6 +126,7 @@ fn text_to_core(
 fn paragraph_to_core(paragraph: &crate::shapes::Paragraph) -> render_core::text::TextParagraph {
     render_core::text::TextParagraph {
         align: text_align_to_core(paragraph.text_align()),
+        direction: text_direction_to_core(paragraph.text_direction()),
         line_height: paragraph.line_height(),
         letter_spacing: paragraph.letter_spacing(),
         spans: paragraph.children().iter().map(span_to_core).collect(),
@@ -147,6 +148,33 @@ fn span_to_core(span: &crate::shapes::TextSpan) -> render_core::text::TextSpan {
         // rebuilds from the span's raw fills, so the two projections hash identically.
         fills: span.fills.iter().filter_map(fill_to_core).collect(),
         decoration: text_decoration_to_core(span.text_decoration),
+        transform: text_transform_to_core(span.text_transform),
+    }
+}
+
+/// Map render-wasm's per-span text transform to the neutral enum. render-vello decodes the same
+/// `RawTextTransform` byte to the same variant, and both fold with `TextTransform::apply`.
+fn text_transform_to_core(
+    transform: Option<crate::shapes::TextTransform>,
+) -> render_core::text::TextTransform {
+    use crate::shapes::TextTransform as S;
+    use render_core::text::TextTransform as D;
+    match transform {
+        Some(S::Uppercase) => D::Uppercase,
+        Some(S::Lowercase) => D::Lowercase,
+        Some(S::Capitalize) => D::Capitalize,
+        None => D::None,
+    }
+}
+
+/// Map Skia's paragraph text direction to the neutral base direction; render-vello decodes the same
+/// `RawTextDirection` byte to the same variant.
+fn text_direction_to_core(
+    direction: skia::textlayout::TextDirection,
+) -> render_core::text::TextDirection {
+    match direction {
+        skia::textlayout::TextDirection::RTL => render_core::text::TextDirection::Rtl,
+        _ => render_core::text::TextDirection::Ltr,
     }
 }
 

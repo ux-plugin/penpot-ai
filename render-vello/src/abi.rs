@@ -23,7 +23,8 @@ use render_core::kurbo::{Affine, Rect};
 use render_core::model::{Node, Scene, ShapeKind};
 use render_core::peniko::Color;
 use render_core::text::{
-    FontRef, TextAlign, TextBlock, TextDecoration, TextGrow, TextParagraph, TextSpan, VerticalAlign,
+    FontRef, TextAlign, TextBlock, TextDecoration, TextDirection, TextGrow, TextParagraph,
+    TextSpan, TextTransform, VerticalAlign,
 };
 
 /// The shared byte buffer. The host allocates, writes through `HEAPU8`, then calls a no-arg
@@ -412,6 +413,8 @@ fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
     }
     let span_count = le_u32(bytes, 0) as usize;
     let align = TextAlign::from_wire(bytes[4]);
+    // Byte 5 is the paragraph's base direction (`RawTextDirection`); render-wasm reads the same.
+    let direction = TextDirection::from_wire(bytes[5]);
     let para_line_height = le_f32(bytes, 8);
     let para_letter_spacing = le_f32(bytes, 12);
 
@@ -439,8 +442,10 @@ fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
             le_u32(span, 32),
         );
         let text_length = le_u32(span, 56) as usize;
-        // Decoration is byte 1 of the header (`RawTextDecoration`); render-wasm reads the same byte.
+        // Bytes 1 and 2 of the header are decoration and case transform (`RawTextDecoration` /
+        // `RawTextTransform`); render-wasm reads the same bytes.
         let decoration = TextDecoration::from_wire(span[1]);
+        let transform = TextTransform::from_wire(span[2]);
 
         // Every paintable fill, in wire order — the same decode, filter and order render-wasm's
         // `span.fills` projection uses, so the two hash identically. Fill records follow the header.
@@ -474,11 +479,13 @@ fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
             letter_spacing,
             fills,
             decoration,
+            transform,
         });
     }
 
     Some(TextParagraph {
         align,
+        direction,
         line_height: para_line_height,
         letter_spacing: para_letter_spacing,
         spans,
@@ -1786,11 +1793,13 @@ mod tests {
         // Paragraph header: one span, align Center, line-height 1.5, letter-spacing 0.
         buf[0..4].copy_from_slice(&1u32.to_le_bytes());
         buf[4] = 1; // TextAlign::Center
+        buf[5] = 1; // RawTextDirection::Rtl
         buf[8..12].copy_from_slice(&1.5f32.to_le_bytes());
         // Span header at offset 16.
         let s = RAW_PARAGRAPH_DATA_SIZE;
         buf[s] = 1; // italic
         buf[s + 1] = 1; // RawTextDecoration::Underline
+        buf[s + 2] = 1; // RawTextTransform::Uppercase
         buf[s + 4..s + 8].copy_from_slice(&24.0f32.to_le_bytes()); // font_size
         buf[s + 8..s + 12].copy_from_slice(&1.3f32.to_le_bytes()); // line_height
         buf[s + 16..s + 20].copy_from_slice(&700i32.to_le_bytes()); // font_weight
@@ -1818,9 +1827,11 @@ mod tests {
         assert_eq!(block.paragraphs.len(), 1);
         let para = &block.paragraphs[0];
         assert_eq!(para.align, TextAlign::Center);
+        assert_eq!(para.direction, TextDirection::Rtl);
         assert_eq!(para.spans.len(), 1);
         let span = &para.spans[0];
         assert_eq!(span.text, "Hi");
+        assert_eq!(span.transform, TextTransform::Uppercase);
         assert_eq!(span.size, 24.0);
         assert_eq!(span.font.weight, 700);
         assert!(span.font.italic);

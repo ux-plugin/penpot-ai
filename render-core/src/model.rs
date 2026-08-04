@@ -781,6 +781,7 @@ fn digest_text(hash: &mut u64, text: &crate::text::TextBlock) {
     fnv_u64(hash, text.paragraphs.len() as u64);
     for paragraph in &text.paragraphs {
         fnv_u64(hash, paragraph.align as u64);
+        fnv_u64(hash, paragraph.direction as u64);
         fnv_f64(hash, f64::from(paragraph.line_height));
         fnv_f64(hash, f64::from(paragraph.letter_spacing));
         fnv_u64(hash, paragraph.spans.len() as u64);
@@ -796,6 +797,7 @@ fn digest_text(hash: &mut u64, text: &crate::text::TextBlock) {
             fnv_f64(hash, f64::from(span.line_height));
             fnv_f64(hash, f64::from(span.letter_spacing));
             fnv_u64(hash, span.decoration as u64);
+            fnv_u64(hash, span.transform as u64);
             fnv_u64(hash, span.fills.len() as u64);
             for fill in &span.fills {
                 digest_paint(hash, fill);
@@ -1151,8 +1153,8 @@ mod tests {
     #[test]
     fn digest_notices_every_field_of_a_text_block() {
         use crate::text::{
-            FontRef, TextAlign, TextBlock, TextDecoration, TextGrow, TextParagraph, TextSpan,
-            VerticalAlign,
+            FontRef, TextAlign, TextBlock, TextDecoration, TextDirection, TextGrow, TextParagraph,
+            TextSpan, TextTransform, VerticalAlign,
         };
 
         let solid = |c| Paint::plain(Brush::Solid(c));
@@ -1164,10 +1166,12 @@ mod tests {
             letter_spacing: 0.0,
             fills: vec![solid(Color::from_rgba8(0, 0, 0, 255))],
             decoration: TextDecoration::None,
+            transform: TextTransform::None,
         };
         let block = || TextBlock {
             paragraphs: vec![TextParagraph {
                 align: TextAlign::Left,
+                direction: TextDirection::Ltr,
                 line_height: 1.2,
                 letter_spacing: 0.0,
                 spans: vec![span()],
@@ -1199,6 +1203,10 @@ mod tests {
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].fills.push(solid(Color::from_rgba8(0, 255, 0, 128)))));
         // A decoration line.
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].decoration = TextDecoration::Underline));
+        // A case transform.
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].transform = TextTransform::Uppercase));
+        // A base direction.
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].direction = TextDirection::Rtl));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].align = TextAlign::Center));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().vertical_align = VerticalAlign::Bottom));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().grow = TextGrow::AutoWidth));

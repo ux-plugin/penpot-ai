@@ -8,11 +8,12 @@
 //! the drawn glyph positions differing is a rasteriser difference, out of the digest's scope, the
 //! same stance it takes on antialiasing.
 //!
-//! Text increments so far carry per-span **decoration** (underline/line-through/overline) and the
+//! Text increments so far carry per-span **decoration** (underline/line-through/overline), the
 //! full per-span **fill list** (so a gradient or layered text fill crosses, not just the first
-//! solid colour). Still deliberately omitted, to be added by a later slice and dropped at
-//! projection on *both* sides so the digest stays in agreement while absent: text strokes, text
-//! transforms, explicit direction/RTL, and emoji/COLR handling.
+//! solid colour), per-span **case transform** and the paragraph's base **direction** (RTL). Text
+//! strokes ride on the node's shape-level `strokes`, not here. Still deliberately omitted, to be
+//! added by a later slice and dropped at projection on *both* sides so the digest stays in
+//! agreement while absent: emoji/COLR fallback, text effects, and the editor.
 
 use crate::model::Paint;
 
@@ -118,6 +119,79 @@ impl TextDecoration {
     }
 }
 
+/// Case folding applied to a span's text before shaping. Wire values are render-wasm's
+/// `RawTextTransform`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextTransform {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+impl TextTransform {
+    /// Decode the wire byte; anything unknown is `None`.
+    pub fn from_wire(value: u8) -> Self {
+        match value {
+            1 => Self::Uppercase,
+            2 => Self::Lowercase,
+            3 => Self::Capitalize,
+            _ => Self::None,
+        }
+    }
+
+    /// Apply this transform to a string, matching render-wasm's `apply_text_transform` /
+    /// `capitalize_words` so both backends fold identically (the neutral model carries the *raw*
+    /// text and this enum; each backend folds at shaping time). `Capitalize` upper-cases the first
+    /// alphabetic char after every non-alphabetic one.
+    pub fn apply(self, text: &str) -> String {
+        match self {
+            Self::None => text.to_string(),
+            Self::Uppercase => text.to_uppercase(),
+            Self::Lowercase => text.to_lowercase(),
+            Self::Capitalize => {
+                let mut result = String::with_capacity(text.len());
+                let mut capitalize_next = true;
+                for c in text.chars() {
+                    if c.is_alphabetic() {
+                        if capitalize_next {
+                            result.extend(c.to_uppercase());
+                        } else {
+                            result.push(c);
+                        }
+                        capitalize_next = false;
+                    } else {
+                        result.push(c);
+                        capitalize_next = true;
+                    }
+                }
+                result
+            }
+        }
+    }
+}
+
+/// The base writing direction of a paragraph. Wire values are render-wasm's `RawTextDirection`
+/// (`Ltr 0, Rtl 1`). Parley resolves the Unicode bidi algorithm from the text content on its own;
+/// this only forces the *base* level, which matters for neutral or mixed runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextDirection {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
+impl TextDirection {
+    /// Decode the wire byte; anything unknown is `Ltr`.
+    pub fn from_wire(value: u8) -> Self {
+        match value {
+            1 => Self::Rtl,
+            _ => Self::Ltr,
+        }
+    }
+}
+
 /// A run of characters sharing one style. Mirrors render-wasm's `TextSpan`, trimmed to the fields
 /// the backends draw.
 #[derive(Clone, Debug, PartialEq)]
@@ -135,12 +209,16 @@ pub struct TextSpan {
     pub fills: Vec<Paint>,
     /// The line drawn along the text, if any.
     pub decoration: TextDecoration,
+    /// Case folding applied to `text` before shaping. `text` stays raw; the fold happens at draw.
+    pub transform: TextTransform,
 }
 
 /// One paragraph: its own alignment and default metrics, and the spans that make it up.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextParagraph {
     pub align: TextAlign,
+    /// Base writing direction; forces the bidi base level (Parley resolves the rest from content).
+    pub direction: TextDirection,
     pub line_height: f32,
     pub letter_spacing: f32,
     pub spans: Vec<TextSpan>,
