@@ -772,9 +772,9 @@ fn digest_gradient_kind(hash: &mut u64, kind: &peniko::GradientKind) {
 ///
 /// The paragraph and span *counts* go in first (a two-span run is a different document from a
 /// one-span run with the same text), then per paragraph its align and metrics, then per span the
-/// bytes of its text, its font reference, size, metrics and colour. Grow and vertical align frame
-/// the whole block. Positions are deliberately absent — they are the shaper's, and the two
-/// backends' shapers differ.
+/// bytes of its text, its font reference, size, metrics, decoration and every fill. Grow and
+/// vertical align frame the whole block. Positions are deliberately absent — they are the shaper's,
+/// and the two backends' shapers differ.
 fn digest_text(hash: &mut u64, text: &crate::text::TextBlock) {
     fnv_u64(hash, text.grow as u64);
     fnv_u64(hash, text.vertical_align as u64);
@@ -795,8 +795,10 @@ fn digest_text(hash: &mut u64, text: &crate::text::TextBlock) {
             fnv_f64(hash, f64::from(span.size));
             fnv_f64(hash, f64::from(span.line_height));
             fnv_f64(hash, f64::from(span.letter_spacing));
-            for component in span.color.components {
-                fnv_f64(hash, f64::from(component));
+            fnv_u64(hash, span.decoration as u64);
+            fnv_u64(hash, span.fills.len() as u64);
+            for fill in &span.fills {
+                digest_paint(hash, fill);
             }
         }
     }
@@ -1148,15 +1150,20 @@ mod tests {
     /// picture, but glyph positions are not (the two backends shape differently).
     #[test]
     fn digest_notices_every_field_of_a_text_block() {
-        use crate::text::{FontRef, TextAlign, TextBlock, TextGrow, TextParagraph, TextSpan, VerticalAlign};
+        use crate::text::{
+            FontRef, TextAlign, TextBlock, TextDecoration, TextGrow, TextParagraph, TextSpan,
+            VerticalAlign,
+        };
 
+        let solid = |c| Paint::plain(Brush::Solid(c));
         let span = || TextSpan {
             text: "Hello".into(),
             font: FontRef { id: 0xAB, weight: 400, italic: false },
             size: 16.0,
             line_height: 1.2,
             letter_spacing: 0.0,
-            color: Color::from_rgba8(0, 0, 0, 255),
+            fills: vec![solid(Color::from_rgba8(0, 0, 0, 255))],
+            decoration: TextDecoration::None,
         };
         let block = || TextBlock {
             paragraphs: vec![TextParagraph {
@@ -1186,7 +1193,12 @@ mod tests {
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.weight = 700));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.italic = true));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.id = 0xCD));
-        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].color = Color::from_rgba8(255, 0, 0, 255)));
+        // Recolouring the one fill.
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].fills[0] = solid(Color::from_rgba8(255, 0, 0, 255))));
+        // A second fill over the first (multi-fill).
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].fills.push(solid(Color::from_rgba8(0, 255, 0, 128)))));
+        // A decoration line.
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].decoration = TextDecoration::Underline));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].align = TextAlign::Center));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().vertical_align = VerticalAlign::Bottom));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().grow = TextGrow::AutoWidth));

@@ -143,22 +143,27 @@ fn span_to_core(span: &crate::shapes::TextSpan) -> render_core::text::TextSpan {
         size: span.font_size,
         line_height: span.line_height,
         letter_spacing: span.letter_spacing,
-        color: text_span_color(span),
+        // Every paintable fill, in wire order — the same list, filter and order render-vello
+        // rebuilds from the span's raw fills, so the two projections hash identically.
+        fills: span.fills.iter().filter_map(fill_to_core).collect(),
+        decoration: text_decoration_to_core(span.text_decoration),
     }
 }
 
-/// The glyph colour: the span's first fill when it is a solid, else opaque black. render-vello
-/// reads the same first-fill-if-solid from the wire, so the two land on one colour; a gradient or
-/// image text fill is deferred on both sides.
-fn text_span_color(span: &crate::shapes::TextSpan) -> render_core::peniko::Color {
-    span.fills
-        .first()
-        .and_then(fill_to_core)
-        .and_then(|paint| match paint.brush {
-            Brush::Solid(color) => Some(color),
-            _ => None,
-        })
-        .unwrap_or(render_core::peniko::Color::from_rgba8(0, 0, 0, 255))
+/// Map Skia's `TextDecoration` to the neutral enum. The wire delivers a single-valued
+/// `RawTextDecoration`, which the span decode turns into exactly one Skia flag (or `None`), so a
+/// plain equality test is exact; render-vello decodes the same byte to the same variant.
+fn text_decoration_to_core(
+    decoration: Option<skia::textlayout::TextDecoration>,
+) -> render_core::text::TextDecoration {
+    use render_core::text::TextDecoration as D;
+    use skia::textlayout::TextDecoration as S;
+    match decoration {
+        Some(d) if d == S::UNDERLINE => D::Underline,
+        Some(d) if d == S::LINE_THROUGH => D::LineThrough,
+        Some(d) if d == S::OVERLINE => D::Overline,
+        _ => D::None,
+    }
 }
 
 /// Map Skia's text alignment to the neutral one. Penpot only authors Left/Center/Right/Justify;

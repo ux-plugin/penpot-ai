@@ -20,9 +20,11 @@ use std::sync::Mutex;
 use render_core::abi::decode_fill;
 use render_core::kurbo;
 use render_core::kurbo::{Affine, Rect};
-use render_core::model::{Brush, Node, Scene, ShapeKind};
+use render_core::model::{Node, Scene, ShapeKind};
 use render_core::peniko::Color;
-use render_core::text::{FontRef, TextAlign, TextBlock, TextGrow, TextParagraph, TextSpan, VerticalAlign};
+use render_core::text::{
+    FontRef, TextAlign, TextBlock, TextDecoration, TextGrow, TextParagraph, TextSpan, VerticalAlign,
+};
 
 /// The shared byte buffer. The host allocates, writes through `HEAPU8`, then calls a no-arg
 /// export that drains it — exactly render-wasm's protocol.
@@ -437,19 +439,22 @@ fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
             le_u32(span, 32),
         );
         let text_length = le_u32(span, 56) as usize;
-        let fill_count = le_u32(span, 60) as usize;
+        // Decoration is byte 1 of the header (`RawTextDecoration`); render-wasm reads the same byte.
+        let decoration = TextDecoration::from_wire(span[1]);
 
-        // The first solid fill is the glyph colour; a gradient/image text fill is deferred, so it
-        // falls back to opaque black rather than being mis-drawn.
-        let color = (fill_count > 0)
-            .then(|| &span[RAW_SPAN_HEADER_SIZE..RAW_SPAN_HEADER_SIZE + render_core::abi::RAW_FILL_DATA_SIZE])
-            .and_then(|fill| decode_fill(fill).ok())
-            .and_then(paint_from_raw)
-            .and_then(|paint| match paint.brush {
-                Brush::Solid(color) => Some(color),
-                _ => None,
+        // Every paintable fill, in wire order — the same decode, filter and order render-wasm's
+        // `span.fills` projection uses, so the two hash identically. Fill records follow the header.
+        let fill_count = le_u32(span, 60) as usize;
+        let fills = span
+            .get(RAW_SPAN_HEADER_SIZE..)
+            .map(|body| {
+                body.chunks_exact(render_core::abi::RAW_FILL_DATA_SIZE)
+                    .take(fill_count)
+                    .filter_map(|chunk| decode_fill(chunk).ok())
+                    .filter_map(paint_from_raw)
+                    .collect::<Vec<_>>()
             })
-            .unwrap_or(Color::from_rgba8(0, 0, 0, 255));
+            .unwrap_or_default();
 
         let text = bytes
             .get(text_offset..text_offset + text_length)
@@ -467,7 +472,8 @@ fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
             size: font_size,
             line_height,
             letter_spacing,
-            color,
+            fills,
+            decoration,
         });
     }
 
@@ -1784,11 +1790,17 @@ mod tests {
         // Span header at offset 16.
         let s = RAW_PARAGRAPH_DATA_SIZE;
         buf[s] = 1; // italic
+        buf[s + 1] = 1; // RawTextDecoration::Underline
         buf[s + 4..s + 8].copy_from_slice(&24.0f32.to_le_bytes()); // font_size
         buf[s + 8..s + 12].copy_from_slice(&1.3f32.to_le_bytes()); // line_height
         buf[s + 16..s + 20].copy_from_slice(&700i32.to_le_bytes()); // font_weight
         buf[s + 20..s + 24].copy_from_slice(&0xAAu32.to_le_bytes()); // font_id[0]
         buf[s + 56..s + 60].copy_from_slice(&(word.len() as u32).to_le_bytes()); // text_length
+        buf[s + 60..s + 64].copy_from_slice(&1u32.to_le_bytes()); // fill_count
+        // One solid fill record at the span's fill area (header type 0, argb at +4).
+        let f = s + RAW_SPAN_HEADER_SIZE;
+        buf[f] = 0x00; // RawFillData::Solid
+        buf[f + 4..f + 8].copy_from_slice(&0xff_11_22_33u32.to_le_bytes());
         // The text buffer follows the (single) span.
         let t = RAW_PARAGRAPH_DATA_SIZE + RAW_SPAN_DATA_SIZE;
         buf[t..t + word.len()].copy_from_slice(word.as_bytes());
@@ -1813,6 +1825,14 @@ mod tests {
         assert_eq!(span.font.weight, 700);
         assert!(span.font.italic);
         assert_eq!(span.font.id, uuid_u128(0xAA, 0, 0, 0));
+        assert_eq!(span.decoration, TextDecoration::Underline);
+        assert_eq!(span.fills.len(), 1, "the one solid fill decodes");
+        assert_eq!(
+            span.fills[0].brush,
+            render_core::model::Brush::Solid(render_core::peniko::Color::from_rgba8(
+                0x11, 0x22, 0x33, 0xff
+            ))
+        );
         assert_eq!(scene_paintable_count(), 1, "text with content paints");
 
         use_shape(0, 0, 0, 7);

@@ -8,12 +8,13 @@
 //! the drawn glyph positions differing is a rasteriser difference, out of the digest's scope, the
 //! same stance it takes on antialiasing.
 //!
-//! This is the first text increment, so it deliberately omits what render-wasm also carries and a
-//! later slice will add: text strokes, decorations (underline/line-through/overline), text
-//! transforms, explicit direction/RTL, per-span multi-fill, and emoji/COLR handling. Each is
-//! dropped at projection on *both* sides so the digest still agrees while the feature is absent.
+//! Text increments so far carry per-span **decoration** (underline/line-through/overline) and the
+//! full per-span **fill list** (so a gradient or layered text fill crosses, not just the first
+//! solid colour). Still deliberately omitted, to be added by a later slice and dropped at
+//! projection on *both* sides so the digest stays in agreement while absent: text strokes, text
+//! transforms, explicit direction/RTL, and emoji/COLR handling.
 
-use peniko::Color;
+use crate::model::Paint;
 
 /// A reference to an uploaded font face. Penpot identifies a face by a family UUID plus a weight
 /// and a style, exactly as render-wasm's `FontFamily { id, weight, style }` does; the two backends
@@ -94,8 +95,31 @@ impl TextGrow {
     }
 }
 
+/// A line drawn along a span's text. Wire values are render-wasm's `RawTextDecoration`; Skia's own
+/// `TextDecoration` is a bitflag set, but the wire only ever carries one, so this is a plain enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextDecoration {
+    #[default]
+    None,
+    Underline,
+    LineThrough,
+    Overline,
+}
+
+impl TextDecoration {
+    /// Decode the wire byte; anything unknown is `None`.
+    pub fn from_wire(value: u8) -> Self {
+        match value {
+            1 => Self::Underline,
+            2 => Self::LineThrough,
+            3 => Self::Overline,
+            _ => Self::None,
+        }
+    }
+}
+
 /// A run of characters sharing one style. Mirrors render-wasm's `TextSpan`, trimmed to the fields
-/// this slice draws.
+/// the backends draw.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextSpan {
     pub text: String,
@@ -105,9 +129,12 @@ pub struct TextSpan {
     pub line_height: f32,
     /// Extra tracking between characters, in the text's own units.
     pub letter_spacing: f32,
-    /// The single fill this slice paints. render-wasm allows up to eight fills per span; here the
-    /// first paintable one wins and the rest are dropped until a later slice.
-    pub color: Color,
+    /// The span's fills, bottom-to-top — the same up-to-eight fills render-wasm layers over the
+    /// glyphs. A backend draws the glyph coverage once per paintable fill; the first fill's colour
+    /// also tints the decoration line. Empty means nothing paints (no fallback colour is invented).
+    pub fills: Vec<Paint>,
+    /// The line drawn along the text, if any.
+    pub decoration: TextDecoration,
 }
 
 /// One paragraph: its own alignment and default metrics, and the spans that make it up.

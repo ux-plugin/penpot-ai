@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 166674860
+const CANONICAL_DIGEST = 1484165574
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -160,6 +160,16 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
     fillColor: '#101828',
     growType: 'auto-height',
   })
+  // Drive the decoration + multi-fill wire (`textDecoration` byte, a two-fill span): an underline
+  // and a second, semi-transparent fill layered over the first. Both backends read the same bytes,
+  // so the digest still agrees — and it moves, proving the new fields cross.
+  const span = (text as { content: { children: { children: { children: Record<string, unknown>[] }[] }[] } })
+    .content.children[0].children[0].children[0]
+  span.textDecoration = 'underline'
+  span.fills = [
+    { fillColor: '#101828', fillOpacity: 1 },
+    { fillColor: '#f59e0b', fillOpacity: 0.5 },
+  ]
 
   for (const shape of [frame, rect, circle, maskGroup, maskShape, maskContent, text])
     setObject(module, shape)

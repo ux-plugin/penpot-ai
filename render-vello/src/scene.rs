@@ -85,16 +85,14 @@ impl NeutralModelScene {
     }
 }
 
-/// The per-run paint Parley carries through layout. Parley's `Brush` bound is
-/// `Clone + PartialEq + Default + Debug`, which a solid colour satisfies; the layout hands it back
-/// at each glyph run, so a run's fill follows the span it came from.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct TextBrush(Color);
-
-impl Default for TextBrush {
-    fn default() -> Self {
-        Self(Color::from_rgba8(0, 0, 0, 255))
-    }
+/// The per-run style Parley carries through layout. Parley's `Brush` bound is
+/// `Clone + PartialEq + Default + Debug`; the layout hands it back at each glyph run, so a run's
+/// style follows the span it came from. It holds the span's whole fill list (drawn bottom-to-top
+/// over the glyph coverage) and its decoration line.
+#[derive(Clone, Debug, PartialEq, Default)]
+struct TextBrush {
+    fills: Vec<m::Paint>,
+    decoration: render_core::text::TextDecoration,
 }
 
 /// The Parley state text layout needs, kept across frames on the scene rather than rebuilt each
@@ -421,7 +419,7 @@ fn draw_text<T: RenderingContext>(
     let origin_x = node.bounds.x0 as f32;
     let mut origin_y = node.bounds.y0 as f32 + vertical_offset;
     for layout in &layouts {
-        draw_layout(ctx, resources, layout, origin_x, origin_y);
+        draw_layout(ctx, resources, layout, origin_x, origin_y, node.bounds);
         origin_y += layout.height();
     }
 }
@@ -461,7 +459,13 @@ fn layout_paragraph(
             range.clone(),
         );
         builder.push(StyleProperty::LetterSpacing(span.letter_spacing), range.clone());
-        builder.push(StyleProperty::Brush(TextBrush(span.color)), range.clone());
+        builder.push(
+            StyleProperty::Brush(TextBrush {
+                fills: span.fills.clone(),
+                decoration: span.decoration,
+            }),
+            range.clone(),
+        );
     }
 
     let mut layout = builder.build(&text);
@@ -488,47 +492,91 @@ fn draw_layout<T: RenderingContext>(
     layout: &Layout<TextBrush>,
     origin_x: f32,
     origin_y: f32,
+    bounds: Rect,
 ) {
     for line in layout.lines() {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                draw_glyph_run(ctx, resources, &glyph_run, origin_x, origin_y);
+                draw_glyph_run(ctx, resources, &glyph_run, origin_x, origin_y, bounds);
             }
         }
     }
 }
 
-/// Draw one glyph run: its span's colour, at the run's positioned glyphs. Mirrors the vello text
-/// example, offset into the shape's box.
+/// Draw one glyph run: its span's fills layered over the glyph coverage, then its decoration line.
+///
+/// The glyph positions are computed once and reused for every fill pass (and for the decoration's
+/// skip-ink). Fills paint bottom-to-top — the order render-wasm's `merge_fills` composites them,
+/// each new fill `SrcOver` the last — so a layered or gradient text fill reads the same way. Each
+/// fill goes through the shared [`set_paint`], so a gradient text fill gets the same unit-box→bounds
+/// mapping a gradient shape fill does; an unresolved image fill paints nothing rather than a hole.
 fn draw_glyph_run<T: RenderingContext>(
     ctx: &mut T,
     resources: &mut T::Resources,
     glyph_run: &GlyphRun<'_, TextBrush>,
     origin_x: f32,
     origin_y: f32,
+    bounds: Rect,
 ) {
-    let mut run_x = glyph_run.offset();
-    let run_y = glyph_run.baseline();
-    let color = glyph_run.style().brush.0;
+    let style = glyph_run.style();
+    if style.brush.fills.is_empty() {
+        return;
+    }
 
-    let glyphs = glyph_run.glyphs().map(move |glyph| {
-        let x = origin_x + run_x + glyph.x;
-        let y = origin_y + run_y - glyph.y;
-        run_x += glyph.advance;
-        Glyph { id: glyph.id, x, y }
-    });
+    let run_start = origin_x + glyph_run.offset();
+    let baseline_y = origin_y + glyph_run.baseline();
+
+    // Positioned glyphs, materialised once so each fill pass and the decoration reuse them.
+    let mut run_x = glyph_run.offset();
+    let glyphs: Vec<Glyph> = glyph_run
+        .glyphs()
+        .map(|glyph| {
+            let x = origin_x + run_x + glyph.x;
+            let y = baseline_y - glyph.y;
+            run_x += glyph.advance;
+            Glyph { id: glyph.id, x, y }
+        })
+        .collect();
 
     let run = glyph_run.run();
     let font = run.font();
     let font_size = run.font_size();
-    let normalized_coords = bytemuck::cast_slice(run.normalized_coords());
+    let normalized_coords: &[i16] = run.normalized_coords();
 
-    ctx.set_paint(color);
-    ctx.glyph_run(resources, font)
-        .font_size(font_size)
-        .normalized_coords(normalized_coords)
-        .hint(true)
-        .fill_glyphs(glyphs);
+    for fill in &style.brush.fills {
+        if set_paint(ctx, fill, bounds) {
+            ctx.glyph_run(resources, font)
+                .font_size(font_size)
+                .normalized_coords(bytemuck::cast_slice(normalized_coords))
+                .hint(true)
+                .fill_glyphs(glyphs.iter().cloned());
+        }
+    }
+
+    // The decoration line, tinted by the topmost (last) fill so it matches the visible ink.
+    let decoration = style.brush.decoration;
+    if decoration != render_core::text::TextDecoration::None {
+        use render_core::text::TextDecoration as D;
+        let metrics = run.metrics();
+        // `*_offset` is the top of the line from the baseline; overline has no metric of its own, so
+        // it rides at the ascent with the underline's thickness.
+        let (offset, size) = match decoration {
+            D::Underline => (metrics.underline_offset, metrics.underline_size),
+            D::LineThrough => (metrics.strikethrough_offset, metrics.strikethrough_size),
+            D::Overline => (metrics.ascent, metrics.underline_size),
+            D::None => unreachable!(),
+        };
+        let x_range = run_start..=(run_start + glyph_run.advance());
+        if let Some(fill) = style.brush.fills.last() {
+            if set_paint(ctx, fill, bounds) {
+                ctx.glyph_run(resources, font)
+                    .font_size(font_size)
+                    .normalized_coords(bytemuck::cast_slice(normalized_coords))
+                    .hint(true)
+                    .render_decoration(glyphs.iter().cloned(), x_range, baseline_y, offset, size, 0.0);
+            }
+        }
+    }
 }
 
 /// Paint a node's own geometry, ignoring its children.
