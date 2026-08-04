@@ -30,13 +30,20 @@ async function buildModel(provider: LlmProvider, model: string, apiKey: string):
   }
 }
 
+/** Fallback model per vendor for the legacy (row-less) completion path. */
+const DEFAULT_MODEL: Record<LlmProvider, string> = {
+  anthropic: 'claude-opus-4-8',
+  openai: 'gpt-4o',
+  google: 'gemini-2.5-pro',
+}
+
 async function complete(req: ChatCompleteRequest): Promise<ChatCompleteResponse> {
   const active = getActiveKey()
   if (!active) throw new Error('No BYOK key is stored.')
   const prompt = req?.prompt?.trim() ?? ''
   if (!prompt) throw new Error('The prompt is empty.')
 
-  const model = await buildModel(active.meta.provider, active.meta.model, active.key)
+  const model = await buildModel(active.provider, DEFAULT_MODEL[active.provider], active.key)
   const { text } = await generateText({ model, prompt })
   return { text }
 }

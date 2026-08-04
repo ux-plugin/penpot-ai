@@ -25,13 +25,31 @@ export interface AcpAgentSpec {
   label?: string
 }
 
+/**
+ * How this chat's agent authenticates. `acp` = the user's subscription (own `claude`
+ * login); `sdk` = a BYOK provider key, which main injects into the adapter env from the
+ * keychain vault — the key never travels over IPC, only the provider is named here.
+ */
+export interface AcpAuth {
+  style: 'acp' | 'sdk'
+  provider?: string
+  /** `sdk` only — the provider-row id whose stored key main should inject. */
+  keyId?: string
+}
+
 export interface AcpPromptRequest {
   /** Which chat this prompt belongs to — selects/creates its own agent session. */
   chatId: string
   text: string
   cwd: string
-  /** The adapter to run for this chat; omitted → bundled Claude Code adapter. */
+  /** A custom adapter executable for this chat; omitted → a registry adapter. */
   agent?: AcpAgentSpec
+  /** Registry adapter id to run (subscription/`acp` style); omitted → Claude Code. */
+  adapter?: string
+  /** How the chat authenticates; omitted → subscription. */
+  auth?: AcpAuth
+  /** Model id to run (Anthropic → injected as `ANTHROPIC_MODEL`); omitted → adapter default. */
+  model?: string
 }
 
 /** A terminal-auth login command the client hosts in a terminal (from the agent). */
@@ -57,6 +75,24 @@ export interface AcpUpdateEnvelope {
   update: unknown
 }
 
+/** A known ACP adapter and whether it's present. The renderer never sees how it launches. */
+export interface DetectedAdapter {
+  id: string
+  label: string
+  /** Tier 1 — present on this machine (bundled, or found on PATH). */
+  available: boolean
+  /** Shown for unavailable adapters. */
+  installHint?: string
+}
+
+/** Result of the Tier-2 handshake: did the adapter actually speak ACP? */
+export interface AdapterTestResult {
+  ok: boolean
+  /** Round-trip of a successful `initialize`, ms. */
+  ms?: number
+  error?: string
+}
+
 export const ACP_CHANNELS = {
   prompt: 'zoetrope:acp:prompt',
   cancel: 'zoetrope:acp:cancel',
@@ -64,6 +100,10 @@ export const ACP_CHANNELS = {
   close: 'zoetrope:acp:close',
   /** main → renderer: AcpUpdateEnvelope (chatId + raw SessionNotification). */
   update: 'zoetrope:acp:update',
+  /** renderer → main: list known adapters + presence (Tier 1). */
+  listAdapters: 'zoetrope:acp:list-adapters',
+  /** renderer → main: verify an adapter speaks ACP via `initialize` (Tier 2). */
+  testAdapter: 'zoetrope:acp:test-adapter',
 } as const
 
 /** The `acp` API exposed on `window.zoetrope`. */
@@ -76,4 +116,8 @@ export interface AcpBridge {
   close(chatId: string): void
   /** Subscribe to streamed updates for all chats; filter by `chatId`. Returns unsubscribe. */
   onUpdate(cb: (envelope: AcpUpdateEnvelope) => void): () => void
+  /** List known ACP adapters and whether each is present (Tier 1). */
+  listAdapters(): Promise<DetectedAdapter[]>
+  /** Verify an adapter actually speaks ACP via an `initialize` handshake (Tier 2). */
+  testAdapter(id: string): Promise<AdapterTestResult>
 }

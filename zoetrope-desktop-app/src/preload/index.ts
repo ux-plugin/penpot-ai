@@ -15,7 +15,14 @@ import {
   type DetectedAgent,
 } from '../shared/agent'
 import { PTY_CHANNELS, type PtyCreateRequest } from '../shared/pty'
-import { ACP_CHANNELS, type AcpPromptRequest, type AcpPromptResponse, type AcpUpdateEnvelope } from '../shared/acp'
+import {
+  ACP_CHANNELS,
+  type AcpPromptRequest,
+  type AcpPromptResponse,
+  type AcpUpdateEnvelope,
+  type AdapterTestResult,
+  type DetectedAdapter,
+} from '../shared/acp'
 
 // Minimal, sandbox-safe surface exposed to the renderer as window.desktop.
 // Grows into the real IPC bridge (file open/save, native menus, auto-update) later.
@@ -36,7 +43,7 @@ const zoetrope: ZoetropeApi = {
   keyStore: {
     getStatus: () => ipcRenderer.invoke(KEYSTORE_CHANNELS.getStatus) as Promise<KeyStoreStatus>,
     set: (req: SetKeyRequest) => ipcRenderer.invoke(KEYSTORE_CHANNELS.set, req) as Promise<KeyStoreStatus>,
-    clear: () => ipcRenderer.invoke(KEYSTORE_CHANNELS.clear) as Promise<KeyStoreStatus>,
+    clear: (id: string) => ipcRenderer.invoke(KEYSTORE_CHANNELS.clear, id) as Promise<KeyStoreStatus>,
   },
   chat: {
     complete: (req: ChatCompleteRequest) =>
@@ -74,6 +81,8 @@ const zoetrope: ZoetropeApi = {
       ipcRenderer.on(ACP_CHANNELS.update, listener)
       return () => ipcRenderer.removeListener(ACP_CHANNELS.update, listener)
     },
+    listAdapters: () => ipcRenderer.invoke(ACP_CHANNELS.listAdapters) as Promise<DetectedAdapter[]>,
+    testAdapter: (id: string) => ipcRenderer.invoke(ACP_CHANNELS.testAdapter, id) as Promise<AdapterTestResult>,
   },
 }
 
