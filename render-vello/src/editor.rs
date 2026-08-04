@@ -3,20 +3,23 @@
 //! Unlike everything else render-vello draws, the editor is **not** part of the neutral document
 //! model or its digest: it is ephemeral interaction state (which shape is being edited, where the
 //! caret sits, what is selected). render-wasm hand-builds all of this on top of Skia's read-only
-//! paragraph API (~2800 lines); render-vello instead wraps Parley's [`parley::PlainEditor`], which
-//! already does cursor movement, bidi-aware hit-testing, selection geometry and IME.
+//! paragraph API (~2800 lines); render-vello instead drives [`crate::rich_editor::RichEditor`],
+//! which reuses Parley's `Selection`/`Cursor` (cursor movement, bidi-aware hit-testing, selection
+//! geometry, IME) over a **multi-style** layout, so per-span styles survive editing.
 //!
-//! **Why a command queue.** The `PlainEditor` needs a `FontContext` to lay text out, and that
-//! context lives on the scene's `TextEngine`, which only the render pass touches (D3: the host owns
-//! the frame loop; the renderer owns the GPU and the fonts). The `text_editor_*` ABI runs *outside*
-//! that pass. So the ABI here only records intent — a focused id, theme colours, a queue of edit
-//! commands — and reads back state the render pass cached. The render pass ([`crate::scene`])
-//! drains the queue against a live `PlainEditor`, then draws the caret and selection inline. The
-//! host drives both backends through the *same* `text_editor_*` names (D17), so its editor code is
+//! **Why a command queue.** The editor needs a `FontContext` to lay text out, and that context
+//! lives on the scene's `TextEngine`, which only the render pass touches (D3: the host owns the
+//! frame loop; the renderer owns the GPU and the fonts). The `text_editor_*` ABI runs *outside* that
+//! pass. So the ABI here only records intent — a focused id, theme colours, a queue of edit
+//! commands — and reads back state the render pass cached. The render pass ([`crate::scene`]) drains
+//! the queue against the live `RichEditor`, then draws the caret and selection inline. The host
+//! drives both backends through the *same* `text_editor_*` names (D17), so its editor code is
 //! unchanged.
 //!
-//! This is stage 1: focus/blur, pointer hit-testing and drag-select, select-all/word, and the
-//! caret + selection *display*. Typing, the model write-back and IME arrive in later stages.
+//! Focus/blur, pointer hit-testing and drag-select, select-all/word, typing, delete, caret motion
+//! and IME are all live. The one gap is *export of styles*: `export_content` still emits plain text
+//! (the span model is preserved across edits, but serialising it back through render-wasm's export
+//! JSON is host-coupled — a separate slice).
 
 use render_core::model::ShapeKind;
 
@@ -432,8 +435,9 @@ fn json_escape(s: &str) -> String {
 }
 
 /// Export the edited text as render-wasm's `export_content` JSON: an array of paragraphs, each an
-/// array of span strings. PlainEditor is single-style, so each newline-separated paragraph is a
-/// single span (rich per-span export is `export_styled`, a later stage). Returns a pointer to a
+/// array of span strings. Each newline-separated paragraph is emitted as a single string here; the
+/// `RichEditor` keeps per-span styles across edits, but serialising them back through render-wasm's
+/// export schema (rich `export_styled`) is host-coupled and a later stage. Returns a pointer to a
 /// null-terminated buffer kept alive in [`RESULT_STR`], or null when unfocused.
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_export_content() -> *mut u8 {

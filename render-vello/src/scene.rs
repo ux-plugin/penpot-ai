@@ -35,9 +35,11 @@ use vello_example_scenes::{ExampleScene, RenderingContext};
 use glifo::Glyph;
 use parley::fontique::{FontInfoOverride, GenericFamily};
 use parley::{
-    Alignment, AlignmentOptions, FontContext, FontFamily, FontFamilyName, GlyphRun, Layout,
-    LayoutContext, LineHeight, PlainEditor, PositionedLayoutItem, StyleProperty,
+    Alignment, AlignmentOptions, FontContext, FontFamily, GlyphRun, Layout, LayoutContext,
+    LineHeight, PositionedLayoutItem, StyleProperty,
 };
+
+use crate::rich_editor::{EditorCommandRef, RichEditor, TextBrush};
 
 /// A Gaussian-blur filter of the given sigma. `EdgeMode::None` fades to transparent at the edges,
 /// which is what a blur or a soft shadow wants.
@@ -85,26 +87,17 @@ impl NeutralModelScene {
     }
 }
 
-/// The per-run style Parley carries through layout. Parley's `Brush` bound is
-/// `Clone + PartialEq + Default + Debug`; the layout hands it back at each glyph run, so a run's
-/// style follows the span it came from. It holds the span's whole fill list (drawn bottom-to-top
-/// over the glyph coverage) and its decoration line.
-#[derive(Clone, Debug, PartialEq, Default)]
-struct TextBrush {
-    fills: Vec<m::Paint>,
-    decoration: render_core::text::TextDecoration,
-}
-
 /// The Parley state text layout needs, kept across frames on the scene rather than rebuilt each
 /// frame: the font collection (fed by `store_font`, which must persist its faces) and the reusable
 /// layout/font contexts (a `FontContext` is expensive to construct).
 struct TextEngine {
     font_cx: FontContext,
     layout_cx: LayoutContext<TextBrush>,
-    /// The live editor for the focused text shape, if any (Parley's [`PlainEditor`] holds the
-    /// caret, selection and its own layout). Rebuilt when focus moves; `None` when nothing is being
-    /// edited. See [`crate::editor`] for why the ABI only queues into this via the render pass.
-    editor: Option<PlainEditor<TextBrush>>,
+    /// The live editor for the focused text shape, if any ([`RichEditor`] holds the span model, its
+    /// multi-style layout, and the caret/selection over it). Rebuilt when focus moves; `None` when
+    /// nothing is being edited. See [`crate::editor`] for why the ABI only queues into this via the
+    /// render pass.
+    editor: Option<RichEditor>,
     /// The shape id `editor` was built for, so a focus change triggers a rebuild.
     editor_for: Option<u128>,
 }
@@ -169,17 +162,14 @@ impl TextEngine {
             return;
         };
 
-        // (Re)build when focus moves to a different shape, then lay it out once so geometry is valid
-        // even before the first pointer event.
+        // (Re)build when focus moves to a different shape. `RichEditor::build` lays it out once, so
+        // geometry is valid even before the first pointer event.
         if *editor_for != Some(id) {
-            *editor = scene
-                .get(id)
-                .and_then(|node| node.text.as_ref())
-                .map(|block| build_editor(block, scene.get(id).map_or(0.0, |n| n.bounds.width() as f32)));
+            *editor = scene.get(id).and_then(|node| node.text.as_ref()).map(|block| {
+                let width = scene.get(id).map_or(0.0, |n| n.bounds.width() as f32);
+                RichEditor::build(block, width, font_cx, layout_cx)
+            });
             *editor_for = Some(id);
-            if let Some(ed) = editor.as_mut() {
-                ed.refresh_layout(font_cx, layout_cx);
-            }
         }
 
         let Some(ed) = editor.as_mut() else {
@@ -187,131 +177,32 @@ impl TextEngine {
             return;
         };
 
-        if !commands.is_empty() {
-            let overtype = crate::editor::overtype();
-            let mut driver = ed.driver(font_cx, layout_cx);
-            for command in commands {
-                use crate::editor::EditorCommand as C;
-                match command {
-                    C::PointerDown(x, y) => driver.move_to_point(x, y),
-                    C::ExtendToPoint(x, y) => driver.extend_selection_to_point(x, y),
-                    C::SelectWord(x, y) => driver.select_word_at_point(x, y),
-                    C::SelectAll => driver.select_all(),
-                    C::Insert(s) => {
-                        // Overtype replaces the character ahead of a collapsed caret before
-                        // inserting (an approximation of render-wasm's replace mode).
-                        if overtype {
-                            driver.delete();
-                        }
-                        driver.insert_or_replace_selection(&s);
-                    }
-                    C::InsertParagraph => driver.insert_or_replace_selection("\n"),
-                    C::DeleteBackward(word) => {
-                        if word {
-                            driver.backdelete_word();
-                        } else {
-                            driver.backdelete();
-                        }
-                    }
-                    C::DeleteForward(word) => {
-                        if word {
-                            driver.delete_word();
-                        } else {
-                            driver.delete();
-                        }
-                    }
-                    C::Move { direction, word, extend } => apply_move(&mut driver, direction, word, extend),
-                    C::SetCompose(s) => driver.set_compose(&s, Some((s.len(), s.len()))),
-                    C::CommitCompose(s) => {
-                        driver.clear_compose();
-                        if !s.is_empty() {
-                            driver.insert_or_replace_selection(&s);
-                        }
-                    }
+        let overtype = crate::editor::overtype();
+        for command in &commands {
+            use crate::editor::EditorCommand as C;
+            let borrowed = match command {
+                C::PointerDown(x, y) => EditorCommandRef::PointerDown(*x, *y),
+                C::ExtendToPoint(x, y) => EditorCommandRef::ExtendToPoint(*x, *y),
+                C::SelectWord(x, y) => EditorCommandRef::SelectWord(*x, *y),
+                C::SelectAll => EditorCommandRef::SelectAll,
+                C::Insert(s) => EditorCommandRef::Insert(s),
+                C::InsertParagraph => EditorCommandRef::InsertParagraph,
+                C::DeleteBackward(word) => EditorCommandRef::DeleteBackward(*word),
+                C::DeleteForward(word) => EditorCommandRef::DeleteForward(*word),
+                C::Move { direction, word, extend } => {
+                    EditorCommandRef::Move { direction: *direction, word: *word, extend: *extend }
                 }
-            }
+                C::SetCompose(s) => EditorCommandRef::SetCompose(s),
+                C::CommitCompose(s) => EditorCommandRef::CommitCompose(s),
+            };
+            ed.apply(borrowed, overtype, font_cx, layout_cx);
         }
-        ed.refresh_layout(font_cx, layout_cx);
-        let range = ed.raw_selection().text_range();
+
+        let (start, end) = ed.selection_range();
         // The caret in shape-local space, for `get_cursor_rect` (IME candidate placement).
-        let caret = ed.cursor_geometry(CARET_WIDTH).map(|b| {
-            [b.x0 as f32, b.y0 as f32, (b.x1 - b.x0) as f32, (b.y1 - b.y0) as f32]
-        });
-        crate::editor::set_snapshot(ed.raw_text().to_string(), (range.start, range.end), caret);
+        let caret = Some(ed.caret_rect(CARET_WIDTH));
+        crate::editor::set_snapshot(ed.text().to_string(), (start, end), caret);
     }
-}
-
-/// Apply a `Move` command against the driver. `direction` is render-wasm's `CursorDirection`
-/// (0 Backward, 1 Forward, 2 LineBefore, 3 LineAfter, 4 LineStart, 5 LineEnd); `word` moves by word;
-/// `extend` grows the selection rather than collapsing it.
-fn apply_move(driver: &mut parley::PlainEditorDriver<'_, TextBrush>, direction: u32, word: bool, extend: bool) {
-    match (direction, word, extend) {
-        (0, false, false) => driver.move_left(),
-        (0, true, false) => driver.move_word_left(),
-        (0, false, true) => driver.select_left(),
-        (0, true, true) => driver.select_word_left(),
-        (1, false, false) => driver.move_right(),
-        (1, true, false) => driver.move_word_right(),
-        (1, false, true) => driver.select_right(),
-        (1, true, true) => driver.select_word_right(),
-        (2, _, false) => driver.move_up(),
-        (2, _, true) => driver.select_up(),
-        (3, _, false) => driver.move_down(),
-        (3, _, true) => driver.select_down(),
-        (4, _, false) => driver.move_to_line_start(),
-        (4, _, true) => driver.select_to_line_start(),
-        (5, _, false) => driver.move_to_line_end(),
-        (5, _, true) => driver.select_to_line_end(),
-        _ => {}
-    }
-}
-
-/// Build a fresh [`PlainEditor`] for a text block. PlainEditor is single-style, so the first span's
-/// style stands in for the whole run (rich multi-span editing is a later stage). The text is the
-/// paragraphs joined by newlines with each span's case transform already folded, so the caret lands
-/// where `draw_text`/`draw_focused_editor` shape the glyphs.
-fn build_editor(block: &render_core::text::TextBlock, width: f32) -> PlainEditor<TextBrush> {
-    let first = block.paragraphs.iter().flat_map(|p| p.spans.iter()).next();
-    let size = first.map_or(16.0, |s| s.size);
-    let mut editor = PlainEditor::<TextBrush>::new(size);
-    if let Some(span) = first {
-        let styles = editor.edit_styles();
-        let alias = crate::abi::font_alias(span.font.id, span.font.weight, span.font.italic);
-        // The `StyleSet` stores `StyleProperty<'static>`, so the family name must be owned rather
-        // than borrowed from `alias` — `FontFamily::named` only takes a `&str`.
-        styles.insert(StyleProperty::FontFamily(FontFamily::Single(
-            FontFamilyName::Named(std::borrow::Cow::Owned(alias)),
-        )));
-        styles.insert(StyleProperty::LineHeight(LineHeight::FontSizeRelative(span.line_height)));
-        styles.insert(StyleProperty::LetterSpacing(span.letter_spacing));
-        styles.insert(StyleProperty::Brush(TextBrush {
-            fills: span.fills.clone(),
-            decoration: span.decoration,
-        }));
-    }
-    editor.set_scale(1.0);
-    editor.set_width(match block.grow {
-        render_core::text::TextGrow::AutoWidth => None,
-        _ => Some(width),
-    });
-    editor.set_text(&editor_text(block));
-    editor
-}
-
-/// The plain string an editor holds for a block: spans concatenated, paragraphs newline-separated,
-/// case transforms folded.
-fn editor_text(block: &render_core::text::TextBlock) -> String {
-    block
-        .paragraphs
-        .iter()
-        .map(|p| {
-            p.spans
-                .iter()
-                .map(|s| s.transform.apply(&s.text))
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 impl Default for NeutralModelScene {
@@ -637,28 +528,25 @@ fn draw_focused_editor<T: RenderingContext>(
     ctx.set_transform(matrix);
     ctx.set_paint_transform(Affine::IDENTITY);
     ctx.set_paint(crate::abi::argb_to_color(crate::editor::selection_color()));
-    for (bbox, _line) in editor.selection_geometry() {
+    for bbox in editor.selection_geometry() {
         ctx.fill_rect(&Rect::new(ox + bbox.x0, oy + bbox.y0, ox + bbox.x1, oy + bbox.y1));
     }
 
-    // The text itself, from the editor's layout (already refreshed by `sync_editor`).
-    if let Some(layout) = editor.try_layout() {
-        draw_layout(ctx, resources, layout, ox as f32, oy as f32, node.bounds, &node.strokes);
-    }
+    // The text itself, from the editor's multi-style layout (already rebuilt by `sync_editor`).
+    draw_layout(ctx, resources, editor.layout(), ox as f32, oy as f32, node.bounds, &node.strokes);
 
     // The caret on top, in its visible blink phase.
     if crate::editor::blink_on() {
-        if let Some(caret) = editor.cursor_geometry(CARET_WIDTH) {
-            ctx.set_transform(matrix);
-            ctx.set_paint_transform(Affine::IDENTITY);
-            ctx.set_paint(crate::abi::argb_to_color(crate::editor::cursor_color()));
-            ctx.fill_rect(&Rect::new(
-                ox + caret.x0,
-                oy + caret.y0,
-                ox + caret.x1,
-                oy + caret.y1,
-            ));
-        }
+        let [cx, cy, cw, ch] = editor.caret_rect(CARET_WIDTH);
+        ctx.set_transform(matrix);
+        ctx.set_paint_transform(Affine::IDENTITY);
+        ctx.set_paint(crate::abi::argb_to_color(crate::editor::cursor_color()));
+        ctx.fill_rect(&Rect::new(
+            ox + f64::from(cx),
+            oy + f64::from(cy),
+            ox + f64::from(cx + cw),
+            oy + f64::from(cy + ch),
+        ));
     }
 }
 

@@ -20,6 +20,7 @@
 
 pub mod abi;
 pub mod editor;
+pub mod rich_editor;
 
 #[cfg(target_arch = "wasm32")]
 mod renderer;
