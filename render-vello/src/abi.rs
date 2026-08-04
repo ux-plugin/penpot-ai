@@ -435,7 +435,22 @@ pub extern "C" fn clean_up() {
     with_state(|state| {
         state.scene.clear();
         state.current = None;
-        state.viewport = Viewport::default();
+        // Reset the document's *view* — pan, zoom and background — but keep the surface metrics
+        // `dpr`, `width` and `height`. Those describe the device and the canvas, not the document:
+        // the host sets `dpr` once at surface bring-up (`set_render_options`) and does not resend
+        // it on every page load, so folding it into the default here left a retina canvas
+        // rendering at `zoom` instead of `zoom · dpr` — every shape at half scale and panning at
+        // half speed, drifting away from the CSS-space selection overlay — until the next resize
+        // happened to re-apply it. (Was `state.viewport = Viewport::default()`, which reset all six.)
+        let Viewport {
+            dpr, width, height, ..
+        } = state.viewport;
+        state.viewport = Viewport {
+            dpr,
+            width,
+            height,
+            ..Viewport::default()
+        };
         state.needs_frame = false;
         // A gesture left in flight across a page change would displace whichever shapes happened
         // to inherit those ids.
@@ -1326,10 +1341,13 @@ mod tests {
     fn reset() -> std::sync::MutexGuard<'static, ()> {
         // A panicking test poisons the lock; the state is reset here anyway, so recover.
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // `clean_up` rather than `clear_scene`: the viewport and the pending-frame flag are
-        // module-global too, and a leftover `set_view` from the previous test would otherwise
-        // leak into this one.
+        // `clean_up` rather than `clear_scene`: the scene, pending-frame flag and image maps are
+        // module-global too, and leftovers from the previous test would otherwise leak into this
+        // one. `clean_up` deliberately *preserves* the surface metrics (dpr, width, height) — that
+        // is the whole point of the fix it now encodes — so the guard resets the full viewport
+        // itself, or a test that set a dpr would leak it forward.
         clean_up();
+        with_state(|state| state.viewport = Viewport::default());
         free_bytes();
         guard
     }
@@ -1812,8 +1830,13 @@ mod tests {
     }
 
     #[test]
-    fn clean_up_resets_document_and_viewport() {
+    fn clean_up_resets_the_document_and_camera_but_keeps_surface_metrics() {
         let _guard = reset();
+        // Surface metrics: dpr from the host, size from a resize. These describe the device, not
+        // the document, and must survive a page clear.
+        set_render_options(0, 2.0);
+        resize_viewbox(1280, 720);
+        // Document + camera state that *should* reset.
         use_shape(0, 0, 0, 1);
         set_view(3.0, 10.0, 20.0);
         set_canvas_background(0xff_ff_ff_ff);
@@ -1821,9 +1844,12 @@ mod tests {
         clean_up();
 
         assert_eq!(scene_node_count(), 0);
-        assert_eq!(viewport_transform(), Affine::IDENTITY);
         assert_eq!(background().components[3], 0.0);
         assert!(!take_needs_frame());
+        // Pan and zoom are gone (zoom back to 1, no pan), but dpr survives — so the transform is a
+        // pure `scale(dpr)`, not identity. Were dpr reset to 1 (the old bug), this would be
+        // `IDENTITY` and every shape would render at half scale on a retina canvas.
+        assert_eq!(viewport_transform(), Affine::scale(2.0));
     }
 
     /// The two counts answer different questions, and a blank canvas is diagnosed by their gap:
