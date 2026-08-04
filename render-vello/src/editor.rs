@@ -49,6 +49,10 @@ pub(crate) enum EditorCommand {
         word: bool,
         extend: bool,
     },
+    /// Set the IME pre-edit (composing) text at the caret.
+    SetCompose(String),
+    /// Commit the IME composition: drop the pre-edit, then insert the final text (empty cancels).
+    CommitCompose(String),
 }
 
 pub(crate) struct EditorState {
@@ -71,6 +75,9 @@ pub(crate) struct EditorState {
     pub text_cache: String,
     /// The selection's byte range `[start, end)` in `text_cache`, cached likewise.
     pub selection: (usize, usize),
+    /// The caret rectangle in shape-local space `[left, top, width, height]`, cached each frame so
+    /// `get_cursor_rect` (used for IME candidate placement) can serve it without the `PlainEditor`.
+    pub caret_rect: Option<[f32; 4]>,
     /// Caret visibility from the host's blink clock; the render pass draws the caret only when set.
     pub blink_on: bool,
     /// A redraw is needed (focus/selection/blink changed). Polled and cleared by `poll_event`.
@@ -91,6 +98,7 @@ static EDITOR: std::sync::Mutex<EditorState> = std::sync::Mutex::new(EditorState
     has_selection: false,
     text_cache: String::new(),
     selection: (0, 0),
+    caret_rect: None,
     blink_on: true,
     dirty: false,
 });
@@ -107,11 +115,12 @@ pub(crate) fn take_focus_and_commands() -> (Option<u128>, Vec<EditorCommand>) {
 /// The render pass reports back what it computed against the live editor: the current text, the
 /// selection byte range, and whether that selection is non-empty. Cleared to empty when nothing is
 /// focused.
-pub(crate) fn set_snapshot(text: String, selection: (usize, usize)) {
+pub(crate) fn set_snapshot(text: String, selection: (usize, usize), caret_rect: Option<[f32; 4]>) {
     with_editor(|e| {
         e.has_selection = selection.0 != selection.1;
         e.text_cache = text;
         e.selection = selection;
+        e.caret_rect = caret_rect;
     });
 }
 
@@ -121,6 +130,7 @@ pub(crate) fn clear_snapshot() {
         e.has_selection = false;
         e.text_cache.clear();
         e.selection = (0, 0);
+        e.caret_rect = None;
     });
 }
 
@@ -469,4 +479,47 @@ pub extern "C" fn text_editor_get_selection(buffer_ptr: *mut u32) -> bool {
         }
         true
     })
+}
+
+// --- IME (stage 3) ----------------------------------------------------------------------------
+
+/// Begin an IME composition. PlainEditor starts composing on the first `set_compose`, so this only
+/// nudges a frame; the caret stays where it is until pre-edit text arrives.
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_composition_start() {
+    crate::abi::request_frame();
+}
+
+/// Update the IME pre-edit text (read from the shared byte buffer).
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_composition_update() {
+    let bytes = crate::abi::take_bytes();
+    if let Ok(text) = String::from_utf8(bytes) {
+        enqueue(EditorCommand::SetCompose(text));
+    }
+}
+
+/// End the IME composition, committing the final text (empty cancels the pre-edit).
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_composition_end() {
+    let bytes = crate::abi::take_bytes();
+    let text = String::from_utf8(bytes).unwrap_or_default();
+    enqueue(EditorCommand::CommitCompose(text));
+}
+
+/// Return the caret rectangle as four little-endian `f32`s (`left, top, width, height`) in
+/// shape-local space — the host uses it to place the IME candidate window. Null when there is no
+/// visible caret. Kept alive in [`RESULT_STR`].
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_get_cursor_rect() -> *mut u8 {
+    let Some([l, t, w, h]) = with_editor(|e| e.caret_rect) else {
+        return std::ptr::null_mut();
+    };
+    let mut bytes = Vec::with_capacity(16);
+    for v in [l, t, w, h] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut guard = RESULT_STR.lock().expect("result string poisoned");
+    *guard = bytes;
+    guard.as_mut_ptr()
 }

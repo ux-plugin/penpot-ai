@@ -221,12 +221,23 @@ impl TextEngine {
                         }
                     }
                     C::Move { direction, word, extend } => apply_move(&mut driver, direction, word, extend),
+                    C::SetCompose(s) => driver.set_compose(&s, Some((s.len(), s.len()))),
+                    C::CommitCompose(s) => {
+                        driver.clear_compose();
+                        if !s.is_empty() {
+                            driver.insert_or_replace_selection(&s);
+                        }
+                    }
                 }
             }
         }
         ed.refresh_layout(font_cx, layout_cx);
         let range = ed.raw_selection().text_range();
-        crate::editor::set_snapshot(ed.raw_text().to_string(), (range.start, range.end));
+        // The caret in shape-local space, for `get_cursor_rect` (IME candidate placement).
+        let caret = ed.cursor_geometry(CARET_WIDTH).map(|b| {
+            [b.x0 as f32, b.y0 as f32, (b.x1 - b.x0) as f32, (b.y1 - b.y0) as f32]
+        });
+        crate::editor::set_snapshot(ed.raw_text().to_string(), (range.start, range.end), caret);
     }
 }
 
