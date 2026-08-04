@@ -17,25 +17,29 @@ export const PROVIDER_LABELS: Record<LlmProvider, string> = {
   google: 'Google',
 }
 
-/** Non-secret view of the stored key. */
+/** Non-secret metadata for one stored key. */
+export interface StoredKeyInfo {
+  provider: LlmProvider
+  last4: string
+}
+
+/** Non-secret view of the vault — stored keys keyed by provider-row id. */
 export interface KeyStoreStatus {
   available: boolean
-  hasKey: boolean
-  provider?: LlmProvider
-  model?: string
-  last4?: string
+  keys: Record<string, StoredKeyInfo>
 }
 
 export interface SetKeyRequest {
+  /** The provider-row id this key belongs to. */
+  id: string
   provider: LlmProvider
-  model: string
   key: string
 }
 
 export interface KeyStoreBridge {
   getStatus(): Promise<KeyStoreStatus>
   set(req: SetKeyRequest): Promise<KeyStoreStatus>
-  clear(): Promise<KeyStoreStatus>
+  clear(id: string): Promise<KeyStoreStatus>
 }
 
 export interface ChatBridge {
@@ -129,12 +133,40 @@ export interface AcpPromptResult {
   login?: AcpLoginCommand
 }
 
+/** How a chat authenticates; the key stays in main, only the provider is named. */
+export interface AcpAuth {
+  style: 'acp' | 'sdk'
+  provider?: string
+  /** `sdk` only — the provider-row id whose stored key main should inject. */
+  keyId?: string
+}
+
 export interface AcpPromptRequest {
   /** The chat this prompt belongs to — selects/creates its own agent session. */
   chatId: string
   text: string
   cwd: string
   agent?: AcpAgentSpec
+  /** Registry adapter id (subscription style); omitted → Claude Code. */
+  adapter?: string
+  auth?: AcpAuth
+  /** Model id (Anthropic → injected as `ANTHROPIC_MODEL`); omitted → adapter default. */
+  model?: string
+}
+
+/** A known ACP adapter and whether it's present on this machine. */
+export interface DetectedAdapter {
+  id: string
+  label: string
+  available: boolean
+  installHint?: string
+}
+
+/** Result of verifying an adapter actually speaks ACP. */
+export interface AdapterTestResult {
+  ok: boolean
+  ms?: number
+  error?: string
 }
 
 /** Drives structured coding agents over ACP in the main process (desktop only). */
@@ -143,6 +175,8 @@ export interface AcpBridge {
   cancel(chatId: string): void
   close(chatId: string): void
   onUpdate(cb: (envelope: AcpUpdateEnvelope) => void): () => void
+  listAdapters(): Promise<DetectedAdapter[]>
+  testAdapter(id: string): Promise<AdapterTestResult>
 }
 
 interface ZoetropeBridge {

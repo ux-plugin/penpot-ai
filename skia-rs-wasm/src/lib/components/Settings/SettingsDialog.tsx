@@ -13,9 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useViewportShortcutsStore, DEFAULT_SHORTCUTS } from '../../renderer/store/shortcuts-store'
-import { hasSecureKeyStore } from '../../renderer/platform'
 import { getAgent } from '../../renderer/desktop-bridge'
-import { AiKeychainPanel } from './AiKeychainPanel'
 import { AiAgentsPanel } from './AiAgentsPanel'
 import type { ShortcutsConfig, ViewportPanModifier } from '../../renderer/types'
 import { TOOL_BINDINGS, type ToolKeyField } from '../../renderer/input/key-bindings'
@@ -109,7 +107,6 @@ const TAB_TRIGGER_CLASS =
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const cfg = useViewportShortcutsStore((s) => s.viewportShortcuts)
   const setCfg = useViewportShortcutsStore((s) => s.setViewportShortcuts)
-  const canBYOK = hasSecureKeyStore()
   const hasTerminal = getAgent() != null
   // Close only when the press STARTED on the backdrop — a drag/click that began
   // inside the dialog (e.g. selecting input text) must not close it on release.
@@ -253,18 +250,24 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               </TabsContent>
 
               <TabsContent value="ai" className="mt-0">
-                <h3 className="mb-3 text-sm font-medium text-muted-foreground">Model</h3>
-                <Field label="Provider">
-                  <Badge variant="secondary" className="font-normal">
-                    Built-in · managed
-                  </Badge>
-                </Field>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Conversations use the built-in model. The provider key is kept on the server — never in this browser.
-                </p>
-
-                <AiKeychainPanel canBYOK={canBYOK} />
-                {hasTerminal && <AiAgentsPanel />}
+                {hasTerminal ? (
+                  // Desktop: Providers is the single source of truth for who to talk to.
+                  <AiAgentsPanel />
+                ) : (
+                  // Web: no local key store — conversations use the built-in managed model.
+                  <>
+                    <h3 className="mb-3 text-sm font-medium text-muted-foreground">Model</h3>
+                    <Field label="Provider">
+                      <Badge variant="secondary" className="font-normal">
+                        Built-in · managed
+                      </Badge>
+                    </Field>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Conversations use the built-in model. The provider key is kept on the server — never in this
+                      browser.
+                    </p>
+                  </>
+                )}
               </TabsContent>
 
               <TabsContent value="shortcuts" className="mt-0">

@@ -8,9 +8,10 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Sparkles, ArrowUp, Terminal, FileDiff, ListChecks, CircleDot, LogIn } from 'lucide-react'
+import { Sparkles, ArrowUp, Terminal, FileDiff, ListChecks, CircleDot, LogIn, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useChatSessionsStore } from '../../renderer/store/chat-sessions-store'
+import { useAgentSettingsStore, visibleModels } from '../../renderer/store/agent-settings-store'
 import type { TranscriptItem } from '../../renderer/interactions/session/acp-transcript'
 import { TerminalView } from './TerminalView'
 
@@ -25,6 +26,91 @@ function statusClass(status: string): string {
   if (status === 'failed') return 'text-destructive'
   if (status === 'in_progress') return 'text-amber-600'
   return 'text-muted-foreground'
+}
+
+/** A compact native <select> for the model bar. */
+function BarSelect({
+  value,
+  onChange,
+  disabled,
+  ariaLabel,
+  children,
+}: {
+  value: string
+  onChange: (v: string) => void
+  disabled?: boolean
+  ariaLabel: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="relative min-w-0 flex-1">
+      <select
+        aria-label={ariaLabel}
+        disabled={disabled}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 w-full min-w-0 appearance-none truncate rounded-md border border-border bg-background pl-2 pr-6 text-[0.7rem] text-foreground outline-none transition-colors hover:bg-muted focus:border-ring disabled:opacity-50"
+      >
+        {children}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+    </div>
+  )
+}
+
+/**
+ * Provider + model selectors for the open chat. Switching the provider re-points the chat
+ * at another configured provider row (and its first visible model); switching the model
+ * stays within the provider. Either change restarts the adapter and replays history, so the
+ * conversation continues seamlessly.
+ */
+function ModelBar({ chatId }: { chatId: string }) {
+  const agents = useAgentSettingsStore((s) => s.agents)
+  const chat = useChatSessionsStore((s) => s.chats.find((c) => c.id === chatId))
+  const setChatProvider = useChatSessionsStore((s) => s.setChatProvider)
+  const setChatModel = useChatSessionsStore((s) => s.setChatModel)
+  if (!chat) return null
+
+  const current = agents.find((a) => a.id === chat.agentId)
+  const models = current ? visibleModels(current) : []
+  const modelValue = chat.model && models.includes(chat.model) ? chat.model : models[0] ?? ''
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-2 py-1.5">
+      <BarSelect
+        ariaLabel="Provider"
+        value={chat.agentId}
+        onChange={(id) => {
+          const next = agents.find((a) => a.id === id)
+          if (next) setChatProvider(chatId, next)
+        }}
+      >
+        {agents.length === 0 && <option value={chat.agentId}>No provider</option>}
+        {!current && <option value={chat.agentId}>{chat.agentId}</option>}
+        {agents.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.name}
+          </option>
+        ))}
+      </BarSelect>
+      <BarSelect
+        ariaLabel="Model"
+        value={modelValue}
+        disabled={models.length === 0}
+        onChange={(m) => setChatModel(chatId, m)}
+      >
+        {models.length === 0 ? (
+          <option value="">No models</option>
+        ) : (
+          models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))
+        )}
+      </BarSelect>
+    </div>
+  )
 }
 
 export function AcpView({ chatId, cwd }: { chatId: string; cwd: string | null }) {
@@ -138,7 +224,9 @@ export function AcpView({ chatId, cwd }: { chatId: string; cwd: string | null })
         </div>
       )}
 
-      <div className="flex shrink-0 items-center gap-1.5 border-t border-border p-2">
+      <ModelBar chatId={chatId} />
+
+      <div className="flex shrink-0 items-center gap-1.5 px-2 pb-2">
         <input
           className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus:border-ring disabled:opacity-50"
           placeholder={login ? 'Signing in…' : 'Ask the agent…'}

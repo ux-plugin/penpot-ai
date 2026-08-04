@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { getAcp, type AcpLoginCommand, type AcpUpdateBody } from '../desktop-bridge'
 import { reduceTranscript, type TranscriptItem } from '../interactions/session/acp-transcript'
-import type { AgentConfig, AgentKind } from './agent-settings-store'
+import { visibleModels, type AgentConfig, type AgentProvider, type AgentStyle } from './agent-settings-store'
 
 /** A chat's live state: idle, streaming a turn, blocked on auth, or errored. */
 export type ChatStatus = 'idle' | 'streaming' | 'auth' | 'error'
@@ -26,7 +26,13 @@ export interface ChatSession {
   title: string
   /** The agent this chat runs (id into the agent-settings store). */
   agentId: string
-  kind: AgentKind
+  style: AgentStyle
+  /** `acp` style only — which ACP adapter to run. */
+  adapter?: string
+  /** `sdk` style only — which provider's key to use. */
+  provider?: AgentProvider
+  /** Model chosen in-chat (from the provider's visible catalog). */
+  model?: string
   cwd: string | null
   createdAt: number
   status: ChatStatus
@@ -42,12 +48,18 @@ interface ChatSessionsState {
   /** Runtime only: a chat awaiting sign-in, and the prompt to replay once signed in. */
   login: Record<string, AcpLoginCommand | null>
   pending: Record<string, string | null>
+  /** Runtime only: chats whose provider/model changed, so the next prompt replays history. */
+  replay: Record<string, boolean>
 
   newChat: (agent: AgentConfig, cwd?: string | null) => string
   selectChat: (id: string) => void
   deleteChat: (id: string) => void
   renameChat: (id: string, title: string) => void
   setChatCwd: (id: string, cwd: string | null) => void
+  /** Switch a chat to another configured provider (resets model, replays history). */
+  setChatProvider: (id: string, agent: AgentConfig) => void
+  /** Switch a chat's model within its provider (replays history so the agent continues). */
+  setChatModel: (id: string, model: string) => void
 
   /** Send a prompt to an ACP chat and drive its full lifecycle (status, auth, errors). */
   sendAcpPrompt: (chatId: string, text: string) => Promise<void>
@@ -61,6 +73,20 @@ interface ChatSessionsState {
 function pushItem(state: ChatSessionsState, chatId: string, item: TranscriptItem): Record<string, TranscriptItem[]> {
   const cur = state.transcripts[chatId] ?? []
   return { ...state.transcripts, [chatId]: [...cur, item] }
+}
+
+/**
+ * Prefix a prompt with the recent conversation so a freshly-spawned adapter (after a
+ * provider/model switch, which restarts its subprocess) can continue in context. Only the
+ * spoken turns are replayed, capped to the last several so the preamble stays bounded.
+ */
+function withReplay(items: TranscriptItem[], text: string): string {
+  const turns = items
+    .filter((i): i is Extract<TranscriptItem, { kind: 'user' | 'assistant' }> => i.kind === 'user' || i.kind === 'assistant')
+    .slice(-12)
+  if (turns.length === 0) return text
+  const history = turns.map((i) => `${i.kind === 'user' ? 'User' : 'Assistant'}: ${i.text}`).join('\n')
+  return `Continuing our earlier conversation. Here's what we said so far:\n\n${history}\n\n---\nUser: ${text}`
 }
 
 /** A short default title from the agent name, disambiguated by count. */
@@ -78,6 +104,7 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
       lastCwd: null,
       login: {},
       pending: {},
+      replay: {},
 
       newChat: (agent, cwd) => {
         const id = crypto.randomUUID()
@@ -85,7 +112,10 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
           id,
           title: defaultTitle(agent, get().chats),
           agentId: agent.id,
-          kind: agent.kind,
+          style: agent.style,
+          adapter: agent.adapter,
+          provider: agent.provider,
+          model: visibleModels(agent)[0],
           cwd: cwd ?? get().lastCwd,
           createdAt: Date.now(),
           status: 'idle',
@@ -111,8 +141,10 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
           delete login[id]
           const pending = { ...s.pending }
           delete pending[id]
+          const replay = { ...s.replay }
+          delete replay[id]
           const activeId = s.activeId === id ? (chats[0]?.id ?? null) : s.activeId
-          return { chats, transcripts, login, pending, activeId }
+          return { chats, transcripts, login, pending, replay, activeId }
         }),
 
       renameChat: (id, title) =>
@@ -124,16 +156,55 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
           lastCwd: cwd ?? s.lastCwd,
         })),
 
+      setChatProvider: (id, agent) =>
+        set((s) => ({
+          chats: s.chats.map((c) =>
+            c.id === id
+              ? {
+                  ...c,
+                  agentId: agent.id,
+                  style: agent.style,
+                  adapter: agent.adapter,
+                  provider: agent.provider,
+                  model: visibleModels(agent)[0],
+                }
+              : c,
+          ),
+          // A live conversation should carry over — the fresh adapter replays it (its
+          // subprocess restarts on any provider/model change).
+          replay: (s.transcripts[id]?.length ?? 0) > 0 ? { ...s.replay, [id]: true } : s.replay,
+        })),
+
+      setChatModel: (id, model) =>
+        set((s) => ({
+          chats: s.chats.map((c) => (c.id === id ? { ...c, model } : c)),
+          replay: (s.transcripts[id]?.length ?? 0) > 0 ? { ...s.replay, [id]: true } : s.replay,
+        })),
+
       sendAcpPrompt: async (chatId, text) => {
         const acp = getAcp()
         const chat = get().chats.find((c) => c.id === chatId)
         if (!acp || !chat || !chat.cwd) return
+        // If the provider/model just changed, the adapter subprocess restarts with no memory
+        // of this chat — prefix the prior transcript so it continues seamlessly ("replay").
+        const replaying = !!get().replay[chatId]
+        const toSend = replaying ? withReplay(get().transcripts[chatId] ?? [], text) : text
         set((s) => ({
           transcripts: pushItem(s, chatId, { kind: 'user', text }),
           chats: s.chats.map((c) => (c.id === chatId ? { ...c, status: 'streaming' } : c)),
+          replay: replaying ? { ...s.replay, [chatId]: false } : s.replay,
         }))
         try {
-          const res = await acp.prompt({ chatId, text, cwd: chat.cwd })
+          const res = await acp.prompt({
+            chatId,
+            text: toSend,
+            cwd: chat.cwd,
+            adapter: chat.adapter,
+            model: chat.model,
+            // Chats persisted before `style` existed default to subscription. The key,
+            // for `sdk` chats, is stored under the provider-row id (== agentId).
+            auth: { style: chat.style ?? 'acp', provider: chat.provider, keyId: chat.agentId },
+          })
           if (res.authRequired && res.login?.command) {
             // Park the prompt; the view hosts the login terminal and calls retryAfterLogin.
             set((s) => ({

@@ -71,9 +71,8 @@ export function ChatPanel() {
   }, [acp])
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? 'Agent'
-  // Only ACP-capable agents can start a chat; today that's Claude.
-  const acpAgents = agents.filter((a) => a.kind === 'acp')
-  const primary = acpAgents[0] ?? null
+  // Every configured agent is startable; the picker lists them all.
+  const primary = agents[0] ?? null
 
   // Search filters the History list (⌘K focuses it).
   const [query, setQuery] = useState('')
@@ -173,7 +172,7 @@ export function ChatPanel() {
   return (
     <HistoryScreen
       chats={filtered}
-      agents={acpAgents}
+      agents={agents}
       agentName={agentName}
       query={query}
       onQueryChange={setQuery}
