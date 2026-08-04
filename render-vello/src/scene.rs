@@ -33,7 +33,7 @@ use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_example_scenes::{ExampleScene, RenderingContext};
 
 use glifo::Glyph;
-use parley::fontique::FontInfoOverride;
+use parley::fontique::{FontInfoOverride, GenericFamily};
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, GlyphRun, Layout, LayoutContext,
     LineHeight, PositionedLayoutItem, StyleProperty,
@@ -116,7 +116,7 @@ impl TextEngine {
     /// is registered under our own alias — see [`font_alias`] — which the draw path looks it up by.
     fn sync_fonts(&mut self) {
         for font in crate::abi::take_pending_fonts() {
-            self.font_cx.collection.register_fonts(
+            let registered = self.font_cx.collection.register_fonts(
                 font.bytes.into(),
                 Some(FontInfoOverride {
                     family_name: Some(&font.alias),
@@ -126,6 +126,16 @@ impl TextEngine {
                     axes: None,
                 }),
             );
+            // An emoji face also joins Parley's `Emoji` generic family. Parley appends that generic
+            // to the font query for any cluster it detects as emoji, so an emoji the primary font
+            // lacks falls through to this face — and glifo's glyph cascade (COLR > bitmap > outline)
+            // draws its colour layers. `append` (not `set`) so multiple emoji faces accumulate.
+            if font.is_emoji {
+                let ids = registered.iter().map(|(family_id, _)| *family_id);
+                self.font_cx
+                    .collection
+                    .append_generic_families(GenericFamily::Emoji, ids);
+            }
         }
     }
 }

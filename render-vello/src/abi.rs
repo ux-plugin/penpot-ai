@@ -290,6 +290,10 @@ pub(crate) struct UploadedFont {
     /// the same alias from a span's [`render_core::text::FontRef`], so the two meet by string.
     pub alias: String,
     pub bytes: Vec<u8>,
+    /// A colour-emoji face. Registered like any other, but also wired into Parley's `Emoji`
+    /// generic family so an emoji the primary font lacks falls through to it (glifo then draws its
+    /// COLR/bitmap layers). Text never references it by name.
+    pub is_emoji: bool,
 }
 
 /// The family name a face is registered under, and the name a span looks it up by. Internal to
@@ -322,7 +326,9 @@ pub extern "C" fn store_font(
     d: u32,
     weight: u32,
     style: u8,
-    _is_emoji: bool,
+    is_emoji: bool,
+    // A general (non-emoji) fallback face. Wiring these into per-script fallback needs the run's
+    // script, which the wire does not carry, so they stay registered-by-name only for now.
     _is_fallback: bool,
 ) {
     let bytes = take_bytes();
@@ -342,7 +348,7 @@ pub extern "C" fn store_font(
     PENDING_FONTS
         .lock()
         .expect("pending fonts poisoned")
-        .push(UploadedFont { alias, bytes });
+        .push(UploadedFont { alias, bytes, is_emoji });
     with_state(|state| state.needs_frame = true);
 }
 
