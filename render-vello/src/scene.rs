@@ -35,8 +35,8 @@ use vello_example_scenes::{ExampleScene, RenderingContext};
 use glifo::Glyph;
 use parley::fontique::{FontInfoOverride, GenericFamily};
 use parley::{
-    Alignment, AlignmentOptions, FontContext, FontFamily, GlyphRun, Layout, LayoutContext,
-    LineHeight, PositionedLayoutItem, StyleProperty,
+    Alignment, AlignmentOptions, FontContext, FontFamily, FontFamilyName, GlyphRun, Layout,
+    LayoutContext, LineHeight, PlainEditor, PositionedLayoutItem, StyleProperty,
 };
 
 /// A Gaussian-blur filter of the given sigma. `EdgeMode::None` fades to transparent at the edges,
@@ -101,13 +101,24 @@ struct TextBrush {
 struct TextEngine {
     font_cx: FontContext,
     layout_cx: LayoutContext<TextBrush>,
+    /// The live editor for the focused text shape, if any (Parley's [`PlainEditor`] holds the
+    /// caret, selection and its own layout). Rebuilt when focus moves; `None` when nothing is being
+    /// edited. See [`crate::editor`] for why the ABI only queues into this via the render pass.
+    editor: Option<PlainEditor<TextBrush>>,
+    /// The shape id `editor` was built for, so a focus change triggers a rebuild.
+    editor_for: Option<u128>,
 }
+
+/// Caret width in text-local units. Parley draws the caret as a thin rect of this width.
+const CARET_WIDTH: f32 = 2.0;
 
 impl TextEngine {
     fn new() -> Self {
         Self {
             font_cx: FontContext::new(),
             layout_cx: LayoutContext::new(),
+            editor: None,
+            editor_for: None,
         }
     }
 
@@ -138,6 +149,107 @@ impl TextEngine {
             }
         }
     }
+
+    /// Bring the editor in step with the ABI: rebuild it when focus moves, apply the queued edit
+    /// commands, and report the selection state back. Runs inside the render pass — the only place
+    /// the `FontContext` the edited text lays out against is reachable (see [`crate::editor`]).
+    fn sync_editor(&mut self, scene: &m::Scene) {
+        let (focused, commands) = crate::editor::take_focus_and_commands();
+        let Self {
+            font_cx,
+            layout_cx,
+            editor,
+            editor_for,
+        } = self;
+
+        let Some(id) = focused else {
+            *editor = None;
+            *editor_for = None;
+            crate::editor::set_has_selection(false);
+            return;
+        };
+
+        // (Re)build when focus moves to a different shape, then lay it out once so geometry is valid
+        // even before the first pointer event.
+        if *editor_for != Some(id) {
+            *editor = scene
+                .get(id)
+                .and_then(|node| node.text.as_ref())
+                .map(|block| build_editor(block, scene.get(id).map_or(0.0, |n| n.bounds.width() as f32)));
+            *editor_for = Some(id);
+            if let Some(ed) = editor.as_mut() {
+                ed.refresh_layout(font_cx, layout_cx);
+            }
+        }
+
+        let Some(ed) = editor.as_mut() else {
+            crate::editor::set_has_selection(false);
+            return;
+        };
+
+        if !commands.is_empty() {
+            let mut driver = ed.driver(font_cx, layout_cx);
+            for command in commands {
+                use crate::editor::EditorCommand as C;
+                match command {
+                    C::PointerDown(x, y) => driver.move_to_point(x, y),
+                    C::ExtendToPoint(x, y) => driver.extend_selection_to_point(x, y),
+                    C::SelectWord(x, y) => driver.select_word_at_point(x, y),
+                    C::SelectAll => driver.select_all(),
+                }
+            }
+        }
+        ed.refresh_layout(font_cx, layout_cx);
+        crate::editor::set_has_selection(!ed.selection_geometry().is_empty());
+    }
+}
+
+/// Build a fresh [`PlainEditor`] for a text block. PlainEditor is single-style, so the first span's
+/// style stands in for the whole run (rich multi-span editing is a later stage). The text is the
+/// paragraphs joined by newlines with each span's case transform already folded, so the caret lands
+/// where `draw_text`/`draw_focused_editor` shape the glyphs.
+fn build_editor(block: &render_core::text::TextBlock, width: f32) -> PlainEditor<TextBrush> {
+    let first = block.paragraphs.iter().flat_map(|p| p.spans.iter()).next();
+    let size = first.map_or(16.0, |s| s.size);
+    let mut editor = PlainEditor::<TextBrush>::new(size);
+    if let Some(span) = first {
+        let styles = editor.edit_styles();
+        let alias = crate::abi::font_alias(span.font.id, span.font.weight, span.font.italic);
+        // The `StyleSet` stores `StyleProperty<'static>`, so the family name must be owned rather
+        // than borrowed from `alias` — `FontFamily::named` only takes a `&str`.
+        styles.insert(StyleProperty::FontFamily(FontFamily::Single(
+            FontFamilyName::Named(std::borrow::Cow::Owned(alias)),
+        )));
+        styles.insert(StyleProperty::LineHeight(LineHeight::FontSizeRelative(span.line_height)));
+        styles.insert(StyleProperty::LetterSpacing(span.letter_spacing));
+        styles.insert(StyleProperty::Brush(TextBrush {
+            fills: span.fills.clone(),
+            decoration: span.decoration,
+        }));
+    }
+    editor.set_scale(1.0);
+    editor.set_width(match block.grow {
+        render_core::text::TextGrow::AutoWidth => None,
+        _ => Some(width),
+    });
+    editor.set_text(&editor_text(block));
+    editor
+}
+
+/// The plain string an editor holds for a block: spans concatenated, paragraphs newline-separated,
+/// case transforms folded.
+fn editor_text(block: &render_core::text::TextBlock) -> String {
+    block
+        .paragraphs
+        .iter()
+        .map(|p| {
+            p.spans
+                .iter()
+                .map(|s| s.transform.apply(&s.text))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl Default for NeutralModelScene {
@@ -174,6 +286,9 @@ impl ExampleScene for NeutralModelScene {
         let fallback = &self.fallback;
         let text = &mut self.text;
         crate::abi::with_scene(|live, viewport, modifiers| {
+            // Fold the queued editor commands into the live editor before drawing, so the caret and
+            // selection this frame paints are up to date. Only the live scene is editable.
+            text.sync_editor(live);
             // `root` is the harness's own pan/zoom; `viewport` is what the host set through
             // `set_view`. They compose — the harness stays at identity when a host is driving.
             let (model, view) = if live.is_empty() {
@@ -399,6 +514,13 @@ fn draw_text<T: RenderingContext>(
         return;
     };
 
+    // While this shape is the focused editor, its text comes from the editor's own layout — so the
+    // caret and selection (computed from that same layout) always align with the drawn glyphs.
+    if engine.editor_for == Some(node.id) && engine.editor.is_some() {
+        draw_focused_editor(ctx, resources, engine, node, matrix);
+        return;
+    }
+
     // `Fixed`/`AutoHeight` wrap to the box width; `AutoWidth` never wraps.
     let max_advance = match block.grow {
         render_core::text::TextGrow::AutoWidth => None,
@@ -431,6 +553,50 @@ fn draw_text<T: RenderingContext>(
     for layout in &layouts {
         draw_layout(ctx, resources, layout, origin_x, origin_y, node.bounds, &node.strokes);
         origin_y += layout.height();
+    }
+}
+
+/// Draw a text shape that is being edited: its selection highlights, then its glyphs (from the
+/// editor's own layout), then the caret — all in the node's space so they align with each other.
+fn draw_focused_editor<T: RenderingContext>(
+    ctx: &mut T,
+    resources: &mut T::Resources,
+    engine: &TextEngine,
+    node: &m::Node,
+    matrix: Affine,
+) {
+    let Some(editor) = engine.editor.as_ref() else {
+        return;
+    };
+    // Top-aligned for now; a vertical-align offset (as `draw_text` computes) is a later refinement.
+    let (ox, oy) = (node.bounds.x0, node.bounds.y0);
+
+    // Selection highlights, behind the glyphs.
+    ctx.set_transform(matrix);
+    ctx.set_paint_transform(Affine::IDENTITY);
+    ctx.set_paint(crate::abi::argb_to_color(crate::editor::selection_color()));
+    for (bbox, _line) in editor.selection_geometry() {
+        ctx.fill_rect(&Rect::new(ox + bbox.x0, oy + bbox.y0, ox + bbox.x1, oy + bbox.y1));
+    }
+
+    // The text itself, from the editor's layout (already refreshed by `sync_editor`).
+    if let Some(layout) = editor.try_layout() {
+        draw_layout(ctx, resources, layout, ox as f32, oy as f32, node.bounds, &node.strokes);
+    }
+
+    // The caret on top, in its visible blink phase.
+    if crate::editor::blink_on() {
+        if let Some(caret) = editor.cursor_geometry(CARET_WIDTH) {
+            ctx.set_transform(matrix);
+            ctx.set_paint_transform(Affine::IDENTITY);
+            ctx.set_paint(crate::abi::argb_to_color(crate::editor::cursor_color()));
+            ctx.fill_rect(&Rect::new(
+                ox + caret.x0,
+                oy + caret.y0,
+                ox + caret.x1,
+                oy + caret.y1,
+            ));
+        }
     }
 }
 

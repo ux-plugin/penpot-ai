@@ -1206,7 +1206,7 @@ fn paint_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::mod
 
 /// The wire carries packed ARGB, matching Skia's word order.
 #[inline]
-fn argb_to_color(argb: u32) -> render_core::peniko::Color {
+pub(crate) fn argb_to_color(argb: u32) -> render_core::peniko::Color {
     render_core::peniko::Color::from_rgba8(
         ((argb >> 16) & 0xff) as u8,
         ((argb >> 8) & 0xff) as u8,
@@ -1216,8 +1216,25 @@ fn argb_to_color(argb: u32) -> render_core::peniko::Color {
 }
 
 #[inline]
-fn uuid_u128(a: u32, b: u32, c: u32, d: u32) -> u128 {
+pub(crate) fn uuid_u128(a: u32, b: u32, c: u32, d: u32) -> u128 {
     ((a as u128) << 96) | ((b as u128) << 64) | ((c as u128) << 32) | (d as u128)
+}
+
+/// Split a packed id back into the wire's `(a, b, c, d)` quartet — the inverse of [`uuid_u128`].
+pub(crate) fn uuid_to_quartet(id: u128) -> (u32, u32, u32, u32) {
+    (
+        (id >> 96) as u32,
+        (id >> 64) as u32,
+        (id >> 32) as u32,
+        id as u32,
+    )
+}
+
+/// Ask the host's frame loop to draw again — the editor's caret blink and selection changes are
+/// only visible once a frame runs (the render pass owns the font context, so it is where the
+/// editor's layout and geometry are computed).
+pub(crate) fn request_frame() {
+    with_state(|state| state.needs_frame = true);
 }
 
 // --- strokes ----------------------------------------------------------------------------
