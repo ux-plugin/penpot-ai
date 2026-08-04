@@ -137,7 +137,7 @@ fn with_current<R>(f: impl FnOnce(&mut Node) -> R) -> Option<R> {
 }
 
 /// Take the pending buffer, leaving it empty. Mirrors render-wasm's `mem::bytes()`.
-fn take_bytes() -> Vec<u8> {
+pub(crate) fn take_bytes() -> Vec<u8> {
     BUFFER
         .lock()
         .expect("byte buffer poisoned")

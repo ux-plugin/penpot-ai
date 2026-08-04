@@ -23,7 +23,7 @@ use render_core::model::ShapeKind;
 /// One queued edit, applied by the render pass against the live `PlainEditor`. Coordinates are in
 /// the shape's own space (the host transforms screen → shape before calling, exactly as it does for
 /// render-wasm's `get_caret_position_from_shape_coords`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EditorCommand {
     /// Place the caret at a point (pointer down).
     PointerDown(f32, f32),
@@ -33,6 +33,22 @@ pub(crate) enum EditorCommand {
     SelectWord(f32, f32),
     /// Select the whole text.
     SelectAll,
+    /// Insert text at the caret, replacing any selection.
+    Insert(String),
+    /// Insert a newline (paragraph break).
+    InsertParagraph,
+    /// Delete before the caret (backspace); `true` deletes a whole word.
+    DeleteBackward(bool),
+    /// Delete after the caret (delete key); `true` deletes a whole word.
+    DeleteForward(bool),
+    /// Move the caret. `direction` is render-wasm's `CursorDirection`
+    /// (0 Backward, 1 Forward, 2 LineBefore, 3 LineAfter, 4 LineStart, 5 LineEnd); `word` moves by
+    /// word; `extend` grows the selection instead of collapsing it.
+    Move {
+        direction: u32,
+        word: bool,
+        extend: bool,
+    },
 }
 
 pub(crate) struct EditorState {
@@ -46,13 +62,23 @@ pub(crate) struct EditorState {
     pub commands: Vec<EditorCommand>,
     /// True between pointer-down and pointer-up, so moves only extend an active drag.
     pub pointer_selecting: bool,
+    /// Overtype (replace) mode, toggled by `text_editor_toggle_overtype_mode`.
+    pub overtype: bool,
     /// Cached by the render pass (the only place the layout — hence the selection — exists).
     pub has_selection: bool,
+    /// The editor's current text, cached each frame so `export_content` can read it without the
+    /// `PlainEditor` (which lives on the render pass).
+    pub text_cache: String,
+    /// The selection's byte range `[start, end)` in `text_cache`, cached likewise.
+    pub selection: (usize, usize),
     /// Caret visibility from the host's blink clock; the render pass draws the caret only when set.
     pub blink_on: bool,
     /// A redraw is needed (focus/selection/blink changed). Polled and cleared by `poll_event`.
     pub dirty: bool,
 }
+
+/// Keeps the last string result (e.g. `export_content` JSON) alive for the host to read.
+static RESULT_STR: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
 static EDITOR: std::sync::Mutex<EditorState> = std::sync::Mutex::new(EditorState {
     focused: None,
@@ -61,7 +87,10 @@ static EDITOR: std::sync::Mutex<EditorState> = std::sync::Mutex::new(EditorState
     cursor_color: 0xff00_0000,
     commands: Vec::new(),
     pointer_selecting: false,
+    overtype: false,
     has_selection: false,
+    text_cache: String::new(),
+    selection: (0, 0),
     blink_on: true,
     dirty: false,
 });
@@ -75,9 +104,29 @@ pub(crate) fn take_focus_and_commands() -> (Option<u128>, Vec<EditorCommand>) {
     with_editor(|e| (e.focused, std::mem::take(&mut e.commands)))
 }
 
-/// The render pass reports back what it computed: whether there is a (non-empty) selection.
-pub(crate) fn set_has_selection(has: bool) {
-    with_editor(|e| e.has_selection = has);
+/// The render pass reports back what it computed against the live editor: the current text, the
+/// selection byte range, and whether that selection is non-empty. Cleared to empty when nothing is
+/// focused.
+pub(crate) fn set_snapshot(text: String, selection: (usize, usize)) {
+    with_editor(|e| {
+        e.has_selection = selection.0 != selection.1;
+        e.text_cache = text;
+        e.selection = selection;
+    });
+}
+
+/// Clear the cached editor snapshot (no focused editor this frame).
+pub(crate) fn clear_snapshot() {
+    with_editor(|e| {
+        e.has_selection = false;
+        e.text_cache.clear();
+        e.selection = (0, 0);
+    });
+}
+
+/// Whether overtype (replace) mode is on — read by the render pass when applying an insert.
+pub(crate) fn overtype() -> bool {
+    with_editor(|e| e.overtype)
 }
 
 /// The caret colour the render pass should paint with (ARGB).
@@ -285,5 +334,139 @@ pub extern "C" fn text_editor_poll_event() -> u8 {
         let dirty = e.dirty;
         e.dirty = false;
         u8::from(dirty)
+    })
+}
+
+// --- input (stage 2) --------------------------------------------------------------------------
+
+/// Queue a command if a shape is focused, and nudge a frame.
+fn enqueue(command: EditorCommand) {
+    let queued = with_editor(|e| {
+        if e.focused.is_none() {
+            return false;
+        }
+        e.commands.push(command);
+        e.dirty = true;
+        true
+    });
+    if queued {
+        crate::abi::request_frame();
+    }
+}
+
+/// Insert the uploaded UTF-8 bytes at the caret (replacing any selection). Mirrors render-wasm's
+/// `insert_text`, which reads the same shared byte buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_insert_text() {
+    let bytes = crate::abi::take_bytes();
+    if let Ok(text) = String::from_utf8(bytes) {
+        if !text.is_empty() {
+            enqueue(EditorCommand::Insert(text));
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_insert_paragraph() {
+    enqueue(EditorCommand::InsertParagraph);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_delete_backward(word_boundary: bool) {
+    enqueue(EditorCommand::DeleteBackward(word_boundary));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_delete_forward(word_boundary: bool) {
+    enqueue(EditorCommand::DeleteForward(word_boundary));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_move_cursor(direction: u32, word_boundary: bool, extend_selection: bool) {
+    enqueue(EditorCommand::Move {
+        direction,
+        word: word_boundary,
+        extend: extend_selection,
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_toggle_overtype_mode() {
+    with_editor(|e| {
+        e.overtype = !e.overtype;
+        e.dirty = true;
+    });
+    crate::abi::request_frame();
+}
+
+// --- export (stage 2) -------------------------------------------------------------------------
+
+/// Split a flat byte offset in `text` into a `(paragraph, offset-in-paragraph)` pair, paragraphs
+/// being the newline-separated lines — the shape render-wasm's selection uses.
+fn byte_to_para_offset(text: &str, pos: usize) -> (u32, u32) {
+    let pos = pos.min(text.len());
+    let before = &text[..pos];
+    let paragraph = before.matches('\n').count();
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    (paragraph as u32, (pos - line_start) as u32)
+}
+
+/// Escape a string as a JSON string body (without the surrounding quotes), matching render-wasm's
+/// `export_content` escaping.
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+/// Export the edited text as render-wasm's `export_content` JSON: an array of paragraphs, each an
+/// array of span strings. PlainEditor is single-style, so each newline-separated paragraph is a
+/// single span (rich per-span export is `export_styled`, a later stage). Returns a pointer to a
+/// null-terminated buffer kept alive in [`RESULT_STR`], or null when unfocused.
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_export_content() -> *mut u8 {
+    let json = with_editor(|e| {
+        e.focused.map(|_| {
+            let paragraphs: Vec<String> = e
+                .text_cache
+                .split('\n')
+                .map(|line| format!("[\"{}\"]", json_escape(line)))
+                .collect();
+            format!("[{}]", paragraphs.join(","))
+        })
+    });
+    let Some(json) = json else {
+        return std::ptr::null_mut();
+    };
+    let mut bytes = json.into_bytes();
+    bytes.push(0); // null terminator, as the host reads a C string
+    let mut guard = RESULT_STR.lock().expect("result string poisoned");
+    *guard = bytes;
+    guard.as_mut_ptr()
+}
+
+/// Write the selection as render-wasm's `(anchorPara, anchorOffset, focusPara, focusOffset)`
+/// quartet to `buffer_ptr`; returns false (writing nothing) when the selection is empty.
+///
+/// # Safety
+/// `buffer_ptr` must point to space for four `u32`s.
+#[unsafe(no_mangle)]
+pub extern "C" fn text_editor_get_selection(buffer_ptr: *mut u32) -> bool {
+    with_editor(|e| {
+        let (start, end) = e.selection;
+        if start == end {
+            return false;
+        }
+        let (ap, ao) = byte_to_para_offset(&e.text_cache, start);
+        let (fp, fo) = byte_to_para_offset(&e.text_cache, end);
+        unsafe {
+            *buffer_ptr = ap;
+            *buffer_ptr.add(1) = ao;
+            *buffer_ptr.add(2) = fp;
+            *buffer_ptr.add(3) = fo;
+        }
+        true
     })
 }

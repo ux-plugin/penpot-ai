@@ -165,7 +165,7 @@ impl TextEngine {
         let Some(id) = focused else {
             *editor = None;
             *editor_for = None;
-            crate::editor::set_has_selection(false);
+            crate::editor::clear_snapshot();
             return;
         };
 
@@ -183,11 +183,12 @@ impl TextEngine {
         }
 
         let Some(ed) = editor.as_mut() else {
-            crate::editor::set_has_selection(false);
+            crate::editor::clear_snapshot();
             return;
         };
 
         if !commands.is_empty() {
+            let overtype = crate::editor::overtype();
             let mut driver = ed.driver(font_cx, layout_cx);
             for command in commands {
                 use crate::editor::EditorCommand as C;
@@ -196,11 +197,61 @@ impl TextEngine {
                     C::ExtendToPoint(x, y) => driver.extend_selection_to_point(x, y),
                     C::SelectWord(x, y) => driver.select_word_at_point(x, y),
                     C::SelectAll => driver.select_all(),
+                    C::Insert(s) => {
+                        // Overtype replaces the character ahead of a collapsed caret before
+                        // inserting (an approximation of render-wasm's replace mode).
+                        if overtype {
+                            driver.delete();
+                        }
+                        driver.insert_or_replace_selection(&s);
+                    }
+                    C::InsertParagraph => driver.insert_or_replace_selection("\n"),
+                    C::DeleteBackward(word) => {
+                        if word {
+                            driver.backdelete_word();
+                        } else {
+                            driver.backdelete();
+                        }
+                    }
+                    C::DeleteForward(word) => {
+                        if word {
+                            driver.delete_word();
+                        } else {
+                            driver.delete();
+                        }
+                    }
+                    C::Move { direction, word, extend } => apply_move(&mut driver, direction, word, extend),
                 }
             }
         }
         ed.refresh_layout(font_cx, layout_cx);
-        crate::editor::set_has_selection(!ed.selection_geometry().is_empty());
+        let range = ed.raw_selection().text_range();
+        crate::editor::set_snapshot(ed.raw_text().to_string(), (range.start, range.end));
+    }
+}
+
+/// Apply a `Move` command against the driver. `direction` is render-wasm's `CursorDirection`
+/// (0 Backward, 1 Forward, 2 LineBefore, 3 LineAfter, 4 LineStart, 5 LineEnd); `word` moves by word;
+/// `extend` grows the selection rather than collapsing it.
+fn apply_move(driver: &mut parley::PlainEditorDriver<'_, TextBrush>, direction: u32, word: bool, extend: bool) {
+    match (direction, word, extend) {
+        (0, false, false) => driver.move_left(),
+        (0, true, false) => driver.move_word_left(),
+        (0, false, true) => driver.select_left(),
+        (0, true, true) => driver.select_word_left(),
+        (1, false, false) => driver.move_right(),
+        (1, true, false) => driver.move_word_right(),
+        (1, false, true) => driver.select_right(),
+        (1, true, true) => driver.select_word_right(),
+        (2, _, false) => driver.move_up(),
+        (2, _, true) => driver.select_up(),
+        (3, _, false) => driver.move_down(),
+        (3, _, true) => driver.select_down(),
+        (4, _, false) => driver.move_to_line_start(),
+        (4, _, true) => driver.select_to_line_start(),
+        (5, _, false) => driver.move_to_line_end(),
+        (5, _, true) => driver.select_to_line_end(),
+        _ => {}
     }
 }
 
