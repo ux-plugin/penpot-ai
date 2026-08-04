@@ -16,6 +16,7 @@
     "package:linux": "pnpm run build && electron-builder --linux"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
     "concurrently": "^9.1.0",
     "electron": "^34.2.0",
     "electron-builder": "^25.1.8",
@@ -27,6 +28,9 @@
     "@ai-sdk/anthropic": "^4.0.14",
     "@ai-sdk/google": "^4.0.14",
     "@ai-sdk/openai": "^4.0.13",
-    "ai": "^7.0.22"
+    "@zed-industries/agent-client-protocol": "^0.4.5",
+    "@zed-industries/claude-code-acp": "^0.16.2",
+    "ai": "^7.0.22",
+    "node-pty": "^1.1.0"
   }
 }

@@ -14,7 +14,9 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useViewportShortcutsStore, DEFAULT_SHORTCUTS } from '../../renderer/store/shortcuts-store'
 import { hasSecureKeyStore } from '../../renderer/platform'
+import { getAgent } from '../../renderer/desktop-bridge'
 import { AiKeychainPanel } from './AiKeychainPanel'
+import { AiAgentsPanel } from './AiAgentsPanel'
 import type { ShortcutsConfig, ViewportPanModifier } from '../../renderer/types'
 import { TOOL_BINDINGS, type ToolKeyField } from '../../renderer/input/key-bindings'
 import { formatKeyCode, shortcutRows, toolKeyConflict } from './shortcut-display'
@@ -108,6 +110,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const cfg = useViewportShortcutsStore((s) => s.viewportShortcuts)
   const setCfg = useViewportShortcutsStore((s) => s.setViewportShortcuts)
   const canBYOK = hasSecureKeyStore()
+  const hasTerminal = getAgent() != null
   // Close only when the press STARTED on the backdrop — a drag/click that began
   // inside the dialog (e.g. selecting input text) must not close it on release.
   const backdropDown = useRef(false)
@@ -261,6 +264,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                 </p>
 
                 <AiKeychainPanel canBYOK={canBYOK} />
+                {hasTerminal && <AiAgentsPanel />}
               </TabsContent>
 
               <TabsContent value="shortcuts" className="mt-0">

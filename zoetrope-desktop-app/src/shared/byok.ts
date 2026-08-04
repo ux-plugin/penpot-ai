@@ -8,6 +8,10 @@
  * provider call itself runs in main (D3) so the plaintext key never lives in renderer JS.
  */
 
+import type { AgentBridge } from './agent'
+import type { PtyBridge } from './pty'
+import type { AcpBridge } from './acp'
+
 export type LlmProvider = 'anthropic' | 'openai' | 'google'
 
 export const LLM_PROVIDERS: readonly LlmProvider[] = ['anthropic', 'openai', 'google']
@@ -73,4 +77,7 @@ export interface ChatBridge {
 export interface ZoetropeApi {
   keyStore: KeyStoreBridge
   chat: ChatBridge
+  agent: AgentBridge
+  pty: PtyBridge
+  acp: AcpBridge
 }

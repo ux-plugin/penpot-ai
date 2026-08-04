@@ -3,6 +3,9 @@ import { join, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { registerByokIpc } from './byok'
 import { registerChatIpc } from './chat'
+import { registerAgentIpc } from './agent'
+import { registerPtyIpc } from './pty'
+import { registerAcpIpc } from './acp'
 
 const isDev = !app.isPackaged
 
@@ -167,6 +170,9 @@ app.whenReady().then(async () => {
   // the renderer's first getStatus() call always has a handler waiting.
   await registerByokIpc()
   registerChatIpc()
+  registerAgentIpc()
+  registerPtyIpc()
+  registerAcpIpc()
   createWindow()
 
   app.on('activate', () => {

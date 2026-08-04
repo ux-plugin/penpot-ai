@@ -31,15 +31,46 @@ function readDebugPipFromUrl(): boolean {
   return v === '1' || v === 'true'
 }
 
-/** Build-mode left rail: live component tree above the chat panel. */
+const BUILD_TABS = [
+  { id: 'components', label: 'Components' },
+  { id: 'chat', label: 'Chat' },
+] as const
+type BuildTab = (typeof BUILD_TABS)[number]['id']
+
+/** Build-mode left rail: Components and Chat as tabs (mirrors the Design rail's tab bar). */
 function BuildLeftRail() {
+  const [tab, setTab] = useState<BuildTab>('chat')
   return (
     <div className="pointer-events-auto flex h-full w-full min-h-0 flex-col overflow-hidden border-r border-border bg-white">
-      <div className="min-h-0 flex-1 overflow-auto">
-        <ComponentTree />
+      <div
+        role="tablist"
+        aria-label="Build rail"
+        className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5"
+      >
+        {BUILD_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={
+              'rounded-md px-2.5 py-1 text-xs font-medium transition-colors ' +
+              (tab === t.id ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground')
+            }
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto border-t border-border">
-        <ChatPanel />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {tab === 'components' ? (
+          <div className="h-full overflow-auto">
+            <ComponentTree />
+          </div>
+        ) : (
+          <ChatPanel />
+        )}
       </div>
     </div>
   )

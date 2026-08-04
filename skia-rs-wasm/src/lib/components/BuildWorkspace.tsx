@@ -1,21 +1,21 @@
 /**
  * Build-mode workspace — the surface shown when the editor is in Build mode.
  *
- *   left   — component tree (live) + chat
+ *   left   — component tree (live) + chat, a resizable vertical split
  *   center — live React preview + generated code
  *
- * The inspector is NOT here: the same floating rail (RightSidePanel) overlays
- * both modes (rendered in App), so this surface reserves the rail's right strip
- * instead of docking its own panel.
+ * The rail width and the tree/chat split are both draggable (react-resizable-panels),
+ * so the chat/agent can be given real room; sizes persist via autoSaveId. The inspector
+ * is NOT here: the same floating rail (RightSidePanel) overlays both modes (rendered in
+ * App), so this surface reserves the rail's right strip instead of docking its own panel.
  */
 
 import { ComponentTree } from './BuildMode/ComponentTree'
 import { PreviewStage } from './BuildMode/PreviewStage'
 import { ChatPanel } from './BuildMode/ChatPanel'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 
-// Floating-rail strips to clear on each side (gap + rail width + gap), matching
-// the Design rails so the backdrop reads consistently across both modes.
-const LEFT_RAIL = 'calc(0.75rem + 16rem + 0.75rem)'
+// Right strip to clear for the floating inspector (RightSidePanel), which overlays both modes.
 const RIGHT_RAIL = 'calc(0.75rem + var(--properties-panel-width, 280px) + 0.75rem)'
 
 export function BuildWorkspace() {
@@ -24,20 +24,29 @@ export function BuildWorkspace() {
       className="pointer-events-auto fixed inset-x-0 bottom-0 z-40"
       style={{ top: 'var(--top-bar-height)', background: 'var(--editor-canvas-chrome)' }}
     >
-      {/* Center: live preview + code, on the backdrop, clearing both floating rails */}
-      <div className="absolute inset-0 flex" style={{ paddingLeft: LEFT_RAIL, paddingRight: RIGHT_RAIL }}>
-        <PreviewStage />
-      </div>
+      <ResizablePanelGroup orientation="horizontal" className="h-full w-full p-3" style={{ paddingRight: RIGHT_RAIL }}>
+        {/* Left rail: components (top) + chat/agent (bottom), each resizable. */}
+        <ResizablePanel id="build-rail" minSize={14} defaultSize={26} className="min-h-0 min-w-0">
+          <div className="flex h-full flex-col overflow-hidden rounded-2xl border border-border/80 bg-white shadow-md">
+            <ResizablePanelGroup orientation="vertical" className="h-full w-full">
+              <ResizablePanel id="build-components" minSize={10} defaultSize={35} className="min-h-0 overflow-auto">
+                <ComponentTree />
+              </ResizablePanel>
+              <ResizableHandle withHandle />
+              <ResizablePanel id="build-chat" minSize={20} defaultSize={65} className="min-h-0 overflow-hidden">
+                <ChatPanel />
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          </div>
+        </ResizablePanel>
 
-      {/* Left floating rail: components (live) + chat */}
-      <aside className="pointer-events-auto absolute top-3 bottom-3 left-3 flex w-64 flex-col overflow-hidden rounded-2xl border border-border/80 bg-white shadow-md">
-        <div className="min-h-0 flex-1 overflow-auto">
-          <ComponentTree />
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto border-t border-border">
-          <ChatPanel />
-        </div>
-      </aside>
+        <ResizableHandle withHandle className="mx-1 bg-transparent" />
+
+        {/* Center: live preview + generated code, on the backdrop. */}
+        <ResizablePanel id="build-preview" minSize={40} defaultSize={74} className="relative min-h-0 min-w-0">
+          <PreviewStage />
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
   )
 }
