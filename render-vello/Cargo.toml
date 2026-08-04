@@ -24,6 +24,18 @@ render-core = { path = "../render-core" }
 
 vello_common = { path = "../vello/sparse_strips/vello_common", default-features = false }
 vello_hybrid = { path = "../vello/sparse_strips/vello_hybrid" }
+
+# Text: Parley lays out the glyphs render-vello draws (render-wasm uses Skia's textlayout; the two
+# shapers differ, which is why the neutral model carries text *input*, not resolved glyphs). Pinned
+# to the submodule's own versions — `vello_example_scenes` already links these, so they must unify
+# (a second `peniko`/`fontique` copy would make Parley's `FontData` a different type from the one
+# `glyph_run` wants). `std` without `system` fonts: on wasm there are none, so the host uploads
+# every face into a Parley collection we control (`store_font`).
+parley = { version = "0.11.0", default-features = false, features = ["std"] }
+glifo = { path = "../vello/glifo", default-features = false }
+# `run.normalized_coords()` is `&[i16]`; the glyph-run builder wants `&[NormalizedCoord]` (also
+# i16-repr). A zero-copy cast bridges them, exactly as the vello text example does.
+bytemuck = "1.25.0"
 # Transitional: the demo/evaluation scenes still live in the fork's example harness. A
 # production render-vello should not link them — they go when the live data path (Phase 2)
 # replaces the hand-built scene.

@@ -20,8 +20,9 @@ use std::sync::Mutex;
 use render_core::abi::decode_fill;
 use render_core::kurbo;
 use render_core::kurbo::{Affine, Rect};
-use render_core::model::{Node, Scene, ShapeKind};
+use render_core::model::{Brush, Node, Scene, ShapeKind};
 use render_core::peniko::Color;
+use render_core::text::{FontRef, TextAlign, TextBlock, TextGrow, TextParagraph, TextSpan, VerticalAlign};
 
 /// The shared byte buffer. The host allocates, writes through `HEAPU8`, then calls a no-arg
 /// export that drains it — exactly render-wasm's protocol.
@@ -272,6 +273,258 @@ pub(crate) fn record_image(id: u128, image_id: vello_common::paint::ImageId) {
         .insert(id, image_id);
 }
 
+// --- fonts -----------------------------------------------------------------------------------
+//
+// render-vello targets `wasm32-unknown-unknown`, which has no system fonts, so every face the
+// document needs is uploaded by the host and registered into a Parley collection `scene.rs`
+// owns. `store_font` stages the bytes here under an alias derived from the face's identity;
+// `scene.rs` drains the queue each frame and registers what is new. Mirrors the image path, and
+// render-wasm's own `store_font` → `FontStore::add`.
+
+/// A font face whose bytes have arrived but are not yet in the Parley collection.
+pub(crate) struct UploadedFont {
+    /// The family alias to register under — see [`font_alias`]. The draw path builds
+    /// the same alias from a span's [`render_core::text::FontRef`], so the two meet by string.
+    pub alias: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The family name a face is registered under, and the name a span looks it up by. Internal to
+/// render-vello: it only has to be consistent between [`store_font`] and the draw path, not match
+/// render-wasm's Skia alias. Keyed by the family UUID plus weight and slant, so two weights of one
+/// family are distinct faces — then Parley needs no weight matching, because each alias resolves to
+/// exactly one face. Lives here (not in the wasm-only `scene`) so `store_font` can build it on
+/// every target.
+pub(crate) fn font_alias(id: u128, weight: u16, italic: bool) -> String {
+    format!("penpot-{id:032x}-{weight}-{}", if italic { 'i' } else { 'n' })
+}
+
+static PENDING_FONTS: Mutex<Vec<UploadedFont>> = Mutex::new(Vec::new());
+/// Aliases the host has ever uploaded, so `is_font_uploaded` can answer without re-sending and a
+/// repeated `store_font` is a no-op. Deliberately *not* cleared by `clean_up`: a face is a device
+/// resource that survives a page change, like the registered fonts in render-wasm's `FontStore`.
+static KNOWN_FONTS: Mutex<std::collections::BTreeSet<String>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
+/// Stage one font face for registration. The bytes arrive through the shared heap buffer; the
+/// identity comes as the family UUID (four LE `u32`), a CSS weight, and a style byte
+/// (`0` normal, `1` italic), matching render-wasm's `store_font`. `is_emoji`/`is_fallback` are
+/// accepted for wire compatibility but not acted on yet — emoji and fallback chaining are a later
+/// slice, so those faces are simply stored like any other.
+#[unsafe(no_mangle)]
+pub extern "C" fn store_font(
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+    weight: u32,
+    style: u8,
+    _is_emoji: bool,
+    _is_fallback: bool,
+) {
+    let bytes = take_bytes();
+    if bytes.is_empty() {
+        return;
+    }
+    let alias = font_alias(uuid_u128(a, b, c, d), weight as u16, style == 1);
+    // `insert` returns false when the alias was already present — then the face is already staged
+    // or registered and this upload is redundant.
+    if !KNOWN_FONTS
+        .lock()
+        .expect("known fonts poisoned")
+        .insert(alias.clone())
+    {
+        return;
+    }
+    PENDING_FONTS
+        .lock()
+        .expect("pending fonts poisoned")
+        .push(UploadedFont { alias, bytes });
+    with_state(|state| state.needs_frame = true);
+}
+
+/// Whether a face is already uploaded, so the host can skip re-sending its bytes. Mirrors
+/// render-wasm's `is_font_uploaded`. `is_emoji` is part of the wire signature but not the alias
+/// yet (see `store_font`).
+#[unsafe(no_mangle)]
+pub extern "C" fn is_font_uploaded(
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+    weight: u32,
+    style: u8,
+    _is_emoji: bool,
+) -> bool {
+    let alias = font_alias(uuid_u128(a, b, c, d), weight as u16, style == 1);
+    KNOWN_FONTS
+        .lock()
+        .expect("known fonts poisoned")
+        .contains(&alias)
+}
+
+/// Hand the scene every face staged since the last call, leaving the queue empty.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn take_pending_fonts() -> Vec<UploadedFont> {
+    std::mem::take(&mut *PENDING_FONTS.lock().expect("pending fonts poisoned"))
+}
+
+// --- text content ----------------------------------------------------------------------------
+//
+// A text shape's content arrives one paragraph at a time (`set_shape_text_content`), the same as
+// render-wasm. Each call carries a `RawParagraphData` header, its spans, then the concatenated
+// UTF-8 text — this decodes exactly those bytes into a `render_core::text::TextParagraph` and
+// appends it. `grow` and `vertical_align` come as their own setters, so they are stored on the
+// block whenever they arrive. Deferred to a later slice (dropped, not faked, on both sides so the
+// digest still agrees): decorations, transforms, explicit direction, and per-span multi-fill —
+// only the first solid fill's colour is read here.
+
+/// Size of `RawParagraphData` (`span_count: u32`, four align/dir/decoration/transform bytes,
+/// `line_height: f32`, `letter_spacing: f32`). `#[repr(C, align(4))]`, so exactly 16.
+const RAW_PARAGRAPH_DATA_SIZE: usize = 16;
+/// The fixed attribute header of a `RawTextSpan`, before its fill array — 64 bytes.
+const RAW_SPAN_HEADER_SIZE: usize = 64;
+/// A `RawTextSpan` is its header plus a fixed array of eight fill records. `MAX_TEXT_FILLS == 8`.
+const RAW_SPAN_DATA_SIZE: usize = RAW_SPAN_HEADER_SIZE + 8 * render_core::abi::RAW_FILL_DATA_SIZE;
+
+#[inline]
+fn le_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+#[inline]
+fn le_f32(bytes: &[u8], offset: usize) -> f32 {
+    f32::from_bits(le_u32(bytes, offset))
+}
+
+/// Decode one paragraph from the wire buffer into a neutral [`TextParagraph`], or `None` if the
+/// buffer is too short for what its header claims (a truncated stream is dropped, not guessed).
+fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
+    if bytes.len() < RAW_PARAGRAPH_DATA_SIZE {
+        return None;
+    }
+    let span_count = le_u32(bytes, 0) as usize;
+    let align = TextAlign::from_wire(bytes[4]);
+    let para_line_height = le_f32(bytes, 8);
+    let para_letter_spacing = le_f32(bytes, 12);
+
+    let spans_end = RAW_PARAGRAPH_DATA_SIZE + span_count.checked_mul(RAW_SPAN_DATA_SIZE)?;
+    if bytes.len() < spans_end {
+        return None;
+    }
+
+    // The per-span slices of the shared text buffer, taken in order by each span's `text_length`.
+    let mut text_offset = spans_end;
+    let mut spans = Vec::with_capacity(span_count);
+    for i in 0..span_count {
+        let base = RAW_PARAGRAPH_DATA_SIZE + i * RAW_SPAN_DATA_SIZE;
+        let span = &bytes[base..base + RAW_SPAN_DATA_SIZE];
+
+        let italic = span[0] == 1; // RawFontStyle::Italic
+        let font_size = le_f32(span, 4);
+        let line_height = le_f32(span, 8);
+        let letter_spacing = le_f32(span, 12);
+        let font_weight = le_u32(span, 16); // wire is i32; weights are positive
+        let font_id = uuid_u128(
+            le_u32(span, 20),
+            le_u32(span, 24),
+            le_u32(span, 28),
+            le_u32(span, 32),
+        );
+        let text_length = le_u32(span, 56) as usize;
+        let fill_count = le_u32(span, 60) as usize;
+
+        // The first solid fill is the glyph colour; a gradient/image text fill is deferred, so it
+        // falls back to opaque black rather than being mis-drawn.
+        let color = (fill_count > 0)
+            .then(|| &span[RAW_SPAN_HEADER_SIZE..RAW_SPAN_HEADER_SIZE + render_core::abi::RAW_FILL_DATA_SIZE])
+            .and_then(|fill| decode_fill(fill).ok())
+            .and_then(paint_from_raw)
+            .and_then(|paint| match paint.brush {
+                Brush::Solid(color) => Some(color),
+                _ => None,
+            })
+            .unwrap_or(Color::from_rgba8(0, 0, 0, 255));
+
+        let text = bytes
+            .get(text_offset..text_offset + text_length)
+            .map(|slice| String::from_utf8_lossy(slice).into_owned())
+            .unwrap_or_default();
+        text_offset += text_length;
+
+        spans.push(TextSpan {
+            text,
+            font: FontRef {
+                id: font_id,
+                weight: font_weight as u16,
+                italic,
+            },
+            size: font_size,
+            line_height,
+            letter_spacing,
+            color,
+        });
+    }
+
+    Some(TextParagraph {
+        align,
+        line_height: para_line_height,
+        letter_spacing: para_letter_spacing,
+        spans,
+    })
+}
+
+/// Get the current node's text block, creating an empty one if needed so `grow`/`vertical_align`
+/// can be set before any content arrives.
+fn with_text<R>(f: impl FnOnce(&mut TextBlock) -> R) -> Option<R> {
+    with_current(|node| {
+        let block = node.text.get_or_insert_with(|| TextBlock {
+            paragraphs: Vec::new(),
+            grow: TextGrow::Fixed,
+            vertical_align: VerticalAlign::Top,
+        });
+        f(block)
+    })
+}
+
+/// Append one paragraph. The host calls this once per paragraph after `clear_shape_text`.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_text_content() {
+    let bytes = take_bytes();
+    let Some(paragraph) = parse_paragraph(&bytes) else {
+        return;
+    };
+    with_text(|block| block.paragraphs.push(paragraph));
+}
+
+/// Drop the accumulated paragraphs, keeping `grow`/`vertical_align` — the host clears before
+/// re-sending content, and those two arrive through their own setters.
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_text() {
+    with_current(|node| {
+        if let Some(block) = node.text.as_mut() {
+            block.paragraphs.clear();
+        }
+    });
+}
+
+/// How the text box sizes to its content: `0` fixed, `1` auto-width, `2` auto-height.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_grow_type(grow_type: u8) {
+    with_text(|block| block.grow = TextGrow::from_wire(grow_type));
+}
+
+/// Vertical placement of the block in its box: `0` top, `1` centre, `2` bottom.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_vertical_align(align: u8) {
+    with_text(|block| block.vertical_align = VerticalAlign::from_wire(align));
+}
+
 /// The atlas slot for an image, if it has been uploaded.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn resolve_image(id: u128) -> Option<vello_common::paint::ImageId> {
@@ -514,11 +767,12 @@ pub extern "C" fn set_shape_type(shape_type: u8) {
             1 => ShapeKind::Group,
             3 => ShapeKind::Rect,
             4 => ShapeKind::Path,
+            5 => ShapeKind::Text,
             6 => ShapeKind::Circle,
-            // Bool, Text and SVGRaw have no model kind yet. Marking them `Unsupported` (rather
-            // than standing in a rect) is what lets the digest agree with render-wasm, which
-            // drops these shapes entirely — see `ShapeKind::Unsupported`. Both the renderer and
-            // the digest then treat the node, and its subtree, as inert.
+            // Bool and SVGRaw have no model kind yet. Marking them `Unsupported` (rather than
+            // standing in a rect) is what lets the digest agree with render-wasm, which drops
+            // these shapes entirely — see `ShapeKind::Unsupported`. Both the renderer and the
+            // digest then treat the node, and its subtree, as inert.
             _ => ShapeKind::Unsupported,
         };
     });
@@ -1490,22 +1744,80 @@ mod tests {
         use_shape(0, 0, 0, 0);
         add_shape_child(0, 0, 0, 1);
 
-        // The same fill paints as a rect and paints nothing once the kind is Text — the
-        // contrast is what makes the count mean anything.
+        // The same fill paints as a rect; once the kind is Text it paints nothing *until content
+        // arrives* (glyphs are the paint, not the fill) — the contrast is what makes the count
+        // mean anything.
         use_shape(0, 0, 0, 1);
         set_shape_type(3); // Rect
         assert_eq!(scene_paintable_count(), 1);
 
-        set_shape_type(5); // Text
-        assert_eq!(current_scene().get(1).unwrap().kind, ShapeKind::Unsupported);
-        assert_eq!(scene_paintable_count(), 0, "unsupported draws nothing, fill or not");
+        set_shape_type(5); // Text — a drawn kind now, but empty, so still nothing to paint.
+        assert_eq!(current_scene().get(1).unwrap().kind, ShapeKind::Text);
+        assert_eq!(scene_paintable_count(), 0, "text with no content draws nothing");
 
-        // Bool and SVGRaw map the same way.
+        // Bool and SVGRaw remain unsupported.
         for raw in [2u8, 7] {
             use_shape(0, 0, 0, 1);
             set_shape_type(raw);
             assert_eq!(current_scene().get(1).unwrap().kind, ShapeKind::Unsupported);
         }
+        assert_eq!(scene_paintable_count(), 0, "unsupported draws nothing, fill or not");
+    }
+
+    /// Text content decodes off the wire into the neutral block: a paragraph with one span, its
+    /// font reference, size and text. Built by hand to the exact `RawParagraphData`/`RawTextSpan`
+    /// byte layout the host writes, so this pins the parser to that layout.
+    #[test]
+    fn text_content_decodes_into_the_block() {
+        let _guard = reset();
+        use_shape(0, 0, 0, 7);
+        set_shape_type(5); // Text
+        set_shape_grow_type(2); // AutoHeight
+        set_shape_vertical_align(1); // Center
+
+        let word = "Hi";
+        let mut buf = vec![0u8; RAW_PARAGRAPH_DATA_SIZE + RAW_SPAN_DATA_SIZE + word.len()];
+        // Paragraph header: one span, align Center, line-height 1.5, letter-spacing 0.
+        buf[0..4].copy_from_slice(&1u32.to_le_bytes());
+        buf[4] = 1; // TextAlign::Center
+        buf[8..12].copy_from_slice(&1.5f32.to_le_bytes());
+        // Span header at offset 16.
+        let s = RAW_PARAGRAPH_DATA_SIZE;
+        buf[s] = 1; // italic
+        buf[s + 4..s + 8].copy_from_slice(&24.0f32.to_le_bytes()); // font_size
+        buf[s + 8..s + 12].copy_from_slice(&1.3f32.to_le_bytes()); // line_height
+        buf[s + 16..s + 20].copy_from_slice(&700i32.to_le_bytes()); // font_weight
+        buf[s + 20..s + 24].copy_from_slice(&0xAAu32.to_le_bytes()); // font_id[0]
+        buf[s + 56..s + 60].copy_from_slice(&(word.len() as u32).to_le_bytes()); // text_length
+        // The text buffer follows the (single) span.
+        let t = RAW_PARAGRAPH_DATA_SIZE + RAW_SPAN_DATA_SIZE;
+        buf[t..t + word.len()].copy_from_slice(word.as_bytes());
+        upload(&buf);
+        set_shape_text_content();
+
+        // Parent it to the root so it is reachable for the paintable walk.
+        use_shape(0, 0, 0, 0);
+        add_shape_child(0, 0, 0, 7);
+
+        let scene = current_scene();
+        let block = scene.get(7).unwrap().text.as_ref().expect("a text block");
+        assert_eq!(block.grow, TextGrow::AutoHeight);
+        assert_eq!(block.vertical_align, VerticalAlign::Center);
+        assert_eq!(block.paragraphs.len(), 1);
+        let para = &block.paragraphs[0];
+        assert_eq!(para.align, TextAlign::Center);
+        assert_eq!(para.spans.len(), 1);
+        let span = &para.spans[0];
+        assert_eq!(span.text, "Hi");
+        assert_eq!(span.size, 24.0);
+        assert_eq!(span.font.weight, 700);
+        assert!(span.font.italic);
+        assert_eq!(span.font.id, uuid_u128(0xAA, 0, 0, 0));
+        assert_eq!(scene_paintable_count(), 1, "text with content paints");
+
+        use_shape(0, 0, 0, 7);
+        clear_shape_text();
+        assert!(current_scene().get(7).unwrap().text.as_ref().unwrap().paragraphs.is_empty());
     }
 
     /// Write `payload` through the real transport, as the host's `HEAPU8.set(bytes, ptr)` does.

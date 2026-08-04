@@ -24,7 +24,7 @@ import { loadVello, velloWasmAvailable, type VelloInstance } from './vello-insta
 import { setContextInitialized } from '../../../src/lib/renderer/api/context'
 import { setObject } from '../../../src/lib/renderer/api/orchestration'
 import { sceneDigest } from '../../../src/lib/renderer/api/canvas'
-import { createCircle, createFrame, createGroup, createRect } from '../../../src/lib/renderer/node-factory'
+import { createCircle, createFrame, createGroup, createRect, createText } from '../../../src/lib/renderer/node-factory'
 import { setShapeChildren } from '../../../src/lib/renderer/api/shape'
 import type { EmscriptenLikeModule } from '../../../src/lib/renderer/vello-module-facade'
 import type { WasmModule } from '../../../src/lib/renderer/wasm-types'
@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 1240504707
+const CANONICAL_DIGEST = 166674860
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -58,6 +58,8 @@ const IDS = {
   maskGroup: '44444444-4444-4444-8444-444444444444',
   maskShape: '55555555-5555-4555-8555-555555555555',
   maskContent: '66666666-6666-4666-8666-666666666666',
+  // A text shape, exercising `_set_shape_text_content` / `_set_shape_grow_type` through the wire.
+  text: '77777777-7777-4777-8777-777777777777',
 } as const
 
 /**
@@ -76,7 +78,7 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
     y: 0,
     width: 400,
     height: 300,
-    shapes: [IDS.rect, IDS.circle, IDS.maskGroup],
+    shapes: [IDS.rect, IDS.circle, IDS.maskGroup, IDS.text],
   })
   const rect = createRect({
     id: IDS.rect,
@@ -145,8 +147,21 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
     height: 80,
     fillColor: '#28a745',
   })
+  // A text shape with real content and a non-default grow, so the anchor exercises
+  // `_set_shape_text_content` (paragraph + span decode) and `_set_shape_grow_type`.
+  const text = createText({
+    id: IDS.text,
+    parentId: frame.id,
+    x: 220,
+    y: 20,
+    width: 160,
+    height: 40,
+    text: 'Hi Vello',
+    fillColor: '#101828',
+    growType: 'auto-height',
+  })
 
-  for (const shape of [frame, rect, circle, maskGroup, maskShape, maskContent])
+  for (const shape of [frame, rect, circle, maskGroup, maskShape, maskContent, text])
     setObject(module, shape)
   module._use_shape(0, 0, 0, 0)
   setShapeChildren(module, [frame.id])
@@ -181,9 +196,9 @@ suite('cross-backend digest', () => {
     expect(actual, 'the canonical document must not digest as an empty scene').not.toBe(empty)
     expect(vello.exports.scene_node_count()).toBeGreaterThan(3)
     // Reachability is the trap: an unlisted child is invisible to the digest, so an anchor
-    // built from one would silently cover only the frame. Four shapes paint — the rect, the
-    // circle, and the masked group's mask and content (the group itself paints nothing).
-    expect(vello.exports.scene_paintable_count(), 'every leaf must be reachable').toBe(4)
+    // built from one would silently cover only the frame. Five shapes paint — the rect, the
+    // circle, the masked group's mask and content, and the text (the group itself paints nothing).
+    expect(vello.exports.scene_paintable_count(), 'every leaf must be reachable').toBe(5)
 
     expect(actual).toBe(CANONICAL_DIGEST)
   })

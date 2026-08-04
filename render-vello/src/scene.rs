@@ -32,6 +32,13 @@ use render_core::peniko::Color;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_example_scenes::{ExampleScene, RenderingContext};
 
+use glifo::Glyph;
+use parley::fontique::FontInfoOverride;
+use parley::{
+    Alignment, AlignmentOptions, FontContext, FontFamily, GlyphRun, Layout, LayoutContext,
+    LineHeight, PositionedLayoutItem, StyleProperty,
+};
+
 /// A Gaussian-blur filter of the given sigma. `EdgeMode::None` fades to transparent at the edges,
 /// which is what a blur or a soft shadow wants.
 fn gaussian_blur(sigma: f32) -> Filter {
@@ -54,15 +61,73 @@ const TOLERANCE: f64 = 0.1;
 /// The model comes from the ABI — whatever the host has sent through `use_shape` and friends.
 /// The hand-built [`demo_model`] stands in only while the ABI is empty, so the dev harness has
 /// something to show with no host attached.
-#[derive(Debug)]
 pub struct NeutralModelScene {
     fallback: m::Scene,
+    text: TextEngine,
+}
+
+impl std::fmt::Debug for NeutralModelScene {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `TextEngine` wraps Parley contexts that are not `Debug`; the scene's identity is the
+        // fallback model, so that is all this prints.
+        f.debug_struct("NeutralModelScene")
+            .field("fallback", &self.fallback)
+            .finish_non_exhaustive()
+    }
 }
 
 impl NeutralModelScene {
     pub fn new() -> Self {
         Self {
             fallback: demo_model(),
+            text: TextEngine::new(),
+        }
+    }
+}
+
+/// The per-run paint Parley carries through layout. Parley's `Brush` bound is
+/// `Clone + PartialEq + Default + Debug`, which a solid colour satisfies; the layout hands it back
+/// at each glyph run, so a run's fill follows the span it came from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TextBrush(Color);
+
+impl Default for TextBrush {
+    fn default() -> Self {
+        Self(Color::from_rgba8(0, 0, 0, 255))
+    }
+}
+
+/// The Parley state text layout needs, kept across frames on the scene rather than rebuilt each
+/// frame: the font collection (fed by `store_font`, which must persist its faces) and the reusable
+/// layout/font contexts (a `FontContext` is expensive to construct).
+struct TextEngine {
+    font_cx: FontContext,
+    layout_cx: LayoutContext<TextBrush>,
+}
+
+impl TextEngine {
+    fn new() -> Self {
+        Self {
+            font_cx: FontContext::new(),
+            layout_cx: LayoutContext::new(),
+        }
+    }
+
+    /// Register every face the host has uploaded since the last frame. The ABI queue is drained
+    /// (each face is staged at most once, deduped by alias there), so this is idempotent. The face
+    /// is registered under our own alias — see [`font_alias`] — which the draw path looks it up by.
+    fn sync_fonts(&mut self) {
+        for font in crate::abi::take_pending_fonts() {
+            self.font_cx.collection.register_fonts(
+                font.bytes.into(),
+                Some(FontInfoOverride {
+                    family_name: Some(&font.alias),
+                    width: None,
+                    style: None,
+                    weight: None,
+                    axes: None,
+                }),
+            );
         }
     }
 }
@@ -77,7 +142,7 @@ impl ExampleScene for NeutralModelScene {
     fn render<T: RenderingContext>(
         &mut self,
         ctx: &mut T,
-        _resources: &mut T::Resources,
+        resources: &mut T::Resources,
         root: Affine,
     ) {
         // The page background, if the host set one. Drawn in canvas space, under everything.
@@ -93,16 +158,23 @@ impl ExampleScene for NeutralModelScene {
             ));
         }
 
+        // Register any faces uploaded since the last frame before laying text out against them.
+        self.text.sync_fonts();
+
+        // Pre-borrow the disjoint fields so the closure can hold the fallback model and the text
+        // engine at once (a whole-`self` capture would alias them).
+        let fallback = &self.fallback;
+        let text = &mut self.text;
         crate::abi::with_scene(|live, viewport, modifiers| {
             // `root` is the harness's own pan/zoom; `viewport` is what the host set through
             // `set_view`. They compose — the harness stays at identity when a host is driving.
             let (model, view) = if live.is_empty() {
-                (&self.fallback, root)
+                (fallback, root)
             } else {
                 (live, root * viewport)
             };
             for id in model.roots() {
-                draw_node(ctx, model, *id, view, modifiers, 0);
+                draw_node(ctx, resources, text, model, *id, view, modifiers, 0);
             }
         });
     }
@@ -124,6 +196,8 @@ impl ExampleScene for NeutralModelScene {
 /// not composed with each node's transform.
 fn draw_node<T: RenderingContext>(
     ctx: &mut T,
+    resources: &mut T::Resources,
+    text: &mut TextEngine,
     scene: &m::Scene,
     id: u128,
     root: Affine,
@@ -180,7 +254,13 @@ fn draw_node<T: RenderingContext>(
         ctx.push_layer(None, blend, alpha, None, blur);
     }
 
-    paint_self(ctx, node, matrix);
+    // Text carries no `fills`/geometry — its paint is the glyph colour inside its spans — so it
+    // takes its own draw path rather than `paint_self`.
+    if node.kind == m::ShapeKind::Text {
+        draw_text(ctx, resources, text, node, matrix);
+    } else {
+        paint_self(ctx, node, matrix);
+    }
 
     let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
     if clip.is_some() {
@@ -190,7 +270,7 @@ fn draw_node<T: RenderingContext>(
         ctx.push_layer(clip.as_ref(), None, None, None, None);
     }
 
-    draw_children(ctx, scene, node, root, modifiers, depth);
+    draw_children(ctx, resources, text, scene, node, root, modifiers, depth);
 
     if clip.is_some() {
         ctx.pop_layer();
@@ -213,6 +293,8 @@ fn draw_node<T: RenderingContext>(
 /// mask flag and the children are in the model either way.
 fn draw_children<T: RenderingContext>(
     ctx: &mut T,
+    resources: &mut T::Resources,
+    text: &mut TextEngine,
     scene: &m::Scene,
     node: &m::Node,
     root: Affine,
@@ -227,7 +309,7 @@ fn draw_children<T: RenderingContext>(
 
     let Some(mask_id) = mask_id else {
         for child in &node.children {
-            draw_node(ctx, scene, *child, root, modifiers, depth + 1);
+            draw_node(ctx, resources, text, scene, *child, root, modifiers, depth + 1);
         }
         return;
     };
@@ -243,7 +325,7 @@ fn draw_children<T: RenderingContext>(
     });
 
     for child in node.children.iter().skip(1) {
-        draw_node(ctx, scene, *child, root, modifiers, depth + 1);
+        draw_node(ctx, resources, text, scene, *child, root, modifiers, depth + 1);
     }
 
     if clipped.is_some() {
@@ -263,7 +345,12 @@ fn draw_children<T: RenderingContext>(
 /// the shape's own space (`matrix · translate(offset)`), so it rotates with the shape; that
 /// composition is not yet pixel-checked against render-wasm.
 fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) {
-    if node.shadows.is_empty() || node.kind == m::ShapeKind::Group {
+    // A text shadow is glyph-shaped, not a box around the bounds; drawing `outline(node)` (the
+    // bounds rect) would be wrong, so text shadows are deferred with the rest of the text effects.
+    if node.shadows.is_empty()
+        || node.kind == m::ShapeKind::Group
+        || node.kind == m::ShapeKind::Text
+    {
         return;
     }
     let silhouette = outline(node);
@@ -281,6 +368,167 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
             ctx.pop_layer();
         }
     }
+}
+
+/// Shape and paint a text node with Parley.
+///
+/// render-wasm lays the same content out with Skia; the two shapers disagree glyph-for-glyph, so
+/// the neutral model carries the *input* and each backend shapes it — the digest hashes that input,
+/// not this result (see [`render_core::text`]). One Parley `Layout` per paragraph, stacked top to
+/// bottom (matching render-wasm's per-paragraph layout), then the whole stack is offset for
+/// vertical alignment.
+///
+/// Deferred, and dropped rather than faked (a later slice): text strokes, decorations, transforms,
+/// RTL, per-span multi-fill.
+fn draw_text<T: RenderingContext>(
+    ctx: &mut T,
+    resources: &mut T::Resources,
+    engine: &mut TextEngine,
+    node: &m::Node,
+    matrix: Affine,
+) {
+    let Some(block) = &node.text else {
+        return;
+    };
+
+    // `Fixed`/`AutoHeight` wrap to the box width; `AutoWidth` never wraps.
+    let max_advance = match block.grow {
+        render_core::text::TextGrow::AutoWidth => None,
+        _ => Some(node.bounds.width() as f32),
+    };
+
+    // Lay out every paragraph first, so the total height is known before placing them — vertical
+    // alignment needs it.
+    let layouts: Vec<Layout<TextBrush>> = block
+        .paragraphs
+        .iter()
+        .map(|paragraph| layout_paragraph(engine, paragraph, max_advance))
+        .collect();
+    let total_height: f32 = layouts.iter().map(Layout::height).sum();
+
+    let box_height = node.bounds.height() as f32;
+    let vertical_offset = match block.vertical_align {
+        render_core::text::VerticalAlign::Top => 0.0,
+        render_core::text::VerticalAlign::Center => (box_height - total_height) * 0.5,
+        render_core::text::VerticalAlign::Bottom => box_height - total_height,
+    };
+
+    // Glyphs are placed in the node's own space (the same space `bounds` is in), then drawn under
+    // the shape matrix — exactly how a rect's fill is positioned, so rotation and viewport apply
+    // the same way.
+    ctx.set_transform(matrix);
+    ctx.set_paint_transform(Affine::IDENTITY);
+    let origin_x = node.bounds.x0 as f32;
+    let mut origin_y = node.bounds.y0 as f32 + vertical_offset;
+    for layout in &layouts {
+        draw_layout(ctx, resources, layout, origin_x, origin_y);
+        origin_y += layout.height();
+    }
+}
+
+/// Lay out one paragraph into a Parley `Layout`, styling each span over exactly its characters.
+fn layout_paragraph(
+    engine: &mut TextEngine,
+    paragraph: &render_core::text::TextParagraph,
+    max_advance: Option<f32>,
+) -> Layout<TextBrush> {
+    // Concatenate the spans into one string, remembering each span's byte range so its style is
+    // pushed over exactly the characters it covers.
+    let mut text = String::new();
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(paragraph.spans.len());
+    for span in &paragraph.spans {
+        let start = text.len();
+        text.push_str(&span.text);
+        ranges.push(start..text.len());
+    }
+
+    // Family aliases must outlive the builder (Parley borrows the name through `build`), so collect
+    // them up front.
+    let aliases: Vec<String> = paragraph
+        .spans
+        .iter()
+        .map(|s| crate::abi::font_alias(s.font.id, s.font.weight, s.font.italic))
+        .collect();
+
+    let mut builder = engine
+        .layout_cx
+        .ranged_builder(&mut engine.font_cx, &text, 1.0, true);
+    for ((range, span), alias) in ranges.iter().zip(&paragraph.spans).zip(&aliases) {
+        builder.push(StyleProperty::FontFamily(FontFamily::named(alias)), range.clone());
+        builder.push(StyleProperty::FontSize(span.size), range.clone());
+        builder.push(
+            StyleProperty::LineHeight(LineHeight::FontSizeRelative(span.line_height)),
+            range.clone(),
+        );
+        builder.push(StyleProperty::LetterSpacing(span.letter_spacing), range.clone());
+        builder.push(StyleProperty::Brush(TextBrush(span.color)), range.clone());
+    }
+
+    let mut layout = builder.build(&text);
+    layout.break_all_lines(max_advance);
+    layout.align(alignment_of(paragraph.align), AlignmentOptions::default());
+    layout
+}
+
+/// Penpot's absolute horizontal alignment → Parley's. Penpot's `Left`/`Right` are edges, not
+/// direction-relative, so they map to `Left`/`Right` rather than `Start`/`End` (RTL is deferred).
+fn alignment_of(align: render_core::text::TextAlign) -> Alignment {
+    match align {
+        render_core::text::TextAlign::Left => Alignment::Left,
+        render_core::text::TextAlign::Center => Alignment::Center,
+        render_core::text::TextAlign::Right => Alignment::Right,
+        render_core::text::TextAlign::Justify => Alignment::Justify,
+    }
+}
+
+/// Draw every glyph run in a laid-out paragraph at the given local origin.
+fn draw_layout<T: RenderingContext>(
+    ctx: &mut T,
+    resources: &mut T::Resources,
+    layout: &Layout<TextBrush>,
+    origin_x: f32,
+    origin_y: f32,
+) {
+    for line in layout.lines() {
+        for item in line.items() {
+            if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                draw_glyph_run(ctx, resources, &glyph_run, origin_x, origin_y);
+            }
+        }
+    }
+}
+
+/// Draw one glyph run: its span's colour, at the run's positioned glyphs. Mirrors the vello text
+/// example, offset into the shape's box.
+fn draw_glyph_run<T: RenderingContext>(
+    ctx: &mut T,
+    resources: &mut T::Resources,
+    glyph_run: &GlyphRun<'_, TextBrush>,
+    origin_x: f32,
+    origin_y: f32,
+) {
+    let mut run_x = glyph_run.offset();
+    let run_y = glyph_run.baseline();
+    let color = glyph_run.style().brush.0;
+
+    let glyphs = glyph_run.glyphs().map(move |glyph| {
+        let x = origin_x + run_x + glyph.x;
+        let y = origin_y + run_y - glyph.y;
+        run_x += glyph.advance;
+        Glyph { id: glyph.id, x, y }
+    });
+
+    let run = glyph_run.run();
+    let font = run.font();
+    let font_size = run.font_size();
+    let normalized_coords = bytemuck::cast_slice(run.normalized_coords());
+
+    ctx.set_paint(color);
+    ctx.glyph_run(resources, font)
+        .font_size(font_size)
+        .normalized_coords(normalized_coords)
+        .hint(true)
+        .fill_glyphs(glyphs);
 }
 
 /// Paint a node's own geometry, ignoring its children.

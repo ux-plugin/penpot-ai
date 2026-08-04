@@ -249,10 +249,15 @@ pub enum ShapeKind {
     /// drop and the mark reconcile to the same hash. Renderers and the paintable/diamond walks
     /// treat it as inert.
     ///
-    /// **Keep this appended last.** The digest hashes `kind as u64`, so inserting a variant
-    /// mid-enum shifts every discriminant and silently changes every digest — the same
-    /// ordering trap as render-wasm's `RawShapeType`.
+    /// **Keep new variants appended after this one.** The digest hashes `kind as u64`, so
+    /// inserting a variant mid-enum shifts every discriminant and silently changes every digest —
+    /// the same ordering trap as render-wasm's `RawShapeType`.
     Unsupported,
+    /// A text shape. Unlike every other kind it carries no geometry of its own — the glyphs are
+    /// shaped from [`Node::text`] by each backend (Skia one side, Parley the other), not stored
+    /// resolved. Appended after `Unsupported` so the existing discriminants — and every digest
+    /// built before text existed — stay put.
+    Text,
 }
 
 impl ShapeKind {
@@ -273,6 +278,10 @@ pub struct Node {
     pub bounds: Rect,
     /// Vector geometry in the node's local space, present when `kind == ShapeKind::Path`.
     pub path: Option<BezPath>,
+    /// Text content, present when `kind == ShapeKind::Text`. Carries the paragraphs/spans the host
+    /// sent, not resolved glyphs — each backend shapes it against its own fonts. The box it flows
+    /// in is [`Node::bounds`]. See [`crate::text`].
+    pub text: Option<crate::text::TextBlock>,
     /// Corner radii for a `Rect`, `None` when the corners are square.
     ///
     /// Penpot's `set_shape_corners(r1, r2, r3, r4)` is top-left, top-right, bottom-right,
@@ -342,6 +351,7 @@ impl Node {
             kind,
             bounds: Rect::ZERO,
             path: None,
+            text: None,
             corners: None,
             transform: Affine::IDENTITY,
             children: Vec::new(),
@@ -496,8 +506,15 @@ impl Scene {
             return;
         }
         // Matches `scene::paint_self`: a group carries a layer, never geometry, and anything
-        // with neither fill nor stroke is skipped before a path is even built.
-        if node.kind != ShapeKind::Group && !(node.fills.is_empty() && node.strokes.is_empty()) {
+        // with neither fill nor stroke is skipped before a path is even built. A text node is the
+        // exception — its paint is the glyph colour inside its spans, not a `fills` entry — so it
+        // counts when it has any non-empty text.
+        let paints = if node.kind == ShapeKind::Text {
+            node.text.as_ref().is_some_and(|t| !t.is_empty())
+        } else {
+            node.kind != ShapeKind::Group && !(node.fills.is_empty() && node.strokes.is_empty())
+        };
+        if paints {
             *count += 1;
         }
         for child in &node.children {
@@ -629,6 +646,17 @@ impl Scene {
             }
         }
 
+        // Text is hashed as the *input* the host sent, not resolved glyphs — the two backends
+        // shape it differently, so hashing positions would make them disagree by construction.
+        // Gated on the kind, not merely on `text.is_some()`: render-wasm only projects text for a
+        // Text shape, whereas render-vello's streaming ABI could leave a stray block on another
+        // kind (a `set_shape_vertical_align` before the type arrives); gating keeps the two equal.
+        if node.kind == ShapeKind::Text {
+            if let Some(text) = &node.text {
+                digest_text(hash, text);
+            }
+        }
+
         fnv_u64(hash, node.fills.len() as u64);
         for brush in &node.fills {
             digest_paint(hash, brush);
@@ -735,6 +763,40 @@ fn digest_gradient_kind(hash: &mut u64, kind: &peniko::GradientKind) {
                 f64::from(p.end_angle),
             ] {
                 fnv_f64(hash, v);
+            }
+        }
+    }
+}
+
+/// Hash a text block: every character and every style attribute that changes the picture.
+///
+/// The paragraph and span *counts* go in first (a two-span run is a different document from a
+/// one-span run with the same text), then per paragraph its align and metrics, then per span the
+/// bytes of its text, its font reference, size, metrics and colour. Grow and vertical align frame
+/// the whole block. Positions are deliberately absent — they are the shaper's, and the two
+/// backends' shapers differ.
+fn digest_text(hash: &mut u64, text: &crate::text::TextBlock) {
+    fnv_u64(hash, text.grow as u64);
+    fnv_u64(hash, text.vertical_align as u64);
+    fnv_u64(hash, text.paragraphs.len() as u64);
+    for paragraph in &text.paragraphs {
+        fnv_u64(hash, paragraph.align as u64);
+        fnv_f64(hash, f64::from(paragraph.line_height));
+        fnv_f64(hash, f64::from(paragraph.letter_spacing));
+        fnv_u64(hash, paragraph.spans.len() as u64);
+        for span in &paragraph.spans {
+            fnv_u64(hash, span.text.len() as u64);
+            for byte in span.text.as_bytes() {
+                fnv_u64(hash, u64::from(*byte));
+            }
+            fnv_u128(hash, span.font.id);
+            fnv_u64(hash, u64::from(span.font.weight));
+            fnv_u64(hash, u64::from(span.font.italic));
+            fnv_f64(hash, f64::from(span.size));
+            fnv_f64(hash, f64::from(span.line_height));
+            fnv_f64(hash, f64::from(span.letter_spacing));
+            for component in span.color.components {
+                fnv_f64(hash, f64::from(component));
             }
         }
     }
@@ -1080,6 +1142,66 @@ mod tests {
         let mut two = tree(&[0, 1, 2]);
         two.get_mut(1).unwrap().shadows = vec![base, base];
         assert_ne!(b, two.digest());
+    }
+
+    /// A text block is hashed as its input — every character and style attribute is part of the
+    /// picture, but glyph positions are not (the two backends shape differently).
+    #[test]
+    fn digest_notices_every_field_of_a_text_block() {
+        use crate::text::{FontRef, TextAlign, TextBlock, TextGrow, TextParagraph, TextSpan, VerticalAlign};
+
+        let span = || TextSpan {
+            text: "Hello".into(),
+            font: FontRef { id: 0xAB, weight: 400, italic: false },
+            size: 16.0,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            color: Color::from_rgba8(0, 0, 0, 255),
+        };
+        let block = || TextBlock {
+            paragraphs: vec![TextParagraph {
+                align: TextAlign::Left,
+                line_height: 1.2,
+                letter_spacing: 0.0,
+                spans: vec![span()],
+            }],
+            grow: TextGrow::Fixed,
+            vertical_align: VerticalAlign::Top,
+        };
+        let with = |f: &dyn Fn(&mut Node)| {
+            let mut s = tree(&[0, 1, 2]);
+            let n = s.get_mut(1).unwrap();
+            n.kind = ShapeKind::Text;
+            n.text = Some(block());
+            f(n);
+            s.digest()
+        };
+
+        let base = with(&|_| {});
+        // A text node is not the same as the plain rect it replaced.
+        assert_ne!(base, tree(&[0, 1, 2]).digest());
+        // Every attribute moves it.
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].text = "Hallo".into()));
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].size = 17.0));
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.weight = 700));
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.italic = true));
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.id = 0xCD));
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].color = Color::from_rgba8(255, 0, 0, 255)));
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].align = TextAlign::Center));
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().vertical_align = VerticalAlign::Bottom));
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().grow = TextGrow::AutoWidth));
+        // A second span is not one.
+        assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans.push(span())));
+
+        // And it is paintable when it has text, inert when empty.
+        let mut painted = tree(&[0, 1, 2]);
+        let n = painted.get_mut(1).unwrap();
+        n.kind = ShapeKind::Text;
+        n.text = Some(block());
+        n.fills.clear();
+        assert_eq!(painted.paintable_count(), 1, "text with content paints");
+        painted.get_mut(1).unwrap().text.as_mut().unwrap().paragraphs[0].spans[0].text.clear();
+        assert_eq!(painted.paintable_count(), 0, "empty text paints nothing");
     }
 
     /// Unreachable nodes are memory, not picture. One backend garbage-collecting an orphan and

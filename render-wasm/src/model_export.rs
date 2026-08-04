@@ -46,8 +46,16 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         Type::Path(path) => (m::ShapeKind::Path, Some(path_to_core(path))),
         Type::Frame(_) => (m::ShapeKind::Frame, None),
         Type::Group(_) => (m::ShapeKind::Group, None),
-        // Text/Bool/SVGRaw are deferred to later increments.
+        Type::Text(_) => (m::ShapeKind::Text, None),
+        // Bool/SVGRaw are deferred to later increments.
         _ => return None,
+    };
+
+    // Text carries its content as the *input* both backends shape (see `render_core::text`). The
+    // box is `bounds`; vertical align lives on the shape, not the content.
+    let text = match &shape.shape_type {
+        Type::Text(content) => Some(text_to_core(content, shape.vertical_align)),
+        _ => None,
     };
 
     let fills = shape.fills.iter().filter_map(fill_to_core).collect();
@@ -66,6 +74,7 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         kind,
         bounds: rect_to_core(shape.selrect),
         path,
+        text,
         corners: corners_to_core(shape.shape_type.corners()),
         transform: affine_to_core(&shape.transform),
         children: shape.children.iter().map(|id| id.as_u128()).collect(),
@@ -86,6 +95,82 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         shadows,
         hidden: shape.hidden,
     })
+}
+
+/// Project a text shape's content into the neutral input model. The two backends shape it
+/// differently (Skia here, Parley there), so what crosses is the paragraphs/spans the host sent —
+/// not resolved glyphs. Deferred, and dropped on both sides so the digest still agrees: decorations,
+/// transforms, explicit direction, per-span multi-fill (only the first solid fill's colour crosses).
+fn text_to_core(
+    content: &crate::shapes::TextContent,
+    vertical_align: crate::shapes::VerticalAlign,
+) -> render_core::text::TextBlock {
+    use crate::shapes::{GrowType, VerticalAlign as VA};
+    let grow = match content.grow_type {
+        GrowType::Fixed => render_core::text::TextGrow::Fixed,
+        GrowType::AutoWidth => render_core::text::TextGrow::AutoWidth,
+        GrowType::AutoHeight => render_core::text::TextGrow::AutoHeight,
+    };
+    let vertical_align = match vertical_align {
+        VA::Top => render_core::text::VerticalAlign::Top,
+        VA::Center => render_core::text::VerticalAlign::Center,
+        VA::Bottom => render_core::text::VerticalAlign::Bottom,
+    };
+    render_core::text::TextBlock {
+        paragraphs: content.paragraphs.iter().map(paragraph_to_core).collect(),
+        grow,
+        vertical_align,
+    }
+}
+
+fn paragraph_to_core(paragraph: &crate::shapes::Paragraph) -> render_core::text::TextParagraph {
+    render_core::text::TextParagraph {
+        align: text_align_to_core(paragraph.text_align()),
+        line_height: paragraph.line_height(),
+        letter_spacing: paragraph.letter_spacing(),
+        spans: paragraph.children().iter().map(span_to_core).collect(),
+    }
+}
+
+fn span_to_core(span: &crate::shapes::TextSpan) -> render_core::text::TextSpan {
+    render_core::text::TextSpan {
+        text: span.text.clone(),
+        font: render_core::text::FontRef {
+            id: span.font_family.id().as_u128(),
+            weight: span.font_weight.max(0) as u16,
+            italic: span.font_family.style() == crate::shapes::FontStyle::Italic,
+        },
+        size: span.font_size,
+        line_height: span.line_height,
+        letter_spacing: span.letter_spacing,
+        color: text_span_color(span),
+    }
+}
+
+/// The glyph colour: the span's first fill when it is a solid, else opaque black. render-vello
+/// reads the same first-fill-if-solid from the wire, so the two land on one colour; a gradient or
+/// image text fill is deferred on both sides.
+fn text_span_color(span: &crate::shapes::TextSpan) -> render_core::peniko::Color {
+    span.fills
+        .first()
+        .and_then(fill_to_core)
+        .and_then(|paint| match paint.brush {
+            Brush::Solid(color) => Some(color),
+            _ => None,
+        })
+        .unwrap_or(render_core::peniko::Color::from_rgba8(0, 0, 0, 255))
+}
+
+/// Map Skia's text alignment to the neutral one. Penpot only authors Left/Center/Right/Justify;
+/// `Start`/`End` fold to Left/Right (RTL is deferred), matching render-vello's `alignment_of`.
+fn text_align_to_core(align: skia::textlayout::TextAlign) -> render_core::text::TextAlign {
+    use skia::textlayout::TextAlign as S;
+    match align {
+        S::Center => render_core::text::TextAlign::Center,
+        S::Right | S::End => render_core::text::TextAlign::Right,
+        S::Justify => render_core::text::TextAlign::Justify,
+        _ => render_core::text::TextAlign::Left,
+    }
 }
 
 /// Project a drop shadow. Inner shadows and hidden ones are dropped — the same "drop at

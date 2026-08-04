@@ -27,3 +27,4 @@ pub mod blur;
 pub mod gradient;
 pub mod model;
 pub mod selection;
+pub mod text;
