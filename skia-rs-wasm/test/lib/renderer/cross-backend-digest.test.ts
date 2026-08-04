@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 1484165574
+const CANONICAL_DIGEST = 2549898142
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -169,6 +169,11 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
   span.fills = [
     { fillColor: '#101828', fillOpacity: 1 },
     { fillColor: '#f59e0b', fillOpacity: 0.5 },
+  ]
+  // A centre stroke on the text shape, exercising a text-node stroke across the wire. Only centre
+  // strokes cross (both projections drop inner/outer), so the two agree; the anchor moves.
+  ;(text as { strokes?: unknown }).strokes = [
+    { strokeColor: '#0ea5e9', strokeOpacity: 1, strokeWidth: 2, strokeStyle: 'solid', strokeAlignment: 'center' },
   ]
 
   for (const shape of [frame, rect, circle, maskGroup, maskShape, maskContent, text])

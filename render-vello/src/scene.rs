@@ -376,8 +376,8 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
 /// bottom (matching render-wasm's per-paragraph layout), then the whole stack is offset for
 /// vertical alignment.
 ///
-/// Deferred, and dropped rather than faked (a later slice): text strokes, decorations, transforms,
-/// RTL, per-span multi-fill.
+/// Deferred, and dropped rather than faked (a later slice): text transforms, RTL, emoji/COLR,
+/// text effects, the editor.
 fn draw_text<T: RenderingContext>(
     ctx: &mut T,
     resources: &mut T::Resources,
@@ -419,7 +419,7 @@ fn draw_text<T: RenderingContext>(
     let origin_x = node.bounds.x0 as f32;
     let mut origin_y = node.bounds.y0 as f32 + vertical_offset;
     for layout in &layouts {
-        draw_layout(ctx, resources, layout, origin_x, origin_y, node.bounds);
+        draw_layout(ctx, resources, layout, origin_x, origin_y, node.bounds, &node.strokes);
         origin_y += layout.height();
     }
 }
@@ -493,11 +493,12 @@ fn draw_layout<T: RenderingContext>(
     origin_x: f32,
     origin_y: f32,
     bounds: Rect,
+    strokes: &[m::Stroke],
 ) {
     for line in layout.lines() {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                draw_glyph_run(ctx, resources, &glyph_run, origin_x, origin_y, bounds);
+                draw_glyph_run(ctx, resources, &glyph_run, origin_x, origin_y, bounds, strokes);
             }
         }
     }
@@ -517,9 +518,10 @@ fn draw_glyph_run<T: RenderingContext>(
     origin_x: f32,
     origin_y: f32,
     bounds: Rect,
+    strokes: &[m::Stroke],
 ) {
     let style = glyph_run.style();
-    if style.brush.fills.is_empty() {
+    if style.brush.fills.is_empty() && strokes.is_empty() {
         return;
     }
 
@@ -550,6 +552,21 @@ fn draw_glyph_run<T: RenderingContext>(
                 .normalized_coords(bytemuck::cast_slice(normalized_coords))
                 .hint(true)
                 .fill_glyphs(glyphs.iter().cloned());
+        }
+    }
+
+    // Strokes over the fills, outlining the glyphs with glifo's `stroke_glyphs` — the text
+    // counterpart of the `set_stroke` + `stroke_path` a shape uses. Only centre strokes reach
+    // here (inner/outer are dropped at projection on both sides, like shape strokes), so the
+    // width straddles the glyph edge with no offsetting decision to make.
+    for stroke in strokes {
+        if set_paint(ctx, &stroke.paint, bounds) {
+            ctx.set_stroke(stroke.style.clone());
+            ctx.glyph_run(resources, font)
+                .font_size(font_size)
+                .normalized_coords(bytemuck::cast_slice(normalized_coords))
+                .hint(true)
+                .stroke_glyphs(glyphs.iter().cloned());
         }
     }
 
