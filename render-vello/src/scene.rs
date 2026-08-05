@@ -487,12 +487,18 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
     for shadow in &node.shadows {
         let sigma = radius_to_sigma(shadow.blur);
         let softened = sigma > 0.0;
-        if softened {
-            ctx.push_filter_layer(gaussian_blur(sigma));
-        }
+        // Set the (zoom-scaled) transform *before* pushing the blur layer. `push_filter_layer`
+        // captures the transform current at push time and scales the blur's sigma and expansion by
+        // it, so a stale transform here would fix the shadow's softness at a device-pixel size — it
+        // would stop growing as you zoom in, reading as the blur collapsing to a hard edge that
+        // "narrows to fit the viewport". The offset rides in the same matrix, so it too scales and
+        // rotates with the shape.
         ctx.set_transform(matrix * Affine::translate((shadow.offset.x, shadow.offset.y)));
         ctx.set_paint_transform(Affine::IDENTITY);
         ctx.set_paint(shadow.color);
+        if softened {
+            ctx.push_filter_layer(gaussian_blur(sigma));
+        }
         if shadow.spread > 0.0 {
             let grown = spread_outline(node, f64::from(shadow.spread));
             ctx.fill_path(&grown);
