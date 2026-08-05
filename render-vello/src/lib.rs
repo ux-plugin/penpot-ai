@@ -20,6 +20,7 @@
 
 pub mod abi;
 pub mod editor;
+mod geometry;
 pub mod rich_editor;
 
 #[cfg(target_arch = "wasm32")]

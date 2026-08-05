@@ -25,8 +25,10 @@
 
 use render_core::blend::DEFAULT_BLEND;
 use render_core::blur::radius_to_sigma;
-use render_core::kurbo::{Affine, BezPath, Ellipse, Rect, RoundedRect, Shape as _};
+use render_core::kurbo::{Affine, BezPath, Rect};
 use render_core::model as m;
+
+use crate::geometry::{outline, spread_outline};
 use render_core::model::Brush;
 use render_core::peniko::Color;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
@@ -54,9 +56,6 @@ fn gaussian_blur(sigma: f32) -> Filter {
 /// until the wasm stack gives out — a hang rather than a diagnosable failure. Real documents
 /// nest an order of magnitude below this.
 const MAX_DEPTH: u32 = 128;
-
-/// Flattening tolerance for curves generated here (ellipses, rounded rects), in device pixels.
-const TOLERANCE: f64 = 0.1;
 
 /// A focus scene that draws a neutral model via the backend-agnostic `RenderingContext`.
 ///
@@ -468,10 +467,11 @@ fn draw_children<T: RenderingContext>(
 /// fork's compound `DropShadow` (which bundles the source and so cannot stack). One
 /// `push_filter_layer` per shadow keeps every filter graph single-primitive.
 ///
-/// Not done yet, and dropped rather than faked: **spread** (needs a dilate/morphology the fork
-/// does not implement) and **inner** shadows (never reach the model). The offset is applied in
-/// the shape's own space (`matrix · translate(offset)`), so it rotates with the shape; that
-/// composition is not yet pixel-checked against render-wasm.
+/// **Spread** grows the silhouette before the blur ([`spread_outline`]) — no fork edit, because our
+/// shadow is a CPU-filled path rather than the fork's alpha-morphology primitive. Still dropped
+/// rather than faked: **inner** shadows (never reach the model). The offset is applied in the
+/// shape's own space (`matrix · translate(offset)`), so it rotates with the shape; that composition
+/// is not yet pixel-checked against render-wasm.
 fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) {
     // A text shadow is glyph-shaped, not a box around the bounds; drawing `outline(node)` (the
     // bounds rect) would be wrong, so text shadows are deferred with the rest of the text effects.
@@ -481,7 +481,9 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
     {
         return;
     }
-    let silhouette = outline(node);
+    // The un-spread silhouette, reused for every zero-spread shadow so the common case allocates
+    // no extra path.
+    let base = outline(node);
     for shadow in &node.shadows {
         let sigma = radius_to_sigma(shadow.blur);
         let softened = sigma > 0.0;
@@ -491,7 +493,12 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
         ctx.set_transform(matrix * Affine::translate((shadow.offset.x, shadow.offset.y)));
         ctx.set_paint_transform(Affine::IDENTITY);
         ctx.set_paint(shadow.color);
-        ctx.fill_path(&silhouette);
+        if shadow.spread > 0.0 {
+            let grown = spread_outline(node, f64::from(shadow.spread));
+            ctx.fill_path(&grown);
+        } else {
+            ctx.fill_path(&base);
+        }
         if softened {
             ctx.pop_layer();
         }
@@ -951,29 +958,6 @@ fn unit_box_to(bounds: Rect) -> Affine {
         1.0
     };
     Affine::translate((bounds.x0, bounds.y0)) * Affine::scale_non_uniform(sx, sy)
-}
-
-/// The node's geometry as a path — what it fills, and what it clips its children to.
-///
-/// Mirrors render-wasm's clip construction: a rounded rect when corners are set, an oval for a
-/// circle, the vector path for a path, and the bounds rectangle for anything else (including a
-/// path whose geometry has not arrived).
-fn outline(node: &m::Node) -> BezPath {
-    match node.kind {
-        m::ShapeKind::Circle => ellipse_path(node.bounds),
-        m::ShapeKind::Path => node
-            .path
-            .clone()
-            .unwrap_or_else(|| node.bounds.to_path(TOLERANCE)),
-        _ => match node.corners {
-            Some(radii) => RoundedRect::from_rect(node.bounds, radii).to_path(TOLERANCE),
-            None => node.bounds.to_path(TOLERANCE),
-        },
-    }
-}
-
-fn ellipse_path(r: Rect) -> BezPath {
-    Ellipse::new(r.center(), (r.width() * 0.5, r.height() * 0.5), 0.0).to_path(TOLERANCE)
 }
 
 /// A hand-built neutral scene using the SAME types render-wasm's converter emits, now as a tree:
