@@ -209,11 +209,11 @@ fn text_align_to_core(align: skia::textlayout::TextAlign) -> render_core::text::
     }
 }
 
-/// Project a drop shadow. Inner shadows and hidden ones are dropped — the same "drop at
-/// projection on both sides" contract as inner/outer strokes, so the digest still agrees while
-/// the Vello backend cannot draw them.
+/// Project a shadow. Both drop and inner (inset) shadows cross now that the Vello backend draws
+/// inner shadows via the fork's `InnerShadow` primitive; only hidden ones are dropped. The `inset`
+/// flag is what the two backends key on, so the digest agrees on which style each shadow is.
 fn shadow_to_core(shadow: &Shadow) -> Option<m::Shadow> {
-    if shadow.hidden() || shadow.style() != ShadowStyle::Drop {
+    if shadow.hidden() {
         return None;
     }
     Some(m::Shadow {
@@ -221,6 +221,7 @@ fn shadow_to_core(shadow: &Shadow) -> Option<m::Shadow> {
         blur: shadow.blur,
         spread: shadow.spread,
         offset: kurbo::Vec2::new(f64::from(shadow.offset.0), f64::from(shadow.offset.1)),
+        inset: shadow.style() == ShadowStyle::Inner,
     })
 }
 
@@ -507,10 +508,10 @@ mod tests {
         assert_eq!(s.offset, render_core::kurbo::Vec2::new(4.0, 5.0));
     }
 
-    /// The three things the Vello backend cannot draw yet are dropped at projection, so the
-    /// digest still agrees: background blur (not a *layer* blur), inner shadows, and hidden ones.
+    /// Background blur (not a *layer* blur) and hidden shadows are dropped at projection so the
+    /// digest agrees; an inner shadow now crosses, tagged `inset`, since the Vello backend draws it.
     #[test]
-    fn undrawable_blur_and_shadows_are_dropped() {
+    fn undrawable_blur_and_hidden_shadow_are_dropped_but_inner_crosses() {
         use crate::shapes::{Blur, BlurType, Shadow, ShadowStyle};
         let mut shape = Shape::new(Uuid::nil());
         shape.set_shape_type(Type::Rect(ShapeRect::default()));
@@ -524,7 +525,8 @@ mod tests {
 
         let node = node_from_shape(&shape).expect("a rect projects");
         assert_eq!(node.blur, None, "background blur is not a layer blur");
-        assert!(node.shadows.is_empty(), "inner and hidden shadows are dropped");
+        assert_eq!(node.shadows.len(), 1, "the inner shadow crosses; the hidden one is dropped");
+        assert!(node.shadows[0].inset, "and it is tagged as an inner shadow");
     }
 
     /// The radius→sigma conversion must be byte-identical on both sides, or the same document

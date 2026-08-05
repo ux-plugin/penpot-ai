@@ -142,16 +142,18 @@ pub struct Stroke {
 
 /// A drop shadow: a blurred, offset silhouette of the shape in [`Shadow::color`], drawn behind it.
 ///
-/// Only *drop* shadows reach this model — inner shadows are dropped at projection on both sides
-/// (like inner/outer strokes) until the backend can draw them, so there is no `style` field. The
-/// blur is a **radius** (see [`crate::blur::radius_to_sigma`]); `spread` is carried for the
-/// digest even though the first Vello slice cannot dilate by it yet.
+/// Both drop and inner (inset) shadows reach this model, distinguished by [`Shadow::inset`]: a drop
+/// shadow is drawn behind the shape, an inner shadow inside it (via the fork's `InnerShadow`
+/// primitive). The blur is a **radius** (see [`crate::blur::radius_to_sigma`]); `spread` grows a
+/// drop shadow's silhouette (inner shadows ignore it, matching render-wasm).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
     pub color: peniko::Color,
     pub blur: f32,
     pub spread: f32,
     pub offset: kurbo::Vec2,
+    /// `true` for an inner (inset) shadow, `false` for a drop shadow.
+    pub inset: bool,
 }
 
 /// One pass in a [`FilterGraph`]. render-vello lowers each to a vello-fork filter primitive and
@@ -663,6 +665,7 @@ impl Scene {
             fnv_f64(hash, f64::from(shadow.spread));
             fnv_f64(hash, shadow.offset.x);
             fnv_f64(hash, shadow.offset.y);
+            fnv_u64(hash, u64::from(shadow.inset));
         }
 
         // The filter graph — its node sequence and each node's params. The picture depends on the
@@ -1168,6 +1171,7 @@ mod tests {
                 blur: 4.0,
                 spread: 0.0,
                 offset: kurbo::Vec2::new(2.0, 3.0),
+                inset: false,
             }])
         );
         assert_ne!(base, mutate(&|n| n.transform = Affine::rotate(0.1)));
@@ -1207,6 +1211,7 @@ mod tests {
             blur: 4.0,
             spread: 0.0,
             offset: kurbo::Vec2::new(2.0, 3.0),
+            inset: false,
         };
         let with = |s: Shadow| {
             let mut t = tree(&[0, 1, 2]);
@@ -1218,6 +1223,8 @@ mod tests {
         assert_ne!(b, with(Shadow { blur: 9.0, ..base }));
         assert_ne!(b, with(Shadow { spread: 2.0, ..base }));
         assert_ne!(b, with(Shadow { offset: kurbo::Vec2::new(-2.0, 3.0), ..base }));
+        // An inner shadow is a different document from a drop shadow of the same geometry.
+        assert_ne!(b, with(Shadow { inset: true, ..base }));
         // Two shadows are not one.
         let mut two = tree(&[0, 1, 2]);
         two.get_mut(1).unwrap().shadows = vec![base, base];

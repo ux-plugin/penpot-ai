@@ -836,8 +836,8 @@ pub extern "C" fn clear_shape_blur_of_kind(blur_type: u8) {
 }
 
 /// Append a shadow. `raw_style` is Penpot's `RawShadowStyle` — `0` drop, `1` inner; `blur` is a
-/// radius, `(x, y)` the offset. Only visible *drop* shadows are carried; inner shadows need a
-/// backend the fork does not have yet and are dropped, like inner strokes.
+/// radius, `(x, y)` the offset. Both drop and inner (inset) shadows are carried now that the fork
+/// draws inner shadows; only *hidden* shadows are dropped, matching `model_export`.
 #[unsafe(no_mangle)]
 pub extern "C" fn add_shape_shadow(
     raw_color: u32,
@@ -848,8 +848,8 @@ pub extern "C" fn add_shape_shadow(
     raw_style: u8,
     hidden: bool,
 ) {
-    if raw_style != 0 || hidden {
-        return; // inner or hidden — dropped at the wire, matching model_export
+    if hidden {
+        return; // hidden — dropped at the wire, matching model_export
     }
     with_current(|node| {
         node.shadows.push(render_core::model::Shadow {
@@ -857,6 +857,7 @@ pub extern "C" fn add_shape_shadow(
             blur,
             spread,
             offset: render_core::kurbo::Vec2::new(f64::from(x), f64::from(y)),
+            inset: raw_style == 1,
         });
     });
 }
@@ -1758,15 +1759,16 @@ mod tests {
         );
     }
 
-    /// Layer blur and drop shadows reach the model; background blur, inner shadows and hidden
-    /// ones are dropped at the wire — matching what `model_export` drops on the render-wasm side.
+    /// Layer blur and both shadow styles reach the model; background blur and hidden shadows are
+    /// dropped at the wire — matching what `model_export` drops on the render-wasm side. Inner
+    /// shadows now cross too (the fork draws them), tagged `inset`.
     #[test]
-    fn blur_and_drop_shadows_reach_the_model_but_the_undrawable_do_not() {
+    fn blur_and_shadows_reach_the_model_but_the_undrawable_do_not() {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
         set_shape_blur(0, false, 12.0); // layer
         add_shape_shadow(0xff_00_00_00, 6.0, 1.0, 4.0, 5.0, 0, false); // drop
-        add_shape_shadow(0xff_00_00_00, 6.0, 0.0, 1.0, 1.0, 1, false); // inner → dropped
+        add_shape_shadow(0xff_00_00_00, 7.0, 0.0, 1.0, 1.0, 1, false); // inner → kept, inset
         add_shape_shadow(0xff_00_00_00, 6.0, 0.0, 1.0, 1.0, 0, true); // hidden → dropped
         set_shape_blur(1, false, 9.0); // background → ignored, does not touch the layer blur
 
@@ -1774,10 +1776,13 @@ mod tests {
             let scene = current_scene();
             let node = scene.get(1).unwrap();
             assert_eq!(node.blur, Some(12.0));
-            assert_eq!(node.shadows.len(), 1, "only the visible drop shadow");
+            assert_eq!(node.shadows.len(), 2, "the drop and the inner shadow, not the hidden one");
             assert_eq!(node.shadows[0].blur, 6.0);
             assert_eq!(node.shadows[0].spread, 1.0);
             assert_eq!(node.shadows[0].offset, render_core::kurbo::Vec2::new(4.0, 5.0));
+            assert!(!node.shadows[0].inset, "the first is a drop shadow");
+            assert_eq!(node.shadows[1].blur, 7.0);
+            assert!(node.shadows[1].inset, "the second is an inner shadow");
         }
 
         // A hidden layer blur clears it; clearing drops the shadows.

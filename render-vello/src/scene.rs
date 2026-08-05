@@ -343,7 +343,14 @@ fn draw_node<T: RenderingContext>(
     if node.kind == m::ShapeKind::Text {
         draw_text(ctx, resources, text, node, matrix);
     } else {
+        // Inner shadows enclose the shape's own paint (they darken inside its edges), so they wrap
+        // `paint_self` — inside the composite/filter layers, but tighter than the drop shadow, which
+        // sits behind.
+        let inner_shadows = push_inner_shadows(ctx, node, matrix);
         paint_self(ctx, node, matrix);
+        for _ in 0..inner_shadows {
+            ctx.pop_layer();
+        }
     }
 
     let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
@@ -487,7 +494,9 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
     // The un-spread silhouette, reused for every zero-spread shadow so the common case allocates
     // no extra path.
     let base = outline(node);
-    for shadow in &node.shadows {
+    // Only *drop* shadows are drawn behind the shape here; inner shadows are drawn *inside* it by
+    // `push_inner_shadows`, wrapping the shape's own paint.
+    for shadow in node.shadows.iter().filter(|s| !s.inset) {
         // Cap the device-space blur so it never enters the fork's lossy many-decimation regime —
         // parity with render-wasm, which caps the shadow blur the same way.
         let sigma = cap_sigma_to_device(radius_to_sigma(shadow.blur), matrix);
@@ -514,6 +523,42 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
             ctx.pop_layer();
         }
     }
+}
+
+/// Wrap the shape's own paint in one filter layer per inner (inset) shadow, returning the count so
+/// the caller pops the same number after painting. Unlike a drop shadow — a separate silhouette
+/// drawn behind — an inner shadow is a property *of the shape's pixels*: the fork's `InnerShadow`
+/// primitive reads the layer's alpha and darkens inside its edges (`inner = colour · a · (1 −
+/// blurred.a)`), so it must enclose the fill rather than sit behind it.
+///
+/// The transform is set before each push so the fork scales the offset and blur by the zoom, and the
+/// blur is capped exactly like the drop shadow. Not applied to groups (no paint of their own) or
+/// text (glyph-shaped inner shadows are deferred with the other text effects).
+fn push_inner_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) -> u32 {
+    if node.kind == m::ShapeKind::Group || node.kind == m::ShapeKind::Text {
+        return 0;
+    }
+    let mut pushed = 0;
+    for shadow in node.shadows.iter().filter(|s| s.inset) {
+        ctx.set_transform(matrix);
+        ctx.push_filter_layer(inner_shadow_filter(shadow, matrix));
+        pushed += 1;
+    }
+    pushed
+}
+
+/// The fork's inner-shadow filter for one inset [`m::Shadow`]. Offset and blur are user-space; the
+/// fork's `transform_shadow_params` scales them to device by the layer transform, so the blur is
+/// pre-capped (as a user-space value) the same way the drop shadow is. Inner shadows ignore
+/// `spread`, matching render-wasm.
+fn inner_shadow_filter(shadow: &m::Shadow, matrix: Affine) -> Filter {
+    Filter::from_primitive(FilterPrimitive::InnerShadow {
+        dx: shadow.offset.x as f32,
+        dy: shadow.offset.y as f32,
+        std_deviation: cap_sigma_to_device(radius_to_sigma(shadow.blur), matrix),
+        color: shadow.color,
+        edge_mode: EdgeMode::None,
+    })
 }
 
 /// Shape and paint a text node with Parley.
