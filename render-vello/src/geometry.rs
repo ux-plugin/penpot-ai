@@ -40,6 +40,25 @@ pub(crate) fn cap_sigma_to_device(sigma_user: f32, matrix: Affine) -> f32 {
     sigma_user.min((MAX_DEVICE_SIGMA / scale) as f32)
 }
 
+/// Cap the blur ([`cap_sigma_to_device`]) and return the capped sigma together with the factor it
+/// was scaled by (`1.0` when under the cap, `< 1.0` once clamped).
+///
+/// The caller multiplies the shadow's **offset** by the same factor. The blur cap alone freezes the
+/// softness at the ceiling while the offset keeps growing with zoom, so the offset drifts away from
+/// the blur and the shadow's shape changes as you zoom — very visible for an inner shadow, whose
+/// dark band thickness *is* the offset. Scaling the offset by the same factor makes the whole shadow
+/// plateau together past the cap, so it keeps its shape (render-wasm caps only the blur, which is
+/// fine only while the offset is small next to it).
+pub(crate) fn cap_shadow_blur(sigma_user: f32, matrix: Affine) -> (f32, f64) {
+    let capped = cap_sigma_to_device(sigma_user, matrix);
+    let ratio = if sigma_user > 0.0 {
+        f64::from(capped / sigma_user)
+    } else {
+        1.0
+    };
+    (capped, ratio)
+}
+
 /// Flattening tolerance for turning analytic shapes into bézier paths, in page pixels.
 pub(crate) const TOLERANCE: f64 = 0.1;
 
@@ -192,6 +211,21 @@ mod tests {
     #[test]
     fn cap_survives_a_zero_scale_matrix() {
         assert_eq!(cap_sigma_to_device(7.0, Affine::scale(0.0)), 7.0);
+    }
+
+    /// Under the cap the ratio is 1 (the offset is untouched); once clamped it matches the sigma's
+    /// own shrink factor, so offset and blur stay proportional.
+    #[test]
+    fn cap_ratio_is_one_below_the_cap_and_shrinks_with_the_sigma() {
+        let (s0, r0) = cap_shadow_blur(12.0, Affine::IDENTITY);
+        assert_eq!(s0, 12.0);
+        assert_eq!(r0, 1.0);
+
+        let (s1, r1) = cap_shadow_blur(40.0, Affine::scale(100.0));
+        assert!((r1 - f64::from(s1 / 40.0)).abs() < 1e-6);
+        assert!(r1 < 1.0, "clamped, so the offset shrinks with the blur");
+        // The device offset a 10px user offset would produce shrinks by the same factor the blur did.
+        assert!((10.0 * r1 * 100.0 - f64::from(s1) * 100.0 / 40.0 * 10.0).abs() < 1e-3);
     }
 
     /// A vector path grows by its Minkowski sum with a disk: the stroked band pushes the outline out

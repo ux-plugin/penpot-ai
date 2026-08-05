@@ -28,7 +28,7 @@ use render_core::blur::radius_to_sigma;
 use render_core::kurbo::{Affine, BezPath, Rect};
 use render_core::model as m;
 
-use crate::geometry::{cap_sigma_to_device, outline, spread_outline};
+use crate::geometry::{cap_shadow_blur, cap_sigma_to_device, outline, spread_outline};
 use render_core::model::Brush;
 use render_core::peniko::Color;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
@@ -498,8 +498,9 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
     // `push_inner_shadows`, wrapping the shape's own paint.
     for shadow in node.shadows.iter().filter(|s| !s.inset) {
         // Cap the device-space blur so it never enters the fork's lossy many-decimation regime —
-        // parity with render-wasm, which caps the shadow blur the same way.
-        let sigma = cap_sigma_to_device(radius_to_sigma(shadow.blur), matrix);
+        // parity with render-wasm, which caps the shadow blur the same way. The offset shrinks by
+        // the same factor when the blur is clamped, so the shadow keeps its shape past the cap.
+        let (sigma, offset_ratio) = cap_shadow_blur(radius_to_sigma(shadow.blur), matrix);
         let softened = sigma > 0.0;
         // Set the (zoom-scaled) transform *before* pushing the blur layer. `push_filter_layer`
         // captures the transform current at push time and scales the blur's sigma and expansion by
@@ -507,7 +508,9 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
         // would stop growing as you zoom in, reading as the blur collapsing to a hard edge that
         // "narrows to fit the viewport". The offset rides in the same matrix, so it too scales and
         // rotates with the shape.
-        ctx.set_transform(matrix * Affine::translate((shadow.offset.x, shadow.offset.y)));
+        ctx.set_transform(
+            matrix * Affine::translate((shadow.offset.x * offset_ratio, shadow.offset.y * offset_ratio)),
+        );
         ctx.set_paint_transform(Affine::IDENTITY);
         ctx.set_paint(shadow.color);
         if softened {
@@ -552,10 +555,14 @@ fn push_inner_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: 
 /// pre-capped (as a user-space value) the same way the drop shadow is. Inner shadows ignore
 /// `spread`, matching render-wasm.
 fn inner_shadow_filter(shadow: &m::Shadow, matrix: Affine) -> Filter {
+    // The offset shrinks with the blur past the cap so the inner shadow's dark band — whose
+    // thickness is the offset — keeps its proportion under zoom instead of drifting.
+    let (std_deviation, offset_ratio) = cap_shadow_blur(radius_to_sigma(shadow.blur), matrix);
+    let offset_ratio = offset_ratio as f32;
     Filter::from_primitive(FilterPrimitive::InnerShadow {
-        dx: shadow.offset.x as f32,
-        dy: shadow.offset.y as f32,
-        std_deviation: cap_sigma_to_device(radius_to_sigma(shadow.blur), matrix),
+        dx: shadow.offset.x as f32 * offset_ratio,
+        dy: shadow.offset.y as f32 * offset_ratio,
+        std_deviation,
         color: shadow.color,
         edge_mode: EdgeMode::None,
     })
