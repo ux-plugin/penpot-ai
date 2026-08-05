@@ -39,7 +39,7 @@ beforeAll(() => setContextInitialized(true))
  * changes, either the wire format changed — in which case update it here *and* re-check the
  * browser side — or something regressed.
  */
-const CANONICAL_DIGEST = 1295223549
+const CANONICAL_DIGEST = 3280782290
 
 /**
  * Fixed ids, because the digest hashes them.
@@ -193,9 +193,10 @@ function canonicalDocument(module: EmscriptenLikeModule, rectHeight = 60): void 
     const b = new Uint8Array(new Float32Array([v]).buffer)
     gw.push(b[0], b[1], b[2], b[3])
   }
-  u32(3) // node count
+  u32(4) // node count
   u32(0); f32(4) // Blur sigma 4
   u32(1); f32(10); f32(0) // Offset (10, 0)
+  u32(3); f32(6); f32(6); f32(4); u32(0x80000000) // InnerShadow dx,dy,sigma,color(ARGB)
   u32(2); u32(0); u32(4); f32(1); f32(0.45); f32(0); f32(0.7) // Custom tint
   const graphBytes = new Uint8Array(gw)
   const graphPtr = module._alloc_bytes(graphBytes.length)

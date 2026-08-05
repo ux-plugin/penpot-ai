@@ -170,6 +170,8 @@ pub enum FilterNode {
     Blur { sigma: f32 },
     /// Translate the input by `(dx, dy)` in the shape's own space.
     Offset { dx: f32, dy: f32 },
+    /// An inner (inset) shadow: a blurred, offset shadow drawn *inside* the shape.
+    InnerShadow { dx: f32, dy: f32, sigma: f32, color: peniko::Color },
     /// A raw custom-effect branch: `effect` index + flat uniform params.
     Custom { effect: u32, params: Vec<f32> },
 }
@@ -680,6 +682,15 @@ impl Scene {
                             fnv_u64(hash, 1);
                             fnv_f64(hash, f64::from(*dx));
                             fnv_f64(hash, f64::from(*dy));
+                        }
+                        FilterNode::InnerShadow { dx, dy, sigma, color } => {
+                            fnv_u64(hash, 3);
+                            fnv_f64(hash, f64::from(*dx));
+                            fnv_f64(hash, f64::from(*dy));
+                            fnv_f64(hash, f64::from(*sigma));
+                            for c in color.components {
+                                fnv_f64(hash, f64::from(c));
+                            }
                         }
                         FilterNode::Custom { effect, params } => {
                             fnv_u64(hash, 2);
@@ -1227,12 +1238,25 @@ mod tests {
         let blur = FilterNode::Blur { sigma: 4.0 };
         let offset = FilterNode::Offset { dx: 10.0, dy: 0.0 };
         let tint = FilterNode::Custom { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] };
+        let inner = FilterNode::InnerShadow {
+            dx: 6.0,
+            dy: 6.0,
+            sigma: 4.0,
+            color: Color::from_rgba8(0, 0, 0, 128),
+        };
 
         let base = with(vec![blur.clone(), offset.clone(), tint.clone()]);
         assert_ne!(none, base, "a graph differs from no graph");
         assert_ne!(base, with(vec![offset.clone(), blur.clone(), tint.clone()]), "order matters");
         assert_ne!(base, with(vec![blur.clone(), tint.clone()]), "node count matters");
-        assert_ne!(base, with(vec![FilterNode::Blur { sigma: 9.0 }, offset, tint]), "params matter");
+        assert_ne!(base, with(vec![FilterNode::Blur { sigma: 9.0 }, offset, tint.clone()]), "params matter");
+        // The inner-shadow node hashes its offset, sigma and colour.
+        assert_ne!(with(vec![inner.clone()]), with(vec![tint]), "node kind matters");
+        assert_ne!(
+            with(vec![inner]),
+            with(vec![FilterNode::InnerShadow { dx: 6.0, dy: 6.0, sigma: 9.0, color: Color::from_rgba8(0, 0, 0, 128) }]),
+            "inner-shadow params matter"
+        );
     }
 
     /// A text block is hashed as its input — every character and style attribute is part of the

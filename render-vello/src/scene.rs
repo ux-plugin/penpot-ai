@@ -391,6 +391,15 @@ fn lower_node(filter_node: &m::FilterNode) -> Filter {
             dx: *dx,
             dy: *dy,
         }),
+        m::FilterNode::InnerShadow { dx, dy, sigma, color } => {
+            Filter::from_primitive(FilterPrimitive::InnerShadow {
+                dx: *dx,
+                dy: *dy,
+                std_deviation: *sigma,
+                color: *color,
+                edge_mode: EdgeMode::None,
+            })
+        }
         m::FilterNode::Custom { effect, params } => Filter::from_primitive(FilterPrimitive::Custom {
             effect: *effect,
             params: params.iter().copied().collect(),

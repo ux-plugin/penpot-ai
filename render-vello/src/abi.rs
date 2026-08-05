@@ -916,6 +916,12 @@ fn parse_filter_graph(bytes: &[u8]) -> Option<render_core::model::FilterGraph> {
         let node = match u32_at(&mut cur)? {
             0 => FilterNode::Blur { sigma: f32_at(&mut cur)? },
             1 => FilterNode::Offset { dx: f32_at(&mut cur)?, dy: f32_at(&mut cur)? },
+            3 => FilterNode::InnerShadow {
+                dx: f32_at(&mut cur)?,
+                dy: f32_at(&mut cur)?,
+                sigma: f32_at(&mut cur)?,
+                color: argb_to_color(u32_at(&mut cur)?),
+            },
             2 => {
                 let effect = u32_at(&mut cur)?;
                 let param_count = u32_at(&mut cur)? as usize;
@@ -1834,16 +1840,21 @@ mod tests {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
 
-        // blur(sigma 4) → offset(10, 0) → custom(effect 0, [1, 0.45, 0, 0.7]).
+        // blur(4) → offset(10,0) → inner_shadow(6,6,4,#80ff0000) → custom(effect 0, [1,0.45,0,0.7]).
         let mut payload = Vec::new();
         let push_u32 = |p: &mut Vec<u8>, v: u32| p.extend_from_slice(&v.to_le_bytes());
         let push_f32 = |p: &mut Vec<u8>, v: f32| p.extend_from_slice(&v.to_le_bytes());
-        push_u32(&mut payload, 3); // node count
+        push_u32(&mut payload, 4); // node count
         push_u32(&mut payload, 0); // Blur
         push_f32(&mut payload, 4.0);
         push_u32(&mut payload, 1); // Offset
         push_f32(&mut payload, 10.0);
         push_f32(&mut payload, 0.0);
+        push_u32(&mut payload, 3); // InnerShadow
+        push_f32(&mut payload, 6.0);
+        push_f32(&mut payload, 6.0);
+        push_f32(&mut payload, 4.0);
+        push_u32(&mut payload, 0x80ff_0000); // color ARGB
         push_u32(&mut payload, 2); // Custom
         push_u32(&mut payload, 0); // effect id
         push_u32(&mut payload, 4); // param count
@@ -1865,6 +1876,7 @@ mod tests {
             vec![
                 FilterNode::Blur { sigma: 4.0 },
                 FilterNode::Offset { dx: 10.0, dy: 0.0 },
+                FilterNode::InnerShadow { dx: 6.0, dy: 6.0, sigma: 4.0, color: argb_to_color(0x80ff_0000) },
                 FilterNode::Custom { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] },
             ]
         );
