@@ -28,7 +28,7 @@ use render_core::blur::radius_to_sigma;
 use render_core::kurbo::{Affine, BezPath, Rect};
 use render_core::model as m;
 
-use crate::geometry::{outline, spread_outline};
+use crate::geometry::{cap_sigma_to_device, outline, spread_outline};
 use render_core::model::Brush;
 use render_core::peniko::Color;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
@@ -51,6 +51,7 @@ fn gaussian_blur(sigma: f32) -> Filter {
         edge_mode: EdgeMode::None,
     })
 }
+
 
 /// Depth cap for the walk. The tree comes off the wire, and a cycle would otherwise recurse
 /// until the wasm stack gives out — a hang rather than a diagnosable failure. Real documents
@@ -328,7 +329,9 @@ fn draw_node<T: RenderingContext>(
     let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
     // Layer blur rides the same outer layer as opacity/blend, via `push_layer`'s filter slot, so
     // it covers this node's paint and its children as one image.
-    let blur = node.blur.map(|radius| gaussian_blur(radius_to_sigma(radius)));
+    let blur = node
+        .blur
+        .map(|radius| gaussian_blur(cap_sigma_to_device(radius_to_sigma(radius), matrix)));
     let composite = alpha.is_some() || blend.is_some() || blur.is_some();
     if composite {
         ctx.set_transform(matrix);
@@ -485,7 +488,9 @@ fn draw_drop_shadows<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: A
     // no extra path.
     let base = outline(node);
     for shadow in &node.shadows {
-        let sigma = radius_to_sigma(shadow.blur);
+        // Cap the device-space blur so it never enters the fork's lossy many-decimation regime —
+        // parity with render-wasm, which caps the shadow blur the same way.
+        let sigma = cap_sigma_to_device(radius_to_sigma(shadow.blur), matrix);
         let softened = sigma > 0.0;
         // Set the (zoom-scaled) transform *before* pushing the blur layer. `push_filter_layer`
         // captures the transform current at push time and scales the blur's sigma and expansion by

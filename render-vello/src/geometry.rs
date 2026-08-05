@@ -6,10 +6,39 @@
 //! `scene` imports [`outline`] and [`spread_outline`] from here.
 
 use render_core::kurbo::{
-    BezPath, Ellipse, Rect, RoundedRect, RoundedRectRadii, Shape as _, Stroke, StrokeOpts,
+    Affine, BezPath, Ellipse, Rect, RoundedRect, RoundedRectRadii, Shape as _, Stroke, StrokeOpts,
     stroke as stroke_expand,
 };
 use render_core::model as m;
+
+/// The device-space blur-sigma ceiling, mirroring render-wasm's shadow/layer-blur cap.
+///
+/// render-wasm clamps `sigma_device = min(radius_to_sigma(blur)·scale, margins.width / 3)`
+/// (`get_drop_shadow_filter_capped` in render-wasm's `shapes/shadows.rs`); its tile margin is
+/// `TILE_SIZE(512) · TILE_SIZE_MULTIPLIER(2) / 4 = 256` device px, so the ceiling is `256 / 3`. The
+/// Skia backend deliberately refuses to build a larger blur — the kernel must fit the tile margin —
+/// so mirroring it is *parity*, not a workaround. It also keeps render-vello out of the fork's
+/// many-decimation regime, where the Gaussian pyramid loses energy and a zoomed-in shadow fades to
+/// nothing instead of staying dark.
+pub(crate) const MAX_DEVICE_SIGMA: f64 = 256.0 / 3.0;
+
+/// Clamp a user-space blur sigma so that, after the fork scales it to device space by `matrix`, it
+/// stays within [`MAX_DEVICE_SIGMA`].
+///
+/// The fork's `transform_blur_params` multiplies the sigma by the transform's mean axis scale, so
+/// capping the user-space value at `MAX_DEVICE_SIGMA / scale` bounds the device sigma to
+/// `MAX_DEVICE_SIGMA` — the same `min(…, max_dev_sigma / scale)` render-wasm applies. `scale` is the
+/// mean of the two column norms, which equals the fork's SVD-derived scale for an unrotated
+/// transform and is a close bound otherwise. A degenerate (zero-scale) matrix leaves the sigma
+/// untouched rather than dividing by zero.
+pub(crate) fn cap_sigma_to_device(sigma_user: f32, matrix: Affine) -> f32 {
+    let [a, b, c, d, _, _] = matrix.as_coeffs();
+    let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
+    if scale <= f64::EPSILON {
+        return sigma_user;
+    }
+    sigma_user.min((MAX_DEVICE_SIGMA / scale) as f32)
+}
 
 /// Flattening tolerance for turning analytic shapes into bézier paths, in page pixels.
 pub(crate) const TOLERANCE: f64 = 0.1;
@@ -139,6 +168,30 @@ mod tests {
         // rect/circle extent checks; here we just pin the inflate.
         assert_eq!(bbox.y0, 95.0);
         assert_eq!(bbox.y1, 185.0);
+    }
+
+    /// At scale 1 a modest blur passes through untouched — the cap only bites large device sigmas.
+    #[test]
+    fn cap_leaves_a_small_blur_unchanged_at_unit_scale() {
+        assert_eq!(cap_sigma_to_device(12.0, Affine::IDENTITY), 12.0);
+    }
+
+    /// Zooming in scales the device sigma, so the user-space value is capped to
+    /// `MAX_DEVICE_SIGMA / zoom`: a 40px user sigma at 100× would be 4000px in device space, far
+    /// past the ceiling, so it clamps to ~0.85 (= 85.3 / 100).
+    #[test]
+    fn cap_clamps_a_large_device_sigma_under_zoom() {
+        let capped = cap_sigma_to_device(40.0, Affine::scale(100.0));
+        let expected = (MAX_DEVICE_SIGMA / 100.0) as f32;
+        assert!((capped - expected).abs() < 1e-4, "{capped} vs {expected}");
+        // And the device sigma it implies is exactly the ceiling.
+        assert!((f64::from(capped) * 100.0 - MAX_DEVICE_SIGMA).abs() < 1e-3);
+    }
+
+    /// A degenerate zero-scale transform must not divide by zero — the sigma passes through.
+    #[test]
+    fn cap_survives_a_zero_scale_matrix() {
+        assert_eq!(cap_sigma_to_device(7.0, Affine::scale(0.0)), 7.0);
     }
 
     /// A vector path grows by its Minkowski sum with a disk: the stroked band pushes the outline out
