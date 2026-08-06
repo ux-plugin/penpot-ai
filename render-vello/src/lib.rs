@@ -24,9 +24,15 @@ mod geometry;
 pub mod rich_editor;
 
 #[cfg(target_arch = "wasm32")]
+mod blend;
+#[cfg(target_arch = "wasm32")]
 mod renderer;
 #[cfg(target_arch = "wasm32")]
 mod scene;
+#[cfg(target_arch = "wasm32")]
+mod sink;
+#[cfg(target_arch = "wasm32")]
+mod tiles;
 
 #[cfg(target_arch = "wasm32")]
 pub use renderer::{FocusRenderer, create_focus_renderer};

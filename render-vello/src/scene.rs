@@ -218,6 +218,31 @@ impl ExampleScene for NeutralModelScene {
         resources: &mut T::Resources,
         root: Affine,
     ) {
+        // Register any faces uploaded since the last frame before laying text out against them.
+        self.text.sync_fonts();
+
+        // Scheduler production sink: when set, this render draws exactly one node's *body* into the
+        // target (no background, no tree), at the matrix the caller baked into `root`. This is how
+        // the sink executes a `Paint` step — reusing the whole draw path (model, text, modifiers)
+        // without a per-node bridge on the scene trait.
+        if let Some(only) = paint_only() {
+            let fallback = &self.fallback;
+            let text = &mut self.text;
+            crate::abi::with_scene(|live, viewport, modifiers| {
+                let (model, view) = if live.is_empty() {
+                    (fallback, root)
+                } else {
+                    (live, root * viewport)
+                };
+                if let Some(node) = model.get(only) {
+                    let modifier = modifiers.get(&only).copied().unwrap_or(Affine::IDENTITY);
+                    let matrix = view * modifier * node.effective_transform();
+                    paint_node_body(ctx, resources, text, node, matrix);
+                }
+            });
+            return;
+        }
+
         // The page background, if the host set one. Drawn in canvas space, under everything.
         let background = crate::abi::background();
         if background.components[3] > 0.0 {
@@ -230,9 +255,6 @@ impl ExampleScene for NeutralModelScene {
                 f64::from(ctx.height()),
             ));
         }
-
-        // Register any faces uploaded since the last frame before laying text out against them.
-        self.text.sync_fonts();
 
         // Pre-borrow the disjoint fields so the closure can hold the fallback model and the text
         // engine at once (a whole-`self` capture would alias them).
@@ -264,6 +286,37 @@ impl ExampleScene for NeutralModelScene {
         };
         Some(format!("neutral model → vello · {source} · {count} nodes"))
     }
+}
+
+thread_local! {
+    /// Whether spatially-spreading effects (blur/shadow/filter graph) are drawn. Off during tiled
+    /// rendering — the fork's decimated blur seams when run per-tile — until effects move to their
+    /// own composited surfaces. Plain paint, opacity, blend and clip are unaffected.
+    static EFFECTS_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Enable or disable spatial-effect drawing for subsequent `draw_node` calls on this thread.
+pub(crate) fn set_effects_enabled(on: bool) {
+    EFFECTS_ENABLED.with(|c| c.set(on));
+}
+
+fn effects_enabled() -> bool {
+    EFFECTS_ENABLED.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// When set, [`NeutralModelScene::render`] draws only this one node's body (a scheduler `Paint`
+    /// step) instead of the whole tree — see the check at the top of `render`.
+    static PAINT_ONLY: std::cell::Cell<Option<u128>> = const { std::cell::Cell::new(None) };
+}
+
+/// Scope the next `render` to one node's body (the sink sets this per `Paint` step, then clears it).
+pub(crate) fn set_paint_only(id: Option<u128>) {
+    PAINT_ONLY.with(|c| c.set(id));
+}
+
+fn paint_only() -> Option<u128> {
+    PAINT_ONLY.with(std::cell::Cell::get)
 }
 
 /// Draw one node and its subtree.
@@ -317,21 +370,37 @@ fn draw_node<T: RenderingContext>(
     // Drop shadows sit behind the shape, and *outside* the layer-blur/opacity/blend layer — a
     // layer blur blurs the shape, not its shadow. Each is its own soft, offset, coloured
     // silhouette; multiple shadows are just multiple passes (no multi-primitive filter needed).
-    draw_drop_shadows(ctx, node, matrix);
+    // Spatially-spreading effects (drop/inner shadow, layer blur, filter graph) are gated off while
+    // tiling: the fork's decimated Gaussian is grid-sensitive, so running it independently inside
+    // each tile buffer seams and flickers under pan/zoom. They will be re-introduced through their
+    // own `extrect`-anchored surfaces, composited once (the render-wasm model), not per-tile. Plain
+    // paint, opacity, blend and clip are translation-invariant and tile cleanly, so they stay.
+    let effects = effects_enabled();
+
+    if effects {
+        draw_drop_shadows(ctx, node, matrix);
+    }
 
     // A filter graph wraps this node's composited paint *and* its children as one image — the
     // outermost of this node's layers, so it filters the finished shape rather than each child, and
     // it sits outside the drop shadow (which is drawn behind). A linear chain lowers to nested filter
     // layers; the shape draws inside all of them and we pop the same count afterward.
-    let filter_layers = push_filter_graph(ctx, node, matrix);
+    let filter_layers = if effects {
+        push_filter_graph(ctx, node, matrix)
+    } else {
+        0
+    };
 
     let alpha = (node.opacity < 1.0).then_some(node.opacity);
     let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
     // Layer blur rides the same outer layer as opacity/blend, via `push_layer`'s filter slot, so
     // it covers this node's paint and its children as one image.
-    let blur = node
-        .blur
-        .map(|radius| gaussian_blur(cap_sigma_to_device(radius_to_sigma(radius), matrix)));
+    let blur = effects
+        .then(|| {
+            node.blur
+                .map(|radius| gaussian_blur(cap_sigma_to_device(radius_to_sigma(radius), matrix)))
+        })
+        .flatten();
     let composite = alpha.is_some() || blend.is_some() || blur.is_some();
     if composite {
         ctx.set_transform(matrix);
@@ -345,8 +414,12 @@ fn draw_node<T: RenderingContext>(
     } else {
         // Inner shadows enclose the shape's own paint (they darken inside its edges), so they wrap
         // `paint_self` — inside the composite/filter layers, but tighter than the drop shadow, which
-        // sits behind.
-        let inner_shadows = push_inner_shadows(ctx, node, matrix);
+        // sits behind. Gated with the other effects while tiling.
+        let inner_shadows = if effects {
+            push_inner_shadows(ctx, node, matrix)
+        } else {
+            0
+        };
         paint_self(ctx, node, matrix);
         for _ in 0..inner_shadows {
             ctx.pop_layer();
@@ -367,6 +440,51 @@ fn draw_node<T: RenderingContext>(
         ctx.pop_layer();
     }
     if composite {
+        ctx.pop_layer();
+    }
+    for _ in 0..filter_layers {
+        ctx.pop_layer();
+    }
+}
+
+/// Paint one node's **own body** into `ctx` at `matrix` — fills, strokes, drop/inner shadows, layer
+/// blur and filter graph — for the scheduler's `Paint` step. Deliberately excludes two things
+/// `draw_node` does: the opacity/blend composite (the scheduler applies that when it *composites*
+/// this node's surface, via the `Composite` step's `LayerPaint`) and the children (each child is its
+/// own `Paint`). Effects are always drawn — the surface the sink renders into is sized to hold them,
+/// which is the entire reason effects live on their own surface.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn paint_node_body<T: RenderingContext>(
+    ctx: &mut T,
+    resources: &mut T::Resources,
+    text: &mut TextEngine,
+    node: &m::Node,
+    matrix: Affine,
+) {
+    if node.hidden || node.kind == m::ShapeKind::Unsupported {
+        return;
+    }
+    // Drop shadows sit behind the body.
+    draw_drop_shadows(ctx, node, matrix);
+    let filter_layers = push_filter_graph(ctx, node, matrix);
+    // Layer blur wraps this body as its own filter layer (a spread effect on this surface).
+    let blur = node
+        .blur
+        .map(|r| gaussian_blur(cap_sigma_to_device(radius_to_sigma(r), matrix)));
+    if let Some(b) = blur.clone() {
+        ctx.set_transform(matrix);
+        ctx.push_layer(None, None, None, None, Some(b));
+    }
+    if node.kind == m::ShapeKind::Text {
+        draw_text(ctx, resources, text, node, matrix);
+    } else {
+        let inner = push_inner_shadows(ctx, node, matrix);
+        paint_self(ctx, node, matrix);
+        for _ in 0..inner {
+            ctx.pop_layer();
+        }
+    }
+    if blur.is_some() {
         ctx.pop_layer();
     }
     for _ in 0..filter_layers {

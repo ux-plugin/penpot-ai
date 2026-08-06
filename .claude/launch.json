@@ -8,6 +8,12 @@
       "port": 5190
     },
     {
+      "name": "skia-vello-proof",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "skia-rs-wasm", "run", "dev", "--port", "5308", "--strictPort"],
+      "port": 5308
+    },
+    {
       "name": "figma_plugin_fe",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "figma_plugin_fe", "run", "dev"],

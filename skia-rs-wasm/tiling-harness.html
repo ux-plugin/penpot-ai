@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Vello tiling harness</title>
+    <style>
+      body { margin: 0; background: #888; font-family: system-ui, sans-serif; }
+      #wrap { position: relative; width: 1024px; height: 1024px; margin: 16px; }
+      #c { display: block; width: 1024px; height: 1024px; }
+      /* Tile boundaries (device 512 grid) drawn 1:1 over the canvas so artifacts can be read
+         against the exact tile joins. */
+      .grid { position: absolute; background: rgba(255,0,0,0.6); pointer-events: none; }
+      .v { top: 0; width: 1px; height: 1024px; }
+      .h { left: 0; height: 1px; width: 1024px; }
+      #status { position: fixed; right: 8px; top: 8px; background: #000; color: #0f0;
+        font: 12px monospace; padding: 6px 8px; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <canvas id="c" width="1024" height="1024"></canvas>
+      <div class="grid v" style="left:512px"></div>
+      <div class="grid h" style="top:512px"></div>
+    </div>
+    <div id="status">loading…</div>
+    <script type="module">
+      import { loadVelloModule } from '/src/lib/renderer/vello-module.ts'
+      import { setContextInitialized } from '/src/lib/renderer/api/context.ts'
+      import { setObject } from '/src/lib/renderer/api/orchestration.ts'
+      import { createRect, createGroup } from '/src/lib/renderer/node-factory.ts'
+      import { setCanvasBackground } from '/src/lib/renderer/api/canvas.ts'
+      import { setShapeChildren } from '/src/lib/renderer/api/shape.ts'
+
+      const status = (m) => { document.getElementById('status').textContent = m }
+
+      async function main() {
+        const canvas = document.getElementById('c')
+        setContextInitialized(true)
+
+        status('loading vello wasm…')
+        const module = await loadVelloModule()
+        status('attaching canvas…')
+        await module.velloBackend.attachCanvas(canvas)
+
+        // Deterministic viewport: identity (zoom 1, pan 0), dpr 1 → page px == device px.
+        module._set_render_options(0, 1)
+        module._set_view(1, 0, 0)
+        setCanvasBackground(module, '#ffffff')
+
+        // One rect straddling the tile cross at device (512,512): [300,724] centred on 512, so its
+        // fill crosses both boundaries and each edge stroke crosses a boundary. Solid fill + solid
+        // centre stroke — no effects, no dashes.
+        const rect = createRect({
+          x: 300, y: 300, width: 424, height: 424,
+          fillColor: '#f5c518', strokeColor: '#1a56db', strokeWidth: 14,
+        })
+        // A control rect fully inside one tile (top-left), should be pixel-perfect.
+        const control = createRect({
+          x: 80, y: 80, width: 300, height: 200,
+          fillColor: '#22aa55', strokeColor: '#114422', strokeWidth: 10,
+        })
+
+        for (const s of [rect, control]) setObject(module, s)
+        module._use_shape(0, 0, 0, 0)
+        setShapeChildren(module, [rect.id, control.id])
+
+        module.velloBackend.renderNow()
+        status('rendered · frames=' + module.velloBackend.frameCount())
+
+        // Expose for re-driving from the console / automation.
+        window.harness = { module, canvas, createRect, createGroup, setObject, setShapeChildren }
+      }
+      main().catch((e) => { status('ERROR: ' + (e?.message || e)); console.error(e) })
+    </script>
+  </body>
+</html>

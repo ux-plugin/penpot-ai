@@ -114,7 +114,8 @@ impl RendererWrapper {
             .unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
 
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // COPY_DST so the tile store can blit each tile's centre onto the swapchain texture.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
             format: surface_format,
             width,
             height,
@@ -157,7 +158,8 @@ impl RendererWrapper {
 
     fn reconfigure(&self, width: u32, height: u32) {
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // COPY_DST so the tile store can blit each tile's centre onto the swapchain texture.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
             format: self.surface_format,
             width,
             height,
@@ -179,18 +181,33 @@ impl RendererWrapper {
 pub struct FocusRenderer {
     canvas: HtmlCanvasElement,
     wrapper: RendererWrapper,
-    scene: Scene,
     scenes: Vec<AnyScene<Scene>>,
     current: usize,
     transform: Affine,
     width: u32,
     height: u32,
+    tiles: crate::tiles::VelloTileStore,
 }
 
 /// Construct a [`FocusRenderer`] on a host-provided canvas. Async because adapter/device
 /// acquisition is async; the JS side receives a `Promise<FocusRenderer>`.
+/// Wire panic messages and `log` output to the browser console the first time the host builds a
+/// renderer. `main.rs` does this for the mock host; the library path (what the app loads) had no
+/// logger, so `log::warn!` diagnostics — including frame-skip warnings — were silently dropped.
+fn ensure_logging() {
+    use std::sync::Once;
+    static START: Once = Once::new();
+    START.call_once(|| {
+        console_error_panic_hook::set_once();
+        // Warn, not Debug: this ships in the library path, so keep it to real problems
+        // (frame skips, surface loss) rather than per-frame chatter.
+        let _ = console_log::init_with_level(log::Level::Warn);
+    });
+}
+
 #[wasm_bindgen]
 pub async fn create_focus_renderer(canvas: HtmlCanvasElement) -> FocusRenderer {
+    ensure_logging();
     let width = canvas.width();
     let height = canvas.height();
     let wrapper = RendererWrapper::new(canvas.clone()).await;
@@ -205,15 +222,16 @@ pub async fn create_focus_renderer(canvas: HtmlCanvasElement) -> FocusRenderer {
         AnyScene::new(stacked_effects::StackedEffectsScene::new()),
     ];
 
+    let tiles = crate::tiles::VelloTileStore::new(wrapper.surface_format);
     FocusRenderer {
         canvas,
         wrapper,
-        scene: Scene::new(width as u16, height as u16),
         scenes,
         current: 0,
         transform: Affine::IDENTITY,
         width,
         height,
+        tiles,
     }
 }
 
@@ -256,16 +274,11 @@ impl FocusRenderer {
         self.wrapper.queue.submit([encoder.finish()]);
     }
 
-    /// Render one frame into the host canvas. The host decides when to call this.
+    /// Render one frame into the host canvas, **tiled** (D18): each visible tile is rasterized into
+    /// its own content+margin buffer — so an effect runs against the tile, not the viewport — and
+    /// the centres are composited onto the surface. The host decides when to call this.
     pub fn render(&mut self) {
         self.upload_pending_images();
-        self.scene.reset();
-        self.scenes[self.current].render(&mut self.scene, self.transform);
-
-        let render_size = vello_hybrid::RenderSize {
-            width: self.width,
-            height: self.height,
-        };
 
         let surface_texture = match self.wrapper.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(t) => t,
@@ -282,32 +295,17 @@ impl FocusRenderer {
                 return;
             }
         };
-        let view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .wrapper
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        if let Err(e) = self.wrapper.renderer.render(
-            &self.scene,
-            self.scenes[self.current].resources_mut(),
+        self.tiles.render_frame(
+            &mut self.wrapper.renderer,
             &self.wrapper.device,
             &self.wrapper.queue,
-            &mut encoder,
-            &render_size,
-            &view,
-            &vello_hybrid::TextureBindings::new(),
-        ) {
-            // Recoverable resource-limit (e.g. filter atlas exhausted): skip the frame
-            // rather than panic, so the host stays alive.
-            log::warn!("render-vello frame skipped: {e:?}");
-            return;
-        }
+            &surface_texture.texture,
+            &mut self.scenes[self.current],
+            self.transform,
+            self.width,
+            self.height,
+        );
 
-        self.wrapper.queue.submit([encoder.finish()]);
         surface_texture.present();
     }
 
@@ -321,7 +319,8 @@ impl FocusRenderer {
         self.width = width;
         self.height = height;
         self.wrapper.reconfigure(width, height);
-        self.scene = Scene::new(width as u16, height as u16);
+        // The tile store recreates its surface-sized composite scene on the next frame when it
+        // notices the dimensions changed; the tile buffers are fixed-size and need no resize.
     }
 
     /// Forward a key press to the active scene (e.g. ArrowUp grows the nested-UI scene).

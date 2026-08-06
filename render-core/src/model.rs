@@ -365,9 +365,13 @@ pub struct Node {
     /// all; anything else is drawn under a blend layer.
     pub blend: peniko::BlendMode,
     /// Layer-blur **radius**, `None` when the shape has no layer blur. Blurs the node's own paint
-    /// and its children together, like [`opacity`](Node::opacity). Backdrop blur is a separate
-    /// concern and is not carried yet.
+    /// and its children together, like [`opacity`](Node::opacity).
     pub blur: Option<f32>,
+    /// Background-blur **radius**, `None` when the shape has none. Unlike [`blur`](Node::blur) (a
+    /// *spread* effect over the node's own paint), this is a *gather* effect: it blurs the backdrop
+    /// **beneath** the shape and shows it through the shape's silhouette (frosted glass). Because it
+    /// reads what is already painted below, it forces true z-order interleaving in the scheduler.
+    pub background_blur: Option<f32>,
     /// Drop shadows, back to front, drawn behind the shape. Inner shadows do not reach here.
     pub shadows: Vec<Shadow>,
     /// A chain of custom filter passes wrapping the shape + children, or `None`. Vello-only —
@@ -399,6 +403,7 @@ impl Node {
             opacity: 1.0,
             blend: crate::blend::DEFAULT_BLEND,
             blur: None,
+            background_blur: None,
             shadows: Vec::new(),
             filter_graph: None,
             hidden: false,
@@ -649,6 +654,16 @@ impl Scene {
         fnv_u64(hash, u64::from(node.blend.compose as u8));
 
         match node.blur {
+            Some(radius) => {
+                fnv_u64(hash, 1);
+                fnv_f64(hash, f64::from(radius));
+            }
+            None => fnv_u64(hash, 0),
+        }
+
+        // Background blur is a distinct effect kind (gather, not spread); hashed with its own tag so
+        // a layer-blurred and a background-blurred node never collide.
+        match node.background_blur {
             Some(radius) => {
                 fnv_u64(hash, 1);
                 fnv_f64(hash, f64::from(radius));

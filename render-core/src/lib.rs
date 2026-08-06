@@ -26,5 +26,7 @@ pub mod blend;
 pub mod blur;
 pub mod gradient;
 pub mod model;
+pub mod schedule;
 pub mod selection;
 pub mod text;
+pub mod tiling;

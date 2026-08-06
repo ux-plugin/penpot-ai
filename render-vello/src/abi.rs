@@ -165,6 +165,22 @@ pub(crate) fn background() -> Color {
     with_state(|state| state.viewport.background)
 }
 
+/// The full page→device transform the draw pass will actually use for `root`, mirroring
+/// `NeutralModelScene::render` exactly: the host viewport composes on top of the harness `root`
+/// when a live scene is present, and is ignored for the demo fallback. The tile store needs this
+/// (not the bare `root`) to place tiles, because when the host drives, `root` is identity and all
+/// the pan/zoom lives in the viewport.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn effective_view(root: Affine) -> Affine {
+    with_state(|state| {
+        if state.scene.is_empty() {
+            root
+        } else {
+            root * state.viewport.transform()
+        }
+    })
+}
+
 /// Whether a frame was requested since the last check, clearing the flag.
 ///
 /// The Vello module does not own a frame loop — Phase 0 put that in the host deliberately
@@ -655,6 +671,80 @@ pub extern "C" fn set_view(zoom: f32, x: f32, y: f32) {
     });
 }
 
+thread_local! {
+    /// Diagnostic toggle: when set, the renderer draws the whole scene in one pass instead of
+    /// per-tile, so a rendering artifact can be attributed to (or cleared of) the tiling buffer
+    /// path. Not part of the product ABI — a bring-up aid driven from the tiling harness.
+    static TILING_BYPASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_tiling_bypass(on: u32) {
+    TILING_BYPASS.with(|c| c.set(on != 0));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn tiling_bypass() -> bool {
+    TILING_BYPASS.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// Diagnostic: when set, effects are *not* gated off while tiling, so the harness can measure
+    /// whether spatially-spreading effects (blur/shadow) still seam per-tile now that the
+    /// submit-per-tile corruption is fixed. Default off (effects gated) — the current shipping
+    /// behaviour. The tile grid is 512-aligned in device space, so a shape rendered into two
+    /// adjacent tile buffers is shifted by exactly 512 px (an integer at every decimation level a
+    /// capped σ reaches), which *should* make the fork's pyramid blur agree at the seam — this
+    /// toggle is how that hypothesis gets a pixel test before any per-shape-surface machinery.
+    static TILE_EFFECTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_tile_effects(on: u32) {
+    TILE_EFFECTS.with(|c| c.set(on != 0));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn tile_effects() -> bool {
+    TILE_EFFECTS.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// Route rendering through the render-core schedule + GPU production sink (the "one pipeline"
+    /// scheduler) instead of the whole-scene-per-tile path. Default off while it is brought up;
+    /// the harness flips it on to verify the sink's pixels against the bypass.
+    static SCHEDULER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_scheduler(on: u32) {
+    SCHEDULER.with(|c| c.set(on != 0));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn scheduler() -> bool {
+    SCHEDULER.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// The most recent frame's tile counts, packed `(rendered << 16) | reused`. A machine-readable
+    /// proof that the page-space cache reuses tiles across a pan (rendered ≈ the newly-exposed
+    /// strip, reused ≈ the rest) and re-renders a full screen on a zoom. Read via `last_tile_stats`.
+    static TILE_STATS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Record the last frame's tile render/reuse split (called by the tile store).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn set_tile_stats(rendered: u32, reused: u32) {
+    TILE_STATS.with(|c| c.set((rendered << 16) | (reused & 0xffff)));
+}
+
+/// The last frame's tile counts, packed `(rendered << 16) | reused`.
+#[unsafe(no_mangle)]
+pub extern "C" fn last_tile_stats() -> u32 {
+    TILE_STATS.with(std::cell::Cell::get)
+}
+
 /// Bracket an interactive pan/zoom. render-wasm uses these to switch to a cheaper cached path
 /// and to time the interaction; this module has no such path yet, so they are accepted and
 /// ignored rather than left undefined for the host to trip over.
@@ -810,29 +900,33 @@ pub extern "C" fn set_shape_blend_mode(mode: u8) {
 }
 
 /// A blur on this shape. `blur_type` is Penpot's `RawBlurType` — `0` layer, `1` background;
-/// `value` is a radius. Only the *layer* blur is carried (backdrop blur needs the source behind
-/// the shape and is a later slice), and a hidden one clears it.
+/// `value` is a radius. A layer blur is a *spread* effect over the shape's own paint; a background
+/// blur is a *gather* effect over the backdrop beneath. A hidden one clears its slot.
 #[unsafe(no_mangle)]
 pub extern "C" fn set_shape_blur(blur_type: u8, hidden: bool, value: f32) {
-    if blur_type != 0 {
-        return; // background blur — not carried yet
-    }
-    with_current(|node| node.blur = (!hidden).then_some(value));
+    let v = (!hidden).then_some(value);
+    with_current(|node| match blur_type {
+        1 => node.background_blur = v,
+        _ => node.blur = v,
+    });
 }
 
-/// Clear every blur. render-wasm clears both slots; here there is only the layer one.
+/// Clear every blur — both the layer and the background slot.
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_shape_blur() {
-    with_current(|node| node.blur = None);
+    with_current(|node| {
+        node.blur = None;
+        node.background_blur = None;
+    });
 }
 
-/// Clear one blur kind. Only the layer kind (`0`) is carried, so a background clear is a no-op.
+/// Clear one blur kind (`0` layer, `1` background), matching render-wasm's per-kind clear.
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_shape_blur_of_kind(blur_type: u8) {
-    if blur_type != 0 {
-        return;
-    }
-    with_current(|node| node.blur = None);
+    with_current(|node| match blur_type {
+        1 => node.background_blur = None,
+        _ => node.blur = None,
+    });
 }
 
 /// Append a shadow. `raw_style` is Penpot's `RawShadowStyle` — `0` drop, `1` inner; `blur` is a
@@ -1759,9 +1853,9 @@ mod tests {
         );
     }
 
-    /// Layer blur and both shadow styles reach the model; background blur and hidden shadows are
-    /// dropped at the wire — matching what `model_export` drops on the render-wasm side. Inner
-    /// shadows now cross too (the fork draws them), tagged `inset`.
+    /// Layer blur, background blur and both shadow styles reach the model; hidden shadows are
+    /// dropped at the wire. Layer blur is a spread effect, background blur a gather effect — they
+    /// live in separate slots and don't disturb each other. Inner shadows cross too, tagged `inset`.
     #[test]
     fn blur_and_shadows_reach_the_model_but_the_undrawable_do_not() {
         let _guard = reset();
@@ -1770,12 +1864,13 @@ mod tests {
         add_shape_shadow(0xff_00_00_00, 6.0, 1.0, 4.0, 5.0, 0, false); // drop
         add_shape_shadow(0xff_00_00_00, 7.0, 0.0, 1.0, 1.0, 1, false); // inner → kept, inset
         add_shape_shadow(0xff_00_00_00, 6.0, 0.0, 1.0, 1.0, 0, true); // hidden → dropped
-        set_shape_blur(1, false, 9.0); // background → ignored, does not touch the layer blur
+        set_shape_blur(1, false, 9.0); // background → its own slot, doesn't touch the layer blur
 
         {
             let scene = current_scene();
             let node = scene.get(1).unwrap();
             assert_eq!(node.blur, Some(12.0));
+            assert_eq!(node.background_blur, Some(9.0), "background blur lands in its own slot");
             assert_eq!(node.shadows.len(), 2, "the drop and the inner shadow, not the hidden one");
             assert_eq!(node.shadows[0].blur, 6.0);
             assert_eq!(node.shadows[0].spread, 1.0);
@@ -1785,9 +1880,10 @@ mod tests {
             assert!(node.shadows[1].inset, "the second is an inner shadow");
         }
 
-        // A hidden layer blur clears it; clearing drops the shadows.
+        // A hidden layer blur clears only that slot; the background blur stays.
         set_shape_blur(0, true, 12.0);
         assert_eq!(current_scene().get(1).unwrap().blur, None);
+        assert_eq!(current_scene().get(1).unwrap().background_blur, Some(9.0));
         clear_shape_shadows();
         assert!(current_scene().get(1).unwrap().shadows.is_empty());
     }
