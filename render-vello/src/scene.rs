@@ -243,6 +243,28 @@ impl ExampleScene for NeutralModelScene {
             return;
         }
 
+        // Mask render: fill exactly one node's silhouette in solid white — the coverage the sink
+        // multiplies into a gather's blurred backdrop so it shows through the shape's outline, not
+        // its bounding box. No paints, no children, no effects; the anti-aliased edge is the mask.
+        if let Some(only) = mask_only() {
+            let fallback = &self.fallback;
+            crate::abi::with_scene(|live, viewport, modifiers| {
+                let (model, view) = if live.is_empty() {
+                    (fallback, root)
+                } else {
+                    (live, root * viewport)
+                };
+                if let Some(node) = model.get(only) {
+                    let modifier = modifiers.get(&only).copied().unwrap_or(Affine::IDENTITY);
+                    let matrix = view * modifier * node.effective_transform();
+                    ctx.set_transform(matrix);
+                    ctx.set_paint(render_core::peniko::Color::from_rgba8(255, 255, 255, 255));
+                    ctx.fill_path(&outline(node));
+                }
+            });
+            return;
+        }
+
         // The page background, if the host set one. Drawn in canvas space, under everything.
         let background = crate::abi::background();
         if background.components[3] > 0.0 {
@@ -308,6 +330,9 @@ thread_local! {
     /// When set, [`NeutralModelScene::render`] draws only this one node's body (a scheduler `Paint`
     /// step) instead of the whole tree — see the check at the top of `render`.
     static PAINT_ONLY: std::cell::Cell<Option<u128>> = const { std::cell::Cell::new(None) };
+    /// When set, `render` fills only this node's silhouette in solid white — a coverage mask the
+    /// sink uses to clip a gather's blurred backdrop to the shape's outline (not its bbox).
+    static MASK_ONLY: std::cell::Cell<Option<u128>> = const { std::cell::Cell::new(None) };
 }
 
 /// Scope the next `render` to one node's body (the sink sets this per `Paint` step, then clears it).
@@ -317,6 +342,15 @@ pub(crate) fn set_paint_only(id: Option<u128>) {
 
 fn paint_only() -> Option<u128> {
     PAINT_ONLY.with(std::cell::Cell::get)
+}
+
+/// Scope the next `render` to one node's silhouette-as-coverage (a `PaintGather` clip mask).
+pub(crate) fn set_mask_only(id: Option<u128>) {
+    MASK_ONLY.with(|c| c.set(id));
+}
+
+fn mask_only() -> Option<u128> {
+    MASK_ONLY.with(std::cell::Cell::get)
 }
 
 /// Draw one node and its subtree.

@@ -23,7 +23,7 @@ use vello_common::kurbo::{Affine, Point, Rect};
 use vello_example_scenes::AnyScene;
 use vello_hybrid::{RenderSize, Renderer, Scene, TextureBindings};
 
-use crate::blend::{Blit, BlurPass, Compositor};
+use crate::blend::{Blit, BlurPass, Compositor, MaskedBlit};
 
 struct Surface {
     #[allow(dead_code)]
@@ -101,7 +101,7 @@ impl Sink {
                     self.compose_backdrop(read_from, *extent, *write_to, device, queue, full_view, format);
                 }
                 Step::PaintGather { backdrop, clip, write_to, .. } => {
-                    self.paint_gather(*backdrop, *clip, *write_to, device, queue, full_view, format);
+                    self.paint_gather(*backdrop, *clip, *write_to, renderer, device, queue, scene_source, root, full_view, format);
                 }
                 // Snapshot / layer brackets are not emitted by the builder yet.
                 _ => {}
@@ -335,26 +335,27 @@ impl Sink {
         backdrop: SurfaceRef,
         clip: Rect,
         write_to: SurfaceRef,
+        renderer: &mut Renderer,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        scene_source: &mut AnyScene<Scene>,
+        root: Affine,
         full_view: Affine,
         format: wgpu::TextureFormat,
     ) {
+        let SurfaceRole::Backdrop(id) = backdrop.role else { return };
         let Some(bd) = self.surfaces.get(&backdrop) else { return };
         let (bw, bh) = (bd.width, bd.height);
         let Some(&(bdx, bdy)) = self.backdrop_origin.get(&backdrop) else { return };
 
-        // Blur once per gather; every dest tile blits from the same cached blurred backdrop.
+        // Build the blurred backdrop (v1) and the shape's coverage mask (v2) once per gather; every
+        // dest tile blits from the same two, so the blur and the silhouette raster happen only once.
         let blurred_ref = backdrop.bump();
+        let mask_ref = backdrop.bump().bump();
         if !self.surfaces.contains_key(&blurred_ref) {
             // Device-space sigma: page sigma scaled by the view, matching the sample-rect margin.
             let sigma = {
-                let radius = match backdrop.role {
-                    SurfaceRole::Backdrop(id) => {
-                        crate::abi::with_scene(|live, _, _| live.get(id).and_then(|n| n.background_blur))
-                    }
-                    _ => None,
-                };
+                let radius = crate::abi::with_scene(|live, _, _| live.get(id).and_then(|n| n.background_blur));
                 let c = full_view.as_coeffs();
                 let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
                 render_core::blur::radius_to_sigma(radius.unwrap_or(0.0)) * scale
@@ -371,13 +372,34 @@ impl Sink {
             self.compositor.blur1d(device, &mut enc, &blurred_view, &BlurPass { src: &scratch_view, size, dir: (0.0, 1.0), sigma });
             queue.submit([enc.finish()]);
             self.surfaces.insert(blurred_ref, Surface { texture: blurred, view: blurred_view, width: bw, height: bh });
+
+            // Coverage mask: the shape's silhouette in white, in the backdrop's device space, so the
+            // masked blit can clip the blur to the outline (a circle/path/rounded/rotated shape) —
+            // not its bounding box.
+            let mask = new_target(device, bw, bh, format);
+            let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
+            let root_for_mask = Affine::translate((-bdx, -bdy)) * root;
+            let mut mscene = Scene::new(bw as u16, bh as u16);
+            crate::scene::set_mask_only(Some(id));
+            scene_source.render(&mut mscene, root_for_mask);
+            crate::scene::set_mask_only(None);
+            let mut menc = device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink gather mask") });
+            let msize = RenderSize { width: bw, height: bh };
+            if let Err(e) = renderer.render(&mscene, scene_source.resources_mut(), device, queue, &mut menc, &msize, &mask_view, &TextureBindings::new()) {
+                log::warn!("sink gather mask skipped: {e:?}");
+            }
+            queue.submit([menc.finish()]);
+            self.surfaces.insert(mask_ref, Surface { texture: mask, view: mask_view, width: bw, height: bh });
         }
         let blurred_view = self.surfaces[&blurred_ref].view.clone();
+        let mask_view = self.surfaces[&mask_ref].view.clone();
 
         let Some(tile) = write_to.tile else { return };
         let (ox, oy) = tiling::tile_device_origin(tile, full_view);
         let (sdx, sdy, sdw, sdh) = device_rect(full_view, clip);
-        // Intersect the shape's device rect with this tile's device content region.
+        // Intersect the shape's device rect (a coarse bound) with this tile's device content region;
+        // the mask does the exact clip to the silhouette within it.
         let ts = f64::from(TILE_SIZE);
         let ix0 = sdx.max(ox);
         let iy0 = sdy.max(oy);
@@ -394,13 +416,14 @@ impl Sink {
             Compositor::clear(&mut enc, &to_view, [0.0, 0.0, 0.0, 0.0]);
         }
         let m = f64::from(TILE_MARGIN);
-        self.compositor.blit(
+        self.compositor.blit_masked(
             device,
             &mut enc,
             &to_view,
             (TILE_BUFFER as f32, TILE_BUFFER as f32),
-            &Blit {
+            &MaskedBlit {
                 src: &blurred_view,
+                mask: &mask_view,
                 dst: ((ix0 - ox + m) as f32, (iy0 - oy + m) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32),
                 src_rect: ((ix0 - bdx) as f32, (iy0 - bdy) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32),
                 src_size: (bw as f32, bh as f32),
