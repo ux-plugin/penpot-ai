@@ -221,18 +221,26 @@ fn has_spread_effect(node: &Node) -> bool {
     node.blur.is_some() || node.shadows.iter().any(|s| !s.inset)
 }
 
-/// A shape carries a gather effect if it reads the backdrop beneath it — currently just background
-/// blur. (Glass/refraction will join here.) Distinct from spread: gather forces z-order interleaving.
+/// A shape carries a gather effect if it reads the backdrop beneath it — background blur or glass.
+/// Distinct from spread: gather forces z-order interleaving.
 fn has_gather_effect(node: &Node) -> bool {
-    node.background_blur.is_some()
+    node.background_blur.is_some() || node.glass.is_some()
 }
 
-/// The gather's page-space **sample rect**: `page_bounds` grown by the background-blur reach (`3σ`)
-/// on every side, so the fused backdrop covers everything the blur kernel can pull in at the edges.
+/// The gather's page-space **sample rect**: `page_bounds` grown by the effect's reach on every side,
+/// so the fused backdrop covers everything the kernel can pull in at the edges — the background
+/// blur's `3σ`, or glass's refraction displacement + blur + frost scatter (mirrors render-wasm's
+/// `compute_gather_sample_rect`).
 fn gather_extent(node: &Node) -> Rect {
     let mut reach = 0.0_f64;
     if let Some(radius) = node.background_blur {
         reach = reach.max(f64::from(3.0 * radius_to_sigma(radius)));
+    }
+    if let Some(g) = node.glass {
+        let displacement = g.thickness * g.refractive_index * 50.0;
+        let blur = g.total_blur_sigma() * 3.0;
+        let frost = g.frost * 6.0;
+        reach = reach.max(f64::from(displacement + blur + frost));
     }
     page_bounds(node).inflate(reach, reach)
 }

@@ -929,6 +929,51 @@ pub extern "C" fn clear_shape_blur_of_kind(blur_type: u8) {
     });
 }
 
+/// The frosted-glass gather effect. Parameter order mirrors render-wasm's `set_shape_glass`; a
+/// hidden glass clears the slot.
+#[unsafe(no_mangle)]
+#[expect(clippy::too_many_arguments, reason = "the wire signature mirrors render-wasm's setter")]
+pub extern "C" fn set_shape_glass(
+    surface_type: i32,
+    bezel_width: f32,
+    glass_thickness: f32,
+    refractive_index: f32,
+    specular_angle: f32,
+    specular_opacity: f32,
+    specular_saturation: f32,
+    chromatic_aberration: f32,
+    splay: f32,
+    tilt_angle: f32,
+    edge_boost: f32,
+    zoom: f32,
+    blur: f32,
+    frost: f32,
+    hidden: u8,
+) {
+    let glass = (hidden == 0).then_some(render_core::model::Glass {
+        surface_type,
+        bezel_width,
+        thickness: glass_thickness,
+        refractive_index,
+        specular_angle,
+        specular_opacity,
+        specular_saturation,
+        chromatic_aberration,
+        splay,
+        tilt_angle,
+        edge_boost,
+        zoom,
+        blur,
+        frost,
+    });
+    with_current(|node| node.glass = glass);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_glass() {
+    with_current(|node| node.glass = None);
+}
+
 /// Append a shadow. `raw_style` is Penpot's `RawShadowStyle` — `0` drop, `1` inner; `blur` is a
 /// radius, `(x, y)` the offset. Both drop and inner (inset) shadows are carried now that the fork
 /// draws inner shadows; only *hidden* shadows are dropped, matching `model_export`.

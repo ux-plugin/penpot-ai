@@ -24,6 +24,7 @@ use vello_example_scenes::AnyScene;
 use vello_hybrid::{RenderSize, Renderer, Scene, TextureBindings};
 
 use crate::blend::{Blit, BlurPass, Compositor, MaskedBlit};
+use crate::glass::{GlassPipeline, DISPLACEMENT_FORMAT};
 
 struct Surface {
     #[allow(dead_code)]
@@ -36,6 +37,7 @@ struct Surface {
 /// The scheduler's GPU production sink. Owns the per-frame surface map and the SrcOver compositor.
 pub(crate) struct Sink {
     compositor: Compositor,
+    glass: GlassPipeline,
     /// Physical surface per logical ref, this frame. Slice-1 allocates fresh each frame (no
     /// cross-frame reuse yet — that folds in with the tile cache later).
     surfaces: HashMap<SurfaceRef, Surface>,
@@ -50,6 +52,7 @@ impl Sink {
     pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
             compositor: Compositor::new(device, format),
+            glass: GlassPipeline::new(device, format),
             surfaces: HashMap::new(),
             written: HashSet::new(),
             backdrop_origin: HashMap::new(),
@@ -348,58 +351,62 @@ impl Sink {
         let (bw, bh) = (bd.width, bd.height);
         let Some(&(bdx, bdy)) = self.backdrop_origin.get(&backdrop) else { return };
 
-        // Build the blurred backdrop (v1) and the shape's coverage mask (v2) once per gather; every
-        // dest tile blits from the same two, so the blur and the silhouette raster happen only once.
-        let blurred_ref = backdrop.bump();
-        let mask_ref = backdrop.bump().bump();
-        if !self.surfaces.contains_key(&blurred_ref) {
-            // Device-space sigma: page sigma scaled by the view, matching the sample-rect margin.
-            let sigma = {
-                let radius = crate::abi::with_scene(|live, _, _| live.get(id).and_then(|n| n.background_blur));
-                let c = full_view.as_coeffs();
-                let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
-                render_core::blur::radius_to_sigma(radius.unwrap_or(0.0)) * scale
-            };
-            let bd_view = self.surfaces[&backdrop].view.clone();
-            let scratch = new_target(device, bw, bh, format);
-            let scratch_view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
-            let blurred = new_target(device, bw, bh, format);
-            let blurred_view = blurred.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut enc = device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink gather blur") });
-            let size = (bw as f32, bh as f32);
-            self.compositor.blur1d(device, &mut enc, &scratch_view, &BlurPass { src: &bd_view, size, dir: (1.0, 0.0), sigma });
-            self.compositor.blur1d(device, &mut enc, &blurred_view, &BlurPass { src: &scratch_view, size, dir: (0.0, 1.0), sigma });
-            queue.submit([enc.finish()]);
-            self.surfaces.insert(blurred_ref, Surface { texture: blurred, view: blurred_view, width: bw, height: bh });
+        let is_glass = crate::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.glass.is_some()));
 
-            // Coverage mask: the shape's silhouette in white, in the backdrop's device space, so the
-            // masked blit can clip the blur to the outline (a circle/path/rounded/rotated shape) —
-            // not its bounding box.
-            let mask = new_target(device, bw, bh, format);
-            let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
-            let root_for_mask = Affine::translate((-bdx, -bdy)) * root;
-            let mut mscene = Scene::new(bw as u16, bh as u16);
-            crate::scene::set_mask_only(Some(id));
-            scene_source.render(&mut mscene, root_for_mask);
-            crate::scene::set_mask_only(None);
-            let mut menc = device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink gather mask") });
-            let msize = RenderSize { width: bw, height: bh };
-            if let Err(e) = renderer.render(&mscene, scene_source.resources_mut(), device, queue, &mut menc, &msize, &mask_view, &TextureBindings::new()) {
-                log::warn!("sink gather mask skipped: {e:?}");
+        // Build the reusable gather result once (cached under v1). Glass → the full 4-pass composite;
+        // background blur → the blurred backdrop plus a silhouette coverage mask (v2). Every dest tile
+        // stamps from these, so the expensive passes run once per gather.
+        let result_ref = backdrop.bump();
+        let mask_ref = backdrop.bump().bump();
+        if !self.surfaces.contains_key(&result_ref) {
+            if is_glass {
+                self.build_glass(id, backdrop, result_ref, bw, bh, bdx, bdy, device, queue, full_view, format);
+            } else {
+                // Device-space sigma: page sigma scaled by the view, matching the sample-rect margin.
+                let sigma = {
+                    let radius = crate::abi::with_scene(|live, _, _| live.get(id).and_then(|n| n.background_blur));
+                    let c = full_view.as_coeffs();
+                    let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
+                    render_core::blur::radius_to_sigma(radius.unwrap_or(0.0)) * scale
+                };
+                let bd_view = self.surfaces[&backdrop].view.clone();
+                let scratch_view = new_target(device, bw, bh, format).create_view(&wgpu::TextureViewDescriptor::default());
+                let blurred = new_target(device, bw, bh, format);
+                let blurred_view = blurred.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut enc = device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink gather blur") });
+                let size = (bw as f32, bh as f32);
+                self.compositor.blur1d(device, &mut enc, &scratch_view, &BlurPass { src: &bd_view, size, dir: (1.0, 0.0), sigma });
+                self.compositor.blur1d(device, &mut enc, &blurred_view, &BlurPass { src: &scratch_view, size, dir: (0.0, 1.0), sigma });
+                queue.submit([enc.finish()]);
+                self.surfaces.insert(result_ref, Surface { texture: blurred, view: blurred_view, width: bw, height: bh });
+
+                // Coverage mask: the shape's silhouette in white, in the backdrop's device space, so
+                // the masked blit clips the blur to the outline (circle/path/rounded/rotated) — not
+                // its bounding box.
+                let mask = new_target(device, bw, bh, format);
+                let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
+                let root_for_mask = Affine::translate((-bdx, -bdy)) * root;
+                let mut mscene = Scene::new(bw as u16, bh as u16);
+                crate::scene::set_mask_only(Some(id));
+                scene_source.render(&mut mscene, root_for_mask);
+                crate::scene::set_mask_only(None);
+                let mut menc = device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink gather mask") });
+                let msize = RenderSize { width: bw, height: bh };
+                if let Err(e) = renderer.render(&mscene, scene_source.resources_mut(), device, queue, &mut menc, &msize, &mask_view, &TextureBindings::new()) {
+                    log::warn!("sink gather mask skipped: {e:?}");
+                }
+                queue.submit([menc.finish()]);
+                self.surfaces.insert(mask_ref, Surface { texture: mask, view: mask_view, width: bw, height: bh });
             }
-            queue.submit([menc.finish()]);
-            self.surfaces.insert(mask_ref, Surface { texture: mask, view: mask_view, width: bw, height: bh });
         }
-        let blurred_view = self.surfaces[&blurred_ref].view.clone();
-        let mask_view = self.surfaces[&mask_ref].view.clone();
+        let result_view = self.surfaces[&result_ref].view.clone();
 
         let Some(tile) = write_to.tile else { return };
         let (ox, oy) = tiling::tile_device_origin(tile, full_view);
         let (sdx, sdy, sdw, sdh) = device_rect(full_view, clip);
-        // Intersect the shape's device rect (a coarse bound) with this tile's device content region;
-        // the mask does the exact clip to the silhouette within it.
+        // Intersect the shape's device rect (a coarse bound) with this tile's device content region.
         let ts = f64::from(TILE_SIZE);
         let ix0 = sdx.max(ox);
         let iy0 = sdy.max(oy);
@@ -416,21 +423,103 @@ impl Sink {
             Compositor::clear(&mut enc, &to_view, [0.0, 0.0, 0.0, 0.0]);
         }
         let m = f64::from(TILE_MARGIN);
-        self.compositor.blit_masked(
-            device,
-            &mut enc,
-            &to_view,
-            (TILE_BUFFER as f32, TILE_BUFFER as f32),
-            &MaskedBlit {
-                src: &blurred_view,
-                mask: &mask_view,
-                dst: ((ix0 - ox + m) as f32, (iy0 - oy + m) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32),
-                src_rect: ((ix0 - bdx) as f32, (iy0 - bdy) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32),
-                src_size: (bw as f32, bh as f32),
-                alpha: 1.0,
-            },
-        );
+        let buf = (TILE_BUFFER as f32, TILE_BUFFER as f32);
+        let dst = ((ix0 - ox + m) as f32, (iy0 - oy + m) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
+        let src_rect = ((ix0 - bdx) as f32, (iy0 - bdy) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
+        let src_size = (bw as f32, bh as f32);
+        if is_glass {
+            // The glass composite already baked in the SDF mask + backdrop passthrough, so a plain
+            // blit over the shape's rect is correct (outside the glass it re-lays the same backdrop).
+            self.compositor.blit(device, &mut enc, &to_view, buf, &Blit { src: &result_view, dst, src_rect, src_size, alpha: 1.0 });
+        } else {
+            let mask_view = self.surfaces[&mask_ref].view.clone();
+            self.compositor.blit_masked(device, &mut enc, &to_view, buf, &MaskedBlit { src: &result_view, mask: &mask_view, dst, src_rect, src_size, alpha: 1.0 });
+        }
         queue.submit([enc.finish()]);
+    }
+
+    /// Run the four-pass glass pipeline over the assembled backdrop and cache the composite under
+    /// `result_ref`. Glass geometry is the shape's rounded box in the backdrop's device space; the
+    /// pipeline's own SDF mask does the clip, so no silhouette mask is needed here.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn build_glass(
+        &mut self,
+        id: u128,
+        backdrop: SurfaceRef,
+        result_ref: SurfaceRef,
+        bw: u32,
+        bh: u32,
+        bdx: f64,
+        bdy: f64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        full_view: Affine,
+        format: wgpu::TextureFormat,
+    ) {
+        let Some((g, cx, cy, w, h, corners, is_circle)) = crate::abi::with_scene(|live, _, _| {
+            live.get(id).and_then(|n| {
+                n.glass.map(|g| {
+                    let c = n.bounds.center();
+                    (g, c.x, c.y, n.bounds.width(), n.bounds.height(), n.corners, n.kind == render_core::model::ShapeKind::Circle)
+                })
+            })
+        }) else {
+            return;
+        };
+
+        // Glass box in the backdrop surface's device-pixel space (axis-aligned; rotation is a gap).
+        let scale = {
+            let c = full_view.as_coeffs();
+            (c[0] * c[0] + c[1] * c[1]).sqrt()
+        };
+        let dev_center = full_view * Point::new(cx, cy);
+        let gcx = (dev_center.x - bdx) as f32;
+        let gcy = (dev_center.y - bdy) as f32;
+        let hx = (w * 0.5 * scale) as f32;
+        let hy = (h * 0.5 * scale) as f32;
+        let corner = if is_circle { hx.min(hy) } else { (corners.map_or(0.0, |r| r.top_left) * scale) as f32 };
+        let s = scale as f32;
+        let (bwf, bhf) = (bw as f32, bh as f32);
+
+        let disp_u: [f32; 20] = [
+            bwf, bhf, gcx, gcy,
+            hx, hy, corner, g.surface_type as f32,
+            g.bezel_width, g.thickness, g.refractive_index, g.specular_angle,
+            g.splay, g.tilt_angle, g.edge_boost, g.zoom,
+            s, 0.0, 0.0, 0.0,
+        ];
+        let refr_u: [f32; 4] = [bwf, bhf, g.chromatic_aberration, s];
+        let comp_u: [f32; 8] = [bwf, bhf, g.frost, g.specular_opacity, g.specular_saturation, s, 0.0, 0.0];
+
+        let vd = wgpu::TextureViewDescriptor::default();
+        let backdrop_view = self.surfaces[&backdrop].view.clone();
+        let disp_view = new_target(device, bw, bh, DISPLACEMENT_FORMAT).create_view(&vd);
+        let refracted_view = new_target(device, bw, bh, format).create_view(&vd);
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink glass") });
+        // 1. displacement field, 2. refraction + chromatic aberration.
+        self.glass.displacement(device, &mut enc, &disp_view, &disp_u);
+        self.glass.refraction(device, &mut enc, &refracted_view, &backdrop_view, &disp_view, &refr_u);
+
+        // 3. glass blur (blur + frost softening) of the refracted image, when meaningful.
+        let sigma = g.total_blur_sigma() * s;
+        let blurred_view = if sigma > 0.5 {
+            let scratch_view = new_target(device, bw, bh, format).create_view(&vd);
+            let bv = new_target(device, bw, bh, format).create_view(&vd);
+            let size = (bwf, bhf);
+            self.compositor.blur1d(device, &mut enc, &scratch_view, &BlurPass { src: &refracted_view, size, dir: (1.0, 0.0), sigma });
+            self.compositor.blur1d(device, &mut enc, &bv, &BlurPass { src: &scratch_view, size, dir: (0.0, 1.0), sigma });
+            bv
+        } else {
+            refracted_view.clone()
+        };
+
+        // 4. frost / tint / specular / mask composite.
+        let composite = new_target(device, bw, bh, format);
+        let composite_view = composite.create_view(&vd);
+        self.glass.composite(device, &mut enc, &composite_view, &blurred_view, &backdrop_view, &disp_view, &comp_u);
+        queue.submit([enc.finish()]);
+        self.surfaces.insert(result_ref, Surface { texture: composite, view: composite_view, width: bw, height: bh });
     }
 }
 

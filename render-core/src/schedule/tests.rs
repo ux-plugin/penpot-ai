@@ -244,6 +244,39 @@ fn a_background_blur_composes_a_backdrop_then_gathers_before_its_own_body() {
 }
 
 #[test]
+fn a_glass_shape_schedules_as_a_gather() {
+    let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
+    r.glass = Some(crate::model::Glass {
+        surface_type: 0,
+        bezel_width: 20.0,
+        thickness: 1.0,
+        refractive_index: 1.5,
+        specular_angle: 0.0,
+        specular_opacity: 0.3,
+        specular_saturation: 4.0,
+        chromatic_aberration: 2.0,
+        splay: 0.0,
+        tilt_angle: 0.0,
+        edge_boost: 0.0,
+        zoom: 1.0,
+        blur: 4.0,
+        frost: 0.2,
+    });
+    let scene = scene_with(vec![r]);
+    let sched = build(&scene, VIEW, W, H);
+
+    assert!(
+        sched.steps.iter().any(|s| matches!(s, Step::ComposeBackdrop { shape: 1, .. })),
+        "glass composes a backdrop (it is a gather effect)"
+    );
+    assert!(
+        sched.steps.iter().any(|s| matches!(s, Step::PaintGather { shape: 1, .. })),
+        "glass paints from the backdrop"
+    );
+    assert!(DepGraph::build(&sched.steps).is_acyclic());
+}
+
+#[test]
 fn a_gather_backdrop_is_composed_after_the_shapes_below_it_paint() {
     // Z-order: a lower plain shape, then a higher background-blur shape over it. The backdrop must
     // freeze AFTER the lower shape paints (so the blur samples it) and reads the tile it painted.

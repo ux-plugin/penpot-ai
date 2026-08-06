@@ -301,6 +301,39 @@ impl ShapeKind {
     }
 }
 
+/// A frosted-glass **gather** effect — a lens over the backdrop beneath the shape. Ported field for
+/// field from render-wasm's `GlassEffect` so the same three-pass pipeline (refraction/displacement,
+/// blur, frost/tint/specular composite) drives both backends. The glass outline is the shape's
+/// rounded box; `surface_type` is the *bezel* profile, not the outline. Like `background_blur` this
+/// is gather, not spread — it reads the backdrop, so it interleaves in z-order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glass {
+    /// Bezel profile: 0 circle, 1 squircle, 2 concave, 3 lip.
+    pub surface_type: i32,
+    pub bezel_width: f32,
+    /// `glass_thickness` — refraction strength multiplier (0.2–3.0).
+    pub thickness: f32,
+    pub refractive_index: f32,
+    pub specular_angle: f32,
+    pub specular_opacity: f32,
+    pub specular_saturation: f32,
+    pub chromatic_aberration: f32,
+    pub splay: f32,
+    pub tilt_angle: f32,
+    pub edge_boost: f32,
+    pub zoom: f32,
+    pub blur: f32,
+    pub frost: f32,
+}
+
+impl Glass {
+    /// Combined blur sigma — the explicit blur plus the frost's own softening.
+    #[must_use]
+    pub fn total_blur_sigma(&self) -> f32 {
+        self.blur + self.frost * 8.0
+    }
+}
+
 /// A single renderable node in neutral form.
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -372,6 +405,9 @@ pub struct Node {
     /// **beneath** the shape and shows it through the shape's silhouette (frosted glass). Because it
     /// reads what is already painted below, it forces true z-order interleaving in the scheduler.
     pub background_blur: Option<f32>,
+    /// A frosted-glass gather effect (refraction lens), `None` when the shape has none. Like
+    /// [`background_blur`](Node::background_blur) it reads the backdrop beneath — a gather effect.
+    pub glass: Option<Glass>,
     /// Drop shadows, back to front, drawn behind the shape. Inner shadows do not reach here.
     pub shadows: Vec<Shadow>,
     /// A chain of custom filter passes wrapping the shape + children, or `None`. Vello-only —
@@ -404,6 +440,7 @@ impl Node {
             blend: crate::blend::DEFAULT_BLEND,
             blur: None,
             background_blur: None,
+            glass: None,
             shadows: Vec::new(),
             filter_graph: None,
             hidden: false,
@@ -667,6 +704,32 @@ impl Scene {
             Some(radius) => {
                 fnv_u64(hash, 1);
                 fnv_f64(hash, f64::from(radius));
+            }
+            None => fnv_u64(hash, 0),
+        }
+
+        // Glass — the other gather effect. Every parameter is part of the picture, so hash them all.
+        match node.glass {
+            Some(g) => {
+                fnv_u64(hash, 1);
+                fnv_u64(hash, g.surface_type as u64);
+                for f in [
+                    g.bezel_width,
+                    g.thickness,
+                    g.refractive_index,
+                    g.specular_angle,
+                    g.specular_opacity,
+                    g.specular_saturation,
+                    g.chromatic_aberration,
+                    g.splay,
+                    g.tilt_angle,
+                    g.edge_boost,
+                    g.zoom,
+                    g.blur,
+                    g.frost,
+                ] {
+                    fnv_f64(hash, f64::from(f));
+                }
             }
             None => fnv_u64(hash, 0),
         }
