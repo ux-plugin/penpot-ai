@@ -21,6 +21,7 @@
 pub mod abi;
 pub mod editor;
 mod geometry;
+pub(crate) mod prof;
 pub mod rich_editor;
 
 #[cfg(target_arch = "wasm32")]

@@ -52,6 +52,14 @@ struct SceneState {
     /// draws the same line — its modifiers live in the shapes pool and are applied on `get`,
     /// not written into the shape.
     modifiers: Modifiers,
+    /// Page-space rects touched since the last frame drained them — one (or two, for a move) per
+    /// mutation. The tile cache converts these to tiles and invalidates *only* those, so an edit
+    /// rebuilds the tiles it actually changed, not the screen. Pan/zoom don't touch this (they're
+    /// viewport, and a tile's pixels are pan-invariant); the cache handles scale separately.
+    dirty_rects: Vec<Rect>,
+    /// Force a full rebuild next frame, for wholesale changes where per-rect tracking isn't worth it
+    /// (document reset, structural child/parent edits).
+    dirty_all: bool,
 }
 
 /// Page-space gesture transforms by shape id. Empty except during a drag.
@@ -101,10 +109,40 @@ impl Viewport {
     }
 }
 
+/// Beyond this many pending dirty rects, `mark_dirty` collapses to a full rebuild — a memory + cost
+/// cap for huge edit batches and the scheduler-off case where nothing drains them.
+const MAX_DIRTY_RECTS: usize = 512;
+
 impl SceneState {
+    /// The page-space rect a shape currently occupies — its bounds under its gesture modifier, grown
+    /// by any effect reach. `None` if the shape is gone. The tile cache dirties the tiles this covers.
+    fn shape_rect(&self, id: u128) -> Option<kurbo::Rect> {
+        let node = self.scene.get(id)?;
+        let modifier = self.modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+        Some(render_core::schedule::affected_page_rect(node, modifier))
+    }
+
+    /// Record a dirty page-rect for the tile cache. Past [`MAX_DIRTY_RECTS`] pending rects (a huge
+    /// edit batch, or edits made while the scheduler is off so nothing drains them) it collapses to
+    /// `dirty_all` — bounding both the accumulator's memory and the per-frame tile-invalidation cost.
+    fn mark_dirty(&mut self, rect: Rect) {
+        if self.dirty_all {
+            return;
+        }
+        if self.dirty_rects.len() >= MAX_DIRTY_RECTS {
+            self.dirty_all = true;
+            self.dirty_rects.clear();
+        } else {
+            self.dirty_rects.push(rect);
+        }
+    }
+
     fn upsert(&mut self, id: u128) {
         if self.scene.get(id).is_none() {
             self.scene.insert(Node::new(id, ShapeKind::Rect));
+            // A fresh node has no geometry yet (its property setters will dirty its area), but it is
+            // usually linked in via `set_children` next — a structural change we treat as full-dirty.
+            self.dirty_all = true;
         }
         self.current = Some(id);
     }
@@ -123,7 +161,12 @@ impl SceneState {
     fn set_children(&mut self, children: Vec<u128>) {
         if let Some(node) = self.current_mut() {
             node.children = children;
+        } else {
+            return;
         }
+        // A structural change (what's drawn where in the container) is coarse and off the pan hot
+        // path — a full rebuild is simpler than tracking the subtree's before/after footprint.
+        self.dirty_all = true;
     }
 }
 
@@ -133,7 +176,22 @@ fn with_state<R>(f: impl FnOnce(&mut SceneState) -> R) -> R {
 }
 
 fn with_current<R>(f: impl FnOnce(&mut Node) -> R) -> Option<R> {
-    with_state(|state| state.current_mut().map(f))
+    with_state(|state| {
+        let id = state.current?;
+        // Snapshot the shape's footprint before and after the edit, so a geometry change (its rect
+        // moves) dirties both the tiles it left and the tiles it entered; a plain property change
+        // (opacity, fill) records the same rect twice, which is harmless.
+        let before = state.shape_rect(id);
+        let out = state.scene.get_mut(id).map(f)?;
+        let after = state.shape_rect(id);
+        if let Some(r) = before {
+            state.mark_dirty(r);
+        }
+        if let Some(r) = after {
+            state.mark_dirty(r);
+        }
+        Some(out)
+    })
 }
 
 /// Take the pending buffer, leaving it empty. Mirrors render-wasm's `mem::bytes()`.
@@ -156,6 +214,17 @@ pub(crate) fn with_scene<R>(f: impl FnOnce(&Scene, Affine, &Modifiers) -> R) -> 
     with_state(|state| {
         let transform = state.viewport.transform();
         f(&state.scene, transform, &state.modifiers)
+    })
+}
+
+/// Drain the dirty region accumulated since the last frame: `(dirty_all, page_rects)`. The tile cache
+/// invalidates the tiles these rects cover (or everything when `dirty_all`), then rebuilds them.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn take_dirty() -> (bool, Vec<Rect>) {
+    with_state(|state| {
+        let all = std::mem::replace(&mut state.dirty_all, false);
+        let rects = std::mem::take(&mut state.dirty_rects);
+        (all, rects)
     })
 }
 
@@ -745,6 +814,19 @@ pub extern "C" fn last_tile_stats() -> u32 {
     TILE_STATS.with(std::cell::Cell::get)
 }
 
+/// Zero the scheduler-sink phase profiler. Host calls this, renders K frames, then reads the
+/// accumulated per-phase ms via `prof_read` and divides by K.
+#[unsafe(no_mangle)]
+pub extern "C" fn prof_reset() {
+    crate::prof::reset();
+}
+
+/// Read a profiler bucket: 0 build · 1 scene · 2 render · 3 submit · 4 tex (ms) · 5 steps · 6 texn.
+#[unsafe(no_mangle)]
+pub extern "C" fn prof_read(which: u32) -> f64 {
+    crate::prof::read(which)
+}
+
 /// Bracket an interactive pan/zoom. render-wasm uses these to switch to a cheaper cached path
 /// and to time the interaction; this module has no such path yet, so they are accepted and
 /// ignored rather than left undefined for the host to trip over.
@@ -797,6 +879,7 @@ pub extern "C" fn clean_up() {
     with_state(|state| {
         state.scene.clear();
         state.current = None;
+        state.dirty_all = true;
         // Reset the document's *view* — pan, zoom and background — but keep the surface metrics
         // `dpr`, `width` and `height`. Those describe the device and the canvas, not the document:
         // the host sets `dpr` once at surface bring-up (`set_render_options`) and does not resend
@@ -974,11 +1057,13 @@ pub extern "C" fn clear_shape_glass() {
     with_current(|node| node.glass = None);
 }
 
-/// A custom WGSL gather effect on this shape — the raw escape hatch. The staged byte buffer holds
+/// A custom WGSL effect on this shape — the raw escape hatch. The staged byte buffer holds
 /// `[nparams: u32 LE][nparams × f32 LE][wgsl UTF-8...]`; `reach` (the author-declared page-space
-/// extent it samples) comes as a direct arg. The scheduler caps its resolution unconditionally.
+/// extent it samples) comes as a direct arg. `reads_backdrop` declares its class: non-zero → it
+/// samples the backdrop beneath (a gather, resolution-capped); zero → it reads only the shape's own
+/// body (a spread, like a layer blur). Pass non-zero for an opaque shader — the safe worst case.
 #[unsafe(no_mangle)]
-pub extern "C" fn set_shape_custom_shader(reach: f32) {
+pub extern "C" fn set_shape_custom_shader(reach: f32, reads_backdrop: u32) {
     let bytes = take_bytes();
     if bytes.len() < 4 {
         return;
@@ -997,7 +1082,12 @@ pub extern "C" fn set_shape_custom_shader(reach: f32) {
         .collect();
     let wgsl = String::from_utf8_lossy(&bytes[params_end..]).into_owned();
     with_current(|node| {
-        node.custom_shader = Some(render_core::model::CustomShader { wgsl, reach, params });
+        node.custom_shader = Some(render_core::model::CustomShader {
+            wgsl,
+            reach,
+            params,
+            reads_backdrop: reads_backdrop != 0,
+        });
     });
 }
 
@@ -1668,7 +1758,26 @@ pub extern "C" fn set_modifiers() {
         .collect();
 
     with_state(|state| {
-        state.modifiers = entries.into_iter().collect();
+        let new: Modifiers = entries.into_iter().collect();
+        // A move only changes the tiles the shape leaves and the tiles it enters — dirty both, for
+        // every shape whose gesture transform actually changed.
+        let ids: std::collections::HashSet<u128> =
+            state.modifiers.keys().chain(new.keys()).copied().collect();
+        let mut rects = Vec::new();
+        for id in ids {
+            let om = state.modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+            let nm = new.get(&id).copied().unwrap_or(Affine::IDENTITY);
+            if om != nm {
+                if let Some(node) = state.scene.get(id) {
+                    rects.push(render_core::schedule::affected_page_rect(node, om));
+                    rects.push(render_core::schedule::affected_page_rect(node, nm));
+                }
+            }
+        }
+        for r in rects {
+            state.mark_dirty(r);
+        }
+        state.modifiers = new;
         state.needs_frame = true;
     });
 }
@@ -1677,6 +1786,17 @@ pub extern "C" fn set_modifiers() {
 #[unsafe(no_mangle)]
 pub extern "C" fn clean_modifiers() {
     with_state(|state| {
+        // Each modified shape snaps from its gesture position back to committed geometry — dirty both.
+        let mut rects = Vec::new();
+        for (&id, &m) in &state.modifiers {
+            if let Some(node) = state.scene.get(id) {
+                rects.push(render_core::schedule::affected_page_rect(node, m));
+                rects.push(render_core::schedule::affected_page_rect(node, Affine::IDENTITY));
+            }
+        }
+        for r in rects {
+            state.mark_dirty(r);
+        }
         state.modifiers.clear();
         state.needs_frame = true;
     });

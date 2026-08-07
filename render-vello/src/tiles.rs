@@ -159,20 +159,31 @@ impl VelloTileStore {
         // executes it on the GPU. Falls through to the whole-scene path when off or when there is no
         // live model (the demo scenes).
         if crate::abi::scheduler() {
-            let schedule = crate::abi::with_scene(|live, viewport, _modifiers| {
-                (!live.is_empty())
-                    .then(|| render_core::schedule::build(live, root * viewport, width, height))
-            });
-            if let Some(schedule) = schedule {
+            let has_scene = crate::abi::with_scene(|live, _, _| !live.is_empty());
+            if has_scene {
+                // The sink owns the cross-frame tile cache, so bring it up first, then let it plan
+                // which visible tiles are dirty this frame (a pan → only the newly-exposed strip; an
+                // edit/zoom → all of them). Build the schedule for *just* those, execute, and the sink
+                // blits the reused tiles from cache.
                 if self.sink.is_none() {
                     self.sink = Some(crate::sink::Sink::new(device, self.format));
                 }
-                if let Some(sink) = self.sink.as_mut() {
-                    sink.execute(
-                        &schedule, renderer, device, queue, surface, scene_source, root, width,
-                        height,
-                    );
-                }
+                let sink = self.sink.as_mut().expect("sink just created");
+                let full_view = crate::abi::effective_view(root);
+                let (dirty_all, dirty_rects) = crate::abi::take_dirty();
+                let dirty = sink.plan_frame(full_view, width, height, dirty_all, &dirty_rects);
+                let dirty_set: std::collections::HashSet<TileKey> = dirty.iter().copied().collect();
+
+                let _tb = crate::prof::now();
+                let schedule = crate::abi::with_scene(|live, viewport, _modifiers| {
+                    render_core::schedule::build_visible(live, root * viewport, &dirty_set)
+                });
+                crate::prof::add_build(crate::prof::now() - _tb);
+
+                sink.execute(
+                    &schedule, &dirty, renderer, device, queue, surface, scene_source, root, width,
+                    height,
+                );
                 return;
             }
         }

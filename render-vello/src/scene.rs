@@ -24,6 +24,7 @@
 //! off-screen rather than as a wrong matrix.
 
 use render_core::blend::DEFAULT_BLEND;
+use render_core::schedule::PaintOp;
 use render_core::blur::radius_to_sigma;
 use render_core::kurbo::{Affine, BezPath, Rect};
 use render_core::model as m;
@@ -225,7 +226,8 @@ impl ExampleScene for NeutralModelScene {
         // target (no background, no tree), at the matrix the caller baked into `root`. This is how
         // the sink executes a `Paint` step — reusing the whole draw path (model, text, modifiers)
         // without a per-node bridge on the scene trait.
-        if let Some(only) = paint_only() {
+        let batch = paint_batch();
+        if !batch.is_empty() {
             let fallback = &self.fallback;
             let text = &mut self.text;
             crate::abi::with_scene(|live, viewport, modifiers| {
@@ -234,10 +236,31 @@ impl ExampleScene for NeutralModelScene {
                 } else {
                     (live, root * viewport)
                 };
-                if let Some(node) = model.get(only) {
-                    let modifier = modifiers.get(&only).copied().unwrap_or(Affine::IDENTITY);
-                    let matrix = view * modifier * node.effective_transform();
-                    paint_node_body(ctx, resources, text, node, matrix);
+                // The batch is already in z-order (builder emission order); execute each op in turn
+                // into this one scene so a run of plain shapes becomes a single `renderer.render`. A
+                // `PushLayer`/`PopLayer` pair isolates a plain opacity/blend group as an in-scene
+                // layer — no separate surface, still one submission.
+                for op in &batch {
+                    match *op {
+                        PaintOp::Body(only) => {
+                            if let Some(node) = model.get(only) {
+                                let modifier = modifiers.get(&only).copied().unwrap_or(Affine::IDENTITY);
+                                let matrix = view * modifier * node.effective_transform();
+                                paint_node_body(ctx, resources, text, node, matrix);
+                            }
+                        }
+                        PaintOp::PushLayer(id) => {
+                            if let Some(node) = model.get(id) {
+                                // Group opacity/blend, applied to the whole subtree drawn until the
+                                // matching pop. Clip is left to the node's own draw path (frame
+                                // clipping is not yet isolating here), matching the `ScopeOf` path.
+                                let alpha = (node.opacity < 1.0).then_some(node.opacity);
+                                let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
+                                ctx.push_layer(None, blend, alpha, None, None);
+                            }
+                        }
+                        PaintOp::PopLayer => ctx.pop_layer(),
+                    }
                 }
             });
             return;
@@ -327,21 +350,32 @@ fn effects_enabled() -> bool {
 }
 
 thread_local! {
-    /// When set, [`NeutralModelScene::render`] draws only this one node's body (a scheduler `Paint`
-    /// step) instead of the whole tree — see the check at the top of `render`.
-    static PAINT_ONLY: std::cell::Cell<Option<u128>> = const { std::cell::Cell::new(None) };
+    /// When non-empty, [`NeutralModelScene::render`] draws exactly these nodes' bodies, in order,
+    /// into the target (a scheduler `Paint` step's shape run) instead of the whole tree — see the
+    /// check at the top of `render`. A run rather than a single id so a coalesced batch of plain
+    /// shapes renders in one pass.
+    static PAINT_BATCH: std::cell::RefCell<Vec<PaintOp>> = const { std::cell::RefCell::new(Vec::new()) };
     /// When set, `render` fills only this node's silhouette in solid white — a coverage mask the
     /// sink uses to clip a gather's blurred backdrop to the shape's outline (not its bbox).
     static MASK_ONLY: std::cell::Cell<Option<u128>> = const { std::cell::Cell::new(None) };
 }
 
-/// Scope the next `render` to one node's body (the sink sets this per `Paint` step, then clears it).
-pub(crate) fn set_paint_only(id: Option<u128>) {
-    PAINT_ONLY.with(|c| c.set(id));
+/// Scope the next `render` to this run of paint ops (the sink sets it per `Paint` step, then clears).
+pub(crate) fn set_paint_batch(ops: &[PaintOp]) {
+    PAINT_BATCH.with(|c| {
+        let mut v = c.borrow_mut();
+        v.clear();
+        v.extend_from_slice(ops);
+    });
 }
 
-fn paint_only() -> Option<u128> {
-    PAINT_ONLY.with(std::cell::Cell::get)
+/// Clear the paint-batch scope so the next `render` draws the whole tree again.
+pub(crate) fn clear_paint_batch() {
+    PAINT_BATCH.with(|c| c.borrow_mut().clear());
+}
+
+fn paint_batch() -> Vec<PaintOp> {
+    PAINT_BATCH.with(|c| c.borrow().clone())
 }
 
 /// Scope the next `render` to one node's silhouette-as-coverage (a `PaintGather` clip mask).

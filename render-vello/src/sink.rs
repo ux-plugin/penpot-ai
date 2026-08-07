@@ -20,15 +20,26 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use render_core::schedule::{LayerPaint, Schedule, Step, SurfaceRef, SurfaceRole};
-use render_core::tiling::{self, TILE_BUFFER, TILE_MARGIN, TILE_SIZE};
-use vello_common::kurbo::{Affine, Point, Rect};
+use render_core::atlas::{pack_grid, shelf_pack};
+use render_core::schedule::{
+    first_write_paints, LayerPaint, PaintOp, Schedule, Step, SurfaceRef, SurfaceRole,
+};
+use render_core::tile_cache::TileCache;
+use render_core::tiling::{self, TileKey, TILE_BUFFER, TILE_MARGIN, TILE_SIZE};
+use vello_common::kurbo::{Affine, Rect};
 use vello_example_scenes::AnyScene;
 use vello_hybrid::{RenderSize, Renderer, Scene, TextureBindings};
 
 use crate::blend::{Blit, Compositor, MaskedBlit};
 use crate::glass::GlassPipeline;
-use crate::graph::{build_custom_pipeline, new_target, run_graph, Pass, PassKind, Src};
+use render_core::effect_graph::{self, GlassGeometry};
+
+use crate::graph::{build_custom_pipeline, lower_graph, new_target, run_graph, Pass};
+
+/// Distinct custom-shader render pipelines kept before the cache is dropped. Keyed by WGSL source
+/// hash, so live-editing a shader (a new source every keystroke) would otherwise grow this without
+/// bound. A pipeline recompiles cheaply on the next use, so clearing when full is a fine cap.
+const MAX_CUSTOM_PIPELINES: usize = 64;
 
 struct Surface {
     #[allow(dead_code)]
@@ -58,6 +69,12 @@ pub(crate) struct Sink {
     /// Custom-shader render pipelines, cached by WGSL-source hash so an unchanged shader compiles
     /// once, not per frame. Persists across frames (unlike the per-frame surface maps).
     custom_pipelines: HashMap<u64, Rc<wgpu::RenderPipeline>>,
+
+    /// The cross-frame **tile cache**: each *processed* tile keyed by `TileKey`, so a pan re-renders
+    /// only the newly-exposed tiles and blits the rest from here. The invalidation + eviction policy
+    /// (scale change → drop all, dirty rect → drop covered, LRU beyond budget) is backend-neutral and
+    /// lives in [`TileCache`]; this sink only owns the `Surface` values it stores.
+    tile_cache: TileCache<Surface>,
 }
 
 impl Sink {
@@ -70,7 +87,25 @@ impl Sink {
             backdrop_origin: HashMap::new(),
             backdrop_scale: HashMap::new(),
             custom_pipelines: HashMap::new(),
+            tile_cache: TileCache::new(),
         }
+    }
+
+    /// Decide, for this frame, which visible tiles must be (re)rendered. A zoom drops the whole cache
+    /// (tile pixels are scale-variant). Otherwise the edited region — the page-space rects the caller
+    /// drained from the abi, or everything when `dirty_all` — is invalidated tile by tile, so an edit
+    /// rebuilds only the tiles it changed. Whatever visible tiles are then uncached (the invalidated
+    /// ones plus the strip a pan just exposed) are returned as dirty; the caller builds the schedule
+    /// for exactly them, then calls [`Self::execute`].
+    pub(crate) fn plan_frame(
+        &mut self,
+        full_view: Affine,
+        width: u32,
+        height: u32,
+        dirty_all: bool,
+        dirty_rects: &[Rect],
+    ) -> Vec<TileKey> {
+        self.tile_cache.plan(full_view, width, height, dirty_all, dirty_rects)
     }
 
     /// Execute one frame's schedule onto `surface` (the swapchain texture).
@@ -78,6 +113,7 @@ impl Sink {
     pub(crate) fn execute(
         &mut self,
         schedule: &Schedule,
+        dirty: &[TileKey],
         renderer: &mut Renderer,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -107,10 +143,25 @@ impl Sink {
         );
         queue.submit([enc.finish()]);
 
-        for step in &schedule.steps {
+        // Atlas prepass: the first `Paint` into each `TileOutput` is a level-0 plain body (no outward
+        // blur, mutually independent), so pack them all into ONE `renderer.render` into one atlas
+        // texture and copy each cell into its tile — instead of one render + submit per tile. Returns
+        // the step indices it handled; the main loop skips them. Empty below the threshold.
+        let mut atlased =
+            self.atlas_prepass(&schedule.steps, renderer, device, queue, scene_source, root, full_view, format);
+        // Same idea for the per-shape spread surfaces: each blurred body is an independent render, so
+        // shelf-pack them into one atlas (a gap between cells keeps each blur inside its own bounds).
+        atlased.extend(
+            self.atlas_effects(&schedule.steps, renderer, device, queue, scene_source, root, full_view, format),
+        );
+
+        for (i, step) in schedule.steps.iter().enumerate() {
+            if atlased.contains(&i) {
+                continue;
+            }
             match step {
-                Step::Paint { shape, clip, write_to } => {
-                    self.paint(*shape, *write_to, *clip, renderer, device, queue, scene_source, root, full_view, format);
+                Step::Paint { ops, clip, write_to } => {
+                    self.paint(ops, *write_to, *clip, renderer, device, queue, scene_source, root, full_view, format);
                 }
                 Step::Composite { from, to, paint, rect, .. } => {
                     self.composite(*from, *to, *paint, *rect, device, queue, &sw_view, full_view, width, height, format);
@@ -125,12 +176,350 @@ impl Sink {
                 _ => {}
             }
         }
+
+        // --- tile cache: harvest what we just rendered, blit what we reused ---
+        self.tile_cache.advance_frame();
+        let dirty_set: HashSet<TileKey> = dirty.iter().copied().collect();
+
+        // Move each freshly-rendered dirty tile's `TileOutput` into the persistent cache. The finalize
+        // composite left it retained (`erase_after: false`), and it was already blitted to the
+        // swapchain by that finalize — so caching it here just makes it reusable next frame. `store`
+        // keeps a `None` for an empty tile too, so `plan_frame` won't keep re-dirtying it.
+        for &t in dirty {
+            let key = SurfaceRef::tile_ref(SurfaceRole::TileOutput, t);
+            self.tile_cache.store(t, self.surfaces.remove(&key));
+        }
+
+        // Composite the reused (cached, not re-rendered this frame) visible tiles onto the swapchain.
+        // This is the whole point: they skipped every paint/effect pass and pay only a texture blit.
+        let visible = tiling::visible_tiles(full_view, width, height);
+        let mut reused_enc = device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink reused tiles") });
+        let mut reused = 0u32;
+        for &t in &visible {
+            if dirty_set.contains(&t) {
+                continue;
+            }
+            // A cached content tile → blit it; a cached-empty tile (`get` → `None`) shows the cleared
+            // background, nothing to blit. Clone the view first so the borrow releases before `touch`.
+            let Some(view) = self.tile_cache.get(t).map(|s| s.view.clone()) else {
+                continue;
+            };
+            self.blit_tile(device, &mut reused_enc, &sw_view, t, &view, full_view, width, height);
+            self.tile_cache.touch(t);
+            reused += 1;
+        }
+        queue.submit([reused_enc.finish()]);
+        // Machine-readable proof of reuse (rendered, reused), read via `_last_tile_stats`.
+        crate::abi::set_tile_stats(u32::try_from(dirty.len()).unwrap_or(u32::MAX), reused);
+
+        // Evict LRU beyond budget (never a visible tile). Dropped textures are freed here; a recycle
+        // pool for the returned surfaces is a later optimization.
+        let _freed = self.tile_cache.evict(&visible);
+    }
+
+    /// Render the level-0 plain bodies (tile + scope buffers) as one atlas instead of one
+    /// `renderer.render` per surface.
+    ///
+    /// Collects every `Paint` that is the *first* write to a `TileOutput` or `ScopeOf` — a plain body
+    /// with no outward blur, and (being a first write) independent of every other one — packs each
+    /// into its own `TILE_BUFFER`² cell of a single atlas scene, does ONE render + copies each cell
+    /// into its surface, all in one submit. The rest of the schedule (composites, gathers, any second
+    /// paint into a surface) then runs unchanged onto the populated, `written`-marked surfaces. Returns
+    /// the handled step indices; empty (falls through to the per-paint path) below the batch threshold
+    /// or if the atlas would exceed the device's max texture size.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn atlas_prepass(
+        &mut self,
+        steps: &[Step],
+        renderer: &mut Renderer,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene_source: &mut AnyScene<Scene>,
+        root: Affine,
+        full_view: Affine,
+        format: wgpu::TextureFormat,
+    ) -> HashSet<usize> {
+        const ATLAS_MIN: usize = 3;
+        let none = HashSet::new();
+
+        // The first Paint into each surface (render-core's SSA-order primitive), kept only for the
+        // `TILE_BUFFER`-sized plain bodies: a tile output or a group's scope buffer (a scope's first
+        // paint is the container background + its plain children; effect children arrive later as
+        // composites). Both pack the same fixed-cell atlas.
+        let mut candidates: Vec<(usize, SurfaceRef, Vec<PaintOp>)> = Vec::new();
+        for i in first_write_paints(steps) {
+            if let Step::Paint { ops, write_to, .. } = &steps[i] {
+                if matches!(write_to.role, SurfaceRole::TileOutput | SurfaceRole::ScopeOf(_)) {
+                    candidates.push((i, *write_to, ops.clone()));
+                }
+            }
+        }
+        if candidates.len() < ATLAS_MIN {
+            return none;
+        }
+
+        // Pack into a near-square grid of fixed `TILE_BUFFER`² cells (backend-neutral geometry).
+        let max_dim = device.limits().max_texture_dimension_2d;
+        let Some(packing) = pack_grid(candidates.len(), TILE_BUFFER, max_dim) else {
+            return none;
+        };
+        let (aw, ah) = (packing.width, packing.height);
+
+        // Build one scene: each candidate's body drawn into its cell (its tile-local transform shifted
+        // to the cell origin).
+        let _tsc = crate::prof::now();
+        let mut scene = Scene::new(aw as u16, ah as u16);
+        for cell in &packing.cells {
+            let (_, write_to, ops) = &candidates[cell.index];
+            let Some(tile) = write_to.tile else { continue };
+            let (ox, oy) = tiling::tile_device_origin(tile, full_view);
+            let m = f64::from(TILE_MARGIN);
+            let root_for_cell = Affine::translate((f64::from(cell.x) + m - ox, f64::from(cell.y) + m - oy)) * root;
+            crate::scene::set_paint_batch(ops);
+            scene_source.render(&mut scene, root_for_cell);
+        }
+        crate::scene::clear_paint_batch();
+        crate::prof::add_scene(crate::prof::now() - _tsc);
+
+        let atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("body atlas"),
+            size: wgpu::Extent3d { width: aw, height: ah, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // ONE render of every cell, then copy each cell into its tile — same encoder, one submit.
+        // wgpu inserts the atlas write→read barrier between the render pass and the copies.
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("atlas") });
+        let _trd = crate::prof::now();
+        let res = renderer.render(
+            &scene,
+            scene_source.resources_mut(),
+            device,
+            queue,
+            &mut enc,
+            &RenderSize { width: aw, height: ah },
+            &atlas_view,
+            &TextureBindings::new(),
+        );
+        crate::prof::add_render(crate::prof::now() - _trd);
+        crate::prof::inc_render();
+        if let Err(e) = res {
+            log::warn!("atlas render skipped: {e:?}");
+            return none;
+        }
+        for cell in &packing.cells {
+            let (_, write_to, _) = &candidates[cell.index];
+            self.ensure_surface(*write_to, device, TILE_BUFFER, TILE_BUFFER, format);
+            enc.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: cell.x, y: cell.y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.surfaces[write_to].texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: TILE_BUFFER, height: TILE_BUFFER, depth_or_array_layers: 1 },
+            );
+            self.written.insert(*write_to);
+            crate::prof::inc_step();
+        }
+        let _tsu = crate::prof::now();
+        queue.submit([enc.finish()]);
+        crate::prof::add_submit(crate::prof::now() - _tsu);
+
+        candidates.iter().map(|(i, _, _)| *i).collect()
+    }
+
+    /// Render the level-0 spread bodies (per-shape `RasterEffectOutput` surfaces) as one atlas.
+    ///
+    /// Like [`Self::atlas_prepass`], but these surfaces vary in size (each is its shape's extrect) and
+    /// carry a blur, so they are shelf-packed with a `GAP` between cells — each shape's blur is already
+    /// clipped to its own layer bounds (its extrect), and the gap absorbs any 1px kernel spill so it
+    /// can't reach a neighbour. Body-only custom shaders are excluded (they need the per-surface
+    /// `custom_over_body` pass) and fall through to the direct path. The following `Composite` steps
+    /// read the populated, `written`-marked surfaces unchanged.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn atlas_effects(
+        &mut self,
+        steps: &[Step],
+        renderer: &mut Renderer,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene_source: &mut AnyScene<Scene>,
+        root: Affine,
+        full_view: Affine,
+        format: wgpu::TextureFormat,
+    ) -> HashSet<usize> {
+        const ATLAS_MIN: usize = 4;
+        const GAP: u32 = 4;
+        let none = HashSet::new();
+        let max_dim = device.limits().max_texture_dimension_2d;
+
+        // First write to each RasterEffectOutput, minus body-only custom shaders (they need the
+        // per-surface `custom_over_body` pass and fall through to the direct path). Carry each cell's
+        // device size and the (dx, dy) that places its extrect at the cell origin.
+        let mut cands: Vec<(usize, SurfaceRef, Vec<PaintOp>, u32, u32, f64, f64)> = Vec::new();
+        for i in first_write_paints(steps) {
+            let Step::Paint { ops, write_to, clip } = &steps[i] else { continue };
+            let SurfaceRole::RasterEffectOutput(id) = write_to.role else { continue };
+            let has_custom = crate::abi::with_scene(|live, _, _| {
+                live.get(id).is_some_and(|n| n.custom_shader.as_ref().is_some_and(|c| !c.reads_backdrop))
+            });
+            if has_custom {
+                continue;
+            }
+            let (dx, dy, dw, dh) = tiling::device_rect(full_view, *clip);
+            let w = (dw.ceil() as u32).max(1);
+            let h = (dh.ceil() as u32).max(1);
+            if w > max_dim || h > max_dim {
+                continue;
+            }
+            cands.push((i, *write_to, ops.clone(), w, h, dx, dy));
+        }
+        if cands.len() < ATLAS_MIN {
+            return none;
+        }
+
+        // Shelf-pack the variable-sized cells with a gap (backend-neutral geometry); the gap keeps
+        // each cell's blur inside its own bounds so it can't bleed into a neighbour.
+        let sizes: Vec<(u32, u32)> = cands.iter().map(|c| (c.3, c.4)).collect();
+        let Some(packing) = shelf_pack(&sizes, GAP, 2048, max_dim) else {
+            return none;
+        };
+        let (atlas_w, atlas_h) = (packing.width, packing.height);
+
+        let _tsc = crate::prof::now();
+        let mut scene = Scene::new(atlas_w as u16, atlas_h as u16);
+        for cell in &packing.cells {
+            let (_, _, ops, _, _, dx, dy) = &cands[cell.index];
+            let root_for_cell = Affine::translate((f64::from(cell.x) - dx, f64::from(cell.y) - dy)) * root;
+            crate::scene::set_paint_batch(ops);
+            scene_source.render(&mut scene, root_for_cell);
+        }
+        crate::scene::clear_paint_batch();
+        crate::prof::add_scene(crate::prof::now() - _tsc);
+
+        let atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("spread atlas"),
+            size: wgpu::Extent3d { width: atlas_w, height: atlas_h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut enc = device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("spread atlas") });
+        let _trd = crate::prof::now();
+        let res = renderer.render(
+            &scene,
+            scene_source.resources_mut(),
+            device,
+            queue,
+            &mut enc,
+            &RenderSize { width: atlas_w, height: atlas_h },
+            &atlas_view,
+            &TextureBindings::new(),
+        );
+        crate::prof::add_render(crate::prof::now() - _trd);
+        crate::prof::inc_render();
+        if let Err(e) = res {
+            log::warn!("spread atlas render skipped: {e:?}");
+            return none;
+        }
+        for cell in &packing.cells {
+            let (_, write_to, _, w, h, _, _) = &cands[cell.index];
+            self.ensure_surface(*write_to, device, *w, *h, format);
+            enc.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: cell.x, y: cell.y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.surfaces[write_to].texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
+            );
+            self.written.insert(*write_to);
+            crate::prof::inc_step();
+        }
+        let _tsu = crate::prof::now();
+        queue.submit([enc.finish()]);
+        crate::prof::add_submit(crate::prof::now() - _tsu);
+
+        cands.iter().map(|(i, _, _, _, _, _, _)| *i).collect()
+    }
+
+    /// Blit a cached tile's centre `TILE_SIZE`² square onto the swapchain at its device origin — the
+    /// same placement the finalize `Composite { to: Target }` uses, factored out so a reused tile can
+    /// reach the screen without going through the schedule.
+    #[expect(clippy::too_many_arguments, reason = "GPU context threads through the sink")]
+    fn blit_tile(
+        &self,
+        device: &wgpu::Device,
+        enc: &mut wgpu::CommandEncoder,
+        sw_view: &wgpu::TextureView,
+        tile: TileKey,
+        src_view: &wgpu::TextureView,
+        full_view: Affine,
+        width: u32,
+        height: u32,
+    ) {
+        let (ox, oy) = tiling::tile_device_origin(tile, full_view);
+        let m = TILE_MARGIN as f32;
+        let ts = TILE_SIZE as f32;
+        self.compositor.blit(
+            device,
+            enc,
+            sw_view,
+            (width as f32, height as f32),
+            &Blit {
+                src: src_view,
+                dst: (ox as f32, oy as f32, ts, ts),
+                src_rect: (m, m, ts, ts),
+                src_size: (TILE_BUFFER as f32, TILE_BUFFER as f32),
+                alpha: 1.0,
+            },
+        );
+    }
+
+    /// Bound the custom-pipeline cache before inserting a new `key`: at the cap, drop the whole map
+    /// (each pipeline recompiles cheaply on next use), so a churn of distinct shader sources can't
+    /// grow it without limit. A key already present is a hit and never trips the cap.
+    fn cap_custom_pipelines(&mut self, key: u64) {
+        if !self.custom_pipelines.contains_key(&key)
+            && self.custom_pipelines.len() >= MAX_CUSTOM_PIPELINES
+        {
+            self.custom_pipelines.clear();
+        }
     }
 
     fn ensure_surface(&mut self, key: SurfaceRef, device: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat) {
         if self.surfaces.contains_key(&key) {
             return;
         }
+        let _tt = crate::prof::now();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sink surface"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -138,18 +527,22 @@ impl Sink {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            // Rendered into, and sampled when composited.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // Rendered into, sampled when composited, and a copy target when the atlas prepass
+            // populates a tile from its atlas cell.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        crate::prof::add_tex(crate::prof::now() - _tt);
         self.surfaces.insert(key, Surface { texture, view, width: w, height: h });
     }
 
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn paint(
         &mut self,
-        shape: u128,
+        ops: &[PaintOp],
         write_to: SurfaceRef,
         clip: Rect,
         renderer: &mut Renderer,
@@ -171,7 +564,7 @@ impl Sink {
                 (TILE_BUFFER, TILE_BUFFER, Affine::translate((m - ox, m - oy)) * root)
             }
             SurfaceRole::RasterEffectOutput(_) => {
-                let (dx, dy, dw, dh) = device_rect(full_view, clip);
+                let (dx, dy, dw, dh) = tiling::device_rect(full_view, clip);
                 let w = (dw.ceil() as u32).max(1);
                 let h = (dh.ceil() as u32).max(1);
                 (w, h, Affine::translate((-dx, -dy)) * root)
@@ -183,23 +576,88 @@ impl Sink {
         let first = self.written.insert(write_to);
         let view = self.surfaces[&write_to].view.clone();
 
+        let _tsc = crate::prof::now();
         let mut scene = Scene::new(w as u16, h as u16);
-        crate::scene::set_paint_only(Some(shape));
+        crate::scene::set_paint_batch(ops);
         scene_source.render(&mut scene, root_for_target);
-        crate::scene::set_paint_only(None);
+        crate::scene::clear_paint_batch();
+        crate::prof::add_scene(crate::prof::now() - _tsc);
 
         let mut enc =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink paint") });
         let size = RenderSize { width: w, height: h };
+        let _trd = crate::prof::now();
         let res = if first {
             renderer.render(&scene, scene_source.resources_mut(), device, queue, &mut enc, &size, &view, &TextureBindings::new())
         } else {
             renderer.render_load(&scene, scene_source.resources_mut(), device, queue, &mut enc, &size, &view, &TextureBindings::new())
         };
+        crate::prof::add_render(crate::prof::now() - _trd);
+        crate::prof::inc_render();
         if let Err(e) = res {
             log::warn!("sink paint skipped: {e:?}");
         }
+        let _tsu = crate::prof::now();
         queue.submit([enc.finish()]);
+        crate::prof::add_submit(crate::prof::now() - _tsu);
+        crate::prof::inc_step();
+
+        // A body-only custom shader (a spread) runs its pass over the body just rendered here,
+        // replacing the effect surface with the shader's output. Backdrop-reading shaders take the
+        // gather path instead and never reach this — this only fires on an isolated effect surface.
+        if let SurfaceRole::RasterEffectOutput(id) = write_to.role {
+            self.custom_over_body(id, write_to, device, queue, format);
+        }
+    }
+
+    /// Run a body-only custom shader (`reads_backdrop: false`) over a shape's freshly rendered effect
+    /// surface, swapping the surface for the shader's output. Same WGSL contract as the gather case —
+    /// `@binding(2)` is just the shape's own body here, not the backdrop.
+    fn custom_over_body(
+        &mut self,
+        id: u128,
+        write_to: SurfaceRef,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) {
+        let shader = crate::abi::with_scene(|live, _, _| {
+            live.get(id).and_then(|n| {
+                n.custom_shader
+                    .as_ref()
+                    .filter(|c| !c.reads_backdrop)
+                    .map(|c| (c.wgsl.clone(), c.params.clone()))
+            })
+        });
+        let Some((wgsl, params)) = shader else { return };
+        let Some(surf) = self.surfaces.get(&write_to) else { return };
+        let (w, h) = (surf.width, surf.height);
+        let body_view = surf.view.clone();
+
+        // One input texture (the body); fold the count into the key so the cached pipeline's explicit
+        // layout always matches the number of textures custom_pass binds.
+        let n_inputs = 1;
+        let mut hasher = DefaultHasher::new();
+        wgsl.hash(&mut hasher);
+        n_inputs.hash(&mut hasher);
+        let key = hasher.finish();
+        self.cap_custom_pipelines(key);
+        let pipeline = self
+            .custom_pipelines
+            .entry(key)
+            .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
+            .clone();
+
+        let mut u = vec![w as f32, h as f32];
+        u.extend_from_slice(&params);
+        // render-core describes the single custom pass; lower it with the pipeline resolved above.
+        let passes = lower_graph(&effect_graph::custom_graph(u), Some(&pipeline));
+        let Some((tex, view)) =
+            run_graph(&self.compositor, &self.glass, device, queue, &[&body_view], &passes, w, h, format)
+        else {
+            return;
+        };
+        self.surfaces.insert(write_to, Surface { texture: tex, view, width: w, height: h });
     }
 
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
@@ -264,7 +722,7 @@ impl Sink {
                     // Effect surface → placed at its device position relative to the tile.
                     let (ox, oy) = tiling::tile_device_origin(tile, full_view);
                     let m = f64::from(TILE_MARGIN);
-                    let (dx, dy, dw, dh) = device_rect(full_view, rect);
+                    let (dx, dy, dw, dh) = tiling::device_rect(full_view, rect);
                     Blit {
                         src: &src_view,
                         dst: ((dx - ox + m) as f32, (dy - oy + m) as f32, dw as f32, dh as f32),
@@ -286,7 +744,10 @@ impl Sink {
             }
             _ => return,
         }
+        let _tsu = crate::prof::now();
         queue.submit([enc.finish()]);
+        crate::prof::add_submit(crate::prof::now() - _tsu);
+        crate::prof::inc_step();
     }
 
     /// Fuse the below-z-order content over a gather's sample rect into one `Backdrop` surface (sized
@@ -306,12 +767,12 @@ impl Sink {
         full_view: Affine,
         format: wgpu::TextureFormat,
     ) {
-        let (bdx, bdy, bw, bh) = device_rect(full_view, extent);
+        let (bdx, bdy, bw, bh) = tiling::device_rect(full_view, extent);
         // Resolution cap: keep the effect's device reach within one tile so a gather never reads/writes
         // past the current tile's one-tile ring. If `reach · zoom` exceeds a tile, draw the backdrop
         // (and every downstream pass) at `k < 1`; the stamp upscales by `1/k`. Blur is low-pass, so
         // this is near-lossless; glass loses some edge detail, the accepted cost of an unbounded zoom.
-        let mut k = resolution_cap(full_view, reach);
+        let mut k = tiling::resolution_cap(full_view, reach);
         // A custom shader (`always_cap`) additionally gets a hard resolution ceiling from any zoom —
         // its reach/cost is unprovable, so its surface never exceeds one tile+ring in its larger dim.
         if always_cap {
@@ -402,7 +863,8 @@ impl Sink {
             } else if is_custom {
                 self.custom_graph(id, bw, bh, device, format)
             } else {
-                Some(blur_graph(self.gather_sigma(id, full_view, k)))
+                let graph = effect_graph::background_blur_graph(self.gather_sigma(id, full_view, k));
+                Some(lower_graph(&graph, None))
             };
             let Some(passes) = passes else { return };
             let backdrop_view = self.surfaces[&backdrop].view.clone();
@@ -432,6 +894,7 @@ impl Sink {
                 if let Err(e) = renderer.render(&mscene, scene_source.resources_mut(), device, queue, &mut menc, &msize, &mask_view, &TextureBindings::new()) {
                     log::warn!("sink gather mask skipped: {e:?}");
                 }
+                crate::prof::inc_render();
                 queue.submit([menc.finish()]);
                 self.surfaces.insert(mask_ref, Surface { texture: mask, view: mask_view, width: bw, height: bh });
             }
@@ -440,7 +903,7 @@ impl Sink {
 
         let Some(tile) = write_to.tile else { return };
         let (ox, oy) = tiling::tile_device_origin(tile, full_view);
-        let (sdx, sdy, sdw, sdh) = device_rect(full_view, clip);
+        let (sdx, sdy, sdw, sdh) = tiling::device_rect(full_view, clip);
         // Intersect the shape's device rect (a coarse bound) with this tile's device content region.
         let ts = f64::from(TILE_SIZE);
         let ix0 = sdx.max(ox);
@@ -475,140 +938,64 @@ impl Sink {
         queue.submit([enc.finish()]);
     }
 
-    /// Device-space Gaussian sigma for a background blur: the shape's page-space radius mapped through
-    /// the *effective* view scale (`zoom · k`). Using the capped scale is what makes the reduced-res
-    /// backdrop's blur reach fit one tile — `3σ_device ≤ TILE_SIZE` by construction of `k`.
+    /// Device-space Gaussian sigma for a background blur (render-core's [`effect_graph::background_blur_sigma`]):
+    /// the shape's page-space radius mapped through the *effective* view scale (`zoom · k`). Using the
+    /// capped scale is what makes the reduced-res backdrop's blur reach fit one tile —
+    /// `3σ_device ≤ TILE_SIZE` by construction of `k`.
     fn gather_sigma(&self, id: u128, full_view: Affine, k: f64) -> f32 {
         let radius = crate::abi::with_scene(|live, _, _| live.get(id).and_then(|n| n.background_blur));
         let c = full_view.as_coeffs();
         let scale = ((c[0] * c[0] + c[1] * c[1]).sqrt() * k) as f32;
-        render_core::blur::radius_to_sigma(radius.unwrap_or(0.0)) * scale
+        effect_graph::background_blur_sigma(radius.unwrap_or(0.0), scale)
     }
 
-    /// Build the glass pass-graph over the assembled backdrop (input 0): displacement (pass 0) →
-    /// refraction (pass 1) → optional blur (passes 2,3) → composite (last). Glass geometry is the
-    /// shape's rounded box in the backdrop's device space (axis-aligned; rotation is a gap); the
-    /// composite's own SDF mask does the clip, so no silhouette mask is needed.
+    /// Build the glass pass-graph over the assembled backdrop (input 0). The geometry→uniform math is
+    /// render-core's [`effect_graph::glass_graph`]; this only reads the shape's glass params/box off
+    /// the live scene and lowers the neutral graph (no custom pass, so no pipeline to resolve). Glass
+    /// geometry is the shape's rounded box (axis-aligned; rotation is a gap); the composite's own SDF
+    /// mask does the clip, so no silhouette mask is needed.
     fn glass_graph(&self, id: u128, bw: u32, bh: u32, bdx: f64, bdy: f64, full_view: Affine, k: f64) -> Option<Vec<Pass>> {
-        let (g, cx, cy, w, h, corners, is_circle) = crate::abi::with_scene(|live, _, _| {
+        let (g, geom) = crate::abi::with_scene(|live, _, _| {
             live.get(id).and_then(|n| {
                 n.glass.map(|g| {
                     let c = n.bounds.center();
-                    (g, c.x, c.y, n.bounds.width(), n.bounds.height(), n.corners, n.kind == render_core::model::ShapeKind::Circle)
+                    let geom = GlassGeometry {
+                        center: c,
+                        width: n.bounds.width(),
+                        height: n.bounds.height(),
+                        corner_radius: n.corners.map_or(0.0, |r| r.top_left),
+                        is_circle: n.kind == render_core::model::ShapeKind::Circle,
+                    };
+                    (g, geom)
                 })
             })
         })?;
-
-        // Effective device scale = zoom · k. All glass geometry (centre, half-extents, corner, device
-        // thresholds `s`, blur sigma) is expressed in the reduced backdrop's texel space, so the SDF
-        // and refraction land pixel-correct at whatever resolution the cap chose.
-        let zoom = {
-            let c = full_view.as_coeffs();
-            (c[0] * c[0] + c[1] * c[1]).sqrt()
-        };
-        let eff = zoom * k;
-        let dev_center = full_view * Point::new(cx, cy);
-        let gcx = ((dev_center.x - bdx) * k) as f32;
-        let gcy = ((dev_center.y - bdy) * k) as f32;
-        let hx = (w * 0.5 * eff) as f32;
-        let hy = (h * 0.5 * eff) as f32;
-        let corner = if is_circle { hx.min(hy) } else { (corners.map_or(0.0, |r| r.top_left) * eff) as f32 };
-        let s = eff as f32;
-        let (bwf, bhf) = (bw as f32, bh as f32);
-
-        let disp_u: [f32; 20] = [
-            bwf, bhf, gcx, gcy,
-            hx, hy, corner, g.surface_type as f32,
-            g.bezel_width, g.thickness, g.refractive_index, g.specular_angle,
-            g.splay, g.tilt_angle, g.edge_boost, g.zoom,
-            s, 0.0, 0.0, 0.0,
-        ];
-        let refr_u: [f32; 4] = [bwf, bhf, g.chromatic_aberration, s];
-        let comp_u: [f32; 8] = [bwf, bhf, g.frost, g.specular_opacity, g.specular_saturation, s, 0.0, 0.0];
-
-        let mut passes = vec![
-            Pass { kind: PassKind::GlassDisplacement { u: disp_u }, inputs: vec![] },
-            Pass { kind: PassKind::GlassRefraction { u: refr_u }, inputs: vec![Src::Input(0), Src::Pass(0)] },
-        ];
-        // Glass blur (blur + frost softening) of the refracted image, when meaningful; otherwise the
-        // composite reads the sharp refraction directly. One Blur pass = a full 2D Gaussian.
-        let sigma = g.total_blur_sigma() * s;
-        let blurred = if sigma > 0.5 {
-            passes.push(Pass { kind: PassKind::Blur { sigma }, inputs: vec![Src::Pass(1)] });
-            Src::Pass(2)
-        } else {
-            Src::Pass(1)
-        };
-        passes.push(Pass { kind: PassKind::GlassComposite { u: comp_u }, inputs: vec![blurred, Src::Input(0), Src::Pass(0)] });
-        Some(passes)
+        let graph = effect_graph::glass_graph(&g, geom, (bw, bh), (bdx, bdy), full_view, k);
+        Some(lower_graph(&graph, None))
     }
 
-    /// Build the custom-shader graph: one [`PassKind::Custom`] over the assembled backdrop (input 0).
-    /// The pipeline is compiled once per distinct WGSL source (cached by hash); the uniform is the
-    /// backdrop resolution followed by the shader's declared params.
+    /// Build the custom-shader graph: one custom pass over the assembled backdrop (input 0). The
+    /// neutral graph is render-core's [`effect_graph::custom_graph`]; this resolves the shape's
+    /// pipeline (compiled once per distinct WGSL source, cached by hash) and lowers with it. The
+    /// uniform is the backdrop resolution followed by the shader's declared params.
     fn custom_graph(&mut self, id: u128, bw: u32, bh: u32, device: &wgpu::Device, format: wgpu::TextureFormat) -> Option<Vec<Pass>> {
         let (wgsl, params) = crate::abi::with_scene(|live, _, _| {
             live.get(id).and_then(|n| n.custom_shader.as_ref().map(|c| (c.wgsl.clone(), c.params.clone())))
         })?;
+        // One input texture (the assembled backdrop); key on it so the explicit layout matches.
+        let n_inputs = 1;
         let mut hasher = DefaultHasher::new();
         wgsl.hash(&mut hasher);
+        n_inputs.hash(&mut hasher);
         let key = hasher.finish();
+        self.cap_custom_pipelines(key);
         let pipeline = self
             .custom_pipelines
             .entry(key)
-            .or_insert_with(|| build_custom_pipeline(device, &wgsl, format))
+            .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
             .clone();
         let mut u = vec![bw as f32, bh as f32];
         u.extend_from_slice(&params);
-        Some(vec![Pass { kind: PassKind::Custom { pipeline, u }, inputs: vec![Src::Input(0)] }])
+        Some(lower_graph(&effect_graph::custom_graph(u), Some(&pipeline)))
     }
-}
-
-/// The background-blur graph: one 2D Gaussian pass over the assembled backdrop (input 0) — direct or
-/// pyramid by sigma. Its result is what the sink stamps through the silhouette mask.
-fn blur_graph(sigma: f32) -> Vec<Pass> {
-    vec![Pass { kind: PassKind::Blur { sigma }, inputs: vec![Src::Input(0)] }]
-}
-
-/// The resolution-cap factor `k ∈ (0, 1]` for an effect whose page-space reach is `reach`, under
-/// `view`. `1.0` while the reach fits one tile in device space; below that it shrinks so
-/// `reach · zoom · k == TILE_SIZE`, keeping every gather read/write inside the current tile's
-/// one-tile ring. The stamp then upscales the reduced result by `1/k`. `reach ≤ 0` (no effect
-/// spread) → `1.0`, i.e. draw at native zoom.
-fn resolution_cap(view: Affine, reach: f64) -> f64 {
-    if reach <= 0.0 {
-        return 1.0;
-    }
-    let c = view.as_coeffs();
-    let zoom = (c[0] * c[0] + c[1] * c[1]).sqrt();
-    let device_reach = reach * zoom;
-    let budget = f64::from(TILE_SIZE);
-    if device_reach <= budget {
-        1.0
-    } else {
-        budget / device_reach
-    }
-}
-
-/// Device-space bbox `(x, y, w, h)` of a page-space rect under `view`, **snapped to integer pixels**
-/// (floor the origin, ceil the far corner). Integer alignment is load-bearing: the effect surface is
-/// rendered at `translate(-origin)` and composited 1:1 at `origin`, so an integer origin keeps the
-/// composite a pixel-exact blit (no bilinear resample of the shadow) *and* preserves the shape's
-/// sub-pixel phase inside the surface — both needed to match the direct-draw ground truth.
-fn device_rect(view: Affine, page: Rect) -> (f64, f64, f64, f64) {
-    let corners = [
-        view * Point::new(page.x0, page.y0),
-        view * Point::new(page.x1, page.y0),
-        view * Point::new(page.x1, page.y1),
-        view * Point::new(page.x0, page.y1),
-    ];
-    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-    for p in corners {
-        x0 = x0.min(p.x);
-        y0 = y0.min(p.y);
-        x1 = x1.max(p.x);
-        y1 = y1.max(p.y);
-    }
-    let (x0, y0) = (x0.floor(), y0.floor());
-    (x0, y0, (x1.ceil() - x0).max(1.0), (y1.ceil() - y0).max(1.0))
 }

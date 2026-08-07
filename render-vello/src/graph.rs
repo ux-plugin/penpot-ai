@@ -15,6 +15,7 @@
 
 use std::rc::Rc;
 
+use render_core::effect_graph::{EffectPass, GraphPass, Src};
 use wgpu::util::DeviceExt;
 
 use crate::blend::{Blit, BlurPass, Compositor};
@@ -25,24 +26,17 @@ use crate::glass::{GlassPipeline, DISPLACEMENT_FORMAT};
 /// fully (`3·32 = 96` taps ≤ 160) with margin.
 const BLUR_MAX_SIGMA: f32 = 32.0;
 
-/// Where a pass reads a texture from: a graph-level input, or an earlier pass's output.
-#[derive(Clone, Copy)]
-pub(crate) enum Src {
-    /// Index into the `inputs` slice `run_graph` was called with (e.g. the assembled backdrop).
-    Input(usize),
-    /// Index into the outputs produced so far (0 = the first pass's result).
-    Pass(usize),
-}
-
-/// One full-screen pass. The kind selects the pipeline and carries its uniform; `inputs` binds the
-/// texture reads in the order that pipeline expects.
+/// One full-screen pass, **lowered** for execution: render-core describes the effect as a neutral
+/// [`GraphPass`]; [`lower_graph`] turns each into this by resolving `Custom` to its compiled wgpu
+/// pipeline. The kind selects the pipeline and carries its uniform; `inputs` (render-core's [`Src`])
+/// binds the texture reads in the order that pipeline expects.
 pub(crate) struct Pass {
     pub(crate) kind: PassKind,
     pub(crate) inputs: Vec<Src>,
 }
 
-/// The pipeline a pass dispatches to. Adding `Custom { module, u }` here is the raw-WGSL escape
-/// hatch — a hand-written effect becomes just another kind, with no new executor code.
+/// The pipeline a lowered pass dispatches to — the backend twin of render-core's [`EffectPass`],
+/// differing only in that `Custom` carries the resolved wgpu pipeline rather than just its uniform.
 pub(crate) enum PassKind {
     /// A full 2D Gaussian of `sigma` device pixels over its 1 input — separable H+V for a small
     /// kernel, a downsample pyramid for a large one (see [`gaussian_blur`]).
@@ -57,6 +51,31 @@ pub(crate) enum PassKind {
     /// over its inputs with `u` (surface resolution + params). The pipeline's own `@group(0)` layout
     /// is honoured: binding 0 uniform, 1 sampler, 2.. the input textures in order.
     Custom { pipeline: Rc<wgpu::RenderPipeline>, u: Vec<f32> },
+}
+
+/// Lower a render-core effect graph to runnable [`Pass`]es. Every kind maps one-to-one except
+/// [`EffectPass::Custom`], whose pipeline the IR does not carry: `custom` supplies the shape's
+/// compiled pipeline (the caller resolved + cached it from the shader source). A `Custom` pass with
+/// no pipeline provided is dropped with a warning rather than panicking mid-frame.
+pub(crate) fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>>) -> Vec<Pass> {
+    let mut out = Vec::with_capacity(graph.len());
+    for gp in graph {
+        let kind = match &gp.pass {
+            EffectPass::Blur { sigma } => PassKind::Blur { sigma: *sigma },
+            EffectPass::GlassDisplacement { u } => PassKind::GlassDisplacement { u: *u },
+            EffectPass::GlassRefraction { u } => PassKind::GlassRefraction { u: *u },
+            EffectPass::GlassComposite { u } => PassKind::GlassComposite { u: *u },
+            EffectPass::Custom { u } => match custom {
+                Some(pipeline) => PassKind::Custom { pipeline: pipeline.clone(), u: u.clone() },
+                None => {
+                    log::warn!("custom effect pass with no pipeline resolved; skipping");
+                    continue;
+                }
+            },
+        };
+        out.push(Pass { kind, inputs: gp.inputs.clone() });
+    }
+    out
 }
 
 impl PassKind {
@@ -225,22 +244,70 @@ fn gaussian_blur(
     keep_views.push(bv);
 }
 
-/// Compile a custom WGSL module into a render pipeline over one fullscreen quad. `layout: None`
-/// auto-derives the bind-group layout from the shader's own `@binding` declarations, so the author
-/// controls it (binding 0 uniform, 1 sampler, 2.. textures) and [`custom_pass`] binds to match.
-/// The sink caches the result by source hash, so this runs once per distinct shader.
+/// Compile a custom WGSL module into a render pipeline over one fullscreen quad.
+///
+/// The bind-group layout is declared **explicitly** — binding 0 uniform, 1 sampler, and `n_inputs`
+/// textures at 2.. — rather than inferred from the shader (`layout: None`). Inference drops any slot
+/// the shader doesn't statically reference: a valid shader that never reads the resolution uniform
+/// would get a layout without binding 0, and [`custom_pass`] (which always binds 0/1/2) would then
+/// fail bind-group creation with "binding 0 not present" and render blank. Declaring the layout
+/// pins all the slots the code binds, so an unused uniform is harmless. The sink caches the result
+/// by (source hash, n_inputs), so this runs once per distinct (shader, input-count) pair.
 pub(crate) fn build_custom_pipeline(
     device: &wgpu::Device,
     wgsl: &str,
+    n_inputs: usize,
     format: wgpu::TextureFormat,
 ) -> Rc<wgpu::RenderPipeline> {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("custom effect"),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
+    let mut entries = vec![
+        // binding 0: resolution + params uniform (may be unused by the shader).
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        // binding 1: the shared effect sampler.
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ];
+    // bindings 2..: the sampled input textures (backdrop and/or body).
+    for i in 0..n_inputs {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 2 + i as u32,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+    }
+    let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("custom effect bind layout"),
+        entries: &entries,
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("custom effect pipeline layout"),
+        bind_group_layouts: &[Some(&bind_layout)],
+        immediate_size: 0,
+    });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("custom effect pipeline"),
-        layout: None,
+        layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &module,
             entry_point: Some("vs"),
