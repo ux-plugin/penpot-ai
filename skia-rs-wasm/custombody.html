@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>body-only custom shader</title>
+<style>body{margin:0;background:#888;font:13px monospace}#c{width:1000px;height:520px;display:block}#s{position:fixed;right:8px;top:8px;background:#000;color:#0f0;padding:8px;white-space:pre}</style>
+</head><body><canvas id="c" width="1000" height="520"></canvas><div id="s">loading…</div>
+<script type="module">
+import { loadVelloModule } from '/src/lib/renderer/vello-module.ts'
+import { setContextInitialized } from '/src/lib/renderer/api/context.ts'
+import { setObject } from '/src/lib/renderer/api/orchestration.ts'
+import { createRect } from '/src/lib/renderer/node-factory.ts'
+import { setShapeChildren } from '/src/lib/renderer/api/shape.ts'
+import { setCanvasBackground } from '/src/lib/renderer/api/canvas.ts'
+
+// Reads its own body (@binding(2)) and inverts RGB. reads_backdrop=0 → the scheduler must route this
+// as a SPREAD (own effect surface), not a gather. Blue #3d7bfd should come out orange.
+//
+// NOTE: this shader declares the uniform at @binding(0) but never reads it. With the old
+// `layout: None` (inferred) pipeline that dropped binding 0 → "binding 0 not present" → blank.
+// With the explicit bind layout it renders. So this file doubles as the regression proof.
+const INVERT = `
+@group(0) @binding(0) var<uniform> u: array<vec4<f32>, 1>;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var tex: texture_2d<f32>;
+struct VSOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
+  let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
+  var o: VSOut;
+  o.pos = vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
+  o.uv = vec2<f32>(corner.x, 1.0 - corner.y);
+  return o;
+}
+@fragment fn fs(in: VSOut) -> @location(0) vec4<f32> {
+  let c = textureSample(tex, samp, in.uv);
+  return vec4<f32>(c.a - c.r, c.a - c.g, c.a - c.b, c.a);
+}`
+
+const s = m => document.getElementById('s').textContent = m
+function setBodyShader(m, wgsl, params, reach) {
+  const enc = new TextEncoder().encode(wgsl)
+  const buf = new Uint8Array(4 + params.length * 4 + enc.length)
+  const dv = new DataView(buf.buffer)
+  dv.setUint32(0, params.length, true)
+  params.forEach((p, i) => dv.setFloat32(4 + i * 4, p, true))
+  buf.set(enc, 4 + params.length * 4)
+  const ptr = m._alloc_bytes(buf.length)
+  m.HEAPU8.set(buf, ptr)
+  m._set_shape_custom_shader(reach, 0)   // reads_backdrop = 0 → body-only (spread)
+}
+
+async function main() {
+  const canvas = document.getElementById('c'); setContextInitialized(true)
+  const m = await loadVelloModule(); await m.velloBackend.attachCanvas(canvas)
+  m._set_render_options(0, 1); m._set_scheduler(1); m._set_tile_effects(1)
+  m._set_view(1, 0, 0); setCanvasBackground(m, '#ffffff')
+
+  const ids = []
+  for (let i = 0; i < 10; i++) {
+    const col = i % 5, row = Math.floor(i / 5)
+    const node = createRect({ x: 40 + col * 180, y: 40 + row * 200, width: 140, height: 140, fillColor: '#3d7bfd' })
+    setObject(m, node)
+    // top row: plain control (blue). bottom row: body-invert shader (should be orange).
+    if (row === 1) setBodyShader(m, INVERT, [], 0)
+    ids.push(node.id)
+  }
+  m._use_shape(0, 0, 0, 0); setShapeChildren(m, ids)
+  for (let i = 0; i < 8; i++) m.velloBackend.renderNow()
+  s(`top row = plain blue (control)\nbottom row = body-invert shader\n(should be orange) DONE`)
+}
+main().catch(e => { s('ERR ' + (e?.message || e)); window.__ERR__ = String(e?.stack || e); console.error(e) })
+</script></body></html>

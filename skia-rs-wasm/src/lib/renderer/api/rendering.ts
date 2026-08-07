@@ -18,7 +18,10 @@ import { textEditorUpdateBlink, textEditorRenderOverlay, textEditorPollEvent } f
  */
 export function render(module: WasmModule, timestamp: number): void {
   checkContext()
+  const _t0 = performance.now()
   module._render(timestamp)
+  const _rb = (window as unknown as { __RB__?: { rec: boolean; t: number[][] } }).__RB__
+  if (_rb && _rb.rec) _rb.t.push([performance.now(), performance.now() - _t0])
   if (textEditorActive.value) {
     textEditorUpdateBlink(module, timestamp)
     textEditorRenderOverlay(module)

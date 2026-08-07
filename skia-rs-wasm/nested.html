@@ -1,0 +1,146 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>nested-layout profiler</title>
+<style>body{margin:0;background:#111;color:#ddd;font:13px/1.5 monospace}#c{width:1280px;height:800px;display:block}#s{position:fixed;right:8px;top:8px;background:#000;color:#0f0;padding:8px 10px;white-space:pre;z-index:9}</style>
+</head><body><canvas id="c" width="1280" height="800"></canvas><div id="s">loading…</div>
+<script type="module">
+import { loadVelloModule } from '/src/lib/renderer/vello-module.ts'
+import { setContextInitialized } from '/src/lib/renderer/api/context.ts'
+import { setObject } from '/src/lib/renderer/api/orchestration.ts'
+import { createRect, createFrame } from '/src/lib/renderer/node-factory.ts'
+import { setShapeChildren, moduleUseShape } from '/src/lib/renderer/api/shape.ts'
+import { setCanvasBackground } from '/src/lib/renderer/api/canvas.ts'
+
+// -------- knobs --------
+// mode    : flat | nested            — flat = every leaf under the root (the old bench); nested =
+//                                       leaves grouped under isolating frames (opacity<1 → ScopeOf).
+// depth   : nesting levels for `nested` (1 = one ring of frames, 2 = frames-in-frames, …)
+// effects : none | spread | gather | mixed  — spread = layer blur + drop shadow on each leaf;
+//                                       gather = background blur on each *container* (z-serial path);
+//                                       mixed = spread leaves + gather containers.
+// n       : leaf count (matched across modes so the comparison is controlled)
+// k       : measured frames
+const q = new URLSearchParams(location.search)
+const MODE = q.get('mode') || 'nested'
+const DEPTH = +(q.get('depth') || 2)
+const EFFECTS = q.get('effects') || 'spread'
+const N = +(q.get('n') || 150)
+const K = +(q.get('k') || 60)
+const s = m => document.getElementById('s').textContent = m
+
+const PAL = ['#3d7bfd','#f5c518','#e63946','#2a9d8f','#a06bd8','#ef8a3a']
+const PAGE_W = 1800, PAGE_H = 1100
+let framesCreated = 0
+const LEAFIDS = []; window.__LEAFIDS__ = LEAFIDS; window.__useShape__ = moduleUseShape
+
+function spread(node) {
+  node.blur = { type:'layer-blur', hidden:false, value:8 }
+  node.shadow = [{ id:null, style:'drop-shadow', offsetX:5, offsetY:6, blur:9, spread:0, hidden:false, color:{ color:'#101828', opacity:0.45 } }]
+}
+function gather(node) { node.backgroundBlur = { type:'background-blur', hidden:false, value:12 } }
+
+// A leaf rect at (x,y) with optional spread effect.
+function leaf(m, x, y, i) {
+  const node = createRect({ x, y, width: 54, height: 54, fillColor: PAL[i % PAL.length] })
+  if (EFFECTS === 'spread' || EFFECTS === 'mixed') spread(node)
+  setObject(m, node)
+  LEAFIDS.push(node.id)
+  return node.id
+}
+
+// An isolating container frame (opacity<1 → scope_wrap) holding `childIds`, optionally a gather.
+function frame(m, x, y, w, h, childIds) {
+  const node = createFrame({ x, y, width: w, height: h, fillColor: '#ffffff', opacity: 0.95 })
+  if (EFFECTS === 'gather' || EFFECTS === 'mixed') gather(node)
+  setObject(m, node)
+  moduleUseShape(m, node.id)
+  setShapeChildren(m, childIds)
+  framesCreated++
+  return node.id
+}
+
+// Build a flat scene: N leaves straight under the root.
+function buildFlat(m) {
+  const cols = Math.ceil(Math.sqrt(N)); const ids = []
+  for (let i = 0; i < N; i++) {
+    const x = 40 + (i % cols) * 70, y = 40 + Math.floor(i / cols) * 66
+    ids.push(leaf(m, x, y, i))
+  }
+  m._use_shape(0, 0, 0, 0); setShapeChildren(m, ids)
+}
+
+// Build a nested scene: leaves are packed into a grid of isolating frames; for depth>1 those frames
+// are themselves packed into bigger isolating frames, recursively. Leaf count stays == N.
+function buildNested(m) {
+  // Group N leaves into cells of ~9; each cell is a frame. Then group frames into super-frames, etc.
+  const perCell = 9
+  const cells = Math.ceil(N / perCell)
+  const cols = Math.ceil(Math.sqrt(cells))
+  let i = 0
+  let level = []                              // [{id, x, y, w, h}]
+  const cw = PAGE_W / cols, ch = cw
+  for (let c = 0; c < cells; c++) {
+    const gx = 30 + (c % cols) * cw, gy = 30 + Math.floor(c / cols) * ch
+    const kids = []
+    const lc = Math.ceil(Math.sqrt(perCell))
+    for (let j = 0; j < perCell && i < N; j++, i++) {
+      const lx = gx + 12 + (j % lc) * 60, ly = gy + 12 + Math.floor(j / lc) * 60
+      kids.push(leaf(m, lx, ly, i))
+    }
+    level.push({ id: frame(m, gx, gy, cw - 12, ch - 12, kids), x: gx, y: gy, w: cw - 12, h: ch - 12 })
+  }
+  // Fold additional isolating levels: wrap groups of frames into parent frames.
+  for (let d = 1; d < DEPTH; d++) {
+    const grp = Math.max(2, Math.ceil(Math.sqrt(level.length)))
+    const next = []
+    for (let g = 0; g < level.length; g += grp) {
+      const chunk = level.slice(g, g + grp)
+      const x0 = Math.min(...chunk.map(c => c.x)), y0 = Math.min(...chunk.map(c => c.y))
+      const x1 = Math.max(...chunk.map(c => c.x + c.w)), y1 = Math.max(...chunk.map(c => c.y + c.h))
+      next.push({ id: frame(m, x0, y0, x1 - x0, y1 - y0, chunk.map(c => c.id)), x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+    }
+    level = next
+  }
+  m._use_shape(0, 0, 0, 0); setShapeChildren(m, level.map(c => c.id))
+}
+
+async function main() {
+  const canvas = document.getElementById('c'); setContextInitialized(true)
+  const m = await loadVelloModule(); await m.velloBackend.attachCanvas(canvas); window.__M__ = m
+  m._set_render_options(0, 1); m._set_scheduler(1); m._set_tile_effects(1)
+  m._set_view(1, 0, 0); setCanvasBackground(m, '#ffffff')
+
+  if (MODE === 'flat') buildFlat(m); else buildNested(m)
+
+  // Warm up over the SAME pan path the measure uses, so the tile cache holds the whole sweep's ring
+  // before timing — the measured number then reflects steady-state pan (reuse), not the cold sweep.
+  for (let i = 0; i < K; i++) { m._set_view(1, Math.sin(i * 0.1) * 40, Math.cos(i * 0.1) * 25); m.velloBackend.renderNow() }
+
+  m._prof_reset()
+  let tiRendered = 0, tiReused = 0
+  const t0 = performance.now()
+  for (let i = 0; i < K; i++) { m._set_view(1, Math.sin(i * 0.1) * 40, Math.cos(i * 0.1) * 25); m.velloBackend.renderNow(); const st = m._last_tile_stats() >>> 0; tiRendered += st >>> 16; tiReused += st & 0xffff }
+  const wall = (performance.now() - t0) / K
+  window.__TILES__ = { renderedPerFrame: +(tiRendered / K).toFixed(1), reusedPerFrame: +(tiReused / K).toFixed(1) }
+  const R = w => m._prof_read(w) / K
+  const build = R(0), scene = R(1), render = R(2), submit = R(3), tex = R(4)
+  const steps = m._prof_read(5) / K, texn = m._prof_read(6) / K, renders = m._prof_read(7) / K
+  const sum = build + scene + render + submit + tex
+  const pc = x => Math.round(100 * x / sum)
+  window.__PROF__ = {
+    mode: MODE, depth: MODE === 'nested' ? DEPTH : 0, effects: EFFECTS, n: N, framesCreated, k: K,
+    wallMsPerFrame: +wall.toFixed(2), stepsPerFrame: Math.round(steps), texPerFrame: Math.round(texn), rendersPerFrame: +renders.toFixed(1),
+    ms: { build:+build.toFixed(2), scene:+scene.toFixed(2), render:+render.toFixed(2), submit:+submit.toFixed(2), tex:+tex.toFixed(2), measuredSum:+sum.toFixed(2) },
+    pct: { build:pc(build), scene:pc(scene), render:pc(render), submit:pc(submit), tex:pc(tex) },
+  }
+  s(`mode=${MODE}${MODE==='nested'?' depth='+DEPTH:''}  effects=${EFFECTS}  leaves=${N}  frames=${framesCreated}
+steps/frame=${Math.round(steps)}  renders/frame=${renders.toFixed(1)}  tex/frame=${Math.round(texn)}
+wall/frame=${wall.toFixed(1)}ms   phase-sum=${sum.toFixed(1)}ms
+build  ${build.toFixed(1)}ms (${pc(build)}%)
+scene  ${scene.toFixed(1)}ms (${pc(scene)}%)
+render ${render.toFixed(1)}ms (${pc(render)}%)
+submit ${submit.toFixed(1)}ms (${pc(submit)}%)
+tex    ${tex.toFixed(1)}ms (${pc(tex)}%)
+DONE`)
+}
+main().catch(e => { s('ERR ' + (e?.message || e)); window.__PROF_ERR__ = String(e?.stack || e); console.error(e) })
+</script></body></html>

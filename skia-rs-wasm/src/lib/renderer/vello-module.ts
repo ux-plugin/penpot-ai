@@ -132,7 +132,10 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
       // Before drawing, never after: a frame encoded against a stale surface is the failure
       // this guards.
       syncSurfaceSize()
+      const _t0 = performance.now()
       renderer.render()
+      const _rb = (window as unknown as { __RB__?: { rec: boolean; t: number[][] } }).__RB__
+      if (_rb && _rb.rec) _rb.t.push([performance.now(), performance.now() - _t0])
       frames += 1
     }
   }
@@ -196,6 +199,12 @@ export async function loadVelloModule(gluePath: string = VELLO_GLUE_PATH): Promi
       await vello.attachCanvas(canvas)
       m._init(Math.floor(canvas.width / dpr), Math.floor(canvas.height / dpr))
       m._set_render_options(0, dpr)
+      // Turn on the render-core schedule + GPU sink so effects (blur/shadow/glass/custom) actually
+      // render on Vello. Without it the app takes the plain-fill tiling path that gates effects off
+      // — the source of the "Vello is 100x faster" mirage, where it was quietly skipping the blur.
+      // These are real render-vello exports; on a build lacking them the facade stubs a no-op.
+      m._set_scheduler(1)
+      m._set_tile_effects(1)
       setContextInitialized(true)
     },
     detachSurface(m: WasmModule): void {

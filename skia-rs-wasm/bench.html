@@ -1,0 +1,185 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Vello / Skia perf bench</title>
+    <style>
+      body { margin: 0; background: #111; color: #ddd; font: 13px/1.5 monospace; }
+      #wrap { position: relative; width: 1280px; height: 800px; }
+      #c { display: block; width: 1280px; height: 800px; }
+      #status { position: fixed; right: 8px; top: 8px; background: #000; color: #0f0;
+        padding: 8px 10px; white-space: pre; z-index: 10; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap"><canvas id="c" width="1280" height="800"></canvas></div>
+    <div id="status">loading…</div>
+    <script type="module">
+      import { loadVelloModule } from '/src/lib/renderer/vello-module.ts'
+      import { ensureWasmModule } from '/src/lib/renderer/wasm-module.ts'
+      import { setContextInitialized } from '/src/lib/renderer/api/context.ts'
+      import { setObject } from '/src/lib/renderer/api/orchestration.ts'
+      import { createRect, createCircle } from '/src/lib/renderer/node-factory.ts'
+      import { setCanvasBackground, initCanvasContext } from '/src/lib/renderer/api/canvas.ts'
+      import { setShapeChildren } from '/src/lib/renderer/api/shape.ts'
+      import { renderSync } from '/src/lib/renderer/api/rendering.ts'
+
+      const q = new URLSearchParams(location.search)
+      const RENDERER = q.get('renderer') === 'vello' ? 'vello' : 'skia'
+      const WORKLOAD = q.get('workload') || 'effects'   // fills | effects | zoom
+      const N        = Number(q.get('n')  || (WORKLOAD === 'fills' ? 3000 : 600))
+      const WARMUP   = Number(q.get('warmup')   || 1500)
+      const DURATION = Number(q.get('duration') || 6000)
+      const ZOOM     = WORKLOAD === 'zoom' ? 3 : 1
+      const SCHED    = q.get('sched') !== '0'   // vello: route through the SSA effects sink (needed for effects)
+
+      const W = 1280, H = 800, DPR = 1
+      const statusEl = document.getElementById('status')
+      const status = (m) => { statusEl.textContent = m }
+
+      // Deterministic LCG so both backends build byte-identical scenes.
+      function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296 } }
+
+      // Page area the shapes scatter across (bigger than the viewport so tiling/culling matters).
+      const PAGE_W = 1800, PAGE_H = 1100
+      const PALETTE = ['#3d7bfd', '#f5c518', '#e63946', '#2a9d8f', '#a06bd8', '#ef8a3a', '#22aa55']
+
+      function buildScene(module) {
+        const r = rng(0xBEEF)
+        const ids = []
+        const withEffects = WORKLOAD !== 'fills'
+        for (let i = 0; i < N; i++) {
+          const x = Math.round(r() * (PAGE_W - 120))
+          const y = Math.round(r() * (PAGE_H - 120))
+          const w = 30 + Math.round(r() * 90)
+          const h = 30 + Math.round(r() * 90)
+          const fill = PALETTE[i % PALETTE.length]
+          const node = (i % 2 === 0)
+            ? createRect({ x, y, width: w, height: h, fillColor: fill })
+            : createCircle({ x, y, width: w, height: h, fillColor: fill })
+          if (withEffects) {
+            // Stacked effects: a layer blur + a drop shadow on every shape — the "many shapes,
+            // each with its own effect surface" case the scheduler is built for.
+            node.blur = { type: 'layer-blur', hidden: false, value: 8 }
+            node.shadow = [{
+              color: { color: '#101828', opacity: 0.45 },
+              blur: 6, spread: 0, offsetX: 4, offsetY: 5,
+              style: 'drop-shadow', hidden: false,
+            }]
+          }
+          setObject(module, node)
+          ids.push(node.id)
+        }
+        module._use_shape(0, 0, 0, 0)
+        setShapeChildren(module, ids)
+        return ids.length
+      }
+
+      async function attach(canvas) {
+        if (RENDERER === 'vello') {
+          setContextInitialized(true)
+          const module = await loadVelloModule()
+          await module.velloBackend.attachCanvas(canvas)
+          module._set_render_options(0, DPR)
+          // The effects (blur/shadow/glass/custom) live behind the render-core schedule + GPU
+          // sink, which is opt-in (SCHEDULER defaults off → the plain-fill tiling path that gates
+          // effects off). Without this, Vello would draw hard-edged fills while Skia blurs — an
+          // apples-to-oranges race. Turn the real pipeline on so both actually apply the effects.
+          if (SCHED) {
+            module._set_scheduler(1)
+            if (typeof module._set_tile_effects === 'function') module._set_tile_effects(1)
+          }
+          return { module, present: () => module.velloBackend.renderNow(), label: 'vello (WebGPU)' }
+        }
+        // Skia: initCanvasContext brings up WebGL2 and sets the context flag itself.
+        const module = await ensureWasmModule('/wasm/render-wasm.js')
+        if (!initCanvasContext(module, canvas, DPR, false, false)) throw new Error('WebGL2 init failed')
+        return { module, present: () => renderSync(module), label: 'skia (WebGL2)' }
+      }
+
+      function percentile(sorted, p) {
+        if (!sorted.length) return 0
+        const idx = Math.min(sorted.length - 1, Math.floor(p / 100 * sorted.length))
+        return sorted[idx]
+      }
+
+      async function main() {
+        const canvas = document.getElementById('c')
+        status(`loading ${RENDERER} · ${WORKLOAD} · N=${N}…`)
+        const { module, present, label } = await attach(canvas)
+
+        module._set_view(ZOOM, 0, 0)
+        setCanvasBackground(module, '#ffffff')
+        const painted = buildScene(module)
+        status(`${label} · ${WORKLOAD} · ${painted} shapes · warming up…`)
+
+        // Animated pan each frame. With `churn=1` the zoom also wobbles every frame, which drops the
+        // Vello tile cache (scale-variant) so every frame is a genuine cold redraw — the raw-throughput
+        // comparison. Without it, a pure pan lets Vello reuse cached tiles — the navigation comparison.
+        const CHURN = q.get('churn') === '1'
+        let frame = 0
+        const pan = () => {
+          const px = 60 * Math.sin(frame * 0.03)
+          const py = 40 * Math.cos(frame * 0.021)
+          const z = CHURN ? ZOOM * (1 + 0.08 * Math.sin(frame * 0.04)) : ZOOM
+          module._set_view(z, px, py)
+        }
+
+        // Warmup — render on boosted clocks, discarded.
+        const t0 = performance.now()
+        await new Promise((resolve) => {
+          const warm = () => {
+            pan(); present(); frame++
+            if (performance.now() - t0 < WARMUP) requestAnimationFrame(warm)
+            else resolve()
+          }
+          requestAnimationFrame(warm)
+        })
+
+        // Measure — free-running rAF; record epoch time + CPU cost of the present() call.
+        const stamps = []   // epoch ms of each completed frame (present-bound)
+        const cpu = []      // ms spent in the present() call (encode/submit; no gl.finish, both symmetric)
+        const mStart = performance.now()
+        status(`${label} · measuring ${DURATION / 1000}s…`)
+        await new Promise((resolve) => {
+          const step = () => {
+            pan()
+            const a = performance.now()
+            present()
+            const b = performance.now()
+            frame++
+            stamps.push(performance.timeOrigin + b)
+            cpu.push(b - a)
+            if (b - mStart < DURATION) requestAnimationFrame(step)
+            else resolve()
+          }
+          requestAnimationFrame(step)
+        })
+
+        // Inter-frame deltas (present cadence) → achieved fps.
+        const deltas = []
+        for (let i = 1; i < stamps.length; i++) deltas.push(stamps[i] - stamps[i - 1])
+        const wallSec = (stamps[stamps.length - 1] - stamps[0]) / 1000
+        deltas.sort((x, y) => x - y)
+        const cpuSorted = cpu.slice().sort((x, y) => x - y)
+
+        const result = {
+          renderer: RENDERER, label, workload: WORKLOAD, n: N, painted, zoom: ZOOM,
+          frames: stamps.length,
+          wallSec: +wallSec.toFixed(3),
+          achievedFps: +(deltas.length / (deltas.reduce((s, d) => s + d, 0) / 1000)).toFixed(2),
+          frameMs: { p50: +percentile(deltas, 50).toFixed(3), p95: +percentile(deltas, 95).toFixed(3), min: +deltas[0]?.toFixed(3) },
+          cpuMs:   { p50: +percentile(cpuSorted, 50).toFixed(3), p95: +percentile(cpuSorted, 95).toFixed(3) },
+          // Full per-frame series (epoch-stamped) so the thermal log can be joined by time and
+          // the throughput-over-time curve reconstructed.
+          series: { epochMs: stamps.map((s) => Math.round(s)), frameMs: (() => { const d = []; for (let i = 1; i < stamps.length; i++) d.push(+(stamps[i] - stamps[i - 1]).toFixed(2)); return d })() },
+          startEpochMs: Math.round(stamps[0]), endEpochMs: Math.round(stamps[stamps.length - 1]),
+        }
+        window.__BENCH_RESULT__ = result
+        console.log('BENCH_JSON ' + JSON.stringify({ ...result, series: undefined }))
+        status(`${label} · ${WORKLOAD}\n${result.frames} frames · ${result.achievedFps} fps\nframe p50 ${result.frameMs.p50}ms p95 ${result.frameMs.p95}ms\ncpu p50 ${result.cpuMs.p50}ms p95 ${result.cpuMs.p95}ms\nDONE`)
+      }
+      main().catch((e) => { status('ERROR: ' + (e?.message || e)); window.__BENCH_ERROR__ = String(e?.stack || e); console.error(e) })
+    </script>
+  </body>
+</html>
