@@ -28,6 +28,8 @@ mod blend;
 #[cfg(target_arch = "wasm32")]
 mod glass;
 #[cfg(target_arch = "wasm32")]
+mod graph;
+#[cfg(target_arch = "wasm32")]
 mod renderer;
 #[cfg(target_arch = "wasm32")]
 mod scene;

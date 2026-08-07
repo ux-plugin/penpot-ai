@@ -135,14 +135,17 @@ fn visit(
     // blur cropping and fading on zoom-in); `PaintGather` blurs it and paints it through the shape's
     // silhouette into each tile the shape covers.
     if has_gather_effect(node) {
-        let sample = gather_extent(node);
+        let reach = gather_reach(node);
+        let sample = page_bounds(node).inflate(reach, reach);
         let backdrop = SurfaceRef::new(SurfaceRole::Backdrop(id), None, 0);
         let read_from: Vec<SurfaceRef> = tiling::tiles_overlapping_page_rect(view, sample)
             .into_iter()
             .filter(|t| visible.contains(t))
             .map(current)
             .collect();
-        steps.push(Step::ComposeBackdrop { shape: id, read_from, extent: sample, write_to: backdrop });
+        // A custom shader's reach/cost is opaque, so bound its surface unconditionally.
+        let always_cap = node.custom_shader.is_some();
+        steps.push(Step::ComposeBackdrop { shape: id, read_from, extent: sample, reach, always_cap, write_to: backdrop });
         for tile in tiling::tiles_overlapping_page_rect(view, page_bounds(node)) {
             if !visible.contains(&tile) {
                 continue;
@@ -224,14 +227,14 @@ fn has_spread_effect(node: &Node) -> bool {
 /// A shape carries a gather effect if it reads the backdrop beneath it — background blur or glass.
 /// Distinct from spread: gather forces z-order interleaving.
 fn has_gather_effect(node: &Node) -> bool {
-    node.background_blur.is_some() || node.glass.is_some()
+    node.background_blur.is_some() || node.glass.is_some() || node.custom_shader.is_some()
 }
 
-/// The gather's page-space **sample rect**: `page_bounds` grown by the effect's reach on every side,
-/// so the fused backdrop covers everything the kernel can pull in at the edges — the background
-/// blur's `3σ`, or glass's refraction displacement + blur + frost scatter (mirrors render-wasm's
-/// `compute_gather_sample_rect`).
-fn gather_extent(node: &Node) -> Rect {
+/// The gather effect's page-space **reach**: how far past the shape the kernel can pull content — the
+/// background blur's `3σ`, or glass's refraction displacement + blur + frost scatter (mirrors
+/// render-wasm's `compute_gather_sample_rect`). `page_bounds.inflate(reach, reach)` is the sample
+/// rect; the sink also uses `reach` to cap the backdrop's device resolution to the one-tile ring.
+fn gather_reach(node: &Node) -> f64 {
     let mut reach = 0.0_f64;
     if let Some(radius) = node.background_blur {
         reach = reach.max(f64::from(3.0 * radius_to_sigma(radius)));
@@ -242,7 +245,10 @@ fn gather_extent(node: &Node) -> Rect {
         let frost = g.frost * 6.0;
         reach = reach.max(f64::from(displacement + blur + frost));
     }
-    page_bounds(node).inflate(reach, reach)
+    if let Some(c) = &node.custom_shader {
+        reach = reach.max(f64::from(c.reach));
+    }
+    reach
 }
 
 fn layer_paint(node: &Node) -> LayerPaint {

@@ -974,6 +974,38 @@ pub extern "C" fn clear_shape_glass() {
     with_current(|node| node.glass = None);
 }
 
+/// A custom WGSL gather effect on this shape — the raw escape hatch. The staged byte buffer holds
+/// `[nparams: u32 LE][nparams × f32 LE][wgsl UTF-8...]`; `reach` (the author-declared page-space
+/// extent it samples) comes as a direct arg. The scheduler caps its resolution unconditionally.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_custom_shader(reach: f32) {
+    let bytes = take_bytes();
+    if bytes.len() < 4 {
+        return;
+    }
+    let word = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+    let nparams = word(0) as usize;
+    let params_end = 4 + nparams * 4;
+    if bytes.len() < params_end {
+        return;
+    }
+    let params: Vec<f32> = (0..nparams)
+        .map(|i| {
+            let o = 4 + i * 4;
+            f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
+        })
+        .collect();
+    let wgsl = String::from_utf8_lossy(&bytes[params_end..]).into_owned();
+    with_current(|node| {
+        node.custom_shader = Some(render_core::model::CustomShader { wgsl, reach, params });
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_custom_shader() {
+    with_current(|node| node.custom_shader = None);
+}
+
 /// Append a shadow. `raw_style` is Penpot's `RawShadowStyle` — `0` drop, `1` inner; `blur` is a
 /// radius, `(x, y)` the offset. Both drop and inner (inset) shadows are carried now that the fork
 /// draws inner shadows; only *hidden* shadows are dropped, matching `model_export`.

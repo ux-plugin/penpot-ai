@@ -15,7 +15,10 @@
 //! submit-per-tile fix, and required here because a later `Paint` into a tile must observe an
 //! earlier `Composite` into it.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use render_core::schedule::{LayerPaint, Schedule, Step, SurfaceRef, SurfaceRole};
 use render_core::tiling::{self, TILE_BUFFER, TILE_MARGIN, TILE_SIZE};
@@ -23,8 +26,9 @@ use vello_common::kurbo::{Affine, Point, Rect};
 use vello_example_scenes::AnyScene;
 use vello_hybrid::{RenderSize, Renderer, Scene, TextureBindings};
 
-use crate::blend::{Blit, BlurPass, Compositor, MaskedBlit};
-use crate::glass::{GlassPipeline, DISPLACEMENT_FORMAT};
+use crate::blend::{Blit, Compositor, MaskedBlit};
+use crate::glass::GlassPipeline;
+use crate::graph::{build_custom_pipeline, new_target, run_graph, Pass, PassKind, Src};
 
 struct Surface {
     #[allow(dead_code)]
@@ -43,9 +47,17 @@ pub(crate) struct Sink {
     surfaces: HashMap<SurfaceRef, Surface>,
     /// Surfaces written at least once this frame — first write clears, rest load.
     written: HashSet<SurfaceRef>,
-    /// Device-space origin of each `Backdrop` surface (its top-left in device pixels), so a
-    /// `PaintGather` can map the shape's device rect into the backdrop's local texel space.
+    /// Device-space origin of each `Backdrop` surface (its top-left in **full-zoom** device pixels),
+    /// so a `PaintGather` can map the shape's device rect into the backdrop's local texel space.
     backdrop_origin: HashMap<SurfaceRef, (f64, f64)>,
+    /// Resolution-cap factor `k ∈ (0, 1]` each `Backdrop` was rendered at (device-px per full-zoom
+    /// device-px). `1.0` = drawn at native zoom; `< 1.0` = the effect's reach would have exceeded the
+    /// one-tile ring, so it was drawn smaller and is upscaled by `1/k` at the stamp. `PaintGather`
+    /// reads it to scale the sigma / glass geometry and the stamp's source rect to match.
+    backdrop_scale: HashMap<SurfaceRef, f64>,
+    /// Custom-shader render pipelines, cached by WGSL-source hash so an unchanged shader compiles
+    /// once, not per frame. Persists across frames (unlike the per-frame surface maps).
+    custom_pipelines: HashMap<u64, Rc<wgpu::RenderPipeline>>,
 }
 
 impl Sink {
@@ -56,6 +68,8 @@ impl Sink {
             surfaces: HashMap::new(),
             written: HashSet::new(),
             backdrop_origin: HashMap::new(),
+            backdrop_scale: HashMap::new(),
+            custom_pipelines: HashMap::new(),
         }
     }
 
@@ -76,6 +90,7 @@ impl Sink {
         self.surfaces.clear();
         self.written.clear();
         self.backdrop_origin.clear();
+        self.backdrop_scale.clear();
         let full_view = crate::abi::effective_view(root);
         let format = surface.format();
         let sw_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
@@ -100,8 +115,8 @@ impl Sink {
                 Step::Composite { from, to, paint, rect, .. } => {
                     self.composite(*from, *to, *paint, *rect, device, queue, &sw_view, full_view, width, height, format);
                 }
-                Step::ComposeBackdrop { read_from, extent, write_to, .. } => {
-                    self.compose_backdrop(read_from, *extent, *write_to, device, queue, full_view, format);
+                Step::ComposeBackdrop { read_from, extent, reach, always_cap, write_to, .. } => {
+                    self.compose_backdrop(read_from, *extent, *reach, *always_cap, *write_to, device, queue, full_view, format);
                 }
                 Step::PaintGather { backdrop, clip, write_to, .. } => {
                     self.paint_gather(*backdrop, *clip, *write_to, renderer, device, queue, scene_source, root, full_view, format);
@@ -283,6 +298,8 @@ impl Sink {
         &mut self,
         read_from: &[SurfaceRef],
         extent: Rect,
+        reach: f64,
+        always_cap: bool,
         write_to: SurfaceRef,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -290,11 +307,23 @@ impl Sink {
         format: wgpu::TextureFormat,
     ) {
         let (bdx, bdy, bw, bh) = device_rect(full_view, extent);
-        let w = (bw.ceil() as u32).clamp(1, 4096);
-        let h = (bh.ceil() as u32).clamp(1, 4096);
+        // Resolution cap: keep the effect's device reach within one tile so a gather never reads/writes
+        // past the current tile's one-tile ring. If `reach · zoom` exceeds a tile, draw the backdrop
+        // (and every downstream pass) at `k < 1`; the stamp upscales by `1/k`. Blur is low-pass, so
+        // this is near-lossless; glass loses some edge detail, the accepted cost of an unbounded zoom.
+        let mut k = resolution_cap(full_view, reach);
+        // A custom shader (`always_cap`) additionally gets a hard resolution ceiling from any zoom —
+        // its reach/cost is unprovable, so its surface never exceeds one tile+ring in its larger dim.
+        if always_cap {
+            let ceiling = f64::from(TILE_BUFFER) / bw.max(bh).max(1.0);
+            k = k.min(ceiling).min(1.0);
+        }
+        let w = ((bw * k).ceil() as u32).clamp(1, 4096);
+        let h = ((bh * k).ceil() as u32).clamp(1, 4096);
         self.ensure_surface(write_to, device, w, h, format);
         self.written.insert(write_to);
         self.backdrop_origin.insert(write_to, (bdx, bdy));
+        self.backdrop_scale.insert(write_to, k);
         let bd_view = self.surfaces[&write_to].view.clone();
 
         let mut enc = device
@@ -307,11 +336,13 @@ impl Sink {
         );
         let m = TILE_MARGIN as f32;
         let ts = TILE_SIZE as f32;
+        let kf = k as f32;
         for src_ref in read_from {
             let Some(tile) = src_ref.tile else { continue };
             let Some(src) = self.surfaces.get(src_ref) else { continue };
             let src_view = src.view.clone();
             let (ox, oy) = tiling::tile_device_origin(tile, full_view);
+            // The tile's full-zoom centre → its place in the reduced backdrop (down-sampled by `k`).
             self.compositor.blit(
                 device,
                 &mut enc,
@@ -319,7 +350,7 @@ impl Sink {
                 (w as f32, h as f32),
                 &Blit {
                     src: &src_view,
-                    dst: ((ox - bdx) as f32, (oy - bdy) as f32, ts, ts),
+                    dst: (((ox - bdx) as f32) * kf, ((oy - bdy) as f32) * kf, ts * kf, ts * kf),
                     src_rect: (m, m, ts, ts),
                     src_size: (TILE_BUFFER as f32, TILE_BUFFER as f32),
                     alpha: 1.0,
@@ -329,9 +360,10 @@ impl Sink {
         queue.submit([enc.finish()]);
     }
 
-    /// Blur the backdrop (separable Gaussian, once per gather — cached under the bumped ref) and
-    /// composite it into `write_to`'s tile through the shape's device rect, replacing the sharp
-    /// content under the glass with its blurred version. The shape's own body then paints on top.
+    /// Assemble a gather effect's result once (cached under the bumped ref) via [`run_graph`], then
+    /// stamp it into `write_to`'s tile — through the shape's silhouette mask for background blur, or
+    /// its device rect for glass (whose SDF mask is baked into the composite). The shape's own body
+    /// paints on top afterward.
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn paint_gather(
         &mut self,
@@ -350,8 +382,12 @@ impl Sink {
         let Some(bd) = self.surfaces.get(&backdrop) else { return };
         let (bw, bh) = (bd.width, bd.height);
         let Some(&(bdx, bdy)) = self.backdrop_origin.get(&backdrop) else { return };
+        // The cap factor the backdrop was assembled at: sigma / glass geometry / stamp source all live
+        // in this reduced space, and the stamp upscales by `1/k` back to full zoom.
+        let k = self.backdrop_scale.get(&backdrop).copied().unwrap_or(1.0);
 
         let is_glass = crate::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.glass.is_some()));
+        let is_custom = crate::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.custom_shader.is_some()));
 
         // Build the reusable gather result once (cached under v1). Glass → the full 4-pass composite;
         // background blur → the blurred backdrop plus a silhouette coverage mask (v2). Every dest tile
@@ -359,34 +395,33 @@ impl Sink {
         let result_ref = backdrop.bump();
         let mask_ref = backdrop.bump().bump();
         if !self.surfaces.contains_key(&result_ref) {
-            if is_glass {
-                self.build_glass(id, backdrop, result_ref, bw, bh, bdx, bdy, device, queue, full_view, format);
+            // The effect is a pass-graph (data): glass = displacement→refraction→blur?→composite,
+            // background blur = a two-tap separable Gaussian. `run_graph` executes either uniformly.
+            let passes = if is_glass {
+                self.glass_graph(id, bw, bh, bdx, bdy, full_view, k)
+            } else if is_custom {
+                self.custom_graph(id, bw, bh, device, format)
             } else {
-                // Device-space sigma: page sigma scaled by the view, matching the sample-rect margin.
-                let sigma = {
-                    let radius = crate::abi::with_scene(|live, _, _| live.get(id).and_then(|n| n.background_blur));
-                    let c = full_view.as_coeffs();
-                    let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
-                    render_core::blur::radius_to_sigma(radius.unwrap_or(0.0)) * scale
-                };
-                let bd_view = self.surfaces[&backdrop].view.clone();
-                let scratch_view = new_target(device, bw, bh, format).create_view(&wgpu::TextureViewDescriptor::default());
-                let blurred = new_target(device, bw, bh, format);
-                let blurred_view = blurred.create_view(&wgpu::TextureViewDescriptor::default());
-                let mut enc = device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink gather blur") });
-                let size = (bw as f32, bh as f32);
-                self.compositor.blur1d(device, &mut enc, &scratch_view, &BlurPass { src: &bd_view, size, dir: (1.0, 0.0), sigma });
-                self.compositor.blur1d(device, &mut enc, &blurred_view, &BlurPass { src: &scratch_view, size, dir: (0.0, 1.0), sigma });
-                queue.submit([enc.finish()]);
-                self.surfaces.insert(result_ref, Surface { texture: blurred, view: blurred_view, width: bw, height: bh });
+                Some(blur_graph(self.gather_sigma(id, full_view, k)))
+            };
+            let Some(passes) = passes else { return };
+            let backdrop_view = self.surfaces[&backdrop].view.clone();
+            let Some((tex, view)) = run_graph(
+                &self.compositor, &self.glass, device, queue, &[&backdrop_view], &passes, bw, bh, format,
+            ) else {
+                return;
+            };
+            self.surfaces.insert(result_ref, Surface { texture: tex, view, width: bw, height: bh });
 
+            if !is_glass {
                 // Coverage mask: the shape's silhouette in white, in the backdrop's device space, so
                 // the masked blit clips the blur to the outline (circle/path/rounded/rotated) — not
-                // its bounding box.
+                // its bounding box. (Glass bakes its SDF mask into the composite, so it needs none.)
                 let mask = new_target(device, bw, bh, format);
                 let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
-                let root_for_mask = Affine::translate((-bdx, -bdy)) * root;
+                // Render the silhouette into the reduced backdrop the same way the tiles mapped in:
+                // full-zoom device → shifted to the backdrop origin → scaled down by `k`.
+                let root_for_mask = Affine::scale(k) * Affine::translate((-bdx, -bdy)) * root;
                 let mut mscene = Scene::new(bw as u16, bh as u16);
                 crate::scene::set_mask_only(Some(id));
                 scene_source.render(&mut mscene, root_for_mask);
@@ -425,7 +460,9 @@ impl Sink {
         let m = f64::from(TILE_MARGIN);
         let buf = (TILE_BUFFER as f32, TILE_BUFFER as f32);
         let dst = ((ix0 - ox + m) as f32, (iy0 - oy + m) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
-        let src_rect = ((ix0 - bdx) as f32, (iy0 - bdy) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
+        // Source rect in the *reduced* backdrop texels (full-zoom device offset × k); the blit upscales
+        // it by 1/k onto the full-zoom `dst`. At k == 1 this is the identity mapping of before.
+        let src_rect = (((ix0 - bdx) * k) as f32, ((iy0 - bdy) * k) as f32, ((ix1 - ix0) * k) as f32, ((iy1 - iy0) * k) as f32);
         let src_size = (bw as f32, bh as f32);
         if is_glass {
             // The glass composite already baked in the SDF mask + backdrop passthrough, so a plain
@@ -438,47 +475,45 @@ impl Sink {
         queue.submit([enc.finish()]);
     }
 
-    /// Run the four-pass glass pipeline over the assembled backdrop and cache the composite under
-    /// `result_ref`. Glass geometry is the shape's rounded box in the backdrop's device space; the
-    /// pipeline's own SDF mask does the clip, so no silhouette mask is needed here.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn build_glass(
-        &mut self,
-        id: u128,
-        backdrop: SurfaceRef,
-        result_ref: SurfaceRef,
-        bw: u32,
-        bh: u32,
-        bdx: f64,
-        bdy: f64,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        full_view: Affine,
-        format: wgpu::TextureFormat,
-    ) {
-        let Some((g, cx, cy, w, h, corners, is_circle)) = crate::abi::with_scene(|live, _, _| {
+    /// Device-space Gaussian sigma for a background blur: the shape's page-space radius mapped through
+    /// the *effective* view scale (`zoom · k`). Using the capped scale is what makes the reduced-res
+    /// backdrop's blur reach fit one tile — `3σ_device ≤ TILE_SIZE` by construction of `k`.
+    fn gather_sigma(&self, id: u128, full_view: Affine, k: f64) -> f32 {
+        let radius = crate::abi::with_scene(|live, _, _| live.get(id).and_then(|n| n.background_blur));
+        let c = full_view.as_coeffs();
+        let scale = ((c[0] * c[0] + c[1] * c[1]).sqrt() * k) as f32;
+        render_core::blur::radius_to_sigma(radius.unwrap_or(0.0)) * scale
+    }
+
+    /// Build the glass pass-graph over the assembled backdrop (input 0): displacement (pass 0) →
+    /// refraction (pass 1) → optional blur (passes 2,3) → composite (last). Glass geometry is the
+    /// shape's rounded box in the backdrop's device space (axis-aligned; rotation is a gap); the
+    /// composite's own SDF mask does the clip, so no silhouette mask is needed.
+    fn glass_graph(&self, id: u128, bw: u32, bh: u32, bdx: f64, bdy: f64, full_view: Affine, k: f64) -> Option<Vec<Pass>> {
+        let (g, cx, cy, w, h, corners, is_circle) = crate::abi::with_scene(|live, _, _| {
             live.get(id).and_then(|n| {
                 n.glass.map(|g| {
                     let c = n.bounds.center();
                     (g, c.x, c.y, n.bounds.width(), n.bounds.height(), n.corners, n.kind == render_core::model::ShapeKind::Circle)
                 })
             })
-        }) else {
-            return;
-        };
+        })?;
 
-        // Glass box in the backdrop surface's device-pixel space (axis-aligned; rotation is a gap).
-        let scale = {
+        // Effective device scale = zoom · k. All glass geometry (centre, half-extents, corner, device
+        // thresholds `s`, blur sigma) is expressed in the reduced backdrop's texel space, so the SDF
+        // and refraction land pixel-correct at whatever resolution the cap chose.
+        let zoom = {
             let c = full_view.as_coeffs();
             (c[0] * c[0] + c[1] * c[1]).sqrt()
         };
+        let eff = zoom * k;
         let dev_center = full_view * Point::new(cx, cy);
-        let gcx = (dev_center.x - bdx) as f32;
-        let gcy = (dev_center.y - bdy) as f32;
-        let hx = (w * 0.5 * scale) as f32;
-        let hy = (h * 0.5 * scale) as f32;
-        let corner = if is_circle { hx.min(hy) } else { (corners.map_or(0.0, |r| r.top_left) * scale) as f32 };
-        let s = scale as f32;
+        let gcx = ((dev_center.x - bdx) * k) as f32;
+        let gcy = ((dev_center.y - bdy) * k) as f32;
+        let hx = (w * 0.5 * eff) as f32;
+        let hy = (h * 0.5 * eff) as f32;
+        let corner = if is_circle { hx.min(hy) } else { (corners.map_or(0.0, |r| r.top_left) * eff) as f32 };
+        let s = eff as f32;
         let (bwf, bhf) = (bw as f32, bh as f32);
 
         let disp_u: [f32; 20] = [
@@ -491,50 +526,68 @@ impl Sink {
         let refr_u: [f32; 4] = [bwf, bhf, g.chromatic_aberration, s];
         let comp_u: [f32; 8] = [bwf, bhf, g.frost, g.specular_opacity, g.specular_saturation, s, 0.0, 0.0];
 
-        let vd = wgpu::TextureViewDescriptor::default();
-        let backdrop_view = self.surfaces[&backdrop].view.clone();
-        let disp_view = new_target(device, bw, bh, DISPLACEMENT_FORMAT).create_view(&vd);
-        let refracted_view = new_target(device, bw, bh, format).create_view(&vd);
-
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink glass") });
-        // 1. displacement field, 2. refraction + chromatic aberration.
-        self.glass.displacement(device, &mut enc, &disp_view, &disp_u);
-        self.glass.refraction(device, &mut enc, &refracted_view, &backdrop_view, &disp_view, &refr_u);
-
-        // 3. glass blur (blur + frost softening) of the refracted image, when meaningful.
+        let mut passes = vec![
+            Pass { kind: PassKind::GlassDisplacement { u: disp_u }, inputs: vec![] },
+            Pass { kind: PassKind::GlassRefraction { u: refr_u }, inputs: vec![Src::Input(0), Src::Pass(0)] },
+        ];
+        // Glass blur (blur + frost softening) of the refracted image, when meaningful; otherwise the
+        // composite reads the sharp refraction directly. One Blur pass = a full 2D Gaussian.
         let sigma = g.total_blur_sigma() * s;
-        let blurred_view = if sigma > 0.5 {
-            let scratch_view = new_target(device, bw, bh, format).create_view(&vd);
-            let bv = new_target(device, bw, bh, format).create_view(&vd);
-            let size = (bwf, bhf);
-            self.compositor.blur1d(device, &mut enc, &scratch_view, &BlurPass { src: &refracted_view, size, dir: (1.0, 0.0), sigma });
-            self.compositor.blur1d(device, &mut enc, &bv, &BlurPass { src: &scratch_view, size, dir: (0.0, 1.0), sigma });
-            bv
+        let blurred = if sigma > 0.5 {
+            passes.push(Pass { kind: PassKind::Blur { sigma }, inputs: vec![Src::Pass(1)] });
+            Src::Pass(2)
         } else {
-            refracted_view.clone()
+            Src::Pass(1)
         };
+        passes.push(Pass { kind: PassKind::GlassComposite { u: comp_u }, inputs: vec![blurred, Src::Input(0), Src::Pass(0)] });
+        Some(passes)
+    }
 
-        // 4. frost / tint / specular / mask composite.
-        let composite = new_target(device, bw, bh, format);
-        let composite_view = composite.create_view(&vd);
-        self.glass.composite(device, &mut enc, &composite_view, &blurred_view, &backdrop_view, &disp_view, &comp_u);
-        queue.submit([enc.finish()]);
-        self.surfaces.insert(result_ref, Surface { texture: composite, view: composite_view, width: bw, height: bh });
+    /// Build the custom-shader graph: one [`PassKind::Custom`] over the assembled backdrop (input 0).
+    /// The pipeline is compiled once per distinct WGSL source (cached by hash); the uniform is the
+    /// backdrop resolution followed by the shader's declared params.
+    fn custom_graph(&mut self, id: u128, bw: u32, bh: u32, device: &wgpu::Device, format: wgpu::TextureFormat) -> Option<Vec<Pass>> {
+        let (wgsl, params) = crate::abi::with_scene(|live, _, _| {
+            live.get(id).and_then(|n| n.custom_shader.as_ref().map(|c| (c.wgsl.clone(), c.params.clone())))
+        })?;
+        let mut hasher = DefaultHasher::new();
+        wgsl.hash(&mut hasher);
+        let key = hasher.finish();
+        let pipeline = self
+            .custom_pipelines
+            .entry(key)
+            .or_insert_with(|| build_custom_pipeline(device, &wgsl, format))
+            .clone();
+        let mut u = vec![bw as f32, bh as f32];
+        u.extend_from_slice(&params);
+        Some(vec![Pass { kind: PassKind::Custom { pipeline, u }, inputs: vec![Src::Input(0)] }])
     }
 }
 
-/// A fresh render-attachment + sampled texture (a blur scratch / result surface).
-fn new_target(device: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("sink blur target"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    })
+/// The background-blur graph: one 2D Gaussian pass over the assembled backdrop (input 0) — direct or
+/// pyramid by sigma. Its result is what the sink stamps through the silhouette mask.
+fn blur_graph(sigma: f32) -> Vec<Pass> {
+    vec![Pass { kind: PassKind::Blur { sigma }, inputs: vec![Src::Input(0)] }]
+}
+
+/// The resolution-cap factor `k ∈ (0, 1]` for an effect whose page-space reach is `reach`, under
+/// `view`. `1.0` while the reach fits one tile in device space; below that it shrinks so
+/// `reach · zoom · k == TILE_SIZE`, keeping every gather read/write inside the current tile's
+/// one-tile ring. The stamp then upscales the reduced result by `1/k`. `reach ≤ 0` (no effect
+/// spread) → `1.0`, i.e. draw at native zoom.
+fn resolution_cap(view: Affine, reach: f64) -> f64 {
+    if reach <= 0.0 {
+        return 1.0;
+    }
+    let c = view.as_coeffs();
+    let zoom = (c[0] * c[0] + c[1] * c[1]).sqrt();
+    let device_reach = reach * zoom;
+    let budget = f64::from(TILE_SIZE);
+    if device_reach <= budget {
+        1.0
+    } else {
+        budget / device_reach
+    }
 }
 
 /// Device-space bbox `(x, y, w, h)` of a page-space rect under `view`, **snapped to integer pixels**

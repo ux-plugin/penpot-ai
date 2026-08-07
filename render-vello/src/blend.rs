@@ -352,6 +352,12 @@ impl Compositor {
         }
     }
 
+    /// The shared filtering sampler (ClampToEdge, linear). A custom-shader pass binds it so its
+    /// `textureSample` of the backdrop matches every other effect pass.
+    pub(crate) fn sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
+    }
+
     /// Record a coverage-masked SrcOver blit: `src` clipped by `mask`'s alpha into `target`. Used to
     /// stamp a blurred gather backdrop through the shape's exact silhouette, not its bounding rect.
     pub(crate) fn blit_masked(

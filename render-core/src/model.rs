@@ -334,6 +334,24 @@ impl Glass {
     }
 }
 
+/// A **custom** gather effect: a hand-written WGSL fragment shader over the backdrop beneath the
+/// shape — the raw escape hatch that sits under the typed presets (blur, glass). Because its reach
+/// can't be reasoned about, the scheduler caps its resolution unconditionally (see the sink's
+/// `always_cap`), so an arbitrary shader can never read/write past the one-tile ring or blow up cost.
+/// `reach` is the author-declared page-space extent it samples; `params` are the uniform floats the
+/// shader reads (packed after the surface resolution).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomShader {
+    /// A complete WGSL module: a `@vertex fn vs` + `@fragment fn fs`, reading `@binding(0)` uniform
+    /// `array<vec4<f32>, N>` (resolution in `u[0].xy`, then `params`), `@binding(1)` sampler,
+    /// `@binding(2)` the backdrop texture.
+    pub wgsl: String,
+    /// Author-declared page-space reach (how far past the shape it samples).
+    pub reach: f32,
+    /// Uniform floats the shader reads, packed after the surface resolution.
+    pub params: Vec<f32>,
+}
+
 /// A single renderable node in neutral form.
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -408,6 +426,9 @@ pub struct Node {
     /// A frosted-glass gather effect (refraction lens), `None` when the shape has none. Like
     /// [`background_blur`](Node::background_blur) it reads the backdrop beneath — a gather effect.
     pub glass: Option<Glass>,
+    /// A custom WGSL gather effect over the backdrop, `None` when the shape has none. The raw
+    /// escape hatch beneath the typed presets; the scheduler caps its resolution unconditionally.
+    pub custom_shader: Option<CustomShader>,
     /// Drop shadows, back to front, drawn behind the shape. Inner shadows do not reach here.
     pub shadows: Vec<Shadow>,
     /// A chain of custom filter passes wrapping the shape + children, or `None`. Vello-only —
@@ -441,6 +462,7 @@ impl Node {
             blur: None,
             background_blur: None,
             glass: None,
+            custom_shader: None,
             shadows: Vec::new(),
             filter_graph: None,
             hidden: false,
@@ -729,6 +751,21 @@ impl Scene {
                     g.frost,
                 ] {
                     fnv_f64(hash, f64::from(f));
+                }
+            }
+            None => fnv_u64(hash, 0),
+        }
+
+        // Custom WGSL gather effect — hash the source, reach and params so an edit re-digests.
+        match &node.custom_shader {
+            Some(c) => {
+                fnv_u64(hash, 1);
+                for b in c.wgsl.as_bytes() {
+                    fnv_u64(hash, u64::from(*b));
+                }
+                fnv_f64(hash, f64::from(c.reach));
+                for p in &c.params {
+                    fnv_f64(hash, f64::from(*p));
                 }
             }
             None => fnv_u64(hash, 0),

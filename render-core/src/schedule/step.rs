@@ -58,10 +58,19 @@ pub enum Step {
     /// Fuse snapshots from a gather's sample neighbourhood into one backdrop surface, sized to the
     /// gather's world-space `extent` (its `Backdrop` role). Sizing to the extent — not a tile — is
     /// what keeps the gather from cropping and fading on zoom-in.
+    ///
+    /// `reach` is the effect's page-space reach (how far `extent` grew past the shape). The sink caps
+    /// the backdrop's device resolution so `reach · zoom` never exceeds one tile — keeping every
+    /// gather's read/write inside the current tile's one-tile ring, then upscaling the result.
     ComposeBackdrop {
         shape: u128,
         read_from: Vec<SurfaceRef>,
         extent: Rect,
+        reach: f64,
+        /// Cap the backdrop's device resolution unconditionally (from any zoom), not only once the
+        /// reach exceeds a tile. Set for a *custom* WGSL effect, whose reach/cost can't be reasoned
+        /// about — so its surface is bounded to the one-tile ring from the get-go.
+        always_cap: bool,
         write_to: SurfaceRef,
     },
 
