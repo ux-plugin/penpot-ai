@@ -1,0 +1,32 @@
+# R1 viability spike for the classic-Vello (WebGPU-compute) backend — see
+# render-vello/docs/classic-vello-backend-plan.md. Proves `RenderingContext` (the trait scene.rs is
+# written against) is implementable for classic `vello::Scene`, so the classic backend can consume our
+# scene unchanged. Not yet a cdylib/wasm backend — that is Phase 2.
+#
+# Versions mirror render-vello/Cargo.toml (this crate is outside the vello workspace, so they are
+# pinned by hand and MUST stay in step with vello/Cargo.toml's [workspace.dependencies]).
+[package]
+name = "vello-gpu-renderer"
+version = "0.1.0"
+description = "Classic-Vello (WebGPU compute) backend — R1 viability spike: RenderingContext for vello::Scene."
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[lib]
+name = "vello_gpu_renderer"
+crate-type = ["rlib"]
+
+[dependencies]
+render-core = { path = "../render-core" }
+
+# The classic, compute-based vello renderer (WebGPU-only) — the whole point of this backend.
+vello = { path = "../vello/vello" }
+vello_common = { path = "../vello/sparse_strips/vello_common", default-features = false }
+# Only for the `TextureId` / `SampleRect` names the RenderingContext trait leaks in
+# `draw_texture_rects` (a hybrid type). The method is unimplemented on classic (external textures are
+# a Capability we do not advertise). Flagged in the plan as a trait-neutrality wart.
+vello_hybrid = { path = "../vello/sparse_strips/vello_hybrid" }
+vello_example_scenes = { path = "../vello/sparse_strips/vello_example_scenes" }
+glifo = { path = "../vello/glifo", default-features = false }
