@@ -200,6 +200,57 @@ pub fn tiles_overlapping_page_rect(view: Affine, rect: Rect) -> Vec<TileKey> {
     tiles
 }
 
+/// Device-space bbox `(x, y, w, h)` of a page-space rect under `view`, **snapped to integer pixels**
+/// (floor the origin, ceil the far corner). Integer alignment is load-bearing for effect surfaces:
+/// the surface is rendered at `translate(-origin)` and composited 1:1 at `origin`, so an integer
+/// origin keeps the composite a pixel-exact blit (no bilinear resample of a shadow) *and* preserves
+/// the shape's sub-pixel phase inside the surface — both needed to match the direct-draw ground
+/// truth. Backend-neutral: every GPU sink needs this identically to place an effect surface, so it
+/// lives here beside [`tile_device_origin`] rather than being re-derived per backend.
+#[must_use]
+pub fn device_rect(view: Affine, page: Rect) -> (f64, f64, f64, f64) {
+    let corners = [
+        view * Point::new(page.x0, page.y0),
+        view * Point::new(page.x1, page.y0),
+        view * Point::new(page.x1, page.y1),
+        view * Point::new(page.x0, page.y1),
+    ];
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for p in corners {
+        x0 = x0.min(p.x);
+        y0 = y0.min(p.y);
+        x1 = x1.max(p.x);
+        y1 = y1.max(p.y);
+    }
+    let (x0, y0) = (x0.floor(), y0.floor());
+    (x0, y0, (x1.ceil() - x0).max(1.0), (y1.ceil() - y0).max(1.0))
+}
+
+/// The resolution-cap factor `k ∈ (0, 1]` for an effect whose page-space reach is `reach`, under
+/// `view`. `1.0` while the reach fits one tile in device space; below that it shrinks so
+/// `reach · zoom · k == TILE_SIZE`, keeping every gather read/write inside the current tile's
+/// one-tile ring. The stamp then upscales the reduced result by `1/k`. `reach ≤ 0` (no effect
+/// spread) → `1.0`, i.e. draw at native zoom.
+///
+/// `zoom` here is the x-axis column norm (`√(a²+b²)`), matching the device-scale the sink uses for
+/// sigma / glass geometry; for the scale+translate views the canvas produces this equals
+/// [`view_scale`]. Backend-neutral policy: any GPU backend caps the same way, so it lives in core.
+#[must_use]
+pub fn resolution_cap(view: Affine, reach: f64) -> f64 {
+    if reach <= 0.0 {
+        return 1.0;
+    }
+    let [a, b, ..] = view.as_coeffs();
+    let zoom = (a * a + b * b).sqrt();
+    let device_reach = reach * zoom;
+    let budget = f64::from(TILE_SIZE);
+    if device_reach <= budget {
+        1.0
+    } else {
+        budget / device_reach
+    }
+}
+
 /// The backend-owned tile store (D18). `render-core` decides *which* tiles ([`visible_tiles`])
 /// and *how they map* ([`tile_render_transform`] / [`tile_device_origin`]); the backend owns how a
 /// tile is physically rendered and composited. Deliberately minimal — the cache, eviction, atlas
@@ -331,6 +382,34 @@ mod tests {
     fn a_degenerate_effect_rect_schedules_nowhere() {
         assert!(tiles_overlapping_page_rect(Affine::IDENTITY, Rect::new(10.0, 10.0, 10.0, 40.0)).is_empty());
         assert!(tiles_overlapping_page_rect(Affine::scale(0.0), Rect::new(0.0, 0.0, 50.0, 50.0)).is_empty());
+    }
+
+    #[test]
+    fn device_rect_snaps_to_integer_pixels_and_is_never_degenerate() {
+        // A page rect with a fractional device origin floors the origin and ceils the far corner, so
+        // the surface covers the shape's every touched pixel and composites 1:1 with no resample.
+        let view = Affine::new([2.0, 0.0, 0.0, 2.0, 10.5, 20.25]); // scale 2, sub-pixel pan
+        let (x, y, w, h) = device_rect(view, Rect::new(5.0, 5.0, 6.0, 6.0));
+        // device corners: (20.5,30.25)..(22.5,32.25) → floor origin, ceil far.
+        assert_eq!((x, y), (20.0, 30.0));
+        assert_eq!((w, h), (3.0, 3.0));
+        // A zero-area page rect still yields at least a 1×1 surface (never a zero-sized texture).
+        let (_, _, w0, h0) = device_rect(Affine::IDENTITY, Rect::new(4.0, 4.0, 4.0, 4.0));
+        assert!(w0 >= 1.0 && h0 >= 1.0);
+    }
+
+    #[test]
+    fn resolution_cap_is_one_until_the_reach_exceeds_a_tile_then_shrinks() {
+        // Reach that fits a tile in device space → no cap.
+        assert_eq!(resolution_cap(Affine::IDENTITY, 100.0), 1.0);
+        assert_eq!(resolution_cap(Affine::IDENTITY, 0.0), 1.0);
+        assert_eq!(resolution_cap(Affine::IDENTITY, -5.0), 1.0);
+        // A reach of one full tile is exactly the budget → still 1.0 (boundary).
+        assert_eq!(resolution_cap(Affine::IDENTITY, f64::from(TILE_SIZE)), 1.0);
+        // Zoom that pushes the device reach past a tile caps so reach·zoom·k == TILE_SIZE.
+        let k = resolution_cap(Affine::scale(4.0), f64::from(TILE_SIZE));
+        assert!((k - 0.25).abs() < 1e-9);
+        assert!((f64::from(TILE_SIZE) * 4.0 * k - f64::from(TILE_SIZE)).abs() < 1e-6);
     }
 
     #[test]

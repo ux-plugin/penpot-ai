@@ -22,11 +22,14 @@ pub use kurbo;
 pub use peniko;
 
 pub mod abi;
+pub mod atlas;
 pub mod blend;
 pub mod blur;
+pub mod effect_graph;
 pub mod gradient;
 pub mod model;
 pub mod schedule;
 pub mod selection;
 pub mod text;
+pub mod tile_cache;
 pub mod tiling;

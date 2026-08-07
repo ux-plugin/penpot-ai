@@ -35,15 +35,37 @@ impl LayerPaint {
     }
 }
 
+/// One instruction inside a `Paint`'s body stream. A `Paint` executes these in order into a single
+/// backend pass (one Vello scene → one submit), so a `PushLayer`/`PopLayer` bracket isolates an
+/// opacity/blend group **without** a separate raster surface — the whole plain subtree stays in one
+/// submission. Layer params (opacity/blend) are read from the node the id points at, exactly as
+/// `Body` reads its fills/strokes. The bracket must open and close inside the *same* `Paint`, because
+/// a backend layer cannot span two scene renders; the builder only lowers a group to a layer when its
+/// subtree has no batch-breaking effect (see `builder::subtree_needs_surface`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PaintOp {
+    /// Draw this shape's body (fills + strokes + drop/inner shadows + filter graph).
+    Body(u128),
+    /// Open an opacity/blend group layer for this container; paired with a later `PopLayer`.
+    PushLayer(u128),
+    /// Close the most recently opened layer.
+    PopLayer,
+}
+
 /// One step in the flat schedule. Variants are coarse-grained: one `Paint` covers a shape's full
 /// body (fills + strokes + drop/inner shadows) because no downstream consumer reads a single pass.
 #[derive(Debug, Clone)]
 pub enum Step {
-    /// Paint a shape's whole body into `write_to` — a tile's `TileOutput` directly (no isolation),
-    /// a `ScopeOf` scope buffer, or its own `RasterEffectOutput` surface (a spread effect, sized to
-    /// the shape's extrect). `clip` is the tile's page-space clip; effect details come from the node.
+    /// Execute a run of `PaintOp`s into `write_to`, in z-order, in a single pass — a tile's
+    /// `TileOutput` directly (no isolation), a `ScopeOf` scope buffer, or a single shape's own
+    /// `RasterEffectOutput` surface (a spread effect, sized to the shape's extrect). The builder
+    /// emits one op per `Paint`, then `coalesce` merges consecutive paints into the same tile/scope
+    /// surface into one — collapsing per-shape passes into one pass per run (a spread or gather
+    /// between two plain runs breaks the merge, preserving z). Plain opacity/blend groups fold in as
+    /// `PushLayer`/`PopLayer` ops rather than their own surface. `clip` is the tile's page-space clip;
+    /// effect details come from each node.
     Paint {
-        shape: u128,
+        ops: Vec<PaintOp>,
         clip: Rect,
         write_to: SurfaceRef,
     },

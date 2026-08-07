@@ -8,7 +8,7 @@ use crate::model::{Node, Scene, ShapeKind, Shadow, ROOT_ID};
 
 use super::builder::build;
 use super::dep_graph::DepGraph;
-use super::step::Step;
+use super::step::{PaintOp, Step};
 use super::surface_ref::SurfaceRole;
 
 const VIEW: Affine = Affine::IDENTITY;
@@ -58,6 +58,20 @@ fn drop_shadow(blur: f32, spread: f32, offset: Vec2) -> Shadow {
 /// The index of the first step matching `f`.
 fn find(steps: &[Step], f: impl Fn(&Step) -> bool) -> Option<usize> {
     steps.iter().position(f)
+}
+
+/// The body ids a `Paint` step draws, in order (ignoring layer push/pop ops).
+fn bodies(step: &Step) -> Vec<u128> {
+    if let Step::Paint { ops, .. } = step {
+        ops.iter().filter_map(|o| if let PaintOp::Body(id) = o { Some(*id) } else { None }).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether a `Paint` step draws `id`'s body.
+fn draws(step: &Step, id: u128) -> bool {
+    bodies(step).contains(&id)
 }
 
 #[test]
@@ -139,7 +153,7 @@ fn a_lower_plain_shape_paints_before_a_higher_shadowed_shape_composites() {
     let sched = build(&scene, VIEW, W, H);
 
     let lower_paint = find(&sched.steps, |s| {
-        matches!(s, Step::Paint { shape: 1, write_to, .. } if write_to.role == SurfaceRole::TileOutput)
+        draws(s, 1) && matches!(s, Step::Paint { write_to, .. } if write_to.role == SurfaceRole::TileOutput)
     })
     .expect("lower shape paints");
     let higher_composite = find(&sched.steps, |s| {
@@ -153,9 +167,10 @@ fn a_lower_plain_shape_paints_before_a_higher_shadowed_shape_composites() {
 }
 
 #[test]
-fn a_group_with_opacity_isolates_its_children_in_a_scope() {
-    // Group 10 at 50% opacity holds two overlapping rects. Without isolation the overlap would
-    // double-composite and the group opacity would be lost; the scope folds them as one image.
+fn a_plain_opacity_group_isolates_as_an_in_scene_layer() {
+    // Group 10 at 50% opacity holds two overlapping plain rects. Isolation is still required (the
+    // overlap must not double-composite), but nothing in the subtree needs a raster surface — so the
+    // group folds in as an in-scene `PushLayer`/`PopLayer` bracket, no `ScopeOf`, no separate submit.
     let scene = scene_tree(
         vec![10],
         vec![
@@ -166,37 +181,63 @@ fn a_group_with_opacity_isolates_its_children_in_a_scope() {
     );
     let sched = build(&scene, VIEW, W, H);
 
-    // Both children paint into the group's ScopeOf, never straight into the tile.
-    for id in [1u128, 2] {
-        assert!(
-            sched.steps.iter().any(|s| matches!(s,
-                Step::Paint { shape, write_to, .. }
-                    if *shape == id && matches!(write_to.role, SurfaceRole::ScopeOf(10)))),
-            "child {id} must paint into the group scope"
-        );
-    }
+    // No scope surface, and no fold composite off one.
     assert!(
-        !sched.steps.iter().any(|s| matches!(s,
-            Step::Paint { shape: 1, write_to, .. } if write_to.role == SurfaceRole::TileOutput)),
-        "a scoped child must not paint straight into the tile"
+        !sched.steps.iter().any(|s| matches!(s, Step::Paint { write_to, .. } if matches!(write_to.role, SurfaceRole::ScopeOf(_)))),
+        "a plain opacity group must not open a scope surface"
+    );
+    assert!(
+        !sched.steps.iter().any(|s| matches!(s, Step::Composite { from, .. } if matches!(from.role, SurfaceRole::ScopeOf(_)))),
+        "a layer group has no scope to fold"
     );
 
-    // The scope folds into the tile at the group's opacity, after the children have painted.
+    // The whole group is one coalesced tile paint: push the layer, both children in z-order, pop.
+    let tile_paints: Vec<_> = sched
+        .steps
+        .iter()
+        .filter(|s| matches!(s, Step::Paint { write_to, .. } if write_to.role == SurfaceRole::TileOutput))
+        .collect();
+    assert_eq!(tile_paints.len(), 1, "the plain group coalesces into a single tile paint");
+    let ops = match tile_paints[0] {
+        Step::Paint { ops, .. } => ops.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        ops,
+        vec![PaintOp::PushLayer(10), PaintOp::Body(1), PaintOp::Body(2), PaintOp::PopLayer],
+        "the group brackets its children in z-order as one in-scene layer"
+    );
+
+    assert!(DepGraph::build(&sched.steps).is_acyclic(), "a layered schedule must stay acyclic");
+}
+
+#[test]
+fn a_group_with_an_effect_in_its_subtree_uses_a_scope_surface() {
+    // A shadowed child forces a raster surface (its `Composite` breaks the batch), and a layer can't
+    // span two scene renders — so the enclosing opacity group must isolate into its own `ScopeOf`,
+    // folded at group opacity, rather than an in-scene layer.
+    let mut child = rect(1, 100.0, 100.0, 300.0, 300.0);
+    child.shadows = vec![drop_shadow(30.0, 0.0, Vec2::new(10.0, 10.0))];
+    let scene = scene_tree(vec![10], vec![group(10, 0.5, vec![1]), child]);
+    let sched = build(&scene, VIEW, W, H);
+
+    // The shadowed child spreads into its own effect surface, which composites into the group's
+    // ScopeOf — so the scope is a `Composite` target (a rewrite), not a `Paint` target.
+    assert!(
+        sched.steps.iter().any(|s| s.rewrites().iter().any(|r| matches!(r.role, SurfaceRole::ScopeOf(10)))),
+        "a group with an effect in its subtree isolates into a scope surface"
+    );
+    assert!(
+        !sched.steps.iter().any(|s| matches!(s, Step::Paint { ops, .. } if ops.contains(&PaintOp::PushLayer(10)))),
+        "the effect-bearing group takes the surface path, not the in-scene layer"
+    );
     let fold = find(&sched.steps, |s| {
         matches!(s, Step::Composite { from, to, paint, .. }
             if matches!(from.role, SurfaceRole::ScopeOf(10))
                 && to.role == SurfaceRole::TileOutput
                 && (paint.opacity - 0.5).abs() < 1e-6)
-    })
-    .expect("scope must fold into the tile at group opacity");
-    let last_child_paint = sched
-        .steps
-        .iter()
-        .rposition(|s| matches!(s, Step::Paint { shape, .. } if *shape == 1 || *shape == 2))
-        .expect("children paint");
-    assert!(last_child_paint < fold, "children must paint before the scope folds");
-
-    // The scope edges must not introduce a cycle.
+    });
+    assert!(fold.is_some(), "the scope folds into the tile at group opacity");
     assert!(DepGraph::build(&sched.steps).is_acyclic(), "a scoped schedule must stay acyclic");
 }
 
@@ -213,8 +254,8 @@ fn a_fully_opaque_group_needs_no_scope() {
         "a trivial group must not open a scope"
     );
     assert!(
-        sched.steps.iter().any(|s| matches!(s,
-            Step::Paint { shape: 1, write_to, .. } if write_to.role == SurfaceRole::TileOutput)),
+        sched.steps.iter().any(|s| draws(s, 1)
+            && matches!(s, Step::Paint { write_to, .. } if write_to.role == SurfaceRole::TileOutput)),
         "its child paints straight into the tile"
     );
 }
@@ -235,7 +276,7 @@ fn a_background_blur_composes_a_backdrop_then_gathers_before_its_own_body() {
     })
     .expect("a gather paints from its backdrop");
     let body = find(&sched.steps, |s| {
-        matches!(s, Step::Paint { shape: 1, write_to, .. } if write_to.role == SurfaceRole::TileOutput)
+        draws(s, 1) && matches!(s, Step::Paint { write_to, .. } if write_to.role == SurfaceRole::TileOutput)
     })
     .expect("the gather shape still paints its own body");
 
@@ -286,7 +327,7 @@ fn a_gather_backdrop_is_composed_after_the_shapes_below_it_paint() {
     let scene = scene_with(vec![lower, glass]);
     let sched = build(&scene, VIEW, W, H);
 
-    let lower_paint = find(&sched.steps, |s| matches!(s, Step::Paint { shape: 1, .. })).expect("lower paints");
+    let lower_paint = find(&sched.steps, |s| draws(s, 1)).expect("lower paints");
     let compose = find(&sched.steps, |s| matches!(s, Step::ComposeBackdrop { shape: 2, .. })).expect("gather composes");
     assert!(
         lower_paint < compose,
@@ -313,4 +354,87 @@ fn the_schedule_dependency_graph_is_acyclic_and_in_natural_order() {
         graph.is_topologically_valid(),
         "the builder emits in dependency order, so every edge must point forward"
     );
+}
+
+#[test]
+fn coalesce_merges_adjacent_plain_shapes_into_one_paint() {
+    // Two plain rects in the same tile (0,0), nothing between them → one batched Paint of both, in
+    // z-order. This is the optimization: N plain shapes become one `renderer.render`, not N.
+    let scene = scene_with(vec![rect(1, 50.0, 50.0, 200.0, 200.0), rect(2, 60.0, 60.0, 210.0, 210.0)]);
+    let sched = build(&scene, VIEW, W, H);
+
+    let tile_paints: Vec<_> = sched
+        .steps
+        .iter()
+        .filter(|s| matches!(s, Step::Paint { write_to, .. } if write_to.role == SurfaceRole::TileOutput))
+        .collect();
+    assert_eq!(tile_paints.len(), 1, "adjacent plain shapes coalesce into a single tile paint");
+    assert_eq!(bodies(tile_paints[0]), vec![1u128, 2], "the batch holds both shapes in z-order");
+}
+
+#[test]
+fn coalesce_breaks_a_plain_run_at_an_interleaved_effect() {
+    // Z-order in tile (0,0): plain(1), shadowed(2), plain(3). The shadow must layer between 1 and 3,
+    // so they must NOT share a batch — two separate tile paints, with the effect composite between.
+    let mut mid = rect(2, 70.0, 70.0, 220.0, 220.0);
+    mid.shadows = vec![drop_shadow(20.0, 0.0, Vec2::new(8.0, 8.0))];
+    let scene = scene_with(vec![
+        rect(1, 50.0, 50.0, 200.0, 200.0),
+        mid,
+        rect(3, 60.0, 60.0, 210.0, 210.0),
+    ]);
+    let sched = build(&scene, VIEW, W, H);
+
+    let tile_paints: Vec<_> = sched
+        .steps
+        .iter()
+        .filter(|s| matches!(s, Step::Paint { write_to, .. } if write_to.role == SurfaceRole::TileOutput))
+        .collect();
+    assert_eq!(tile_paints.len(), 2, "an interleaved effect splits the plain run");
+    assert_eq!(bodies(tile_paints[0]), vec![1u128]);
+    assert_eq!(bodies(tile_paints[1]), vec![3u128]);
+    assert!(DepGraph::build(&sched.steps).is_acyclic(), "the split schedule stays acyclic");
+}
+
+fn custom(reads_backdrop: bool, reach: f32) -> crate::model::CustomShader {
+    crate::model::CustomShader { wgsl: String::new(), reach, params: vec![], reads_backdrop }
+}
+
+#[test]
+fn a_backdrop_reading_custom_shader_schedules_as_a_gather() {
+    // Declared to sample the backdrop → the expensive, z-serial gather path (and the resolution cap).
+    let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
+    r.custom_shader = Some(custom(true, 8.0));
+    let scene = scene_with(vec![r]);
+    let sched = build(&scene, VIEW, W, H);
+
+    assert!(
+        sched.steps.iter().any(|s| matches!(s, Step::ComposeBackdrop { shape: 1, always_cap: true, .. })),
+        "a backdrop-reading custom shader is a gather, capped because it is opaque"
+    );
+    assert!(
+        !sched.steps.iter().any(|s| matches!(s,
+            Step::Paint { write_to, .. } if matches!(write_to.role, SurfaceRole::RasterEffectOutput(1)))),
+        "a gather does not take the spread path"
+    );
+}
+
+#[test]
+fn a_body_only_custom_shader_schedules_as_a_spread_not_a_gather() {
+    // Declared to read only its own body → the cheap spread path: its own effect surface, no backdrop.
+    let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
+    r.custom_shader = Some(custom(false, 8.0));
+    let scene = scene_with(vec![r]);
+    let sched = build(&scene, VIEW, W, H);
+
+    assert!(
+        sched.steps.iter().any(|s| matches!(s,
+            Step::Paint { write_to, .. } if matches!(write_to.role, SurfaceRole::RasterEffectOutput(1)))),
+        "a body-only custom shader paints into its own effect surface (spread)"
+    );
+    assert!(
+        !sched.steps.iter().any(|s| matches!(s, Step::ComposeBackdrop { .. })),
+        "a body-only custom shader never composes a backdrop"
+    );
+    assert!(DepGraph::build(&sched.steps).is_acyclic());
 }

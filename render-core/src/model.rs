@@ -335,21 +335,28 @@ impl Glass {
 }
 
 /// A **custom** gather effect: a hand-written WGSL fragment shader over the backdrop beneath the
-/// shape — the raw escape hatch that sits under the typed presets (blur, glass). Because its reach
-/// can't be reasoned about, the scheduler caps its resolution unconditionally (see the sink's
-/// `always_cap`), so an arbitrary shader can never read/write past the one-tile ring or blow up cost.
-/// `reach` is the author-declared page-space extent it samples; `params` are the uniform floats the
-/// shader reads (packed after the surface resolution).
+/// shape — the raw escape hatch that sits under the typed presets (blur, glass).
+///
+/// Its scheduling class is *declared*, not guessed: `reads_backdrop` says whether `@binding(2)` is
+/// the composited backdrop beneath the shape (a **gather** — z-serial, needs a backdrop surface) or
+/// the shape's own body (a **spread**, like a layer blur — no backdrop, cheaper, batches around it).
+/// A shader with no declared info should default to `reads_backdrop: true` — the safe worst case, in
+/// which the scheduler also caps the backdrop resolution unconditionally so an opaque shader can
+/// never read/write past the one-tile ring or blow up cost. `reach` is the author-declared page-space
+/// extent it samples; `params` are the uniform floats the shader reads (packed after the resolution).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CustomShader {
     /// A complete WGSL module: a `@vertex fn vs` + `@fragment fn fs`, reading `@binding(0)` uniform
     /// `array<vec4<f32>, N>` (resolution in `u[0].xy`, then `params`), `@binding(1)` sampler,
-    /// `@binding(2)` the backdrop texture.
+    /// `@binding(2)` the input texture (the backdrop if `reads_backdrop`, else the shape's own body).
     pub wgsl: String,
     /// Author-declared page-space reach (how far past the shape it samples).
     pub reach: f32,
     /// Uniform floats the shader reads, packed after the surface resolution.
     pub params: Vec<f32>,
+    /// Whether the shader samples the backdrop beneath the shape (gather) or only its own body
+    /// (spread). Default to `true` for an opaque shader — the safe, worst-case classification.
+    pub reads_backdrop: bool,
 }
 
 /// A single renderable node in neutral form.
@@ -767,6 +774,7 @@ impl Scene {
                 for p in &c.params {
                     fnv_f64(hash, f64::from(*p));
                 }
+                fnv_u64(hash, u64::from(c.reads_backdrop));
             }
             None => fnv_u64(hash, 0),
         }

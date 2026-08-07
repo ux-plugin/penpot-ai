@@ -17,9 +17,9 @@ pub mod dep_graph;
 pub mod step;
 pub mod surface_ref;
 
-pub use builder::{build, Schedule};
+pub use builder::{affected_page_rect, build, build_visible, first_write_paints, Schedule};
 pub use dep_graph::DepGraph;
-pub use step::{LayerPaint, Step};
+pub use step::{LayerPaint, PaintOp, Step};
 pub use surface_ref::{SizeClass, SurfaceRef, SurfaceRole};
 
 #[cfg(test)]
