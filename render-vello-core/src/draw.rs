@@ -21,6 +21,7 @@ use render_core::gradient::DIAMOND_TILE;
 use render_core::host::Modifiers;
 use render_core::kurbo::{Affine, Rect};
 use render_core::model::{self as m, Brush, Node, Scene, ShapeKind};
+use render_core::peniko::{BlendMode, Color, Compose, Mix};
 use render_core::schedule::PaintOp;
 use vello_common::paint::ImageId;
 use vello_example_scenes::{Fill, RenderingContext};
@@ -86,6 +87,7 @@ fn draw_node<C: RenderingContext, E: DrawEnv>(
         ctx.push_layer(None, blend, alpha, None, None);
     }
     draw_node_kind_body(ctx, resources, env, text, node, matrix);
+    draw_box_inner_shadows(ctx, node, matrix);
     // A frame with `clip` set clips its children (not its own body — a frame's stroke straddles its
     // edge). The clip path is captured under this node's transform, matching render-wasm.
     let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
@@ -131,11 +133,13 @@ fn draw_node_kind_body<C: RenderingContext, E: DrawEnv>(
     }
 }
 
-/// One shape's full self-mark for a scheduler `Paint` step: its drop shadows, then its body — but
-/// **not** its children, isolation layer or clip (the schedule emits those as their own steps /
-/// `PushLayer`/`PopLayer` ops). This is the classic backend's per-`Body(id)` unit, the neutral twin of
-/// `scene.rs`'s `paint_node_body`. Spread effects (layer blur, filter graph, inner shadows) are the
-/// sink's job via its effect surfaces, so they are deliberately absent here.
+/// One shape's full self-mark for a scheduler `Paint` step: its box drop shadows, its body, then its
+/// box inner shadows — but **not** its children, isolation layer or clip (the schedule emits those as
+/// their own steps / `PushLayer`/`PopLayer` ops). This is the classic backend's per-`Body(id)` unit,
+/// the neutral twin of `scene.rs`'s `paint_node_body`. Box drop/inner shadows draw inline via the
+/// native blurred-rounded-rect (the isolated `RasterEffectOutput` surface makes the inner shadow's
+/// silhouette whole); the remaining spread effects — layer blur, filter graphs, path-shaped shadows —
+/// are still the sink's job via its effect surfaces and are absent here.
 pub fn draw_node_body<C: RenderingContext, E: DrawEnv>(
     ctx: &mut C,
     resources: &mut C::Resources,
@@ -149,6 +153,7 @@ pub fn draw_node_body<C: RenderingContext, E: DrawEnv>(
     }
     draw_box_drop_shadows(ctx, node, matrix);
     draw_node_kind_body(ctx, resources, env, text, node, matrix);
+    draw_box_inner_shadows(ctx, node, matrix);
 }
 
 /// Draw one scheduler `Paint` step — a z-ordered run of [`PaintOp`]s — into `ctx`. `Body(id)` draws
@@ -219,6 +224,60 @@ fn draw_box_drop_shadows<C: RenderingContext>(ctx: &mut C, node: &Node, matrix: 
         );
         ctx.fill_blurred_rounded_rect(&rect, radius, sigma);
     }
+}
+
+/// Draw a node's inset (inner) shadows for the box-shaped common case (rect/frame/circle) via the
+/// native blurred-rounded-rect primitive — the classic backend's analogue of the hybrid fork's
+/// `InnerShadow` filter. Mirrors render-wasm's Skia construction (`drop_shadow_only` → colour `SrcOut`
+/// → `SrcIn` shape): inside a layer clipped to the shape (the `SrcIn`), flood it with the shadow
+/// colour, then punch out the shape's silhouette shifted by the offset and blurred (`DestOut`) —
+/// leaving colour only on the offset side, which is the inner band.
+///
+/// Only the classic backend routes through here; the hybrid walk applies inner shadows via the fork
+/// filter in `scene.rs`, so it never calls this and the two never double-apply. Path/text inner
+/// shadows are deferred (a blurred rrect is the wrong silhouette), exactly like path drop shadows, and
+/// spread is ignored (parity with render-wasm and the hybrid fork). `matrix` is the node's page→device
+/// transform.
+fn draw_box_inner_shadows<C: RenderingContext>(ctx: &mut C, node: &Node, matrix: Affine) {
+    if !node.shadows.iter().any(|s| s.inset) {
+        return;
+    }
+    let base_radius = match node.kind {
+        ShapeKind::Rect | ShapeKind::Frame => node.corners.map_or(0.0, |c| c.top_left),
+        ShapeKind::Circle => node.bounds.width().min(node.bounds.height()) / 2.0,
+        _ => return,
+    };
+    let shape = outline(node);
+    // `DestOut` reads only the punch's alpha, so an opaque colour fully clears the shifted silhouette.
+    let opaque = Color::WHITE;
+    let dest_out = BlendMode::new(Mix::Normal, Compose::DestOut);
+    for shadow in node.shadows.iter().filter(|s| s.inset) {
+        // Cap the device blur like the drop shadow; the offset shrinks by the same factor past the cap
+        // so the band keeps its shape under zoom.
+        let (sigma, offset_ratio) = cap_shadow_blur(radius_to_sigma(shadow.blur), matrix);
+
+        // `SrcIn` to the shape: everything below composites over the body, clipped to the silhouette.
+        ctx.set_paint_transform(Affine::IDENTITY);
+        ctx.set_transform(matrix);
+        ctx.push_layer(Some(&shape), None, None, None, None);
+
+        // The shadow colour, flooding the whole shape …
+        ctx.set_paint(shadow.color);
+        ctx.set_transform(matrix);
+        ctx.fill_path(&shape);
+
+        // … minus the shape's silhouette shifted by the offset and blurred: the remainder is the band.
+        ctx.push_layer(None, Some(dest_out), None, None, None);
+        ctx.set_paint(opaque);
+        ctx.set_transform(
+            matrix * Affine::translate((shadow.offset.x * offset_ratio, shadow.offset.y * offset_ratio)),
+        );
+        ctx.fill_blurred_rounded_rect(&node.bounds, base_radius as f32, sigma);
+        ctx.pop_layer();
+
+        ctx.pop_layer();
+    }
+    ctx.set_paint_transform(Affine::IDENTITY);
 }
 
 /// Paint a node's own geometry (fills then strokes), ignoring its children — the backend-neutral
