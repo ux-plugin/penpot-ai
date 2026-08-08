@@ -43,3 +43,5 @@ wgpu = { version = "29.0.3" }
 pollster = "0.4"
 # Encode the readback buffer to a PNG proof (already in the tree via the vello graphics stack).
 png = "0.18"
+# Text proofs: map chars → glyph ids and read advances without pulling in a full layout engine.
+skrifa = "0.43"

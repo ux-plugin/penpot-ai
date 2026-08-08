@@ -8,10 +8,10 @@
 //! The trait is *stateful* (`set_transform`, `set_paint`, then `fill_path`); classic `vello::Scene`
 //! is *immediate* (`fill(rule, transform, brush, …)`). So this is a wrapper, [`ClassicCtx`], that
 //! accumulates the pen state and flushes it on each draw. The core paint path (fills, strokes, paths,
-//! rects, layers) maps cleanly; the pieces that are a later slice on classic — text (needs a glifo
-//! backend bridging to `draw_glyphs`), blurred-rect drop shadows, filter layers (effects route
-//! through our own `run_graph` instead), and external-texture images — are stubbed here and called
-//! out as the Phase-2 work items. The spike's job is to show the *shape* holds and compiles.
+//! rects, layers) maps cleanly, and **text** now routes through [`ClassicGlyphBackend`] to classic's
+//! native `Scene::draw_glyphs` (its own outline + COLR/emoji pipeline — no glifo sink needed). The
+//! pieces still deferred on classic are blurred-rect drop shadows and filter layers (effects route
+//! through our own `run_graph` instead) and external-texture images.
 
 use glifo::{Glyph, GlyphRun, GlyphRunBackend, GlyphRunBuilder};
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions};
@@ -82,38 +82,92 @@ impl ClassicCtx {
 /// Glyph backend stub. Classic vello draws text through its own skrifa `draw_glyphs`, not a glifo
 /// backend, so bridging glifo → classic is its own slice; the spike only needs the type to line up.
 pub struct ClassicGlyphBackend<'a> {
-    _scene: &'a mut vello::Scene,
+    scene: &'a mut vello::Scene,
+    /// The pen's current paint, snapshotted from the `ClassicCtx` — glifo's `GlyphRun` carries the
+    /// font and geometry but not the brush, so the backend supplies it (as `scene.rs`'s per-fill
+    /// `set_paint` sets it before each glyph pass).
+    brush: ClassicPaint,
+    stroke: Stroke,
+}
+
+impl<'a> ClassicGlyphBackend<'a> {
+    /// Encode a glyph sequence through classic vello's native `Scene::draw_glyphs` under `style`
+    /// (fill or stroke). Classic's own pipeline handles outlines and COLR/bitmap emoji, so the
+    /// backend only translates the run's parameters and the current brush — no glifo atlas/outline
+    /// sink is needed (that is the sparse-strips path). glifo's `Glyph` maps 1:1 to `vello::Glyph`.
+    fn draw(self, run: &GlyphRun<'a>, glyphs: impl Iterator<Item = Glyph> + Clone, stroked: bool) {
+        let scene_pt = run.scene_paint_transform();
+        // glifo carries variation coords as skrifa `F2Dot14`; classic wants raw `i16` bits (same
+        // value). Materialise them into a Vec that outlives the builder.
+        let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
+        // `draw_glyphs` reborrows `self.scene` for a local lifetime, so the owned `self.brush` (and
+        // `self.stroke`) outlive the builder and can supply the `BrushRef` — disjoint field borrows.
+        let db = self
+            .scene
+            .draw_glyphs(run.font())
+            .font_size(run.font_size())
+            .transform(run.transform())
+            .glyph_transform(run.glyph_transform())
+            .brush_transform((scene_pt != Affine::IDENTITY).then_some(scene_pt))
+            .normalized_coords(&coords)
+            .hint(run.hint());
+        let items = glyphs.map(|g| vello::Glyph { id: g.id, x: g.x, y: g.y });
+        // The brush and the fill/stroke style are chosen together so the builder is consumed once.
+        match (&self.brush, stroked) {
+            (ClassicPaint::Solid(c), false) => db.brush(*c).draw(Fill::NonZero, items),
+            (ClassicPaint::Gradient(gr), false) => db.brush(gr).draw(Fill::NonZero, items),
+            (ClassicPaint::Solid(c), true) => db.brush(*c).draw(&self.stroke, items),
+            (ClassicPaint::Gradient(gr), true) => db.brush(gr).draw(&self.stroke, items),
+        }
+    }
 }
 
 impl<'a> GlyphRunBackend<'a> for ClassicGlyphBackend<'a> {
     fn atlas_cache(self, _enabled: bool) -> Self {
+        // Classic vello does its own glyph caching inside the renderer; nothing to toggle here.
         self
     }
-    fn fill_glyphs<G>(self, _run: GlyphRun<'a>, _glyphs: G)
+    fn fill_glyphs<G>(self, run: GlyphRun<'a>, glyphs: G)
     where
         G: Iterator<Item = Glyph> + Clone,
     {
-        todo!("classic-vello text: bridge glifo glyph runs to vello::Scene::draw_glyphs (Phase 2)")
+        self.draw(&run, glyphs, false);
     }
-    fn stroke_glyphs<G>(self, _run: GlyphRun<'a>, _glyphs: G)
+    fn stroke_glyphs<G>(self, run: GlyphRun<'a>, glyphs: G)
     where
         G: Iterator<Item = Glyph> + Clone,
     {
-        todo!("classic-vello text (Phase 2)")
+        self.draw(&run, glyphs, true);
     }
+    /// Draw a decoration line (underline / strikethrough / overline) as a filled rectangle spanning
+    /// the run under its own transform. This is the plain version: it does **not** yet do glifo's
+    /// skip-ink (clipping the line out of descenders) — a later refinement — but a solid decoration
+    /// reads correctly for the common case.
     fn render_decoration<G>(
         self,
-        _run: GlyphRun<'a>,
+        run: GlyphRun<'a>,
         _glyphs: G,
-        _x_range: RangeInclusive<f32>,
-        _baseline_y: f32,
-        _offset: f32,
-        _size: f32,
+        x_range: RangeInclusive<f32>,
+        baseline_y: f32,
+        offset: f32,
+        size: f32,
         _buffer: f32,
     ) where
         G: Iterator<Item = Glyph> + Clone,
     {
-        todo!("classic-vello text decorations (Phase 2)")
+        // `offset` is the top of the line measured down from the baseline; `size` its thickness.
+        let top = f64::from(baseline_y + offset);
+        let rect = Rect::new(
+            f64::from(*x_range.start()),
+            top,
+            f64::from(*x_range.end()),
+            top + f64::from(size),
+        );
+        let t = run.transform();
+        match &self.brush {
+            ClassicPaint::Solid(c) => self.scene.fill(Fill::NonZero, t, *c, None, &rect),
+            ClassicPaint::Gradient(g) => self.scene.fill(Fill::NonZero, t, g, None, &rect),
+        }
     }
 }
 
@@ -195,7 +249,15 @@ impl RenderingContext for ClassicCtx {
         font: &FontData,
     ) -> GlyphRunBuilder<'a, Self::GlyphRunBackend<'a>> {
         let (t, pt) = (self.transform, self.paint_transform);
-        GlyphRunBuilder::new(font.clone(), t, pt, ClassicGlyphBackend { _scene: &mut self.scene })
+        // Snapshot the current brush/stroke so the backend can paint the glyphs — glifo's run carries
+        // font + geometry but not paint. Cloned (not borrowed) so it doesn't alias `&mut self.scene`.
+        let (brush, stroke) = (self.paint.clone(), self.stroke.clone());
+        GlyphRunBuilder::new(
+            font.clone(),
+            t,
+            pt,
+            ClassicGlyphBackend { scene: &mut self.scene, brush, stroke },
+        )
     }
 
     fn push_clip_layer(&mut self, path: &BezPath) {
@@ -714,5 +776,111 @@ mod tests {
         let right = px(52, 32);
         assert!(left[0] > left[2] + 60, "gradient left end should be red-dominant, got {left:?}");
         assert!(right[2] > right[0] + 60, "gradient right end should be blue-dominant, got {right:?}");
+    }
+
+    // Slice B milestone: classic vello rasterizes TEXT through ClassicGlyphBackend. "HELLO" is shaped
+    // by hand (charmap char→gid, real advances) and drawn via ctx.glyph_run(...).fill_glyphs — the
+    // exact path scene.rs's draw_glyph_run will take once the layout migrates — routing to classic's
+    // native Scene::draw_glyphs. Proof: blue ink appears in the text band, background stays white.
+    #[test]
+    fn classic_renders_text_through_the_glyph_backend() {
+        use render_core::kurbo::Affine;
+        use render_core::peniko::{Blob, Color, FontData};
+        use skrifa::instance::{LocationRef, Size};
+        use skrifa::{FontRef, MetadataProvider};
+        use std::sync::Arc;
+        use vello_example_scenes::RenderingContext;
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../vello/examples/assets/roboto/Roboto-Regular.ttf");
+        let Ok(bytes) = std::fs::read(path) else {
+            eprintln!("no Roboto font at {path} — skipping text proof");
+            return;
+        };
+        let font_ref = FontRef::new(&bytes).expect("parse font");
+        let font_size = 48.0f32;
+        let charmap = font_ref.charmap();
+        let gm = font_ref.glyph_metrics(Size::new(font_size), LocationRef::default());
+
+        // Shape "HELLO" by hand: char → glyph id, advance by the font's real widths.
+        let (mut x, baseline) = (12.0f32, 62.0f32);
+        let mut glyphs: Vec<Glyph> = Vec::new();
+        for ch in "HELLO".chars() {
+            let gid = charmap.map(ch).expect("glyph id");
+            glyphs.push(Glyph { id: gid.to_u32(), x, y: baseline });
+            x += gm.advance_width(gid).unwrap_or(font_size * 0.5);
+        }
+        let font = FontData::new(Blob::new(Arc::new(bytes)), 0);
+
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter — skipping text proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("vello-gpu text"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        let (w, h) = (256u32, 96u32);
+        let mut renderer = ClassicRenderer::new(&device);
+        let mut ctx = renderer.new_scene(w as u16, h as u16);
+        // Set the pen exactly as scene.rs's draw_glyph_run does before a fill pass: transform, then
+        // the fill's paint. glyph_run snapshots this brush into the backend.
+        ctx.set_transform(Affine::IDENTITY);
+        ctx.set_paint(Color::from_rgba8(20, 30, 160, 255));
+        let mut resources = ();
+        ctx.glyph_run(&mut resources, &font)
+            .font_size(font_size)
+            .hint(true)
+            .fill_glyphs(glyphs.iter().copied());
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("text target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+
+        let data = read_back(&device, &queue, &texture, w, h);
+
+        // Count ink: any pixel visibly darker than white is glyph coverage.
+        let mut ink = 0usize;
+        for i in (0..data.len()).step_by(4) {
+            if data[i] < 200 || data[i + 1] < 200 || data[i + 2] < 200 {
+                ink += 1;
+            }
+        }
+        assert!(ink > 300, "expected glyph ink from HELLO, got only {ink} non-white px");
+        // The blue tint means it took the brush, not the default black.
+        let blue = data.chunks_exact(4).any(|p| p[2] > 120 && p[0] < 90 && p[1] < 90);
+        assert!(blue, "glyph ink should carry the blue brush");
+        // Top-left corner is outside the text band → white.
+        let c = {
+            let o = ((2 * w + 2) * 4) as usize;
+            [data[o], data[o + 1], data[o + 2]]
+        };
+        assert!(c[0] > 240 && c[1] > 240 && c[2] > 240, "corner should be white, got {c:?}");
+
+        // Keep the pixel proof.
+        let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../proofs/slice-b-classic-text.png");
+        if let Ok(file) = std::fs::File::create(out) {
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            if let Ok(mut wr) = enc.write_header() {
+                let _ = wr.write_image_data(&data);
+            }
+        }
     }
 }
