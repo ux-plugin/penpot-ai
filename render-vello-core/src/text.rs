@@ -13,6 +13,7 @@
 
 use crate::draw::{set_paint, DrawEnv};
 use glifo::Glyph;
+use parley::fontique::{FontInfoOverride, GenericFamily};
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, GlyphRun, Layout, LayoutContext,
     LineHeight, PositionedLayoutItem, StyleProperty,
@@ -42,6 +43,32 @@ impl TextState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Register every face the host has uploaded since the last call into the font collection, under
+    /// the same alias [`crate::abi::font_alias`] produces — so [`DrawEnv::font_alias`] finds it. Drains
+    /// the ABI queue (each face staged at most once, deduped by alias there), so it is idempotent; the
+    /// backend calls it once per frame before laying text out. Mirrors the hybrid `NeutralModelScene`'s
+    /// `sync_fonts`, shared here so the classic backend registers faces the identical way.
+    pub fn sync_fonts(&mut self) {
+        for font in crate::abi::take_pending_fonts() {
+            let registered = self.font_cx.collection.register_fonts(
+                font.bytes.into(),
+                Some(FontInfoOverride {
+                    family_name: Some(&font.alias),
+                    width: None,
+                    style: None,
+                    weight: None,
+                    axes: None,
+                }),
+            );
+            // An emoji face also joins Parley's `Emoji` generic family, so a cluster the primary font
+            // lacks falls through to it (glifo then draws its COLR/bitmap layers). `append` accumulates.
+            if font.is_emoji {
+                let ids = registered.iter().map(|(family_id, _)| *family_id);
+                self.font_cx.collection.append_generic_families(GenericFamily::Emoji, ids);
+            }
+        }
     }
 }
 

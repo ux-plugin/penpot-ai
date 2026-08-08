@@ -50,14 +50,24 @@ pub struct ClassicCtx {
     /// enum has no image arm yet.
     paint: ClassicPaint,
     stroke: Stroke,
+    /// The host images this backend has staged, keyed by the [`vello_common::paint::ImageId`] the sink
+    /// resolved a fill to. Shared (an `Rc`) with the owning [`ClassicBackend`] so every per-surface
+    /// `ClassicCtx` sees the same uploads. Classic vello carries pixels in the scene encoding (there is
+    /// no external atlas handle like hybrid's), so `set_paint` looks the pixels up here and attaches
+    /// them as a peniko `ImageBrush`.
+    images: ImageMap,
 }
 
-/// The paint kinds classic vello can draw today. Both are peniko-native (`Scene::fill` takes them
-/// directly); the image atlas is Phase 2.
+/// Shared `ImageId → pixels` map (see [`ClassicCtx::images`]).
+type ImageMap = std::rc::Rc<std::cell::RefCell<std::collections::HashMap<vello_common::paint::ImageId, vello_common::peniko::ImageData>>>;
+
+/// The paint kinds classic vello can draw today — all peniko-native, so `Scene::fill` takes them
+/// directly.
 #[derive(Clone)]
 enum ClassicPaint {
     Solid(vello_common::peniko::Color),
     Gradient(vello_common::peniko::Gradient),
+    Image(vello_common::peniko::ImageBrush),
 }
 
 impl Default for ClassicPaint {
@@ -81,6 +91,7 @@ impl ClassicCtx {
             fill_rule: Fill::NonZero,
             paint: ClassicPaint::default(),
             stroke: Stroke::default(),
+            images: ImageMap::default(),
         }
     }
 
@@ -88,6 +99,11 @@ impl ClassicCtx {
     #[must_use]
     pub fn scene(&self) -> &vello::Scene {
         &self.scene
+    }
+
+    /// Point this context at the backend's shared image map, so an image fill resolves its pixels.
+    fn share_images(&mut self, images: ImageMap) {
+        self.images = images;
     }
 }
 
@@ -128,8 +144,10 @@ impl<'a> ClassicGlyphBackend<'a> {
         match (&self.brush, stroked) {
             (ClassicPaint::Solid(c), false) => db.brush(*c).draw(Fill::NonZero, items),
             (ClassicPaint::Gradient(gr), false) => db.brush(gr).draw(Fill::NonZero, items),
+            (ClassicPaint::Image(b), false) => db.brush(b).draw(Fill::NonZero, items),
             (ClassicPaint::Solid(c), true) => db.brush(*c).draw(&self.stroke, items),
             (ClassicPaint::Gradient(gr), true) => db.brush(gr).draw(&self.stroke, items),
+            (ClassicPaint::Image(b), true) => db.brush(b).draw(&self.stroke, items),
         }
     }
 }
@@ -179,6 +197,7 @@ impl<'a> GlyphRunBackend<'a> for ClassicGlyphBackend<'a> {
         match &self.brush {
             ClassicPaint::Solid(c) => self.scene.fill(Fill::NonZero, t, *c, None, &rect),
             ClassicPaint::Gradient(g) => self.scene.fill(Fill::NonZero, t, g, None, &rect),
+            ClassicPaint::Image(b) => self.scene.fill(Fill::NonZero, t, b, None, &rect),
         }
     }
 }
@@ -204,14 +223,25 @@ impl RenderingContext for ClassicCtx {
         self.fill_rule = fill_rule;
     }
     fn set_paint(&mut self, paint: impl Into<PaintType>) {
-        // PaintType is `peniko::Brush<Image, Gradient>`. Solid and gradient are peniko-native and map
-        // straight through; an image paint would need this backend's own atlas (Phase 2), and
-        // `ClassicEnv` resolves images to nothing upstream so this arm is currently unreachable — it
-        // falls back to the default black placeholder rather than silently keeping a stale paint.
+        // PaintType is `peniko::Brush<vello_common::paint::Image, Gradient>`. Solid and gradient are
+        // peniko-native and map straight through. An image paint arrives as an atlas *handle*
+        // (`ImageSource::OpaqueId`, the shape the shared `set_paint` emits); classic carries pixels in
+        // the scene, so we resolve that handle back to the pixels `upload_pending_images` staged and
+        // attach them as a peniko `ImageBrush`. An unstaged/absent image falls back to the placeholder.
         self.paint = match paint.into() {
             vello_common::peniko::Brush::Solid(color) => ClassicPaint::Solid(color),
             vello_common::peniko::Brush::Gradient(g) => ClassicPaint::Gradient(g),
-            vello_common::peniko::Brush::Image(_) => ClassicPaint::default(),
+            vello_common::peniko::Brush::Image(img) => match img.image {
+                vello_common::paint::ImageSource::OpaqueId { id, .. } => self
+                    .images
+                    .borrow()
+                    .get(&id)
+                    .map_or_else(ClassicPaint::default, |data| {
+                        ClassicPaint::Image(vello_common::peniko::ImageBrush::new(data.clone()))
+                    }),
+                // The shared draw path only ever emits OpaqueId; a direct-pixmap source isn't produced.
+                vello_common::paint::ImageSource::Pixmap(_) => ClassicPaint::default(),
+            },
         };
     }
     fn set_stroke(&mut self, stroke: Stroke) {
@@ -237,6 +267,7 @@ impl RenderingContext for ClassicCtx {
         match &self.paint {
             ClassicPaint::Solid(c) => self.scene.fill(self.fill_rule, self.transform, *c, pt, path),
             ClassicPaint::Gradient(g) => self.scene.fill(self.fill_rule, self.transform, g, pt, path),
+            ClassicPaint::Image(b) => self.scene.fill(self.fill_rule, self.transform, b, pt, path),
         }
     }
     fn stroke_path(&mut self, path: &BezPath) {
@@ -244,6 +275,7 @@ impl RenderingContext for ClassicCtx {
         match &self.paint {
             ClassicPaint::Solid(c) => self.scene.stroke(&self.stroke, self.transform, *c, pt, path),
             ClassicPaint::Gradient(g) => self.scene.stroke(&self.stroke, self.transform, g, pt, path),
+            ClassicPaint::Image(b) => self.scene.stroke(&self.stroke, self.transform, b, pt, path),
         }
     }
     fn fill_rect(&mut self, rect: &Rect) {
@@ -253,6 +285,7 @@ impl RenderingContext for ClassicCtx {
         match &self.paint {
             ClassicPaint::Solid(c) => self.scene.fill(self.fill_rule, self.transform, *c, pt, rect),
             ClassicPaint::Gradient(g) => self.scene.fill(self.fill_rule, self.transform, g, pt, rect),
+            ClassicPaint::Image(b) => self.scene.fill(self.fill_rule, self.transform, b, pt, rect),
         }
     }
 
@@ -262,7 +295,9 @@ impl RenderingContext for ClassicCtx {
         // here is not meaningful, so fall back to black.
         let color = match &self.paint {
             ClassicPaint::Solid(c) => *c,
-            ClassicPaint::Gradient(_) => vello_common::color::palette::css::BLACK,
+            ClassicPaint::Gradient(_) | ClassicPaint::Image(_) => {
+                vello_common::color::palette::css::BLACK
+            }
         };
         self.scene.draw_blurred_rounded_rect(
             self.transform,
@@ -387,15 +422,18 @@ impl render_vello_core::rasterize::SceneRasterizer for ClassicRenderer {
 pub struct ClassicEnv;
 
 impl render_vello_core::draw::DrawEnv for ClassicEnv {
-    fn resolve_image(&self, _id: u128) -> Option<vello_common::paint::ImageId> {
-        None
+    /// Resolve a content reference to the id [`ClassicBackend::upload_pending_images`] recorded for it,
+    /// via the shared ABI map (same lookup the hybrid backend uses). `None` until the pixels are staged
+    /// — then the shape draws nothing that frame and appears the next, matching hybrid.
+    fn resolve_image(&self, id: u128) -> Option<vello_common::paint::ImageId> {
+        render_vello_core::abi::resolve_image(id)
     }
-    /// The font-family name to select in the Parley `FontContext`. Classic has no font-upload
-    /// registry yet (Phase 2 wires the ABI font staging), so every reference maps to the single face
-    /// the caller registered under this name. When real registration lands, this consults an
-    /// id→alias map exactly as the hybrid backend's ABI alias does.
-    fn font_alias(&self, _id: u128, _weight: u16, _italic: bool) -> String {
-        DEFAULT_FONT_ALIAS.to_string()
+    /// The font-family name to select in the Parley `FontContext`, resolved through the SHARED ABI
+    /// aliasing — the same per-(id, weight, italic) alias the hybrid backend uses, and the same name
+    /// [`ClassicBackend::sync_fonts`] registers each uploaded face under. (Before font staging this
+    /// returned a single [`DEFAULT_FONT_ALIAS`]; now real host fonts resolve.)
+    fn font_alias(&self, id: u128, weight: u16, italic: bool) -> String {
+        render_vello_core::abi::font_alias(id, weight, italic)
     }
 }
 
@@ -415,19 +453,64 @@ pub const DEFAULT_FONT_ALIAS: &str = "vello-gpu-font";
 pub struct ClassicBackend {
     renderer: ClassicRenderer,
     text: render_vello_core::text::TextState,
+    /// Host images staged from the ABI, keyed by the id the sink resolves fills to. Shared into every
+    /// `ClassicCtx` `new_scene` builds, so a fill can attach the pixels.
+    images: ImageMap,
+    /// The next `ImageId` to hand out. Classic mints its own (there is no external atlas); the value
+    /// only has to be unique and stable for the frame, and `record_image` maps the content id to it.
+    next_image_id: u32,
 }
 
 impl ClassicBackend {
     /// Build over a device (compiles the classic shader permutations once).
     #[must_use]
     pub fn new(device: &wgpu::Device) -> Self {
-        Self { renderer: ClassicRenderer::new(device), text: render_vello_core::text::TextState::new() }
+        Self {
+            renderer: ClassicRenderer::new(device),
+            text: render_vello_core::text::TextState::new(),
+            images: ImageMap::default(),
+            next_image_id: 0,
+        }
     }
 
-    /// The Parley engine, so a caller can register faces (until ABI font staging lands, tests register
-    /// the one face `DEFAULT_FONT_ALIAS` names).
+    /// Register every image the host staged since the last frame (plus any freshly baked diamonds)
+    /// into the shared map, and record the content-id → [`vello_common::paint::ImageId`] mapping the
+    /// sink's `resolve_image` reads. Classic keeps the pixels (peniko `ImageData`) rather than
+    /// uploading to an external atlas — they ride the scene encoding, and vello builds its own atlas at
+    /// render. The wasm shell calls this once per frame before the sink runs.
+    pub fn upload_pending_images(&mut self) {
+        render_vello_core::abi::stage_diamond_bakes();
+        for img in render_vello_core::abi::take_pending_images() {
+            let expected = (img.width as usize) * (img.height as usize) * 4;
+            if img.width == 0 || img.height == 0 || img.rgba.len() != expected {
+                continue;
+            }
+            let data = vello_common::peniko::ImageData {
+                data: vello_common::peniko::Blob::new(std::sync::Arc::new(img.rgba)),
+                // The ABI hands straight (unpremultiplied) top-left RGBA — exactly `Rgba8` + `Alpha`.
+                format: vello_common::peniko::ImageFormat::Rgba8,
+                alpha_type: vello_common::peniko::ImageAlphaType::Alpha,
+                width: img.width,
+                height: img.height,
+            };
+            let id = vello_common::paint::ImageId::new(self.next_image_id);
+            self.next_image_id = self.next_image_id.wrapping_add(1);
+            self.images.borrow_mut().insert(id, data);
+            render_vello_core::abi::record_image(img.id, id);
+        }
+    }
+
+    /// The Parley engine, so a test can register a face directly (the browser path uses
+    /// [`Self::sync_fonts`] instead, draining the ABI upload queue).
     pub fn text_mut(&mut self) -> &mut render_vello_core::text::TextState {
         &mut self.text
+    }
+
+    /// Register any faces the host uploaded since the last frame into the Parley collection, under the
+    /// aliases [`ClassicEnv::font_alias`] resolves to — so text laid out this frame finds its font. The
+    /// wasm shell calls this once per frame before the sink runs.
+    pub fn sync_fonts(&mut self) {
+        self.text.sync_fonts();
     }
 }
 
@@ -435,7 +518,9 @@ impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
     type Scene = ClassicCtx;
 
     fn new_scene(&self, width: u16, height: u16) -> ClassicCtx {
-        ClassicCtx::new(width, height)
+        let mut ctx = ClassicCtx::new(width, height);
+        ctx.share_images(self.images.clone());
+        ctx
     }
 
     fn build_bodies(&mut self, scene: &mut ClassicCtx, transform: Affine, ops: &[render_core::schedule::PaintOp]) {
@@ -494,6 +579,11 @@ impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
 mod tests {
     use super::*;
     use render_vello_core::rasterize::SceneRasterizer;
+
+    /// The shared ABI scene-state is a process-global singleton, so the tests that drive it must not
+    /// run concurrently. Each locks this first (poison ignored — a panicking test shouldn't wedge the
+    /// rest); using disjoint shape ids keeps their scenes from colliding through the lock.
+    static ABI_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // The whole point of the spike: the impl exists and a scene can be driven through the trait
     // exactly as `scene.rs` would, with no GPU. If this compiles and runs, R1's core is proven.
@@ -627,6 +717,7 @@ mod tests {
         use render_vello_core::sink::Sink;
         use std::collections::HashSet;
 
+        let _abi = ABI_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let instance = wgpu::Instance::default();
         let Ok(adapter) =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))

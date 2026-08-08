@@ -143,6 +143,11 @@ pub async fn create_focus_renderer(canvas: HtmlCanvasElement) -> ClassicFocusRen
 impl ClassicFocusRenderer {
     /// Render one frame of the live document onto the host canvas through the shared sink.
     pub fn render(&mut self) {
+        // Register any faces + images the host staged since last frame, so text and image fills drawn
+        // below resolve their font / pixels.
+        self.backend.sync_fonts();
+        self.backend.upload_pending_images();
+
         let surface_texture = match self.gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             other => {
