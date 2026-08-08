@@ -53,21 +53,13 @@ half4 main(float2 fragCoord) {
             frostSum += blurred.eval((uv + off) * u_resolution).rgb;
             totalW += 1.0;
         }
+        // Frost only *scatters* (softens) the refracted image; the milky tint + desaturation and the
+        // unconditional glass tint that used to follow were removed (designer request) so glass reads
+        // clear, not grayish. Kept in sync with render-vello-core/src/glass.rs.
         blurredColor = frostSum / half(totalW);
-
-        // Cool translucent tint
-        half3 frostTint = half3(0.85, 0.88, 0.92);
-        blurredColor = mix(blurredColor, frostTint, half(u_frost * 0.35));
-
-        // Desaturate
-        half luma = dot(blurredColor, half3(0.299, 0.587, 0.114));
-        blurredColor = mix(blurredColor, half3(luma), half(u_frost * 0.4));
     } else {
         blurredColor = blurred.eval(fragCoord).rgb;
     }
-
-    // ---- GLASS TINT ----
-    blurredColor *= half3(0.92, 0.94, 0.98);
 
     // ---- PRISMATIC SPECULAR ----
     // Sample refracted color and boost saturation for prismatic highlight.
