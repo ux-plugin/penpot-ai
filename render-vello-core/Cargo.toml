@@ -25,6 +25,12 @@ wgpu = { version = "29.0.3" }
 bytemuck = "1.25.0"
 log = "0.4.29"
 
+# The neutral drawer (`draw`) walks a render-core model into any `RenderingContext`, so this crate
+# needs the trait (vello_example_scenes) and the paint atoms (vello_common). Path deps into the same
+# fork, so they unify with render-vello's copies.
+vello_common = { path = "../vello/sparse_strips/vello_common", default-features = false }
+vello_example_scenes = { path = "../vello/sparse_strips/vello_example_scenes" }
+
 # wasm-only: the profiler reads `performance.now()`. Behind the same `target_arch = "wasm32"` cfg the
 # code uses, so a host build of this crate needs neither.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

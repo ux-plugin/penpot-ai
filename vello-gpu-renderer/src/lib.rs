@@ -520,4 +520,87 @@ mod tests {
         let bleed = px(12, 32);
         assert!(bleed[1] < 245 && bleed[2] > bleed[1], "edge should show blur bleed, got {bleed:?}");
     }
+
+    // The Phase-1c milestone: classic vello renders a REAL render-core document — built with the
+    // model API, walked by the shared neutral drawer (render_vello_core::draw) into ClassicCtx — not
+    // a hand-built scene. A red rect, plus a blue rect inside a 0.5-opacity group (so the group
+    // isolation → push/pop layer path is exercised), over white.
+    #[test]
+    fn classic_renders_a_real_render_core_document() {
+        use render_core::kurbo::Rect as PageRect;
+        use render_core::model::{Brush, Node, Paint, Scene, ShapeKind, ROOT_ID};
+        use render_core::peniko::Color;
+        use render_vello_core::draw::draw_scene;
+
+        let (red, blue) = (Color::from_rgba8(230, 40, 40, 255), Color::from_rgba8(40, 60, 230, 255));
+        let (a, g, b) = (1u128, 2u128, 3u128);
+        let mut scene = Scene::new();
+        let mut root = Node::new(ROOT_ID, ShapeKind::Group);
+        root.children = vec![a, g];
+        scene.insert(root);
+
+        let mut na = Node::new(a, ShapeKind::Rect);
+        na.bounds = PageRect::new(8.0, 8.0, 28.0, 28.0);
+        na.fills = vec![Paint::plain(Brush::Solid(red))];
+        scene.insert(na);
+
+        let mut ng = Node::new(g, ShapeKind::Group);
+        ng.opacity = 0.5; // → isolation layer
+        ng.children = vec![b];
+        scene.insert(ng);
+
+        let mut nb = Node::new(b, ShapeKind::Rect);
+        nb.bounds = PageRect::new(36.0, 36.0, 56.0, 56.0);
+        nb.fills = vec![Paint::plain(Brush::Solid(blue))];
+        scene.insert(nb);
+
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter — skipping real-document proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("vello-gpu doc"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        let (w, h) = (64u32, 64u32);
+        let mut renderer = ClassicRenderer::new(&device);
+        let mut ctx = renderer.new_scene(w as u16, h as u16);
+        draw_scene(&mut ctx, &scene, render_core::kurbo::Affine::IDENTITY);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("doc target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+
+        let data = read_back(&device, &queue, &texture, w, h);
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            let o = ((y * w + x) * 4) as usize;
+            [data[o], data[o + 1], data[o + 2], data[o + 3]]
+        };
+        // Rect A (8..28) is opaque red.
+        let ra = px(18, 18);
+        assert!(ra[0] > 190 && ra[1] < 90 && ra[2] < 90, "rect A should be red, got {ra:?}");
+        // Rect B (36..56) is blue at 0.5 group opacity over white → a lighter blue (blue high, red/green
+        // lifted toward white). The 0.5 layer is the proof the group isolation path ran.
+        let rb = px(46, 46);
+        assert!(rb[2] > 150 && rb[0] > 100 && rb[0] < 210, "rect B should be half-opacity blue, got {rb:?}");
+        // Background stays white.
+        let bg = px(2, 2);
+        assert!(bg[0] > 240 && bg[1] > 240 && bg[2] > 240, "background should be white, got {bg:?}");
+    }
 }

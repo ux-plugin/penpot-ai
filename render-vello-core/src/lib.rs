@@ -12,6 +12,7 @@
 //! only has to supply its own scene rasterization, not re-implement effects.
 
 pub mod blend;
+pub mod draw;
 pub mod glass;
 pub mod graph;
 pub mod prof;
