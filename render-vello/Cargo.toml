@@ -21,6 +21,10 @@ crate-type = ["cdylib", "rlib"]
 # fail in confusing ways. When bumping the submodule, re-check this block against it.
 [dependencies]
 render-core = { path = "../render-core" }
+# The backend-agnostic wgpu effect executor (compositor, glass, blur, custom pass-graph) + profiler,
+# carved out so the classic-vello sink shares it. This crate re-exports its modules as `crate::blend`
+# / `crate::graph` / `crate::glass` / `crate::prof` so the sink's existing paths are unchanged.
+render-vello-core = { path = "../render-vello-core" }
 
 vello_common = { path = "../vello/sparse_strips/vello_common", default-features = false }
 vello_hybrid = { path = "../vello/sparse_strips/vello_hybrid" }

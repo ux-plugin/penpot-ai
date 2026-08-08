@@ -1,0 +1,31 @@
+# The backend-agnostic Vello layer. Phase 1 of the classic-Vello third-backend carve (see
+# render-vello/docs/classic-vello-backend-plan.md): the device-generic wgpu effect executor —
+# the SrcOver compositor, the glass pass-graph, the separable/pyramid blur, and the custom-WGSL
+# pass runner — plus the profiler. None of it touches a concrete Vello renderer; it runs our own
+# wgpu pipelines against any `wgpu::Device`, driven by the render-core effect-graph IR. Shared by
+# both the vello_hybrid sink (render-vello) and the classic-vello sink (vello-gpu-renderer).
+#
+# Versions pinned by hand (outside the vello workspace), same as render-vello — keep in step with
+# vello/Cargo.toml's [workspace.dependencies], wgpu especially.
+[package]
+name = "render-vello-core"
+version = "0.1.0"
+description = "Backend-agnostic Vello layer: the device-generic wgpu effect executor (compositor, glass, blur, custom pass-graph) shared by the vello_hybrid and classic-vello sinks."
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[lib]
+name = "render_vello_core"
+
+[dependencies]
+render-core = { path = "../render-core" }
+wgpu = { version = "29.0.3" }
+bytemuck = "1.25.0"
+log = "0.4.29"
+
+# wasm-only: the profiler reads `performance.now()`. Behind the same `target_arch = "wasm32"` cfg the
+# code uses, so a host build of this crate needs neither.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3.91", features = ["Window", "Performance"] }

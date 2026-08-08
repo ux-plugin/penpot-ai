@@ -21,15 +21,16 @@
 pub mod abi;
 pub mod editor;
 mod geometry;
-pub(crate) mod prof;
 pub mod rich_editor;
 
+// The device-generic wgpu effect executor + profiler now live in render-vello-core; re-export their
+// modules under the same crate paths (`crate::blend` / `glass` / `graph` / `prof`) the sink uses, so
+// the carve is transparent to the rest of this crate. Gating mirrors the originals: the executor was
+// wasm-only (it's driven by the sink); the profiler is all-target.
+pub(crate) use render_vello_core::prof;
 #[cfg(target_arch = "wasm32")]
-mod blend;
-#[cfg(target_arch = "wasm32")]
-mod glass;
-#[cfg(target_arch = "wasm32")]
-mod graph;
+pub(crate) use render_vello_core::{blend, glass, graph};
+
 #[cfg(target_arch = "wasm32")]
 mod renderer;
 #[cfg(target_arch = "wasm32")]
