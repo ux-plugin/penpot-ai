@@ -1147,7 +1147,9 @@ name = "render-vello-core"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "glifo",
  "log",
+ "parley",
  "render-core",
  "vello_common",
  "vello_example_scenes",

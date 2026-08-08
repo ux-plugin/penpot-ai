@@ -45,3 +45,6 @@ pollster = "0.4"
 png = "0.18"
 # Text proofs: map chars → glyph ids and read advances without pulling in a full layout engine.
 skrifa = "0.43"
+# Text-block proof: build a Parley FontContext/LayoutContext and register a face, to drive the
+# neutral text layout path end to end. Pinned to render-vello-core's parley.
+parley = { version = "0.11.0", default-features = false, features = ["std"] }

@@ -360,7 +360,18 @@ impl render_vello_core::draw::DrawEnv for ClassicEnv {
     fn resolve_image(&self, _id: u128) -> Option<vello_common::paint::ImageId> {
         None
     }
+    /// The font-family name to select in the Parley `FontContext`. Classic has no font-upload
+    /// registry yet (Phase 2 wires the ABI font staging), so every reference maps to the single face
+    /// the caller registered under this name. When real registration lands, this consults an
+    /// id→alias map exactly as the hybrid backend's ABI alias does.
+    fn font_alias(&self, _id: u128, _weight: u16, _italic: bool) -> String {
+        DEFAULT_FONT_ALIAS.to_string()
+    }
 }
+
+/// The single family name the classic backend registers its one face under until real font staging
+/// exists — shared by [`ClassicEnv::font_alias`] and any caller that registers a face for it.
+pub const DEFAULT_FONT_ALIAS: &str = "vello-gpu-font";
 
 #[cfg(test)]
 mod tests {
@@ -874,6 +885,135 @@ mod tests {
 
         // Keep the pixel proof.
         let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../proofs/slice-b-classic-text.png");
+        if let Ok(file) = std::fs::File::create(out) {
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            if let Ok(mut wr) = enc.write_header() {
+                let _ = wr.write_image_data(&data);
+            }
+        }
+    }
+
+    // Slice B Part 2 milestone: classic lays out and renders a real model TEXT BLOCK through the
+    // SHARED neutral text path (render_vello_core::text::draw_text_block) — the same code render-
+    // vello's scene.rs now delegates to. A model TextBlock (one blue "Vello" span) is laid out with
+    // Parley against a FontContext this backend registered Roboto into, then drawn on classic. Proof:
+    // blue glyph ink appears, background stays white.
+    #[test]
+    fn classic_renders_a_text_block_through_shared_layout() {
+        use parley::fontique::FontInfoOverride;
+        use parley::{FontContext, LayoutContext};
+        use render_core::kurbo::{Affine, Rect as PageRect};
+        use render_core::model::{Brush, Node, Paint, ShapeKind};
+        use render_core::peniko::Color;
+        use render_core::text::{
+            FontRef, TextAlign, TextBlock, TextBrush, TextDecoration, TextDirection, TextGrow,
+            TextParagraph, TextSpan, TextTransform, VerticalAlign,
+        };
+
+        let fpath = concat!(env!("CARGO_MANIFEST_DIR"), "/../vello/examples/assets/roboto/Roboto-Regular.ttf");
+        let Ok(bytes) = std::fs::read(fpath) else {
+            eprintln!("no Roboto font at {fpath} — skipping text-block proof");
+            return;
+        };
+
+        // A Parley engine with Roboto registered under exactly the name ClassicEnv::font_alias returns
+        // — this is the classic backend's stand-in for the ABI font-upload path.
+        let mut font_cx = FontContext::new();
+        font_cx.collection.register_fonts(
+            bytes.into(),
+            Some(FontInfoOverride {
+                family_name: Some(DEFAULT_FONT_ALIAS),
+                width: None,
+                style: None,
+                weight: None,
+                axes: None,
+            }),
+        );
+        let mut layout_cx: LayoutContext<TextBrush> = LayoutContext::new();
+
+        // A real model text node: one paragraph, one blue "Vello" span.
+        let span = TextSpan {
+            text: "Vello".to_string(),
+            font: FontRef { id: 7, weight: 400, italic: false },
+            size: 44.0,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            fills: vec![Paint::plain(Brush::Solid(Color::from_rgba8(20, 30, 160, 255)))],
+            decoration: TextDecoration::None,
+            transform: TextTransform::None,
+        };
+        let block = TextBlock {
+            paragraphs: vec![TextParagraph {
+                align: TextAlign::Left,
+                direction: TextDirection::Ltr,
+                line_height: 1.2,
+                letter_spacing: 0.0,
+                spans: vec![span],
+            }],
+            grow: TextGrow::AutoWidth,
+            vertical_align: VerticalAlign::Top,
+        };
+        let mut node = Node::new(1, ShapeKind::Text);
+        node.bounds = PageRect::new(10.0, 10.0, 246.0, 82.0);
+        node.text = Some(block);
+
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter — skipping text-block proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("vello-gpu text-block"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        let (w, h) = (256u32, 96u32);
+        let mut renderer = ClassicRenderer::new(&device);
+        let mut ctx = renderer.new_scene(w as u16, h as u16);
+        let mut resources = ();
+        // The whole point: drive the SHARED neutral text path, not a hand-built glyph run.
+        render_vello_core::text::draw_text_block(
+            &mut ctx,
+            &mut resources,
+            &mut font_cx,
+            &mut layout_cx,
+            &ClassicEnv,
+            &node,
+            Affine::IDENTITY,
+        );
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("text-block target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+
+        let data = read_back(&device, &queue, &texture, w, h);
+        let mut ink = 0usize;
+        for i in (0..data.len()).step_by(4) {
+            if data[i] < 200 || data[i + 1] < 200 || data[i + 2] < 200 {
+                ink += 1;
+            }
+        }
+        assert!(ink > 300, "expected laid-out glyph ink from 'Vello', got only {ink} non-white px");
+        let blue = data.chunks_exact(4).any(|p| p[2] > 120 && p[0] < 90 && p[1] < 90);
+        assert!(blue, "text-block ink should carry the span's blue fill");
+
+        let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../proofs/slice-b2-classic-text-block.png");
         if let Ok(file) = std::fs::File::create(out) {
             let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
             enc.set_color(png::ColorType::Rgba);

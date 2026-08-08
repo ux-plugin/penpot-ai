@@ -23,14 +23,18 @@ use vello_common::paint::ImageId;
 use vello_example_scenes::{Fill, RenderingContext};
 
 /// The host services the neutral drawer needs but cannot own, injected so this crate stays free of
-/// the ABI globals. Today that is only image resolution; text (font atlas) will join it when the
-/// text draw path migrates here.
+/// the ABI globals: image/diamond atlas resolution and font-family aliasing for text layout.
 pub trait DrawEnv {
     /// Resolve an image or baked-diamond content reference to its atlas id, or `None` when the
     /// pixels have not been staged yet — in which case that paint draws nothing this frame and
     /// appears the frame after the upload lands. The classic backend returns `None` until it has an
     /// image atlas.
     fn resolve_image(&self, id: u128) -> Option<ImageId>;
+
+    /// The font-family name a `(font id, weight, italic)` reference was registered under in the
+    /// backend's Parley `FontContext`, so text layout can select it by name. The hybrid backend
+    /// returns its ABI alias; a backend registers faces under whatever names it returns here.
+    fn font_alias(&self, id: u128, weight: u16, italic: bool) -> String;
 }
 
 /// Draw every root subtree in z-order under `view` (the page→device transform).

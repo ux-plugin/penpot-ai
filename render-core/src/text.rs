@@ -119,6 +119,19 @@ impl TextDecoration {
     }
 }
 
+/// The per-run style a text layout carries through to each glyph run: the span's whole fill list
+/// (drawn bottom-to-top over the glyph coverage) and its decoration line.
+///
+/// This is the brush a Parley `Layout` is generic over. Parley's `Brush` bound is
+/// `Clone + PartialEq + Default + Debug` and is a blanket impl, so this plain data type is a valid
+/// brush without a Parley dependency — which is why it lives here in render-core, shared by the
+/// host-side editor (render-vello) and the neutral text draw path (render-vello-core) alike.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TextBrush {
+    pub fills: Vec<Paint>,
+    pub decoration: TextDecoration,
+}
+
 /// Case folding applied to a span's text before shaping. Wire values are render-wasm's
 /// `RawTextTransform`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

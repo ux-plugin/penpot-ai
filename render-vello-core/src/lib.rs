@@ -17,3 +17,4 @@ pub mod glass;
 pub mod graph;
 pub mod prof;
 pub mod rasterize;
+pub mod text;

@@ -29,20 +29,11 @@ use parley::{
     LayoutContext, LineHeight, Selection, StyleProperty,
 };
 use render_core::model::Paint;
-use render_core::text::{FontRef, TextAlign, TextBlock, TextDecoration, TextGrow, TextSpan};
+use render_core::text::{
+    FontRef, TextAlign, TextBlock, TextBrush, TextDecoration, TextGrow, TextSpan,
+};
 
 use parley::Layout;
-
-/// The per-run style Parley carries through layout. Parley's `Brush` bound is
-/// `Clone + PartialEq + Default + Debug`; the layout hands it back at each glyph run, so a run's
-/// style follows the span it came from. It holds the span's whole fill list (drawn bottom-to-top
-/// over the glyph coverage) and its decoration line. Defined here (not in `scene`) so the host-side
-/// editor and its tests can build layouts without pulling in the wasm-only draw path.
-#[derive(Clone, Debug, PartialEq, Default)]
-pub(crate) struct TextBrush {
-    pub fills: Vec<Paint>,
-    pub decoration: TextDecoration,
-}
 
 /// The style of one editable run — everything a span carries *except* its text and case transform.
 /// The transform is folded into the stored text at build time (as the plain editor already did), so

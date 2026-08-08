@@ -35,14 +35,11 @@ use render_core::peniko::Color;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_example_scenes::{ExampleScene, RenderingContext};
 
-use glifo::Glyph;
 use parley::fontique::{FontInfoOverride, GenericFamily};
-use parley::{
-    Alignment, AlignmentOptions, FontContext, FontFamily, GlyphRun, Layout, LayoutContext,
-    LineHeight, PositionedLayoutItem, StyleProperty,
-};
+use parley::{FontContext, LayoutContext};
 
-use crate::rich_editor::{EditorCommandRef, RichEditor, TextBrush};
+use crate::rich_editor::{EditorCommandRef, RichEditor};
+use render_core::text::TextBrush;
 
 /// A Gaussian-blur filter of the given sigma. `EdgeMode::None` fades to transparent at the edges,
 /// which is what a blur or a soft shadow wants.
@@ -771,9 +768,9 @@ fn draw_text<T: RenderingContext>(
     node: &m::Node,
     matrix: Affine,
 ) {
-    let Some(block) = &node.text else {
+    if node.text.is_none() {
         return;
-    };
+    }
 
     // While this shape is the focused editor, its text comes from the editor's own layout — so the
     // caret and selection (computed from that same layout) always align with the drawn glyphs.
@@ -782,39 +779,17 @@ fn draw_text<T: RenderingContext>(
         return;
     }
 
-    // `Fixed`/`AutoHeight` wrap to the box width; `AutoWidth` never wraps.
-    let max_advance = match block.grow {
-        render_core::text::TextGrow::AutoWidth => None,
-        _ => Some(node.bounds.width() as f32),
-    };
-
-    // Lay out every paragraph first, so the total height is known before placing them — vertical
-    // alignment needs it.
-    let layouts: Vec<Layout<TextBrush>> = block
-        .paragraphs
-        .iter()
-        .map(|paragraph| layout_paragraph(engine, paragraph, max_advance))
-        .collect();
-    let total_height: f32 = layouts.iter().map(Layout::height).sum();
-
-    let box_height = node.bounds.height() as f32;
-    let vertical_offset = match block.vertical_align {
-        render_core::text::VerticalAlign::Top => 0.0,
-        render_core::text::VerticalAlign::Center => (box_height - total_height) * 0.5,
-        render_core::text::VerticalAlign::Bottom => box_height - total_height,
-    };
-
-    // Glyphs are placed in the node's own space (the same space `bounds` is in), then drawn under
-    // the shape matrix — exactly how a rect's fill is positioned, so rotation and viewport apply
-    // the same way.
-    ctx.set_transform(matrix);
-    ctx.set_paint_transform(Affine::IDENTITY);
-    let origin_x = node.bounds.x0 as f32;
-    let mut origin_y = node.bounds.y0 as f32 + vertical_offset;
-    for layout in &layouts {
-        draw_layout(ctx, resources, layout, origin_x, origin_y, node.bounds, &node.strokes);
-        origin_y += layout.height();
-    }
+    // The layout + glyph drawing is the backend-neutral path shared with the classic backend; font
+    // aliases resolve through the ABI collection via [`AbiEnv`].
+    render_vello_core::text::draw_text_block(
+        ctx,
+        resources,
+        &mut engine.font_cx,
+        &mut engine.layout_cx,
+        &AbiEnv,
+        node,
+        matrix,
+    );
 }
 
 /// Draw a text shape that is being edited: its selection highlights, then its glyphs (from the
@@ -840,8 +815,18 @@ fn draw_focused_editor<T: RenderingContext>(
         ctx.fill_rect(&Rect::new(ox + bbox.x0, oy + bbox.y0, ox + bbox.x1, oy + bbox.y1));
     }
 
-    // The text itself, from the editor's multi-style layout (already rebuilt by `sync_editor`).
-    draw_layout(ctx, resources, editor.layout(), ox as f32, oy as f32, node.bounds, &node.strokes);
+    // The text itself, from the editor's multi-style layout (already rebuilt by `sync_editor`),
+    // through the shared neutral glyph-run drawer.
+    render_vello_core::text::draw_layout(
+        ctx,
+        resources,
+        &AbiEnv,
+        editor.layout(),
+        ox as f32,
+        oy as f32,
+        node.bounds,
+        &node.strokes,
+    );
 
     // The caret on top, in its visible blink phase.
     if crate::editor::blink_on() {
@@ -858,188 +843,9 @@ fn draw_focused_editor<T: RenderingContext>(
     }
 }
 
-/// Lay out one paragraph into a Parley `Layout`, styling each span over exactly its characters.
-fn layout_paragraph(
-    engine: &mut TextEngine,
-    paragraph: &render_core::text::TextParagraph,
-    max_advance: Option<f32>,
-) -> Layout<TextBrush> {
-    // Concatenate the spans into one string, remembering each span's byte range so its style is
-    // pushed over exactly the characters it covers. The span text is folded by its case transform
-    // here (the model keeps it raw); ranges track the folded length, which `to_uppercase` can grow.
-    //
-    // A right-to-left paragraph is forced by prepending a RIGHT-TO-LEFT MARK: Parley resolves the
-    // bidi algorithm from content and has no explicit base-direction knob, so this zero-width,
-    // unstyled control char sets the base level to RTL the way render-wasm's `set_text_direction`
-    // does. Real RTL scripts (Arabic/Hebrew) already reorder on their own; this only fixes the base
-    // for neutral or mixed text.
-    let mut text = String::new();
-    if paragraph.direction == render_core::text::TextDirection::Rtl {
-        text.push('\u{200F}');
-    }
-    let mut ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(paragraph.spans.len());
-    for span in &paragraph.spans {
-        let start = text.len();
-        text.push_str(&span.transform.apply(&span.text));
-        ranges.push(start..text.len());
-    }
-
-    // Family aliases must outlive the builder (Parley borrows the name through `build`), so collect
-    // them up front.
-    let aliases: Vec<String> = paragraph
-        .spans
-        .iter()
-        .map(|s| crate::abi::font_alias(s.font.id, s.font.weight, s.font.italic))
-        .collect();
-
-    let mut builder = engine
-        .layout_cx
-        .ranged_builder(&mut engine.font_cx, &text, 1.0, true);
-    for ((range, span), alias) in ranges.iter().zip(&paragraph.spans).zip(&aliases) {
-        builder.push(StyleProperty::FontFamily(FontFamily::named(alias)), range.clone());
-        builder.push(StyleProperty::FontSize(span.size), range.clone());
-        builder.push(
-            StyleProperty::LineHeight(LineHeight::FontSizeRelative(span.line_height)),
-            range.clone(),
-        );
-        builder.push(StyleProperty::LetterSpacing(span.letter_spacing), range.clone());
-        builder.push(
-            StyleProperty::Brush(TextBrush {
-                fills: span.fills.clone(),
-                decoration: span.decoration,
-            }),
-            range.clone(),
-        );
-    }
-
-    let mut layout = builder.build(&text);
-    layout.break_all_lines(max_advance);
-    layout.align(alignment_of(paragraph.align), AlignmentOptions::default());
-    layout
-}
-
-/// Penpot's absolute horizontal alignment → Parley's. Penpot's `Left`/`Right` are edges, not
-/// direction-relative, so they map to `Left`/`Right` rather than `Start`/`End` — they stay put
-/// under an RTL base direction, which only reorders the glyphs within the line.
-fn alignment_of(align: render_core::text::TextAlign) -> Alignment {
-    match align {
-        render_core::text::TextAlign::Left => Alignment::Left,
-        render_core::text::TextAlign::Center => Alignment::Center,
-        render_core::text::TextAlign::Right => Alignment::Right,
-        render_core::text::TextAlign::Justify => Alignment::Justify,
-    }
-}
-
-/// Draw every glyph run in a laid-out paragraph at the given local origin.
-fn draw_layout<T: RenderingContext>(
-    ctx: &mut T,
-    resources: &mut T::Resources,
-    layout: &Layout<TextBrush>,
-    origin_x: f32,
-    origin_y: f32,
-    bounds: Rect,
-    strokes: &[m::Stroke],
-) {
-    for line in layout.lines() {
-        for item in line.items() {
-            if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                draw_glyph_run(ctx, resources, &glyph_run, origin_x, origin_y, bounds, strokes);
-            }
-        }
-    }
-}
-
-/// Draw one glyph run: its span's fills layered over the glyph coverage, then its decoration line.
-///
-/// The glyph positions are computed once and reused for every fill pass (and for the decoration's
-/// skip-ink). Fills paint bottom-to-top — the order render-wasm's `merge_fills` composites them,
-/// each new fill `SrcOver` the last — so a layered or gradient text fill reads the same way. Each
-/// fill goes through the shared [`set_paint`], so a gradient text fill gets the same unit-box→bounds
-/// mapping a gradient shape fill does; an unresolved image fill paints nothing rather than a hole.
-fn draw_glyph_run<T: RenderingContext>(
-    ctx: &mut T,
-    resources: &mut T::Resources,
-    glyph_run: &GlyphRun<'_, TextBrush>,
-    origin_x: f32,
-    origin_y: f32,
-    bounds: Rect,
-    strokes: &[m::Stroke],
-) {
-    let style = glyph_run.style();
-    if style.brush.fills.is_empty() && strokes.is_empty() {
-        return;
-    }
-
-    let run_start = origin_x + glyph_run.offset();
-    let baseline_y = origin_y + glyph_run.baseline();
-
-    // Positioned glyphs, materialised once so each fill pass and the decoration reuse them.
-    let mut run_x = glyph_run.offset();
-    let glyphs: Vec<Glyph> = glyph_run
-        .glyphs()
-        .map(|glyph| {
-            let x = origin_x + run_x + glyph.x;
-            let y = baseline_y - glyph.y;
-            run_x += glyph.advance;
-            Glyph { id: glyph.id, x, y }
-        })
-        .collect();
-
-    let run = glyph_run.run();
-    let font = run.font();
-    let font_size = run.font_size();
-    let normalized_coords: &[i16] = run.normalized_coords();
-
-    for fill in &style.brush.fills {
-        if set_paint(ctx, fill, bounds) {
-            ctx.glyph_run(resources, font)
-                .font_size(font_size)
-                .normalized_coords(bytemuck::cast_slice(normalized_coords))
-                .hint(true)
-                .fill_glyphs(glyphs.iter().cloned());
-        }
-    }
-
-    // Strokes over the fills, outlining the glyphs with glifo's `stroke_glyphs` — the text
-    // counterpart of the `set_stroke` + `stroke_path` a shape uses. Only centre strokes reach
-    // here (inner/outer are dropped at projection on both sides, like shape strokes), so the
-    // width straddles the glyph edge with no offsetting decision to make.
-    for stroke in strokes {
-        if set_paint(ctx, &stroke.paint, bounds) {
-            ctx.set_stroke(stroke.style.clone());
-            ctx.glyph_run(resources, font)
-                .font_size(font_size)
-                .normalized_coords(bytemuck::cast_slice(normalized_coords))
-                .hint(true)
-                .stroke_glyphs(glyphs.iter().cloned());
-        }
-    }
-
-    // The decoration line, tinted by the topmost (last) fill so it matches the visible ink.
-    let decoration = style.brush.decoration;
-    if decoration != render_core::text::TextDecoration::None {
-        use render_core::text::TextDecoration as D;
-        let metrics = run.metrics();
-        // `*_offset` is the top of the line from the baseline; overline has no metric of its own, so
-        // it rides at the ascent with the underline's thickness.
-        let (offset, size) = match decoration {
-            D::Underline => (metrics.underline_offset, metrics.underline_size),
-            D::LineThrough => (metrics.strikethrough_offset, metrics.strikethrough_size),
-            D::Overline => (metrics.ascent, metrics.underline_size),
-            D::None => unreachable!(),
-        };
-        let x_range = run_start..=(run_start + glyph_run.advance());
-        if let Some(fill) = style.brush.fills.last() {
-            if set_paint(ctx, fill, bounds) {
-                ctx.glyph_run(resources, font)
-                    .font_size(font_size)
-                    .normalized_coords(bytemuck::cast_slice(normalized_coords))
-                    .hint(true)
-                    .render_decoration(glyphs.iter().cloned(), x_range, baseline_y, offset, size, 0.0);
-            }
-        }
-    }
-}
+// The paragraph layout + glyph-run drawing (`layout_paragraph`, `alignment_of`, `draw_layout`,
+// `draw_glyph_run`) now live in the backend-neutral `render_vello_core::text`, shared with the
+// classic backend. `draw_text` and `draw_focused_editor` above delegate to it.
 
 /// Paint a node's own geometry, ignoring its children.
 ///
@@ -1059,14 +865,9 @@ impl render_vello_core::draw::DrawEnv for AbiEnv {
     fn resolve_image(&self, id: u128) -> Option<vello_common::paint::ImageId> {
         crate::abi::resolve_image(id)
     }
-}
-
-/// Install a paint as the current one — a thin shim over the backend-neutral
-/// [`render_vello_core::draw::set_paint`], which owns every paint kind (solid/gradient/image/
-/// diamond) and the unit-box gradient mapping. Returns false when the backend cannot draw it this
-/// frame (an image/diamond not yet staged), so the caller falls through to the next fill.
-fn set_paint<T: RenderingContext>(ctx: &mut T, paint: &m::Paint, bounds: Rect) -> bool {
-    render_vello_core::draw::set_paint(ctx, &AbiEnv, paint, bounds)
+    fn font_alias(&self, id: u128, weight: u16, italic: bool) -> String {
+        crate::abi::font_alias(id, weight, italic)
+    }
 }
 
 /// A hand-built neutral scene using the SAME types render-wasm's converter emits, now as a tree:
