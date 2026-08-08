@@ -772,8 +772,8 @@ mod tests {
         let full_view = render_vello_core::abi::effective_view(root);
         let dirty = sink.plan_frame(full_view, w, h, true, &[]);
         let dirty_set: HashSet<TileKey> = dirty.iter().copied().collect();
-        let schedule = render_vello_core::abi::with_scene(|live, viewport, _| {
-            build_visible(live, root * viewport, &dirty_set)
+        let schedule = render_vello_core::abi::with_scene(|live, viewport, modifiers| {
+            build_visible(live, root * viewport, modifiers, &dirty_set)
         });
 
         let surface = device.create_texture(&wgpu::TextureDescriptor {

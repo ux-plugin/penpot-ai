@@ -38,6 +38,7 @@ use std::collections::{HashMap, HashSet};
 use kurbo::{Affine, Point, Rect};
 
 use crate::blur::radius_to_sigma;
+use crate::host::Modifiers;
 use crate::model::{Node, Scene, ShapeKind};
 use crate::tiling::{self, TileKey};
 
@@ -57,7 +58,8 @@ pub fn build(scene: &Scene, view: Affine, viewport_w: u32, viewport_h: u32) -> S
     let visible: HashSet<TileKey> = tiling::visible_tiles(view, viewport_w, viewport_h)
         .into_iter()
         .collect();
-    build_visible(scene, view, &visible)
+    // No gesture in flight (the whole-frame convenience form): commit-geometry tiling.
+    build_visible(scene, view, &Modifiers::new(), &visible)
 }
 
 /// Build the schedule for an explicit set of target tiles — the tiles that must be (re)produced this
@@ -66,7 +68,12 @@ pub fn build(scene: &Scene, view: Affine, viewport_w: u32, viewport_h: u32) -> S
 /// from cache. Each target tile's `TileOutput` is self-contained — the walk emits every shape/effect
 /// overlapping it — so any subset is correct on its own.
 #[must_use]
-pub fn build_visible(scene: &Scene, view: Affine, visible: &HashSet<TileKey>) -> Schedule {
+pub fn build_visible(
+    scene: &Scene,
+    view: Affine,
+    modifiers: &Modifiers,
+    visible: &HashSet<TileKey>,
+) -> Schedule {
     let mut steps = Vec::new();
 
     // The current scope each visible tile paints into. Starts at the tile's own `TileOutput`; a
@@ -77,7 +84,7 @@ pub fn build_visible(scene: &Scene, view: Affine, visible: &HashSet<TileKey>) ->
         .collect();
 
     for &id in scene.roots() {
-        visit(scene, id, view, visible, &mut scopes, &mut steps, 0);
+        visit(scene, id, view, modifiers, visible, &mut scopes, &mut steps, 0);
     }
 
     // Finalize: fold each target tile's accumulated output into the single Target the swapchain
@@ -161,10 +168,12 @@ pub fn first_write_paints(steps: &[Step]) -> Vec<usize> {
 
 const MAX_DEPTH: u32 = 256;
 
+#[expect(clippy::too_many_arguments, reason = "the walk threads scene + view + gesture state")]
 fn visit(
     scene: &Scene,
     id: u128,
     view: Affine,
+    modifiers: &Modifiers,
     visible: &HashSet<TileKey>,
     scopes: &mut HashMap<TileKey, SurfaceRef>,
     steps: &mut Vec<Step>,
@@ -178,6 +187,10 @@ fn visit(
         // Skip the node and its subtree, matching draw_node's reachability.
         return;
     }
+    // The node's live gesture transform (identity when committed). Every tile-coverage computation
+    // below uses it, so the shape is scheduled into the tiles the body paint (which applies the same
+    // modifier) actually draws into.
+    let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
 
     let is_group = node.kind == ShapeKind::Group;
     let lp = layer_paint(node);
@@ -207,7 +220,7 @@ fn visit(
     // not spawn empty push/pop layer-paints (each its own scene render) in tiles it never touches.
     // Same set at open and close, since a layer group never swaps `scopes`.
     let layer_tiles: Vec<(TileKey, SurfaceRef)> = if use_layer {
-        let cover: HashSet<TileKey> = subtree_page_bounds(scene, id)
+        let cover: HashSet<TileKey> = subtree_page_bounds(scene, id, modifiers)
             .map(|b| tiling::tiles_overlapping_page_rect(view, b).into_iter().collect())
             .unwrap_or_default();
         scopes.iter().filter(|(t, _)| cover.contains(t)).map(|(&t, &s)| (t, s)).collect()
@@ -242,13 +255,13 @@ fn visit(
         // The gather is only needed if the shape covers a target tile. Culling here matters for the
         // tile cache: with a small dirty set (a pan), a gather whose shape is entirely in reused tiles
         // must emit nothing — otherwise its (expensive, z-serial) backdrop compose runs every frame.
-        let paint_tiles: Vec<TileKey> = tiling::tiles_overlapping_page_rect(view, page_bounds(node))
+        let paint_tiles: Vec<TileKey> = tiling::tiles_overlapping_page_rect(view, page_bounds(node, m))
             .into_iter()
             .filter(|t| visible.contains(t))
             .collect();
         if !paint_tiles.is_empty() {
             let reach = gather_reach(node);
-            let sample = page_bounds(node).inflate(reach, reach);
+            let sample = page_bounds(node, m).inflate(reach, reach);
             let backdrop = SurfaceRef::new(SurfaceRole::Backdrop(id), None, 0);
             let read_from: Vec<SurfaceRef> = tiling::tiles_overlapping_page_rect(view, sample)
                 .into_iter()
@@ -263,7 +276,7 @@ fn visit(
                 steps.push(Step::PaintGather {
                     shape: id,
                     backdrop,
-                    clip: page_bounds(node),
+                    clip: page_bounds(node, m),
                     write_to: current(tile),
                 });
             }
@@ -280,7 +293,7 @@ fn visit(
             // (expensive) effect-surface paint when a target tile actually needs it: the paint is
             // per-shape, not per-tile, so without this gate a pan would re-blur every off-screen /
             // reused-tile shape every frame — the tile cache's whole cost.
-            let ext = effect_extent(node);
+            let ext = effect_extent(node, m);
             let comp_tiles: Vec<TileKey> = tiling::tiles_overlapping_page_rect(view, ext)
                 .into_iter()
                 .filter(|t| visible.contains(t))
@@ -300,7 +313,7 @@ fn visit(
             }
         } else {
             // Plain body: paint directly into each overlapped tile's current scope.
-            let pb = page_bounds(node);
+            let pb = page_bounds(node, m);
             for tile in tiling::tiles_overlapping_page_rect(view, pb) {
                 if !visible.contains(&tile) {
                     continue;
@@ -315,7 +328,7 @@ fn visit(
     }
 
     for &child in &node.children {
-        visit(scene, child, view, visible, scopes, steps, depth + 1);
+        visit(scene, child, view, modifiers, visible, scopes, steps, depth + 1);
     }
 
     // Close the in-scene layer: one `PopLayer` op per bracketed tile, matching the `PushLayer`s, so
@@ -372,15 +385,16 @@ fn subtree_needs_surface(scene: &Scene, id: u128) -> bool {
 /// `page_bounds` (a group contributes no body of its own, only its children). Used to bracket an
 /// in-scene layer over exactly the tiles its content lands in, so a group emits no empty push/pop
 /// layer-paints in tiles it never touches. `None` when the subtree draws nothing.
-fn subtree_page_bounds(scene: &Scene, id: u128) -> Option<Rect> {
+fn subtree_page_bounds(scene: &Scene, id: u128, modifiers: &Modifiers) -> Option<Rect> {
     let node = scene.get(id)?;
     if node.hidden || node.kind == ShapeKind::Unsupported {
         return None;
     }
+    let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
     // A group has no body; a frame/leaf contributes its own page bounds.
-    let mut acc = (node.kind != ShapeKind::Group).then(|| page_bounds(node));
+    let mut acc = (node.kind != ShapeKind::Group).then(|| page_bounds(node, m));
     for &child in &node.children {
-        if let Some(cb) = subtree_page_bounds(scene, child) {
+        if let Some(cb) = subtree_page_bounds(scene, child, modifiers) {
             acc = Some(acc.map_or(cb, |a| a.union(cb)));
         }
     }
@@ -457,16 +471,20 @@ fn layer_paint(node: &Node) -> LayerPaint {
     LayerPaint { opacity: node.opacity, blend: node.blend }
 }
 
-/// The shape's page-space bounds — the bbox of its local `bounds` under `effective_transform`.
-fn page_bounds(node: &Node) -> Rect {
-    transform_rect(node.effective_transform(), node.bounds)
+/// The shape's page-space bounds — the bbox of its local `bounds` under `effective_transform`, with an
+/// extra gesture `modifier` (`IDENTITY` when committed; the live move/scale during a drag). Tiling
+/// must use the *modified* bounds so a dragged shape is scheduled into the tiles it is actually drawn
+/// in — [`crate::draw`]'s body paint applies the same `modifier`, so the two would otherwise disagree
+/// and the shape would render into its pre-drag tile (teleporting across tile boundaries mid-move).
+fn page_bounds(node: &Node, modifier: Affine) -> Rect {
+    transform_rect(modifier * node.effective_transform(), node.bounds)
 }
 
 /// The shape's page-space `extrect`: `page_bounds` grown by every spread effect's reach — a drop
 /// shadow's `offset` + blur reach (`3σ`) + `spread`, and a layer blur's reach. This is the size the
 /// effect surface must be, so nothing clips at a tile edge.
-fn effect_extent(node: &Node) -> Rect {
-    let base = page_bounds(node);
+fn effect_extent(node: &Node, modifier: Affine) -> Rect {
+    let base = page_bounds(node, modifier);
     let mut ext = base;
     for s in node.shadows.iter().filter(|s| !s.inset) {
         // The silhouette, offset by the shadow, then grown by blur reach (3σ) + spread on every side.

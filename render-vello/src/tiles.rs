@@ -175,8 +175,8 @@ impl VelloTileStore {
                 let dirty_set: std::collections::HashSet<TileKey> = dirty.iter().copied().collect();
 
                 let _tb = crate::prof::now();
-                let schedule = crate::abi::with_scene(|live, viewport, _modifiers| {
-                    render_core::schedule::build_visible(live, root * viewport, &dirty_set)
+                let schedule = crate::abi::with_scene(|live, viewport, modifiers| {
+                    render_core::schedule::build_visible(live, root * viewport, modifiers, &dirty_set)
                 });
                 crate::prof::add_build(crate::prof::now() - _tb);
 

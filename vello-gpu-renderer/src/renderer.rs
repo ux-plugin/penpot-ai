@@ -163,8 +163,8 @@ impl ClassicFocusRenderer {
         let (dirty_all, dirty_rects) = render_vello_core::abi::take_dirty();
         let dirty = self.sink.plan_frame(full_view, self.width, self.height, dirty_all, &dirty_rects);
         let dirty_set: HashSet<TileKey> = dirty.iter().copied().collect();
-        let schedule = render_vello_core::abi::with_scene(|live, viewport, _| {
-            build_visible(live, root * viewport, &dirty_set)
+        let schedule = render_vello_core::abi::with_scene(|live, viewport, modifiers| {
+            build_visible(live, root * viewport, modifiers, &dirty_set)
         });
 
         self.sink.execute(

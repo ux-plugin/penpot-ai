@@ -438,3 +438,51 @@ fn a_body_only_custom_shader_schedules_as_a_spread_not_a_gather() {
     );
     assert!(DepGraph::build(&sched.steps).is_acyclic());
 }
+
+/// The distinct tile columns a shape's plain body paints into (`Body(id)` ops on a `TileOutput`).
+fn body_tile_cols(steps: &[Step], id: u128) -> Vec<i32> {
+    let mut xs: Vec<i32> = steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Paint { ops, write_to, .. }
+                if matches!(write_to.role, SurfaceRole::TileOutput)
+                    && ops.iter().any(|o| matches!(o, PaintOp::Body(b) if *b == id)) =>
+            {
+                write_to.tile.map(|t| t.tile_x)
+            }
+            _ => None,
+        })
+        .collect();
+    xs.sort_unstable();
+    xs.dedup();
+    xs
+}
+
+/// Regression: a shape being dragged is scheduled into the tiles it is *drawn* in (its live gesture
+/// position), not its committed one. Before `build_visible` took the modifiers, tiling used the
+/// pre-drag geometry while the body paint applied the modifier — so a shape dragged across a tile
+/// boundary was scheduled into its old tile and clipped there, "teleporting" at the boundary.
+#[test]
+fn a_dragged_shape_schedules_into_the_tile_it_moves_into() {
+    use super::builder::build_visible;
+    use crate::host::Modifiers;
+
+    // A small rect wholly inside tile column 0 (0..512 page px at identity view).
+    let scene = scene_with(vec![rect(1, 10.0, 10.0, 100.0, 100.0)]);
+    let visible: std::collections::HashSet<_> =
+        crate::tiling::visible_tiles(VIEW, W, H).into_iter().collect();
+
+    // Committed (no gesture): the body paints into tile column 0.
+    let base = build_visible(&scene, VIEW, &Modifiers::new(), &visible);
+    assert_eq!(body_tile_cols(&base.steps, 1), vec![0], "committed body lives in tile column 0");
+
+    // Dragged +600px right: the rect now sits in tile column 1 (512..1024) and must be scheduled there.
+    let mut mods = Modifiers::new();
+    mods.insert(1, Affine::translate((600.0, 0.0)));
+    let moved = build_visible(&scene, VIEW, &mods, &visible);
+    assert_eq!(
+        body_tile_cols(&moved.steps, 1),
+        vec![1],
+        "a shape dragged into tile column 1 must be scheduled there, not left in its pre-drag tile"
+    );
+}
