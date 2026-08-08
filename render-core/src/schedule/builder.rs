@@ -426,13 +426,19 @@ pub fn affected_page_rect(node: &Node, modifier: Affine) -> Rect {
     base.inflate(reach, reach)
 }
 
-/// A shape carries a spread effect if it has a layer blur, any drop (non-inset) shadow, or a custom
+/// A shape carries a spread effect if it has a layer blur, **any shadow** (drop or inner), or a custom
 /// shader that reads only its own body — all transform the shape's own pixels into an isolated,
-/// extrect-sized surface (no backdrop). Inner shadows spread inward (they ride the body's own paint)
-/// so they do not enlarge the surface.
+/// extrect-sized surface (no backdrop).
+///
+/// Inner shadows isolate too, even though they spread *inward* and so don't enlarge the extent
+/// (`effect_extent` leaves the surface at `page_bounds` for an inner-only shape): the point is that
+/// the shadow must be computed **once over the whole shape**, not per tile. Drawn inline in each tile's
+/// body paint, the inner-shadow filter runs against that tile's *clipped* body — producing the shadow
+/// at every internal tile edge (a grid). An isolated surface holds the whole body, so the filter sees
+/// the true silhouette and the shadow lands only on the real edge.
 fn has_spread_effect(node: &Node) -> bool {
     node.blur.is_some()
-        || node.shadows.iter().any(|s| !s.inset)
+        || !node.shadows.is_empty()
         || node.custom_shader.as_ref().is_some_and(|c| !c.reads_backdrop)
 }
 

@@ -486,3 +486,35 @@ fn a_dragged_shape_schedules_into_the_tile_it_moves_into() {
         "a shape dragged into tile column 1 must be scheduled there, not left in its pre-drag tile"
     );
 }
+
+/// Regression: an inner shadow must isolate onto the shape's own surface, so the inner-shadow filter
+/// runs once over the whole silhouette. Painted straight into each tile, it ran against the
+/// tile-clipped body and drew the shadow at every internal tile edge — a grid over the shape.
+#[test]
+fn an_inner_shadow_isolates_instead_of_painting_per_tile() {
+    let mut r = rect(1, 10.0, 10.0, 300.0, 900.0); // tall enough to straddle several tiles
+    r.shadows.push(super::super::model::Shadow {
+        color: peniko::Color::BLACK,
+        blur: 8.0,
+        spread: 0.0,
+        offset: Vec2::new(2.0, 2.0),
+        inset: true,
+    });
+    let scene = scene_with(vec![r]);
+    let sched = build(&scene, VIEW, W, H);
+
+    assert!(
+        sched.steps.iter().any(|s| matches!(s,
+            Step::Paint { write_to, ops, .. }
+                if matches!(write_to.role, SurfaceRole::RasterEffectOutput(id) if id == 1)
+                    && ops.iter().any(|o| matches!(o, PaintOp::Body(b) if *b == 1)))),
+        "an inner-shadow shape's body should paint once into its own RasterEffectOutput surface"
+    );
+    assert!(
+        !sched.steps.iter().any(|s| matches!(s,
+            Step::Paint { write_to, ops, .. }
+                if matches!(write_to.role, SurfaceRole::TileOutput)
+                    && ops.iter().any(|o| matches!(o, PaintOp::Body(b) if *b == 1)))),
+        "an inner-shadow shape must not paint its body straight into a tile (that re-runs the filter per tile)"
+    );
+}
