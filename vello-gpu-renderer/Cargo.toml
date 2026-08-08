@@ -30,3 +30,11 @@ vello_common = { path = "../vello/sparse_strips/vello_common", default-features 
 vello_hybrid = { path = "../vello/sparse_strips/vello_hybrid" }
 vello_example_scenes = { path = "../vello/sparse_strips/vello_example_scenes" }
 glifo = { path = "../vello/glifo", default-features = false }
+
+# Classic vello's `Renderer`/`render_to_texture` need wgpu directly. Pinned to the fork's wgpu, same
+# as render-vello.
+wgpu = { version = "29.0.3" }
+
+[dev-dependencies]
+# Headless native render + readback proof (no browser): block on wgpu's async device/adapter/map.
+pollster = "0.4"

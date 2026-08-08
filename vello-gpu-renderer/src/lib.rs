@@ -14,6 +14,7 @@
 //! out as the Phase-2 work items. The spike's job is to show the *shape* holds and compiles.
 
 use glifo::{Glyph, GlyphRun, GlyphRunBackend, GlyphRunBuilder};
+use vello::{AaConfig, RenderParams, Renderer, RendererOptions};
 use std::ops::RangeInclusive;
 use vello_common::filter_effects::Filter;
 use vello_common::kurbo::Affine;
@@ -216,6 +217,44 @@ impl RenderingContext for ClassicCtx {
     }
 }
 
+/// The classic-Vello `SceneRasterizer` (Phase 2, part 1): rasterizes a [`ClassicCtx`]'s scene into a
+/// texture via classic vello's compute pipeline. This is the one operation that differs from
+/// vello_hybrid — hybrid takes a caller-owned encoder + `TextureBindings`; classic manages its own
+/// encoder/submit internally through `render_to_texture`. The target must be `Rgba8Unorm` with
+/// `STORAGE_BINDING` set (vello writes it from a compute shader).
+pub struct ClassicRenderer {
+    inner: Renderer,
+}
+
+impl ClassicRenderer {
+    /// Build the renderer for a device (compiles the shader permutations).
+    #[must_use]
+    pub fn new(device: &wgpu::Device) -> Self {
+        Self { inner: Renderer::new(device, RendererOptions::default()).expect("vello renderer") }
+    }
+
+    /// Rasterize `ctx`'s scene into `view` (an `Rgba8Unorm` + `STORAGE_BINDING` texture) over
+    /// `base_color`.
+    pub fn rasterize(
+        &mut self,
+        ctx: &ClassicCtx,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        base_color: vello_common::peniko::Color,
+    ) {
+        let params = RenderParams {
+            base_color,
+            width: u32::from(ctx.width),
+            height: u32::from(ctx.height),
+            antialiasing_method: AaConfig::Area,
+        };
+        self.inner
+            .render_to_texture(device, queue, ctx.scene(), view, &params)
+            .expect("render_to_texture");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +287,94 @@ mod tests {
         // A non-empty scene came out the other side.
         assert_eq!(ctx.width(), 256);
         assert!(ctx.scene().encoding().n_paths > 0, "expected encoded paths in the classic scene");
+    }
+
+    // The end-to-end pixel proof: build a scene through the trait, rasterize it with classic vello's
+    // compute pipeline to a real GPU texture, read it back, and check the pixels. Needs a wgpu device;
+    // skipped (not failed) on a machine with no suitable adapter (e.g. CI with no GPU).
+    #[test]
+    fn classic_vello_rasterizes_our_scene_to_a_texture() {
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) = pollster::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        ) else {
+            eprintln!("no wgpu adapter — skipping GPU render proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("vello-gpu spike"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        // 64×64 so bytes-per-row = 64·4 = 256 (already the required 256-byte alignment).
+        let (w, h) = (64u32, 64u32);
+        let mut ctx = ClassicCtx::new(w as u16, h as u16);
+        // A purple square from (16,16) to (48,48) over a white background.
+        ctx.set_paint(vello_common::peniko::Brush::Solid(
+            vello_common::color::palette::css::REBECCA_PURPLE,
+        ));
+        ctx.fill_rect(&Rect::new(16.0, 16.0, 48.0, 48.0));
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vello-gpu target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut renderer = ClassicRenderer::new(&device);
+        renderer.rasterize(&ctx, &device, &queue, &view, vello_common::color::palette::css::WHITE);
+
+        // Copy the texture into a mappable buffer and read it back.
+        let bytes_per_row = w * 4;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: u64::from(bytes_per_row * h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let data = slice.get_mapped_range();
+
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            let o = (y * bytes_per_row + x * 4) as usize;
+            [data[o], data[o + 1], data[o + 2], data[o + 3]]
+        };
+        // Centre (32,32) is inside the square → purple (rebecca purple ≈ #663399).
+        let c = px(32, 32);
+        assert!(c[0] > 60 && c[0] < 130 && c[2] > 120 && c[1] < 90, "centre should be purple, got {c:?}");
+        // A corner (4,4) is background → white.
+        let bg = px(4, 4);
+        assert!(bg[0] > 240 && bg[1] > 240 && bg[2] > 240, "corner should be white, got {bg:?}");
     }
 }
