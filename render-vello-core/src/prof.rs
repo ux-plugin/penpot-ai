@@ -18,6 +18,15 @@ thread_local! {
     static STEPS: Cell<u32> = const { Cell::new(0) };
     static TEXN: Cell<u32> = const { Cell::new(0) };
     static RENDERS: Cell<u32> = const { Cell::new(0) };
+    static POOL_HIT: Cell<u32> = const { Cell::new(0) };
+    static POOL_MISS: Cell<u32> = const { Cell::new(0) };
+}
+
+pub fn add_pool_hit() {
+    POOL_HIT.with(|c| c.set(c.get() + 1));
+}
+pub fn add_pool_miss() {
+    POOL_MISS.with(|c| c.set(c.get() + 1));
 }
 
 /// High-resolution wall clock in ms (`performance.now()` on wasm, 0 elsewhere).
@@ -68,6 +77,8 @@ pub fn reset() {
     STEPS.with(|c| c.set(0));
     TEXN.with(|c| c.set(0));
     RENDERS.with(|c| c.set(0));
+    POOL_HIT.with(|c| c.set(0));
+    POOL_MISS.with(|c| c.set(0));
 }
 
 /// Read a bucket: 0 build, 1 scene, 2 render, 3 submit, 4 tex, 5 steps, 6 texn (ms except counts).
@@ -81,6 +92,8 @@ pub fn read(which: u32) -> f64 {
         5 => f64::from(STEPS.with(Cell::get)),
         6 => f64::from(TEXN.with(Cell::get)),
         7 => f64::from(RENDERS.with(Cell::get)),
+        8 => f64::from(POOL_HIT.with(Cell::get)),
+        9 => f64::from(POOL_MISS.with(Cell::get)),
         _ => 0.0,
     }
 }

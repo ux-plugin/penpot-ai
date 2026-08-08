@@ -54,6 +54,69 @@ struct Surface {
     height: u32,
 }
 
+/// A texture's recyclability identity: two textures are interchangeable iff their size, format, and
+/// usage all match. Derived straight from the texture, so nothing threads it through `Surface`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PoolKey {
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    usage: u32,
+}
+
+impl PoolKey {
+    fn of(t: &wgpu::Texture) -> Self {
+        Self { w: t.width(), h: t.height(), format: t.format(), usage: t.usage().bits() }
+    }
+}
+
+/// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
+const MAX_POOL_PER_KEY: usize = 32;
+
+/// A free-list of reusable GPU textures keyed by [`PoolKey`]. The sink recycles only at frame
+/// boundaries (drained before this frame renders) and on tile eviction/replacement, so every pooled
+/// texture belongs to a frame whose `queue.submit` has already flushed — safe to hand back out as a
+/// fresh render target without extra synchronisation.
+#[derive(Default)]
+struct TexturePool {
+    free: HashMap<PoolKey, Vec<wgpu::Texture>>,
+}
+
+impl TexturePool {
+    /// A texture matching `key`, reused from the free list or freshly created. A real allocation is
+    /// timed into the `tex` profiler bucket, so `texn` counts only genuine `create_texture` calls —
+    /// the metric the pool is meant to drive down.
+    fn acquire(&mut self, device: &wgpu::Device, key: PoolKey, label: &str) -> wgpu::Texture {
+        if let Some(t) = self.free.get_mut(&key).and_then(Vec::pop) {
+            crate::prof::add_pool_hit();
+            return t;
+        }
+        crate::prof::add_pool_miss();
+        let _tt = crate::prof::now();
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: key.w, height: key.h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: key.format,
+            usage: wgpu::TextureUsages::from_bits_truncate(key.usage),
+            view_formats: &[],
+        });
+        crate::prof::add_tex(crate::prof::now() - _tt);
+        tex
+    }
+
+    /// Return a texture for reuse. Its key is read back off the texture, so any texture created through
+    /// [`Self::acquire`] round-trips to the right bucket. Over the per-key cap it is simply dropped.
+    fn release(&mut self, texture: wgpu::Texture) {
+        let bucket = self.free.entry(PoolKey::of(&texture)).or_default();
+        if bucket.len() < MAX_POOL_PER_KEY {
+            bucket.push(texture);
+        }
+    }
+}
+
 /// The scheduler's GPU production sink. Owns the per-frame surface map and the SrcOver compositor.
 pub struct Sink {
     compositor: Compositor,
@@ -86,6 +149,14 @@ pub struct Sink {
     /// non-generic allocation helpers (`ensure_surface`, the atlas + scratch textures) can OR it in
     /// without threading the backend through. Hybrid renders as an attachment; classic adds storage.
     raster_usage: wgpu::TextureUsages,
+
+    /// Recycled render-target textures, so a dirty frame reuses last frame's surfaces instead of
+    /// `create_texture` per tile/effect/scratch. Fed at frame boundaries + on tile eviction/replace.
+    pool: TexturePool,
+    /// Textures allocated for this frame that live outside the surface map (the body/spread atlases and
+    /// the accumulate scratch): held here until the next frame drains them into [`Self::pool`], so
+    /// their in-flight GPU work has flushed before they are reused.
+    frame_transient: Vec<wgpu::Texture>,
 }
 
 impl Sink {
@@ -100,6 +171,8 @@ impl Sink {
             custom_pipelines: HashMap::new(),
             tile_cache: TileCache::new(),
             raster_usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            pool: TexturePool::default(),
+            frame_transient: Vec::new(),
         }
     }
 
@@ -117,7 +190,14 @@ impl Sink {
         dirty_all: bool,
         dirty_rects: &[Rect],
     ) -> Vec<TileKey> {
-        self.tile_cache.plan(full_view, width, height, dirty_all, dirty_rects)
+        let (dirty, invalidated) =
+            self.tile_cache.plan(full_view, width, height, dirty_all, dirty_rects);
+        // A moved/edited shape invalidates the tiles it covered; recycle those textures (a prior
+        // frame's, already flushed) so the re-render reuses them instead of allocating fresh.
+        for s in invalidated {
+            self.pool.release(s.texture);
+        }
+        dirty
     }
 
     /// Execute one frame's schedule onto `surface` (the swapchain texture).
@@ -134,7 +214,15 @@ impl Sink {
         width: u32,
         height: u32,
     ) {
-        self.surfaces.clear();
+        // Recycle last frame's textures. Its `queue.submit` has flushed by now, so every surface here
+        // (effect/scope/mask/backdrop — tile outputs already moved to the cache) and every transient
+        // (atlases, accumulate scratch) is safe to hand back out as a fresh target this frame.
+        for (_, s) in self.surfaces.drain() {
+            self.pool.release(s.texture);
+        }
+        for tex in self.frame_transient.drain(..) {
+            self.pool.release(tex);
+        }
         self.written.clear();
         self.backdrop_origin.clear();
         self.backdrop_scale.clear();
@@ -199,7 +287,11 @@ impl Sink {
         // keeps a `None` for an empty tile too, so `plan_frame` won't keep re-dirtying it.
         for &t in dirty {
             let key = SurfaceRef::tile_ref(SurfaceRole::TileOutput, t);
-            self.tile_cache.store(t, self.surfaces.remove(&key));
+            // A re-rendered dirty tile replaces its cached surface; recycle the one it displaced. The
+            // displaced tile is a prior frame's (submitted + presented), so it is safe to reuse.
+            if let Some(old) = self.tile_cache.store(t, self.surfaces.remove(&key)) {
+                self.pool.release(old.texture);
+            }
         }
 
         // Composite the reused (cached, not re-rendered this frame) visible tiles onto the swapchain.
@@ -225,9 +317,11 @@ impl Sink {
         // Machine-readable proof of reuse (rendered, reused), read via `_last_tile_stats`.
         crate::abi::set_tile_stats(u32::try_from(dirty.len()).unwrap_or(u32::MAX), reused);
 
-        // Evict LRU beyond budget (never a visible tile). Dropped textures are freed here; a recycle
-        // pool for the returned surfaces is a later optimization.
-        let _freed = self.tile_cache.evict(&visible);
+        // Evict LRU beyond budget (never a visible tile) and recycle each evicted tile's texture — a
+        // cached (thus prior-frame, flushed) surface, safe to reuse.
+        for s in self.tile_cache.evict(&visible) {
+            self.pool.release(s.texture);
+        }
     }
 
     /// Render the level-0 plain bodies (tile + scope buffers) as one atlas instead of one
@@ -289,16 +383,12 @@ impl Sink {
             backend.build_bodies(&mut scene, root_for_cell, ops);
         }
 
-        let atlas = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("body atlas"),
-            size: wgpu::Extent3d { width: aw, height: ah, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: self.raster_usage | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
+        let atlas = self.pool.acquire(
+            device,
+            PoolKey { w: aw, h: ah, format, usage: atlas_usage.bits() },
+            "body atlas",
+        );
         let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
 
         // ONE render of every cell (the backend owns its submit), then copy each cell into its tile on
@@ -331,6 +421,7 @@ impl Sink {
         let _tsu = crate::prof::now();
         queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
+        self.frame_transient.push(atlas);
 
         candidates.iter().map(|(i, _, _)| *i).collect()
     }
@@ -399,16 +490,12 @@ impl Sink {
             backend.build_bodies(&mut scene, root_for_cell, ops);
         }
 
-        let atlas = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("spread atlas"),
-            size: wgpu::Extent3d { width: atlas_w, height: atlas_h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: self.raster_usage | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
+        let atlas = self.pool.acquire(
+            device,
+            PoolKey { w: atlas_w, h: atlas_h, format, usage: atlas_usage.bits() },
+            "spread atlas",
+        );
         let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
 
         backend.rasterize(&scene, device, queue, &atlas_view, atlas_w, atlas_h, CLEAR);
@@ -438,6 +525,7 @@ impl Sink {
         let _tsu = crate::prof::now();
         queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
+        self.frame_transient.push(atlas);
 
         cands.iter().map(|(i, _, _, _, _, _, _)| *i).collect()
     }
@@ -490,25 +578,16 @@ impl Sink {
         if self.surfaces.contains_key(&key) {
             return;
         }
-        let _tt = crate::prof::now();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("sink surface"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            // Rendered into (the compositor always writes as an attachment; the backend's rasterize
-            // may need more, e.g. classic's storage binding), sampled when composited, and a copy
-            // target when the atlas prepass populates a tile from its atlas cell.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | self.raster_usage,
-            view_formats: &[],
-        });
+        // Rendered into (the compositor always writes as an attachment; the backend's rasterize may
+        // need more, e.g. classic's storage binding), sampled when composited, and a copy target when
+        // the atlas prepass populates a tile from its atlas cell.
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | self.raster_usage;
+        let texture =
+            self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "sink surface");
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        crate::prof::add_tex(crate::prof::now() - _tt);
         self.surfaces.insert(key, Surface { texture, view, width: w, height: h });
     }
 
@@ -536,17 +615,10 @@ impl Sink {
             backend.rasterize(scene, device, queue, target, w, h, CLEAR);
             return;
         }
-        let scratch = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("sink accumulate scratch"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            // Rasterized into, then sampled by the compositor blit.
-            usage: self.raster_usage | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
+        // Rasterized into, then sampled by the compositor blit.
+        let usage = self.raster_usage | wgpu::TextureUsages::TEXTURE_BINDING;
+        let scratch =
+            self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "sink accumulate scratch");
         let scratch_view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
         backend.rasterize(scene, device, queue, &scratch_view, w, h, CLEAR);
         let mut enc = device
@@ -567,6 +639,8 @@ impl Sink {
         let _tsu = crate::prof::now();
         queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
+        // Recycle next frame (not now): the submit above still reads it until the GPU drains.
+        self.frame_transient.push(scratch);
     }
 
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]

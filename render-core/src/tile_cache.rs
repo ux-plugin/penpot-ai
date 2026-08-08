@@ -70,9 +70,12 @@ impl<S> TileCache<S> {
 
     /// Decide which visible tiles must be (re)rendered this frame, invalidating the cache first: a
     /// **scale change** drops everything (tile pixels are scale-variant); `dirty_all` drops
-    /// everything; otherwise each dirty **page-space** rect removes the tiles it covers. Returns the
-    /// visible tiles not in the cache — the newly-exposed strip plus the invalidated ones — which the
-    /// caller builds the schedule for; the rest are reused from cache.
+    /// everything; otherwise each dirty **page-space** rect removes the tiles it covers.
+    ///
+    /// Returns `(dirty, invalidated)`: the visible tiles not in the cache — the newly-exposed strip
+    /// plus the invalidated ones — that the caller builds the schedule for (the rest are reused from
+    /// cache), and the *content surfaces the invalidation just dropped*, so the backend can recycle
+    /// their textures instead of freeing them (the same reason [`evict`](Self::evict) hands its back).
     pub fn plan(
         &mut self,
         view: Affine,
@@ -80,28 +83,32 @@ impl<S> TileCache<S> {
         height: u32,
         dirty_all: bool,
         dirty_rects: &[Rect],
-    ) -> Vec<TileKey> {
+    ) -> (Vec<TileKey>, Vec<S>) {
         let scale = tiling::view_scale(view);
+        let mut invalidated = Vec::new();
         if self.scale != Some(scale) {
-            self.entries.clear();
+            invalidated.extend(self.entries.drain().filter_map(|(_, s)| s));
             self.last_used.clear();
             self.scale = Some(scale);
         }
         if dirty_all {
-            self.entries.clear();
+            invalidated.extend(self.entries.drain().filter_map(|(_, s)| s));
             self.last_used.clear();
         } else {
             for rect in dirty_rects {
                 for t in tiling::tiles_overlapping_page_rect(view, *rect) {
-                    self.entries.remove(&t);
+                    if let Some(Some(s)) = self.entries.remove(&t) {
+                        invalidated.push(s);
+                    }
                     self.last_used.remove(&t);
                 }
             }
         }
-        tiling::visible_tiles(view, width, height)
+        let dirty = tiling::visible_tiles(view, width, height)
             .into_iter()
             .filter(|t| !self.entries.contains_key(t))
-            .collect()
+            .collect();
+        (dirty, invalidated)
     }
 
     /// Begin a produced frame: advance the counter that stamps `last_used`. Call once, after
@@ -112,10 +119,11 @@ impl<S> TileCache<S> {
     }
 
     /// Record a freshly-produced tile — `Some(surface)` for content, `None` for an empty tile (kept
-    /// so `plan` won't re-dirty it) — and stamp it used this frame.
-    pub fn store(&mut self, key: TileKey, surface: Option<S>) {
-        self.entries.insert(key, surface);
+    /// so `plan` won't re-dirty it) — and stamp it used this frame. Returns the content surface this
+    /// one replaced, if any, so the backend can recycle its texture (a re-rendered dirty tile).
+    pub fn store(&mut self, key: TileKey, surface: Option<S>) -> Option<S> {
         self.last_used.insert(key, self.frame);
+        self.entries.insert(key, surface).flatten()
     }
 
     /// The cached content surface for a tile, or `None` if the tile is cached-empty or absent. Does
@@ -182,14 +190,14 @@ mod tests {
     fn a_pan_reuses_cached_tiles_and_only_plans_the_newly_exposed_strip() {
         let mut cache: TileCache<u32> = TileCache::new();
         // Frame 1 at identity: everything is uncached → all visible tiles are planned.
-        let first = cache.plan(Affine::IDENTITY, 1024, 512, false, &[]);
+        let (first, _) = cache.plan(Affine::IDENTITY, 1024, 512, false, &[]);
         assert_eq!(first.len(), 2); // tiles (0,0) and (1,0)
         cache.advance_frame();
         for t in &first {
             cache.store(*t, Some(1));
         }
         // Frame 2 panned left by one tile: (1,0) stays visible+cached, (2,0) is new.
-        let panned = cache.plan(Affine::translate((-512.0, 0.0)), 1024, 512, false, &[]);
+        let (panned, _) = cache.plan(Affine::translate((-512.0, 0.0)), 1024, 512, false, &[]);
         assert_eq!(panned, vec![tile(2, 0)]); // only the exposed column is re-planned
         assert!(cache.contains(tile(1, 0))); // the overlapping tile was reused, not re-planned
     }
@@ -197,13 +205,13 @@ mod tests {
     #[test]
     fn a_scale_change_drops_the_whole_cache() {
         let mut cache: TileCache<u32> = TileCache::new();
-        let first = cache.plan(Affine::IDENTITY, 1024, 512, false, &[]);
+        let (first, _) = cache.plan(Affine::IDENTITY, 1024, 512, false, &[]);
         cache.advance_frame();
         for t in &first {
             cache.store(*t, Some(1));
         }
         // Any zoom invalidates: the 1:1 composite is only valid at the render scale.
-        let zoomed = cache.plan(Affine::scale(2.0), 1024, 512, false, &[]);
+        let (zoomed, _) = cache.plan(Affine::scale(2.0), 1024, 512, false, &[]);
         assert!(!zoomed.is_empty());
         assert!(!cache.contains(tile(0, 0))); // old-scale entry gone
     }
@@ -211,17 +219,17 @@ mod tests {
     #[test]
     fn a_dirty_rect_invalidates_only_the_tiles_it_covers() {
         let mut cache: TileCache<u32> = TileCache::new();
-        let first = cache.plan(Affine::IDENTITY, 1024, 512, false, &[]);
+        let (first, _) = cache.plan(Affine::IDENTITY, 1024, 512, false, &[]);
         cache.advance_frame();
         for t in &first {
             cache.store(*t, Some(1));
         }
         // An edit confined to tile (0,0) re-plans only it; (1,0) is reused.
-        let dirty = cache.plan(Affine::IDENTITY, 1024, 512, false, &[Rect::new(20.0, 20.0, 100.0, 100.0)]);
+        let (dirty, _) = cache.plan(Affine::IDENTITY, 1024, 512, false, &[Rect::new(20.0, 20.0, 100.0, 100.0)]);
         assert_eq!(dirty, vec![tile(0, 0)]);
         assert!(cache.contains(tile(1, 0)));
         // dirty_all re-plans every visible tile.
-        let all = cache.plan(Affine::IDENTITY, 1024, 512, true, &[]);
+        let (all, _) = cache.plan(Affine::IDENTITY, 1024, 512, true, &[]);
         assert_eq!(all.len(), 2);
     }
 
