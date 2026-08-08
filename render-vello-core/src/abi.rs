@@ -964,6 +964,69 @@ pub extern "C" fn clear_shape_custom_shader() {
     with_current(|node| node.custom_shader = None);
 }
 
+/// **Texture** effect — a fractal-noise displacement warp of the shape's own body (fill included),
+/// matching render-wasm's `set_shape_texture(noise_size, radius, clip_to_shape, hidden)`. Lowered to a
+/// spread [`CustomShader`] with the built-in [`crate::effects::TEXTURE_WGSL`]; a hidden / zero-radius
+/// texture clears the slot.
+///
+/// NOTE: texture and noise both occupy the single `custom_shader` slot for now, so a shape can carry
+/// one or the other (last write wins), not both. Coexistence needs the node to hold a *list* of spread
+/// passes — the effect-graph consolidation — tracked as a follow-up.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_texture(noise_size: f32, radius: f32, clip_to_shape: u32, hidden: u32) {
+    let shader = crate::effects::texture_shader(noise_size, radius, clip_to_shape != 0, hidden != 0);
+    with_current(|node| node.custom_shader = shader);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_texture() {
+    with_current(|node| node.custom_shader = None);
+}
+
+/// **Noise** effect — coloured fractal-noise grain composited over the shape's body, matching
+/// render-wasm's `set_shape_noise(noise_size, density, softness, apply_to_fill, hidden)`. The slots are
+/// staged in the byte buffer, laid out exactly like render-wasm's writer:
+///   `[u32 count][u8 kind_0..kind_{n-1}][pad to 4B][u32 rgba_0][u32 rgba_1]…` (each color 0xAARRGGBB LE).
+/// Lowered to a spread [`CustomShader`] with the built-in [`crate::effects::NOISE_WGSL`]; a hidden /
+/// slotless noise clears the slot. See the coexistence note on [`set_shape_texture`].
+#[unsafe(no_mangle)]
+pub extern "C" fn set_shape_noise(noise_size: f32, density: f32, softness: f32, apply_to_fill: u32, hidden: u32) {
+    let bytes = take_bytes();
+    let count = if bytes.len() >= 4 {
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
+    } else {
+        0
+    }
+    .min(crate::effects::MAX_NOISE_SLOTS);
+
+    // Colors start after [u32 count][kinds…] padded up to a 4-byte boundary (mirrors the writer).
+    let colors_offset = 4 + ((count + 3) & !3);
+    let mut slots: Vec<crate::effects::NoiseSlot> = Vec::with_capacity(count);
+    for i in 0..count {
+        let kind = bytes.get(4 + i).copied().unwrap_or(0);
+        let off = colors_offset + i * 4;
+        if off + 4 > bytes.len() {
+            break;
+        }
+        // 0xAARRGGBB little-endian: byte[0]=B, [1]=G, [2]=R, [3]=A. Straight RGBA in [0, 1].
+        let rgba = [
+            f32::from(bytes[off + 2]) / 255.0,
+            f32::from(bytes[off + 1]) / 255.0,
+            f32::from(bytes[off]) / 255.0,
+            f32::from(bytes[off + 3]) / 255.0,
+        ];
+        slots.push(crate::effects::NoiseSlot { kind, rgba });
+    }
+
+    let shader = crate::effects::noise_shader(&slots, noise_size, density, softness, apply_to_fill != 0, hidden != 0);
+    with_current(|node| node.custom_shader = shader);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_shape_noise() {
+    with_current(|node| node.custom_shader = None);
+}
+
 /// Append a shadow. `raw_style` is Penpot's `RawShadowStyle` — `0` drop, `1` inner; `blur` is a
 /// radius, `(x, y)` the offset. Both drop and inner (inset) shadows are carried now that the fork
 /// draws inner shadows; only *hidden* shadows are dropped, matching `model_export`.

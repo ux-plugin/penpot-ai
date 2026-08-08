@@ -19,6 +19,7 @@
 pub mod abi;
 pub mod blend;
 pub mod draw;
+pub mod effects;
 pub mod glass;
 pub mod graph;
 pub mod prof;
