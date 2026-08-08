@@ -210,7 +210,14 @@ impl RenderingContext for ClassicCtx {
     // our own `run_graph` — so the filter hooks are inert here.
     fn set_filter_effect(&mut self, _filter: Filter) {}
     fn reset_filter_effect(&mut self) {}
-    fn push_filter_layer(&mut self, _filter: Filter) {}
+    fn push_filter_layer(&mut self, _filter: Filter) {
+        // Classic vello has no layer-filter primitive (layer blur / inner shadow / filter graph);
+        // real filtering routes through our own `run_graph` at the sink. Until that lands, push a
+        // plain unclipped layer so the push/pop stack stays balanced and the content draws unfiltered
+        // rather than panicking — a visible-but-unblurred degradation, not a corruption.
+        let full = Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6);
+        self.scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, Affine::IDENTITY, &full);
+    }
 
     fn fill_path(&mut self, path: &BezPath) {
         let pt = (self.paint_transform != Affine::IDENTITY).then_some(self.paint_transform);
@@ -237,10 +244,21 @@ impl RenderingContext for ClassicCtx {
         }
     }
 
-    fn fill_blurred_rounded_rect(&mut self, _rect: &Rect, _radius: f32, _std_dev: f32) {
-        // Sparse-strips convenience for drop shadows; on classic these route through our own blur in
-        // `run_graph`. Phase 2 either emulates it or drops the call at the sink.
-        todo!("classic-vello blurred rounded rect (drop-shadow) — route via run_graph (Phase 2)")
+    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32) {
+        // Classic vello has a native blurred-rounded-rect primitive (its own gaussian), so a box
+        // drop shadow needs no filter layer or run_graph. Shadows are solid; a gradient in the pen
+        // here is not meaningful, so fall back to black.
+        let color = match &self.paint {
+            ClassicPaint::Solid(c) => *c,
+            ClassicPaint::Gradient(_) => vello_common::color::palette::css::BLACK,
+        };
+        self.scene.draw_blurred_rounded_rect(
+            self.transform,
+            *rect,
+            color,
+            f64::from(radius),
+            f64::from(std_dev),
+        );
     }
 
     fn glyph_run<'a>(
@@ -1176,5 +1194,101 @@ mod tests {
                 let _ = wr.write_image_data(&data);
             }
         }
+    }
+
+    // Effects: classic renders a box DROP SHADOW through the shared neutral walk, using vello's
+    // native blurred-rounded-rect (no filter layer / run_graph). A rounded rect with an offset soft
+    // shadow — the shadow shows as grey blur down-right of the shape, outside its own footprint.
+    #[test]
+    fn classic_renders_a_box_drop_shadow() {
+        use render_core::kurbo::{Affine, Rect as PageRect, RoundedRectRadii, Vec2};
+        use render_core::model::{Brush, Node, Paint, Scene, Shadow, ShapeKind, ROOT_ID};
+        use render_core::peniko::Color;
+        use render_vello_core::draw::draw_scene;
+        use render_vello_core::text::TextState;
+
+        let mut scene = Scene::new();
+        let mut root = Node::new(ROOT_ID, ShapeKind::Group);
+        root.children = vec![1];
+        scene.insert(root);
+        let mut card = Node::new(1, ShapeKind::Rect);
+        card.bounds = PageRect::new(60.0, 40.0, 150.0, 110.0);
+        card.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+        card.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(240, 240, 245, 255)))];
+        card.shadows = vec![Shadow {
+            color: Color::from_rgba8(0, 0, 0, 140),
+            blur: 8.0,
+            spread: 0.0,
+            offset: Vec2::new(14.0, 16.0),
+            inset: false,
+        }];
+        scene.insert(card);
+
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter — skipping drop-shadow proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("vello-gpu shadow"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        let (w, h) = (256u32, 160u32);
+        let mut renderer = ClassicRenderer::new(&device);
+        let mut ctx = renderer.new_scene(w as u16, h as u16);
+        let mut resources = ();
+        let mut text = TextState::new();
+        draw_scene(&mut ctx, &mut resources, &ClassicEnv, &mut text, &scene, Affine::IDENTITY);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shadow target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+
+        let data = read_back(&device, &queue, &texture, w, h);
+
+        let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../proofs/slice-c-classic-drop-shadow.png");
+        if let Ok(file) = std::fs::File::create(out) {
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            if let Ok(mut wr) = enc.write_header() {
+                let _ = wr.write_image_data(&data);
+            }
+        }
+
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            let o = ((y * w + x) * 4) as usize;
+            [data[o], data[o + 1], data[o + 2], data[o + 3]]
+        };
+        // Shadow ink: any grey pixel (darker than white, roughly neutral) below-right of the card,
+        // outside the card's own footprint (x>150 or y>110), proves the blurred shadow rendered.
+        let shadow_px = (111..150).any(|y: u32| {
+            (150..190).any(|x: u32| {
+                let p = px(x, y);
+                p[0] < 235 && p[0] > 40 && (p[0] as i32 - p[2] as i32).abs() < 45
+            })
+        });
+        assert!(shadow_px, "expected a soft grey drop shadow below-right of the card");
+        // The card's own area is its near-white fill.
+        let c = px(100, 75);
+        assert!(c[0] > 225 && c[1] > 225, "card fill should be near-white, got {c:?}");
+        // Far top-left corner is clean white (shadow offsets down-right).
+        let bg = px(6, 6);
+        assert!(bg[0] > 245 && bg[1] > 245 && bg[2] > 245, "corner should be white, got {bg:?}");
     }
 }

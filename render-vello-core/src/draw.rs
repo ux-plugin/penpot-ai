@@ -15,7 +15,8 @@
 //! ABI atlas map; the classic backend supplies one that returns `None` until image staging lands.
 
 use render_core::blend::DEFAULT_BLEND;
-use render_core::geometry::outline;
+use render_core::blur::radius_to_sigma;
+use render_core::geometry::{cap_shadow_blur, outline};
 use render_core::gradient::DIAMOND_TILE;
 use render_core::kurbo::{Affine, Rect};
 use render_core::model::{self as m, Brush, Node, Scene, ShapeKind};
@@ -71,6 +72,9 @@ fn draw_node<C: RenderingContext, E: DrawEnv>(
         return;
     }
     let matrix = view * node.effective_transform();
+    // Drop shadows sit behind everything this node draws (outside its opacity/blend layer), so they
+    // go first, before the isolation layer.
+    draw_box_drop_shadows(ctx, node, matrix);
     // A container with non-trivial opacity/blend isolates as a layer, so overlapping children compose
     // once and the group's opacity/blend applies to the whole subtree.
     let isolates = node.kind.is_container() && (node.opacity < 1.0 || node.blend != DEFAULT_BLEND);
@@ -111,6 +115,40 @@ fn draw_node<C: RenderingContext, E: DrawEnv>(
     }
     if isolates {
         ctx.pop_layer();
+    }
+}
+
+/// Draw a node's non-inset drop shadows as blurred rounded rects, the box-shaped common case
+/// (rect/frame/circle). Both backends have a `fill_blurred_rounded_rect` primitive — classic vello's
+/// native blurred-rounded-rect and sparse-strips' own — so no filter layer is needed. Deferred to the
+/// sink's `run_graph` path: path-shaped shadows (a blurred rect is the wrong silhouette) and inner
+/// shadows (they darken *inside* the shape's own pixels). `matrix` is the node's page→device transform.
+fn draw_box_drop_shadows<C: RenderingContext>(ctx: &mut C, node: &Node, matrix: Affine) {
+    if node.shadows.is_empty() {
+        return;
+    }
+    // The un-spread corner radius; a plain rect is 0, a circle is a full round (stadium for a
+    // non-square box — an approximation until path shadows land).
+    let base_radius = match node.kind {
+        ShapeKind::Rect | ShapeKind::Frame => node.corners.map_or(0.0, |c| c.top_left),
+        ShapeKind::Circle => node.bounds.width().min(node.bounds.height()) / 2.0,
+        _ => return,
+    };
+    for shadow in node.shadows.iter().filter(|s| !s.inset) {
+        // Cap the device blur (parity with render-wasm / the hybrid path); the offset shrinks by the
+        // same factor past the cap so the shadow keeps its shape under zoom.
+        let (sigma, offset_ratio) = cap_shadow_blur(radius_to_sigma(shadow.blur), matrix);
+        let spread = f64::from(shadow.spread);
+        let rect = node.bounds.inflate(spread, spread);
+        let radius = (base_radius + spread).max(0.0) as f32;
+        ctx.set_paint(shadow.color);
+        ctx.set_paint_transform(Affine::IDENTITY);
+        // Offset rides in the shape's own space, so it rotates with the shape and scales with zoom.
+        ctx.set_transform(
+            matrix
+                * Affine::translate((shadow.offset.x * offset_ratio, shadow.offset.y * offset_ratio)),
+        );
+        ctx.fill_blurred_rounded_rect(&rect, radius, sigma);
     }
 }
 
