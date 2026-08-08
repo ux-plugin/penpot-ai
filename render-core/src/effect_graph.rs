@@ -132,8 +132,12 @@ pub fn glass_graph(
 
     let disp_u: [f32; 20] = [
         bwf, bhf, gcx, gcy,
+        // hx/hy/corner and the SDF `dist` all live in reduced-backdrop texels (scaled by `eff`), so
+        // the bezel width — a page-space distance like the corner radius — must be scaled the same way.
+        // Left raw, it mixes units with `dist` in `distFromBorder = -dist/bezel`, so the refraction band
+        // (and the specular gaussian keyed off it) shifts as zoom changes `eff`.
         hx, hy, corner, g.surface_type as f32,
-        g.bezel_width, g.thickness, g.refractive_index, g.specular_angle,
+        g.bezel_width * s, g.thickness, g.refractive_index, g.specular_angle,
         g.splay, g.tilt_angle, g.edge_boost, g.zoom,
         s, 0.0, 0.0, 0.0,
     ];
