@@ -18,8 +18,10 @@ use render_core::blend::DEFAULT_BLEND;
 use render_core::blur::radius_to_sigma;
 use render_core::geometry::{cap_shadow_blur, outline};
 use render_core::gradient::DIAMOND_TILE;
+use render_core::host::Modifiers;
 use render_core::kurbo::{Affine, Rect};
 use render_core::model::{self as m, Brush, Node, Scene, ShapeKind};
+use render_core::schedule::PaintOp;
 use vello_common::paint::ImageId;
 use vello_example_scenes::{Fill, RenderingContext};
 
@@ -72,34 +74,18 @@ fn draw_node<C: RenderingContext, E: DrawEnv>(
         return;
     }
     let matrix = view * node.effective_transform();
-    // Drop shadows sit behind everything this node draws (outside its opacity/blend layer), so they
-    // go first, before the isolation layer.
-    draw_box_drop_shadows(ctx, node, matrix);
     // A container with non-trivial opacity/blend isolates as a layer, so overlapping children compose
-    // once and the group's opacity/blend applies to the whole subtree.
+    // once and the group's opacity/blend applies to the whole subtree. Drop shadows sit behind
+    // everything this node draws (outside its opacity/blend layer), so `draw_node_body` (which draws
+    // them first) runs before the isolation layer is pushed.
     let isolates = node.kind.is_container() && (node.opacity < 1.0 || node.blend != DEFAULT_BLEND);
+    draw_box_drop_shadows(ctx, node, matrix);
     if isolates {
         let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
         let alpha = (node.opacity < 1.0).then_some(node.opacity);
         ctx.push_layer(None, blend, alpha, None, None);
     }
-    // The node's own body: text lays out through the shared text path; a group has no body; every
-    // other kind fills/strokes its geometry.
-    match node.kind {
-        ShapeKind::Text => {
-            crate::text::draw_text_block(
-                ctx,
-                resources,
-                &mut text.font_cx,
-                &mut text.layout_cx,
-                env,
-                node,
-                matrix,
-            );
-        }
-        ShapeKind::Group => {}
-        _ => paint_body(ctx, env, node, matrix),
-    }
+    draw_node_kind_body(ctx, resources, env, text, node, matrix);
     // A frame with `clip` set clips its children (not its own body — a frame's stroke straddles its
     // edge). The clip path is captured under this node's transform, matching render-wasm.
     let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
@@ -115,6 +101,89 @@ fn draw_node<C: RenderingContext, E: DrawEnv>(
     }
     if isolates {
         ctx.pop_layer();
+    }
+}
+
+/// The node's own body — text lays out through the shared text path; a group has no body; every other
+/// kind fills/strokes its geometry. No shadows, isolation, clip or children: just this node's mark.
+fn draw_node_kind_body<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    resources: &mut C::Resources,
+    env: &E,
+    text: &mut crate::text::TextState,
+    node: &Node,
+    matrix: Affine,
+) {
+    match node.kind {
+        ShapeKind::Text => {
+            crate::text::draw_text_block(
+                ctx,
+                resources,
+                &mut text.font_cx,
+                &mut text.layout_cx,
+                env,
+                node,
+                matrix,
+            );
+        }
+        ShapeKind::Group => {}
+        _ => paint_body(ctx, env, node, matrix),
+    }
+}
+
+/// One shape's full self-mark for a scheduler `Paint` step: its drop shadows, then its body — but
+/// **not** its children, isolation layer or clip (the schedule emits those as their own steps /
+/// `PushLayer`/`PopLayer` ops). This is the classic backend's per-`Body(id)` unit, the neutral twin of
+/// `scene.rs`'s `paint_node_body`. Spread effects (layer blur, filter graph, inner shadows) are the
+/// sink's job via its effect surfaces, so they are deliberately absent here.
+pub fn draw_node_body<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    resources: &mut C::Resources,
+    env: &E,
+    text: &mut crate::text::TextState,
+    node: &Node,
+    matrix: Affine,
+) {
+    if node.hidden || node.kind == ShapeKind::Unsupported {
+        return;
+    }
+    draw_box_drop_shadows(ctx, node, matrix);
+    draw_node_kind_body(ctx, resources, env, text, node, matrix);
+}
+
+/// Draw one scheduler `Paint` step — a z-ordered run of [`PaintOp`]s — into `ctx`. `Body(id)` draws
+/// that node's self-mark ([`draw_node_body`]) at `view · modifier · node.transform`; `PushLayer`/
+/// `PopLayer` bracket a group's opacity/blend isolation. This is what a backend's `RasterBackend::
+/// build_bodies` runs so both flavors execute a `Paint` step identically; the whole-tree
+/// [`draw_scene`] is the non-scheduled path.
+pub fn draw_paint_batch<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    resources: &mut C::Resources,
+    env: &E,
+    text: &mut crate::text::TextState,
+    model: &Scene,
+    view: Affine,
+    modifiers: &Modifiers,
+    ops: &[PaintOp],
+) {
+    for op in ops {
+        match *op {
+            PaintOp::Body(id) => {
+                if let Some(node) = model.get(id) {
+                    let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                    let matrix = view * modifier * node.effective_transform();
+                    draw_node_body(ctx, resources, env, text, node, matrix);
+                }
+            }
+            PaintOp::PushLayer(id) => {
+                if let Some(node) = model.get(id) {
+                    let alpha = (node.opacity < 1.0).then_some(node.opacity);
+                    let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
+                    ctx.push_layer(None, blend, alpha, None, None);
+                }
+            }
+            PaintOp::PopLayer => ctx.pop_layer(),
+        }
     }
 }
 

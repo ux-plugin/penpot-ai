@@ -391,6 +391,93 @@ impl render_vello_core::draw::DrawEnv for ClassicEnv {
 /// exists — shared by [`ClassicEnv::font_alias`] and any caller that registers a face for it.
 pub const DEFAULT_FONT_ALIAS: &str = "vello-gpu-font";
 
+/// The classic backend as the sink's [`RasterBackend`](render_vello_core::rasterize::RasterBackend) —
+/// the full seam `render_vello_core::sink::Sink` drives, so classic runs the *same* scheduler +
+/// tile-cache + effect pipeline hybrid does.
+///
+/// It composes the pieces the earlier slices proved: scene *building* is the shared
+/// [`draw_paint_batch`](render_vello_core::draw::draw_paint_batch) over [`ClassicCtx`] (reading the
+/// live model off the shared ABI, exactly as the hybrid `NeutralModelScene` does); *rasterization* is
+/// [`ClassicRenderer`]'s `render_to_texture`. It owns the Parley [`TextState`](render_vello_core::text::TextState)
+/// so text laid out across a frame reuses one font context.
+pub struct ClassicBackend {
+    renderer: ClassicRenderer,
+    text: render_vello_core::text::TextState,
+}
+
+impl ClassicBackend {
+    /// Build over a device (compiles the classic shader permutations once).
+    #[must_use]
+    pub fn new(device: &wgpu::Device) -> Self {
+        Self { renderer: ClassicRenderer::new(device), text: render_vello_core::text::TextState::new() }
+    }
+
+    /// The Parley engine, so a caller can register faces (until ABI font staging lands, tests register
+    /// the one face `DEFAULT_FONT_ALIAS` names).
+    pub fn text_mut(&mut self) -> &mut render_vello_core::text::TextState {
+        &mut self.text
+    }
+}
+
+impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
+    type Scene = ClassicCtx;
+
+    fn new_scene(&self, width: u16, height: u16) -> ClassicCtx {
+        ClassicCtx::new(width, height)
+    }
+
+    fn build_bodies(&mut self, scene: &mut ClassicCtx, transform: Affine, ops: &[render_core::schedule::PaintOp]) {
+        let mut resources = ();
+        let text = &mut self.text;
+        // The live model + host viewport + gesture modifiers come off the shared ABI, the same source
+        // the hybrid `NeutralModelScene` reads; `view = transform · viewport` mirrors its `root ·
+        // viewport`, with `transform` the surface-placement matrix the sink baked in.
+        render_vello_core::abi::with_scene(|model, viewport, modifiers| {
+            render_vello_core::draw::draw_paint_batch(
+                scene,
+                &mut resources,
+                &ClassicEnv,
+                text,
+                model,
+                transform * viewport,
+                modifiers,
+                ops,
+            );
+        });
+    }
+
+    fn build_mask(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128) {
+        render_vello_core::abi::with_scene(|model, viewport, modifiers| {
+            if let Some(node) = model.get(id) {
+                let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                let matrix = transform * viewport * modifier * node.effective_transform();
+                scene.set_transform(matrix);
+                scene.set_paint(render_core::peniko::Color::from_rgba8(255, 255, 255, 255));
+                scene.fill_path(&render_core::geometry::outline(node));
+            }
+        });
+    }
+
+    fn rasterize(
+        &mut self,
+        scene: &ClassicCtx,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        base_color: render_core::peniko::Color,
+    ) {
+        use render_vello_core::rasterize::SceneRasterizer;
+        self.renderer.rasterize(scene, device, queue, target, width, height, base_color);
+    }
+
+    fn rasterize_target_usage(&self) -> wgpu::TextureUsages {
+        // Classic writes the target from a compute shader, not as a render attachment.
+        wgpu::TextureUsages::STORAGE_BINDING
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +600,124 @@ mod tests {
         // A corner (4,4) is background → white.
         let bg = px(4, 4);
         assert!(bg[0] > 240 && bg[1] > 240 && bg[2] > 240, "corner should be white, got {bg:?}");
+    }
+
+    /// **The task-15c milestone:** classic vello renders a real document through the *shared* GPU sink
+    /// — the same `render_vello_core::sink::Sink` (scheduler + tile cache + effect executor) the hybrid
+    /// backend drives — via [`ClassicBackend`]. We drive the shared ABI like the host would (two solid
+    /// rects under the root), let the sink schedule + tile + composite them onto a swapchain texture,
+    /// read it back, and check the pixels. This is the first end-to-end classic render of a scheduled
+    /// document; only the wgpu-on-canvas surface + `?renderer=vello-gpu` loader (15d) then remain.
+    #[test]
+    fn classic_renders_a_document_through_the_shared_sink() {
+        use render_core::schedule::build_visible;
+        use render_core::tiling::TileKey;
+        use render_vello_core::sink::Sink;
+        use std::collections::HashSet;
+
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter — skipping classic sink render proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("classic sink"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        // Drive the shared ABI exactly as the host does: two overlapping solid rects under ROOT.
+        fn solid_fill_bytes(argb: u32) -> Vec<u8> {
+            // header: [count, pad, pad, pad] then one RAW_FILL_DATA_SIZE (=164) chunk. Solid tag 0x00
+            // at chunk[0]; color u32 (ARGB, LE) at PAYLOAD(4)+COLOR(0) = buffer offset 8.
+            let mut b = vec![0u8; 4 + 164];
+            b[0] = 1;
+            b[8..12].copy_from_slice(&argb.to_le_bytes());
+            b
+        }
+        let rect = |id: u32, l: f32, t: f32, r: f32, bt: f32, argb: u32| {
+            render_vello_core::abi::use_shape(id, 0, 0, 0);
+            render_vello_core::abi::set_shape_type(3); // Rect
+            render_vello_core::abi::set_shape_selrect(l, t, r, bt);
+            let bytes = solid_fill_bytes(argb);
+            let ptr = render_vello_core::abi::alloc_bytes(bytes.len());
+            // SAFETY: `alloc_bytes` handed back a `bytes.len()`-sized allocation it owns; we fill it,
+            // then `set_shape_fills` drains it.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
+            render_vello_core::abi::set_shape_fills();
+        };
+
+        render_vello_core::abi::init(256, 256);
+        render_vello_core::abi::set_render_options(0, 1.0);
+        render_vello_core::abi::set_view(1.0, 0.0, 0.0);
+        render_vello_core::abi::set_canvas_background(0xFFFF_FFFF); // opaque white
+        rect(1, 40.0, 40.0, 150.0, 150.0, 0xFFE2_3B3B); // red
+        rect(2, 90.0, 90.0, 200.0, 200.0, 0xFF2B_6CF0); // blue, drawn on top
+        render_vello_core::abi::use_shape(0, 0, 0, 0); // ROOT
+        render_vello_core::abi::set_children_2(1, 0, 0, 0, 2, 0, 0, 0);
+
+        // Run the SHARED sink with the classic backend.
+        let (w, h) = (256u32, 256u32);
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut sink = Sink::new(&device, format);
+        let mut backend = ClassicBackend::new(&device);
+        let root = Affine::IDENTITY;
+        let full_view = render_vello_core::abi::effective_view(root);
+        let dirty = sink.plan_frame(full_view, w, h, true, &[]);
+        let dirty_set: HashSet<TileKey> = dirty.iter().copied().collect();
+        let schedule = render_vello_core::abi::with_scene(|live, viewport, _| {
+            build_visible(live, root * viewport, &dirty_set)
+        });
+
+        let surface = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("classic swapchain"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        sink.execute(&schedule, &dirty, &mut backend, &device, &queue, &surface, root, w, h);
+
+        let data = read_back(&device, &queue, &surface, w, h);
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            let o = ((y * w + x) * 4) as usize;
+            [data[o], data[o + 1], data[o + 2], data[o + 3]]
+        };
+
+        let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../proofs/slice-d-classic-sink-document.png");
+        if let Ok(file) = std::fs::File::create(out) {
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            if let Ok(mut wr) = enc.write_header() {
+                let _ = wr.write_image_data(&data);
+            }
+        }
+
+        let bg = px(8, 8);
+        assert!(bg[0] > 230 && bg[1] > 230 && bg[2] > 230, "corner should be white bg, got {bg:?}");
+        let red = px(60, 60);
+        assert!(
+            red[0] > 150 && red[0] > red[1] + 40 && red[0] > red[2] + 40,
+            "expected the red rect at (60,60), got {red:?}"
+        );
+        let blue = px(178, 178);
+        assert!(
+            blue[2] > 150 && blue[2] > blue[0] + 40 && blue[2] > blue[1] + 40,
+            "expected the blue rect at (178,178), got {blue:?}"
+        );
+        // The overlap: blue is drawn after red, so it wins there.
+        let overlap = px(120, 120);
+        assert!(overlap[2] > overlap[0], "overlap should be blue-over-red, got {overlap:?}");
     }
 
     /// Copy a texture into a mappable buffer and return its bytes (row-major RGBA8). `w·4` must be a
