@@ -404,7 +404,7 @@ fn custom(reads_backdrop: bool, reach: f32) -> crate::model::CustomShader {
 fn a_backdrop_reading_custom_shader_schedules_as_a_gather() {
     // Declared to sample the backdrop → the expensive, z-serial gather path (and the resolution cap).
     let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
-    r.custom_shader = Some(custom(true, 8.0));
+    r.upsert_effect(crate::model::EffectSlot::Custom, custom(true, 8.0));
     let scene = scene_with(vec![r]);
     let sched = build(&scene, VIEW, W, H);
 
@@ -423,7 +423,7 @@ fn a_backdrop_reading_custom_shader_schedules_as_a_gather() {
 fn a_body_only_custom_shader_schedules_as_a_spread_not_a_gather() {
     // Declared to read only its own body → the cheap spread path: its own effect surface, no backdrop.
     let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
-    r.custom_shader = Some(custom(false, 8.0));
+    r.upsert_effect(crate::model::EffectSlot::Custom, custom(false, 8.0));
     let scene = scene_with(vec![r]);
     let sched = build(&scene, VIEW, W, H);
 
@@ -437,6 +437,49 @@ fn a_body_only_custom_shader_schedules_as_a_spread_not_a_gather() {
         "a body-only custom shader never composes a backdrop"
     );
     assert!(DepGraph::build(&sched.steps).is_acyclic());
+}
+
+#[test]
+fn a_chain_of_spread_effects_keeps_order_and_schedules_one_spread_surface() {
+    use crate::model::EffectSlot;
+    // [texture, noise] — two body-only spreads. They chain over one effect surface (the sink threads
+    // each output into the next), so the schedule still emits a single RasterEffectOutput spread.
+    let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
+    r.upsert_effect(EffectSlot::Texture, custom(false, 12.0));
+    r.upsert_effect(EffectSlot::Noise, custom(false, 0.0));
+    assert_eq!(
+        r.effects.iter().map(|e| e.slot).collect::<Vec<_>>(),
+        vec![EffectSlot::Texture, EffectSlot::Noise],
+        "call order is chain order"
+    );
+    assert_eq!(r.spread_shaders().count(), 2);
+    // The surface must be padded to the largest reach among the chained spreads.
+    assert!((r.max_spread_reach() - 12.0).abs() < 1e-6);
+
+    let scene = scene_with(vec![r]);
+    let sched = build(&scene, VIEW, W, H);
+    assert!(
+        sched.steps.iter().any(|s| matches!(s,
+            Step::Paint { write_to, .. } if matches!(write_to.role, SurfaceRole::RasterEffectOutput(1)))),
+        "a spread chain paints into one effect surface"
+    );
+    assert!(!sched.steps.iter().any(|s| matches!(s, Step::ComposeBackdrop { .. })));
+    assert!(DepGraph::build(&sched.steps).is_acyclic());
+}
+
+#[test]
+fn upsert_updates_in_place_and_clear_removes_only_its_slot() {
+    use crate::model::EffectSlot;
+    let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
+    r.upsert_effect(EffectSlot::Texture, custom(false, 12.0));
+    r.upsert_effect(EffectSlot::Noise, custom(false, 0.0));
+    // Re-setting texture (a param edit) keeps it first, does not move it after noise.
+    r.upsert_effect(EffectSlot::Texture, custom(false, 20.0));
+    assert_eq!(r.effects[0].slot, EffectSlot::Texture);
+    assert!((r.effects[0].shader.reach - 20.0).abs() < 1e-6);
+    // Clearing texture leaves noise intact.
+    r.remove_effect(EffectSlot::Texture);
+    assert_eq!(r.effects.iter().map(|e| e.slot).collect::<Vec<_>>(), vec![EffectSlot::Noise]);
 }
 
 /// The distinct tile columns a shape's plain body paints into (`Body(id)` ops on a `TileOutput`).

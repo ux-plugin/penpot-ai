@@ -950,18 +950,16 @@ pub extern "C" fn set_shape_custom_shader(reach: f32, reads_backdrop: u32) {
         .collect();
     let wgsl = String::from_utf8_lossy(&bytes[params_end..]).into_owned();
     with_current(|node| {
-        node.custom_shader = Some(render_core::model::CustomShader {
-            wgsl,
-            reach,
-            params,
-            reads_backdrop: reads_backdrop != 0,
-        });
+        node.upsert_effect(
+            render_core::model::EffectSlot::Custom,
+            render_core::model::CustomShader { wgsl, reach, params, reads_backdrop: reads_backdrop != 0 },
+        );
     });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_shape_custom_shader() {
-    with_current(|node| node.custom_shader = None);
+    with_current(|node| node.remove_effect(render_core::model::EffectSlot::Custom));
 }
 
 /// **Texture** effect — a fractal-noise displacement warp of the shape's own body (fill included),
@@ -969,26 +967,31 @@ pub extern "C" fn clear_shape_custom_shader() {
 /// spread [`CustomShader`] with the built-in [`crate::effects::TEXTURE_WGSL`]; a hidden / zero-radius
 /// texture clears the slot.
 ///
-/// NOTE: texture and noise both occupy the single `custom_shader` slot for now, so a shape can carry
-/// one or the other (last write wins), not both. Coexistence needs the node to hold a *list* of spread
-/// passes — the effect-graph consolidation — tracked as a follow-up.
+/// Texture and noise are separate [`EffectSlot`]s in the node's ordered effect list, so a shape can
+/// carry both and they **chain** in the order they were set (see [`set_shape_noise`] and the sink's
+/// `custom_over_body`). Setting texture upserts its slot (updating in place on a param edit); a hidden
+/// / zero-radius texture removes it.
 #[unsafe(no_mangle)]
 pub extern "C" fn set_shape_texture(noise_size: f32, radius: f32, clip_to_shape: u32, hidden: u32) {
     let shader = crate::effects::texture_shader(noise_size, radius, clip_to_shape != 0, hidden != 0);
-    with_current(|node| node.custom_shader = shader);
+    with_current(|node| match shader {
+        Some(s) => node.upsert_effect(render_core::model::EffectSlot::Texture, s),
+        None => node.remove_effect(render_core::model::EffectSlot::Texture),
+    });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_shape_texture() {
-    with_current(|node| node.custom_shader = None);
+    with_current(|node| node.remove_effect(render_core::model::EffectSlot::Texture));
 }
 
 /// **Noise** effect — coloured fractal-noise grain composited over the shape's body, matching
 /// render-wasm's `set_shape_noise(noise_size, density, softness, apply_to_fill, hidden)`. The slots are
 /// staged in the byte buffer, laid out exactly like render-wasm's writer:
 ///   `[u32 count][u8 kind_0..kind_{n-1}][pad to 4B][u32 rgba_0][u32 rgba_1]…` (each color 0xAARRGGBB LE).
-/// Lowered to a spread [`CustomShader`] with the built-in [`crate::effects::NOISE_WGSL`]; a hidden /
-/// slotless noise clears the slot. See the coexistence note on [`set_shape_texture`].
+/// Lowered to a spread [`CustomShader`] in the [`EffectSlot::Noise`](render_core::model::EffectSlot)
+/// slot with the built-in [`crate::effects::NOISE_WGSL`]; a hidden / slotless noise removes it. Because
+/// it is its own slot, noise composes with texture — the order the two were set is the chain order.
 #[unsafe(no_mangle)]
 pub extern "C" fn set_shape_noise(noise_size: f32, density: f32, softness: f32, apply_to_fill: u32, hidden: u32) {
     let bytes = take_bytes();
@@ -1019,12 +1022,15 @@ pub extern "C" fn set_shape_noise(noise_size: f32, density: f32, softness: f32, 
     }
 
     let shader = crate::effects::noise_shader(&slots, noise_size, density, softness, apply_to_fill != 0, hidden != 0);
-    with_current(|node| node.custom_shader = shader);
+    with_current(|node| match shader {
+        Some(s) => node.upsert_effect(render_core::model::EffectSlot::Noise, s),
+        None => node.remove_effect(render_core::model::EffectSlot::Noise),
+    });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_shape_noise() {
-    with_current(|node| node.custom_shader = None);
+    with_current(|node| node.remove_effect(render_core::model::EffectSlot::Noise));
 }
 
 /// Append a shadow. `raw_style` is Penpot's `RawShadowStyle` — `0` drop, `1` inner; `blur` is a

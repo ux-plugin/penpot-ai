@@ -458,7 +458,7 @@ impl Sink {
             let Step::Paint { ops, write_to, clip } = &steps[i] else { continue };
             let SurfaceRole::RasterEffectOutput(id) = write_to.role else { continue };
             let has_custom = crate::abi::with_scene(|live, _, _| {
-                live.get(id).is_some_and(|n| n.custom_shader.as_ref().is_some_and(|c| !c.reads_backdrop))
+                live.get(id).is_some_and(render_core::model::Node::has_spread_shader)
             });
             if has_custom {
                 continue;
@@ -692,9 +692,12 @@ impl Sink {
         }
     }
 
-    /// Run a body-only custom shader (`reads_backdrop: false`) over a shape's freshly rendered effect
-    /// surface, swapping the surface for the shader's output. Same WGSL contract as the gather case —
-    /// `@binding(2)` is just the shape's own body here, not the backdrop.
+    /// Run the shape's **spread chain** (its body-only shaders, `reads_backdrop: false`) over its
+    /// freshly rendered effect surface, in application order, swapping the surface for the chain's final
+    /// output. Each effect's output feeds the next as its `@binding(2)` body — `[texture, noise]` warps
+    /// the body then colours the warped result — so a list of effects is one shader graph, wired
+    /// output → next input. (Consecutive pointwise passes each round-trip a texture here; fusing them
+    /// into a single shader where no blur/gather barrier sits between them is a later optimization.)
     fn custom_over_body(
         &mut self,
         id: u128,
@@ -703,43 +706,50 @@ impl Sink {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
     ) {
-        let shader = crate::abi::with_scene(|live, _, _| {
-            live.get(id).and_then(|n| {
-                n.custom_shader
-                    .as_ref()
-                    .filter(|c| !c.reads_backdrop)
-                    .map(|c| (c.wgsl.clone(), c.params.clone()))
-            })
-        });
-        let Some((wgsl, params)) = shader else { return };
+        let chain: Vec<(String, Vec<f32>)> = crate::abi::with_scene(|live, _, _| {
+            live.get(id)
+                .map(|n| n.spread_shaders().map(|c| (c.wgsl.clone(), c.params.clone())).collect())
+        })
+        .unwrap_or_default();
+        if chain.is_empty() {
+            return;
+        }
         let Some(surf) = self.surfaces.get(&write_to) else { return };
         let (w, h) = (surf.width, surf.height);
-        let body_view = surf.view.clone();
 
-        // One input texture (the body); fold the count into the key so the cached pipeline's explicit
-        // layout always matches the number of textures custom_pass binds.
-        let n_inputs = 1;
-        let mut hasher = DefaultHasher::new();
-        wgsl.hash(&mut hasher);
-        n_inputs.hash(&mut hasher);
-        let key = hasher.finish();
-        self.cap_custom_pipelines(key);
-        let pipeline = self
-            .custom_pipelines
-            .entry(key)
-            .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
-            .clone();
+        // Thread each effect's output into the next: body → e0 → e1 → … The final surface replaces the
+        // body. Every effect is a one-node custom graph over its input at `@binding(2)`.
+        let mut input_view = surf.view.clone();
+        let mut result: Option<(wgpu::Texture, wgpu::TextureView)> = None;
+        for (wgsl, params) in chain {
+            // One input texture; fold the count into the key so the cached pipeline's explicit layout
+            // always matches the number of textures custom_pass binds.
+            let n_inputs = 1;
+            let mut hasher = DefaultHasher::new();
+            wgsl.hash(&mut hasher);
+            n_inputs.hash(&mut hasher);
+            let key = hasher.finish();
+            self.cap_custom_pipelines(key);
+            let pipeline = self
+                .custom_pipelines
+                .entry(key)
+                .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
+                .clone();
 
-        let mut u = vec![w as f32, h as f32];
-        u.extend_from_slice(&params);
-        // render-core describes the single custom pass; lower it with the pipeline resolved above.
-        let passes = lower_graph(&effect_graph::custom_graph(u), Some(&pipeline));
-        let Some((tex, view)) =
-            run_graph(&self.compositor, &self.glass, device, queue, &[&body_view], &passes, w, h, format)
-        else {
-            return;
-        };
-        self.surfaces.insert(write_to, Surface { texture: tex, view, width: w, height: h });
+            let mut u = vec![w as f32, h as f32];
+            u.extend_from_slice(&params);
+            let passes = lower_graph(&effect_graph::custom_graph(u), Some(&pipeline));
+            let Some((tex, view)) =
+                run_graph(&self.compositor, &self.glass, device, queue, &[&input_view], &passes, w, h, format)
+            else {
+                return;
+            };
+            input_view = view.clone();
+            result = Some((tex, view));
+        }
+        if let Some((tex, view)) = result {
+            self.surfaces.insert(write_to, Surface { texture: tex, view, width: w, height: h });
+        }
     }
 
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
@@ -929,7 +939,7 @@ impl Sink {
         let k = self.backdrop_scale.get(&backdrop).copied().unwrap_or(1.0);
 
         let is_glass = crate::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.glass.is_some()));
-        let is_custom = crate::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.custom_shader.is_some()));
+        let is_custom = crate::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.gather_shader().is_some()));
 
         // Build the reusable gather result once (cached under v1). Glass → the full 4-pass composite;
         // background blur → the blurred backdrop plus a silhouette coverage mask (v2). Every dest tile
@@ -1061,7 +1071,7 @@ impl Sink {
     /// uniform is the backdrop resolution followed by the shader's declared params.
     fn custom_graph(&mut self, id: u128, bw: u32, bh: u32, device: &wgpu::Device, format: wgpu::TextureFormat) -> Option<Vec<Pass>> {
         let (wgsl, params) = crate::abi::with_scene(|live, _, _| {
-            live.get(id).and_then(|n| n.custom_shader.as_ref().map(|c| (c.wgsl.clone(), c.params.clone())))
+            live.get(id).and_then(|n| n.gather_shader().map(|c| (c.wgsl.clone(), c.params.clone())))
         })?;
         // One input texture (the assembled backdrop); key on it so the explicit layout matches.
         let n_inputs = 1;

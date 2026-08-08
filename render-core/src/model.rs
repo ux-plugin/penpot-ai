@@ -359,6 +359,32 @@ pub struct CustomShader {
     pub reads_backdrop: bool,
 }
 
+/// Which authored effect a [`ShapeEffect`] came from — its identity for upsert/clear on the wire.
+/// A shape can carry at most one effect per slot; re-setting a slot updates it in place (keeping its
+/// position in the chain), and clearing removes just that slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectSlot {
+    /// The fractal-noise displacement warp (`set_shape_texture`).
+    Texture,
+    /// The coloured fractal-noise grain (`set_shape_noise`).
+    Noise,
+    /// The raw WGSL escape hatch (`set_shape_custom_shader`).
+    Custom,
+}
+
+/// One authored effect on a shape: a [`CustomShader`] plus the [`EffectSlot`] it was set from.
+///
+/// A node's [`effects`](Node::effects) list is **ordered**, and the order *is* the pipeline: each
+/// spread effect reads the previous effect's output, so `[texture, noise]` warps the body then colours
+/// the warped result. This is the "a list of effects is one shader graph, output → next input" model —
+/// the chain is realized as consecutive spread passes (`Src::Pass(n)` feeding the next), fusible into a
+/// single shader later where no blur/gather barrier sits between them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeEffect {
+    pub slot: EffectSlot,
+    pub shader: CustomShader,
+}
+
 /// A single renderable node in neutral form.
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -433,9 +459,12 @@ pub struct Node {
     /// A frosted-glass gather effect (refraction lens), `None` when the shape has none. Like
     /// [`background_blur`](Node::background_blur) it reads the backdrop beneath — a gather effect.
     pub glass: Option<Glass>,
-    /// A custom WGSL gather effect over the backdrop, `None` when the shape has none. The raw
-    /// escape hatch beneath the typed presets; the scheduler caps its resolution unconditionally.
-    pub custom_shader: Option<CustomShader>,
+    /// The shape's authored effects, in application order. Each is a [`CustomShader`] (a built-in
+    /// texture/noise preset or the raw WGSL escape hatch) tagged with its [`EffectSlot`]. The order is
+    /// the pipeline: consecutive spread effects chain (output → next input); a backdrop-reading effect
+    /// is a gather. See [`ShapeEffect`] and the accessors below ([`spread_shaders`](Node::spread_shaders),
+    /// [`gather_shader`](Node::gather_shader)).
+    pub effects: Vec<ShapeEffect>,
     /// Drop shadows, back to front, drawn behind the shape. Inner shadows do not reach here.
     pub shadows: Vec<Shadow>,
     /// A chain of custom filter passes wrapping the shape + children, or `None`. Vello-only —
@@ -469,11 +498,49 @@ impl Node {
             blur: None,
             background_blur: None,
             glass: None,
-            custom_shader: None,
+            effects: Vec::new(),
             shadows: Vec::new(),
             filter_graph: None,
             hidden: false,
         }
+    }
+
+    /// The spread effects (body-only shaders) in application order — the chain that warps/colours the
+    /// shape's own paint. Each reads the previous one's output.
+    pub fn spread_shaders(&self) -> impl Iterator<Item = &CustomShader> {
+        self.effects.iter().map(|e| &e.shader).filter(|c| !c.reads_backdrop)
+    }
+
+    /// The (first) backdrop-reading effect — the custom *gather* shader, if any. A shape carries at
+    /// most one gather custom shader alongside the typed glass/background-blur gathers.
+    pub fn gather_shader(&self) -> Option<&CustomShader> {
+        self.effects.iter().map(|e| &e.shader).find(|c| c.reads_backdrop)
+    }
+
+    /// Whether any effect is a body-only spread shader.
+    pub fn has_spread_shader(&self) -> bool {
+        self.effects.iter().any(|e| !e.shader.reads_backdrop)
+    }
+
+    /// The largest page-space reach over the spread shaders — how far past the silhouette the chain
+    /// samples, so the spread surface is padded to hold it.
+    pub fn max_spread_reach(&self) -> f32 {
+        self.spread_shaders().map(|c| c.reach).fold(0.0, f32::max)
+    }
+
+    /// Insert or update the effect in `slot`, preserving its position in the chain when it already
+    /// exists (a param edit) and appending in call order when it is new.
+    pub fn upsert_effect(&mut self, slot: EffectSlot, shader: CustomShader) {
+        if let Some(e) = self.effects.iter_mut().find(|e| e.slot == slot) {
+            e.shader = shader;
+        } else {
+            self.effects.push(ShapeEffect { slot, shader });
+        }
+    }
+
+    /// Remove the effect in `slot`, if present.
+    pub fn remove_effect(&mut self, slot: EffectSlot) {
+        self.effects.retain(|e| e.slot != slot);
     }
 
     /// The matrix to draw with: the stored transform conjugated by the shape's centre.
@@ -763,20 +830,19 @@ impl Scene {
             None => fnv_u64(hash, 0),
         }
 
-        // Custom WGSL gather effect — hash the source, reach and params so an edit re-digests.
-        match &node.custom_shader {
-            Some(c) => {
-                fnv_u64(hash, 1);
-                for b in c.wgsl.as_bytes() {
-                    fnv_u64(hash, u64::from(*b));
-                }
-                fnv_f64(hash, f64::from(c.reach));
-                for p in &c.params {
-                    fnv_f64(hash, f64::from(*p));
-                }
-                fnv_u64(hash, u64::from(c.reads_backdrop));
+        // Authored effects — hash the ordered list (source, reach, params, class per entry) so an edit
+        // or a reorder re-digests.
+        fnv_u64(hash, node.effects.len() as u64);
+        for e in &node.effects {
+            let c = &e.shader;
+            for b in c.wgsl.as_bytes() {
+                fnv_u64(hash, u64::from(*b));
             }
-            None => fnv_u64(hash, 0),
+            fnv_f64(hash, f64::from(c.reach));
+            for p in &c.params {
+                fnv_f64(hash, f64::from(*p));
+            }
+            fnv_u64(hash, u64::from(c.reads_backdrop));
         }
 
         fnv_u64(hash, node.shadows.len() as u64);

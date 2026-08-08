@@ -363,7 +363,7 @@ fn visit(
 /// own body (→ a spread). Absent shader → false. Opaque shaders declare `reads_backdrop: true`, so
 /// they land here as gathers — the safe worst case; a shader declared body-only takes the cheap path.
 fn custom_reads_backdrop(node: &Node) -> bool {
-    node.custom_shader.as_ref().is_some_and(|c| c.reads_backdrop)
+    node.gather_shader().is_some()
 }
 
 /// Whether anything in `id`'s subtree must be rasterized into its own surface — a spread or gather
@@ -418,11 +418,7 @@ pub fn affected_page_rect(node: &Node, modifier: Affine) -> Rect {
     if let Some(radius) = node.blur {
         reach = reach.max(f64::from(3.0 * radius_to_sigma(radius)));
     }
-    if let Some(c) = &node.custom_shader {
-        if !c.reads_backdrop {
-            reach = reach.max(f64::from(c.reach));
-        }
-    }
+    reach = reach.max(f64::from(node.max_spread_reach()));
     base.inflate(reach, reach)
 }
 
@@ -437,9 +433,7 @@ pub fn affected_page_rect(node: &Node, modifier: Affine) -> Rect {
 /// at every internal tile edge (a grid). An isolated surface holds the whole body, so the filter sees
 /// the true silhouette and the shadow lands only on the real edge.
 fn has_spread_effect(node: &Node) -> bool {
-    node.blur.is_some()
-        || !node.shadows.is_empty()
-        || node.custom_shader.as_ref().is_some_and(|c| !c.reads_backdrop)
+    node.blur.is_some() || !node.shadows.is_empty() || node.has_spread_shader()
 }
 
 /// A shape carries a gather effect if it reads the backdrop beneath it — background blur, glass, or a
@@ -463,12 +457,10 @@ fn gather_reach(node: &Node) -> f64 {
         let frost = g.frost * 6.0;
         reach = reach.max(f64::from(displacement + blur + frost));
     }
-    if let Some(c) = &node.custom_shader {
-        // Only a backdrop-reading custom shader contributes to the *gather* sample rect; a body-only
-        // shader's reach sizes its spread surface instead (see `effect_extent`).
-        if c.reads_backdrop {
-            reach = reach.max(f64::from(c.reach));
-        }
+    if let Some(c) = node.gather_shader() {
+        // Only a backdrop-reading custom shader contributes to the *gather* sample rect; body-only
+        // spread shaders size their own surface instead (see `effect_extent`).
+        reach = reach.max(f64::from(c.reach));
     }
     reach
 }
@@ -506,12 +498,11 @@ fn effect_extent(node: &Node, modifier: Affine) -> Rect {
         let reach = f64::from(3.0 * radius_to_sigma(radius));
         ext = ext.union(base.inflate(reach, reach));
     }
-    // A body-only custom shader (spread) samples up to its declared reach past the silhouette.
-    if let Some(c) = &node.custom_shader {
-        if !c.reads_backdrop {
-            let reach = f64::from(c.reach);
-            ext = ext.union(base.inflate(reach, reach));
-        }
+    // Body-only spread shaders sample up to their declared reach past the silhouette; the chain shares
+    // one surface, so size it to the largest reach among them.
+    let spread_reach = f64::from(node.max_spread_reach());
+    if spread_reach > 0.0 {
+        ext = ext.union(base.inflate(spread_reach, spread_reach));
     }
     ext
 }
