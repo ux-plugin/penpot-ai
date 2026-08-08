@@ -95,5 +95,6 @@
 
 # Built by skia-rs-wasm/scripts/build-vello.sh, alongside the Skia wasm artifacts.
 /skia-rs-wasm/public/wasm-vello/
+/skia-rs-wasm/public/wasm-vello-gpu/
 
 /vello-gpu-renderer/target

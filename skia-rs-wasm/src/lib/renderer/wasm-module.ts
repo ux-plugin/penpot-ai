@@ -5,7 +5,7 @@
 
 import type { WasmModule } from './wasm-types'
 import initWasmModuleFactory from '../../../public/wasm/render-wasm.js'
-import { loadVelloModule } from './vello-module'
+import { loadVelloModule, VELLO_GPU_GLUE_PATH } from './vello-module'
 import { attachBackend, chooseBackendKind, type RenderBackend } from './backend'
 import { initCanvasContext, clearCanvas } from './api/canvas'
 import { storeImageViaTexture } from './api/fills'
@@ -72,8 +72,12 @@ export async function ensureWasmModule(wasmPathParam?: string): Promise<WasmModu
       // Exactly one wasm artifact is downloaded (D2); the seam decides which before anything is
       // fetched. Default is Skia — the Vello backend is opt-in until it reaches text/effects
       // parity (see `AUTO_SELECT_VELLO` in `backend.ts`).
-      if ((await chooseBackendKind()) === 'vello') {
-        const vello = (await loadVelloModule()) as unknown as WasmModule
+      // Both vello flavors go through the same loader/facade; `vello-gpu` (classic, WebGPU-compute)
+      // only points it at a different artifact.
+      const kind = await chooseBackendKind()
+      if (kind === 'vello' || kind === 'vello-gpu') {
+        const gluePath = kind === 'vello-gpu' ? VELLO_GPU_GLUE_PATH : undefined
+        const vello = (await loadVelloModule(gluePath)) as unknown as WasmModule
         wasmModuleInstance = vello
         wasmModuleError = null
         return vello

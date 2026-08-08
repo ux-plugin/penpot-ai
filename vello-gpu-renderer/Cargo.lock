@@ -1420,7 +1420,11 @@ dependencies = [
 name = "vello-gpu-renderer"
 version = "0.1.0"
 dependencies = [
+ "console_error_panic_hook",
+ "console_log",
  "glifo",
+ "js-sys",
+ "log",
  "parley",
  "png",
  "pollster",
@@ -1431,6 +1435,9 @@ dependencies = [
  "vello_common",
  "vello_example_scenes",
  "vello_hybrid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wgpu",
 ]
 

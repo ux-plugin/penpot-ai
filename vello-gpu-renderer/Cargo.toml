@@ -16,7 +16,9 @@ publish = false
 
 [lib]
 name = "vello_gpu_renderer"
-crate-type = ["rlib"]
+# cdylib for the wasm backend the host loads (its `#[no_mangle]` ABI + `create_focus_renderer`),
+# rlib so the native pixel tests + other crates can link it.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 render-core = { path = "../render-core" }
@@ -35,8 +37,26 @@ vello_example_scenes = { path = "../vello/sparse_strips/vello_example_scenes" }
 glifo = { path = "../vello/glifo", default-features = false }
 
 # Classic vello's `Renderer`/`render_to_texture` need wgpu directly. Pinned to the fork's wgpu, same
-# as render-vello.
+# as render-vello. No `webgl` feature: classic is WebGPU-only (that's the point — compute rasterization).
 wgpu = { version = "29.0.3" }
+
+log = "0.4.29"
+
+# The wasm backend shell: a `create_focus_renderer` over a host `<canvas>` + the browser console
+# wiring. wasm-only so the native rlib + tests stay lean. Mirrors render-vello's versions (this crate
+# is outside the vello workspace, so pinned by hand and kept in step with vello/Cargo.toml).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.114"
+wasm-bindgen-futures = "0.4.64"
+js-sys = "0.3.91"
+web-sys = { version = "0.3.91", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+] }
+console_error_panic_hook = "0.1.7"
+console_log = "1.0"
 
 [dev-dependencies]
 # Headless native render + readback proof (no browser): block on wgpu's async device/adapter/map.

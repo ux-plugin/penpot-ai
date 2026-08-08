@@ -74,7 +74,13 @@ export function backendOf(module: WasmModule | EmscriptenLikeModule): RenderBack
   return backend
 }
 
-export type BackendKind = RenderBackend['kind']
+/**
+ * The load-time backend choice. `vello-gpu` is the classic (WebGPU-compute) vello artifact; it shares
+ * the whole `RenderBackend` seam with `vello` (same `create_focus_renderer` handoff), differing only
+ * in which wasm is fetched — so the backend *object* still reports kind `'vello'`, and this wider type
+ * exists purely to route the URL.
+ */
+export type BackendKind = RenderBackend['kind'] | 'vello-gpu'
 
 /**
  * The one-line flip. While it is `false`, WebGPU-capable users still land on Skia by default;
@@ -84,11 +90,11 @@ export type BackendKind = RenderBackend['kind']
  */
 const AUTO_SELECT_VELLO = false
 
-/** `?renderer=vello` / `?renderer=skia`, or null for neither (and under SSR). */
+/** `?renderer=vello` / `?renderer=vello-gpu` / `?renderer=skia`, or null for neither (and under SSR). */
 function rendererOverride(): BackendKind | null {
   if (typeof window === 'undefined') return null
   const value = new URLSearchParams(window.location.search).get('renderer')
-  return value === 'vello' || value === 'skia' ? value : null
+  return value === 'vello' || value === 'skia' || value === 'vello-gpu' ? value : null
 }
 
 /**
@@ -117,6 +123,13 @@ export async function chooseBackendKind(): Promise<BackendKind> {
   if (override === 'vello') {
     if (await probeWebGPU()) return 'vello'
     console.warn('[renderer] ?renderer=vello requested but WebGPU is unavailable; using Skia.')
+    return 'skia'
+  }
+  // Classic vello is WebGPU-only (compute rasterization) — there is no WebGL fallback, so an absent
+  // adapter drops to Skia rather than failing inside wgpu bring-up.
+  if (override === 'vello-gpu') {
+    if (await probeWebGPU()) return 'vello-gpu'
+    console.warn('[renderer] ?renderer=vello-gpu requested but WebGPU is unavailable; using Skia.')
     return 'skia'
   }
   if (AUTO_SELECT_VELLO && (await probeWebGPU())) return 'vello'

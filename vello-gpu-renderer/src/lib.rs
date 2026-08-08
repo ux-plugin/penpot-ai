@@ -13,6 +13,18 @@
 //! pieces still deferred on classic are blurred-rect drop shadows and filter layers (effects route
 //! through our own `run_graph` instead) and external-texture images.
 
+// The wasm backend shell (surface + `create_focus_renderer` over a host canvas). wasm-only; the
+// native rlib + tests never build it.
+#[cfg(target_arch = "wasm32")]
+mod renderer;
+#[cfg(target_arch = "wasm32")]
+pub use renderer::{create_focus_renderer, ClassicFocusRenderer};
+
+// Re-export the shared C-style ABI + host scene-state so this cdylib exports the identical host
+// interface the hybrid module does — the same wholesale-carve trick proven in render-vello: the 82
+// `#[no_mangle]` exports surface from the cdylib even though they live in the dependency rlib.
+pub use render_vello_core::abi;
+
 use glifo::{Glyph, GlyphRun, GlyphRunBackend, GlyphRunBuilder};
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions};
 use std::ops::RangeInclusive;

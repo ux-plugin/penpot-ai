@@ -27,6 +27,13 @@ import { storeImageRgbaForVello } from './api/fills'
 /** Default location of the wasm-bindgen bundle, copied here by `scripts/build-vello.sh`. */
 const VELLO_GLUE_PATH = '/wasm-vello/render-vello.js'
 
+/**
+ * The classic (WebGPU-compute) vello artifact, published by `scripts/build-vello-gpu.sh`. Selected by
+ * `?renderer=vello-gpu`. It exposes the identical `create_focus_renderer` + `frame_requested` + ABI,
+ * so `loadVelloModule` brings it up through the very same path — only the URL differs.
+ */
+export const VELLO_GPU_GLUE_PATH = '/wasm-vello-gpu/render-vello-gpu.js'
+
 /** The wasm-bindgen surface we reach past the C ABI, for the parts a C ABI cannot express. */
 interface VelloBindgenExports extends RawWasmExports {
   create_focus_renderer(canvas: HTMLCanvasElement): Promise<VelloFocusRenderer>
