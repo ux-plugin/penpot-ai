@@ -180,9 +180,12 @@ impl VelloTileStore {
                 });
                 crate::prof::add_build(crate::prof::now() - _tb);
 
+                // Wrap the frame's concrete renderer + scene source as the hybrid `RasterBackend`; the
+                // sink itself is generic over the backend seam (build + rasterize) and holds neither.
+                let mut backend =
+                    crate::hybrid_backend::HybridBackend { renderer, scene_source };
                 sink.execute(
-                    &schedule, &dirty, renderer, device, queue, surface, scene_source, root, width,
-                    height,
+                    &schedule, &dirty, &mut backend, device, queue, surface, root, width, height,
                 );
                 return;
             }
