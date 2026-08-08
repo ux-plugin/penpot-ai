@@ -377,4 +377,138 @@ mod tests {
         let bg = px(4, 4);
         assert!(bg[0] > 240 && bg[1] > 240 && bg[2] > 240, "corner should be white, got {bg:?}");
     }
+
+    /// Copy a texture into a mappable buffer and return its bytes (row-major RGBA8). `w·4` must be a
+    /// multiple of 256 (the tests use w=64 → 256).
+    fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, w: u32, h: u32) -> Vec<u8> {
+        let bpr = w * 4;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: u64::from(bpr * h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(h) },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        slice.get_mapped_range().to_vec()
+    }
+
+    // Phase 1b: the shared device-generic effect executor (render-vello-core) runs on classic vello's
+    // OWN wgpu device — proving the classic sink reuses our blur/glass/blit unchanged. Rasterize a
+    // sharp square, blur it through run_graph, and confirm the edge bled (soft) rather than a hard step.
+    #[test]
+    fn classic_device_runs_the_shared_effect_executor() {
+        use render_core::effect_graph::background_blur_graph;
+        use render_vello_core::blend::{Blit, Compositor};
+        use render_vello_core::glass::GlassPipeline;
+        use render_vello_core::graph::{lower_graph, run_graph};
+
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter — skipping executor proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("vello-gpu executor"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        let (w, h) = (64u32, 64u32);
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut ctx = ClassicCtx::new(w as u16, h as u16);
+        ctx.set_paint(vello_common::peniko::Brush::Solid(
+            vello_common::color::palette::css::REBECCA_PURPLE,
+        ));
+        ctx.fill_rect(&Rect::new(16.0, 16.0, 48.0, 48.0));
+
+        // The rasterized square: STORAGE_BINDING (vello writes it) + TEXTURE_BINDING (the blur samples it).
+        let src = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rasterized"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let src_view = src.create_view(&wgpu::TextureViewDescriptor::default());
+        ClassicRenderer::new(&device).rasterize(
+            &ctx,
+            &device,
+            &queue,
+            &src_view,
+            vello_common::color::palette::css::WHITE,
+        );
+
+        // Blur it with the SHARED executor (our own pipelines) on classic's device.
+        let compositor = Compositor::new(&device, format);
+        let glass = GlassPipeline::new(&device, format);
+        let passes = lower_graph(&background_blur_graph(6.0), None);
+        let (_blurred, blurred_view) =
+            run_graph(&compositor, &glass, &device, &queue, &[&src_view], &passes, w, h, format)
+                .expect("blur produced a texture");
+
+        // Blit the blurred result into a COPY_SRC target to read it back.
+        let dst = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("readback-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let dst_view = dst.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        compositor.blit(
+            &device,
+            &mut enc,
+            &dst_view,
+            (w as f32, h as f32),
+            &Blit {
+                src: &blurred_view,
+                dst: (0.0, 0.0, w as f32, h as f32),
+                src_rect: (0.0, 0.0, w as f32, h as f32),
+                src_size: (w as f32, h as f32),
+                alpha: 1.0,
+            },
+        );
+        queue.submit([enc.finish()]);
+
+        let data = read_back(&device, &queue, &dst, w, h);
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            let o = ((y * w + x) * 4) as usize;
+            [data[o], data[o + 1], data[o + 2], data[o + 3]]
+        };
+        // Centre stays strongly purple (square is 32px wide; 3σ=18 < 16 half-width → centre untouched).
+        let c = px(32, 32);
+        assert!(c[2] > 110 && c[1] < 120, "blurred centre should stay purple, got {c:?}");
+        // 4px OUTSIDE the sharp left edge (x=16): a hard render is pure white here; the blur bleeds
+        // purple, pulling green down and leaving blue above green. That delta is the proof it ran.
+        let bleed = px(12, 32);
+        assert!(bleed[1] < 245 && bleed[2] > bleed[1], "edge should show blur bleed, got {bleed:?}");
+    }
 }

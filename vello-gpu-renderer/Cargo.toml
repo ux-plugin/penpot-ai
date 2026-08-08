@@ -20,6 +20,9 @@ crate-type = ["rlib"]
 
 [dependencies]
 render-core = { path = "../render-core" }
+# The shared device-generic effect executor (compositor, glass, blur, custom pass-graph). Classic
+# vello reuses it unchanged — its pipelines run on any wgpu device, including classic's.
+render-vello-core = { path = "../render-vello-core" }
 
 # The classic, compute-based vello renderer (WebGPU-only) — the whole point of this backend.
 vello = { path = "../vello/vello" }
