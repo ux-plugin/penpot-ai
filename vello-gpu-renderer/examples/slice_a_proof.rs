@@ -71,7 +71,14 @@ fn main() {
 
     let mut renderer = ClassicRenderer::new(&device);
     let mut ctx = renderer.new_scene(w as u16, h as u16);
-    draw_scene(&mut ctx, &ClassicEnv, &scene, render_core::kurbo::Affine::IDENTITY);
+    draw_scene(
+            &mut ctx,
+            &mut (),
+            &ClassicEnv,
+            &mut render_vello_core::text::TextState::new(),
+            &scene,
+            render_core::kurbo::Affine::IDENTITY,
+        );
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("proof target"),

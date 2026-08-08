@@ -38,20 +38,30 @@ pub trait DrawEnv {
 }
 
 /// Draw every root subtree in z-order under `view` (the page→device transform).
+///
+/// `text` carries the Parley engine so text nodes lay out on the way past; a document with no text
+/// never touches it. This is the full neutral walk — isolation groups (opacity/blend), solid/gradient/
+/// image/diamond fills, strokes, text blocks, and child clips — shared by both Vello backends. Still
+/// outside it (drawn by `scene.rs`'s richer hybrid walk, not yet lifted): shadows, layer blur, filter
+/// graphs, and the modifier (gesture) transforms.
 pub fn draw_scene<C: RenderingContext, E: DrawEnv>(
     ctx: &mut C,
+    resources: &mut C::Resources,
     env: &E,
+    text: &mut crate::text::TextState,
     scene: &Scene,
     view: Affine,
 ) {
     for &root in scene.roots() {
-        draw_node(ctx, env, scene, root, view);
+        draw_node(ctx, resources, env, text, scene, root, view);
     }
 }
 
 fn draw_node<C: RenderingContext, E: DrawEnv>(
     ctx: &mut C,
+    resources: &mut C::Resources,
     env: &E,
+    text: &mut crate::text::TextState,
     scene: &Scene,
     id: u128,
     view: Affine,
@@ -60,6 +70,7 @@ fn draw_node<C: RenderingContext, E: DrawEnv>(
     if node.hidden || node.kind == ShapeKind::Unsupported {
         return;
     }
+    let matrix = view * node.effective_transform();
     // A container with non-trivial opacity/blend isolates as a layer, so overlapping children compose
     // once and the group's opacity/blend applies to the whole subtree.
     let isolates = node.kind.is_container() && (node.opacity < 1.0 || node.blend != DEFAULT_BLEND);
@@ -68,13 +79,35 @@ fn draw_node<C: RenderingContext, E: DrawEnv>(
         let alpha = (node.opacity < 1.0).then_some(node.opacity);
         ctx.push_layer(None, blend, alpha, None, None);
     }
-    // A group has no body of its own; `paint_body` guards this too, but skipping it keeps the walk
-    // honest about what carries geometry.
-    if node.kind != ShapeKind::Group {
-        paint_body(ctx, env, node, view * node.effective_transform());
+    // The node's own body: text lays out through the shared text path; a group has no body; every
+    // other kind fills/strokes its geometry.
+    match node.kind {
+        ShapeKind::Text => {
+            crate::text::draw_text_block(
+                ctx,
+                resources,
+                &mut text.font_cx,
+                &mut text.layout_cx,
+                env,
+                node,
+                matrix,
+            );
+        }
+        ShapeKind::Group => {}
+        _ => paint_body(ctx, env, node, matrix),
+    }
+    // A frame with `clip` set clips its children (not its own body — a frame's stroke straddles its
+    // edge). The clip path is captured under this node's transform, matching render-wasm.
+    let clip = (node.clip && !node.children.is_empty()).then(|| outline(node));
+    if let Some(path) = &clip {
+        ctx.set_transform(matrix);
+        ctx.push_layer(Some(path), None, None, None, None);
     }
     for &child in &node.children {
-        draw_node(ctx, env, scene, child, view);
+        draw_node(ctx, resources, env, text, scene, child, view);
+    }
+    if clip.is_some() {
+        ctx.pop_layer();
     }
     if isolates {
         ctx.pop_layer();

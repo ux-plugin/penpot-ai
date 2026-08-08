@@ -22,6 +22,29 @@ use render_core::model as m;
 use render_core::text::{self, TextBrush};
 use vello_example_scenes::RenderingContext;
 
+/// The Parley state text layout needs, kept across frames on the backend (a `FontContext` is
+/// expensive to build): the font collection each backend fills from its own uploaded faces, and the
+/// reusable layout context. The neutral walk ([`crate::draw::draw_scene`]) threads `&mut TextState`
+/// so it can lay a text node out on the way past. Font *registration* is the backend's job — it owns
+/// `font_cx.collection` and registers faces under the names its [`DrawEnv::font_alias`] returns.
+pub struct TextState {
+    pub font_cx: FontContext,
+    pub layout_cx: LayoutContext<TextBrush>,
+}
+
+impl Default for TextState {
+    fn default() -> Self {
+        Self { font_cx: FontContext::new(), layout_cx: LayoutContext::new() }
+    }
+}
+
+impl TextState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Draw a text node's block: lay out its paragraphs, align them vertically in the box, and draw each
 /// laid-out paragraph at the node's origin under `matrix`. The focused-editor path (selection, caret,
 /// the editor's own live layout) is *not* here — that overlay stays in the hybrid backend.

@@ -684,7 +684,14 @@ mod tests {
         let (w, h) = (64u32, 64u32);
         let mut renderer = ClassicRenderer::new(&device);
         let mut ctx = renderer.new_scene(w as u16, h as u16);
-        draw_scene(&mut ctx, &ClassicEnv, &scene, render_core::kurbo::Affine::IDENTITY);
+        draw_scene(
+            &mut ctx,
+            &mut (),
+            &ClassicEnv,
+            &mut render_vello_core::text::TextState::new(),
+            &scene,
+            render_core::kurbo::Affine::IDENTITY,
+        );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("doc target"),
@@ -763,7 +770,14 @@ mod tests {
         let (w, h) = (64u32, 64u32);
         let mut renderer = ClassicRenderer::new(&device);
         let mut ctx = renderer.new_scene(w as u16, h as u16);
-        draw_scene(&mut ctx, &ClassicEnv, &scene, render_core::kurbo::Affine::IDENTITY);
+        draw_scene(
+            &mut ctx,
+            &mut (),
+            &ClassicEnv,
+            &mut render_vello_core::text::TextState::new(),
+            &scene,
+            render_core::kurbo::Affine::IDENTITY,
+        );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gradient target"),
@@ -1014,6 +1028,146 @@ mod tests {
         assert!(blue, "text-block ink should carry the span's blue fill");
 
         let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../proofs/slice-b2-classic-text-block.png");
+        if let Ok(file) = std::fs::File::create(out) {
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            if let Ok(mut wr) = enc.write_header() {
+                let _ = wr.write_image_data(&data);
+            }
+        }
+    }
+
+    // Neutral-walk completeness: classic renders a FULL document in one draw_scene call — a clipping
+    // frame that cuts an overflowing rect, plus a text label — exercising the child-clip layer and the
+    // Text dispatch the walk gained. The overflowing rect must be clipped to the frame; the label's
+    // glyphs must appear outside it.
+    #[test]
+    fn classic_renders_a_clipped_document_with_text() {
+        use parley::fontique::FontInfoOverride;
+        use render_core::kurbo::{Affine, Rect as PageRect};
+        use render_core::model::{Brush, Node, Paint, Scene, ShapeKind, ROOT_ID};
+        use render_core::peniko::Color;
+        use render_core::text::{
+            FontRef, TextAlign, TextBlock, TextDecoration, TextDirection, TextGrow, TextParagraph,
+            TextSpan, TextTransform, VerticalAlign,
+        };
+        use render_vello_core::draw::draw_scene;
+        use render_vello_core::text::TextState;
+
+        let fpath = concat!(env!("CARGO_MANIFEST_DIR"), "/../vello/examples/assets/roboto/Roboto-Regular.ttf");
+        let Ok(bytes) = std::fs::read(fpath) else {
+            eprintln!("no Roboto — skipping clipped-document proof");
+            return;
+        };
+        let mut text = TextState::new();
+        text.font_cx.collection.register_fonts(
+            bytes.into(),
+            Some(FontInfoOverride { family_name: Some(DEFAULT_FONT_ALIAS), ..Default::default() }),
+        );
+
+        let mut scene = Scene::new();
+        let mut root = Node::new(ROOT_ID, ShapeKind::Group);
+        root.children = vec![10, 20];
+        scene.insert(root);
+
+        // A clipping frame (light grey) at 20..120, clip on, containing a blue rect that overflows to
+        // 200 — the clip must cut it at the frame edge.
+        let mut frame = Node::new(10, ShapeKind::Frame);
+        frame.bounds = PageRect::new(20.0, 20.0, 120.0, 120.0);
+        frame.clip = true;
+        frame.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(225, 225, 225, 255)))];
+        frame.children = vec![11];
+        scene.insert(frame);
+        let mut inner = Node::new(11, ShapeKind::Rect);
+        inner.bounds = PageRect::new(60.0, 60.0, 200.0, 200.0);
+        inner.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(30, 60, 210, 255)))];
+        scene.insert(inner);
+
+        // A text label to the right of the frame.
+        let span = TextSpan {
+            text: "Clip".to_string(),
+            font: FontRef { id: 1, weight: 400, italic: false },
+            size: 34.0,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            fills: vec![Paint::plain(Brush::Solid(Color::from_rgba8(200, 40, 40, 255)))],
+            decoration: TextDecoration::None,
+            transform: TextTransform::None,
+        };
+        let mut label = Node::new(20, ShapeKind::Text);
+        label.bounds = PageRect::new(150.0, 40.0, 250.0, 90.0);
+        label.text = Some(TextBlock {
+            paragraphs: vec![TextParagraph {
+                align: TextAlign::Left,
+                direction: TextDirection::Ltr,
+                line_height: 1.2,
+                letter_spacing: 0.0,
+                spans: vec![span],
+            }],
+            grow: TextGrow::AutoWidth,
+            vertical_align: VerticalAlign::Top,
+        });
+        scene.insert(label);
+
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter — skipping clipped-document proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("vello-gpu clip-doc"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        let (w, h) = (256u32, 160u32);
+        let mut renderer = ClassicRenderer::new(&device);
+        let mut ctx = renderer.new_scene(w as u16, h as u16);
+        let mut resources = ();
+        draw_scene(&mut ctx, &mut resources, &ClassicEnv, &mut text, &scene, Affine::IDENTITY);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("clip-doc target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+
+        let data = read_back(&device, &queue, &texture, w, h);
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            let o = ((y * w + x) * 4) as usize;
+            [data[o], data[o + 1], data[o + 2], data[o + 3]]
+        };
+        // Inside the frame, over the rect → blue.
+        let p_in = px(100, 100);
+        assert!(p_in[2] > 150 && p_in[0] < 90, "inside frame should be blue, got {p_in:?}");
+        // The rect geometrically covers (150,150) but it is OUTSIDE the frame → the clip removed it → white.
+        let p_clip = px(150, 150);
+        assert!(
+            p_clip[0] > 230 && p_clip[1] > 230 && p_clip[2] > 230,
+            "overflow past the frame must be clipped to white, got {p_clip:?}"
+        );
+        // The label band carries red glyph ink.
+        let red_ink = (36..90).any(|y| {
+            (150..250).any(|x| {
+                let p = px(x, y);
+                p[0] > 120 && p[1] < 90 && p[2] < 90
+            })
+        });
+        assert!(red_ink, "expected red text ink in the label band");
+
+        let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../proofs/slice-c-classic-clip-text-document.png");
         if let Ok(file) = std::fs::File::create(out) {
             let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
             enc.set_color(png::ColorType::Rgba);
