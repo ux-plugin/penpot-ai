@@ -432,16 +432,12 @@ fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
             frostSum = frostSum + textureSample(blurred, samp, uvpix + off).rgb;
             totalW = totalW + 1.0;
         }
+        // Frost only *scatters* (softens) the refracted image; the milky tint + desaturation that
+        // used to follow were removed at the designer's request, so glass stays clear, not grayish.
         blurredColor = frostSum / totalW;
-        let frostTint = vec3<f32>(0.85, 0.88, 0.92);
-        blurredColor = mix(blurredColor, frostTint, frost * 0.35);
-        let luma = dot(blurredColor, vec3<f32>(0.299, 0.587, 0.114));
-        blurredColor = mix(blurredColor, vec3<f32>(luma), frost * 0.4);
     } else {
         blurredColor = textureSample(blurred, samp, uvpix).rgb;
     }
-
-    blurredColor = blurredColor * vec3<f32>(0.92, 0.94, 0.98);
 
     let specLuma = dot(blurredColor, vec3<f32>(0.299, 0.587, 0.114));
     var saturated = mix(vec3<f32>(specLuma), blurredColor, 1.0 + specularSaturation);
