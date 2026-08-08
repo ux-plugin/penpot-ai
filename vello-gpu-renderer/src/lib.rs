@@ -232,25 +232,31 @@ impl ClassicRenderer {
     pub fn new(device: &wgpu::Device) -> Self {
         Self { inner: Renderer::new(device, RendererOptions::default()).expect("vello renderer") }
     }
+}
 
-    /// Rasterize `ctx`'s scene into `view` (an `Rgba8Unorm` + `STORAGE_BINDING` texture) over
-    /// `base_color`.
-    pub fn rasterize(
+impl render_vello_core::rasterize::SceneRasterizer for ClassicRenderer {
+    type Scene = ClassicCtx;
+
+    fn new_scene(&self, width: u16, height: u16) -> ClassicCtx {
+        ClassicCtx::new(width, height)
+    }
+
+    /// Rasterize `scene` into `target` (an `Rgba8Unorm` + `STORAGE_BINDING` texture) over
+    /// `base_color`. Classic vello's `render_to_texture` owns its encoder/submit and clears the
+    /// target first — there is no load variant (accumulation is the sink's job, above this seam).
+    fn rasterize(
         &mut self,
-        ctx: &ClassicCtx,
+        scene: &ClassicCtx,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        view: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
         base_color: vello_common::peniko::Color,
     ) {
-        let params = RenderParams {
-            base_color,
-            width: u32::from(ctx.width),
-            height: u32::from(ctx.height),
-            antialiasing_method: AaConfig::Area,
-        };
+        let params = RenderParams { base_color, width, height, antialiasing_method: AaConfig::Area };
         self.inner
-            .render_to_texture(device, queue, ctx.scene(), view, &params)
+            .render_to_texture(device, queue, scene.scene(), target, &params)
             .expect("render_to_texture");
     }
 }
@@ -258,6 +264,7 @@ impl ClassicRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render_vello_core::rasterize::SceneRasterizer;
 
     // The whole point of the spike: the impl exists and a scene can be driven through the trait
     // exactly as `scene.rs` would, with no GPU. If this compiles and runs, R1's core is proven.
@@ -331,7 +338,7 @@ mod tests {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut renderer = ClassicRenderer::new(&device);
-        renderer.rasterize(&ctx, &device, &queue, &view, vello_common::color::palette::css::WHITE);
+        renderer.rasterize(&ctx, &device, &queue, &view, w, h, vello_common::color::palette::css::WHITE);
 
         // Copy the texture into a mappable buffer and read it back.
         let bytes_per_row = w * 4;
@@ -459,6 +466,8 @@ mod tests {
             &device,
             &queue,
             &src_view,
+            w,
+            h,
             vello_common::color::palette::css::WHITE,
         );
 

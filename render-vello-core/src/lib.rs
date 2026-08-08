@@ -15,3 +15,4 @@ pub mod blend;
 pub mod glass;
 pub mod graph;
 pub mod prof;
+pub mod rasterize;
