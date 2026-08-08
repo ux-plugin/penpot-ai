@@ -26,6 +26,7 @@ pub mod atlas;
 pub mod blend;
 pub mod blur;
 pub mod effect_graph;
+pub mod geometry;
 pub mod gradient;
 pub mod host;
 pub mod model;

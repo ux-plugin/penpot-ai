@@ -32,10 +32,28 @@ pub struct ClassicCtx {
     transform: Affine,
     paint_transform: Affine,
     fill_rule: Fill,
-    /// Solid paint only, for the spike. A gradient/image paint records `None` and draws nothing —
-    /// the full `PaintType` → `peniko` brush mapping is Phase-2 work.
-    solid: Option<vello_common::peniko::Color>,
+    /// The current paint. Classic vello is peniko-native, so solid and gradient map straight onto its
+    /// `Scene::fill` brush. Image/diamond paints are resolved away to `None` upstream (`ClassicEnv`)
+    /// until this backend has its own image atlas, so they never reach here — the [`ClassicPaint`]
+    /// enum has no image arm yet.
+    paint: ClassicPaint,
     stroke: Stroke,
+}
+
+/// The paint kinds classic vello can draw today. Both are peniko-native (`Scene::fill` takes them
+/// directly); the image atlas is Phase 2.
+#[derive(Clone)]
+enum ClassicPaint {
+    Solid(vello_common::peniko::Color),
+    Gradient(vello_common::peniko::Gradient),
+}
+
+impl Default for ClassicPaint {
+    /// Opaque black, so a shape whose paint this backend cannot yet draw still shows rather than
+    /// vanishing — the same visible-placeholder stance the solid-only spike took.
+    fn default() -> Self {
+        Self::Solid(vello_common::color::palette::css::BLACK)
+    }
 }
 
 impl ClassicCtx {
@@ -49,7 +67,7 @@ impl ClassicCtx {
             transform: Affine::IDENTITY,
             paint_transform: Affine::IDENTITY,
             fill_rule: Fill::NonZero,
-            solid: None,
+            paint: ClassicPaint::default(),
             stroke: Stroke::default(),
         }
     }
@@ -58,12 +76,6 @@ impl ClassicCtx {
     #[must_use]
     pub fn scene(&self) -> &vello::Scene {
         &self.scene
-    }
-
-    /// The current solid brush, defaulting to opaque black so a missing/unsupported paint still draws
-    /// something visible in the spike rather than nothing.
-    fn brush(&self) -> vello_common::peniko::Color {
-        self.solid.unwrap_or(vello_common::color::palette::css::BLACK)
     }
 }
 
@@ -126,10 +138,14 @@ impl RenderingContext for ClassicCtx {
         self.fill_rule = fill_rule;
     }
     fn set_paint(&mut self, paint: impl Into<PaintType>) {
-        // PaintType is `peniko::Brush<Image, Gradient>`; the spike keeps only the solid case.
-        self.solid = match paint.into() {
-            vello_common::peniko::Brush::Solid(color) => Some(color),
-            _ => None,
+        // PaintType is `peniko::Brush<Image, Gradient>`. Solid and gradient are peniko-native and map
+        // straight through; an image paint would need this backend's own atlas (Phase 2), and
+        // `ClassicEnv` resolves images to nothing upstream so this arm is currently unreachable — it
+        // falls back to the default black placeholder rather than silently keeping a stale paint.
+        self.paint = match paint.into() {
+            vello_common::peniko::Brush::Solid(color) => ClassicPaint::Solid(color),
+            vello_common::peniko::Brush::Gradient(g) => ClassicPaint::Gradient(g),
+            vello_common::peniko::Brush::Image(_) => ClassicPaint::default(),
         };
     }
     fn set_stroke(&mut self, stroke: Stroke) {
@@ -143,18 +159,28 @@ impl RenderingContext for ClassicCtx {
     fn push_filter_layer(&mut self, _filter: Filter) {}
 
     fn fill_path(&mut self, path: &BezPath) {
-        let brush = self.brush();
         let pt = (self.paint_transform != Affine::IDENTITY).then_some(self.paint_transform);
-        self.scene.fill(self.fill_rule, self.transform, brush, pt, path);
+        // Disjoint field borrows: `self.paint` read for the brush, `self.scene` mutated by `fill`.
+        match &self.paint {
+            ClassicPaint::Solid(c) => self.scene.fill(self.fill_rule, self.transform, *c, pt, path),
+            ClassicPaint::Gradient(g) => self.scene.fill(self.fill_rule, self.transform, g, pt, path),
+        }
     }
     fn stroke_path(&mut self, path: &BezPath) {
-        let brush = self.brush();
         let pt = (self.paint_transform != Affine::IDENTITY).then_some(self.paint_transform);
-        self.scene.stroke(&self.stroke, self.transform, brush, pt, path);
+        match &self.paint {
+            ClassicPaint::Solid(c) => self.scene.stroke(&self.stroke, self.transform, *c, pt, path),
+            ClassicPaint::Gradient(g) => self.scene.stroke(&self.stroke, self.transform, g, pt, path),
+        }
     }
     fn fill_rect(&mut self, rect: &Rect) {
-        let brush = self.brush();
-        self.scene.fill(self.fill_rule, self.transform, brush, None, rect);
+        // Honour the paint transform here too: a gradient-filled square rect takes this fast path (no
+        // corners → no `fill_path`), and the unit-box→bounds gradient mapping lives in that transform.
+        let pt = (self.paint_transform != Affine::IDENTITY).then_some(self.paint_transform);
+        match &self.paint {
+            ClassicPaint::Solid(c) => self.scene.fill(self.fill_rule, self.transform, *c, pt, rect),
+            ClassicPaint::Gradient(g) => self.scene.fill(self.fill_rule, self.transform, g, pt, rect),
+        }
     }
 
     fn fill_blurred_rounded_rect(&mut self, _rect: &Rect, _radius: f32, _std_dev: f32) {
@@ -258,6 +284,19 @@ impl render_vello_core::rasterize::SceneRasterizer for ClassicRenderer {
         self.inner
             .render_to_texture(device, queue, scene.scene(), target, &params)
             .expect("render_to_texture");
+    }
+}
+
+/// The classic backend's [`DrawEnv`](render_vello_core::draw::DrawEnv). Image and baked-diamond
+/// references resolve to nothing until this backend has an image atlas (Phase 2), so those paints
+/// are skipped and every other kind — solid, gradient — draws now. Solid fields make it a
+/// zero-cost stand-in the moment atlas staging arrives.
+#[derive(Default)]
+pub struct ClassicEnv;
+
+impl render_vello_core::draw::DrawEnv for ClassicEnv {
+    fn resolve_image(&self, _id: u128) -> Option<vello_common::paint::ImageId> {
+        None
     }
 }
 
@@ -572,7 +611,7 @@ mod tests {
         let (w, h) = (64u32, 64u32);
         let mut renderer = ClassicRenderer::new(&device);
         let mut ctx = renderer.new_scene(w as u16, h as u16);
-        draw_scene(&mut ctx, &scene, render_core::kurbo::Affine::IDENTITY);
+        draw_scene(&mut ctx, &ClassicEnv, &scene, render_core::kurbo::Affine::IDENTITY);
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("doc target"),
@@ -602,5 +641,78 @@ mod tests {
         // Background stays white.
         let bg = px(2, 2);
         assert!(bg[0] > 240 && bg[1] > 240 && bg[2] > 240, "background should be white, got {bg:?}");
+    }
+
+    // The new capability this slice unlocks: a NON-solid paint kind on classic. A linear gradient
+    // fill goes through the shared `render_vello_core::draw::set_paint` — the unit-box→bounds mapping
+    // and peniko gradient it builds — proving classic gained gradient/image/diamond from the port,
+    // not just solids. The fill visibly varies across the box (red left, blue right); a flat or
+    // collapsed gradient (the top-left-pixel bug the mapping guards against) would fail both ends.
+    #[test]
+    fn classic_renders_a_gradient_through_shared_draw() {
+        use render_core::kurbo::Rect as PageRect;
+        use render_core::model::{Brush, Node, Paint, Scene, ShapeKind, ROOT_ID};
+        use render_core::peniko::{Color, ColorStop, Gradient};
+        use render_vello_core::draw::draw_scene;
+
+        // Unit-box linear gradient, red→blue left to right — exactly what a Penpot gradient fill
+        // carries; `set_paint` maps the unit box onto the shape's bounds.
+        let stops = [
+            ColorStop { offset: 0.0, color: Color::from_rgba8(230, 30, 30, 255).into() },
+            ColorStop { offset: 1.0, color: Color::from_rgba8(30, 40, 230, 255).into() },
+        ];
+        let grad = Gradient::new_linear((0.0, 0.0), (1.0, 0.0)).with_stops(&stops[..]);
+
+        let mut scene = Scene::new();
+        let mut root = Node::new(ROOT_ID, ShapeKind::Group);
+        root.children = vec![1];
+        scene.insert(root);
+        let mut n = Node::new(1, ShapeKind::Rect);
+        n.bounds = PageRect::new(8.0, 8.0, 56.0, 56.0);
+        n.fills = vec![Paint::plain(Brush::Gradient(grad))];
+        scene.insert(n);
+
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter — skipping gradient proof");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("vello-gpu gradient"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("device");
+
+        let (w, h) = (64u32, 64u32);
+        let mut renderer = ClassicRenderer::new(&device);
+        let mut ctx = renderer.new_scene(w as u16, h as u16);
+        draw_scene(&mut ctx, &ClassicEnv, &scene, render_core::kurbo::Affine::IDENTITY);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gradient target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+
+        let data = read_back(&device, &queue, &texture, w, h);
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            let o = ((y * w + x) * 4) as usize;
+            [data[o], data[o + 1], data[o + 2], data[o + 3]]
+        };
+        let left = px(12, 32);
+        let right = px(52, 32);
+        assert!(left[0] > left[2] + 60, "gradient left end should be red-dominant, got {left:?}");
+        assert!(right[2] > right[0] + 60, "gradient right end should be blue-dominant, got {right:?}");
     }
 }

@@ -41,3 +41,5 @@ wgpu = { version = "29.0.3" }
 [dev-dependencies]
 # Headless native render + readback proof (no browser): block on wgpu's async device/adapter/map.
 pollster = "0.4"
+# Encode the readback buffer to a PNG proof (already in the tree via the vello graphics stack).
+png = "0.18"

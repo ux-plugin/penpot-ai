@@ -265,6 +265,11 @@ fn srgb_u8(stop: ColorStop) -> [u8; 4] {
     ]
 }
 
+/// The edge length of the square tile a diamond gradient is baked into. It has no peniko paint
+/// kind, so it is rasterised to this `DIAMOND_TILE × DIAMOND_TILE` field and drawn as an image;
+/// both the bake ([`bake_diamond_rgba`]) and the draw path key off this one size.
+pub const DIAMOND_TILE: u32 = 512;
+
 /// Bake the diamond field into a `size × size` tile of straight RGBA, row-major, top-left origin.
 ///
 /// The tile is unit-box space, so a caller draws it with `unit_box_to(bounds)` exactly like a

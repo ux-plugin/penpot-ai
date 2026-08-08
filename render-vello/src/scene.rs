@@ -29,7 +29,7 @@ use render_core::blur::radius_to_sigma;
 use render_core::kurbo::{Affine, BezPath, Rect};
 use render_core::model as m;
 
-use crate::geometry::{cap_shadow_blur, cap_sigma_to_device, outline, spread_outline};
+use render_core::geometry::{cap_shadow_blur, cap_sigma_to_device, outline, spread_outline};
 use render_core::model::Brush;
 use render_core::peniko::Color;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
@@ -1042,171 +1042,31 @@ fn draw_glyph_run<T: RenderingContext>(
 }
 
 /// Paint a node's own geometry, ignoring its children.
+///
+/// The fill/stroke translation — every paint kind, the rect/path/outline dispatch, the paint-space
+/// reset — is the backend-neutral [`render_vello_core::draw::paint_body`], shared verbatim with the
+/// classic backend; image/diamond references resolve through the ABI atlas via [`AbiEnv`].
 fn paint_self<T: RenderingContext>(ctx: &mut T, node: &m::Node, matrix: Affine) {
-    // A group has no geometry of its own; it exists to carry the layer.
-    if node.kind == m::ShapeKind::Group {
-        return;
-    }
-    if node.fills.is_empty() && node.strokes.is_empty() {
-        return;
-    }
-
-    ctx.set_transform(matrix);
-
-    // The first fill this backend can paint wins — not simply the first fill, or a shape whose
-    // top fill is an image would render as nothing while a solid underneath it went unused.
-    let painted = node.fills.iter().any(|f| set_paint(ctx, f, node.bounds));
-    if painted {
-        match node.kind {
-            // The one case worth a fast path: a square-cornered rect needs no path at all.
-            m::ShapeKind::Rect | m::ShapeKind::Frame if node.corners.is_none() => {
-                ctx.fill_rect(&node.bounds)
-            }
-            m::ShapeKind::Path => {
-                if let Some(path) = &node.path {
-                    ctx.fill_path(path);
-                }
-            }
-            _ => ctx.fill_path(&outline(node)),
-        }
-    }
-
-    // Strokes go over the fills, back to front. They are drawn on this node's own outline —
-    // a frame's stroke straddles its edge and is *not* clipped by the frame's own clip, which
-    // is why clip and opacity take separate layers in `draw_node`.
-    if node.strokes.is_empty() {
-        ctx.set_paint_transform(Affine::IDENTITY);
-        return;
-    }
-    let path = outline(node);
-    for stroke in &node.strokes {
-        if !set_paint(ctx, &stroke.paint, node.bounds) {
-            continue;
-        }
-        ctx.set_stroke(stroke.style.clone());
-        ctx.stroke_path(&path);
-    }
-
-    // The paint transform is context state, not an argument: left set, the next shape's solid
-    // fill would be drawn through this shape's gradient mapping.
-    ctx.set_paint_transform(Affine::IDENTITY);
+    render_vello_core::draw::paint_body(ctx, &AbiEnv, node, matrix);
 }
 
-/// Install a paint as the current one. Returns false when this backend cannot draw it, so the
-/// caller can fall through to the next fill rather than drawing nothing.
-///
-/// **Gradient coordinates are normalised to the shape's own box**, not page space — Penpot's
-/// exporter emits `0..1` and render-wasm maps them with `translate(rect.origin) · scale(rect.size)`
-/// as a shader-local matrix. Vello's paint transform has exactly those semantics (applied to the
-/// paint after the geometry's transform), so the same mapping is expressed the same way. Drawn
-/// without it, every gradient collapses into the top-left pixel of the page.
-///
-/// The paint's own transform composes *inside* that: it carries a radial gradient's rotation and
-/// ellipse ratio, and an angular one's shear, all in unit-box space. `render_core::gradient`
-/// builds it alongside the gradient so neither backend re-derives the matrix.
+/// The host-backed [`DrawEnv`](render_vello_core::draw::DrawEnv) for the hybrid backend: image and
+/// baked-diamond references resolve through the ABI atlas the renderer fills each frame from
+/// `store_image_rgba` / `stage_diamond_bakes`.
+pub(crate) struct AbiEnv;
+
+impl render_vello_core::draw::DrawEnv for AbiEnv {
+    fn resolve_image(&self, id: u128) -> Option<vello_common::paint::ImageId> {
+        crate::abi::resolve_image(id)
+    }
+}
+
+/// Install a paint as the current one — a thin shim over the backend-neutral
+/// [`render_vello_core::draw::set_paint`], which owns every paint kind (solid/gradient/image/
+/// diamond) and the unit-box gradient mapping. Returns false when the backend cannot draw it this
+/// frame (an image/diamond not yet staged), so the caller falls through to the next fill.
 fn set_paint<T: RenderingContext>(ctx: &mut T, paint: &m::Paint, bounds: Rect) -> bool {
-    match &paint.brush {
-        Brush::Solid(color) => {
-            ctx.set_paint_transform(Affine::IDENTITY);
-            ctx.set_paint(*color);
-            true
-        }
-        Brush::Gradient(g) => {
-            ctx.set_paint_transform(unit_box_to(bounds) * paint.transform);
-            ctx.set_paint(g.clone());
-            true
-        }
-        Brush::Image(image) => {
-            // Resolve the reference against the atlas the renderer filled from `store_image_rgba`.
-            // Absent means the pixels have not arrived yet — draw nothing this frame rather than a
-            // placeholder, and the next frame after the upload will show it.
-            let Some(image_id) = crate::abi::resolve_image(image.id) else {
-                return false;
-            };
-            let target = image.dest.unwrap_or(bounds);
-            ctx.set_paint_transform(image_paint_transform(image, target));
-            ctx.set_paint(vello_common::paint::Image {
-                image: vello_common::paint::ImageSource::opaque_id(image_id),
-                sampler: vello_common::peniko::ImageSampler {
-                    // Clamp at the edges: with the cover/stretch transform the fill never samples
-                    // outside the image, so the extend mode only matters at sub-pixel borders.
-                    x_extend: vello_common::peniko::Extend::Pad,
-                    y_extend: vello_common::peniko::Extend::Pad,
-                    quality: vello_common::peniko::ImageQuality::Medium,
-                    alpha: f32::from(image.opacity) / 255.0,
-                },
-            });
-            true
-        }
-        Brush::Diamond(d) => {
-            // Diamond has no peniko kind, so it is baked to a tile and drawn as an image. The
-            // renderer's pre-pass (`stage_diamond_bakes`) rasterises the L1 field and uploads it
-            // under this content key; here it resolves exactly like an image fill. Absent means
-            // the bake has not landed yet — draw nothing this frame, painted the next.
-            let Some(image_id) = crate::abi::resolve_image(d.content_key()) else {
-                return false;
-            };
-            // The bake covers the unit box, but it is an *image* now, sampled in pixel space —
-            // so the transform maps the whole tile `[0, TILE]²` onto the shape, exactly the
-            // stretch a plain image uses. (Mapping unit space `[0,1]` here samples only the tile's
-            // first pixel across the whole shape — which is how the first cut rendered solid.)
-            // The non-square-shape distortion comes from this stretch, matching render-wasm's
-            // normalised-space shader. Stop alphas are baked in; the sampler adds none.
-            let tile = f64::from(crate::abi::DIAMOND_TILE);
-            ctx.set_paint_transform(
-                Affine::translate((bounds.x0, bounds.y0))
-                    * Affine::scale_non_uniform(bounds.width() / tile, bounds.height() / tile),
-            );
-            ctx.set_paint(vello_common::paint::Image {
-                image: vello_common::paint::ImageSource::opaque_id(image_id),
-                sampler: vello_common::peniko::ImageSampler {
-                    x_extend: vello_common::peniko::Extend::Pad,
-                    y_extend: vello_common::peniko::Extend::Pad,
-                    quality: vello_common::peniko::ImageQuality::Medium,
-                    alpha: 1.0,
-                },
-            });
-            true
-        }
-    }
-}
-
-/// Map the image's pixel space onto its target rect, in the shape's local coordinates.
-///
-/// Two placements, matching render-wasm's `get_source_rect`:
-/// - **stretch** (default): the image fills the box exactly, distorting aspect if it must.
-/// - **cover** (`keep_aspect`): the image is scaled by the larger axis ratio and centred, so it
-///   covers the box with no letterboxing; the overflow is clipped by the fill to `target`.
-fn image_paint_transform(image: &m::ImageFill, target: Rect) -> Affine {
-    let (iw, ih) = (f64::from(image.width.max(1)), f64::from(image.height.max(1)));
-    let (tw, th) = (target.width(), target.height());
-
-    if image.keep_aspect {
-        let scale = (tw / iw).max(th / ih);
-        // Centre the scaled image over the target; the fill clips whatever spills past it.
-        let ox = target.x0 + (tw - iw * scale) * 0.5;
-        let oy = target.y0 + (th - ih * scale) * 0.5;
-        Affine::translate((ox, oy)) * Affine::scale(scale)
-    } else {
-        Affine::translate((target.x0, target.y0)) * Affine::scale_non_uniform(tw / iw, th / ih)
-    }
-}
-
-/// Maps the unit box onto `bounds` — the space Penpot's gradient coordinates live in.
-fn unit_box_to(bounds: Rect) -> Affine {
-    // A zero-extent axis would collapse the paint onto a line and hand the rasteriser a
-    // singular matrix; leaving that axis unscaled keeps the fill finite and visible.
-    let sx = if bounds.width().abs() > f64::EPSILON {
-        bounds.width()
-    } else {
-        1.0
-    };
-    let sy = if bounds.height().abs() > f64::EPSILON {
-        bounds.height()
-    } else {
-        1.0
-    };
-    Affine::translate((bounds.x0, bounds.y0)) * Affine::scale_non_uniform(sx, sy)
+    render_vello_core::draw::set_paint(ctx, &AbiEnv, paint, bounds)
 }
 
 /// A hand-built neutral scene using the SAME types render-wasm's converter emits, now as a tree:

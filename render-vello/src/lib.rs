@@ -20,7 +20,6 @@
 
 pub mod abi;
 pub mod editor;
-mod geometry;
 pub mod rich_editor;
 
 // The device-generic wgpu effect executor + profiler now live in render-vello-core; re-export their

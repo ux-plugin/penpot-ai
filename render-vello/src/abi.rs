@@ -507,10 +507,10 @@ pub(crate) fn resolve_image(id: u128) -> Option<vello_common::paint::ImageId> {
         .and_then(|m| m.get(&id).copied())
 }
 
-/// Side of the square tile each diamond is baked into. 512² keeps a smooth ramp crisp at normal
-/// zoom; the tradeoff is softness far in, which is the documented cost of baking rather than a
-/// live shader.
-pub(crate) const DIAMOND_TILE: u32 = 512;
+/// Side of the square tile each diamond is baked into (re-exported from render-core, where the draw
+/// path also keys off it). 512² keeps a smooth ramp crisp at normal zoom; the tradeoff is softness
+/// far in, which is the documented cost of baking rather than a live shader.
+pub(crate) use render_core::gradient::DIAMOND_TILE;
 
 /// Bake any reachable diamond gradient that has not been baked yet, staging it as an image.
 ///

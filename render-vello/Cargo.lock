@@ -1154,11 +1154,25 @@ dependencies = [
  "log",
  "parley",
  "render-core",
+ "render-vello-core",
  "vello_common",
  "vello_example_scenes",
  "vello_hybrid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
+name = "render-vello-core"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "log",
+ "render-core",
+ "vello_common",
+ "vello_example_scenes",
  "web-sys",
  "wgpu",
 ]

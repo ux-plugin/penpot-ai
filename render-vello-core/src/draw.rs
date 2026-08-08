@@ -1,27 +1,57 @@
 //! The neutral document drawer — walks a `render_core::model::Scene` in z-order and draws it into
 //! any `RenderingContext`.
 //!
-//! This is slice 1 of unifying the draw path across Vello backends: today render-vello's `scene.rs`
-//! owns the full translation (all paint kinds, strokes, text, shadows, blur, clips) but is woven into
-//! that crate's ABI globals; this is the backend-neutral *core* of it — solid-fill bodies for
-//! rect/frame/circle plus isolation groups (opacity/blend → push/pop layer). It lets the classic
-//! backend render real render-core documents *now*, and `scene.rs` will be refactored to delegate
-//! here and add the specializations this slice defers (gradient/image/diamond paint, strokes, text,
-//! shadows/blur, clip content).
+//! This is the backend-neutral *core* of render-vello's `scene.rs`: the tree walk, the isolation
+//! groups (opacity/blend → push/pop layer), and every fill/stroke paint kind (solid, gradient,
+//! image, diamond). It is the single copy both Vello backends share — the classic backend renders
+//! real render-core documents through it today, and `scene.rs` delegates its own leaf paint here so
+//! the two never diverge. The specialisations still owned by `scene.rs` and deferred here are text,
+//! drop shadows / layer blur, clip content, and modifier (gesture) transforms.
+//!
+//! ## The [`DrawEnv`] seam
+//! The only thing paint resolution needs from the host is *which atlas id* an image or baked-diamond
+//! reference maps to — a lookup that lives in render-vello's ABI globals and must not leak into this
+//! backend-neutral crate. [`DrawEnv`] injects it: the hybrid backend supplies an env backed by its
+//! ABI atlas map; the classic backend supplies one that returns `None` until image staging lands.
 
 use render_core::blend::DEFAULT_BLEND;
-use render_core::kurbo::{Affine, Ellipse, Shape};
-use render_core::model::{Brush, Node, Scene, ShapeKind};
+use render_core::geometry::outline;
+use render_core::gradient::DIAMOND_TILE;
+use render_core::kurbo::{Affine, Rect};
+use render_core::model::{self as m, Brush, Node, Scene, ShapeKind};
+use vello_common::paint::ImageId;
 use vello_example_scenes::{Fill, RenderingContext};
 
+/// The host services the neutral drawer needs but cannot own, injected so this crate stays free of
+/// the ABI globals. Today that is only image resolution; text (font atlas) will join it when the
+/// text draw path migrates here.
+pub trait DrawEnv {
+    /// Resolve an image or baked-diamond content reference to its atlas id, or `None` when the
+    /// pixels have not been staged yet — in which case that paint draws nothing this frame and
+    /// appears the frame after the upload lands. The classic backend returns `None` until it has an
+    /// image atlas.
+    fn resolve_image(&self, id: u128) -> Option<ImageId>;
+}
+
 /// Draw every root subtree in z-order under `view` (the page→device transform).
-pub fn draw_scene<C: RenderingContext>(ctx: &mut C, scene: &Scene, view: Affine) {
+pub fn draw_scene<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    env: &E,
+    scene: &Scene,
+    view: Affine,
+) {
     for &root in scene.roots() {
-        draw_node(ctx, scene, root, view);
+        draw_node(ctx, env, scene, root, view);
     }
 }
 
-fn draw_node<C: RenderingContext>(ctx: &mut C, scene: &Scene, id: u128, view: Affine) {
+fn draw_node<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    env: &E,
+    scene: &Scene,
+    id: u128,
+    view: Affine,
+) {
     let Some(node) = scene.get(id) else { return };
     if node.hidden || node.kind == ShapeKind::Unsupported {
         return;
@@ -34,32 +64,194 @@ fn draw_node<C: RenderingContext>(ctx: &mut C, scene: &Scene, id: u128, view: Af
         let alpha = (node.opacity < 1.0).then_some(node.opacity);
         ctx.push_layer(None, blend, alpha, None, None);
     }
-    // A group has no body of its own; every other kind draws its fill.
+    // A group has no body of its own; `paint_body` guards this too, but skipping it keeps the walk
+    // honest about what carries geometry.
     if node.kind != ShapeKind::Group {
-        paint_body(ctx, node, view);
+        paint_body(ctx, env, node, view * node.effective_transform());
     }
     for &child in &node.children {
-        draw_node(ctx, scene, child, view);
+        draw_node(ctx, env, scene, child, view);
     }
     if isolates {
         ctx.pop_layer();
     }
 }
 
-/// Draw one node's solid-fill body. Non-solid paints (gradient/image/diamond) and non-fill content
-/// (strokes/text/effects) are deferred — the specializations `scene.rs` will keep until this drawer
-/// grows them.
-fn paint_body<C: RenderingContext>(ctx: &mut C, node: &Node, view: Affine) {
-    let Some(paint) = node.fills.first() else { return };
-    let Brush::Solid(color) = &paint.brush else { return };
-    ctx.set_fill_rule(Fill::NonZero);
-    ctx.set_transform(view * node.effective_transform());
-    ctx.set_paint(render_core::peniko::Brush::Solid(*color));
-    if node.kind == ShapeKind::Circle {
-        let b = node.bounds;
-        let ellipse = Ellipse::new(b.center(), (b.width() / 2.0, b.height() / 2.0), 0.0);
-        ctx.fill_path(&ellipse.to_path(0.1));
-    } else {
-        ctx.fill_rect(&node.bounds);
+/// Paint a node's own geometry (fills then strokes), ignoring its children — the backend-neutral
+/// twin of `scene.rs`'s `paint_self`. `matrix` is the fully-composed page→device→shape transform.
+pub fn paint_body<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    env: &E,
+    node: &Node,
+    matrix: Affine,
+) {
+    // A group has no geometry of its own; it exists to carry the layer.
+    if node.kind == ShapeKind::Group {
+        return;
     }
+    if node.fills.is_empty() && node.strokes.is_empty() {
+        return;
+    }
+
+    ctx.set_fill_rule(Fill::NonZero);
+    ctx.set_transform(matrix);
+
+    // The first fill this backend can paint wins — not simply the first fill, or a shape whose top
+    // fill is an image would render as nothing while a solid underneath it went unused.
+    let painted = node.fills.iter().any(|f| set_paint(ctx, env, f, node.bounds));
+    if painted {
+        match node.kind {
+            // The one case worth a fast path: a square-cornered rect needs no path at all.
+            ShapeKind::Rect | ShapeKind::Frame if node.corners.is_none() => {
+                ctx.fill_rect(&node.bounds)
+            }
+            ShapeKind::Path => {
+                if let Some(path) = &node.path {
+                    ctx.fill_path(path);
+                }
+            }
+            _ => ctx.fill_path(&outline(node)),
+        }
+    }
+
+    // Strokes go over the fills, back to front, on this node's own outline.
+    if node.strokes.is_empty() {
+        ctx.set_paint_transform(Affine::IDENTITY);
+        return;
+    }
+    let path = outline(node);
+    for stroke in &node.strokes {
+        if !set_paint(ctx, env, &stroke.paint, node.bounds) {
+            continue;
+        }
+        ctx.set_stroke(stroke.style.clone());
+        ctx.stroke_path(&path);
+    }
+
+    // The paint transform is context state, not an argument: left set, the next shape's solid fill
+    // would be drawn through this shape's gradient mapping.
+    ctx.set_paint_transform(Affine::IDENTITY);
+}
+
+/// Install a paint as the current one. Returns false when this backend cannot draw it *this frame*
+/// (an image/diamond whose pixels have not been staged), so the caller can fall through to the next
+/// fill rather than drawing nothing.
+///
+/// **Gradient coordinates are normalised to the shape's own box**, not page space — Penpot's
+/// exporter emits `0..1` and render-wasm maps them with `translate(rect.origin) · scale(rect.size)`
+/// as a shader-local matrix. Vello's paint transform has exactly those semantics (applied to the
+/// paint after the geometry's transform), so the same mapping is expressed the same way. Drawn
+/// without it, every gradient collapses into the top-left pixel of the page.
+///
+/// The paint's own transform composes *inside* that: it carries a radial gradient's rotation and
+/// ellipse ratio, and an angular one's shear, all in unit-box space. `render_core::gradient` builds
+/// it alongside the gradient so neither backend re-derives the matrix.
+pub fn set_paint<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    env: &E,
+    paint: &m::Paint,
+    bounds: Rect,
+) -> bool {
+    match &paint.brush {
+        Brush::Solid(color) => {
+            ctx.set_paint_transform(Affine::IDENTITY);
+            ctx.set_paint(*color);
+            true
+        }
+        Brush::Gradient(g) => {
+            ctx.set_paint_transform(unit_box_to(bounds) * paint.transform);
+            ctx.set_paint(g.clone());
+            true
+        }
+        Brush::Image(image) => {
+            // Resolve the reference against the atlas the renderer filled from `store_image_rgba`.
+            // Absent means the pixels have not arrived yet — draw nothing this frame rather than a
+            // placeholder, and the next frame after the upload will show it.
+            let Some(image_id) = env.resolve_image(image.id) else {
+                return false;
+            };
+            let target = image.dest.unwrap_or(bounds);
+            ctx.set_paint_transform(image_paint_transform(image, target));
+            ctx.set_paint(vello_common::paint::Image {
+                image: vello_common::paint::ImageSource::opaque_id(image_id),
+                sampler: vello_common::peniko::ImageSampler {
+                    // Clamp at the edges: with the cover/stretch transform the fill never samples
+                    // outside the image, so the extend mode only matters at sub-pixel borders.
+                    x_extend: vello_common::peniko::Extend::Pad,
+                    y_extend: vello_common::peniko::Extend::Pad,
+                    quality: vello_common::peniko::ImageQuality::Medium,
+                    alpha: f32::from(image.opacity) / 255.0,
+                },
+            });
+            true
+        }
+        Brush::Diamond(d) => {
+            // Diamond has no peniko kind, so it is baked to a tile and drawn as an image. The
+            // renderer's pre-pass (`stage_diamond_bakes`) rasterises the L1 field and uploads it
+            // under this content key; here it resolves exactly like an image fill. Absent means the
+            // bake has not landed yet — draw nothing this frame, painted the next.
+            let Some(image_id) = env.resolve_image(d.content_key()) else {
+                return false;
+            };
+            // The bake covers the unit box, but it is an *image* now, sampled in pixel space — so
+            // the transform maps the whole tile `[0, TILE]²` onto the shape, exactly the stretch a
+            // plain image uses. (Mapping unit space `[0,1]` here samples only the tile's first pixel
+            // across the whole shape — which is how the first cut rendered solid.) The non-square
+            // distortion comes from this stretch, matching render-wasm's normalised-space shader.
+            // Stop alphas are baked in; the sampler adds none.
+            let tile = f64::from(DIAMOND_TILE);
+            ctx.set_paint_transform(
+                Affine::translate((bounds.x0, bounds.y0))
+                    * Affine::scale_non_uniform(bounds.width() / tile, bounds.height() / tile),
+            );
+            ctx.set_paint(vello_common::paint::Image {
+                image: vello_common::paint::ImageSource::opaque_id(image_id),
+                sampler: vello_common::peniko::ImageSampler {
+                    x_extend: vello_common::peniko::Extend::Pad,
+                    y_extend: vello_common::peniko::Extend::Pad,
+                    quality: vello_common::peniko::ImageQuality::Medium,
+                    alpha: 1.0,
+                },
+            });
+            true
+        }
+    }
+}
+
+/// Map the image's pixel space onto its target rect, in the shape's local coordinates.
+///
+/// Two placements, matching render-wasm's `get_source_rect`:
+/// - **stretch** (default): the image fills the box exactly, distorting aspect if it must.
+/// - **cover** (`keep_aspect`): the image is scaled by the larger axis ratio and centred, so it
+///   covers the box with no letterboxing; the overflow is clipped by the fill to `target`.
+fn image_paint_transform(image: &m::ImageFill, target: Rect) -> Affine {
+    let (iw, ih) = (f64::from(image.width.max(1)), f64::from(image.height.max(1)));
+    let (tw, th) = (target.width(), target.height());
+
+    if image.keep_aspect {
+        let scale = (tw / iw).max(th / ih);
+        // Centre the scaled image over the target; the fill clips whatever spills past it.
+        let ox = target.x0 + (tw - iw * scale) * 0.5;
+        let oy = target.y0 + (th - ih * scale) * 0.5;
+        Affine::translate((ox, oy)) * Affine::scale(scale)
+    } else {
+        Affine::translate((target.x0, target.y0)) * Affine::scale_non_uniform(tw / iw, th / ih)
+    }
+}
+
+/// Maps the unit box onto `bounds` — the space Penpot's gradient coordinates live in.
+fn unit_box_to(bounds: Rect) -> Affine {
+    // A zero-extent axis would collapse the paint onto a line and hand the rasteriser a singular
+    // matrix; leaving that axis unscaled keeps the fill finite and visible.
+    let sx = if bounds.width().abs() > f64::EPSILON {
+        bounds.width()
+    } else {
+        1.0
+    };
+    let sy = if bounds.height().abs() > f64::EPSILON {
+        bounds.height()
+    } else {
+        1.0
+    };
+    Affine::translate((bounds.x0, bounds.y0)) * Affine::scale_non_uniform(sx, sy)
 }

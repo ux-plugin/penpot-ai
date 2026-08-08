@@ -2,14 +2,14 @@
 //! from.
 //!
 //! These are plain kurbo constructions over the neutral model, with no Vello or wasm dependency, so
-//! they live outside the `wasm32`-gated [`crate::scene`] module and can be unit-tested on the host.
-//! `scene` imports [`outline`] and [`spread_outline`] from here.
+//! they live in render-core and are shared by both Vello draw paths: the hybrid backend's
+//! `scene.rs` and the backend-neutral `render_vello_core::draw`. Host-testable.
 
-use render_core::kurbo::{
+use crate::kurbo::{
     Affine, BezPath, Ellipse, Rect, RoundedRect, RoundedRectRadii, Shape as _, Stroke, StrokeOpts,
     stroke as stroke_expand,
 };
-use render_core::model as m;
+use crate::model as m;
 
 /// The device-space blur-sigma ceiling, mirroring render-wasm's shadow/layer-blur cap.
 ///
@@ -20,7 +20,7 @@ use render_core::model as m;
 /// so mirroring it is *parity*, not a workaround. It also keeps render-vello out of the fork's
 /// many-decimation regime, where the Gaussian pyramid loses energy and a zoomed-in shadow fades to
 /// nothing instead of staying dark.
-pub(crate) const MAX_DEVICE_SIGMA: f64 = 256.0 / 3.0;
+pub const MAX_DEVICE_SIGMA: f64 = 256.0 / 3.0;
 
 /// Clamp a user-space blur sigma so that, after the fork scales it to device space by `matrix`, it
 /// stays within [`MAX_DEVICE_SIGMA`].
@@ -31,7 +31,7 @@ pub(crate) const MAX_DEVICE_SIGMA: f64 = 256.0 / 3.0;
 /// mean of the two column norms, which equals the fork's SVD-derived scale for an unrotated
 /// transform and is a close bound otherwise. A degenerate (zero-scale) matrix leaves the sigma
 /// untouched rather than dividing by zero.
-pub(crate) fn cap_sigma_to_device(sigma_user: f32, matrix: Affine) -> f32 {
+pub fn cap_sigma_to_device(sigma_user: f32, matrix: Affine) -> f32 {
     let [a, b, c, d, _, _] = matrix.as_coeffs();
     let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
     if scale <= f64::EPSILON {
@@ -49,7 +49,7 @@ pub(crate) fn cap_sigma_to_device(sigma_user: f32, matrix: Affine) -> f32 {
 /// dark band thickness *is* the offset. Scaling the offset by the same factor makes the whole shadow
 /// plateau together past the cap, so it keeps its shape (render-wasm caps only the blur, which is
 /// fine only while the offset is small next to it).
-pub(crate) fn cap_shadow_blur(sigma_user: f32, matrix: Affine) -> (f32, f64) {
+pub fn cap_shadow_blur(sigma_user: f32, matrix: Affine) -> (f32, f64) {
     let capped = cap_sigma_to_device(sigma_user, matrix);
     let ratio = if sigma_user > 0.0 {
         f64::from(capped / sigma_user)
@@ -60,14 +60,14 @@ pub(crate) fn cap_shadow_blur(sigma_user: f32, matrix: Affine) -> (f32, f64) {
 }
 
 /// Flattening tolerance for turning analytic shapes into bézier paths, in page pixels.
-pub(crate) const TOLERANCE: f64 = 0.1;
+pub const TOLERANCE: f64 = 0.1;
 
 /// The node's geometry as a path — what it fills, and what it clips its children to.
 ///
 /// Mirrors render-wasm's clip construction: a rounded rect when corners are set, an oval for a
 /// circle, the vector path for a path, and the bounds rectangle for anything else (including a
 /// path whose geometry has not arrived).
-pub(crate) fn outline(node: &m::Node) -> BezPath {
+pub fn outline(node: &m::Node) -> BezPath {
     match node.kind {
         m::ShapeKind::Circle => ellipse_path(node.bounds),
         m::ShapeKind::Path => node
@@ -98,7 +98,7 @@ fn ellipse_path(r: Rect) -> BezPath {
 ///
 /// Only positive spread grows the shape; render-wasm likewise dilates only for `spread > 0`, and the
 /// caller never invokes this otherwise.
-pub(crate) fn spread_outline(node: &m::Node, spread: f64) -> BezPath {
+pub fn spread_outline(node: &m::Node, spread: f64) -> BezPath {
     let bounds = node.bounds.inflate(spread, spread);
     match node.kind {
         m::ShapeKind::Circle => ellipse_path(bounds),
