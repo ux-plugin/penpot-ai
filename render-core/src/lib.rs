@@ -27,6 +27,7 @@ pub mod blend;
 pub mod blur;
 pub mod effect_graph;
 pub mod gradient;
+pub mod host;
 pub mod model;
 pub mod schedule;
 pub mod selection;
