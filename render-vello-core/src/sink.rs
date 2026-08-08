@@ -1027,15 +1027,24 @@ impl Sink {
     /// geometry is the shape's rounded box (axis-aligned; rotation is a gap); the composite's own SDF
     /// mask does the clip, so no silhouette mask is needed.
     fn glass_graph(&self, id: u128, bw: u32, bh: u32, bdx: f64, bdy: f64, full_view: Affine, k: f64) -> Option<Vec<Pass>> {
-        let (g, geom) = crate::abi::with_scene(|live, _, _| {
+        let (g, geom) = crate::abi::with_scene(|live, _, modifiers| {
             live.get(id).and_then(|n| {
                 n.glass.map(|g| {
-                    let c = n.bounds.center();
+                    // The lens must sit where the shape is drawn *this frame*, including the live drag
+                    // modifier — the backdrop it refracts is assembled at `page_bounds(node, m)` too. Using
+                    // the committed bounds left the lens at the pre-drag spot while the backdrop moved, so
+                    // the refraction fell outside and the glass looked like a flat frost mid-drag.
+                    let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                    let page = render_core::schedule::page_bounds(n, m);
+                    // Corner radius rides in the shape's own space; scale it by the transform so a
+                    // scale-drag keeps the rounding proportional to the (now page-space) width/height.
+                    let [a, b, c, d, _, _] = (m * n.effective_transform()).as_coeffs();
+                    let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
                     let geom = GlassGeometry {
-                        center: c,
-                        width: n.bounds.width(),
-                        height: n.bounds.height(),
-                        corner_radius: n.corners.map_or(0.0, |r| r.top_left),
+                        center: page.center(),
+                        width: page.width(),
+                        height: page.height(),
+                        corner_radius: n.corners.map_or(0.0, |r| r.top_left) * scale,
                         is_circle: n.kind == render_core::model::ShapeKind::Circle,
                     };
                     (g, geom)

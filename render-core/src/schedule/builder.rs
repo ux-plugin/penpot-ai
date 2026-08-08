@@ -482,7 +482,7 @@ fn layer_paint(node: &Node) -> LayerPaint {
 /// must use the *modified* bounds so a dragged shape is scheduled into the tiles it is actually drawn
 /// in — [`crate::draw`]'s body paint applies the same `modifier`, so the two would otherwise disagree
 /// and the shape would render into its pre-drag tile (teleporting across tile boundaries mid-move).
-fn page_bounds(node: &Node, modifier: Affine) -> Rect {
+pub fn page_bounds(node: &Node, modifier: Affine) -> Rect {
     transform_rect(modifier * node.effective_transform(), node.bounds)
 }
 
