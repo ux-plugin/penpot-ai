@@ -18,7 +18,11 @@
     reason = "truncation has no appreciable impact in this Phase-0 proof"
 )]
 
-pub mod abi;
+// The C-style ABI + host scene-state singleton now live in render-vello-core so the classic backend
+// exports the identical interface from the same source. Re-exported at the crate root so this crate's
+// `crate::abi::…` call sites (scene/tiles/sink/renderer) and the cdylib's `#[no_mangle]` FFI exports
+// resolve unchanged.
+pub use render_vello_core::abi;
 pub mod editor;
 pub mod rich_editor;
 

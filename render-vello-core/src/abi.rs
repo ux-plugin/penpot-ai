@@ -36,7 +36,7 @@ static STATE: Mutex<Option<SceneState>> = Mutex::new(None);
 // The host scene-state machine (the document the ABI accumulates: shape tree, cursor, viewport,
 // modifiers, dirty tracking) is backend-neutral and lives in render-core; this module owns only the
 // static instance of it plus the FFI shell that drives it. See `render_core::host`.
-pub(crate) use render_core::host::{Modifiers, SceneState, Viewport};
+pub use render_core::host::{Modifiers, SceneState, Viewport};
 
 fn with_state<R>(f: impl FnOnce(&mut SceneState) -> R) -> R {
     let mut guard = STATE.lock().expect("scene state poisoned");
@@ -63,7 +63,7 @@ fn with_current<R>(f: impl FnOnce(&mut Node) -> R) -> Option<R> {
 }
 
 /// Take the pending buffer, leaving it empty. Mirrors render-wasm's `mem::bytes()`.
-pub(crate) fn take_bytes() -> Vec<u8> {
+pub fn take_bytes() -> Vec<u8> {
     BUFFER
         .lock()
         .expect("byte buffer poisoned")
@@ -78,7 +78,7 @@ pub(crate) fn take_bytes() -> Vec<u8> {
 /// node map per frame is exactly the cost this backend exists to avoid.
 // `scene.rs` is wasm-only, so a host build sees no caller outside the tests.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn with_scene<R>(f: impl FnOnce(&Scene, Affine, &Modifiers) -> R) -> R {
+pub fn with_scene<R>(f: impl FnOnce(&Scene, Affine, &Modifiers) -> R) -> R {
     with_state(|state| {
         let transform = state.viewport.transform();
         f(&state.scene, transform, &state.modifiers)
@@ -88,7 +88,7 @@ pub(crate) fn with_scene<R>(f: impl FnOnce(&Scene, Affine, &Modifiers) -> R) -> 
 /// Drain the dirty region accumulated since the last frame: `(dirty_all, page_rects)`. The tile cache
 /// invalidates the tiles these rects cover (or everything when `dirty_all`), then rebuilds them.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn take_dirty() -> (bool, Vec<Rect>) {
+pub fn take_dirty() -> (bool, Vec<Rect>) {
     with_state(|state| {
         let all = std::mem::replace(&mut state.dirty_all, false);
         let rects = std::mem::take(&mut state.dirty_rects);
@@ -98,7 +98,7 @@ pub(crate) fn take_dirty() -> (bool, Vec<Rect>) {
 
 /// The canvas clear colour the host set, if any.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn background() -> Color {
+pub fn background() -> Color {
     with_state(|state| state.viewport.background)
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn background() -> Color {
 /// (not the bare `root`) to place tiles, because when the host drives, `root` is identity and all
 /// the pan/zoom lives in the viewport.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn effective_view(root: Affine) -> Affine {
+pub fn effective_view(root: Affine) -> Affine {
     with_state(|state| {
         if state.scene.is_empty() {
             root
@@ -124,7 +124,7 @@ pub(crate) fn effective_view(root: Affine) -> Affine {
 /// (D3), and render-wasm's own `render()` schedules rather than draws. So the C entry point
 /// records the request and the host's `requestAnimationFrame` picks it up.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn take_needs_frame() -> bool {
+pub fn take_needs_frame() -> bool {
     with_state(|state| std::mem::take(&mut state.needs_frame))
 }
 
@@ -165,7 +165,7 @@ pub extern "C" fn free_bytes() {
 // is an image that has not finished loading — it draws nothing that frame rather than guessing.
 
 /// An image whose pixels have arrived but are not yet in the atlas.
-pub(crate) struct PendingImage {
+pub struct PendingImage {
     pub id: u128,
     pub width: u32,
     pub height: u32,
@@ -215,13 +215,13 @@ pub extern "C" fn store_image_rgba() {
 
 /// Hand the renderer everything staged since the last call, leaving the queue empty.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn take_pending_images() -> Vec<PendingImage> {
+pub fn take_pending_images() -> Vec<PendingImage> {
     std::mem::take(&mut *PENDING_IMAGES.lock().expect("pending images poisoned"))
 }
 
 /// Record where an uploaded image landed, so `scene.rs` can resolve it.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn record_image(id: u128, image_id: vello_common::paint::ImageId) {
+pub fn record_image(id: u128, image_id: vello_common::paint::ImageId) {
     RESOLVED_IMAGES
         .lock()
         .expect("resolved images poisoned")
@@ -238,7 +238,7 @@ pub(crate) fn record_image(id: u128, image_id: vello_common::paint::ImageId) {
 // render-wasm's own `store_font` → `FontStore::add`.
 
 /// A font face whose bytes have arrived but are not yet in the Parley collection.
-pub(crate) struct UploadedFont {
+pub struct UploadedFont {
     /// The family alias to register under — see [`font_alias`]. The draw path builds
     /// the same alias from a span's [`render_core::text::FontRef`], so the two meet by string.
     pub alias: String,
@@ -255,7 +255,7 @@ pub(crate) struct UploadedFont {
 /// family are distinct faces — then Parley needs no weight matching, because each alias resolves to
 /// exactly one face. Lives here (not in the wasm-only `scene`) so `store_font` can build it on
 /// every target.
-pub(crate) fn font_alias(id: u128, weight: u16, italic: bool) -> String {
+pub fn font_alias(id: u128, weight: u16, italic: bool) -> String {
     format!("penpot-{id:032x}-{weight}-{}", if italic { 'i' } else { 'n' })
 }
 
@@ -327,7 +327,7 @@ pub extern "C" fn is_font_uploaded(
 
 /// Hand the scene every face staged since the last call, leaving the queue empty.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn take_pending_fonts() -> Vec<UploadedFont> {
+pub fn take_pending_fonts() -> Vec<UploadedFont> {
     std::mem::take(&mut *PENDING_FONTS.lock().expect("pending fonts poisoned"))
 }
 
@@ -499,7 +499,7 @@ pub extern "C" fn set_shape_vertical_align(align: u8) {
 
 /// The atlas slot for an image, if it has been uploaded.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn resolve_image(id: u128) -> Option<vello_common::paint::ImageId> {
+pub fn resolve_image(id: u128) -> Option<vello_common::paint::ImageId> {
     RESOLVED_IMAGES
         .lock()
         .expect("resolved images poisoned")
@@ -510,7 +510,7 @@ pub(crate) fn resolve_image(id: u128) -> Option<vello_common::paint::ImageId> {
 /// Side of the square tile each diamond is baked into (re-exported from render-core, where the draw
 /// path also keys off it). 512² keeps a smooth ramp crisp at normal zoom; the tradeoff is softness
 /// far in, which is the documented cost of baking rather than a live shader.
-pub(crate) use render_core::gradient::DIAMOND_TILE;
+pub use render_core::gradient::DIAMOND_TILE;
 
 /// Bake any reachable diamond gradient that has not been baked yet, staging it as an image.
 ///
@@ -519,7 +519,7 @@ pub(crate) use render_core::gradient::DIAMOND_TILE;
 /// `take_pending_images`, so the bakes ride the same upload path as real images — keyed by
 /// [`DiamondGradient::content_key`], so an unchanged diamond is baked once and reused.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn stage_diamond_bakes() {
+pub fn stage_diamond_bakes() {
     let diamonds = with_state(|state| state.scene.diamonds());
     if diamonds.is_empty() {
         return;
@@ -621,7 +621,7 @@ pub extern "C" fn set_tiling_bypass(on: u32) {
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn tiling_bypass() -> bool {
+pub fn tiling_bypass() -> bool {
     TILING_BYPASS.with(std::cell::Cell::get)
 }
 
@@ -642,7 +642,7 @@ pub extern "C" fn set_tile_effects(on: u32) {
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn tile_effects() -> bool {
+pub fn tile_effects() -> bool {
     TILE_EFFECTS.with(std::cell::Cell::get)
 }
 
@@ -659,7 +659,7 @@ pub extern "C" fn set_scheduler(on: u32) {
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn scheduler() -> bool {
+pub fn scheduler() -> bool {
     SCHEDULER.with(std::cell::Cell::get)
 }
 
@@ -672,7 +672,7 @@ thread_local! {
 
 /// Record the last frame's tile render/reuse split (called by the tile store).
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn set_tile_stats(rendered: u32, reused: u32) {
+pub fn set_tile_stats(rendered: u32, reused: u32) {
     TILE_STATS.with(|c| c.set((rendered << 16) | (reused & 0xffff)));
 }
 
@@ -1407,7 +1407,7 @@ fn paint_from_raw(raw: render_core::abi::RawFillData) -> Option<render_core::mod
 
 /// The wire carries packed ARGB, matching Skia's word order.
 #[inline]
-pub(crate) fn argb_to_color(argb: u32) -> render_core::peniko::Color {
+pub fn argb_to_color(argb: u32) -> render_core::peniko::Color {
     render_core::peniko::Color::from_rgba8(
         ((argb >> 16) & 0xff) as u8,
         ((argb >> 8) & 0xff) as u8,
@@ -1417,12 +1417,12 @@ pub(crate) fn argb_to_color(argb: u32) -> render_core::peniko::Color {
 }
 
 #[inline]
-pub(crate) fn uuid_u128(a: u32, b: u32, c: u32, d: u32) -> u128 {
+pub fn uuid_u128(a: u32, b: u32, c: u32, d: u32) -> u128 {
     ((a as u128) << 96) | ((b as u128) << 64) | ((c as u128) << 32) | (d as u128)
 }
 
 /// Split a packed id back into the wire's `(a, b, c, d)` quartet — the inverse of [`uuid_u128`].
-pub(crate) fn uuid_to_quartet(id: u128) -> (u32, u32, u32, u32) {
+pub fn uuid_to_quartet(id: u128) -> (u32, u32, u32, u32) {
     (
         (id >> 96) as u32,
         (id >> 64) as u32,
@@ -1434,7 +1434,7 @@ pub(crate) fn uuid_to_quartet(id: u128) -> (u32, u32, u32, u32) {
 /// Ask the host's frame loop to draw again — the editor's caret blink and selection changes are
 /// only visible once a frame runs (the render pass owns the font context, so it is where the
 /// editor's layout and geometry are computed).
-pub(crate) fn request_frame() {
+pub fn request_frame() {
     with_state(|state| state.needs_frame = true);
 }
 
