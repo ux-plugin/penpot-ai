@@ -1,9 +1,0 @@
-/Users/dhiat/coding/penpot-ai/.claude/worktrees/ai-chat-feature-status-bbf703/render-vello-core/target/debug/deps/linebender_resource_handle-709929a9bfc533a2.d: /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/lib.rs /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/blob.rs /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/font.rs
-
-/Users/dhiat/coding/penpot-ai/.claude/worktrees/ai-chat-feature-status-bbf703/render-vello-core/target/debug/deps/liblinebender_resource_handle-709929a9bfc533a2.rlib: /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/lib.rs /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/blob.rs /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/font.rs
-
-/Users/dhiat/coding/penpot-ai/.claude/worktrees/ai-chat-feature-status-bbf703/render-vello-core/target/debug/deps/liblinebender_resource_handle-709929a9bfc533a2.rmeta: /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/lib.rs /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/blob.rs /Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/font.rs
-
-/Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/lib.rs:
-/Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/blob.rs:
-/Users/dhiat/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linebender_resource_handle-0.1.1/src/font.rs:
