@@ -28,7 +28,7 @@ use render_core::schedule::{
 };
 use render_core::tile_cache::TileCache;
 use render_core::tiling::{self, TileKey, TILE_BUFFER, TILE_MARGIN, TILE_SIZE};
-use render_vello_core::rasterize::RasterBackend;
+use crate::rasterize::RasterBackend;
 use vello_common::kurbo::{Affine, Rect};
 
 use crate::blend::{Blit, Compositor, MaskedBlit};
@@ -55,7 +55,7 @@ struct Surface {
 }
 
 /// The scheduler's GPU production sink. Owns the per-frame surface map and the SrcOver compositor.
-pub(crate) struct Sink {
+pub struct Sink {
     compositor: Compositor,
     glass: GlassPipeline,
     /// Physical surface per logical ref, this frame. Slice-1 allocates fresh each frame (no
@@ -89,7 +89,7 @@ pub(crate) struct Sink {
 }
 
 impl Sink {
-    pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
             compositor: Compositor::new(device, format),
             glass: GlassPipeline::new(device, format),
@@ -109,7 +109,7 @@ impl Sink {
     /// rebuilds only the tiles it changed. Whatever visible tiles are then uncached (the invalidated
     /// ones plus the strip a pan just exposed) are returned as dirty; the caller builds the schedule
     /// for exactly them, then calls [`Self::execute`].
-    pub(crate) fn plan_frame(
+    pub fn plan_frame(
         &mut self,
         full_view: Affine,
         width: u32,
@@ -122,7 +122,7 @@ impl Sink {
 
     /// Execute one frame's schedule onto `surface` (the swapchain texture).
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    pub(crate) fn execute<B: RasterBackend>(
+    pub fn execute<B: RasterBackend>(
         &mut self,
         schedule: &Schedule,
         dirty: &[TileKey],

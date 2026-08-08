@@ -23,6 +23,10 @@
 // `crate::abi::…` call sites (scene/tiles/sink/renderer) and the cdylib's `#[no_mangle]` FFI exports
 // resolve unchanged.
 pub use render_vello_core::abi;
+// The generic GPU sink also lives in render-vello-core now (it needs only the shared abi + effect
+// executor). Re-exported so `crate::sink::Sink` in `tiles.rs` resolves unchanged; the hybrid backend
+// (`hybrid_backend.rs`) plugs into it as the `RasterBackend`.
+pub use render_vello_core::sink;
 pub mod editor;
 pub mod rich_editor;
 
@@ -40,8 +44,6 @@ mod hybrid_backend;
 mod renderer;
 #[cfg(target_arch = "wasm32")]
 mod scene;
-#[cfg(target_arch = "wasm32")]
-mod sink;
 #[cfg(target_arch = "wasm32")]
 mod tiles;
 

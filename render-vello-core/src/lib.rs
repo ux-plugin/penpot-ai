@@ -23,4 +23,8 @@ pub mod glass;
 pub mod graph;
 pub mod prof;
 pub mod rasterize;
+/// The GPU production sink — executes a `render_core::schedule::Schedule` on a Vello backend. Generic
+/// over [`rasterize::RasterBackend`], so both flavors run this one copy; it holds only wgpu + the
+/// shared compositor/effect executor + the cross-frame tile cache, never a concrete backend type.
+pub mod sink;
 pub mod text;
