@@ -9,7 +9,7 @@
 use render_core::kurbo::{Rect as PageRect, RoundedRectRadii};
 use render_core::model::{Brush, Node, Paint, Scene, ShapeKind, ROOT_ID};
 use render_core::peniko::{Color, ColorStop, Gradient};
-use render_vello_core::draw::draw_scene;
+use vello_gpu_renderer::walk::draw_scene;
 use render_vello_core::rasterize::SceneRasterizer;
 use vello_gpu_renderer::{ClassicEnv, ClassicRenderer};
 

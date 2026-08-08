@@ -17,6 +17,7 @@
 // native rlib + tests never build it.
 #[cfg(target_arch = "wasm32")]
 mod renderer;
+pub mod walk;
 #[cfg(target_arch = "wasm32")]
 pub use renderer::{create_focus_renderer, ClassicFocusRenderer};
 
@@ -445,9 +446,10 @@ pub const DEFAULT_FONT_ALIAS: &str = "vello-gpu-font";
 /// the full seam `render_vello_core::sink::Sink` drives, so classic runs the *same* scheduler +
 /// tile-cache + effect pipeline hybrid does.
 ///
-/// It composes the pieces the earlier slices proved: scene *building* is the shared
-/// [`draw_paint_batch`](render_vello_core::draw::draw_paint_batch) over [`ClassicCtx`] (reading the
-/// live model off the shared ABI, exactly as the hybrid `NeutralModelScene` does); *rasterization* is
+/// It composes the pieces the earlier slices proved: scene *building* is classic's own
+/// [`draw_paint_batch`](crate::walk::draw_paint_batch) over [`ClassicCtx`] — leaning on the shared
+/// leaf paint (`render_vello_core::draw::paint_body`) and reading the live model off the shared ABI,
+/// as the hybrid `NeutralModelScene` does with its own walk; *rasterization* is
 /// [`ClassicRenderer`]'s `render_to_texture`. It owns the Parley [`TextState`](render_vello_core::text::TextState)
 /// so text laid out across a frame reuses one font context.
 pub struct ClassicBackend {
@@ -530,7 +532,7 @@ impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
         // the hybrid `NeutralModelScene` reads; `view = transform · viewport` mirrors its `root ·
         // viewport`, with `transform` the surface-placement matrix the sink baked in.
         render_vello_core::abi::with_scene(|model, viewport, modifiers| {
-            render_vello_core::draw::draw_paint_batch(
+            crate::walk::draw_paint_batch(
                 scene,
                 &mut resources,
                 &ClassicEnv,
@@ -968,7 +970,7 @@ mod tests {
         use render_core::kurbo::Rect as PageRect;
         use render_core::model::{Brush, Node, Paint, Scene, ShapeKind, ROOT_ID};
         use render_core::peniko::Color;
-        use render_vello_core::draw::draw_scene;
+        use crate::walk::draw_scene;
 
         let (red, blue) = (Color::from_rgba8(230, 40, 40, 255), Color::from_rgba8(40, 60, 230, 255));
         let (a, g, b) = (1u128, 2u128, 3u128);
@@ -1059,7 +1061,7 @@ mod tests {
         use render_core::kurbo::Rect as PageRect;
         use render_core::model::{Brush, Node, Paint, Scene, ShapeKind, ROOT_ID};
         use render_core::peniko::{Color, ColorStop, Gradient};
-        use render_vello_core::draw::draw_scene;
+        use crate::walk::draw_scene;
 
         // Unit-box linear gradient, red→blue left to right — exactly what a Penpot gradient fill
         // carries; `set_paint` maps the unit box onto the shape's bounds.
@@ -1378,7 +1380,7 @@ mod tests {
             FontRef, TextAlign, TextBlock, TextDecoration, TextDirection, TextGrow, TextParagraph,
             TextSpan, TextTransform, VerticalAlign,
         };
-        use render_vello_core::draw::draw_scene;
+        use crate::walk::draw_scene;
         use render_vello_core::text::TextState;
 
         let fpath = concat!(env!("CARGO_MANIFEST_DIR"), "/../vello/examples/assets/roboto/Roboto-Regular.ttf");
@@ -1512,7 +1514,7 @@ mod tests {
         use render_core::kurbo::{Affine, Rect as PageRect, RoundedRectRadii, Vec2};
         use render_core::model::{Brush, Node, Paint, Scene, Shadow, ShapeKind, ROOT_ID};
         use render_core::peniko::Color;
-        use render_vello_core::draw::draw_scene;
+        use crate::walk::draw_scene;
         use render_vello_core::text::TextState;
 
         let mut scene = Scene::new();
