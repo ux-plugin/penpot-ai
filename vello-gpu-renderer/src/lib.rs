@@ -526,6 +526,8 @@ impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
     }
 
     fn build_bodies(&mut self, scene: &mut ClassicCtx, transform: Affine, ops: &[render_core::schedule::PaintOp]) {
+        // Timed like hybrid's, so `scene` (CPU scene building) is comparable across backends.
+        let _tsc = render_vello_core::prof::now();
         let mut resources = ();
         let text = &mut self.text;
         // The live model + host viewport + gesture modifiers come off the shared ABI, the same source
@@ -543,6 +545,7 @@ impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
                 ops,
             );
         });
+        render_vello_core::prof::add_scene(render_vello_core::prof::now() - _tsc);
     }
 
     fn build_mask(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128) {
@@ -568,7 +571,12 @@ impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
         base_color: render_core::peniko::Color,
     ) {
         use render_vello_core::rasterize::SceneRasterizer;
+        // Timed like hybrid's `render` bucket. For classic this covers encoding *and* the compute
+        // dispatch's own submit, so a large value here that is not encode work is GPU backpressure.
+        let _trd = render_vello_core::prof::now();
         self.renderer.rasterize(scene, device, queue, target, width, height, base_color);
+        render_vello_core::prof::add_render(render_vello_core::prof::now() - _trd);
+        render_vello_core::prof::inc_render();
     }
 
     fn rasterize_target_usage(&self) -> wgpu::TextureUsages {
