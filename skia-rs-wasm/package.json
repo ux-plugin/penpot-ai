@@ -29,6 +29,7 @@
     "build": "npm run build:lib && npm run build:worker",
     "build:wasm": "./scripts/build-wasm.sh",
     "build:vello": "./scripts/build-vello.sh",
+    "build:vello-gpu": "./scripts/build-vello-gpu.sh",
     "build:lib": "vite build",
     "build:worker": "vite build --config vite.worker.config.ts",
     "build:app": "vite build --config vite.app.config.ts",
