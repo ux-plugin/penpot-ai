@@ -158,7 +158,13 @@ function renderSceneIntoBox(
   renderer.setScissor(glX, glY, sw, sh)
   renderer.setScissorTest(true)
   renderer.setClearColor(backdrop ? new THREE.Color(backdrop) : 0x000000, backdrop ? 1 : 0)
-  renderer.clear(true, true, false) // colour + depth, scoped to the scissor box
+  // Depth always (each scene needs its own depth range), but colour ONLY for an explicit
+  // backdrop. All scenes share one overlay canvas, and this clear is scoped to *this* scene's
+  // box — so clearing colour unconditionally erased whatever an earlier scene had already
+  // drawn wherever their boxes overlap. That is what cut a sphere off along the neighbouring
+  // board's edges, showing the 2D canvas (the page background) through the hole. Transparency
+  // needs no clear here: `draw()` already clears the whole overlay to transparent each frame.
+  renderer.clear(backdrop !== null, true, false)
   renderer.render(inst.scene, inst.camera)
 }
 
