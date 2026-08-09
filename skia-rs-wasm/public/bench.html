@@ -1,0 +1,144 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>vello bench</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font: 13px ui-monospace, monospace; }
+  #c { display: block; }
+  #out { position: fixed; top: 8px; left: 8px; white-space: pre; background: #000c; padding: 8px; }
+</style>
+<canvas id="c"></canvas>
+<div id="out">booting…</div>
+<script type="module">
+// Standalone renderer benchmark: loads a vello backend directly, with NO app, no React, no
+// document proxies — so the numbers are the renderer's, not the editor's.
+//
+//   /bench.html?backend=hybrid|classic&n=2000&frames=40
+//
+// Shapes are built straight through the C ABI (the same entry points the app uses), so both
+// backends rasterize byte-identical input.
+
+const q = new URLSearchParams(location.search)
+const BACKEND = q.get('backend') ?? 'hybrid'
+const N = Number(q.get('n') ?? 2000)
+const FRAMES = Number(q.get('frames') ?? 40)
+const W = Number(q.get('w') ?? 1600)
+const H = Number(q.get('h') ?? 1000)
+
+const out = document.getElementById('out')
+const log = (s) => { out.textContent = s }
+
+const URLS = {
+  hybrid: '/wasm-vello/render-vello.js',
+  classic: '/wasm-vello-gpu/render-vello-gpu.js',
+}
+
+// One solid fill record: 4-byte header (count) + one RAW_FILL_DATA_SIZE record.
+// Record layout: tag u8 @0 (0x00 = Solid), payload @4, solid colour u32 @payload+0.
+const REC = 164
+
+function main() {
+  const url = URLS[BACKEND]
+  if (!url) { log('unknown backend ' + BACKEND); return }
+
+  import(/* @vite-ignore */ url).then(async (mod) => {
+    // `init()` returns the raw wasm instance exports — that is where the `#[no_mangle]` C-ABI
+    // lives (and `memory`). `create_focus_renderer` is a wasm-bindgen item, so it is on the
+    // module namespace instead.
+    const wasm = await mod.default()
+    const X = wasm
+    const memOf = () => wasm.memory
+
+    const canvas = document.getElementById('c')
+    const dpr = 1 // pin to 1 so both backends rasterize the same pixel count
+    canvas.width = W
+    canvas.height = H
+    canvas.style.width = W + 'px'
+    canvas.style.height = H + 'px'
+
+    X.init(W, H)
+    X.set_render_options(0, dpr)
+    X.set_scheduler(1)
+    X.set_tile_effects(1)
+
+    const renderer = await mod.create_focus_renderer(canvas)
+
+    // ---- build the synthetic scene -------------------------------------------------
+    const mem = memOf()
+    const u8 = () => new Uint8Array(mem.buffer)
+    const dv = () => new DataView(mem.buffer)
+
+    function solidFill(color) {
+      const size = 4 + REC
+      const ptr = X.alloc_bytes(size)
+      u8().fill(0, ptr, ptr + size)
+      u8()[ptr] = 1            // fill count
+      u8()[ptr + 4] = 0x00     // record tag: Solid
+      dv().setUint32(ptr + 8, color, true)
+      X.set_shape_fills()
+    }
+
+    X.init_shapes_pool(N + 16)
+    // Lay the shapes out on a grid across a page area that spans many tiles, so the tiling and
+    // batching paths are actually exercised rather than one tile doing all the work.
+    const cols = Math.ceil(Math.sqrt(N))
+    const cell = 40
+    for (let i = 0; i < N; i++) {
+      const cx = (i % cols) * cell
+      const cy = Math.floor(i / cols) * cell
+      X.use_shape(0, 0, 0, i + 1)
+      X.set_shape_selrect(cx + 2, cy + 2, cx + cell - 2, cy + cell - 2)
+      // vary colour so nothing can be trivially batched away
+      solidFill(0xff000000 | (i * 2654435761 & 0xffffff))
+      X.use_shape(0, 0, 0, 0)
+      X.add_shape_child(0, 0, 0, i + 1)
+    }
+
+    // ---- benchmark ------------------------------------------------------------------
+    const raf = () => new Promise((r) => requestAnimationFrame(r))
+    // Distinct zooms => a different zoom bucket each frame => the whole tile cache is dropped,
+    // so every frame is a genuine full redraw rather than a cache blit.
+    const ZOOMS = [0.5, 0.8, 1.1, 1.4, 0.65, 0.95, 1.25, 1.55]
+    const setZ = (i) => X.set_view(ZOOMS[i % ZOOMS.length], 0, 0)
+
+    for (let i = 0; i < 8; i++) { setZ(i); renderer.render(); await raf() }
+
+    X.prof_reset()
+    let sum = 0, worst = 0, rendered = 0
+    for (let i = 0; i < FRAMES; i++) {
+      setZ(i)
+      const t0 = performance.now()
+      renderer.render()
+      const dt = performance.now() - t0
+      sum += dt; if (dt > worst) worst = dt
+      rendered += (X.last_tile_stats() >>> 16)
+      await raf()
+    }
+    const b = [0, 1, 2, 3, 4, 5].map((i) => X.prof_read(i))
+
+    let frames = 0
+    const t1 = performance.now()
+    while (performance.now() - t1 < 2500) { setZ(frames); renderer.render(); frames++; await raf() }
+    const fps = frames / ((performance.now() - t1) / 1000)
+
+    const res = {
+      backend: BACKEND, shapes: N, canvas: W + 'x' + H, dpr,
+      tilesPerFrame: +(rendered / FRAMES).toFixed(1),
+      cpuMsPerFrame: +(sum / FRAMES).toFixed(3),
+      worstMs: +worst.toFixed(2),
+      phases_ms: {
+        build: +(b[0] / FRAMES).toFixed(3),
+        scene: +(b[1] / FRAMES).toFixed(3),
+        render: +(b[2] / FRAMES).toFixed(3),
+        submit: +(b[3] / FRAMES).toFixed(3),
+        tex: +(b[4] / FRAMES).toFixed(3),
+      },
+      stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
+      sustainedFps: +fps.toFixed(1),
+    }
+    window.__RESULT__ = res
+    log(JSON.stringify(res, null, 2))
+  }).catch((e) => { window.__ERR__ = String(e); log('ERROR ' + e) })
+}
+
+main()
+</script>
