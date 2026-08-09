@@ -19,9 +19,10 @@
 //! sink's job, above this seam, using the shared compositor — so both backends express it the same
 //! way.
 
-use render_core::kurbo::Affine;
+use render_core::kurbo::{Affine, Rect, Shape};
 use render_core::peniko::Color;
 use render_core::schedule::PaintOp;
+use vello_example_scenes::RenderingContext;
 
 /// The **sink's** full backend seam: everything the GPU production sink ([`crate`]'s scheduler sink)
 /// needs from a Vello flavor, so the sink body holds no concrete backend type.
@@ -42,7 +43,10 @@ use render_core::schedule::PaintOp;
 /// a scene is built and rasterized.
 pub trait RasterBackend {
     /// The backend's scene type (a `vello_hybrid::Scene`, or the classic `RenderingContext` wrapper).
-    type Scene;
+    ///
+    /// Bounded by `RenderingContext` so the seam can express a *clip* once, for both backends —
+    /// see [`Self::build_bodies_clipped`].
+    type Scene: RenderingContext;
 
     /// A fresh, empty scene sized `width × height` device pixels, ready to be drawn into.
     fn new_scene(&self, width: u16, height: u16) -> Self::Scene;
@@ -51,6 +55,31 @@ pub trait RasterBackend {
     /// live document into `scene` at `transform`. Coalescing several plain shapes into one scene is
     /// how a `Paint` becomes a single rasterize.
     fn build_bodies(&mut self, scene: &mut Self::Scene, transform: Affine, ops: &[PaintOp]);
+
+    /// [`Self::build_bodies`], clipped to `clip` — a rect in the **scene's own** pixel space.
+    ///
+    /// This is what makes it safe to batch several independent surfaces into ONE scene, the way the
+    /// sink's atlas prepass does: each surface owns a cell of the atlas, and a shape is only
+    /// guaranteed to stay inside its cell if it is clipped to it. Unclipped, anything bigger than a
+    /// cell (a board border, a large bake) paints straight through into the neighbouring cells, which
+    /// are then copied into the *wrong* surfaces — reproducing that shape one cell away.
+    ///
+    /// Defaulted in terms of `build_bodies` plus the `RenderingContext` clip both backends already
+    /// implement, so no backend has to repeat it.
+    fn build_bodies_clipped(
+        &mut self,
+        scene: &mut Self::Scene,
+        transform: Affine,
+        ops: &[PaintOp],
+        clip: Rect,
+    ) {
+        // A clip path is captured under whatever transform is current at push time, so pin identity
+        // first to express `clip` in raw scene pixels rather than in `transform`'s space.
+        scene.set_transform(Affine::IDENTITY);
+        scene.push_clip_layer(&clip.to_path(0.1));
+        self.build_bodies(scene, transform, ops);
+        scene.pop_layer();
+    }
 
     /// Fill exactly one node's silhouette in solid white into `scene` at `transform` — the coverage
     /// mask a gather multiplies into its blurred backdrop so it shows through the shape's outline.

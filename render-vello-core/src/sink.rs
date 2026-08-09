@@ -348,32 +348,6 @@ impl Sink {
         const ATLAS_MIN: usize = 3;
         let none = HashSet::new();
 
-        // DISABLED — this prepass duplicates content across tiles.
-        //
-        // It draws *every* candidate tile's bodies into ONE shared atlas scene, positioning each by a
-        // per-cell translate only (`root_for_cell` below) with **no clip to the cell**. A shape larger
-        // than a tile — a board border, a big 3D bake — therefore paints straight out of its 1024²
-        // cell and into the neighbouring cells, which are then `copy_texture_to_texture`'d into *their*
-        // tiles. Working the offsets through: a cell's spill lands in the next tile's buffer exactly
-        // `TILE_SIZE` (512 px) from where that tile's own copy sits, so a single stroke reappears every
-        // 512 device px.
-        //
-        // Measured, not guessed: at 293% and again at 558% zoom (so the period is zoom-invariant, i.e.
-        // tile-locked rather than content) the vello frame carried strokes at exactly 512-px spacing
-        // (930 → 1442 → 1954, 1033 → 1545, 1113 → 1625), where 1954 is the *real* stroke and the others
-        // are its −512/−1024 duplicates. The same document under Skia has no 512-periodic feature at
-        // all, and turning the scheduler off (whole-scene, untiled) removed every duplicate.
-        //
-        // The `ATLAS_MIN = 3` threshold is why this only bites past a certain zoom, and earliest on the
-        // big 3D bake: below three candidate tiles the prepass never ran. The per-tile path this falls
-        // through to renders each tile into its own texture, which clips it, so it is correct.
-        //
-        // Re-enabling needs a per-cell clip across the `RasterBackend` seam (the neutral `PaintOp`
-        // stream has no clip variant today, and the clip primitive lives on `RenderingContext`, not on
-        // the backend trait) — a batching optimisation, deliberately traded for correctness here.
-        if ATLAS_MIN > 0 {
-            return none;
-        }
 
         // The first Paint into each surface (render-core's SSA-order primitive), kept only for the
         // `TILE_BUFFER`-sized plain bodies: a tile output or a group's scope buffer (a scope's first
@@ -407,7 +381,18 @@ impl Sink {
             let (ox, oy) = tiling::tile_device_origin(tile, full_view);
             let m = f64::from(TILE_MARGIN);
             let root_for_cell = Affine::translate((f64::from(cell.x) + m - ox, f64::from(cell.y) + m - oy)) * root;
-            backend.build_bodies(&mut scene, root_for_cell, ops);
+            // Clip to this cell. Every candidate shares one atlas scene, so without it a shape bigger
+            // than a tile (a board border, a large 3D bake) paints out of its own 1024² cell and into
+            // the neighbours, which are then copied into *their* tiles — the shape reappearing exactly
+            // `TILE_SIZE` away, once per tile. The clip is the cell itself, so the tile's margin apron
+            // is untouched and the batching win is kept.
+            let cell_rect = Rect::new(
+                f64::from(cell.x),
+                f64::from(cell.y),
+                f64::from(cell.x) + f64::from(TILE_BUFFER),
+                f64::from(cell.y) + f64::from(TILE_BUFFER),
+            );
+            backend.build_bodies_clipped(&mut scene, root_for_cell, ops, cell_rect);
         }
 
         let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
