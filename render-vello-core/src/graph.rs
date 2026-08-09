@@ -104,6 +104,7 @@ pub fn run_graph(
     h: u32,
     format: wgpu::TextureFormat,
 ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+    crate::prof::inc_graph();
     let sampler = compositor.sampler();
     let mut outputs: Vec<(wgpu::Texture, wgpu::TextureView)> = Vec::with_capacity(passes.len());
     // Scratch textures/views a pass allocates internally (blur pyramid levels) must outlive the

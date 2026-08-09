@@ -40,6 +40,14 @@ const RADIUS = Number(q.get('radius') ?? 6)
 // SHOULD collapse to one pass. Compare buckets 108-111 across the two to see the optimization's reach.
 const STACK = Number(q.get('stack') ?? 0)
 const STACK_FX = q.get('stackFx') ?? 'bgblur'
+// Isolated topmost lenses: `lenses` fill-less blur rects spread across the canvas in a grid, each
+// small enough that its sample rect (output + blur reach) never reaches a neighbour, and all added
+// LAST so nothing is painted above them. This is the "panels over a background" case the collapse
+// targets — every lens is topmost and independent, so they all defer into ONE batched pass.
+const LENSES = Number(q.get('lenses') ?? 0)
+// bgFill=1 lays one full-canvas opaque rect UNDER everything, so a lens's backdrop has no transparent
+// gaps — isolates true blur fidelity from the grid's transparent-seam "show-through" artifact.
+const BGFILL = Number(q.get('bgFill') ?? 0)
 
 const out = document.getElementById('out')
 const log = (s) => { out.textContent = s }
@@ -75,6 +83,8 @@ function main() {
     // Sink submit-batch size (steps per encoder). 0 = unbounded (whole frame in one encoder — the
     // case that OOMed). Default 32. Lets a sweep prove memory scales with batch size.
     if (X.set_sink_batch) X.set_sink_batch(Number(q.get('batch') ?? 32))
+    // gatherBatch=0 forces the inline (pre-collapse) gather path — the A/B baseline for the batch.
+    if (X.set_gather_batch) X.set_gather_batch(Number(q.get('gatherBatch') ?? 1))
 
     window.__X__ = X // expose wasm exports for ad-hoc probing
     const renderer = await mod.create_focus_renderer(canvas)
@@ -96,7 +106,18 @@ function main() {
     const cols = Math.ceil(Math.sqrt(N))
     const shapeXY = (i) => [(i % cols) * CELL, Math.floor(i / cols) * CELL]
 
-    X.init_shapes_pool(N + DEPTH + STACK + 16)
+    X.init_shapes_pool(N + DEPTH + STACK + LENSES + 16)
+
+    // Opaque full-canvas backdrop as the first root child (lowest z), under the grid + lenses.
+    if (BGFILL) {
+      const id = N + DEPTH + STACK + LENSES + 5
+      X.use_shape(0, 0, 0, id)
+      X.set_shape_type(3)
+      X.set_shape_selrect(0, 0, W, H)
+      solidFill(0xff202028)
+      X.use_shape(0, 0, 0, 0)
+      X.add_shape_child(0, 0, 0, id)
+    }
 
     // Nested frames above the shapes: root -> f1 -> ... -> fDEPTH -> shapes. This is what makes
     // the walk pay for a transform/clip stack rather than a flat list.
@@ -118,8 +139,13 @@ function main() {
       X.use_shape(0, 0, 0, i + 1)
       X.set_shape_type(3)                       // Rect
       X.set_shape_selrect(cx + 2, cy + 2, cx + CELL - 2, cy + CELL - 2)
-      solidFill(0xff000000 | (i * 2654435761 & 0xffffff))
-      if (EFFECTS !== 'none' && i % EFFECT_EVERY === 0) {
+      const isEffect = EFFECTS !== 'none' && i % EFFECT_EVERY === 0
+      // Gather lenses (bgblur/glass) stay fill-less so they are *pure lenses* — the batched gather
+      // stage only collapses those (nothing composites over the blur). Everything else gets a fill so
+      // there is a colourful backdrop to blur.
+      const isGatherLens = isEffect && (EFFECTS === 'bgblur' || EFFECTS === 'glass')
+      if (!isGatherLens) solidFill(0xff000000 | (i * 2654435761 & 0xffffff))
+      if (isEffect) {
         // Two scheduler families:
         //   SPREAD  — own surface, composited onto every tile it overlaps (additive, no backdrop read).
         //     shadow = drop shadow;  blur = LAYER blur (blur_type 0, the shape's own paint).
@@ -149,6 +175,25 @@ function main() {
       else X.set_shape_blur(1, false, RADIUS)   // blur_type 1 = background (gather)
       X.use_shape(...parent)
       X.add_shape_child(0, 0, 0, id)
+    }
+
+    // Isolated topmost blur lenses spread over the canvas — the collapse's best case.
+    const LENS_BASE = N + DEPTH + STACK + 2
+    if (LENSES > 0) {
+      const lc = Math.ceil(Math.sqrt(LENSES))
+      const cw = W / lc, ch = H / lc
+      const half = Math.min(cw, ch) * 0.28   // small enough that output+reach stays inside its cell
+      for (let s = 0; s < LENSES; s++) {
+        const id = LENS_BASE + s
+        const gx = (s % lc + 0.5) * cw, gy = (Math.floor(s / lc) + 0.5) * ch
+        X.use_shape(0, 0, 0, id)
+        X.set_shape_type(3)                       // Rect
+        X.set_shape_selrect(gx - half, gy - half, gx + half, gy + half)  // no fill: pure lens
+        if (STACK_FX === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.2, 0, 0, 0, 1, RADIUS, 3, 0)
+        else X.set_shape_blur(1, false, RADIUS)   // background blur (gather)
+        X.use_shape(...parent)
+        X.add_shape_child(0, 0, 0, id)
+      }
     }
 
     // ---- regimes -------------------------------------------------------------------
@@ -206,6 +251,9 @@ function main() {
         // this well below the paint-step count. bucket 8/9 = texture-pool hits/misses.
         renders: +(X.prof_read(7) / FRAMES).toFixed(1),
         poolMiss: +(X.prof_read(9) / FRAMES).toFixed(1),
+        // bucket 14 = run_graph executions (the blur/glass/custom pass-graph round-trips). This is the
+        // real gather cost `renders` hides — the number the batched collapse is meant to crater.
+        graphRuns: +(X.prof_read(14) / FRAMES).toFixed(1),
       }
       // Gather-collapse projection (buckets 108-111, last timed frame): total gathers vs how many
       // defer, the passes with the collapse applied vs `total` today, and the batched dispatch count.
@@ -248,6 +296,19 @@ function main() {
     }
 
     const res = { backend: BACKEND, shapes: N, depth: DEPTH, effects: EFFECTS, radius: RADIUS, effectEvery: EFFECT_EVERY, stack: STACK, stackFx: STACK_FX, canvas: W + 'x' + H, modes: {} }
+    // once=1: render exactly ONE fresh frame at view (1,0,0) and stop — no tile-cache reuse, so
+    // gathers are actually rendered this frame. The clean A/B substrate (batched vs inline) that idle
+    // can't give (idle blits cached tiles) and zoom can't give (its view differs frame to frame).
+    if (Number(q.get('once') ?? 0)) {
+      X.prof_reset()
+      X.set_view(1, 0, 0)
+      renderer.render()
+      await raf()
+      res.once = { graphRuns: X.prof_read(14), gatherTotal: X.prof_read(108), deferrable: X.prof_read(109) }
+      window.__RESULT__ = res
+      log(JSON.stringify(res, null, 2))
+      return
+    }
     const modeList = q.get('modes') ? q.get('modes').split(',') : ['idle', 'pan', 'zoom', 'edit1', 'editFar', 'editMulti']
     for (const name of modeList) {
       log(JSON.stringify(res, null, 2) + '\n\nrunning ' + name + '…')

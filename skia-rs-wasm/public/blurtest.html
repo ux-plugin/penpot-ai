@@ -17,6 +17,8 @@ const BACKEND = q.get('backend') ?? 'classic'
 const BATCH = Number(q.get('batch') ?? 1)
 const RADIUS = Number(q.get('radius') ?? 20)
 const FX = q.get('fx') ?? 'bgblur'   // bgblur | glass — both are gather effects
+const GB = Number(q.get('gatherBatch') ?? 1) // 0 = inline gather path (A/B baseline)
+const TWO = Number(q.get('two') ?? 0)        // 1 = two separated lenses so the batch engages (min 2)
 const out = document.getElementById('out')
 const log = (s) => { out.textContent = s }
 const URLS = { hybrid: '/wasm-vello/render-vello.js', classic: '/wasm-vello-gpu/render-vello-gpu.js' }
@@ -25,13 +27,14 @@ const REC = 164
 import(/* @vite-ignore */ URLS[BACKEND]).then(async (X0) => {
   const X = await X0.default()
   const canvas = document.getElementById('c')
-  const W = 600, H = 600
+  const W = TWO ? 1200 : 600, H = 600
   canvas.width = W; canvas.height = H
   X.init(W, H)
   X.set_render_options(0, 1)
   X.set_scheduler(1)
   X.set_tile_effects(1)
   if (X.set_sink_batch) X.set_sink_batch(BATCH)
+  if (X.set_gather_batch) X.set_gather_batch(GB)
   const renderer = await X0.create_focus_renderer(canvas)
 
   const u8 = () => new Uint8Array(X.memory.buffer)
@@ -52,9 +55,9 @@ import(/* @vite-ignore */ URLS[BACKEND]).then(async (X0) => {
 
   X.init_shapes_pool(16)
   // Backdrop stripes.
-  rect(1, 0, 0, 200, 600, 0xffff0000); childOfRoot(1)   // red
-  rect(2, 200, 0, 400, 600, 0xff00ff00); childOfRoot(2) // green
-  rect(3, 400, 0, 600, 600, 0xff0000ff); childOfRoot(3) // blue
+  rect(1, 0, 0, W / 3, 600, 0xffff0000); childOfRoot(1)       // red
+  rect(2, W / 3, 0, 2 * W / 3, 600, 0xff00ff00); childOfRoot(2) // green
+  rect(3, 2 * W / 3, 0, W, 600, 0xff0000ff); childOfRoot(3)   // blue
   if (FX === 'shadow') {
     // Two overlapping filled rects, each casting a drop shadow — tests the tile-fuse: the shadow
     // surfaces inline under the plain bodies, in z-order, across tile boundaries.
@@ -71,20 +74,26 @@ import(/* @vite-ignore */ URLS[BACKEND]).then(async (X0) => {
     window.__DONE__ = true
     return
   }
-  // No-fill rect with a GATHER effect on top, straddling both seams.
-  rect(4, 100, 100, 500, 500, null)
-  if (FX === 'glass') {
-    // surface, bezel, thickness, ior, specAngle, specOpacity, specSat, chromAb, splay, tilt, edge, zoom, blur, frost, hidden
-    X.set_shape_glass(0, 8, 12, 1.6, 0, 0.4, 1, 0.2, 0, 0, 0, 1, RADIUS, 4, 0)
-  } else {
-    X.set_shape_blur(1, false, RADIUS)  // blur_type 1 = background (gather)
+  // No-fill rect(s) with a GATHER effect on top, straddling seams. `two` adds a far-right lens so the
+  // batch engages (min 2 deferrable lenses); the LEFT lens is at the same 100..500 spot either way, so
+  // its region is directly comparable batched vs inline.
+  function lens(id, x0) {
+    rect(id, x0, 100, x0 + 400, 500, null)
+    if (FX === 'glass') {
+      // surface, bezel, thickness, ior, specAngle, specOpacity, specSat, chromAb, splay, tilt, edge, zoom, blur, frost, hidden
+      X.set_shape_glass(0, 8, 12, 1.6, 0, 0.4, 1, 0.2, 0, 0, 0, 1, RADIUS, 4, 0)
+    } else {
+      X.set_shape_blur(1, false, RADIUS)  // blur_type 1 = background (gather)
+    }
+    childOfRoot(id)
   }
-  childOfRoot(4)
+  lens(4, 100)
+  if (TWO) lens(6, W - 500)
 
   X.set_view(1, 0, 0)
   const raf = () => new Promise((r) => requestAnimationFrame(r))
   for (let i = 0; i < 5; i++) { renderer.render(); await raf() }
-  log(`${BACKEND} · batch=${BATCH} · fx=${FX} radius=${RADIUS}\nStripes should be SMEARED/REFRACTED inside the centre rect if the gather ran.`)
+  log(`${BACKEND} · batch=${BATCH} · fx=${FX} r=${RADIUS} · two=${TWO} · gatherBatch=${GB}\nStripes should be SMEARED inside the lens rect(s) if the gather ran.`)
   window.__DONE__ = true
 }).catch((e) => { window.__ERR__ = String(e && e.stack || e); log('ERROR ' + e) })
 </script>

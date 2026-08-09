@@ -24,7 +24,7 @@ use render_core::atlas::{pack_grid, shelf_pack};
 use render_core::peniko::color::palette::css::TRANSPARENT;
 use render_core::peniko::Color;
 use render_core::schedule::{
-    first_write_paints, LayerPaint, PaintOp, Schedule, Step, SurfaceRef, SurfaceRole,
+    first_write_paints, GatherPlan, LayerPaint, PaintOp, Schedule, Step, SurfaceRef, SurfaceRole,
 };
 use render_core::tile_cache::TileCache;
 use render_core::tiling::{self, TileKey, TILE_BUFFER, TILE_MARGIN, TILE_SIZE};
@@ -302,10 +302,45 @@ impl Sink {
             Self::submit_batch(&mut frame_enc, device, queue, backend);
         }
 
+        // Batched gather collapse: the deferrable pure-lens blur groups worth batching (>= 2). Their
+        // ComposeBackdrop/PaintGather steps are skipped below and run as one atlas after the loop; the
+        // finalize composites (TileOutput→Target) are held until after that scatter lands in the tiles.
+        const GATHER_MIN: usize = 2;
+        let gather_groups: Vec<Vec<usize>> = if crate::abi::gather_batch() {
+            schedule
+                .gather_plan
+                .deferrable_blur_groups()
+                .into_iter()
+                .filter(|g| g.len() >= GATHER_MIN)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let batched_gathers: HashSet<u128> = gather_groups
+            .iter()
+            .flatten()
+            .map(|&gi| schedule.gather_plan.gathers[gi].shape)
+            .collect();
+        let mut finalize: Vec<usize> = Vec::new();
+
         let mut batched = 0_u32;
         for (i, step) in schedule.steps.iter().enumerate() {
             if atlased.contains(&i) {
                 continue;
+            }
+            // Deferred to the batched gather stage — its backdrop is recomposed there from the finished
+            // tiles (z-invariant by the sample-rect rule).
+            if let Step::ComposeBackdrop { shape, .. } | Step::PaintGather { shape, .. } = step {
+                if batched_gathers.contains(shape) {
+                    continue;
+                }
+            }
+            // Finalize composites wait until the gather batch has scattered into the tiles.
+            if let Step::Composite { to, .. } = step {
+                if to.is_target() {
+                    finalize.push(i);
+                    continue;
+                }
             }
             match step {
                 Step::Paint { ops, clip, write_to } => {
@@ -333,6 +368,22 @@ impl Sink {
                 // transient GPU memory is ever held unsubmitted.
                 Self::submit_batch(&mut frame_enc, device, queue, backend);
                 batched = 0;
+            }
+        }
+
+        // The batched gather collapse: every deferred blur lens's backdrop composed into one atlas,
+        // blurred once per radius, and scattered into its tiles — N round-trips become ~1.
+        if !gather_groups.is_empty() {
+            self.atlas_gather(&schedule.gather_plan, &gather_groups, backend, device, queue, &mut frame_enc, root, full_view, format);
+            if !safe {
+                Self::submit_batch(&mut frame_enc, device, queue, backend);
+            }
+        }
+        // Held finalize composites now fold each tile — including the scattered blur — to the swapchain.
+        for &i in &finalize {
+            if let Step::Composite { from, to, paint, rect, .. } = &schedule.steps[i] {
+                crate::prof::inc_composite();
+                self.composite(*from, *to, *paint, *rect, device, &mut frame_enc, &sw_view, full_view, width, height, format);
             }
         }
 
@@ -806,6 +857,180 @@ impl Sink {
             }
         }
         handled
+    }
+
+    /// The batched background-blur gather stage — **the collapse**. Instead of a backdrop-compose +
+    /// blur pass *per* deferrable blur lens (a GPU round-trip each, the ~90 ms cost), it composes every
+    /// lens's backdrop into one atlas, blurs the atlas **once** per radius group, rasterizes every
+    /// silhouette into one mask atlas (one `backend.rasterize`), and scatters each cell through its mask
+    /// into the lens's tiles. So N lenses cost ~1 blur-graph run + 1 mask render instead of N of each.
+    ///
+    /// Runs after the main loop has painted all non-deferred content, so recomposing each backdrop from
+    /// the finished `TileOutput`s is pixel-identical to reading it at the lens's z — the sample-rect
+    /// deferrability rule (see render-core's `gather_plan`) guarantees nothing above ever touched it.
+    /// `groups` are the pre-filtered [`GatherPlan::deferrable_blur_groups`] the main loop skipped.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn atlas_gather<B: RasterBackend>(
+        &mut self,
+        plan: &GatherPlan,
+        groups: &[Vec<usize>],
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        root: Affine,
+        full_view: Affine,
+        format: wgpu::TextureFormat,
+    ) {
+        // A gap between cells so no cell's kernel taps reach a neighbour. Each cell already carries its
+        // `reach` (3σ) padding — the sample rect — so the silhouette region samples only within its own
+        // cell; the gap just keeps the discarded padding fringe from touching the next cell.
+        const GAP: u32 = 8;
+        let max_dim = device.limits().max_texture_dimension_2d;
+        let bg = crate::abi::background().components;
+        let bgc = [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])];
+
+        // One (device backdrop rect, cap factor, cell size) per gather in the group.
+        struct Cell {
+            gi: usize,
+            bdx: f64,
+            bdy: f64,
+            k: f64,
+            w: u32,
+            h: u32,
+        }
+        for group in groups {
+            let mut cells: Vec<Cell> = Vec::with_capacity(group.len());
+            for &gi in group {
+                let g = &plan.gathers[gi];
+                let (bdx, bdy, dw, dh) = tiling::device_rect(full_view, g.sample);
+                let k = tiling::resolution_cap(full_view, g.reach);
+                let w = ((dw * k).ceil() as u32).clamp(1, 4096);
+                let h = ((dh * k).ceil() as u32).clamp(1, 4096);
+                if w > max_dim || h > max_dim {
+                    continue;
+                }
+                cells.push(Cell { gi, bdx, bdy, k, w, h });
+            }
+            if cells.is_empty() {
+                continue;
+            }
+            let sizes: Vec<(u32, u32)> = cells.iter().map(|c| (c.w, c.h)).collect();
+            let Some(packing) = shelf_pack(&sizes, GAP, 2048, max_dim) else { continue };
+            let (aw, ah) = (packing.width, packing.height);
+
+            // (1) Backdrop atlas: compose each lens's backdrop into its cell (the same tile-centre blits
+            // `compose_backdrop` does, offset to the cell). Needs to be a render target *and* a sampled
+            // input for the blur.
+            let bd_usage =
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
+            let bd_atlas = self.pool.acquire(device, PoolKey { w: aw, h: ah, format, usage: bd_usage.bits() }, "gather backdrop atlas");
+            let bd_view = bd_atlas.create_view(&wgpu::TextureViewDescriptor::default());
+            Compositor::clear(enc, &bd_view, bgc);
+            let m = TILE_MARGIN as f32;
+            let ts = TILE_SIZE as f32;
+            for cell in &packing.cells {
+                let c = &cells[cell.index];
+                let kf = c.k as f32;
+                for &tile in &plan.gathers[c.gi].reads {
+                    let src_ref = SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile);
+                    let Some(src) = self.surfaces.get(&src_ref) else { continue };
+                    let src_view = src.view.clone();
+                    let (ox, oy) = tiling::tile_device_origin(tile, full_view);
+                    self.compositor.blit(device, enc, &bd_view, (aw as f32, ah as f32), &Blit {
+                        src: &src_view,
+                        dst: (
+                            cell.x as f32 + ((ox - c.bdx) as f32) * kf,
+                            cell.y as f32 + ((oy - c.bdy) as f32) * kf,
+                            ts * kf,
+                            ts * kf,
+                        ),
+                        src_rect: (m, m, ts, ts),
+                        src_size: (TILE_BUFFER as f32, TILE_BUFFER as f32),
+                        alpha: 1.0,
+                    });
+                }
+            }
+
+            // The blur graph submits its own encoder, so the backdrop-atlas blits (recorded into `enc`,
+            // along with the tile writes they read) must be flushed first or the blur reads stale
+            // pixels — the same flush the inline gather path gets from crossing a submit batch.
+            Self::submit_batch(enc, device, queue, backend);
+
+            // (2) Blur the whole atlas ONCE. Every cell in the group shares σ (same radius, same cap),
+            // so one separable Gaussian over the atlas blurs them all; padding keeps cells independent.
+            let sigma = self.gather_sigma(plan.gathers[cells[0].gi].shape, full_view, cells[0].k);
+            let passes = lower_graph(&effect_graph::background_blur_graph(sigma), None);
+            let Some((blur_atlas, blur_view)) =
+                run_graph(&self.compositor, &self.glass, device, queue, &[&bd_view], &passes, aw, ah, format)
+            else {
+                self.frame_transient.push(bd_atlas);
+                continue;
+            };
+
+            // (3) Mask atlas: every lens's silhouette rasterized into its cell in ONE pass.
+            let mask_atlas = new_target_with_usage(device, aw, ah, format, self.raster_usage);
+            let mask_view = mask_atlas.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut mscene = backend.new_scene(aw as u16, ah as u16);
+            for cell in &packing.cells {
+                let c = &cells[cell.index];
+                // Full-zoom device → shifted to the backdrop origin → scaled by cap k → offset to cell,
+                // matching how the backdrop tiles mapped in (so mask and blur align in the cell).
+                let root_for_cell = Affine::translate((f64::from(cell.x), f64::from(cell.y)))
+                    * Affine::scale(c.k)
+                    * Affine::translate((-c.bdx, -c.bdy))
+                    * root;
+                backend.build_mask(&mut mscene, root_for_cell, plan.gathers[c.gi].shape);
+            }
+            backend.rasterize(&mscene, device, queue, enc, &mask_view, aw, ah, CLEAR);
+
+            // (4) Scatter: masked-blit each blurred cell through its mask cell into the lens's tiles.
+            for cell in &packing.cells {
+                let c = &cells[cell.index];
+                let g = &plan.gathers[c.gi];
+                for &tile in &g.writes {
+                    let (ox, oy) = tiling::tile_device_origin(tile, full_view);
+                    let (sdx, sdy, sdw, sdh) = tiling::device_rect(full_view, g.output);
+                    let tsz = f64::from(TILE_SIZE);
+                    let ix0 = sdx.max(ox);
+                    let iy0 = sdy.max(oy);
+                    let ix1 = (sdx + sdw).min(ox + tsz);
+                    let iy1 = (sdy + sdh).min(oy + tsz);
+                    if ix1 <= ix0 || iy1 <= iy0 {
+                        continue;
+                    }
+                    let write_to = SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile);
+                    self.ensure_surface(write_to, device, TILE_BUFFER, TILE_BUFFER, format);
+                    let to_view = self.surfaces[&write_to].view.clone();
+                    if self.written.insert(write_to) {
+                        Compositor::clear(enc, &to_view, [0.0, 0.0, 0.0, 0.0]);
+                    }
+                    let mf = f64::from(TILE_MARGIN);
+                    let buf = (TILE_BUFFER as f32, TILE_BUFFER as f32);
+                    let dst = ((ix0 - ox + mf) as f32, (iy0 - oy + mf) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
+                    // Source rect inside the atlas cell: the shape sub-rect in reduced (×k) texels,
+                    // offset to the cell origin. `blit_masked` samples blur and mask at the same rect.
+                    let src_rect = (
+                        cell.x as f32 + ((ix0 - c.bdx) * c.k) as f32,
+                        cell.y as f32 + ((iy0 - c.bdy) * c.k) as f32,
+                        ((ix1 - ix0) * c.k) as f32,
+                        ((iy1 - iy0) * c.k) as f32,
+                    );
+                    let src_size = (aw as f32, ah as f32);
+                    self.compositor.blit_masked(device, enc, &to_view, buf, &MaskedBlit {
+                        src: &blur_view,
+                        mask: &mask_view,
+                        dst,
+                        src_rect,
+                        src_size,
+                        alpha: 1.0,
+                    });
+                }
+            }
+            self.frame_transient.push(bd_atlas);
+            self.frame_transient.push(blur_atlas);
+            self.frame_transient.push(mask_atlas);
+        }
     }
 
     /// Blit a cached tile's centre `TILE_SIZE`² square onto the swapchain at its device origin — the

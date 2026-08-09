@@ -24,6 +24,7 @@ thread_local! {
     static COMPOSITES: Cell<u32> = const { Cell::new(0) };
     static GATHERS: Cell<u32> = const { Cell::new(0) };
     static SUBMITS: Cell<u32> = const { Cell::new(0) };
+    static GRAPHS: Cell<u32> = const { Cell::new(0) };
 }
 
 pub fn add_pool_hit() {
@@ -81,6 +82,12 @@ pub fn inc_gather() {
 pub fn inc_submit() {
     SUBMITS.with(|c| c.set(c.get() + 1));
 }
+/// Count one effect **pass-graph run** (`run_graph`) — a gather's blur/glass/custom, the render-pass
+/// round-trip the batched gather stage is meant to collapse. This is the number `renders`
+/// (backend.rasterize) does NOT show, so it is the honest before/after for the collapse.
+pub fn inc_graph() {
+    GRAPHS.with(|c| c.set(c.get() + 1));
+}
 
 thread_local! {
     /// TEMP scratch buckets for ad-hoc diagnostics, read via `prof_read(100 + i)`.
@@ -111,6 +118,7 @@ pub fn reset() {
     COMPOSITES.with(|c| c.set(0));
     GATHERS.with(|c| c.set(0));
     SUBMITS.with(|c| c.set(0));
+    GRAPHS.with(|c| c.set(0));
     DBG.with(|c| *c.borrow_mut() = [0.0; 16]);
 }
 
@@ -131,6 +139,7 @@ pub fn read(which: u32) -> f64 {
         11 => f64::from(COMPOSITES.with(Cell::get)),
         12 => f64::from(GATHERS.with(Cell::get)),
         13 => f64::from(SUBMITS.with(Cell::get)),
+        14 => f64::from(GRAPHS.with(Cell::get)),
         100..=115 => DBG.with(|c| c.borrow()[(which - 100) as usize]),
         _ => 0.0,
     }

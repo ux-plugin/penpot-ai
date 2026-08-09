@@ -63,11 +63,18 @@ pub struct GatherInfo {
     pub writes: Vec<TileKey>,
     /// Page-space sample extent (the backdrop rect); sizes the snapshot clip.
     pub sample: Rect,
+    /// The effect's page-space reach — how far past the shape the kernel pulls. The sink caps the
+    /// backdrop's device resolution by it, exactly as the inline `ComposeBackdrop` does.
+    pub reach: f64,
     /// Page-space output silhouette (the scatter clip).
     pub output: Rect,
     /// Topmost in its region → safe to defer into the batched pass. Otherwise it runs inline (its own
     /// pass), exactly as today.
     pub deferrable: bool,
+    /// No fills or strokes — a pure lens, so nothing has to composite *over* the blur. The batched
+    /// stage scatters the blurred backdrop with no body to re-order, so v1 only batches these; a
+    /// gather with a body keeps the inline path (its body paints over the blur in z, as authored).
+    pub pure_lens: bool,
 }
 
 /// The gather-collapse plan for one frame's schedule.
@@ -109,6 +116,28 @@ impl GatherPlan {
         keys.len()
     }
 
+    /// Deferrable **background-blur** gathers grouped by effect key (radius), as indices into
+    /// [`gathers`](Self::gathers). Each group shares one σ, so the batched pass composes their backdrops
+    /// into one atlas and blurs it once. Groups keep z-order (the gathers are z-sorted already). Only
+    /// blur is grouped here — glass/custom keep the inline path in v1. Groups of any size are returned;
+    /// the sink decides the batch-worthiness threshold.
+    #[must_use]
+    pub fn deferrable_blur_groups(&self) -> Vec<Vec<usize>> {
+        let mut by_radius: Vec<(u32, Vec<usize>)> = Vec::new();
+        for (i, g) in self.gathers.iter().enumerate() {
+            if !g.deferrable || !g.pure_lens {
+                continue;
+            }
+            let EffectKey::Blur(r) = g.effect_key else { continue };
+            if let Some(entry) = by_radius.iter_mut().find(|(k, _)| *k == r) {
+                entry.1.push(i);
+            } else {
+                by_radius.push((r, vec![i]));
+            }
+        }
+        by_radius.into_iter().map(|(_, v)| v).collect()
+    }
+
     /// Estimated gather **passes** with the collapse applied: all deferrable gathers share one batched
     /// pass (they are provably independent — see the module docs), and each non-deferrable gather keeps
     /// its own inline pass. This is the number the bench compares against the un-collapsed `total()`.
@@ -136,7 +165,7 @@ pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> 
     let mut index_of: std::collections::HashMap<u128, usize> = std::collections::HashMap::new();
     for (i, step) in steps.iter().enumerate() {
         match step {
-            Step::ComposeBackdrop { shape, read_from, extent, .. } => {
+            Step::ComposeBackdrop { shape, read_from, extent, reach, .. } => {
                 let Some(node) = scene.get(*shape) else { continue };
                 let Some(key) = effect_key(node) else { continue };
                 let reads = read_from.iter().filter_map(|s| s.tile).collect();
@@ -149,8 +178,10 @@ pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> 
                     reads,
                     writes: Vec::new(),
                     sample: *extent,
+                    reach: *reach,
                     output,
                     deferrable: true, // provisional; the coverage pass below can only clear it
+                    pure_lens: node.fills.is_empty() && node.strokes.is_empty(),
                 });
             }
             Step::PaintGather { shape, write_to, .. } => {

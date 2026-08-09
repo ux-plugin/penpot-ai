@@ -684,6 +684,23 @@ pub fn sink_batch() -> u32 {
 }
 
 thread_local! {
+    /// Whether the batched background-blur gather collapse is on (default). Off = every deferrable
+    /// lens runs inline, exactly the pre-collapse path — the A/B toggle for pixel-parity + timing.
+    static GATHER_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Enable/disable the batched gather collapse. `0` forces the inline path (the A/B baseline).
+#[unsafe(no_mangle)]
+pub extern "C" fn set_gather_batch(on: u32) {
+    GATHER_BATCH.with(|c| c.set(on != 0));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn gather_batch() -> bool {
+    GATHER_BATCH.with(std::cell::Cell::get)
+}
+
+thread_local! {
     /// The most recent frame's tile counts, packed `(rendered << 16) | reused`. A machine-readable
     /// proof that the page-space cache reuses tiles across a pan (rendered ≈ the newly-exposed
     /// strip, reused ≈ the rest) and re-renders a full screen on a zoom. Read via `last_tile_stats`.
