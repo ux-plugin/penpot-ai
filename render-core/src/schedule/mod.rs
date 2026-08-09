@@ -18,7 +18,10 @@ pub mod gather_plan;
 pub mod step;
 pub mod surface_ref;
 
-pub use builder::{affected_page_rect, build, build_visible, first_write_paints, page_bounds, Schedule};
+pub use builder::{
+    affected_page_rect, build, build_visible, first_write_paints, gather_dirty_expansion,
+    page_bounds, Schedule,
+};
 pub use dep_graph::DepGraph;
 pub use gather_plan::{analyze_gathers, EffectKey, GatherInfo, GatherPlan};
 pub use step::{LayerPaint, PaintOp, Step};

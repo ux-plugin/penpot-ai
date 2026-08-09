@@ -427,6 +427,64 @@ pub fn affected_page_rect(node: &Node, modifier: Affine) -> Rect {
     base.inflate(reach, reach)
 }
 
+/// Atomic gather invalidation. A gather (background blur / glass / backdrop shader) samples a page
+/// region *larger* than its own footprint, and its output must recompose as a single unit. But
+/// incremental dirty tracking only invalidates the tiles a *moved* shape lands in — so when a shape
+/// inside a lens's backdrop moves, the lens's tiles that don't overlap that shape keep a stale
+/// half-blur and the lens tears along tile seams.
+///
+/// Given the frame's base `dirty` rects, this returns the **output footprint** of every gather whose
+/// **sample** rect a dirty rect touches. Adding those to the dirty set re-renders each affected lens
+/// whole. It runs a fixpoint so stacked lenses (a lens over a lens) promote correctly: a lens pulled
+/// into the dirty set can force an outer lens to re-render in turn. The loop is bounded by the gather
+/// count — each gather is promoted at most once.
+#[must_use]
+pub fn gather_dirty_expansion(scene: &Scene, modifiers: &Modifiers, dirty: &[Rect]) -> Vec<Rect> {
+    if dirty.is_empty() {
+        return Vec::new();
+    }
+    // (sample rect, output rect) for every gather in the scene.
+    let gathers: Vec<(Rect, Rect)> = scene
+        .iter_nodes()
+        .filter(|n| has_gather_effect(n))
+        .map(|n| {
+            let m = modifiers.get(&n.id).copied().unwrap_or(Affine::IDENTITY);
+            let output = page_bounds(n, m);
+            let reach = gather_reach(n);
+            (output.inflate(reach, reach), output)
+        })
+        .collect();
+    if gathers.is_empty() {
+        return Vec::new();
+    }
+
+    let mut active: Vec<Rect> = dirty.to_vec();
+    let mut added: Vec<Rect> = Vec::new();
+    let mut taken = vec![false; gathers.len()];
+    loop {
+        let mut changed = false;
+        for (i, (sample, output)) in gathers.iter().enumerate() {
+            if taken[i] {
+                continue;
+            }
+            if active.iter().any(|r| rects_overlap(r, sample)) {
+                taken[i] = true;
+                active.push(*output);
+                added.push(*output);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    added
+}
+
+fn rects_overlap(a: &Rect, b: &Rect) -> bool {
+    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+}
+
 /// A shape carries a spread effect if it has a layer blur, **any shadow** (drop or inner), or a custom
 /// shader that reads only its own body — all transform the shape's own pixels into an isolated,
 /// extrect-sized surface (no backdrop).
@@ -537,4 +595,86 @@ fn transform_rect(m: Affine, rect: Rect) -> Rect {
         y1 = y1.max(p.y);
     }
     Rect::new(x0, y0, x1, y1)
+}
+
+#[cfg(test)]
+mod gather_dirty_tests {
+    use kurbo::Rect;
+
+    use crate::host::Modifiers;
+    use crate::model::{Node, Scene, ShapeKind, ROOT_ID};
+
+    use super::gather_dirty_expansion;
+
+    fn scene_with(nodes: Vec<Node>) -> Scene {
+        let mut s = Scene::new();
+        let mut root = Node::new(ROOT_ID, ShapeKind::Group);
+        root.children = nodes.iter().map(|n| n.id).collect();
+        s.insert(root);
+        for n in nodes {
+            s.insert(n);
+        }
+        s
+    }
+
+    fn bg_blur(id: u128, r: Rect) -> Node {
+        let mut n = Node::new(id, ShapeKind::Rect);
+        n.bounds = r;
+        n.background_blur = Some(8.0);
+        n
+    }
+
+    fn plain(id: u128, r: Rect) -> Node {
+        let mut n = Node::new(id, ShapeKind::Rect);
+        n.bounds = r;
+        n
+    }
+
+    #[test]
+    fn dirty_rect_in_one_corner_returns_whole_lens() {
+        // A lens spanning several tiles (0..1200 crosses 512-tile boundaries twice).
+        let lens = Rect::new(100.0, 100.0, 1200.0, 1200.0);
+        let scene = scene_with(vec![plain(1, Rect::new(0.0, 0.0, 1300.0, 1300.0)), bg_blur(2, lens)]);
+        // A shape moved inside the top-left corner of the lens' backdrop — one tile's worth.
+        let dirty = [Rect::new(150.0, 150.0, 220.0, 220.0)];
+        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), &dirty);
+        assert_eq!(extra.len(), 1, "the lens is promoted exactly once");
+        assert_eq!(extra[0], lens, "the whole lens output is dirtied, not just the touched tile");
+    }
+
+    #[test]
+    fn dirty_rect_outside_sample_returns_nothing() {
+        let lens = Rect::new(100.0, 100.0, 500.0, 500.0);
+        let scene = scene_with(vec![bg_blur(2, lens)]);
+        // Far outside the lens output + its ~12px blur reach.
+        let dirty = [Rect::new(2000.0, 2000.0, 2100.0, 2100.0)];
+        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), &dirty);
+        assert!(extra.is_empty(), "a dirty rect that misses the sample rect promotes no lens");
+    }
+
+    #[test]
+    fn no_gather_no_expansion() {
+        let scene = scene_with(vec![plain(1, Rect::new(0.0, 0.0, 500.0, 500.0))]);
+        let dirty = [Rect::new(10.0, 10.0, 20.0, 20.0)];
+        assert!(gather_dirty_expansion(&scene, &Modifiers::new(), &dirty).is_empty());
+    }
+
+    #[test]
+    fn stacked_lenses_promote_transitively() {
+        // Inner lens A; outer lens B sits far away but its sample overlaps A's output. A dirty rect in
+        // A's backdrop must promote A, and A's output must then promote B.
+        let a = Rect::new(100.0, 100.0, 400.0, 400.0);
+        let b = Rect::new(380.0, 380.0, 700.0, 700.0); // sample overlaps A's output corner
+        let scene = scene_with(vec![
+            plain(1, Rect::new(0.0, 0.0, 800.0, 800.0)),
+            bg_blur(2, a),
+            bg_blur(3, b),
+        ]);
+        let dirty = [Rect::new(120.0, 120.0, 160.0, 160.0)]; // inside A only
+        let mut extra = gather_dirty_expansion(&scene, &Modifiers::new(), &dirty);
+        extra.sort_by(|p, q| p.x0.partial_cmp(&q.x0).unwrap());
+        assert_eq!(extra.len(), 2, "both lenses promote — A directly, B transitively");
+        assert_eq!(extra[0], a);
+        assert_eq!(extra[1], b);
+    }
 }

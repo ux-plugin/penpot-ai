@@ -593,6 +593,14 @@ impl Scene {
         self.nodes.get_mut(&id)
     }
 
+    /// Iterate every node in the scene (unordered). Used by frame-wide passes that must inspect all
+    /// shapes regardless of tree position — e.g. finding the gathers whose backdrop a dirty rect
+    /// touches, so a multi-tile lens re-renders atomically.
+    #[inline]
+    pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.values()
+    }
+
     /// Pre-size the map. The host announces its shape count up front
     /// (`init_shapes_pool`), and a scene built one `use_shape` at a time would otherwise
     /// rehash its way up to that size.

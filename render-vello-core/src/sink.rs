@@ -196,8 +196,26 @@ impl Sink {
         dirty_all: bool,
         dirty_rects: &[Rect],
     ) -> Vec<TileKey> {
+        // Atomic gather invalidation: a lens samples a region wider than its footprint, so a dirty
+        // rect that touches only part of its backdrop must re-render the *whole* lens — otherwise the
+        // tiles it doesn't overlap keep a stale half-blur and the lens tears along tile seams. Grow
+        // the dirty set by every affected gather's output footprint before planning tiles.
+        let rects: std::borrow::Cow<[Rect]> = if dirty_all || dirty_rects.is_empty() {
+            std::borrow::Cow::Borrowed(dirty_rects)
+        } else {
+            let extra = crate::abi::with_scene(|scene, _, modifiers| {
+                render_core::schedule::gather_dirty_expansion(scene, modifiers, dirty_rects)
+            });
+            if extra.is_empty() {
+                std::borrow::Cow::Borrowed(dirty_rects)
+            } else {
+                let mut all = dirty_rects.to_vec();
+                all.extend(extra);
+                std::borrow::Cow::Owned(all)
+            }
+        };
         let (dirty, invalidated) =
-            self.tile_cache.plan(full_view, width, height, dirty_all, dirty_rects);
+            self.tile_cache.plan(full_view, width, height, dirty_all, &rects);
         // A moved/edited shape invalidates the tiles it covered; recycle those textures (a prior
         // frame's, already flushed) so the re-render reuses them instead of allocating fresh.
         for s in invalidated {
@@ -1475,6 +1493,13 @@ impl Sink {
                 Some(lower_graph(&graph, None))
             };
             let Some(passes) = passes else { return };
+            // `run_graph` submits its own encoder, so the `compose_backdrop` blits that filled this
+            // backdrop (recorded into `enc`) must be flushed first — otherwise the blur reads stale
+            // pixels (a recycled backdrop texture holding the pre-edit frame). The batched atlas path
+            // does the identical flush; the inline path must not rely on a submit-batch boundary
+            // happening to fall between the compose and the gather (at the default batch of 32 it does
+            // not, and the gather freezes on incremental edits).
+            Self::submit_batch(enc, device, queue, backend);
             let backdrop_view = self.surfaces[&backdrop].view.clone();
             let Some((tex, view)) = run_graph(
                 &self.compositor, &self.glass, device, queue, &[&backdrop_view], &passes, bw, bh, format,

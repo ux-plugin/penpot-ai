@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>gather seam under incremental edits — fix verification</title>
+<style>
+  body { margin: 0; background: #14181d; color: #dfe6ee; font: 13px ui-monospace, monospace; }
+  .row { display: flex; flex-direction: column; gap: 20px; padding: 16px; align-items: flex-start; }
+  .col { display: flex; flex-direction: column; gap: 6px; }
+  canvas { display: block; border: 1px solid #2b333c; image-rendering: pixelated; }
+  h2 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .04em; color: #9fb0c0; text-transform: uppercase; }
+  #out { padding: 4px 16px 16px; white-space: pre; color: #8fa; }
+</style>
+<div class="row">
+  <div class="col"><h2>incremental edits (the fix)</h2><canvas id="a" width="900" height="900"></canvas></div>
+  <div class="col"><h2>cold full redraw (oracle)</h2><canvas id="b" width="900" height="900"></canvas></div>
+</div>
+<div id="out">booting…</div>
+<script type="module">
+// A multi-tile background-blur lens sits over a grid of colored cells. One backdrop cell UNDER the
+// lens is moved incrementally (set_shape_selrect → the mutation dirty path). Before the fix, only the
+// tiles the moved cell lands in re-blur, so the lens tears along the 512px tile seam. After the fix,
+// any dirty rect touching the lens' sample re-renders the whole lens output — so `a` (incremental)
+// should match `b` (cold, dirty_all) pixel-for-pixel with no seam.
+const q = new URLSearchParams(location.search)
+const BACKEND = q.get('backend') ?? 'classic'
+const RADIUS = Number(q.get('radius') ?? 48)
+const WANT_LENS = Number(q.get('lens') ?? 1)  // 0 = plain mover move, no gather (isolation test)
+const out = document.getElementById('out')
+const URLS = { hybrid: '/wasm-vello/render-vello.js', classic: '/wasm-vello-gpu/render-vello-gpu.js' }
+const REC = 164
+const SIZE = Number(q.get('size') ?? 760)  // > 512 so a lens can straddle the tile seams
+const W = SIZE, H = SIZE
+// A grid of colored cells covering the canvas; a big lens spanning several 512px tiles on top. The
+// lens footprint is wider than any single tile, so a small edit under it dirties only some of its
+// tiles — the exact condition that used to leave the rest stale and tear the blur along a tile seam.
+const LI = Math.round(SIZE * 0.14)
+const LENS = { x0: LI, y0: LI, x1: SIZE - LI, y1: SIZE - LI }
+// The backdrop cell we move: it sits under the lens' left half, crossing the x=512 tile boundary as
+// it travels — exactly the shape whose stale tiles produced the seam.
+const MOVER = 999
+const raf = () => new Promise((r) => requestAnimationFrame(r))
+
+async function boot(url) {
+  const ns = await import(/* @vite-ignore */ url)
+  const X = await ns.default()          // raw FFI exports (init, memory, alloc_bytes, set_shape_*) — frozen
+  const api = {}
+  for (const k in X) api[k] = X[k]
+  api.memory = X.memory
+  api.create_focus_renderer = ns.create_focus_renderer // #[wasm_bindgen] factory lives on the namespace
+  return api
+}
+
+// Each canvas gets its OWN wasm instance (query-busted URL → separate module + separate abi state),
+// so the cold oracle can't share the incremental one's tile cache.
+function apiFor(mod) {
+  const u8 = () => new Uint8Array(mod.memory.buffer)
+  const dv = () => new DataView(mod.memory.buffer)
+  const solidFill = (color) => {
+    const size = 4 + REC, ptr = mod.alloc_bytes(size)
+    u8().fill(0, ptr, ptr + size)
+    u8()[ptr] = 1; u8()[ptr + 4] = 0x00; dv().setUint32(ptr + 8, color, true)
+    mod.set_shape_fills()
+  }
+  const rect = (id, x0, y0, x1, y1, color) => {
+    mod.use_shape(0, 0, 0, id); mod.set_shape_type(3); mod.set_shape_selrect(x0, y0, x1, y1)
+    if (color != null) solidFill(color)
+  }
+  const childOfRoot = (id) => { mod.use_shape(0, 0, 0, 0); mod.add_shape_child(0, 0, 0, id) }
+  return { rect, childOfRoot }
+}
+
+// Distinct, saturated cell colors so any stale blur tile shows as a color discontinuity.
+const COLORS = [
+  0xffe6194b, 0xff3cb44b, 0xffffe119, 0xff4363d8, 0xfff58231, 0xff911eb4,
+  0xff46f0f0, 0xfff032e6, 0xffbcf60c, 0xfffabebe, 0xff008080, 0xffe6beff,
+]
+const CELL = SIZE / 6
+const MW = Math.round(SIZE * 0.14)          // mover size — a fraction of the lens, so its dirty rect
+                                            // covers only some of the lens' four tiles
+function buildGrid({ rect, childOfRoot }) {
+  // 6×6 grid of colored cells across the canvas — a high-contrast backdrop for the blur.
+  let idc = 1
+  for (let gy = 0; gy < 6; gy++) {
+    for (let gx = 0; gx < 6; gx++) {
+      const c = COLORS[(gx + gy * 6) % COLORS.length]
+      rect(idc, gx * CELL, gy * CELL, gx * CELL + CELL, gy * CELL + CELL, c)
+      childOfRoot(idc); idc++
+    }
+  }
+}
+
+async function run() {
+  const [A, B] = await Promise.all([
+    boot(URLS[BACKEND] + '?i=a'),
+    boot(URLS[BACKEND] + '?i=b'),
+  ])
+  for (const [mod, id] of [[A, 'a'], [B, 'b']]) {
+    const canvas = document.getElementById(id)
+    canvas.width = W; canvas.height = H   // backing store must match the surface init size
+    mod.init(W, H); mod.set_render_options(0, 1); mod.set_scheduler(1); mod.set_tile_effects(1)
+    // Intentionally NOT calling set_sink_batch — this runs at the default batch (32), the path that
+    // exposed the stale-backdrop freeze. With the inline-gather flush fix it must now be correct here.
+    mod.__canvas = canvas
+  }
+  const rA = await A.create_focus_renderer(document.getElementById('a'))
+  const rB = await B.create_focus_renderer(document.getElementById('b'))
+
+  // The mover starts in the lens' top-left tile and jumps to its bottom-right tile — the single edit
+  // crosses the x=512 AND y=512 tile seams inside a lens that spans all four tiles. Both canvases end
+  // with the mover at EXACTLY the same final rect, so any difference is a stale-tile seam, not geometry.
+  const START = { x: 150, y: 150 }
+  const END = { x: 512, y: 512 }
+  // The mover is a solid black square (high contrast against the bright grid) so its blur and any
+  // stale ghost are obvious. `place` creates it (type + fill); `move` is a pure selrect edit, exactly
+  // like the bench's moveShape — nothing else touched.
+  const place = (mod, p) => apiFor(mod).rect(MOVER, p.x, p.y, p.x + MW, p.y + MW, 0xff101010)
+  const move = (mod, p) => { mod.use_shape(0, 0, 0, MOVER); mod.set_shape_selrect(p.x, p.y, p.x + MW, p.y + MW) }
+
+  function buildScene(mod, moverStart) {
+    const api = apiFor(mod)
+    mod.init_shapes_pool(40)
+    buildGrid(api)                                  // 6×6 colored backdrop cells
+    place(mod, moverStart); api.childOfRoot(MOVER)  // the high-contrast mover, under the lens
+    if (WANT_LENS) {
+      api.rect(500, LENS.x0, LENS.y0, LENS.x1, LENS.y1, null) // fill-less background-blur lens, on top
+      mod.set_shape_blur(1, false, RADIUS)
+      api.childOfRoot(500)
+    }
+    mod.set_view(1, 0, 0)
+  }
+  const settle = async (r, mod) => {
+    // A zoom nudge drops the whole tile cache, so the next frame is a genuine full redraw with the
+    // backdrop already populated — the gather blurs cleanly. Used to give the oracle a trustworthy
+    // reference frame independent of any cold-start ordering.
+    for (let i = 0; i < 3; i++) { r.render(); await raf() }
+    mod.set_view(1.12, 0, 0); r.render(); await raf()
+    mod.set_view(1, 0, 0); for (let i = 0; i < 3; i++) { r.render(); await raf() }
+  }
+
+  // LEFT (incremental): build with the mover at START, warm the cache (lens blurred correctly there),
+  // then ONE edit jumps it to END. Mirrors the bench's edit loop exactly — set_view(1,0,0) every frame
+  // — since that is the path the reported seam appeared under.
+  buildScene(A, START)
+  for (let i = 0; i < 5; i++) { A.set_view(1, 0, 0); rA.render(); await raf() }
+  A.set_view(1, 0, 0); move(A, END)
+  for (let i = 0; i < 4; i++) { A.set_view(1, 0, 0); rA.render(); await raf() }
+
+  // RIGHT (oracle): the identical final scene, mover already at END, given a full-redraw settle.
+  buildScene(B, END)
+  await settle(rB, B)
+
+  out.textContent = `${BACKEND} · radius=${RADIUS} · lens ${LENS.x0}..${LENS.x1} spans the 512 tile seams · mover ${MW}px jumps ${START.x},${START.y} → ${END.x},${END.y}\n`
+    + `TOP = one incremental edit (default batch) · BOTTOM = cold dirty_all of the identical final scene.\n`
+    + `Fix holds when the lens matches on both — no color seam and no ghost of the mover's old spot.`
+  window.__DONE__ = true
+}
+run().catch((e) => { window.__ERR__ = String(e && e.stack || e); out.textContent = 'ERROR ' + (e && e.stack || e) })
+</script>
