@@ -24,6 +24,9 @@ pub mod glass;
 pub mod graph;
 pub mod prof;
 pub mod rasterize;
+/// Versioned per-tile backdrop snapshot pool for the batched gather stage (copy-on-write, refcounted,
+/// capped). The scheduler that drives it lives in [`sink`].
+pub mod snapshot;
 /// The GPU production sink — executes a `render_core::schedule::Schedule` on a Vello backend. Generic
 /// over [`rasterize::RasterBackend`], so both flavors run this one copy; it holds only wgpu + the
 /// shared compositor/effect executor + the cross-frame tile cache, never a concrete backend type.

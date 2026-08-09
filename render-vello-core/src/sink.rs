@@ -57,7 +57,7 @@ struct Surface {
 /// A texture's recyclability identity: two textures are interchangeable iff their size, format, and
 /// usage all match. Derived straight from the texture, so nothing threads it through `Surface`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct PoolKey {
+pub(crate) struct PoolKey {
     w: u32,
     h: u32,
     format: wgpu::TextureFormat,
@@ -67,6 +67,12 @@ struct PoolKey {
 impl PoolKey {
     fn of(t: &wgpu::Texture) -> Self {
         Self { w: t.width(), h: t.height(), format: t.format(), usage: t.usage().bits() }
+    }
+
+    /// Construct a key directly — for callers outside the sink (the snapshot pool) that acquire
+    /// textures of a chosen size/format/usage.
+    pub(crate) fn new(w: u32, h: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> Self {
+        Self { w, h, format, usage: usage.bits() }
     }
 }
 
@@ -78,7 +84,7 @@ const MAX_POOL_PER_KEY: usize = 32;
 /// texture belongs to a frame whose `queue.submit` has already flushed — safe to hand back out as a
 /// fresh render target without extra synchronisation.
 #[derive(Default)]
-struct TexturePool {
+pub(crate) struct TexturePool {
     free: HashMap<PoolKey, Vec<wgpu::Texture>>,
 }
 
@@ -86,7 +92,7 @@ impl TexturePool {
     /// A texture matching `key`, reused from the free list or freshly created. A real allocation is
     /// timed into the `tex` profiler bucket, so `texn` counts only genuine `create_texture` calls —
     /// the metric the pool is meant to drive down.
-    fn acquire(&mut self, device: &wgpu::Device, key: PoolKey, label: &str) -> wgpu::Texture {
+    pub(crate) fn acquire(&mut self, device: &wgpu::Device, key: PoolKey, label: &str) -> wgpu::Texture {
         if let Some(t) = self.free.get_mut(&key).and_then(Vec::pop) {
             crate::prof::add_pool_hit();
             return t;
@@ -109,7 +115,7 @@ impl TexturePool {
 
     /// Return a texture for reuse. Its key is read back off the texture, so any texture created through
     /// [`Self::acquire`] round-trips to the right bucket. Over the per-key cap it is simply dropped.
-    fn release(&mut self, texture: wgpu::Texture) {
+    pub(crate) fn release(&mut self, texture: wgpu::Texture) {
         let bucket = self.free.entry(PoolKey::of(&texture)).or_default();
         if bucket.len() < MAX_POOL_PER_KEY {
             bucket.push(texture);
