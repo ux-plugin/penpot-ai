@@ -241,6 +241,7 @@ impl Sink {
             &sw_view,
             [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])],
         );
+        crate::prof::inc_submit();
         queue.submit([enc.finish()]);
 
         // Atlas prepass: the first `Paint` into each `TileOutput` is a level-0 plain body (no outward
@@ -255,27 +256,46 @@ impl Sink {
             self.atlas_effects(&schedule.steps, backend, device, queue, root, full_view, format),
         );
 
+        // Open encoder accumulating the current run of composites; `None` when nothing is pending.
+        let mut comp_enc: Option<wgpu::CommandEncoder> = None;
         for (i, step) in schedule.steps.iter().enumerate() {
             if atlased.contains(&i) {
                 continue;
             }
+            // A run of consecutive composites shares one encoder and one submission. Any other step
+            // kind flushes it first: a `Paint` into a tile must observe an earlier `Composite` into
+            // that tile, and the backend's rasterize owns its own encoder/submit, so the recorded
+            // composites have to be on the queue before it runs.
+            if !matches!(step, Step::Composite { .. }) {
+                Self::flush_composites(&mut comp_enc, queue);
+            }
             match step {
                 Step::Paint { ops, clip, write_to } => {
+                    crate::prof::inc_paint();
                     self.paint(ops, *write_to, *clip, backend, device, queue, root, full_view, format);
                 }
                 Step::Composite { from, to, paint, rect, .. } => {
-                    self.composite(*from, *to, *paint, *rect, device, queue, &sw_view, full_view, width, height, format);
+                    crate::prof::inc_composite();
+                    let enc = comp_enc.get_or_insert_with(|| {
+                        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("sink composite run"),
+                        })
+                    });
+                    self.composite(*from, *to, *paint, *rect, device, enc, &sw_view, full_view, width, height, format);
                 }
                 Step::ComposeBackdrop { read_from, extent, reach, always_cap, write_to, .. } => {
+                    crate::prof::inc_gather();
                     self.compose_backdrop(read_from, *extent, *reach, *always_cap, *write_to, device, queue, full_view, format);
                 }
                 Step::PaintGather { backdrop, clip, write_to, .. } => {
+                    crate::prof::inc_gather();
                     self.paint_gather(*backdrop, *clip, *write_to, backend, device, queue, root, full_view, format);
                 }
                 // Snapshot / layer brackets are not emitted by the builder yet.
                 _ => {}
             }
         }
+        Self::flush_composites(&mut comp_enc, queue);
 
         // --- tile cache: harvest what we just rendered, blit what we reused ---
         self.tile_cache.advance_frame();
@@ -313,6 +333,7 @@ impl Sink {
             self.tile_cache.touch(t);
             reused += 1;
         }
+        crate::prof::inc_submit();
         queue.submit([reused_enc.finish()]);
         // Machine-readable proof of reuse (rendered, reused), read via `_last_tile_stats`.
         crate::abi::set_tile_stats(u32::try_from(dirty.len()).unwrap_or(u32::MAX), reused);
@@ -431,6 +452,7 @@ impl Sink {
             crate::prof::inc_step();
         }
         let _tsu = crate::prof::now();
+        crate::prof::inc_submit();
         queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
         self.frame_transient.push(atlas);
@@ -535,6 +557,7 @@ impl Sink {
             crate::prof::inc_step();
         }
         let _tsu = crate::prof::now();
+        crate::prof::inc_submit();
         queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
         self.frame_transient.push(atlas);
@@ -649,6 +672,7 @@ impl Sink {
             },
         );
         let _tsu = crate::prof::now();
+        crate::prof::inc_submit();
         queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
         // Recycle next frame (not now): the submit above still reads it until the GPU drains.
@@ -764,6 +788,15 @@ impl Sink {
         }
     }
 
+    /// Submit whatever composites have been recorded, if any, and close the run.
+    fn flush_composites(enc: &mut Option<wgpu::CommandEncoder>, queue: &wgpu::Queue) {
+        let Some(e) = enc.take() else { return };
+        let _tsu = crate::prof::now();
+        crate::prof::inc_submit();
+        queue.submit([e.finish()]);
+        crate::prof::add_submit(crate::prof::now() - _tsu);
+    }
+
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn composite(
         &mut self,
@@ -772,7 +805,11 @@ impl Sink {
         paint: LayerPaint,
         rect: Rect,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        // Composites record into a caller-owned encoder instead of submitting per step: a run of
+        // consecutive composites is one submission, not one each. Passes inside an encoder still
+        // execute in order and read-after-write between them is ordered, so z-order holds; the
+        // caller flushes before any step that is not a composite.
+        enc: &mut wgpu::CommandEncoder,
         sw_view: &wgpu::TextureView,
         full_view: Affine,
         width: u32,
@@ -787,9 +824,6 @@ impl Sink {
         // Blend beyond SrcOver needs a read-dst pipeline; opacity is applied here, blend is a gap.
         let alpha = paint.opacity;
 
-        let mut enc = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink composite") });
-
         match to.role {
             SurfaceRole::Target => {
                 // A tile buffer's centre → swapchain at the tile's device origin.
@@ -799,7 +833,7 @@ impl Sink {
                 let ts = TILE_SIZE as f32;
                 self.compositor.blit(
                     device,
-                    &mut enc,
+                    enc,
                     sw_view,
                     (width as f32, height as f32),
                     &Blit {
@@ -819,7 +853,7 @@ impl Sink {
                 self.ensure_surface(to, device, TILE_BUFFER, TILE_BUFFER, format);
                 let to_view = self.surfaces[&to].view.clone();
                 if self.written.insert(to) {
-                    Compositor::clear(&mut enc, &to_view, [0.0, 0.0, 0.0, 0.0]);
+                    Compositor::clear(enc, &to_view, [0.0, 0.0, 0.0, 0.0]);
                 }
                 let buf = TILE_BUFFER as f32;
                 let blit = if matches!(from.role, SurfaceRole::RasterEffectOutput(_)) {
@@ -844,13 +878,10 @@ impl Sink {
                         alpha,
                     }
                 };
-                self.compositor.blit(device, &mut enc, &to_view, (buf, buf), &blit);
+                self.compositor.blit(device, enc, &to_view, (buf, buf), &blit);
             }
-            _ => return,
+            _ => {}
         }
-        let _tsu = crate::prof::now();
-        queue.submit([enc.finish()]);
-        crate::prof::add_submit(crate::prof::now() - _tsu);
         crate::prof::inc_step();
     }
 
@@ -922,6 +953,7 @@ impl Sink {
                 },
             );
         }
+        crate::prof::inc_submit();
         queue.submit([enc.finish()]);
     }
 
@@ -1029,6 +1061,7 @@ impl Sink {
             let mask_view = self.surfaces[&mask_ref].view.clone();
             self.compositor.blit_masked(device, &mut enc, &to_view, buf, &MaskedBlit { src: &result_view, mask: &mask_view, dst, src_rect, src_size, alpha: 1.0 });
         }
+        crate::prof::inc_submit();
         queue.submit([enc.finish()]);
     }
 

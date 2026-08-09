@@ -159,6 +159,13 @@ function main() {
         await raf()
       }
       const b = [0, 1, 2, 3, 4, 5].map((i) => X.prof_read(i))
+      // 10 paints · 11 composites · 12 gathers · 13 queue submissions
+      const kinds = {
+        paints: +(X.prof_read(10) / FRAMES).toFixed(1),
+        composites: +(X.prof_read(11) / FRAMES).toFixed(1),
+        gathers: +(X.prof_read(12) / FRAMES).toFixed(1),
+        submits: +(X.prof_read(13) / FRAMES).toFixed(1),
+      }
       let frames = 0
       const t1 = performance.now()
       while (performance.now() - t1 < 1500) { apply(frames); renderer.render(); frames++; await raf() }
@@ -173,6 +180,7 @@ function main() {
           render: +(b[2] / FRAMES).toFixed(3), submit: +(b[3] / FRAMES).toFixed(3),
         },
         stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
+        kinds,
         sustainedFps: fps,
         // CPU-vs-rest split. `cpuMsPerFrame` is wall time around the *blocking* render() call, so
         // it is CPU: scene building plus command encoding. `framePeriodMs` is the achieved period.

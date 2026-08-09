@@ -20,6 +20,10 @@ thread_local! {
     static RENDERS: Cell<u32> = const { Cell::new(0) };
     static POOL_HIT: Cell<u32> = const { Cell::new(0) };
     static POOL_MISS: Cell<u32> = const { Cell::new(0) };
+    static PAINTS: Cell<u32> = const { Cell::new(0) };
+    static COMPOSITES: Cell<u32> = const { Cell::new(0) };
+    static GATHERS: Cell<u32> = const { Cell::new(0) };
+    static SUBMITS: Cell<u32> = const { Cell::new(0) };
 }
 
 pub fn add_pool_hit() {
@@ -62,6 +66,21 @@ pub fn add_tex(ms: f64) {
 pub fn inc_step() {
     STEPS.with(|c| c.set(c.get() + 1));
 }
+/// Break the step count down by kind, and count the *queue submissions* they cost. A step that
+/// submits on its own turns into a driver round-trip and a GPU sync point, so `submits` climbing
+/// with `steps` is the thing to watch — it is what makes an effect-heavy frame expensive.
+pub fn inc_paint() {
+    PAINTS.with(|c| c.set(c.get() + 1));
+}
+pub fn inc_composite() {
+    COMPOSITES.with(|c| c.set(c.get() + 1));
+}
+pub fn inc_gather() {
+    GATHERS.with(|c| c.set(c.get() + 1));
+}
+pub fn inc_submit() {
+    SUBMITS.with(|c| c.set(c.get() + 1));
+}
 /// Count one `renderer.render` call — with the atlas, one render covers many steps, so this drops
 /// below `steps` and is the number the atlas is meant to shrink.
 pub fn inc_render() {
@@ -79,6 +98,10 @@ pub fn reset() {
     RENDERS.with(|c| c.set(0));
     POOL_HIT.with(|c| c.set(0));
     POOL_MISS.with(|c| c.set(0));
+    PAINTS.with(|c| c.set(0));
+    COMPOSITES.with(|c| c.set(0));
+    GATHERS.with(|c| c.set(0));
+    SUBMITS.with(|c| c.set(0));
 }
 
 /// Read a bucket: 0 build, 1 scene, 2 render, 3 submit, 4 tex, 5 steps, 6 texn (ms except counts).
@@ -94,6 +117,10 @@ pub fn read(which: u32) -> f64 {
         7 => f64::from(RENDERS.with(Cell::get)),
         8 => f64::from(POOL_HIT.with(Cell::get)),
         9 => f64::from(POOL_MISS.with(Cell::get)),
+        10 => f64::from(PAINTS.with(Cell::get)),
+        11 => f64::from(COMPOSITES.with(Cell::get)),
+        12 => f64::from(GATHERS.with(Cell::get)),
+        13 => f64::from(SUBMITS.with(Cell::get)),
         _ => 0.0,
     }
 }
