@@ -381,7 +381,25 @@ fn custom_pass(
 }
 
 /// A fresh render-attachment + sampled texture — an effect pass's output (or scratch) surface.
+///
+/// The graph's own passes are render-pipeline blits/shaders, so `RENDER_ATTACHMENT | TEXTURE_BINDING`
+/// is all they need. A target the sink rasterizes into with a *backend* scene (the gather coverage
+/// mask) needs the backend's extra usage too — see [`new_target_with_usage`].
 pub fn new_target(device: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::Texture {
+    new_target_with_usage(device, w, h, format, wgpu::TextureUsages::empty())
+}
+
+/// [`new_target`] plus `extra` usage flags. Used for the gather coverage mask, which the sink fills
+/// via `backend.rasterize` — classic writes that from a compute shader, so the mask must also carry
+/// `STORAGE_BINDING` (supplied by `RasterBackend::rasterize_target_usage`). Without it the compute
+/// bind group is invalid, the mask render is dropped, and the blur silently vanishes.
+pub fn new_target_with_usage(
+    device: &wgpu::Device,
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    extra: wgpu::TextureUsages,
+) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("effect target"),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -389,7 +407,7 @@ pub fn new_target(device: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFo
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | extra,
         view_formats: &[],
     })
 }

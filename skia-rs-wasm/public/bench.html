@@ -29,6 +29,10 @@ const H = Number(q.get('h') ?? 1000)
 const DEPTH = Number(q.get('depth') ?? 0)
 const EFFECTS = q.get('effects') ?? 'none'
 const EFFECT_EVERY = Number(q.get('effectEvery') ?? 10)
+// Blur radius for bgblur/blur/glass. Held or swept to separate per-pass overhead (round-trip) from
+// blur compute: the backdrop is capped to a one-tile ring, so compute/blur is ~radius-invariant —
+// if GPU time tracks pass COUNT and is flat vs RADIUS, the cost is the round-trip, not the math.
+const RADIUS = Number(q.get('radius') ?? 6)
 
 const out = document.getElementById('out')
 const log = (s) => { out.textContent = s }
@@ -61,7 +65,11 @@ function main() {
     X.set_render_options(0, dpr)
     X.set_scheduler(1)
     X.set_tile_effects(1)
+    // Sink submit-batch size (steps per encoder). 0 = unbounded (whole frame in one encoder — the
+    // case that OOMed). Default 32. Lets a sweep prove memory scales with batch size.
+    if (X.set_sink_batch) X.set_sink_batch(Number(q.get('batch') ?? 32))
 
+    window.__X__ = X // expose wasm exports for ad-hoc probing
     const renderer = await mod.create_focus_renderer(canvas)
 
     // ---- scene ---------------------------------------------------------------------
@@ -105,10 +113,15 @@ function main() {
       X.set_shape_selrect(cx + 2, cy + 2, cx + CELL - 2, cy + CELL - 2)
       solidFill(0xff000000 | (i * 2654435761 & 0xffffff))
       if (EFFECTS !== 'none' && i % EFFECT_EVERY === 0) {
-        // shadow = a spread effect (own surface, composited into every tile it overlaps);
-        // blur = a gather effect (reads the backdrop beneath). Different scheduler paths.
+        // Two scheduler families:
+        //   SPREAD  — own surface, composited onto every tile it overlaps (additive, no backdrop read).
+        //     shadow = drop shadow;  blur = LAYER blur (blur_type 0, the shape's own paint).
+        //   GATHER  — reads the backdrop beneath, so it forces a compose-backdrop + read pass.
+        //     bgblur = BACKGROUND blur (blur_type 1);  glass = frosted glass.
         if (EFFECTS === 'shadow' || EFFECTS === 'both') X.add_shape_shadow(0x80000000, 8, 0, 4, 4, 0, false)
-        if (EFFECTS === 'blur' || EFFECTS === 'both') X.set_shape_blur(0, false, 6)
+        if (EFFECTS === 'blur' || EFFECTS === 'both') X.set_shape_blur(0, false, RADIUS)
+        if (EFFECTS === 'bgblur') X.set_shape_blur(1, false, RADIUS)
+        if (EFFECTS === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.1, 0, 0, 0, 1, RADIUS, 3, 0)
       }
       X.use_shape(...parent)
       X.add_shape_child(0, 0, 0, i + 1)
@@ -165,10 +178,18 @@ function main() {
         composites: +(X.prof_read(11) / FRAMES).toFixed(1),
         gathers: +(X.prof_read(12) / FRAMES).toFixed(1),
         submits: +(X.prof_read(13) / FRAMES).toFixed(1),
+        // bucket 7 = actual backend rasterize (render_to_texture) calls; the atlas is meant to keep
+        // this well below the paint-step count. bucket 8/9 = texture-pool hits/misses.
+        renders: +(X.prof_read(7) / FRAMES).toFixed(1),
+        poolMiss: +(X.prof_read(9) / FRAMES).toFixed(1),
       }
+      // TEMP atlas_effects diagnostics (last timed frame): 100 cands · 101 widest · 102 tallest ·
+      // 103 shelf-declined · 104 atlas height
+      const dbg = { cands: X.prof_read(100), widest: X.prof_read(101), tallest: X.prof_read(102), declined: X.prof_read(103), atlasH: X.prof_read(104) }
       let frames = 0
       const t1 = performance.now()
-      while (performance.now() - t1 < 1500) { apply(frames); renderer.render(); frames++; await raf() }
+      const sustainMs = Number(q.get('sustainMs') ?? 1500)
+      while (performance.now() - t1 < sustainMs) { apply(frames); renderer.render(); frames++; await raf() }
       const fps = +(frames / ((performance.now() - t1) / 1000)).toFixed(1)
       return {
         cpuMsPerFrame: +(sum / FRAMES).toFixed(3),
@@ -181,6 +202,7 @@ function main() {
         },
         stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
         kinds,
+        dbg,
         sustainedFps: fps,
         // CPU-vs-rest split. `cpuMsPerFrame` is wall time around the *blocking* render() call, so
         // it is CPU: scene building plus command encoding. `framePeriodMs` is the achieved period.
@@ -192,8 +214,9 @@ function main() {
       }
     }
 
-    const res = { backend: BACKEND, shapes: N, depth: DEPTH, effects: EFFECTS, canvas: W + 'x' + H, modes: {} }
-    for (const name of ['idle', 'pan', 'zoom', 'edit1', 'editFar', 'editMulti']) {
+    const res = { backend: BACKEND, shapes: N, depth: DEPTH, effects: EFFECTS, radius: RADIUS, effectEvery: EFFECT_EVERY, canvas: W + 'x' + H, modes: {} }
+    const modeList = q.get('modes') ? q.get('modes').split(',') : ['idle', 'pan', 'zoom', 'edit1', 'editFar', 'editMulti']
+    for (const name of modeList) {
       log(JSON.stringify(res, null, 2) + '\n\nrunning ' + name + '…')
       res.modes[name] = await runMode(name)
     }

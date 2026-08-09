@@ -53,6 +53,7 @@ impl RasterBackend for HybridBackend<'_> {
         scene: &Scene,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         width: u32,
         height: u32,
@@ -60,16 +61,16 @@ impl RasterBackend for HybridBackend<'_> {
         // wants; the neutral `base_color` is honored by the classic backend, not needed here.
         _base_color: Color,
     ) {
-        let mut enc = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("hybrid rasterize") });
         let size = RenderSize { width, height };
         let _trd = crate::prof::now();
+        // Already encoder-taking, so recording into the sink's frame encoder is the whole change —
+        // the submit that used to follow now happens once per frame, in the sink.
         let res = self.renderer.render(
             scene,
             self.scene_source.resources_mut(),
             device,
             queue,
-            &mut enc,
+            enc,
             &size,
             target,
             &TextureBindings::new(),
@@ -79,8 +80,5 @@ impl RasterBackend for HybridBackend<'_> {
         if let Err(e) = res {
             log::warn!("hybrid rasterize skipped: {e:?}");
         }
-        let _tsu = crate::prof::now();
-        queue.submit([enc.finish()]);
-        crate::prof::add_submit(crate::prof::now() - _tsu);
     }
 }

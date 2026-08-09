@@ -86,12 +86,18 @@ pub trait RasterBackend {
     fn build_mask(&mut self, scene: &mut Self::Scene, transform: Affine, id: u128);
 
     /// Rasterize `scene` into `target` (a `width × height` texture), clearing to `base_color` first.
-    /// Owns its encoder + submit.
+    ///
+    /// Records into the caller's `enc` and does **not** submit: an effect-heavy frame runs hundreds of
+    /// these, and a submit each is a driver round-trip plus a GPU sync point. The sink owns one encoder
+    /// per frame and submits once; ordering still holds, since commands in one encoder execute in
+    /// order and read-after-write between them is ordered.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn rasterize(
         &mut self,
         scene: &Self::Scene,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         width: u32,
         height: u32,
@@ -105,6 +111,50 @@ pub trait RasterBackend {
     /// `RENDER_ATTACHMENT` / `TEXTURE_BINDING` / `COPY_DST`).
     fn rasterize_target_usage(&self) -> wgpu::TextureUsages {
         wgpu::TextureUsages::RENDER_ATTACHMENT
+    }
+
+    /// Whether this backend can draw an already-rendered surface as an **inline image** inside a scene
+    /// being built — the primitive the tile-fuse needs to collapse a tile's plain bodies *and* its
+    /// spread effect surfaces into ONE rasterize (instead of a plain render split by every effect
+    /// composite). Classic does it via `register_texture` + an `ImageBrush` fill; hybrid has a
+    /// different image model and keeps the composite path, so it defaults to `false`.
+    fn inline_images_supported(&self) -> bool {
+        false
+    }
+
+    /// Register `texture` (an `Rgba8Unorm`, `COPY_SRC` surface) for inline drawing this frame, returning
+    /// an opaque handle to pass to [`Self::draw_inline_image`]. Paired with [`Self::unregister_inline_image`]
+    /// once the scenes that use it have been rasterized. Only called when [`Self::inline_images_supported`].
+    fn register_inline_image(&mut self, _texture: &wgpu::Texture) -> u64 {
+        0
+    }
+
+    /// Draw a previously [`registered`](Self::register_inline_image) surface into `scene`, placing its
+    /// whole extent at device-space `dst` (a rect in the scene's own pixels) at `alpha`. 1:1 in size,
+    /// mirroring the composite blit it replaces.
+    fn draw_inline_image(&mut self, _scene: &mut Self::Scene, _handle: u64, _dst: Rect, _alpha: f32) {}
+
+    /// Release a handle from [`Self::register_inline_image`] after the frame's fused scenes are rendered.
+    fn unregister_inline_image(&mut self, _handle: u64) {}
+
+    /// Called once per frame, immediately after the sink submits its encoder.
+    ///
+    /// A backend that defers recycling while commands are unsubmitted reclaims here. Classic does:
+    /// vello's engine holds retired buffers until this point, because returning one to its pool with
+    /// commands still unsubmitted lets the next recording overwrite live data. Hybrid needs nothing.
+    fn after_submit(&mut self) {}
+
+    /// Whether the sink may record **several** [`Self::rasterize`] calls into one encoder before
+    /// submitting (the batching that turns ~1-submit-per-step into ~steps/batch).
+    ///
+    /// Safe only if a rasterize does not alias GPU state across calls that share a submit. Default is
+    /// `false` — the conservative choice for any new backend. vello's classic engine encodes fresh
+    /// per-recording buffers into each `Recording`, so it overrides to `true`. vello_hybrid reuses a
+    /// **persistent** `view_config` uniform buffer, rewritten via `queue.write_buffer` per render;
+    /// since those writes apply at submit time, batching would make every draw in the batch read the
+    /// last render's config — so hybrid keeps the default and submits per rasterize.
+    fn batched_submits_safe(&self) -> bool {
+        false
     }
 }
 
@@ -121,14 +171,16 @@ pub trait SceneRasterizer {
 
     /// Rasterize `scene` into `target` (a `width × height` texture), clearing to `base_color` first.
     ///
-    /// The implementation owns its encoder + submit. `target`'s required usages are the backend's
-    /// business (classic needs `STORAGE_BINDING`; hybrid renders as an attachment); the sink allocates
-    /// via the backend so it can set them.
+    /// Records into the caller's `enc` and does not submit — the sink submits once per frame.
+    /// `target`'s required usages are the backend's business (classic needs `STORAGE_BINDING`; hybrid
+    /// renders as an attachment); the sink allocates via the backend so it can set them.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn rasterize(
         &mut self,
         scene: &Self::Scene,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         width: u32,
         height: u32,

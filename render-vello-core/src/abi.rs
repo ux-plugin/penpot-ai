@@ -664,6 +664,26 @@ pub fn scheduler() -> bool {
 }
 
 thread_local! {
+    /// How many sink steps share one command encoder before it is submitted. Bounds peak GPU memory
+    /// (wgpu holds every resource an unsubmitted encoder references), while collapsing the ~1
+    /// submit-per-step into ~steps/BATCH. Runtime-tunable so the bench can prove the memory effect by
+    /// sweeping it — a large value reproduces the one-encoder-per-frame blow-up, 32 is the shipping
+    /// default. `0` is treated as "unbounded" (whole frame in one encoder).
+    static SINK_BATCH: std::cell::Cell<u32> = const { std::cell::Cell::new(32) };
+}
+
+/// Set the sink's submit-batch size (steps per encoder). `0` = unbounded.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_sink_batch(n: u32) {
+    SINK_BATCH.with(|c| c.set(n));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn sink_batch() -> u32 {
+    SINK_BATCH.with(std::cell::Cell::get)
+}
+
+thread_local! {
     /// The most recent frame's tile counts, packed `(rendered << 16) | reused`. A machine-readable
     /// proof that the page-space cache reuses tiles across a pan (rendered ≈ the newly-exposed
     /// strip, reused ≈ the rest) and re-renders a full screen on a zoom. Read via `last_tile_stats`.

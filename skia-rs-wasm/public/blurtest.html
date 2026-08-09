@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>classic gather (background-blur) visual test</title>
+<style>
+  body { margin: 0; background: #222; color: #eee; font: 13px ui-monospace, monospace; }
+  #c { display: block; margin: 16px; border: 1px solid #444; }
+  #out { padding: 8px 16px; white-space: pre; }
+</style>
+<canvas id="c" width="600" height="600"></canvas>
+<div id="out">booting…</div>
+<script type="module">
+// Decisive gather test: 3 sharp vertical stripes (red|green|blue), then a NO-FILL rect with a
+// BACKGROUND blur on top. If classic's gather works, the stripe seams are smeared inside the rect;
+// if the gather compute is dropped, the seams stay razor-sharp inside the rect.
+const q = new URLSearchParams(location.search)
+const BACKEND = q.get('backend') ?? 'classic'
+const BATCH = Number(q.get('batch') ?? 1)
+const RADIUS = Number(q.get('radius') ?? 20)
+const FX = q.get('fx') ?? 'bgblur'   // bgblur | glass — both are gather effects
+const out = document.getElementById('out')
+const log = (s) => { out.textContent = s }
+const URLS = { hybrid: '/wasm-vello/render-vello.js', classic: '/wasm-vello-gpu/render-vello-gpu.js' }
+const REC = 164
+
+import(/* @vite-ignore */ URLS[BACKEND]).then(async (X0) => {
+  const X = await X0.default()
+  const canvas = document.getElementById('c')
+  const W = 600, H = 600
+  canvas.width = W; canvas.height = H
+  X.init(W, H)
+  X.set_render_options(0, 1)
+  X.set_scheduler(1)
+  X.set_tile_effects(1)
+  if (X.set_sink_batch) X.set_sink_batch(BATCH)
+  const renderer = await X0.create_focus_renderer(canvas)
+
+  const u8 = () => new Uint8Array(X.memory.buffer)
+  const dv = () => new DataView(X.memory.buffer)
+  function solidFill(color) {
+    const size = 4 + REC, ptr = X.alloc_bytes(size)
+    u8().fill(0, ptr, ptr + size)
+    u8()[ptr] = 1; u8()[ptr + 4] = 0x00; dv().setUint32(ptr + 8, color, true)
+    X.set_shape_fills()
+  }
+  function rect(id, x0, y0, x1, y1, color) {
+    X.use_shape(0, 0, 0, id)
+    X.set_shape_type(3)
+    X.set_shape_selrect(x0, y0, x1, y1)
+    if (color != null) solidFill(color)
+  }
+  function childOfRoot(id) { X.use_shape(0, 0, 0, 0); X.add_shape_child(0, 0, 0, id) }
+
+  X.init_shapes_pool(16)
+  // Backdrop stripes.
+  rect(1, 0, 0, 200, 600, 0xffff0000); childOfRoot(1)   // red
+  rect(2, 200, 0, 400, 600, 0xff00ff00); childOfRoot(2) // green
+  rect(3, 400, 0, 600, 600, 0xff0000ff); childOfRoot(3) // blue
+  if (FX === 'shadow') {
+    // Two overlapping filled rects, each casting a drop shadow — tests the tile-fuse: the shadow
+    // surfaces inline under the plain bodies, in z-order, across tile boundaries.
+    rect(4, 120, 120, 340, 340, 0xffffffff)
+    X.add_shape_shadow(0x90000000, 16, 0, 24, 24, 0, false)  // black@~56%, blur 16, offset (24,24)
+    childOfRoot(4)
+    rect(5, 280, 280, 500, 500, 0xffffe000)
+    X.add_shape_shadow(0x90000000, 16, 0, 24, 24, 0, false)
+    childOfRoot(5)
+    X.set_view(1, 0, 0)
+    const raf0 = () => new Promise((r) => requestAnimationFrame(r))
+    for (let i = 0; i < 5; i++) { renderer.render(); await raf0() }
+    log(`${BACKEND} · fx=shadow\nEach rect should cast an offset soft dark shadow to its lower-right.`)
+    window.__DONE__ = true
+    return
+  }
+  // No-fill rect with a GATHER effect on top, straddling both seams.
+  rect(4, 100, 100, 500, 500, null)
+  if (FX === 'glass') {
+    // surface, bezel, thickness, ior, specAngle, specOpacity, specSat, chromAb, splay, tilt, edge, zoom, blur, frost, hidden
+    X.set_shape_glass(0, 8, 12, 1.6, 0, 0.4, 1, 0.2, 0, 0, 0, 1, RADIUS, 4, 0)
+  } else {
+    X.set_shape_blur(1, false, RADIUS)  // blur_type 1 = background (gather)
+  }
+  childOfRoot(4)
+
+  X.set_view(1, 0, 0)
+  const raf = () => new Promise((r) => requestAnimationFrame(r))
+  for (let i = 0; i < 5; i++) { renderer.render(); await raf() }
+  log(`${BACKEND} · batch=${BATCH} · fx=${FX} radius=${RADIUS}\nStripes should be SMEARED/REFRACTED inside the centre rect if the gather ran.`)
+  window.__DONE__ = true
+}).catch((e) => { window.__ERR__ = String(e && e.stack || e); log('ERROR ' + e) })
+</script>

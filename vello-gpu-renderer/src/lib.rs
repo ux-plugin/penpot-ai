@@ -106,6 +106,24 @@ impl ClassicCtx {
     fn share_images(&mut self, images: ImageMap) {
         self.images = images;
     }
+
+    /// Draw a registered surface `img` into this scene with its top-left at `(ox, oy)`, 1:1 in size —
+    /// the tile-fuse's inline replacement for a spread effect's composite blit. `alpha < 1` is applied
+    /// through a clipped opacity layer over the placement rect.
+    pub fn fill_image(&mut self, img: &vello_common::peniko::ImageData, ox: f64, oy: f64, alpha: f32) {
+        use vello_common::peniko::ImageBrush;
+        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
+        let xf = Affine::translate((ox, oy));
+        let rect = Rect::new(0.0, 0.0, iw, ih);
+        let brush = ImageBrush::new(img.clone());
+        if alpha < 0.999 {
+            self.scene.push_layer(Fill::NonZero, vello_common::peniko::BlendMode::default(), alpha, xf, &rect);
+            self.scene.fill(Fill::NonZero, xf, &brush, None, &rect);
+            self.scene.pop_layer();
+        } else {
+            self.scene.fill(Fill::NonZero, xf, &brush, None, &rect);
+        }
+    }
 }
 
 /// Glyph backend stub. Classic vello draws text through its own skrifa `draw_glyphs`, not a glifo
@@ -388,6 +406,154 @@ impl ClassicRenderer {
     }
 }
 
+impl ClassicRenderer {
+    /// Hand vello's retired buffers back to its pool. Safe only after the caller submitted the
+    /// encoder the recordings went into — see `Renderer::release_pending`.
+    pub fn release_pending(&mut self) {
+        self.inner.release_pending();
+    }
+
+    /// Register a GPU surface with vello so scenes on this renderer can draw it as an image (the
+    /// tile-fuse). The texture must be `Rgba8Unorm` + `COPY_SRC`; the returned handle is drawn via an
+    /// `ImageBrush` and released with [`Self::unregister_texture`] once the frame is rendered.
+    pub fn register_texture(&mut self, texture: wgpu::Texture) -> vello_common::peniko::ImageData {
+        self.inner.register_texture(texture)
+    }
+
+    /// Release a surface registered with [`Self::register_texture`].
+    pub fn unregister_texture(&mut self, handle: vello_common::peniko::ImageData) {
+        self.inner.unregister_texture(handle);
+    }
+
+    /// SPIKE — prove `register_texture` round-trips before the tile-assembly refactor is built on it.
+    ///
+    /// (1) render a two-colour pattern (red left, blue right) into an offscreen texture; (2) register
+    /// that GPU texture with vello; (3) build a second scene that draws a green background, a solid
+    /// magenta rect *directly*, and the registered texture *as an image*; (4) render it to `target`.
+    /// If the screenshot shows the red/blue pattern where the image was placed, in the right spot with
+    /// the right colours, next to the magenta rect, the round-trip works. Throwaway.
+    ///
+    /// Renders into an offscreen `SIDE`×`SIDE` storage texture (classic writes its target from a
+    /// compute shader, so the target needs `STORAGE_BINDING` — the swapchain view can't be one), then
+    /// copies it to a mappable buffer and returns the raw RGBA bytes. The harness paints them into a 2D
+    /// canvas so the round-trip can be seen and pixel-checked. `SIDE` is 512 so `bytes_per_row`
+    /// (512·4 = 2048) is already 256-aligned — no row padding to unpick.
+    pub async fn spike(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u8> {
+        use vello::Scene;
+        use vello_common::kurbo::Rect;
+        use vello_common::peniko::color::palette::css;
+
+        const SIDE: u32 = 512;
+        let params = |cw: u32, ch: u32, bg| RenderParams {
+            base_color: bg,
+            width: cw,
+            height: ch,
+            antialiasing_method: AaConfig::Area,
+        };
+        let storage_tex = |label, side| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: side, height: side, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        };
+
+        // PREMULT TEST: our effect surfaces (shadows) are semi-transparent, rendered into a transparent
+        // target — so the stored texels are *premultiplied*. `register_texture` documents *unpremult*
+        // input, so this checks whether a 50%-alpha surface, drawn back as an image over green, matches
+        // the same 50%-alpha colour filled *directly* over green. If they differ, premult is wrong.
+        let half_red = css::RED.with_alpha(0.5);
+
+        // (1) Render a 50%-alpha red into an offscreen (transparent) texture → premultiplied texels.
+        let pat_side = 200u32;
+        let tex = storage_tex("spike pattern", pat_side);
+        let tview = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pat = Scene::new();
+        pat.fill(Fill::NonZero, Affine::IDENTITY, half_red, None, &Rect::new(0.0, 0.0, 200.0, 200.0));
+        self.inner
+            .render_to_texture(device, queue, &pat, &tview, &params(pat_side, pat_side, css::TRANSPARENT))
+            .expect("spike: render pattern");
+
+        // (2) Register the GPU texture; the returned image can be drawn in scenes on this renderer.
+        let img = self.inner.register_texture(tex);
+
+        // (3) Output scene: green background; a DIRECT 50%-red reference rect at (40,40)-(180,180); the
+        // registered surface drawn *as an image* at (250,100),200×200. Both sit over green, so the
+        // reference and the image region should read the same colour if the round-trip is correct.
+        let out_tex = storage_tex("spike out", SIDE);
+        let out_view = out_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut out = Scene::new();
+        let full = f64::from(SIDE);
+        out.fill(Fill::NonZero, Affine::IDENTITY, css::GREEN, None, &Rect::new(0.0, 0.0, full, full));
+        out.fill(Fill::NonZero, Affine::IDENTITY, half_red, None, &Rect::new(40.0, 40.0, 180.0, 180.0));
+        let brush = vello_common::peniko::ImageBrush::new(img.clone());
+        out.fill(
+            Fill::NonZero,
+            Affine::translate((250.0, 100.0)),
+            &brush,
+            None,
+            &Rect::new(0.0, 0.0, 200.0, 200.0),
+        );
+        self.inner
+            .render_to_texture(device, queue, &out, &out_view, &params(SIDE, SIDE, css::WHITE))
+            .expect("spike: render output");
+        self.inner.unregister_texture(img);
+
+        // (4) Copy the offscreen texture into a mappable buffer and read the RGBA bytes back.
+        let bpr = SIDE * 4; // 2048, already 256-aligned
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("spike readback"),
+            size: u64::from(bpr) * u64::from(SIDE),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("spike copy") });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &out_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(SIDE),
+                },
+            },
+            wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+
+        let slice = readback.slice(..);
+        let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        // No-op on web (the browser event loop drives the map callback); real work on native.
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        rx.receive().await.expect("spike: map channel").expect("spike: map failed");
+        let data = slice.get_mapped_range().to_vec();
+        drop(slice);
+        readback.unmap();
+        data
+    }
+}
+
+impl ClassicBackend {
+    /// SPIKE accessor — reach the vello renderer from the focus renderer. Throwaway.
+    pub fn renderer_mut(&mut self) -> &mut ClassicRenderer {
+        &mut self.renderer
+    }
+}
+
 impl render_vello_core::rasterize::SceneRasterizer for ClassicRenderer {
     type Scene = ClassicCtx;
 
@@ -396,13 +562,14 @@ impl render_vello_core::rasterize::SceneRasterizer for ClassicRenderer {
     }
 
     /// Rasterize `scene` into `target` (an `Rgba8Unorm` + `STORAGE_BINDING` texture) over
-    /// `base_color`. Classic vello's `render_to_texture` owns its encoder/submit and clears the
-    /// target first — there is no load variant (accumulation is the sink's job, above this seam).
+    /// `base_color`, recording into the caller's encoder. Clears the target first — there is no load
+    /// variant (accumulation is the sink's job, above this seam).
     fn rasterize(
         &mut self,
         scene: &ClassicCtx,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         width: u32,
         height: u32,
@@ -410,8 +577,8 @@ impl render_vello_core::rasterize::SceneRasterizer for ClassicRenderer {
     ) {
         let params = RenderParams { base_color, width, height, antialiasing_method: AaConfig::Area };
         self.inner
-            .render_to_texture(device, queue, scene.scene(), target, &params)
-            .expect("render_to_texture");
+            .render_to_texture_into(device, queue, scene.scene(), target, &params, enc)
+            .expect("render_to_texture_into");
     }
 }
 
@@ -461,6 +628,11 @@ pub struct ClassicBackend {
     /// The next `ImageId` to hand out. Classic mints its own (there is no external atlas); the value
     /// only has to be unique and stable for the frame, and `record_image` maps the content id to it.
     next_image_id: u32,
+    /// Effect surfaces registered with vello for inline drawing this frame (the tile-fuse), keyed by the
+    /// handle the sink holds. Drained each frame as the sink unregisters them post-render.
+    inline_images: std::collections::HashMap<u64, vello_common::peniko::ImageData>,
+    /// Monotonic handle source for [`Self::register_inline_image`].
+    next_inline: u64,
 }
 
 impl ClassicBackend {
@@ -472,6 +644,8 @@ impl ClassicBackend {
             text: render_vello_core::text::TextState::new(),
             images: ImageMap::default(),
             next_image_id: 0,
+            inline_images: std::collections::HashMap::new(),
+            next_inline: 0,
         }
     }
 
@@ -565,16 +739,16 @@ impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
         scene: &ClassicCtx,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         width: u32,
         height: u32,
         base_color: render_core::peniko::Color,
     ) {
         use render_vello_core::rasterize::SceneRasterizer;
-        // Timed like hybrid's `render` bucket. For classic this covers encoding *and* the compute
-        // dispatch's own submit, so a large value here that is not encode work is GPU backpressure.
+        // Timed like hybrid's `render` bucket — encode only now that the submit moved to the sink.
         let _trd = render_vello_core::prof::now();
-        self.renderer.rasterize(scene, device, queue, target, width, height, base_color);
+        self.renderer.rasterize(scene, device, queue, enc, target, width, height, base_color);
         render_vello_core::prof::add_render(render_vello_core::prof::now() - _trd);
         render_vello_core::prof::inc_render();
     }
@@ -582,6 +756,43 @@ impl render_vello_core::rasterize::RasterBackend for ClassicBackend {
     fn rasterize_target_usage(&self) -> wgpu::TextureUsages {
         // Classic writes the target from a compute shader, not as a render attachment.
         wgpu::TextureUsages::STORAGE_BINDING
+    }
+
+    /// The frame has been submitted, so vello's retired buffers are safe to recycle now.
+    fn after_submit(&mut self) {
+        self.renderer.release_pending();
+    }
+
+    /// Classic encodes fresh per-recording buffers into each `Recording` (no persistent uniform is
+    /// aliased across renders), so several rasterizes may share one submit. See the trait default for
+    /// why hybrid cannot.
+    fn batched_submits_safe(&self) -> bool {
+        true
+    }
+
+    /// Classic draws inline surfaces via `register_texture` + an `ImageBrush` fill — the tile-fuse.
+    fn inline_images_supported(&self) -> bool {
+        true
+    }
+
+    fn register_inline_image(&mut self, texture: &wgpu::Texture) -> u64 {
+        let img = self.renderer.register_texture(texture.clone());
+        let handle = self.next_inline;
+        self.next_inline = self.next_inline.wrapping_add(1);
+        self.inline_images.insert(handle, img);
+        handle
+    }
+
+    fn draw_inline_image(&mut self, scene: &mut ClassicCtx, handle: u64, dst: render_core::kurbo::Rect, alpha: f32) {
+        if let Some(img) = self.inline_images.get(&handle) {
+            scene.fill_image(img, dst.x0, dst.y0, alpha);
+        }
+    }
+
+    fn unregister_inline_image(&mut self, handle: u64) {
+        if let Some(img) = self.inline_images.remove(&handle) {
+            self.renderer.unregister_texture(img);
+        }
     }
 }
 

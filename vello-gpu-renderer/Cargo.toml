@@ -41,6 +41,9 @@ glifo = { path = "../vello/glifo", default-features = false }
 wgpu = { version = "29.0.3" }
 
 log = "0.4.29"
+# SPIKE-only: oneshot channel to await buffer map on wasm (device.poll is a no-op on web, so the
+# browser event loop drives the map callback and we await its result). Throwaway with the spike.
+futures-intrusive = "0.5"
 
 # The wasm backend shell: a `create_focus_renderer` over a host `<canvas>` + the browser console
 # wiring. wasm-only so the native rlib + tests stay lean. Mirrors render-vello's versions (this crate

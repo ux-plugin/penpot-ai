@@ -81,6 +81,15 @@ pub fn inc_gather() {
 pub fn inc_submit() {
     SUBMITS.with(|c| c.set(c.get() + 1));
 }
+
+thread_local! {
+    /// TEMP scratch buckets for ad-hoc diagnostics, read via `prof_read(100 + i)`.
+    static DBG: std::cell::RefCell<[f64; 8]> = const { std::cell::RefCell::new([0.0; 8]) };
+}
+/// TEMP: set diagnostic bucket `i` (0..8), read via `prof_read(100 + i)`.
+pub fn dbg_set(i: usize, v: f64) {
+    DBG.with(|c| { if i < 8 { c.borrow_mut()[i] = v; } });
+}
 /// Count one `renderer.render` call — with the atlas, one render covers many steps, so this drops
 /// below `steps` and is the number the atlas is meant to shrink.
 pub fn inc_render() {
@@ -102,6 +111,7 @@ pub fn reset() {
     COMPOSITES.with(|c| c.set(0));
     GATHERS.with(|c| c.set(0));
     SUBMITS.with(|c| c.set(0));
+    DBG.with(|c| *c.borrow_mut() = [0.0; 8]);
 }
 
 /// Read a bucket: 0 build, 1 scene, 2 render, 3 submit, 4 tex, 5 steps, 6 texn (ms except counts).
@@ -121,6 +131,7 @@ pub fn read(which: u32) -> f64 {
         11 => f64::from(COMPOSITES.with(Cell::get)),
         12 => f64::from(GATHERS.with(Cell::get)),
         13 => f64::from(SUBMITS.with(Cell::get)),
+        100..=107 => DBG.with(|c| c.borrow()[(which - 100) as usize]),
         _ => 0.0,
     }
 }

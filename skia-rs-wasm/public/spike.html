@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>register_texture spike</title>
+<style>
+  body { margin: 0; background: #222; color: #eee; font: 13px ui-monospace, monospace; }
+  #c { display: block; margin: 20px; border: 1px solid #444; image-rendering: pixelated; }
+  #out { padding: 12px; white-space: pre; }
+</style>
+<canvas id="c" width="512" height="512"></canvas>
+<div id="out">booting…</div>
+<script type="module">
+// SPIKE: prove render-to-texture → register_texture → draw-as-image round-trips.
+// spike() returns 512×512 RGBA of an OFFSCREEN scene: white base, green full bg, magenta rect at
+// (40,40)-(180,180), and the registered texture (red-left / blue-right pattern) drawn as an image at
+// (250,100) 200×200. We paint it into the canvas AND assert the key pixels.
+const out = document.getElementById('out')
+const log = (s) => { out.textContent = s }
+const SIDE = 512
+const px = (data, x, y) => { const o = (y * SIDE + x) * 4; return [data[o], data[o+1], data[o+2], data[o+3]] }
+const near = (c, r, g, b, tol = 24) => Math.abs(c[0]-r) <= tol && Math.abs(c[1]-g) <= tol && Math.abs(c[2]-b) <= tol
+
+import('/wasm-vello-gpu/render-vello-gpu.js').then(async (mod) => {
+  await mod.default()
+  const canvas = document.getElementById('c')
+  const renderer = await mod.create_focus_renderer(canvas)
+  const bytes = await renderer.spike()           // Uint8Array, 512*512*4
+  const data = new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  // Paint into a 2D canvas so the round-trip is visible in a screenshot.
+  const c2d = document.createElement('canvas'); c2d.width = SIDE; c2d.height = SIDE
+  c2d.getContext('2d').putImageData(new ImageData(data, SIDE, SIDE), 0, 0)
+  canvas.getContext('2d', { willReadFrequently: false })?.drawImage?.(c2d, 0, 0) ||
+    canvas.getContext('bitmaprenderer')
+  // The #c canvas may be WebGPU-configured already; draw via a plain 2D overlay canvas instead.
+  const show = document.createElement('canvas'); show.width = SIDE; show.height = SIDE
+  show.style.cssText = 'display:block;margin:20px;border:1px solid #444;image-rendering:pixelated'
+  show.getContext('2d').putImageData(new ImageData(data, SIDE, SIDE), 0, 0)
+  canvas.replaceWith(show)
+
+  // ---- premult round-trip check ----
+  // Both regions are 50%-alpha red over green: DIRECT fill vs the registered surface drawn as an image.
+  // They must match for premultiplied surfaces to inline correctly.
+  const samples = {
+    bg_green:  px(data, 8, 8),        // green background
+    direct:    px(data, 100, 100),    // 50%-red filled directly over green
+    image:     px(data, 350, 200),    // 50%-red surface drawn as an image over green
+    outside:   px(data, 470, 470),    // green, past both
+  }
+  const dist = (a, b) => Math.max(Math.abs(a[0]-b[0]), Math.abs(a[1]-b[1]), Math.abs(a[2]-b[2]))
+  const checks = {
+    bg_is_green:      near(samples.bg_green, 0, 128, 0),
+    direct_is_50red:  near(samples.direct, 128, 128, 0, 20),   // 0.5*red + 0.5*green
+    image_matches_direct: dist(samples.image, samples.direct) <= 20,
+    corner_is_green:  near(samples.outside, 0, 128, 0),
+  }
+  const pass = Object.values(checks).every(Boolean)
+  window.__SPIKE__ = { pass, checks, samples, imageVsDirectDist: dist(samples.image, samples.direct) }
+  log((pass ? '✅ PASS — premultiplied surface round-trips (image == direct)\n\n'
+            : '❌ FAIL — image differs from direct (premult issue?)\n\n') +
+      JSON.stringify({ checks, samples }, null, 2))
+}).catch((e) => { window.__ERR__ = String(e && e.stack || e); log('ERROR ' + e) })
+</script>

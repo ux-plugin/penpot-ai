@@ -35,7 +35,7 @@ use crate::blend::{Blit, Compositor, MaskedBlit};
 use crate::glass::GlassPipeline;
 use render_core::effect_graph::{self, GlassGeometry};
 
-use crate::graph::{build_custom_pipeline, lower_graph, new_target, run_graph, Pass};
+use crate::graph::{build_custom_pipeline, lower_graph, new_target_with_usage, run_graph, Pass};
 
 /// Every sink surface is composited with `SrcOver`, so a first write clears to full transparency —
 /// the neutral `base_color` the backend rasterizes against.
@@ -231,71 +231,96 @@ impl Sink {
         let format = surface.format();
         let sw_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Steps share an encoder in **bounded batches** rather than submitting one at a time.
+        //
+        // A submit per step is a driver round-trip and a GPU sync point, and an effect-heavy frame ran
+        // ~440 of them. But going all the way to one encoder per frame is worse: wgpu keeps every
+        // resource an *unsubmitted* encoder references alive, so peak GPU memory becomes the **sum**
+        // over steps instead of the max — measured at ~3.5 GB allocated on a 20k-shape effect scene,
+        // which OOMed. Batching bounds both: ~440 submits collapse to ~440/BATCH, while peak memory
+        // stays a small multiple of one step's.
+        //
+        // Ordering holds regardless: commands within an encoder run in order, and submits are ordered
+        // against each other, so a `Paint` still observes an earlier `Composite` either way.
+        // Steps per encoder before a submit (0 = whole frame in one encoder — the unbounded case that
+        // OOMed). Runtime-tunable so the bench can sweep it and prove the memory effect. A backend
+        // whose rasterize aliases GPU state across a shared submit (vello_hybrid's persistent config
+        // buffer) is not batchable, so it submits per step (batch 1) regardless of the knob.
+        let safe = backend.batched_submits_safe();
+        let batch = if safe { crate::abi::sink_batch() } else { 1 };
+        let mut frame_enc = device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink batch") });
+
         // The page background is not a scheduled node — clear the swapchain to it, then the
         // TileOutput→Target composites land on top.
         let bg = crate::abi::background().components;
-        let mut enc =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink clear") });
         Compositor::clear(
-            &mut enc,
+            &mut frame_enc,
             &sw_view,
             [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])],
         );
-        crate::prof::inc_submit();
-        queue.submit([enc.finish()]);
 
-        // Atlas prepass: the first `Paint` into each `TileOutput` is a level-0 plain body (no outward
-        // blur, mutually independent), so pack them all into ONE `renderer.render` into one atlas
-        // texture and copy each cell into its tile — instead of one render + submit per tile. Returns
-        // the step indices it handled; the main loop skips them. Empty below the threshold.
+        // The per-shape spread surfaces first: each blurred body is an independent render, so shelf-pack
+        // them into one atlas (a gap between cells keeps each blur inside its own bounds). Doing this
+        // before the fuse means those surfaces exist to be inlined.
         let mut atlased =
-            self.atlas_prepass(&schedule.steps, backend, device, queue, root, full_view, format);
-        // Same idea for the per-shape spread surfaces: each blurred body is an independent render, so
-        // shelf-pack them into one atlas (a gap between cells keeps each blur inside its own bounds).
+            self.atlas_effects(&schedule.steps, backend, device, queue, &mut frame_enc, root, full_view, format);
+        if !safe {
+            Self::submit_batch(&mut frame_enc, device, queue, backend);
+        }
+        // Tile-fuse: a tile whose only effects are spreads draws its bodies AND those spread surfaces
+        // (inlined as images) as one scene — collapsing the plain run an effect composite used to split
+        // into a rasterize per segment. No-op on backends without inline images (hybrid). Consumes the
+        // tile's paints + spread composites so the prepass and main loop skip them.
         atlased.extend(
-            self.atlas_effects(&schedule.steps, backend, device, queue, root, full_view, format),
+            self.atlas_fuse(&schedule.steps, backend, device, queue, &mut frame_enc, root, full_view, format),
         );
+        if !safe {
+            Self::submit_batch(&mut frame_enc, device, queue, backend);
+        }
+        // Atlas prepass: the first `Paint` into each *remaining* (non-fused) `TileOutput`/`ScopeOf` is a
+        // level-0 plain body, mutually independent — pack them into ONE render and copy each cell into
+        // its tile. Returns the step indices it handled; the main loop skips them.
+        atlased.extend(
+            self.atlas_prepass(&schedule.steps, &atlased, backend, device, queue, &mut frame_enc, root, full_view, format),
+        );
+        if !safe {
+            Self::submit_batch(&mut frame_enc, device, queue, backend);
+        }
 
-        // Open encoder accumulating the current run of composites; `None` when nothing is pending.
-        let mut comp_enc: Option<wgpu::CommandEncoder> = None;
+        let mut batched = 0_u32;
         for (i, step) in schedule.steps.iter().enumerate() {
             if atlased.contains(&i) {
                 continue;
             }
-            // A run of consecutive composites shares one encoder and one submission. Any other step
-            // kind flushes it first: a `Paint` into a tile must observe an earlier `Composite` into
-            // that tile, and the backend's rasterize owns its own encoder/submit, so the recorded
-            // composites have to be on the queue before it runs.
-            if !matches!(step, Step::Composite { .. }) {
-                Self::flush_composites(&mut comp_enc, queue);
-            }
             match step {
                 Step::Paint { ops, clip, write_to } => {
                     crate::prof::inc_paint();
-                    self.paint(ops, *write_to, *clip, backend, device, queue, root, full_view, format);
+                    self.paint(ops, *write_to, *clip, backend, device, queue, &mut frame_enc, root, full_view, format);
                 }
                 Step::Composite { from, to, paint, rect, .. } => {
                     crate::prof::inc_composite();
-                    let enc = comp_enc.get_or_insert_with(|| {
-                        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("sink composite run"),
-                        })
-                    });
-                    self.composite(*from, *to, *paint, *rect, device, enc, &sw_view, full_view, width, height, format);
+                    self.composite(*from, *to, *paint, *rect, device, &mut frame_enc, &sw_view, full_view, width, height, format);
                 }
                 Step::ComposeBackdrop { read_from, extent, reach, always_cap, write_to, .. } => {
                     crate::prof::inc_gather();
-                    self.compose_backdrop(read_from, *extent, *reach, *always_cap, *write_to, device, queue, full_view, format);
+                    self.compose_backdrop(read_from, *extent, *reach, *always_cap, *write_to, device, &mut frame_enc, full_view, format);
                 }
                 Step::PaintGather { backdrop, clip, write_to, .. } => {
                     crate::prof::inc_gather();
-                    self.paint_gather(*backdrop, *clip, *write_to, backend, device, queue, root, full_view, format);
+                    self.paint_gather(*backdrop, *clip, *write_to, backend, device, queue, &mut frame_enc, root, full_view, format);
                 }
                 // Snapshot / layer brackets are not emitted by the builder yet.
                 _ => {}
             }
+            batched += 1;
+            if batch != 0 && batched >= batch {
+                // Submit this batch and start a fresh encoder, so at most `batch` steps' worth of
+                // transient GPU memory is ever held unsubmitted.
+                Self::submit_batch(&mut frame_enc, device, queue, backend);
+                batched = 0;
+            }
         }
-        Self::flush_composites(&mut comp_enc, queue);
 
         // --- tile cache: harvest what we just rendered, blit what we reused ---
         self.tile_cache.advance_frame();
@@ -317,8 +342,6 @@ impl Sink {
         // Composite the reused (cached, not re-rendered this frame) visible tiles onto the swapchain.
         // This is the whole point: they skipped every paint/effect pass and pay only a texture blit.
         let visible = tiling::visible_tiles(full_view, width, height);
-        let mut reused_enc = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink reused tiles") });
         let mut reused = 0u32;
         for &t in &visible {
             if dirty_set.contains(&t) {
@@ -329,14 +352,20 @@ impl Sink {
             let Some(view) = self.tile_cache.get(t).map(|s| s.view.clone()) else {
                 continue;
             };
-            self.blit_tile(device, &mut reused_enc, &sw_view, t, &view, full_view, width, height);
+            self.blit_tile(device, &mut frame_enc, &sw_view, t, &view, full_view, width, height);
             self.tile_cache.touch(t);
             reused += 1;
         }
-        crate::prof::inc_submit();
-        queue.submit([reused_enc.finish()]);
         // Machine-readable proof of reuse (rendered, reused), read via `_last_tile_stats`.
         crate::abi::set_tile_stats(u32::try_from(dirty.len()).unwrap_or(u32::MAX), reused);
+
+        // The frame's single submission — everything above only *recorded* into `frame_enc`.
+        let _tsu = crate::prof::now();
+        crate::prof::inc_submit();
+        queue.submit([frame_enc.finish()]);
+        crate::prof::add_submit(crate::prof::now() - _tsu);
+        // Only now is it safe for a backend to recycle what this frame retired.
+        backend.after_submit();
 
         // Evict LRU beyond budget (never a visible tile) and recycle each evicted tile's texture — a
         // cached (thus prior-frame, flushed) surface, safe to reuse.
@@ -359,9 +388,11 @@ impl Sink {
     fn atlas_prepass<B: RasterBackend>(
         &mut self,
         steps: &[Step],
+        already: &HashSet<usize>,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         root: Affine,
         full_view: Affine,
         format: wgpu::TextureFormat,
@@ -373,9 +404,13 @@ impl Sink {
         // The first Paint into each surface (render-core's SSA-order primitive), kept only for the
         // `TILE_BUFFER`-sized plain bodies: a tile output or a group's scope buffer (a scope's first
         // paint is the container background + its plain children; effect children arrive later as
-        // composites). Both pack the same fixed-cell atlas.
+        // composites). Both pack the same fixed-cell atlas. A first-paint already consumed by the
+        // tile-fuse (its tile drew all its bodies inline) is skipped.
         let mut candidates: Vec<(usize, SurfaceRef, Vec<PaintOp>)> = Vec::new();
         for i in first_write_paints(steps) {
+            if already.contains(&i) {
+                continue;
+            }
             if let Step::Paint { ops, write_to, .. } = &steps[i] {
                 if matches!(write_to.role, SurfaceRole::TileOutput | SurfaceRole::ScopeOf(_)) {
                     candidates.push((i, *write_to, ops.clone()));
@@ -427,9 +462,7 @@ impl Sink {
         // ONE render of every cell (the backend owns its submit), then copy each cell into its tile on
         // a following encoder. wgpu orders submits, so the atlas is fully written before the copies
         // read it.
-        backend.rasterize(&scene, device, queue, &atlas_view, aw, ah, CLEAR);
-        let mut enc =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("atlas copy") });
+        backend.rasterize(&scene, device, queue, enc, &atlas_view, aw, ah, CLEAR);
         for cell in &packing.cells {
             let (_, write_to, _) = &candidates[cell.index];
             self.ensure_surface(*write_to, device, TILE_BUFFER, TILE_BUFFER, format);
@@ -452,8 +485,6 @@ impl Sink {
             crate::prof::inc_step();
         }
         let _tsu = crate::prof::now();
-        crate::prof::inc_submit();
-        queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
         self.frame_transient.push(atlas);
 
@@ -475,6 +506,7 @@ impl Sink {
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         root: Affine,
         full_view: Affine,
         format: wgpu::TextureFormat,
@@ -505,6 +537,7 @@ impl Sink {
             }
             cands.push((i, *write_to, ops.clone(), w, h, dx, dy));
         }
+        crate::prof::dbg_set(0, cands.len() as f64); // TEMP: atlas_effects candidate count
         if cands.len() < ATLAS_MIN {
             return none;
         }
@@ -512,9 +545,13 @@ impl Sink {
         // Shelf-pack the variable-sized cells with a gap (backend-neutral geometry); the gap keeps
         // each cell's blur inside its own bounds so it can't bleed into a neighbour.
         let sizes: Vec<(u32, u32)> = cands.iter().map(|c| (c.3, c.4)).collect();
+        crate::prof::dbg_set(1, sizes.iter().map(|s| u64::from(s.0)).max().unwrap_or(0) as f64); // TEMP: widest cell
+        crate::prof::dbg_set(2, sizes.iter().map(|s| u64::from(s.1)).max().unwrap_or(0) as f64); // TEMP: tallest cell
         let Some(packing) = shelf_pack(&sizes, GAP, 2048, max_dim) else {
+            crate::prof::dbg_set(3, 1.0); // TEMP: shelf_pack declined
             return none;
         };
+        crate::prof::dbg_set(4, packing.height as f64); // TEMP: atlas height
         let (atlas_w, atlas_h) = (packing.width, packing.height);
 
         let mut scene = backend.new_scene(atlas_w as u16, atlas_h as u16);
@@ -532,9 +569,7 @@ impl Sink {
         );
         let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
 
-        backend.rasterize(&scene, device, queue, &atlas_view, atlas_w, atlas_h, CLEAR);
-        let mut enc = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("spread atlas copy") });
+        backend.rasterize(&scene, device, queue, enc, &atlas_view, atlas_w, atlas_h, CLEAR);
         for cell in &packing.cells {
             let (_, write_to, _, w, h, _, _) = &cands[cell.index];
             self.ensure_surface(*write_to, device, *w, *h, format);
@@ -557,12 +592,206 @@ impl Sink {
             crate::prof::inc_step();
         }
         let _tsu = crate::prof::now();
-        crate::prof::inc_submit();
-        queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
         self.frame_transient.push(atlas);
 
         cands.iter().map(|(i, _, _, _, _, _, _)| *i).collect()
+    }
+
+    /// The tile-fuse: render a whole tile — its plain bodies **and** its spread effect surfaces inlined
+    /// as images — as ONE scene, so an effect composite no longer splits the tile's plain run into a
+    /// fresh rasterize each. This is the Skia-style single-scene-per-tile: instead of `paint · composite
+    /// spread · paint · …` (a rasterize per segment), one cell draws `body · image(spread) · body · …`
+    /// in z-order, and the fixed-cell atlas batches many such tiles into one render.
+    ///
+    /// Only for backends that can [inline images](RasterBackend::inline_images_supported) (classic).
+    /// A tile qualifies only if every step touching it is a plain `Paint` or a spread `Composite`
+    /// (`RasterEffectOutput → TileOutput`) whose source surface is already rendered — any gather, scope,
+    /// or layer touching the tile disqualifies it, and it falls back to the unchanged per-step path.
+    /// Returns the handled step indices (all consumed paints + spread composites).
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn atlas_fuse<B: RasterBackend>(
+        &mut self,
+        steps: &[Step],
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        root: Affine,
+        full_view: Affine,
+        format: wgpu::TextureFormat,
+    ) -> HashSet<usize> {
+        let none = HashSet::new();
+        if !backend.inline_images_supported() {
+            return none;
+        }
+
+        // One entry per tile-touching step, in schedule (z) order.
+        enum Op {
+            Plain(usize, Vec<PaintOp>, Rect),
+            Spread(usize, SurfaceRef, Rect, f32),
+        }
+        let mut per_tile: std::collections::HashMap<TileKey, Vec<Op>> = std::collections::HashMap::new();
+        let mut order: Vec<TileKey> = Vec::new();
+        let mut disq: HashSet<TileKey> = HashSet::new();
+
+        for (i, step) in steps.iter().enumerate() {
+            match step {
+                Step::Paint { ops, clip, write_to } => {
+                    if matches!(write_to.role, SurfaceRole::TileOutput) {
+                        if let Some(t) = write_to.tile {
+                            if !per_tile.contains_key(&t) {
+                                order.push(t);
+                            }
+                            per_tile.entry(t).or_default().push(Op::Plain(i, ops.clone(), *clip));
+                        }
+                    }
+                }
+                Step::Composite { from, to, paint, rect, .. } => match to.role {
+                    SurfaceRole::TileOutput => {
+                        if let Some(t) = to.tile {
+                            if matches!(from.role, SurfaceRole::RasterEffectOutput(_))
+                                && self.surfaces.contains_key(from)
+                            {
+                                if !per_tile.contains_key(&t) {
+                                    order.push(t);
+                                }
+                                per_tile.entry(t).or_default()
+                                    .push(Op::Spread(i, *from, *rect, paint.opacity));
+                            } else {
+                                // scope fold, or a spread whose surface isn't pre-rendered → fall back.
+                                disq.insert(t);
+                            }
+                        }
+                    }
+                    _ => {} // → Target (finalize): left to the main loop.
+                },
+                // Anything involving a gather / snapshot / layer disqualifies every tile it references.
+                Step::ComposeBackdrop { .. }
+                | Step::PaintGather { .. }
+                | Step::Snapshot { .. }
+                | Step::BeginLayer { .. }
+                | Step::EndLayer { .. } => {
+                    for r in step.reads().into_iter().chain(step.writes()) {
+                        if let Some(t) = r.tile {
+                            disq.insert(t);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Keep only tiles that survived and actually carry a spread (a plain-only tile stays on the
+        // cheaper first-write atlas prepass).
+        let fused_tiles: Vec<TileKey> = order
+            .into_iter()
+            .filter(|t| !disq.contains(t))
+            .filter(|t| per_tile[t].iter().any(|op| matches!(op, Op::Spread(..))))
+            .collect();
+        if fused_tiles.is_empty() {
+            return none;
+        }
+
+        let max_dim = device.limits().max_texture_dimension_2d;
+        let Some(packing) = pack_grid(fused_tiles.len(), TILE_BUFFER, max_dim) else {
+            return none;
+        };
+        let (aw, ah) = (packing.width, packing.height);
+
+        // Register every spread surface these tiles inline, once, for the whole atlas render.
+        let mut handles: std::collections::HashMap<SurfaceRef, u64> = std::collections::HashMap::new();
+        for t in &fused_tiles {
+            for op in &per_tile[t] {
+                if let Op::Spread(_, from, _, _) = op {
+                    if !handles.contains_key(from) {
+                        let tex = self.surfaces[from].texture.clone();
+                        handles.insert(*from, backend.register_inline_image(&tex));
+                    }
+                }
+            }
+        }
+
+        // One scene: each fused tile's ordered bodies + inlined spread surfaces drawn into its cell.
+        let m = f64::from(TILE_MARGIN);
+        let mut scene = backend.new_scene(aw as u16, ah as u16);
+        for cell in &packing.cells {
+            let t = fused_tiles[cell.index];
+            let (ox, oy) = tiling::tile_device_origin(t, full_view);
+            let root_for_cell = Affine::translate((f64::from(cell.x) + m - ox, f64::from(cell.y) + m - oy)) * root;
+            let cell_rect = Rect::new(
+                f64::from(cell.x),
+                f64::from(cell.y),
+                f64::from(cell.x) + f64::from(TILE_BUFFER),
+                f64::from(cell.y) + f64::from(TILE_BUFFER),
+            );
+            for op in &per_tile[&t] {
+                match op {
+                    Op::Plain(_, ops, _) => {
+                        backend.build_bodies_clipped(&mut scene, root_for_cell, ops, cell_rect);
+                    }
+                    Op::Spread(_, from, rect, alpha) => {
+                        let (dx, dy, dw, dh) = tiling::device_rect(full_view, *rect);
+                        let x0 = f64::from(cell.x) + (dx - ox + m);
+                        let y0 = f64::from(cell.y) + (dy - oy + m);
+                        let handle = handles[from];
+                        backend.draw_inline_image(&mut scene, handle, Rect::new(x0, y0, x0 + dw, y0 + dh), *alpha);
+                    }
+                }
+            }
+        }
+
+        let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
+        let atlas = self.pool.acquire(
+            device,
+            PoolKey { w: aw, h: ah, format, usage: atlas_usage.bits() },
+            "fuse atlas",
+        );
+        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
+        backend.rasterize(&scene, device, queue, enc, &atlas_view, aw, ah, CLEAR);
+
+        // Copy each cell into its tile output, and mark it written so the finalize composite reads it.
+        for cell in &packing.cells {
+            let t = fused_tiles[cell.index];
+            let write_to = SurfaceRef::tile_ref(SurfaceRole::TileOutput, t);
+            self.ensure_surface(write_to, device, TILE_BUFFER, TILE_BUFFER, format);
+            enc.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: cell.x, y: cell.y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.surfaces[&write_to].texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: TILE_BUFFER, height: TILE_BUFFER, depth_or_array_layers: 1 },
+            );
+            self.written.insert(write_to);
+            crate::prof::inc_step();
+        }
+        self.frame_transient.push(atlas);
+
+        // Release the registrations now that the atlas render is recorded.
+        for (_, handle) in handles {
+            backend.unregister_inline_image(handle);
+        }
+
+        // Every plain paint + spread composite we consumed is handled; the main loop skips them.
+        let mut handled = HashSet::new();
+        for t in &fused_tiles {
+            for op in &per_tile[t] {
+                match op {
+                    Op::Plain(i, _, _) | Op::Spread(i, _, _, _) => {
+                        handled.insert(*i);
+                    }
+                }
+            }
+        }
+        handled
     }
 
     /// Blit a cached tile's centre `TILE_SIZE`² square onto the swapchain at its device origin — the
@@ -614,11 +843,13 @@ impl Sink {
             return;
         }
         // Rendered into (the compositor always writes as an attachment; the backend's rasterize may
-        // need more, e.g. classic's storage binding), sampled when composited, and a copy target when
-        // the atlas prepass populates a tile from its atlas cell.
+        // need more, e.g. classic's storage binding), sampled when composited, a copy target when the
+        // atlas prepass populates a tile from its atlas cell, and a copy *source* so an effect surface
+        // can be `register_texture`'d and inlined by the tile-fuse (`register_texture` requires COPY_SRC).
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC
             | self.raster_usage;
         let texture =
             self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "sink surface");
@@ -644,10 +875,11 @@ impl Sink {
         first: bool,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         format: wgpu::TextureFormat,
     ) {
         if first {
-            backend.rasterize(scene, device, queue, target, w, h, CLEAR);
+            backend.rasterize(scene, device, queue, enc, target, w, h, CLEAR);
             return;
         }
         // Rasterized into, then sampled by the compositor blit.
@@ -655,12 +887,10 @@ impl Sink {
         let scratch =
             self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "sink accumulate scratch");
         let scratch_view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
-        backend.rasterize(scene, device, queue, &scratch_view, w, h, CLEAR);
-        let mut enc = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink accumulate") });
+        backend.rasterize(scene, device, queue, enc, &scratch_view, w, h, CLEAR);
         self.compositor.blit(
             device,
-            &mut enc,
+            enc,
             target,
             (w as f32, h as f32),
             &Blit {
@@ -672,8 +902,6 @@ impl Sink {
             },
         );
         let _tsu = crate::prof::now();
-        crate::prof::inc_submit();
-        queue.submit([enc.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
         // Recycle next frame (not now): the submit above still reads it until the GPU drains.
         self.frame_transient.push(scratch);
@@ -688,6 +916,7 @@ impl Sink {
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         root: Affine,
         full_view: Affine,
         format: wgpu::TextureFormat,
@@ -717,7 +946,7 @@ impl Sink {
 
         let mut scene = backend.new_scene(w as u16, h as u16);
         backend.build_bodies(&mut scene, root_for_target, ops);
-        self.rasterize_accumulate(backend, &scene, &view, w, h, first, device, queue, format);
+        self.rasterize_accumulate(backend, &scene, &view, w, h, first, device, queue, enc, format);
         crate::prof::inc_step();
 
         // A body-only custom shader (a spread) runs its pass over the body just rendered here,
@@ -788,13 +1017,22 @@ impl Sink {
         }
     }
 
-    /// Submit whatever composites have been recorded, if any, and close the run.
-    fn flush_composites(enc: &mut Option<wgpu::CommandEncoder>, queue: &wgpu::Queue) {
-        let Some(e) = enc.take() else { return };
+    /// Submit `frame_enc` and swap in a fresh encoder in its place, then let the backend reclaim what
+    /// the submitted batch retired. The single point every batch boundary goes through.
+    fn submit_batch<B: RasterBackend>(
+        frame_enc: &mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        backend: &mut B,
+    ) {
+        let fresh = device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink batch") });
+        let done = std::mem::replace(frame_enc, fresh);
         let _tsu = crate::prof::now();
         crate::prof::inc_submit();
-        queue.submit([e.finish()]);
+        queue.submit([done.finish()]);
         crate::prof::add_submit(crate::prof::now() - _tsu);
+        backend.after_submit();
     }
 
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
@@ -898,7 +1136,7 @@ impl Sink {
         always_cap: bool,
         write_to: SurfaceRef,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         full_view: Affine,
         format: wgpu::TextureFormat,
     ) {
@@ -921,12 +1159,9 @@ impl Sink {
         self.backdrop_origin.insert(write_to, (bdx, bdy));
         self.backdrop_scale.insert(write_to, k);
         let bd_view = self.surfaces[&write_to].view.clone();
-
-        let mut enc = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink backdrop") });
         let bg = crate::abi::background().components;
         Compositor::clear(
-            &mut enc,
+            enc,
             &bd_view,
             [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])],
         );
@@ -941,7 +1176,7 @@ impl Sink {
             // The tile's full-zoom centre → its place in the reduced backdrop (down-sampled by `k`).
             self.compositor.blit(
                 device,
-                &mut enc,
+                enc,
                 &bd_view,
                 (w as f32, h as f32),
                 &Blit {
@@ -953,8 +1188,6 @@ impl Sink {
                 },
             );
         }
-        crate::prof::inc_submit();
-        queue.submit([enc.finish()]);
     }
 
     /// Assemble a gather effect's result once (cached under the bumped ref) via [`run_graph`], then
@@ -970,6 +1203,7 @@ impl Sink {
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
         root: Affine,
         full_view: Affine,
         format: wgpu::TextureFormat,
@@ -1014,14 +1248,17 @@ impl Sink {
                 // Coverage mask: the shape's silhouette in white, in the backdrop's device space, so
                 // the masked blit clips the blur to the outline (circle/path/rounded/rotated) — not
                 // its bounding box. (Glass bakes its SDF mask into the composite, so it needs none.)
-                let mask = new_target(device, bw, bh, format);
+                // The mask is filled via `backend.rasterize` (classic writes it from a compute shader),
+                // so it needs the backend's rasterize usage — `STORAGE_BINDING` on classic. Without it
+                // the compute bind group is invalid and the whole blur is dropped.
+                let mask = new_target_with_usage(device, bw, bh, format, self.raster_usage);
                 let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
                 // Render the silhouette into the reduced backdrop the same way the tiles mapped in:
                 // full-zoom device → shifted to the backdrop origin → scaled down by `k`.
                 let root_for_mask = Affine::scale(k) * Affine::translate((-bdx, -bdy)) * root;
                 let mut mscene = backend.new_scene(bw as u16, bh as u16);
                 backend.build_mask(&mut mscene, root_for_mask, id);
-                backend.rasterize(&mscene, device, queue, &mask_view, bw, bh, CLEAR);
+                backend.rasterize(&mscene, device, queue, enc, &mask_view, bw, bh, CLEAR);
                 self.surfaces.insert(mask_ref, Surface { texture: mask, view: mask_view, width: bw, height: bh });
             }
         }
@@ -1041,10 +1278,8 @@ impl Sink {
         }
         self.ensure_surface(write_to, device, TILE_BUFFER, TILE_BUFFER, format);
         let to_view = self.surfaces[&write_to].view.clone();
-        let mut enc = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sink gather paint") });
         if self.written.insert(write_to) {
-            Compositor::clear(&mut enc, &to_view, [0.0, 0.0, 0.0, 0.0]);
+            Compositor::clear(enc, &to_view, [0.0, 0.0, 0.0, 0.0]);
         }
         let m = f64::from(TILE_MARGIN);
         let buf = (TILE_BUFFER as f32, TILE_BUFFER as f32);
@@ -1056,13 +1291,11 @@ impl Sink {
         if is_glass {
             // The glass composite already baked in the SDF mask + backdrop passthrough, so a plain
             // blit over the shape's rect is correct (outside the glass it re-lays the same backdrop).
-            self.compositor.blit(device, &mut enc, &to_view, buf, &Blit { src: &result_view, dst, src_rect, src_size, alpha: 1.0 });
+            self.compositor.blit(device, enc, &to_view, buf, &Blit { src: &result_view, dst, src_rect, src_size, alpha: 1.0 });
         } else {
             let mask_view = self.surfaces[&mask_ref].view.clone();
-            self.compositor.blit_masked(device, &mut enc, &to_view, buf, &MaskedBlit { src: &result_view, mask: &mask_view, dst, src_rect, src_size, alpha: 1.0 });
+            self.compositor.blit_masked(device, enc, &to_view, buf, &MaskedBlit { src: &result_view, mask: &mask_view, dst, src_rect, src_size, alpha: 1.0 });
         }
-        crate::prof::inc_submit();
-        queue.submit([enc.finish()]);
     }
 
     /// Device-space Gaussian sigma for a background blur (render-core's [`effect_graph::background_blur_sigma`]):

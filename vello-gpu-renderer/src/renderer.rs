@@ -184,6 +184,16 @@ impl ClassicFocusRenderer {
         surface_texture.present();
     }
 
+    /// SPIKE — run the `register_texture` round-trip proof and hand the raw 512×512 RGBA bytes back to
+    /// JS (as a `Uint8Array`) so the harness can paint + pixel-check them. Throwaway; see
+    /// `ClassicRenderer::spike`.
+    pub async fn spike(&mut self) -> Vec<u8> {
+        self.backend
+            .renderer_mut()
+            .spike(&self.gpu.device, &self.gpu.queue)
+            .await
+    }
+
     /// Resize the render surface when the host canvas changes size.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
