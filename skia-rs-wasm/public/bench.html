@@ -95,45 +95,71 @@ function main() {
 
     // ---- benchmark ------------------------------------------------------------------
     const raf = () => new Promise((r) => requestAnimationFrame(r))
-    // Distinct zooms => a different zoom bucket each frame => the whole tile cache is dropped,
-    // so every frame is a genuine full redraw rather than a cache blit.
+
+    // The four regimes that actually exercise different parts of the pipeline. Only `zoom` is a
+    // full invalidation; the others are exactly where the tile cache and the dirty-rect
+    // identification do their work, so reporting tiles rendered-vs-reused per mode is the point.
     const ZOOMS = [0.5, 0.8, 1.1, 1.4, 0.65, 0.95, 1.25, 1.55]
-    const setZ = (i) => X.set_view(ZOOMS[i % ZOOMS.length], 0, 0)
-
-    for (let i = 0; i < 8; i++) { setZ(i); renderer.render(); await raf() }
-
-    X.prof_reset()
-    let sum = 0, worst = 0, rendered = 0
-    for (let i = 0; i < FRAMES; i++) {
-      setZ(i)
-      const t0 = performance.now()
-      renderer.render()
-      const dt = performance.now() - t0
-      sum += dt; if (dt > worst) worst = dt
-      rendered += (X.last_tile_stats() >>> 16)
-      await raf()
-    }
-    const b = [0, 1, 2, 3, 4, 5].map((i) => X.prof_read(i))
-
-    let frames = 0
-    const t1 = performance.now()
-    while (performance.now() - t1 < 2500) { setZ(frames); renderer.render(); frames++; await raf() }
-    const fps = frames / ((performance.now() - t1) / 1000)
-
-    const res = {
-      backend: BACKEND, shapes: N, canvas: W + 'x' + H, dpr,
-      tilesPerFrame: +(rendered / FRAMES).toFixed(1),
-      cpuMsPerFrame: +(sum / FRAMES).toFixed(3),
-      worstMs: +worst.toFixed(2),
-      phases_ms: {
-        build: +(b[0] / FRAMES).toFixed(3),
-        scene: +(b[1] / FRAMES).toFixed(3),
-        render: +(b[2] / FRAMES).toFixed(3),
-        submit: +(b[3] / FRAMES).toFixed(3),
-        tex: +(b[4] / FRAMES).toFixed(3),
+    const MODES = {
+      // Nothing changes: every visible tile should come from cache. Floor cost of a frame.
+      idle: (i) => { X.set_view(1, 0, 0) },
+      // Constant scale, moving origin: the cache stays valid and only the newly-exposed strip
+      // should re-render. This is the common interaction and the real test of reuse.
+      pan: (i) => { X.set_view(1, (i * 13) % 2000, (i * 7) % 1200) },
+      // A different zoom bucket each frame drops the whole cache => genuine full redraw.
+      zoom: (i) => { X.set_view(ZOOMS[i % ZOOMS.length], 0, 0) },
+      // Move ONE shape at a fixed view. `with_current` dirties the rect it left and the rect it
+      // entered, so only the covered tiles should rebuild — this is the dirty-rect path.
+      edit: (i) => {
+        X.set_view(1, 0, 0)
+        const cols = Math.ceil(Math.sqrt(N))
+        const cx = (7 % cols) * cell, cy = Math.floor(7 / cols) * cell
+        const j = i % 40
+        X.use_shape(0, 0, 0, 8)
+        X.set_shape_selrect(cx + 2 + j, cy + 2 + j, cx + cell - 2 + j, cy + cell - 2 + j)
       },
-      stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
-      sustainedFps: +fps.toFixed(1),
+    }
+
+    async function runMode(name) {
+      const apply = MODES[name]
+      for (let i = 0; i < 8; i++) { apply(i); renderer.render(); await raf() }
+      X.prof_reset()
+      let sum = 0, worst = 0, rendered = 0, reused = 0
+      for (let i = 0; i < FRAMES; i++) {
+        apply(i)
+        const t0 = performance.now()
+        renderer.render()
+        const dt = performance.now() - t0
+        sum += dt; if (dt > worst) worst = dt
+        const s = X.last_tile_stats()
+        rendered += (s >>> 16); reused += (s & 0xffff)
+        await raf()
+      }
+      const b = [0, 1, 2, 3, 4, 5].map((i) => X.prof_read(i))
+      let frames = 0
+      const t1 = performance.now()
+      while (performance.now() - t1 < 1500) { apply(frames); renderer.render(); frames++; await raf() }
+      const fps = frames / ((performance.now() - t1) / 1000)
+      return {
+        cpuMsPerFrame: +(sum / FRAMES).toFixed(3),
+        worstMs: +worst.toFixed(2),
+        tilesRendered: +(rendered / FRAMES).toFixed(2),
+        tilesReused: +(reused / FRAMES).toFixed(2),
+        phases_ms: {
+          build: +(b[0] / FRAMES).toFixed(3),
+          scene: +(b[1] / FRAMES).toFixed(3),
+          render: +(b[2] / FRAMES).toFixed(3),
+          submit: +(b[3] / FRAMES).toFixed(3),
+        },
+        stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
+        sustainedFps: +fps.toFixed(1),
+      }
+    }
+
+    const res = { backend: BACKEND, shapes: N, canvas: W + 'x' + H, dpr, modes: {} }
+    for (const name of ['idle', 'pan', 'zoom', 'edit']) {
+      log(JSON.stringify(res, null, 2) + '\n\nrunning ' + name + '…')
+      res.modes[name] = await runMode(name)
     }
     window.__RESULT__ = res
     log(JSON.stringify(res, null, 2))
