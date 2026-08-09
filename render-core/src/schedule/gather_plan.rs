@@ -7,9 +7,14 @@
 //! pass (one dispatch per distinct effect) and scatter back afterwards. This module finds those.
 //!
 //! The rule is deliberately conservative and provably z-safe: a gather is **deferrable** only when it
-//! is *topmost in its own region* — no later shape of any kind (plain body, composite, or another
-//! gather) overlaps its output silhouette. Deferring such a gather to the end of the frame is
-//! visually identical to running it in place, because nothing was ever going to paint over it there.
+//! is *topmost across its whole sample region* — no later shape of any kind (plain body, composite, or
+//! another gather) overlaps its **sample rect** (its output silhouette grown by the blur reach). That
+//! stronger test — the sample rect, not just the output — is what lets the batched pass compose every
+//! deferrable backdrop at *end of frame* instead of freezing it mid-walk: if nothing above ever
+//! touched even the blur fringe, the tiles under the sample rect read the same at end-of-frame as they
+//! did at the gather's z-position. So the batch needs **no per-tile snapshots** — it recomposes each
+//! backdrop from the finished tiles and gets a pixel-identical result. (The versioned snapshot pool
+//! stays on the shelf; it would only be needed to *recover* the fringe cases this rule drops.)
 //!
 //! A useful consequence falls out for free: if gather B read gather A's output, B would sit *above*
 //! and *overlap* A — which would make A non-deferrable. So **every deferrable gather is mutually
@@ -183,10 +188,12 @@ pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> 
         }
     }
 
-    // Coverage: clear `deferrable` for any gather with a later write overlapping its output silhouette.
+    // Coverage: clear `deferrable` for any gather with a later write overlapping its **sample** rect
+    // (output grown by blur reach). Using the sample rect — not just the output — is what makes the
+    // backdrop z-invariant, so the batch can recompose it at end-of-frame without a snapshot.
     for g in &mut gathers {
         let covered = writes.iter().any(|&(i, r, owner)| {
-            i > g.order && owner != Some(g.shape) && overlaps(r, g.output)
+            i > g.order && owner != Some(g.shape) && overlaps(r, g.sample)
         });
         if covered {
             g.deferrable = false;
@@ -335,6 +342,18 @@ mod tests {
         let plan = plan_for(&scene);
         assert_eq!(plan.deferrable_count(), 0, "a shape painted over the gather blocks deferral");
         assert_eq!(plan.estimated_passes(), 1);
+    }
+
+    #[test]
+    fn a_shape_in_the_blur_fringe_above_blocks_deferral() {
+        // Plain rect 2 does NOT overlap gather 1's output (400..470 vs 100..380) but sits within its
+        // blur reach — inside the sample rect. The sample-rect rule must catch it, so the backdrop
+        // stays z-invariant and no snapshot is needed.
+        let mut blur = bg_blur(1, 100.0, 100.0, 380.0, 380.0);
+        blur.background_blur = Some(64.0); // a wide blur → a fat fringe past the output
+        let scene = scene_tree(vec![1, 2], vec![blur, plain(2, 400.0, 100.0, 470.0, 380.0)]);
+        let plan = plan_for(&scene);
+        assert_eq!(plan.deferrable_count(), 0, "a shape in the blur fringe above blocks deferral");
     }
 
     #[test]
