@@ -33,6 +33,13 @@ const EFFECT_EVERY = Number(q.get('effectEvery') ?? 10)
 // blur compute: the backdrop is capped to a one-tile ring, so compute/blur is ~radius-invariant —
 // if GPU time tracks pass COUNT and is flat vs RADIUS, the cost is the round-trip, not the math.
 const RADIUS = Number(q.get('radius') ?? 6)
+// Stacked-gather stress: `stack` concentric gather rects at the canvas centre, each nested inside the
+// one below so every higher one covers the ones under it. This is the WORST case for the collapse —
+// a genuine gather-on-gather dependency chain — so it should NOT collapse (deferrable≈1, passes≈stack).
+// Contrast with the grid gathers (effects=bgblur|glass on scattered cells), which are independent and
+// SHOULD collapse to one pass. Compare buckets 108-111 across the two to see the optimization's reach.
+const STACK = Number(q.get('stack') ?? 0)
+const STACK_FX = q.get('stackFx') ?? 'bgblur'
 
 const out = document.getElementById('out')
 const log = (s) => { out.textContent = s }
@@ -89,7 +96,7 @@ function main() {
     const cols = Math.ceil(Math.sqrt(N))
     const shapeXY = (i) => [(i % cols) * CELL, Math.floor(i / cols) * CELL]
 
-    X.init_shapes_pool(N + DEPTH + 16)
+    X.init_shapes_pool(N + DEPTH + STACK + 16)
 
     // Nested frames above the shapes: root -> f1 -> ... -> fDEPTH -> shapes. This is what makes
     // the walk pay for a transform/clip stack rather than a flat list.
@@ -125,6 +132,23 @@ function main() {
       }
       X.use_shape(...parent)
       X.add_shape_child(0, 0, 0, i + 1)
+    }
+
+    // Concentric stacked gathers at the centre — a genuine gather-on-gather dependency chain. Each
+    // higher (later, smaller) rect overlaps every rect below it, so only the topmost is "topmost in
+    // its region": the collapse must refuse (deferrable≈1, estPasses≈STACK). The worst case, by design.
+    const STACK_BASE = N + DEPTH + 2
+    const cx = W / 2, cy = H / 2
+    for (let s = 0; s < STACK; s++) {
+      const id = STACK_BASE + s
+      const half = 220 - s * 18
+      X.use_shape(0, 0, 0, id)
+      X.set_shape_type(3)                       // Rect
+      X.set_shape_selrect(cx - half, cy - half, cx + half, cy + half)  // no fill: a pure gather lens
+      if (STACK_FX === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.2, 0, 0, 0, 1, RADIUS, 3, 0)
+      else X.set_shape_blur(1, false, RADIUS)   // blur_type 1 = background (gather)
+      X.use_shape(...parent)
+      X.add_shape_child(0, 0, 0, id)
     }
 
     // ---- regimes -------------------------------------------------------------------
@@ -183,6 +207,14 @@ function main() {
         renders: +(X.prof_read(7) / FRAMES).toFixed(1),
         poolMiss: +(X.prof_read(9) / FRAMES).toFixed(1),
       }
+      // Gather-collapse projection (buckets 108-111, last timed frame): total gathers vs how many
+      // defer, the passes with the collapse applied vs `total` today, and the batched dispatch count.
+      // gathersTotal→estPasses is the whole point: it should crater for independent grid gathers and
+      // stay ≈ total for the stacked chain.
+      const gather = {
+        total: X.prof_read(108), deferrable: X.prof_read(109),
+        estPasses: X.prof_read(110), batchedDispatches: X.prof_read(111),
+      }
       // TEMP atlas_effects diagnostics (last timed frame): 100 cands · 101 widest · 102 tallest ·
       // 103 shelf-declined · 104 atlas height
       const dbg = { cands: X.prof_read(100), widest: X.prof_read(101), tallest: X.prof_read(102), declined: X.prof_read(103), atlasH: X.prof_read(104) }
@@ -202,6 +234,7 @@ function main() {
         },
         stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
         kinds,
+        gather,
         dbg,
         sustainedFps: fps,
         // CPU-vs-rest split. `cpuMsPerFrame` is wall time around the *blocking* render() call, so
@@ -214,7 +247,7 @@ function main() {
       }
     }
 
-    const res = { backend: BACKEND, shapes: N, depth: DEPTH, effects: EFFECTS, radius: RADIUS, effectEvery: EFFECT_EVERY, canvas: W + 'x' + H, modes: {} }
+    const res = { backend: BACKEND, shapes: N, depth: DEPTH, effects: EFFECTS, radius: RADIUS, effectEvery: EFFECT_EVERY, stack: STACK, stackFx: STACK_FX, canvas: W + 'x' + H, modes: {} }
     const modeList = q.get('modes') ? q.get('modes').split(',') : ['idle', 'pan', 'zoom', 'edit1', 'editFar', 'editMulti']
     for (const name of modeList) {
       log(JSON.stringify(res, null, 2) + '\n\nrunning ' + name + '…')

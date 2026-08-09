@@ -232,6 +232,14 @@ impl Sink {
         self.written.clear();
         self.backdrop_origin.clear();
         self.backdrop_scale.clear();
+        // TEMP gather-collapse projection (buckets 108-111): the analysis's verdict for this frame —
+        // total gathers vs how many defer, the passes with the collapse applied vs `total` today, and
+        // the batched dispatch count. Lets the bench show the projected reduction before the sink acts.
+        let gp = &schedule.gather_plan;
+        crate::prof::dbg_set(8, gp.total() as f64);
+        crate::prof::dbg_set(9, gp.deferrable_count() as f64);
+        crate::prof::dbg_set(10, gp.estimated_passes() as f64);
+        crate::prof::dbg_set(11, gp.batched_dispatches() as f64);
         self.raster_usage = backend.rasterize_target_usage();
         let full_view = crate::abi::effective_view(root);
         let format = surface.format();

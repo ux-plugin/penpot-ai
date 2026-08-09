@@ -49,6 +49,9 @@ use super::surface_ref::{SurfaceRef, SurfaceRole};
 #[derive(Debug, Default)]
 pub struct Schedule {
     pub steps: Vec<Step>,
+    /// The gather-collapse analysis for this frame — which gathers the sink can defer into one batched
+    /// pass. Derived from the pre-coalesce steps; empty when the frame has no gather effects.
+    pub gather_plan: super::gather_plan::GatherPlan,
 }
 
 /// Build the schedule for one frame. `view` is the page→device transform (`root * viewport`);
@@ -100,7 +103,9 @@ pub fn build_visible(
         });
     }
 
-    Schedule { steps: coalesce(steps) }
+    // Analyse gathers on the raw steps (one Body per Paint — coverage is unambiguous), then coalesce.
+    let gather_plan = super::gather_plan::analyze_gathers(scene, modifiers, &steps);
+    Schedule { steps: coalesce(steps), gather_plan }
 }
 
 /// Merge consecutive `Paint`s into the same tile/scope surface into one batched `Paint`, so the sink

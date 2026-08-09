@@ -57,7 +57,9 @@ pub struct SnapshotPool {
 }
 
 impl SnapshotPool {
-    /// A pool bounded to `cap` live snapshots (e.g. 64 → ~64 MB at 512²·RGBA8).
+    /// A pool bounded to `cap` live snapshots. Each snapshot is one buffered tile surface
+    /// (`TILE_BUFFER²` = 1024²·RGBA8 = 4 MiB — the margin apron must be kept so an edge blur can
+    /// sample it), so `cap` is a VRAM dial: 16 → 64 MiB, 64 → 256 MiB.
     #[must_use]
     pub fn new(cap: usize) -> Self {
         Self { entries: HashMap::new(), version: HashMap::new(), cap }
