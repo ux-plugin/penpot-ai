@@ -162,6 +162,7 @@ function main() {
       let frames = 0
       const t1 = performance.now()
       while (performance.now() - t1 < 1500) { apply(frames); renderer.render(); frames++; await raf() }
+      const fps = +(frames / ((performance.now() - t1) / 1000)).toFixed(1)
       return {
         cpuMsPerFrame: +(sum / FRAMES).toFixed(3),
         worstMs: +worst.toFixed(2),
@@ -172,7 +173,14 @@ function main() {
           render: +(b[2] / FRAMES).toFixed(3), submit: +(b[3] / FRAMES).toFixed(3),
         },
         stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
-        sustainedFps: +(frames / ((performance.now() - t1) / 1000)).toFixed(1),
+        sustainedFps: fps,
+        // CPU-vs-rest split. `cpuMsPerFrame` is wall time around the *blocking* render() call, so
+        // it is CPU: scene building plus command encoding. `framePeriodMs` is the achieved period.
+        // The difference is time the main thread was NOT executing render — vsync idle when we are
+        // at 60, but under that it is present/GPU backpressure. So: residue ≈ 0 with fps well below
+        // 60 => CPU-bound; a large residue => the GPU is the limiter.
+        framePeriodMs: +(1000 / fps).toFixed(2),
+        nonCpuMs: +(1000 / fps - sum / FRAMES).toFixed(2),
       }
     }
 
