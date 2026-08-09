@@ -4,7 +4,7 @@
 <style>
   body { margin: 0; background: #111; color: #eee; font: 13px ui-monospace, monospace; }
   #c { display: block; }
-  #out { position: fixed; top: 8px; left: 8px; white-space: pre; background: #000c; padding: 8px; }
+  #out { position: fixed; top: 8px; left: 8px; white-space: pre; background: #000c; padding: 8px; max-height: 96vh; overflow: auto; }
 </style>
 <canvas id="c"></canvas>
 <div id="out">booting…</div>
@@ -12,17 +12,23 @@
 // Standalone renderer benchmark: loads a vello backend directly, with NO app, no React, no
 // document proxies — so the numbers are the renderer's, not the editor's.
 //
-//   /bench.html?backend=hybrid|classic&n=2000&frames=40
+//   /bench.html?backend=hybrid|classic&n=20000&depth=0&effects=none
 //
-// Shapes are built straight through the C ABI (the same entry points the app uses), so both
-// backends rasterize byte-identical input.
+//   depth    nesting: `depth` nested frames above the shapes (transform/clip stack depth)
+//   effects  none | shadow | blur | both — applied to every `effectEvery`-th shape
+//
+// Shapes are built straight through the C ABI (the same entry points the app uses), so every
+// backend rasterizes byte-identical input.
 
 const q = new URLSearchParams(location.search)
 const BACKEND = q.get('backend') ?? 'hybrid'
-const N = Number(q.get('n') ?? 2000)
+const N = Number(q.get('n') ?? 20000)
 const FRAMES = Number(q.get('frames') ?? 40)
 const W = Number(q.get('w') ?? 1600)
 const H = Number(q.get('h') ?? 1000)
+const DEPTH = Number(q.get('depth') ?? 0)
+const EFFECTS = q.get('effects') ?? 'none'
+const EFFECT_EVERY = Number(q.get('effectEvery') ?? 10)
 
 const out = document.getElementById('out')
 const log = (s) => { out.textContent = s }
@@ -35,6 +41,7 @@ const URLS = {
 // One solid fill record: 4-byte header (count) + one RAW_FILL_DATA_SIZE record.
 // Record layout: tag u8 @0 (0x00 = Solid), payload @4, solid colour u32 @payload+0.
 const REC = 164
+const CELL = 40
 
 function main() {
   const url = URLS[BACKEND]
@@ -42,18 +49,13 @@ function main() {
 
   import(/* @vite-ignore */ url).then(async (mod) => {
     // `init()` returns the raw wasm instance exports — that is where the `#[no_mangle]` C-ABI
-    // lives (and `memory`). `create_focus_renderer` is a wasm-bindgen item, so it is on the
-    // module namespace instead.
-    const wasm = await mod.default()
-    const X = wasm
-    const memOf = () => wasm.memory
+    // lives (and `memory`). `create_focus_renderer` is a wasm-bindgen item, on the namespace.
+    const X = await mod.default()
 
     const canvas = document.getElementById('c')
-    const dpr = 1 // pin to 1 so both backends rasterize the same pixel count
-    canvas.width = W
-    canvas.height = H
-    canvas.style.width = W + 'px'
-    canvas.style.height = H + 'px'
+    const dpr = 1 // pin to 1 so every backend rasterizes the same pixel count
+    canvas.width = W; canvas.height = H
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px'
 
     X.init(W, H)
     X.set_render_options(0, dpr)
@@ -62,10 +64,9 @@ function main() {
 
     const renderer = await mod.create_focus_renderer(canvas)
 
-    // ---- build the synthetic scene -------------------------------------------------
-    const mem = memOf()
-    const u8 = () => new Uint8Array(mem.buffer)
-    const dv = () => new DataView(mem.buffer)
+    // ---- scene ---------------------------------------------------------------------
+    const u8 = () => new Uint8Array(X.memory.buffer)
+    const dv = () => new DataView(X.memory.buffer)
 
     function solidFill(color) {
       const size = 4 + REC
@@ -77,46 +78,68 @@ function main() {
       X.set_shape_fills()
     }
 
-    X.init_shapes_pool(N + 16)
-    // Lay the shapes out on a grid across a page area that spans many tiles, so the tiling and
-    // batching paths are actually exercised rather than one tile doing all the work.
     const cols = Math.ceil(Math.sqrt(N))
-    const cell = 40
+    const shapeXY = (i) => [(i % cols) * CELL, Math.floor(i / cols) * CELL]
+
+    X.init_shapes_pool(N + DEPTH + 16)
+
+    // Nested frames above the shapes: root -> f1 -> ... -> fDEPTH -> shapes. This is what makes
+    // the walk pay for a transform/clip stack rather than a flat list.
+    const FRAME_BASE = N + 1
+    let parent = [0, 0, 0, 0]
+    for (let d = 0; d < DEPTH; d++) {
+      const id = FRAME_BASE + d
+      X.use_shape(0, 0, 0, id)
+      X.set_shape_type(0)                       // Frame
+      X.set_shape_selrect(0, 0, cols * CELL, cols * CELL)
+      X.set_shape_clip_content(false)           // clipping would cull, hiding the depth cost
+      X.use_shape(...parent)
+      X.add_shape_child(0, 0, 0, id)
+      parent = [0, 0, 0, id]
+    }
+
     for (let i = 0; i < N; i++) {
-      const cx = (i % cols) * cell
-      const cy = Math.floor(i / cols) * cell
+      const [cx, cy] = shapeXY(i)
       X.use_shape(0, 0, 0, i + 1)
-      X.set_shape_selrect(cx + 2, cy + 2, cx + cell - 2, cy + cell - 2)
-      // vary colour so nothing can be trivially batched away
+      X.set_shape_type(3)                       // Rect
+      X.set_shape_selrect(cx + 2, cy + 2, cx + CELL - 2, cy + CELL - 2)
       solidFill(0xff000000 | (i * 2654435761 & 0xffffff))
-      X.use_shape(0, 0, 0, 0)
+      if (EFFECTS !== 'none' && i % EFFECT_EVERY === 0) {
+        // shadow = a spread effect (own surface, composited into every tile it overlaps);
+        // blur = a gather effect (reads the backdrop beneath). Different scheduler paths.
+        if (EFFECTS === 'shadow' || EFFECTS === 'both') X.add_shape_shadow(0x80000000, 8, 0, 4, 4, 0, false)
+        if (EFFECTS === 'blur' || EFFECTS === 'both') X.set_shape_blur(0, false, 6)
+      }
+      X.use_shape(...parent)
       X.add_shape_child(0, 0, 0, i + 1)
     }
 
-    // ---- benchmark ------------------------------------------------------------------
+    // ---- regimes -------------------------------------------------------------------
     const raf = () => new Promise((r) => requestAnimationFrame(r))
-
-    // The four regimes that actually exercise different parts of the pipeline. Only `zoom` is a
-    // full invalidation; the others are exactly where the tile cache and the dirty-rect
-    // identification do their work, so reporting tiles rendered-vs-reused per mode is the point.
     const ZOOMS = [0.5, 0.8, 1.1, 1.4, 0.65, 0.95, 1.25, 1.55]
+
+    function moveShape(id, dx, dy) {
+      const [cx, cy] = shapeXY(id - 1)
+      X.use_shape(0, 0, 0, id)
+      X.set_shape_selrect(cx + 2 + dx, cy + 2 + dy, cx + CELL - 2 + dx, cy + CELL - 2 + dy)
+    }
+
     const MODES = {
       // Nothing changes: every visible tile should come from cache. Floor cost of a frame.
-      idle: (i) => { X.set_view(1, 0, 0) },
-      // Constant scale, moving origin: the cache stays valid and only the newly-exposed strip
-      // should re-render. This is the common interaction and the real test of reuse.
+      idle: () => { X.set_view(1, 0, 0) },
+      // Constant scale, moving origin: cache stays valid, only newly-exposed tiles rebuild.
       pan: (i) => { X.set_view(1, (i * 13) % 2000, (i * 7) % 1200) },
       // A different zoom bucket each frame drops the whole cache => genuine full redraw.
       zoom: (i) => { X.set_view(ZOOMS[i % ZOOMS.length], 0, 0) },
-      // Move ONE shape at a fixed view. `with_current` dirties the rect it left and the rect it
-      // entered, so only the covered tiles should rebuild — this is the dirty-rect path.
-      edit: (i) => {
+      // One shape, sub-tile movement: the minimum dirty footprint.
+      edit1: (i) => { X.set_view(1, 0, 0); moveShape(8, i % 40, i % 40) },
+      // One shape hopping >1 tile (512px) per frame: it leaves one tile and enters another, so
+      // the dirty set must cover both — a stricter test of the invalidation than a nudge.
+      editFar: (i) => { X.set_view(1, 0, 0); moveShape(8, (i % 6) * 600, (i % 3) * 600) },
+      // 50 shapes moved in one frame, scattered: many independent dirty rects at once.
+      editMulti: (i) => {
         X.set_view(1, 0, 0)
-        const cols = Math.ceil(Math.sqrt(N))
-        const cx = (7 % cols) * cell, cy = Math.floor(7 / cols) * cell
-        const j = i % 40
-        X.use_shape(0, 0, 0, 8)
-        X.set_shape_selrect(cx + 2 + j, cy + 2 + j, cx + cell - 2 + j, cy + cell - 2 + j)
+        for (let k = 0; k < 50; k++) moveShape(1 + ((k * 137) % N), (i % 20) * 30, (i % 20) * 30)
       },
     }
 
@@ -139,31 +162,28 @@ function main() {
       let frames = 0
       const t1 = performance.now()
       while (performance.now() - t1 < 1500) { apply(frames); renderer.render(); frames++; await raf() }
-      const fps = frames / ((performance.now() - t1) / 1000)
       return {
         cpuMsPerFrame: +(sum / FRAMES).toFixed(3),
         worstMs: +worst.toFixed(2),
         tilesRendered: +(rendered / FRAMES).toFixed(2),
         tilesReused: +(reused / FRAMES).toFixed(2),
         phases_ms: {
-          build: +(b[0] / FRAMES).toFixed(3),
-          scene: +(b[1] / FRAMES).toFixed(3),
-          render: +(b[2] / FRAMES).toFixed(3),
-          submit: +(b[3] / FRAMES).toFixed(3),
+          build: +(b[0] / FRAMES).toFixed(3), scene: +(b[1] / FRAMES).toFixed(3),
+          render: +(b[2] / FRAMES).toFixed(3), submit: +(b[3] / FRAMES).toFixed(3),
         },
         stepsPerFrame: +(b[5] / FRAMES).toFixed(1),
-        sustainedFps: +fps.toFixed(1),
+        sustainedFps: +(frames / ((performance.now() - t1) / 1000)).toFixed(1),
       }
     }
 
-    const res = { backend: BACKEND, shapes: N, canvas: W + 'x' + H, dpr, modes: {} }
-    for (const name of ['idle', 'pan', 'zoom', 'edit']) {
+    const res = { backend: BACKEND, shapes: N, depth: DEPTH, effects: EFFECTS, canvas: W + 'x' + H, modes: {} }
+    for (const name of ['idle', 'pan', 'zoom', 'edit1', 'editFar', 'editMulti']) {
       log(JSON.stringify(res, null, 2) + '\n\nrunning ' + name + '…')
       res.modes[name] = await runMode(name)
     }
     window.__RESULT__ = res
     log(JSON.stringify(res, null, 2))
-  }).catch((e) => { window.__ERR__ = String(e); log('ERROR ' + e) })
+  }).catch((e) => { window.__ERR__ = String(e && e.stack || e); log('ERROR ' + e) })
 }
 
 main()
