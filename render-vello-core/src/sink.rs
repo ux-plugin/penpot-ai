@@ -324,6 +324,26 @@ impl Sink {
             [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])],
         );
 
+        // Batched gather collapse: the deferrable pure-lens blur groups worth batching (>= 2). Their
+        // ComposeBackdrop/PaintGather steps are skipped below and run as one atlas after the loop; the
+        // finalize composites (TileOutput→Target) are held until after that scatter lands in the tiles.
+        let gather_groups: Vec<Vec<usize>> = if crate::abi::gather_batch() {
+            schedule.gather_plan.batched_groups()
+        } else {
+            Vec::new()
+        };
+        // Shape → its index in the plan, for the steps the walk hands to the batch instead of running.
+        let batched_gathers: HashMap<u128, usize> = gather_groups
+            .iter()
+            .flatten()
+            .map(|&gi| (schedule.gather_plan.gathers[gi].shape, gi))
+            .collect();
+        // Only pay for write-versioning when something will actually be frozen.
+        let versioning = gather_groups
+            .iter()
+            .flatten()
+            .any(|&gi| schedule.gather_plan.gathers[gi].needs_snapshot);
+
         // The per-shape spread surfaces first: each blurred body is an independent render, so shelf-pack
         // them into one atlas (a gap between cells keeps each blur inside its own bounds). Doing this
         // before the fuse means those surfaces exist to be inlined.
@@ -337,7 +357,7 @@ impl Sink {
         // into a rasterize per segment. No-op on backends without inline images (hybrid). Consumes the
         // tile's paints + spread composites so the prepass and main loop skip them.
         atlased.extend(
-            self.atlas_fuse(&schedule.steps, backend, device, queue, &mut frame_enc, root, full_view, format),
+            self.atlas_fuse(&schedule.steps, &batched_gathers, backend, device, queue, &mut frame_enc, root, full_view, format),
         );
         if !safe {
             Self::submit_batch(&mut frame_enc, device, queue, backend);
@@ -352,54 +372,6 @@ impl Sink {
             Self::submit_batch(&mut frame_enc, device, queue, backend);
         }
 
-        // Batched gather collapse: the deferrable pure-lens blur groups worth batching (>= 2). Their
-        // ComposeBackdrop/PaintGather steps are skipped below and run as one atlas after the loop; the
-        // finalize composites (TileOutput→Target) are held until after that scatter lands in the tiles.
-        const GATHER_MIN: usize = 2;
-        let mut gather_groups: Vec<Vec<usize>> = if crate::abi::gather_batch() {
-            schedule
-                .gather_plan
-                .deferrable_blur_groups()
-                .into_iter()
-                .filter(|g| g.len() >= GATHER_MIN)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // A gather whose sample rect is disturbed above can only batch off a frozen backdrop, and the
-        // freeze costs one buffered tile apiece. Spend that budget in z-order and drop the gathers that
-        // do not fit back to the inline path — decided *here*, before the walk, so a capture can never
-        // fail half way through a frame and leave a batched gather with no backdrop.
-        {
-            let mut budget = SNAPSHOT_CAP;
-            for group in &mut gather_groups {
-                group.retain(|&gi| {
-                    let g = &schedule.gather_plan.gathers[gi];
-                    if !g.needs_snapshot {
-                        return true;
-                    }
-                    let want = g.reads.len();
-                    if want <= budget {
-                        budget -= want;
-                        true
-                    } else {
-                        false
-                    }
-                });
-            }
-            gather_groups.retain(|g| g.len() >= GATHER_MIN);
-        }
-        // Shape → its index in the plan, for the steps the walk hands to the batch instead of running.
-        let batched_gathers: HashMap<u128, usize> = gather_groups
-            .iter()
-            .flatten()
-            .map(|&gi| (schedule.gather_plan.gathers[gi].shape, gi))
-            .collect();
-        // Only pay for write-versioning when something will actually be frozen.
-        let versioning = gather_groups
-            .iter()
-            .flatten()
-            .any(|&gi| schedule.gather_plan.gathers[gi].needs_snapshot);
         let mut finalize: Vec<usize> = Vec::new();
 
         let mut batched = 0_u32;
@@ -787,6 +759,7 @@ impl Sink {
     fn atlas_fuse<B: RasterBackend>(
         &mut self,
         steps: &[Step],
+        batched_gathers: &HashMap<u128, usize>,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -840,7 +813,14 @@ impl Sink {
                     }
                     _ => {} // → Target (finalize): left to the main loop.
                 },
-                // Anything involving a gather / snapshot / layer disqualifies every tile it references.
+                // A gather handed to the end-of-frame batch neither reads nor writes its tiles during
+                // the walk, and the deferral rule already guarantees nothing is painted over its
+                // output — so the tile's bodies still fuse into one render and the blur lands on top
+                // afterwards. This is what stops a screenful of lenses from shattering the fuse into
+                // one rasterize per run of shapes between them.
+                Step::ComposeBackdrop { shape, .. } | Step::PaintGather { shape, .. }
+                    if batched_gathers.contains_key(shape) => {}
+                // Anything else involving a gather / snapshot / layer disqualifies every tile it uses.
                 Step::ComposeBackdrop { .. }
                 | Step::PaintGather { .. }
                 | Step::Snapshot { .. }
@@ -1039,7 +1019,11 @@ impl Sink {
             let bd_view = bd_atlas.create_view(&wgpu::TextureViewDescriptor::default());
             Compositor::clear(enc, &bd_view, bgc);
             let m = f64::from(TILE_MARGIN);
+            let stages = crate::abi::gather_stages();
             for cell in &packing.cells {
+                if stages & 1 == 0 {
+                    break;
+                }
                 let c = &cells[cell.index];
                 for &tile in &plan.gathers[c.gi].reads {
                     let src_ref = SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile);
@@ -1086,7 +1070,7 @@ impl Sink {
             // (2) Blur the whole atlas ONCE. Every cell in the group shares σ (same radius, same cap),
             // so one separable Gaussian over the atlas blurs them all; padding keeps cells independent.
             let sigma = self.gather_sigma(plan.gathers[cells[0].gi].shape, full_view, cells[0].k);
-            let passes = lower_graph(&effect_graph::background_blur_graph(sigma), None);
+            let passes = if stages & 2 == 0 { Vec::new() } else { lower_graph(&effect_graph::background_blur_graph(sigma), None) };
             let Some((blur_atlas, blur_view)) =
                 run_graph(&self.compositor, &self.glass, device, queue, &[&bd_view], &passes, aw, ah, format)
             else {
@@ -1111,13 +1095,18 @@ impl Sink {
                     * root;
                 backend.build_mask(&mut mscene, root_for_cell, plan.gathers[c.gi].shape);
             }
-            backend.rasterize(&mscene, device, queue, enc, &mask_view, aw, ah, CLEAR);
+            if stages & 4 != 0 {
+                backend.rasterize(&mscene, device, queue, enc, &mask_view, aw, ah, CLEAR);
+            }
 
             if crate::abi::debug_atlas() == 3 {
                 self.dbg_atlas = Some((mask_view.clone(), aw, ah));
             }
             // (4) Scatter: masked-blit each blurred cell through its mask cell into the lens's tiles.
             for cell in &packing.cells {
+                if stages & 8 == 0 {
+                    break;
+                }
                 let c = &cells[cell.index];
                 let g = &plan.gathers[c.gi];
                 for &tile in &g.writes {

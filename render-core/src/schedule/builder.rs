@@ -104,8 +104,16 @@ pub fn build_visible(
     }
 
     // Analyse gathers on the raw steps (one Body per Paint — coverage is unambiguous), then coalesce.
+    // The gathers the sink will defer are passed in: they do not touch their tiles during the walk, so
+    // they must not split those tiles' paint runs.
     let gather_plan = super::gather_plan::analyze_gathers(scene, modifiers, &steps);
-    Schedule { steps: coalesce(steps), gather_plan }
+    let deferred: HashSet<u128> = gather_plan
+        .batched_groups()
+        .into_iter()
+        .flatten()
+        .map(|gi| gather_plan.gathers[gi].shape)
+        .collect();
+    Schedule { steps: coalesce(steps, &deferred), gather_plan }
 }
 
 /// Merge consecutive `Paint`s into the same tile/scope surface into one batched `Paint`, so the sink
@@ -117,7 +125,7 @@ pub fn build_visible(
 /// gather sampling the tile, the finalize fold to `Target` — closes the batch, so a shape that must
 /// layer between two plain runs still splits them and z-order is exact. Only `TileOutput`/`ScopeOf`
 /// paints merge; a spread's `RasterEffectOutput` is a per-shape isolated surface and never merges.
-fn coalesce(steps: Vec<Step>) -> Vec<Step> {
+fn coalesce(steps: Vec<Step>, deferred: &HashSet<u128>) -> Vec<Step> {
     let mut out: Vec<Step> = Vec::with_capacity(steps.len());
     // Surface → index in `out` of a still-open batched `Paint` we may append to.
     let mut open: HashMap<SurfaceRef, usize> = HashMap::new();
@@ -137,10 +145,19 @@ fn coalesce(steps: Vec<Step>) -> Vec<Step> {
             out.push(step);
             continue;
         }
-        // Any non-`Paint` step closes the batch of every surface it touches, so nothing merges past
-        // a composite/gather/fold that must observe the tile mid-way.
-        for s in step.reads().into_iter().chain(step.writes()).chain(step.rewrites()) {
-            open.remove(&s);
+        // A gather bound for the end-of-frame batch is the one exception: it observes the tile only
+        // after every paint has landed, and the deferral rule guarantees nothing is drawn over its
+        // output, so the run of shapes it sits between still merges into one rasterize.
+        let deferred_gather = matches!(
+            &step,
+            Step::ComposeBackdrop { shape, .. } | Step::PaintGather { shape, .. } if deferred.contains(shape)
+        );
+        // Any other non-`Paint` step closes the batch of every surface it touches, so nothing merges
+        // past a composite/gather/fold that must observe the tile mid-way.
+        if !deferred_gather {
+            for s in step.reads().into_iter().chain(step.writes()).chain(step.rewrites()) {
+                open.remove(&s);
+            }
         }
         out.push(step);
     }

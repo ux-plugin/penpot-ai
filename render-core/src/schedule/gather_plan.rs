@@ -95,6 +95,11 @@ pub struct GatherInfo {
     pub pure_lens: bool,
 }
 
+/// A batched group must have at least this many gathers to be worth an atlas; below it the inline
+/// path is cheaper. Shared by the builder (which must not break paint batches for gathers that will
+/// be deferred) and the sink (which does the deferring).
+pub const GATHER_MIN: usize = 2;
+
 /// The gather-collapse plan for one frame's schedule.
 #[derive(Debug, Default, Clone)]
 pub struct GatherPlan {
@@ -134,6 +139,26 @@ impl GatherPlan {
         keys.len()
     }
 
+    /// The batching rule, in one place: which gathers the sink will actually hand to the batched pass.
+    ///
+    /// Both the schedule builder and the sink must agree on this exactly. The builder needs it because
+    /// a deferred gather does **not** touch its tiles during the walk, so it must not close the tile's
+    /// paint batch in [`coalesce`](super::builder) — otherwise a screenful of lenses shatters every
+    /// tile's shapes into one rasterize per run between them, which measured at 121 rasterizer
+    /// invocations per frame against 1 for the same scene without lenses. The sink needs it to know
+    /// which steps to skip. Deriving it here means they cannot drift apart.
+    ///
+    /// `needs_snapshot` gathers are excluded while the snapshot tier is disabled in the sink.
+    #[must_use]
+    pub fn batched_groups(&self) -> Vec<Vec<usize>> {
+        self.deferrable_blur_groups()
+            .into_iter()
+            .map(|g| g.into_iter().filter(|&i| !self.gathers[i].needs_snapshot).collect::<Vec<_>>())
+            .filter(|g| g.len() >= GATHER_MIN)
+            .collect()
+    }
+
+    /// Gathers below this many in a group are not worth an atlas — they keep the inline path.
     /// Deferrable **background-blur** gathers grouped by effect key (radius), as indices into
     /// [`gathers`](Self::gathers). Each group shares one σ, so the batched pass composes their backdrops
     /// into one atlas and blurs it once. Groups keep z-order (the gathers are z-sorted already). Only

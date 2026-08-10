@@ -701,6 +701,26 @@ thread_local! {
     static DEBUG_ATLAS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+thread_local! {
+    /// Which stages of the batched gather actually run, as a bit mask — `1` compose the backdrop
+    /// atlas, `2` blur it, `4` rasterize the mask atlas, `8` scatter into the tiles. All on by
+    /// default. Turning one off leaves the rest running on whatever the previous stage left behind,
+    /// which is visually wrong but timing-valid: it is how the frame cost is attributed to a stage
+    /// without needing GPU timestamp queries.
+    static GATHER_STAGES: std::cell::Cell<u32> = const { std::cell::Cell::new(0xF) };
+}
+
+/// Ablate stages of the batched gather to attribute its GPU cost. `0xF` = normal rendering.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_gather_stages(mask: u32) {
+    GATHER_STAGES.with(|c| c.set(mask));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn gather_stages() -> u32 {
+    GATHER_STAGES.with(std::cell::Cell::get)
+}
+
 /// Select which gather atlas to draw over the frame (0 = off).
 #[unsafe(no_mangle)]
 pub extern "C" fn set_debug_atlas(which: u32) {
