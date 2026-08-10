@@ -693,6 +693,23 @@ thread_local! {
     static GATHER_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+thread_local! {
+    /// DEBUG: which batched-gather atlas to blit over the swapchain — 0 off, 1 backdrop, 2 blurred,
+    /// 3 mask. Lets the atlas intermediates be inspected directly instead of inferred.
+    static DEBUG_ATLAS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Select which gather atlas to draw over the frame (0 = off).
+#[unsafe(no_mangle)]
+pub extern "C" fn set_debug_atlas(which: u32) {
+    DEBUG_ATLAS.with(|c| c.set(which));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn debug_atlas() -> u32 {
+    DEBUG_ATLAS.with(std::cell::Cell::get)
+}
+
 /// Enable/disable the batched gather collapse. `0` forces the inline path (the A/B baseline).
 #[unsafe(no_mangle)]
 pub extern "C" fn set_gather_batch(on: u32) {

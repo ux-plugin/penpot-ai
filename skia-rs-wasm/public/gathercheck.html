@@ -31,6 +31,10 @@ async function boot(url) {
 const X = await boot(URLS[BE])
 const canvas = document.getElementById('c')
 X.init(W, H); X.set_render_options(0, 1); X.set_scheduler(1); X.set_tile_effects(1)
+// two=1 needs the batched path on to reproduce the bug (it now ships OFF by default).
+if (X.set_gather_batch) X.set_gather_batch(Number(q.get('gatherBatch') ?? (Number(q.get('two') ?? 0) ? 1 : 0)))
+// debugAtlas: 1 = backdrop atlas, 2 = blurred atlas, 3 = mask atlas, drawn over the frame at 1:1.
+if (X.set_debug_atlas) X.set_debug_atlas(Number(q.get('debugAtlas') ?? 0))
 const r = await X.create_focus_renderer(canvas)
 const u8 = () => new Uint8Array(X.memory.buffer), dv = () => new DataView(X.memory.buffer)
 const solid = (c) => { const s = 4 + REC, p = X.alloc_bytes(s); u8().fill(0, p, p + s); u8()[p] = 1; u8()[p + 4] = 0; dv().setUint32(p + 8, c, true); X.set_shape_fills() }
@@ -66,6 +70,15 @@ if (EDIT) {
     X.use_shape(0, 0, 0, 6); X.set_shape_selrect(x, y, x + 100, y + 100)
     r.render(); await raf()
   }
+}
+// The gather atlas is only built on a frame that actually re-renders; idle frames come from the
+// tile cache and would show no overlay. Force a full redraw on the last frame by changing the zoom
+// bucket, so the atlas is rebuilt and the debug overlay lands on what we screenshot.
+if (Number(q.get('debugAtlas') ?? 0)) {
+  // Exactly ONE frame: the atlas is only rebuilt on the frame that re-renders, and any further
+  // cached frame would paint over the debug overlay.
+  X.set_view(1.25, 0, 0)
+  r.render(); await raf()
 }
 out.textContent = `${BE} · radius=${R} · lens=${LENS_ON} · quadrant split @450, tile boundary @512\n`
   + `Inside the lens: (350,350) must be RED, (700,350) GREEN, (350,700) BLUE, (700,700) YELLOW.`

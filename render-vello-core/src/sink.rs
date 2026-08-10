@@ -163,6 +163,9 @@ pub struct Sink {
     /// the accumulate scratch): held here until the next frame drains them into [`Self::pool`], so
     /// their in-flight GPU work has flushed before they are reused.
     frame_transient: Vec<wgpu::Texture>,
+    /// DEBUG: an atlas captured this frame (view, w, h) to blit over the swapchain so the batched
+    /// gather's intermediates can be inspected. Selected by `abi::debug_atlas()`.
+    dbg_atlas: Option<(wgpu::TextureView, u32, u32)>,
 }
 
 impl Sink {
@@ -179,6 +182,7 @@ impl Sink {
             raster_usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             pool: TexturePool::default(),
             frame_transient: Vec::new(),
+            dbg_atlas: None,
         }
     }
 
@@ -440,6 +444,18 @@ impl Sink {
             reused += 1;
         }
         // Machine-readable proof of reuse (rendered, reused), read via `_last_tile_stats`.
+        // DEBUG: draw the captured gather atlas over the finished frame, 1:1 at the top-left, so the
+        // batched path's intermediates can be inspected directly. Must come after the finalize
+        // composites, which would otherwise paint over it.
+        if let Some((view, aw, ah)) = self.dbg_atlas.take() {
+            self.compositor.blit(device, &mut frame_enc, &sw_view, (width as f32, height as f32), &Blit {
+                src: &view,
+                dst: (0.0, 0.0, width as f32, height as f32),
+                src_rect: (0.0, 0.0, aw as f32, ah as f32),
+                src_size: (aw as f32, ah as f32),
+                alpha: 1.0,
+            });
+        }
         crate::abi::set_tile_stats(u32::try_from(dirty.len()).unwrap_or(u32::MAX), reused);
 
         // The frame's single submission — everything above only *recorded* into `frame_enc`.
@@ -970,6 +986,9 @@ impl Sink {
                 }
             }
 
+            if crate::abi::debug_atlas() == 1 {
+                self.dbg_atlas = Some((bd_view.clone(), aw, ah));
+            }
             // The blur graph submits its own encoder, so the backdrop-atlas blits (recorded into `enc`,
             // along with the tile writes they read) must be flushed first or the blur reads stale
             // pixels — the same flush the inline gather path gets from crossing a submit batch.
@@ -986,6 +1005,9 @@ impl Sink {
                 continue;
             };
 
+            if crate::abi::debug_atlas() == 2 {
+                self.dbg_atlas = Some((blur_view.clone(), aw, ah));
+            }
             // (3) Mask atlas: every lens's silhouette rasterized into its cell in ONE pass.
             let mask_atlas = new_target_with_usage(device, aw, ah, format, self.raster_usage);
             let mask_view = mask_atlas.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1002,6 +1024,9 @@ impl Sink {
             }
             backend.rasterize(&mscene, device, queue, enc, &mask_view, aw, ah, CLEAR);
 
+            if crate::abi::debug_atlas() == 3 {
+                self.dbg_atlas = Some((mask_view.clone(), aw, ah));
+            }
             // (4) Scatter: masked-blit each blurred cell through its mask cell into the lens's tiles.
             for cell in &packing.cells {
                 let c = &cells[cell.index];
