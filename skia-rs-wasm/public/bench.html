@@ -48,6 +48,13 @@ const LENSES = Number(q.get('lenses') ?? 0)
 // bgFill=1 lays one full-canvas opaque rect UNDER everything, so a lens's backdrop has no transparent
 // gaps — isolates true blur fidelity from the grid's transparent-seam "show-through" artifact.
 const BGFILL = Number(q.get('bgFill') ?? 0)
+// The collapse only batches lenses that are pure (no fill/stroke) AND share one radius. These two
+// knobs turn each of those off so the bench can show what the optimization is worth on content that
+// is NOT its best case: `lensTint` gives every lens a translucent fill (a tinted frosted panel — it
+// stops being a pure lens), `lensRadii` spreads the radius over N distinct values (lenses only group
+// with others of the same radius, so a spread splits the batch into singletons).
+const LENS_TINT = Number(q.get('lensTint') ?? 0)
+const LENS_RADII = Number(q.get('lensRadii') ?? 1)
 
 const out = document.getElementById('out')
 const log = (s) => { out.textContent = s }
@@ -194,9 +201,11 @@ function main() {
         const gx = (s % lc + 0.5) * cw, gy = (Math.floor(s / lc) + 0.5) * ch
         X.use_shape(0, 0, 0, id)
         X.set_shape_type(3)                       // Rect
-        X.set_shape_selrect(gx - half, gy - half, gx + half, gy + half)  // no fill: pure lens
-        if (STACK_FX === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.2, 0, 0, 0, 1, RADIUS, 3, 0)
-        else X.set_shape_blur(1, false, RADIUS)   // background blur (gather)
+        X.set_shape_selrect(gx - half, gy - half, gx + half, gy + half)
+        if (LENS_TINT) solidFill(0x30ffffff)      // a tinted panel — no longer a `pure_lens`
+        const radius = RADIUS + (s % LENS_RADII) * 4
+        if (STACK_FX === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.2, 0, 0, 0, 1, radius, 3, 0)
+        else X.set_shape_blur(1, false, radius)   // background blur (gather)
         X.use_shape(...parent)
         X.add_shape_child(0, 0, 0, id)
       }
