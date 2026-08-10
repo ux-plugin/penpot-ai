@@ -200,15 +200,15 @@ impl Sink {
         dirty_all: bool,
         dirty_rects: &[Rect],
     ) -> Vec<TileKey> {
-        // Atomic gather invalidation: a lens samples a region wider than its footprint, so a dirty
-        // rect that touches only part of its backdrop must re-render the *whole* lens — otherwise the
-        // tiles it doesn't overlap keep a stale half-blur and the lens tears along tile seams. Grow
-        // the dirty set by every affected gather's output footprint before planning tiles.
+        // Atomic gather invalidation: a lens samples a region wider than its footprint, so any frame
+        // that repaints part of its backdrop must re-render the *whole* lens — otherwise the tiles it
+        // doesn't cover keep a stale half-blur and the lens tears along tile seams. Grow the dirty set
+        // by every affected gather's sample rect before planning tiles.
         let rects: std::borrow::Cow<[Rect]> = if dirty_all || dirty_rects.is_empty() {
             std::borrow::Cow::Borrowed(dirty_rects)
         } else {
             let extra = crate::abi::with_scene(|scene, _, modifiers| {
-                render_core::schedule::gather_dirty_expansion(scene, modifiers, dirty_rects)
+                render_core::schedule::gather_dirty_expansion(scene, modifiers, full_view, dirty_rects)
             });
             if extra.is_empty() {
                 std::borrow::Cow::Borrowed(dirty_rects)

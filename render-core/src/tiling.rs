@@ -133,6 +133,33 @@ pub fn tile_device_origin(key: TileKey, view: Affine) -> (f64, f64) {
     (e + f64::from(key.tile_x) * size, f + f64::from(key.tile_y) * size)
 }
 
+/// A page rect grown to cover whole tiles — the region that actually gets re-rendered when this
+/// rect is dirty.
+///
+/// Dirty tracking is per-rect but rendering is per-tile, so a one-pixel edit re-renders its whole
+/// [`TILE_SIZE`] tile. Anything reasoning about *what a frame will repaint* (rather than what the
+/// user touched) has to work in these units: a gather whose sample rect misses the edit but overlaps
+/// the edit's tile still has its blur re-run there, and so still has to be invalidated as a whole.
+#[must_use]
+pub fn tile_aligned_page_rect(view: Affine, page: Rect) -> Rect {
+    let (dx, dy, dw, dh) = device_rect(view, page);
+    let [.., e, f] = view.as_coeffs();
+    let size = f64::from(TILE_SIZE);
+    let snap = |v: f64, origin: f64, up: bool| {
+        let t = (v - origin) / size;
+        origin + (if up { t.ceil() } else { t.floor() }) * size
+    };
+    let (x0, y0) = (snap(dx, e, false), snap(dy, f, false));
+    let (x1, y1) = (snap(dx + dw, e, true), snap(dy + dh, f, true));
+    // Back to page space through the view's inverse, as a bbox so a rotated view still bounds it.
+    let inv = view.inverse();
+    let mut r = Rect::from_points(inv * Point::new(x0, y0), inv * Point::new(x1, y1));
+    for p in [inv * Point::new(x1, y0), inv * Point::new(x0, y1)] {
+        r = r.union_pt(p);
+    }
+    r
+}
+
 /// The part of a tile's content-square that falls inside a device-space rect, as
 /// `(x, y, w, h)` in device space, or `None` when they do not overlap.
 ///

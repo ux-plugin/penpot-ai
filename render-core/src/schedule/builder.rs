@@ -433,44 +433,59 @@ pub fn affected_page_rect(node: &Node, modifier: Affine) -> Rect {
 /// inside a lens's backdrop moves, the lens's tiles that don't overlap that shape keep a stale
 /// half-blur and the lens tears along tile seams.
 ///
-/// Given the frame's base `dirty` rects, this returns the **output footprint** of every gather whose
-/// **sample** rect a dirty rect touches. Adding those to the dirty set re-renders each affected lens
-/// whole. It runs a fixpoint so stacked lenses (a lens over a lens) promote correctly: a lens pulled
-/// into the dirty set can force an outer lens to re-render in turn. The loop is bounded by the gather
-/// count — each gather is promoted at most once.
+/// Given the frame's base `dirty` rects, this returns the **sample** rect of every gather whose
+/// sample rect the frame is going to repaint. Adding those to the dirty set re-renders each affected
+/// lens whole. It runs a fixpoint so stacked lenses (a lens over a lens) promote correctly: a lens
+/// pulled into the dirty set can force an outer lens to re-render in turn. The loop is bounded by the
+/// gather count — each gather is promoted at most once.
+///
+/// Two things make it wider than it looks, and both are load-bearing:
+///
+/// * The test is against the **tile-aligned** dirty region, not the raw rects. Rendering is per-tile,
+///   so a one-pixel edit repaints its whole tile — and repainting a tile re-runs the gather of every
+///   lens overlapping it, for that tile only. A lens straddling a tile boundary would then have its
+///   dirty half re-blurred and its clean half left cached, tearing along the boundary. Matching on
+///   the raw edit rect misses exactly those lenses: they never overlap the edit itself.
+/// * It promotes the **sample** rect, not the output. `ComposeBackdrop`'s `read_from` is filtered to
+///   the frame's tile set, because only a re-rendered tile has a live surface to read. Promoting just
+///   the output leaves the sample's outer ring — the `reach` the kernel pulls from — in clean tiles
+///   that contribute nothing, so the backdrop keeps its background clear there and the blur smears it
+///   inward as a `reach`-wide band.
 #[must_use]
-pub fn gather_dirty_expansion(scene: &Scene, modifiers: &Modifiers, dirty: &[Rect]) -> Vec<Rect> {
+pub fn gather_dirty_expansion(scene: &Scene, modifiers: &Modifiers, view: Affine, dirty: &[Rect]) -> Vec<Rect> {
     if dirty.is_empty() {
         return Vec::new();
     }
-    // (sample rect, output rect) for every gather in the scene.
-    let gathers: Vec<(Rect, Rect)> = scene
+    // The sample rect (output grown by the kernel's reach) for every gather in the scene.
+    let gathers: Vec<Rect> = scene
         .iter_nodes()
         .filter(|n| has_gather_effect(n))
         .map(|n| {
             let m = modifiers.get(&n.id).copied().unwrap_or(Affine::IDENTITY);
-            let output = page_bounds(n, m);
             let reach = gather_reach(n);
-            (output.inflate(reach, reach), output)
+            page_bounds(n, m).inflate(reach, reach)
         })
         .collect();
     if gathers.is_empty() {
         return Vec::new();
     }
 
-    let mut active: Vec<Rect> = dirty.to_vec();
+    // `active` holds what the frame will actually repaint — whole tiles — so a lens is promoted when
+    // a *repainted tile* touches its sample, not merely when the edit itself does.
+    let align = |r: &Rect| tiling::tile_aligned_page_rect(view, *r);
+    let mut active: Vec<Rect> = dirty.iter().map(align).collect();
     let mut added: Vec<Rect> = Vec::new();
     let mut taken = vec![false; gathers.len()];
     loop {
         let mut changed = false;
-        for (i, (sample, output)) in gathers.iter().enumerate() {
+        for (i, sample) in gathers.iter().enumerate() {
             if taken[i] {
                 continue;
             }
             if active.iter().any(|r| rects_overlap(r, sample)) {
                 taken[i] = true;
-                active.push(*output);
-                added.push(*output);
+                active.push(align(sample));
+                added.push(*sample);
                 changed = true;
             }
         }
@@ -599,7 +614,7 @@ fn transform_rect(m: Affine, rect: Rect) -> Rect {
 
 #[cfg(test)]
 mod gather_dirty_tests {
-    use kurbo::Rect;
+    use kurbo::{Affine, Rect};
 
     use crate::host::Modifiers;
     use crate::model::{Node, Scene, ShapeKind, ROOT_ID};
@@ -631,15 +646,37 @@ mod gather_dirty_tests {
     }
 
     #[test]
-    fn dirty_rect_in_one_corner_returns_whole_lens() {
+    fn dirty_rect_in_one_corner_returns_the_whole_sample_rect() {
         // A lens spanning several tiles (0..1200 crosses 512-tile boundaries twice).
         let lens = Rect::new(100.0, 100.0, 1200.0, 1200.0);
         let scene = scene_with(vec![plain(1, Rect::new(0.0, 0.0, 1300.0, 1300.0)), bg_blur(2, lens)]);
         // A shape moved inside the top-left corner of the lens' backdrop — one tile's worth.
         let dirty = [Rect::new(150.0, 150.0, 220.0, 220.0)];
-        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), &dirty);
+        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &dirty);
         assert_eq!(extra.len(), 1, "the lens is promoted exactly once");
-        assert_eq!(extra[0], lens, "the whole lens output is dirtied, not just the touched tile");
+        // The whole SAMPLE rect, not just the output: every tile the backdrop reads has to be
+        // re-rendered, or the ring the kernel reaches into contributes background instead of content.
+        assert!(extra[0].x0 < lens.x0 && extra[0].y0 < lens.y0, "grown past the output on the near side");
+        assert!(extra[0].x1 > lens.x1 && extra[0].y1 > lens.y1, "grown past the output on the far side");
+        assert_eq!(extra[0], lens.inflate(lens.x0 - extra[0].x0, lens.y0 - extra[0].y0), "grown by the reach on all sides");
+    }
+
+    #[test]
+    fn a_lens_sharing_the_edit_s_tile_promotes_even_though_it_misses_the_edit() {
+        // The regression the bench showed: one small shape moves near the origin, and a lens far from
+        // it — but straddling that tile's boundary — re-blurred only its half inside the repainted
+        // tile, tearing along x = TILE_SIZE. The edit rect misses the lens' sample entirely; the
+        // *tile* the edit repaints does not.
+        let straddler = Rect::new(424.0, 244.0, 536.0, 356.0); // crosses the 512 tile boundary
+        let scene = scene_with(vec![
+            plain(1, Rect::new(0.0, 0.0, 1600.0, 1000.0)),
+            bg_blur(2, straddler),
+        ]);
+        let edit = Rect::new(20.0, 20.0, 60.0, 60.0); // top-left, nowhere near the lens
+        assert!(!super::rects_overlap(&edit, &straddler), "the edit really does miss the lens");
+        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &[edit]);
+        assert_eq!(extra.len(), 1, "sharing the repainted tile is enough to promote the lens");
+        assert!(extra[0].contains_rect(straddler), "and it promotes the lens whole");
     }
 
     #[test]
@@ -648,7 +685,7 @@ mod gather_dirty_tests {
         let scene = scene_with(vec![bg_blur(2, lens)]);
         // Far outside the lens output + its ~12px blur reach.
         let dirty = [Rect::new(2000.0, 2000.0, 2100.0, 2100.0)];
-        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), &dirty);
+        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &dirty);
         assert!(extra.is_empty(), "a dirty rect that misses the sample rect promotes no lens");
     }
 
@@ -656,7 +693,7 @@ mod gather_dirty_tests {
     fn no_gather_no_expansion() {
         let scene = scene_with(vec![plain(1, Rect::new(0.0, 0.0, 500.0, 500.0))]);
         let dirty = [Rect::new(10.0, 10.0, 20.0, 20.0)];
-        assert!(gather_dirty_expansion(&scene, &Modifiers::new(), &dirty).is_empty());
+        assert!(gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &dirty).is_empty());
     }
 
     #[test]
@@ -671,10 +708,11 @@ mod gather_dirty_tests {
             bg_blur(3, b),
         ]);
         let dirty = [Rect::new(120.0, 120.0, 160.0, 160.0)]; // inside A only
-        let mut extra = gather_dirty_expansion(&scene, &Modifiers::new(), &dirty);
+        let mut extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &dirty);
         extra.sort_by(|p, q| p.x0.partial_cmp(&q.x0).unwrap());
         assert_eq!(extra.len(), 2, "both lenses promote — A directly, B transitively");
-        assert_eq!(extra[0], a);
-        assert_eq!(extra[1], b);
+        // Each promotes its sample rect, which contains its output.
+        assert!(extra[0].contains_rect(a), "A's promotion covers A's output");
+        assert!(extra[1].contains_rect(b), "B's promotion covers B's output");
     }
 }

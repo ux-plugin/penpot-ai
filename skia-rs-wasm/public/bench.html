@@ -93,6 +93,7 @@ function main() {
 
     window.__X__ = X // expose wasm exports for ad-hoc probing
     const renderer = await mod.create_focus_renderer(canvas)
+    window.__R__ = renderer // so a probe can force a cold full redraw and diff it against the incremental frame
 
     // ---- scene ---------------------------------------------------------------------
     const u8 = () => new Uint8Array(X.memory.buffer)
