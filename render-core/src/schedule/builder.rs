@@ -268,9 +268,14 @@ fn visit(
             let reach = gather_reach(node);
             let sample = page_bounds(node, m).inflate(reach, reach);
             let backdrop = SurfaceRef::new(SurfaceRole::Backdrop(id), None, 0);
+            // Deliberately NOT filtered to the frame's tile set. A gather's sample rect routinely
+            // reaches into tiles this frame is not re-rendering, and those tiles' pixels are still
+            // valid in the tile cache — the sink resolves a source with no live surface from there.
+            // Filtering here would punch a hole in the backdrop wherever the sample crosses into a
+            // clean tile, and the only way to avoid the hole would be to repaint that tile purely to
+            // have something to read.
             let read_from: Vec<SurfaceRef> = tiling::tiles_overlapping_page_rect(view, sample)
                 .into_iter()
-                .filter(|t| visible.contains(t))
                 .map(current)
                 .collect();
             // A backdrop-reading custom shader is opaque, so bound its surface unconditionally; a
@@ -433,37 +438,41 @@ pub fn affected_page_rect(node: &Node, modifier: Affine) -> Rect {
 /// inside a lens's backdrop moves, the lens's tiles that don't overlap that shape keep a stale
 /// half-blur and the lens tears along tile seams.
 ///
-/// Given the frame's base `dirty` rects, this returns the **sample** rect of every gather whose
-/// sample rect the frame is going to repaint. Adding those to the dirty set re-renders each affected
-/// lens whole. It runs a fixpoint so stacked lenses (a lens over a lens) promote correctly: a lens
-/// pulled into the dirty set can force an outer lens to re-render in turn. The loop is bounded by the
-/// gather count — each gather is promoted at most once.
+/// A gather **depends on** every tile its sample rect covers, and **produces** every tile its output
+/// covers. Given the frame's base `dirty` rects, this returns the **output** rect of every gather one
+/// of whose dependencies the frame is going to repaint, to a fixpoint — so a lens pulled in can force
+/// a lens reading *its* output to re-render in turn. The loop is bounded by the gather count; each
+/// gather is promoted at most once.
 ///
-/// Two things make it wider than it looks, and both are load-bearing:
+/// Two details are load-bearing:
 ///
 /// * The test is against the **tile-aligned** dirty region, not the raw rects. Rendering is per-tile,
 ///   so a one-pixel edit repaints its whole tile — and repainting a tile re-runs the gather of every
 ///   lens overlapping it, for that tile only. A lens straddling a tile boundary would then have its
 ///   dirty half re-blurred and its clean half left cached, tearing along the boundary. Matching on
 ///   the raw edit rect misses exactly those lenses: they never overlap the edit itself.
-/// * It promotes the **sample** rect, not the output. `ComposeBackdrop`'s `read_from` is filtered to
-///   the frame's tile set, because only a re-rendered tile has a live surface to read. Promoting just
-///   the output leaves the sample's outer ring — the `reach` the kernel pulls from — in clean tiles
-///   that contribute nothing, so the backdrop keeps its background clear there and the blur smears it
-///   inward as a `reach`-wide band.
+/// * The trigger is the **sample** rect but the promotion is the **output** rect. Only the output has
+///   to be repainted — the sample is *read*, and a tile that is not being re-rendered still has its
+///   pixels in the tile cache for the sink to read from. Promoting the sample instead would repaint a
+///   ring of untouched tiles around every lens for no reason.
+///
+/// The dependency is each shape's own sample rect, so this is not uniform across gathers: a small lens
+/// whose sample stays inside one tile has a purely local dependency and never drags in a neighbour,
+/// while a lens spanning tiles ties them together. Both are covered by the tests below.
 #[must_use]
 pub fn gather_dirty_expansion(scene: &Scene, modifiers: &Modifiers, view: Affine, dirty: &[Rect]) -> Vec<Rect> {
     if dirty.is_empty() {
         return Vec::new();
     }
-    // The sample rect (output grown by the kernel's reach) for every gather in the scene.
-    let gathers: Vec<Rect> = scene
+    // (what it depends on, what it produces) for every gather in the scene.
+    let gathers: Vec<(Rect, Rect)> = scene
         .iter_nodes()
         .filter(|n| has_gather_effect(n))
         .map(|n| {
             let m = modifiers.get(&n.id).copied().unwrap_or(Affine::IDENTITY);
+            let output = page_bounds(n, m);
             let reach = gather_reach(n);
-            page_bounds(n, m).inflate(reach, reach)
+            (output.inflate(reach, reach), output)
         })
         .collect();
     if gathers.is_empty() {
@@ -478,14 +487,16 @@ pub fn gather_dirty_expansion(scene: &Scene, modifiers: &Modifiers, view: Affine
     let mut taken = vec![false; gathers.len()];
     loop {
         let mut changed = false;
-        for (i, sample) in gathers.iter().enumerate() {
+        for (i, (sample, output)) in gathers.iter().enumerate() {
             if taken[i] {
                 continue;
             }
             if active.iter().any(|r| rects_overlap(r, sample)) {
                 taken[i] = true;
-                active.push(align(sample));
-                added.push(*sample);
+                // Repainting the output repaints its whole tiles, and that is what the next round has
+                // to test against — a lens reading any of those tiles is now stale too.
+                active.push(align(output));
+                added.push(*output);
                 changed = true;
             }
         }
@@ -646,7 +657,7 @@ mod gather_dirty_tests {
     }
 
     #[test]
-    fn dirty_rect_in_one_corner_returns_the_whole_sample_rect() {
+    fn dirty_rect_in_one_corner_returns_the_whole_lens_output() {
         // A lens spanning several tiles (0..1200 crosses 512-tile boundaries twice).
         let lens = Rect::new(100.0, 100.0, 1200.0, 1200.0);
         let scene = scene_with(vec![plain(1, Rect::new(0.0, 0.0, 1300.0, 1300.0)), bg_blur(2, lens)]);
@@ -654,11 +665,9 @@ mod gather_dirty_tests {
         let dirty = [Rect::new(150.0, 150.0, 220.0, 220.0)];
         let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &dirty);
         assert_eq!(extra.len(), 1, "the lens is promoted exactly once");
-        // The whole SAMPLE rect, not just the output: every tile the backdrop reads has to be
-        // re-rendered, or the ring the kernel reaches into contributes background instead of content.
-        assert!(extra[0].x0 < lens.x0 && extra[0].y0 < lens.y0, "grown past the output on the near side");
-        assert!(extra[0].x1 > lens.x1 && extra[0].y1 > lens.y1, "grown past the output on the far side");
-        assert_eq!(extra[0], lens.inflate(lens.x0 - extra[0].x0, lens.y0 - extra[0].y0), "grown by the reach on all sides");
+        // The whole output, so the lens repaints as one unit and cannot tear on a tile seam — but not
+        // a pixel more: the sample's outer ring is only ever *read*, and the sink reads it from cache.
+        assert_eq!(extra[0], lens, "the lens repaints whole, and nothing around it is dragged in");
     }
 
     #[test]
@@ -677,6 +686,66 @@ mod gather_dirty_tests {
         let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &[edit]);
         assert_eq!(extra.len(), 1, "sharing the repainted tile is enough to promote the lens");
         assert!(extra[0].contains_rect(straddler), "and it promotes the lens whole");
+    }
+
+    #[test]
+    fn a_grid_of_touching_gathers_invalidates_as_one_unit() {
+        // A gather depends on every tile its sample rect covers, so invalidating any of those tiles
+        // invalidates the gather — and the gather's own sample then invalidates its neighbours' in
+        // turn. Lay one lens over each tile of a 5x5 grid: each sample spills `reach` into the four
+        // tiles around it, so the whole grid is one dependency component and a single edit anywhere
+        // must promote all 25. That transitive closure is the point of the fixpoint; the cost of it
+        // is real and is why an edit near a lens repaints far more than the shape it touched.
+        let t = f64::from(crate::tiling::TILE_SIZE);
+        let mut nodes = vec![plain(1, Rect::new(0.0, 0.0, 5.0 * t, 5.0 * t))];
+        for i in 0..5_u128 {
+            for j in 0..5_u128 {
+                let (x, y) = (i as f64 * t, j as f64 * t);
+                nodes.push(bg_blur(10 + i * 5 + j, Rect::new(x, y, x + t, y + t)));
+            }
+        }
+        let scene = scene_with(nodes);
+        let edit = [Rect::new(10.0, 10.0, 30.0, 30.0)]; // one small shape in the very first tile
+        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &edit);
+        assert_eq!(extra.len(), 25, "one edit invalidates every lens in the connected grid");
+    }
+
+    #[test]
+    fn a_grid_of_tile_local_gathers_does_not_cascade() {
+        // The same 5x5 grid, but each lens is small and sits well inside its tile, so its sample rect
+        // never leaves that tile. Gathers are not uniform: the dependency is each shape's OWN sample
+        // rect, which is its output grown by its OWN reach. A lens that reads nothing outside its tile
+        // has a purely local dependency and must not drag its neighbours in — otherwise the rule would
+        // collapse to "any edit repaints every lens", which is what a per-effect-class rule would do.
+        let t = f64::from(crate::tiling::TILE_SIZE);
+        let mut nodes = vec![plain(1, Rect::new(0.0, 0.0, 5.0 * t, 5.0 * t))];
+        for i in 0..5_u128 {
+            for j in 0..5_u128 {
+                let (cx, cy) = ((i as f64 + 0.5) * t, (j as f64 + 0.5) * t);
+                nodes.push(bg_blur(10 + i * 5 + j, Rect::new(cx - 50.0, cy - 50.0, cx + 50.0, cy + 50.0)));
+            }
+        }
+        let scene = scene_with(nodes);
+        let edit = [Rect::new(10.0, 10.0, 30.0, 30.0)]; // first tile again
+        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &edit);
+        assert_eq!(extra.len(), 1, "only the lens in the edited tile depends on it");
+    }
+
+    #[test]
+    fn independent_gathers_do_not_chain() {
+        // The cascade is through *overlap*, not through being a gather: two lenses far enough apart
+        // that neither sample reaches the other stay independent, and an edit in one leaves the other
+        // alone. Without this the rule would degenerate into "any edit repaints every lens".
+        let near = Rect::new(100.0, 100.0, 300.0, 300.0);
+        let far = Rect::new(2000.0, 2000.0, 2200.0, 2200.0);
+        let scene = scene_with(vec![
+            plain(1, Rect::new(0.0, 0.0, 2400.0, 2400.0)),
+            bg_blur(2, near),
+            bg_blur(3, far),
+        ]);
+        let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &[Rect::new(120.0, 120.0, 140.0, 140.0)]);
+        assert_eq!(extra.len(), 1, "only the lens whose dependency changed is promoted");
+        assert!(extra[0].contains_rect(near));
     }
 
     #[test]

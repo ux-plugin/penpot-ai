@@ -55,6 +55,11 @@ const BGFILL = Number(q.get('bgFill') ?? 0)
 // with others of the same radius, so a spread splits the batch into singletons).
 const LENS_TINT = Number(q.get('lensTint') ?? 0)
 const LENS_RADII = Number(q.get('lensRadii') ?? 1)
+// `lensFringe=1` paints a small opaque tab ABOVE each lens, sitting in the ring between the lens
+// output and the edge of its sample rect. It never covers the lens, so the lens' result can still be
+// scattered last — but the finished tiles no longer hold the backdrop it read, so it can only batch
+// off a frozen copy. This is the case the snapshot pool exists for.
+const LENS_FRINGE = Number(q.get('lensFringe') ?? 0)
 
 const out = document.getElementById('out')
 const log = (s) => { out.textContent = s }
@@ -208,6 +213,18 @@ function main() {
         else X.set_shape_blur(1, false, radius)   // background blur (gather)
         X.use_shape(...parent)
         X.add_shape_child(0, 0, 0, id)
+        if (LENS_FRINGE) {
+          // A tab just outside the lens but inside its sample rect (reach = 3 sigma, sigma = r/2+0.5),
+          // added AFTER the lens so it is above it in z.
+          const reach = 3 * (0.5 * radius + 0.5)
+          const fid = LENS_BASE + LENSES + s
+          X.use_shape(0, 0, 0, fid)
+          X.set_shape_type(3)
+          X.set_shape_selrect(gx + half + reach * 0.2, gy - half - reach * 0.8, gx + half + reach * 0.8, gy - half - reach * 0.2)
+          solidFill(0xff202020)
+          X.use_shape(...parent)
+          X.add_shape_child(0, 0, 0, fid)
+        }
       }
     }
 

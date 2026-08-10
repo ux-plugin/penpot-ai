@@ -36,6 +36,7 @@ use crate::glass::GlassPipeline;
 use render_core::effect_graph::{self, GlassGeometry};
 
 use crate::graph::{build_custom_pipeline, lower_graph, new_target_with_usage, run_graph, Pass};
+use crate::snapshot::{SnapshotKey, SnapshotPool};
 
 /// Every sink surface is composited with `SrcOver`, so a first write clears to full transparency —
 /// the neutral `base_color` the backend rasterizes against.
@@ -163,10 +164,31 @@ pub struct Sink {
     /// the accumulate scratch): held here until the next frame drains them into [`Self::pool`], so
     /// their in-flight GPU work has flushed before they are reused.
     frame_transient: Vec<wgpu::Texture>,
+    /// Frozen backdrop tiles for the batched gathers that need one — those whose sample rect is
+    /// disturbed by something above, so the finished tiles no longer hold what they read. Captured at
+    /// each such gather's z-position during the walk, sampled by the batch, cleared at frame end.
+    snapshots: SnapshotPool,
+    /// Which snapshot backs each `(batched gather index, backdrop tile)`, filled during the walk and
+    /// consumed by `atlas_gather`. Cleared with the pool.
+    snapshot_of: HashMap<(usize, TileKey), SnapshotKey>,
+
     /// DEBUG: an atlas captured this frame (view, w, h) to blit over the swapchain so the batched
     /// gather's intermediates can be inspected. Selected by `abi::debug_atlas()`.
     dbg_atlas: Option<(wgpu::TextureView, u32, u32)>,
 }
+
+/// Live backdrop snapshots allowed at once. Each is one buffered tile (`TILE_BUFFER`² RGBA8 = 4 MiB),
+/// so this is a VRAM ceiling: 16 → 64 MiB. Gathers that would push past it keep the inline path rather
+/// than the batch, so the bound costs passes, never correctness.
+///
+/// **Set to 0: the snapshot-backed tier is off.** The machinery below is complete and the freeze is
+/// provably total (every read tile of every frozen gather had a live surface and was copied, 1712/1712
+/// measured, and every capture produced its own entry — 1728 captures, 1728 distinct snapshots, so
+/// nothing aliases). But on the bench's fringe-covered lens grid, 5 of 25 lenses still differ from
+/// the inline reference: their backdrop is missing a moving shape that the inline compose reads at
+/// the same z. That is unexplained, so the tier stays disabled until it is — a wrong lens is worse
+/// than a slow one. Raise this to re-enable once the divergence is understood.
+const SNAPSHOT_CAP: usize = 0;
 
 impl Sink {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -182,6 +204,8 @@ impl Sink {
             raster_usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             pool: TexturePool::default(),
             frame_transient: Vec::new(),
+            snapshots: SnapshotPool::new(SNAPSHOT_CAP),
+            snapshot_of: HashMap::new(),
             dbg_atlas: None,
         }
     }
@@ -251,6 +275,10 @@ impl Sink {
         for tex in self.frame_transient.drain(..) {
             self.pool.release(tex);
         }
+        // Frozen backdrops are frame-scoped like everything above, and released on the same "last
+        // frame's submit has flushed" argument.
+        self.snapshots.clear(&mut self.pool);
+        self.snapshot_of.clear();
         self.written.clear();
         self.backdrop_origin.clear();
         self.backdrop_scale.clear();
@@ -328,7 +356,7 @@ impl Sink {
         // ComposeBackdrop/PaintGather steps are skipped below and run as one atlas after the loop; the
         // finalize composites (TileOutput→Target) are held until after that scatter lands in the tiles.
         const GATHER_MIN: usize = 2;
-        let gather_groups: Vec<Vec<usize>> = if crate::abi::gather_batch() {
+        let mut gather_groups: Vec<Vec<usize>> = if crate::abi::gather_batch() {
             schedule
                 .gather_plan
                 .deferrable_blur_groups()
@@ -338,11 +366,40 @@ impl Sink {
         } else {
             Vec::new()
         };
-        let batched_gathers: HashSet<u128> = gather_groups
+        // A gather whose sample rect is disturbed above can only batch off a frozen backdrop, and the
+        // freeze costs one buffered tile apiece. Spend that budget in z-order and drop the gathers that
+        // do not fit back to the inline path — decided *here*, before the walk, so a capture can never
+        // fail half way through a frame and leave a batched gather with no backdrop.
+        {
+            let mut budget = SNAPSHOT_CAP;
+            for group in &mut gather_groups {
+                group.retain(|&gi| {
+                    let g = &schedule.gather_plan.gathers[gi];
+                    if !g.needs_snapshot {
+                        return true;
+                    }
+                    let want = g.reads.len();
+                    if want <= budget {
+                        budget -= want;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
+            gather_groups.retain(|g| g.len() >= GATHER_MIN);
+        }
+        // Shape → its index in the plan, for the steps the walk hands to the batch instead of running.
+        let batched_gathers: HashMap<u128, usize> = gather_groups
             .iter()
             .flatten()
-            .map(|&gi| schedule.gather_plan.gathers[gi].shape)
+            .map(|&gi| (schedule.gather_plan.gathers[gi].shape, gi))
             .collect();
+        // Only pay for write-versioning when something will actually be frozen.
+        let versioning = gather_groups
+            .iter()
+            .flatten()
+            .any(|&gi| schedule.gather_plan.gathers[gi].needs_snapshot);
         let mut finalize: Vec<usize> = Vec::new();
 
         let mut batched = 0_u32;
@@ -350,10 +407,19 @@ impl Sink {
             if atlased.contains(&i) {
                 continue;
             }
-            // Deferred to the batched gather stage — its backdrop is recomposed there from the finished
-            // tiles (z-invariant by the sample-rect rule).
-            if let Step::ComposeBackdrop { shape, .. } | Step::PaintGather { shape, .. } = step {
-                if batched_gathers.contains(shape) {
+            // Deferred to the batched gather stage. Its backdrop is normally recomposed there from the
+            // finished tiles; a gather whose sample something above disturbs has to have its backdrop
+            // frozen *here*, at its own z, for the batch to read instead.
+            if let Step::ComposeBackdrop { shape, read_from, .. } = step {
+                if let Some(&gi) = batched_gathers.get(shape) {
+                    if schedule.gather_plan.gathers[gi].needs_snapshot {
+                        self.freeze_backdrop(gi, read_from, device, &mut frame_enc);
+                    }
+                    continue;
+                }
+            }
+            if let Step::PaintGather { shape, .. } = step {
+                if batched_gathers.contains_key(shape) {
                     continue;
                 }
             }
@@ -383,6 +449,15 @@ impl Sink {
                 }
                 // Snapshot / layer brackets are not emitted by the builder yet.
                 _ => {}
+            }
+            // Advance the version of every tile this step touched, so a later freeze of the same tile
+            // takes a second copy instead of aliasing the one taken before the write.
+            if versioning {
+                for r in step.writes().into_iter().chain(step.rewrites()) {
+                    if let Some(tile) = r.tile {
+                        self.snapshots.on_write(tile);
+                    }
+                }
             }
             batched += 1;
             if batch != 0 && batched >= batch {
@@ -968,8 +1043,14 @@ impl Sink {
                 let c = &cells[cell.index];
                 for &tile in &plan.gathers[c.gi].reads {
                     let src_ref = SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile);
-                    let Some(src) = self.surfaces.get(&src_ref) else { continue };
-                    let src_view = src.view.clone();
+                    // A frozen copy if this gather took one for this tile (something above was going to
+                    // overwrite what it read), otherwise the live or cached tile.
+                    let frozen = self
+                        .snapshot_of
+                        .get(&(c.gi, tile))
+                        .and_then(|k| self.snapshots.view(*k))
+                        .cloned();
+                    let Some(src_view) = frozen.or_else(|| self.backdrop_source(&src_ref)) else { continue };
                     let (ox, oy) = tiling::tile_device_origin(tile, full_view);
                     // Clip the tile to *this* lens's backdrop rect. Unlike `compose_backdrop`, whose
                     // target is the lens's own surface and so clips the overhang for free, the atlas
@@ -1126,6 +1207,47 @@ impl Sink {
         {
             self.custom_pipelines.clear();
         }
+    }
+
+    /// Freeze the backdrop of one batched gather at its own z-position, for the batch to read at end
+    /// of frame.
+    ///
+    /// Only tiles with a **live** surface are copied. A tile the frame is not re-rendering cannot
+    /// change between here and the batch, so its cached pixels are already a valid freeze and
+    /// [`Self::backdrop_source`] will serve them directly — the copy is only needed where this frame
+    /// is still going to paint over what the gather read.
+    fn freeze_backdrop(
+        &mut self,
+        gi: usize,
+        read_from: &[SurfaceRef],
+        device: &wgpu::Device,
+        enc: &mut wgpu::CommandEncoder,
+    ) {
+        let live: Vec<(TileKey, wgpu::Texture)> = read_from
+            .iter()
+            .filter_map(|r| Some((r.tile?, self.surfaces.get(r)?.texture.clone())))
+            .collect();
+        for (tile, texture) in live {
+            let key = self.snapshots.capture(tile, &texture, device, &mut self.pool, enc);
+            self.snapshot_of.insert((gi, tile), key);
+        }
+    }
+
+    /// The pixels to read for one backdrop source tile: this frame's live surface if the tile is being
+    /// re-rendered, otherwise the tile cache's copy.
+    ///
+    /// A gather's sample rect routinely reaches into tiles the frame is not touching. Their content is
+    /// unchanged and already on the GPU, so serving it from the cache is what lets an edit next to a
+    /// lens repaint only what actually changed instead of every tile the lens happens to read.
+    fn backdrop_source(&self, src_ref: &SurfaceRef) -> Option<wgpu::TextureView> {
+        if let Some(s) = self.surfaces.get(src_ref) {
+            return Some(s.view.clone());
+        }
+        // Only a plain tile output has a cached counterpart; a scope/effect surface is frame-local.
+        if !matches!(src_ref.role, SurfaceRole::TileOutput) {
+            return None;
+        }
+        self.tile_cache.get(src_ref.tile?).map(|s| s.view.clone())
     }
 
     fn ensure_surface(&mut self, key: SurfaceRef, device: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat) {
@@ -1460,8 +1582,7 @@ impl Sink {
         let kf = k as f32;
         for src_ref in read_from {
             let Some(tile) = src_ref.tile else { continue };
-            let Some(src) = self.surfaces.get(src_ref) else { continue };
-            let src_view = src.view.clone();
+            let Some(src_view) = self.backdrop_source(src_ref) else { continue };
             let (ox, oy) = tiling::tile_device_origin(tile, full_view);
             // The tile's full-zoom centre → its place in the reduced backdrop (down-sampled by `k`).
             self.compositor.blit(

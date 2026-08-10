@@ -97,6 +97,10 @@ thread_local! {
 pub fn dbg_set(i: usize, v: f64) {
     DBG.with(|c| { if i < 16 { c.borrow_mut()[i] = v; } });
 }
+/// Accumulate into a debug bucket (reset per frame like the rest), for counting occurrences.
+pub fn dbg_add(i: usize, v: f64) {
+    DBG.with(|c| { if i < 16 { c.borrow_mut()[i] += v; } });
+}
 /// Count one `renderer.render` call — with the atlas, one render covers many steps, so this drops
 /// below `steps` and is the number the atlas is meant to shrink.
 pub fn inc_render() {

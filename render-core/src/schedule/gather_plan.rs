@@ -6,22 +6,35 @@
 //! finished* backdrop and land on *disjoint* regions, so their blurs can run together in a single
 //! pass (one dispatch per distinct effect) and scatter back afterwards. This module finds those.
 //!
-//! The rule is deliberately conservative and provably z-safe: a gather is **deferrable** only when it
-//! is *topmost across its whole sample region* — no later shape of any kind (plain body, composite, or
-//! another gather) overlaps its **sample rect** (its output silhouette grown by the blur reach). That
-//! stronger test — the sample rect, not just the output — is what lets the batched pass compose every
-//! deferrable backdrop at *end of frame* instead of freezing it mid-walk: if nothing above ever
-//! touched even the blur fringe, the tiles under the sample rect read the same at end-of-frame as they
-//! did at the gather's z-position. So the batch needs **no per-tile snapshots** — it recomposes each
-//! backdrop from the finished tiles and gets a pixel-identical result. (The versioned snapshot pool
-//! stays on the shelf; it would only be needed to *recover* the fringe cases this rule drops.)
+//! Deferring a gather to end-of-frame needs **two** separate things to be true, and it is worth
+//! keeping them apart because they have different remedies:
 //!
-//! A useful consequence falls out for free: if gather B read gather A's output, B would sit *above*
-//! and *overlap* A — which would make A non-deferrable. So **every deferrable gather is mutually
-//! independent**, and they all collapse into a *single* batched pass. Genuinely stacked gathers (a
-//! blur of a blur) fail the topmost test at every level but the top, so they stay inline — one pass
-//! each, exactly as today. That is the honest limit: the collapse pays for *independent* gathers
-//! (the common "many panels over one background" file) and is a correct no-op for *stacked* ones.
+//! 1. **The scatter must still land in z-order.** The batch paints its results after everything else,
+//!    so nothing later may cover the gather's **output** silhouette. There is no way around this one
+//!    from inside a single end-of-frame pass: a gather with something painted over it has to composite
+//!    at its own z, and stays inline.
+//! 2. **The backdrop must be the one the gather would have seen.** The batch recomposes each backdrop
+//!    from the *finished* tiles, which is only the same picture if nothing later disturbed the
+//!    **sample rect** (the output grown by the kernel's reach).
+//!
+//! Requiring both against the sample rect — the original rule — is simple and needs no memory, but it
+//! throws away every gather whose blur *fringe* is merely brushed by something above, even though such
+//! a gather is perfectly scatterable. Those come back by satisfying (2) with memory instead of luck:
+//! freeze the backdrop tiles at the gather's z-position and let the batch read the frozen copy. So a
+//! gather lands in one of three tiers:
+//!
+//! | later write overlaps | verdict |
+//! |---|---|
+//! | the output | inline — the scatter cannot be deferred |
+//! | the sample only | **deferrable, [`needs_snapshot`](GatherInfo::needs_snapshot)** |
+//! | neither | deferrable, recomposed from the finished tiles |
+//!
+//! One dependency is not a "write" at all and has to be tested separately: a later gather *reads* a
+//! region wider than it paints. If B's sample rect overlaps A's output, then B's backdrop must be
+//! taken after A's result has landed — but the batch composes *every* backdrop before it scatters
+//! *any* result, so A can never share a batch with B. A is forced inline. (Genuinely stacked gathers —
+//! a blur of a blur — fail this or the output test at every level but the top, so they stay inline,
+//! one pass each, exactly as before.)
 //!
 //! The plan is a pure function of the built schedule + scene; the sink ([`crate::schedule`]'s Vello
 //! backend) consumes it to snapshot each deferrable gather's backdrop and run the batch. Nothing here
@@ -68,9 +81,14 @@ pub struct GatherInfo {
     pub reach: f64,
     /// Page-space output silhouette (the scatter clip).
     pub output: Rect,
-    /// Topmost in its region → safe to defer into the batched pass. Otherwise it runs inline (its own
-    /// pass), exactly as today.
+    /// Nothing later covers this gather's **output**, so its result can be scattered at end of frame.
+    /// Otherwise it runs inline (its own pass), exactly as before the collapse.
     pub deferrable: bool,
+    /// Something later disturbs the **sample** rect, so the finished tiles no longer hold the backdrop
+    /// this gather would have read. Still batchable, but the sink must freeze its backdrop tiles at
+    /// this gather's z-position and have the batch read the frozen copy. Meaningless when
+    /// [`deferrable`](Self::deferrable) is false.
+    pub needs_snapshot: bool,
     /// No fills or strokes — a pure lens, so nothing has to composite *over* the blur. The batched
     /// stage scatters the blurred backdrop with no body to re-order, so v1 only batches these; a
     /// gather with a body keeps the inline path (its body paints over the blur in z, as authored).
@@ -180,7 +198,8 @@ pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> 
                     sample: *extent,
                     reach: *reach,
                     output,
-                    deferrable: true, // provisional; the coverage pass below can only clear it
+                    deferrable: true, // provisional; the coverage pass below decides the tier
+                    needs_snapshot: false,
                     pure_lens: node.fills.is_empty() && node.strokes.is_empty(),
                 });
             }
@@ -219,16 +238,31 @@ pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> 
         }
     }
 
-    // Coverage: clear `deferrable` for any gather with a later write overlapping its **sample** rect
-    // (output grown by blur reach). Using the sample rect — not just the output — is what makes the
-    // backdrop z-invariant, so the batch can recompose it at end-of-frame without a snapshot.
-    for g in &mut gathers {
-        let covered = writes.iter().any(|&(i, r, owner)| {
-            i > g.order && owner != Some(g.shape) && overlaps(r, g.sample)
-        });
-        if covered {
-            g.deferrable = false;
-        }
+    // Every gather's read region, so a gather that *feeds* a later one can be spotted. This is not a
+    // write and so is invisible to the loop above, but it is just as disqualifying: the batch composes
+    // all backdrops before it scatters any result, so a producer can never share a batch with its
+    // consumer.
+    let reads: Vec<(usize, Rect)> = gathers.iter().map(|g| (g.order, g.sample)).collect();
+
+    // Tier each gather (see the module docs): covered output → inline; covered sample only →
+    // deferrable but the sink must freeze its backdrop; neither → deferrable off the finished tiles.
+    let tiers: Vec<(bool, bool)> = gathers
+        .iter()
+        .map(|g| {
+            let later = |rect: Rect| {
+                writes.iter().any(|&(i, r, owner)| i > g.order && owner != Some(g.shape) && overlaps(r, rect))
+            };
+            let feeds_a_later_gather = reads.iter().any(|&(o, s)| o > g.order && overlaps(s, g.output));
+            if feeds_a_later_gather || later(g.output) {
+                (false, false)
+            } else {
+                (true, later(g.sample))
+            }
+        })
+        .collect();
+    for (g, (deferrable, needs_snapshot)) in gathers.iter_mut().zip(tiers) {
+        g.deferrable = deferrable;
+        g.needs_snapshot = needs_snapshot;
     }
 
     GatherPlan { gathers }
@@ -376,15 +410,44 @@ mod tests {
     }
 
     #[test]
-    fn a_shape_in_the_blur_fringe_above_blocks_deferral() {
+    fn a_shape_in_the_blur_fringe_above_still_batches_but_needs_a_snapshot() {
         // Plain rect 2 does NOT overlap gather 1's output (400..470 vs 100..380) but sits within its
-        // blur reach — inside the sample rect. The sample-rect rule must catch it, so the backdrop
-        // stays z-invariant and no snapshot is needed.
+        // blur reach — inside the sample rect. The scatter is still z-correct (nothing covers the
+        // lens), but the finished tiles no longer hold the backdrop it read, so it batches only with a
+        // frozen copy.
         let mut blur = bg_blur(1, 100.0, 100.0, 380.0, 380.0);
         blur.background_blur = Some(64.0); // a wide blur → a fat fringe past the output
         let scene = scene_tree(vec![1, 2], vec![blur, plain(2, 400.0, 100.0, 470.0, 380.0)]);
         let plan = plan_for(&scene);
-        assert_eq!(plan.deferrable_count(), 0, "a shape in the blur fringe above blocks deferral");
+        assert_eq!(plan.deferrable_count(), 1, "a covered fringe no longer costs the whole deferral");
+        assert!(plan.gathers[0].needs_snapshot, "but the backdrop has to be frozen at its z");
+    }
+
+    #[test]
+    fn an_undisturbed_gather_batches_without_a_snapshot() {
+        // Nothing above at all: the finished tiles still hold exactly the backdrop the lens read.
+        let scene = scene_tree(
+            vec![1, 2],
+            vec![plain(1, 0.0, 0.0, 600.0, 600.0), bg_blur(2, 150.0, 150.0, 350.0, 350.0)],
+        );
+        let plan = plan_for(&scene);
+        assert_eq!(plan.deferrable_count(), 1);
+        assert!(!plan.gathers[0].needs_snapshot, "no snapshot when nothing disturbed the sample");
+    }
+
+    #[test]
+    fn a_gather_feeding_a_later_gather_cannot_batch() {
+        // B's sample reaches over A's output while B's own output stays clear of A's sample, so no
+        // *write* test catches it. But the batch composes every backdrop before it scatters any
+        // result, so B would read A's region un-blurred. A must run inline.
+        let mut a = bg_blur(1, 100.0, 100.0, 300.0, 300.0);
+        a.background_blur = Some(4.0); // a narrow fringe, so B's output stays outside A's sample
+        let mut b = bg_blur(2, 360.0, 100.0, 560.0, 300.0);
+        b.background_blur = Some(160.0); // a wide reach, so B's sample swallows A's output
+        let scene = scene_tree(vec![1, 2], vec![a, b]);
+        let plan = plan_for(&scene);
+        assert!(!plan.gathers[0].deferrable, "the producer cannot share a batch with its consumer");
+        assert!(plan.gathers[1].deferrable, "the consumer itself is unobstructed");
     }
 
     #[test]
