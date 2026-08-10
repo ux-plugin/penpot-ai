@@ -18,7 +18,8 @@ const q = new URLSearchParams(location.search)
 const BE = q.get('backend') ?? 'classic'
 const R = Number(q.get('radius') ?? 16)
 const LENS_ON = Number(q.get('lens') ?? 1)
-const W = 900, H = 900, REC = 164
+// The canvas can be grown past the 900² scene (`?w=`) so a 1:1 debug-atlas overlay fits on it.
+const W = Number(q.get('w') ?? 900), H = Number(q.get('w') ?? 900), REC = 164
 const URLS = { hybrid: '/wasm-vello/render-vello.js', classic: '/wasm-vello-gpu/render-vello-gpu.js' }
 const out = document.getElementById('out')
 
@@ -30,6 +31,7 @@ async function boot(url) {
 }
 const X = await boot(URLS[BE])
 const canvas = document.getElementById('c')
+canvas.width = W; canvas.height = H   // the backing store must match init(W,H) or the surplus stays black
 X.init(W, H); X.set_render_options(0, 1); X.set_scheduler(1); X.set_tile_effects(1)
 // two=1 needs the batched path on to reproduce the bug (it now ships OFF by default).
 if (X.set_gather_batch) X.set_gather_batch(Number(q.get('gatherBatch') ?? (Number(q.get('two') ?? 0) ? 1 : 0)))

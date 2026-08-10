@@ -684,13 +684,15 @@ pub fn sink_batch() -> u32 {
 }
 
 thread_local! {
-    /// Whether the batched background-blur gather collapse is on. **Default OFF: the batched atlas
-    /// path renders the wrong backdrop per lens.** Measured against a linear-light Gaussian of the
-    /// true backdrop, the inline path is exact (mean abs error 1.2/255) while the batched path is
-    /// ~50/255 off and visibly shows another region's content. It only misbehaves with 2+ deferrable
-    /// lenses (`GATHER_MIN`), which is why every single-lens test passed — those silently ran inline.
-    /// Kept behind this flag so the collapse can be debugged and re-enabled without reverting it.
-    static GATHER_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the batched background-blur gather collapse is on. It was default-OFF for a while:
+    /// the atlas composed each lens's backdrop with an *unclipped* tile blit, so a tile overhanging
+    /// the lens's sample rect spilled into the neighbouring cell and the lens blurred another
+    /// region's content (~50/255 against a linear-light Gaussian of the true backdrop, vs 1.2 for
+    /// the inline path). Only 2+ deferrable lenses batch (`GATHER_MIN`), which is why every
+    /// single-lens test passed — those silently ran inline. With the clip in place the collapse is
+    /// **bit-identical** to the inline path on the bench's 25-lens idle and editMulti frames, so it
+    /// ships on; the flag stays as the A/B baseline.
+    static GATHER_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 thread_local! {

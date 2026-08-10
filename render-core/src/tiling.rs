@@ -133,6 +133,29 @@ pub fn tile_device_origin(key: TileKey, view: Affine) -> (f64, f64) {
     (e + f64::from(key.tile_x) * size, f + f64::from(key.tile_y) * size)
 }
 
+/// The part of a tile's content-square that falls inside a device-space rect, as
+/// `(x, y, w, h)` in device space, or `None` when they do not overlap.
+///
+/// A tile is a full [`TILE_SIZE`] square and generally overhangs whatever region is being composed
+/// from it, so anything that composes tiles into a **shared** target — the batched gather atlas,
+/// where each lens owns only its own cell — has to clip explicitly. A dedicated per-lens surface
+/// gets the same clip for free from its own bounds; an atlas cell does not, and an unclipped blit
+/// silently paints its neighbour's cell (a lens then blurs another region's content).
+#[must_use]
+pub fn tile_clip_device(key: TileKey, view: Affine, rect: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
+    let (ox, oy) = tile_device_origin(key, view);
+    let size = f64::from(TILE_SIZE);
+    let (rx, ry, rw, rh) = rect;
+    let x0 = ox.max(rx);
+    let y0 = oy.max(ry);
+    let x1 = (ox + size).min(rx + rw);
+    let y1 = (oy + size).min(ry + rh);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
 /// The page→buffer transform for rendering one tile into its [`TILE_BUFFER`]² buffer: the same
 /// view transform, post-translated in device space so the tile's content-origin lands at
 /// `(TILE_MARGIN, TILE_MARGIN)` — i.e. the content sits centred with a full margin all around.
@@ -382,6 +405,37 @@ mod tests {
     fn a_degenerate_effect_rect_schedules_nowhere() {
         assert!(tiles_overlapping_page_rect(Affine::IDENTITY, Rect::new(10.0, 10.0, 10.0, 40.0)).is_empty());
         assert!(tiles_overlapping_page_rect(Affine::scale(0.0), Rect::new(0.0, 0.0, 50.0, 50.0)).is_empty());
+    }
+
+    #[test]
+    fn tile_clip_device_keeps_a_tile_inside_its_own_rect() {
+        // Two lenses whose backdrop rects sit in different tiles — the batched-gather atlas case.
+        // Tile (1,1) covers device 512..1024 in both axes; lens B's backdrop is 613..1087.
+        let view = Affine::IDENTITY;
+        let b = (613.0, 613.0, 474.0, 474.0);
+        let t11 = TileKey { tile_x: 1, tile_y: 1, zoom_bucket: 0 };
+        // The overhang on every side is dropped: only 613..1024 of the tile belongs to this lens.
+        assert_eq!(tile_clip_device(t11, view, b), Some((613.0, 613.0, 411.0, 411.0)));
+        // The far tile is clipped by the rect's far edge, not by its own size.
+        let t21 = TileKey { tile_x: 2, tile_y: 1, zoom_bucket: 0 };
+        assert_eq!(tile_clip_device(t21, view, b), Some((1024.0, 613.0, 63.0, 411.0)));
+        // Lens A's backdrop (38..512) reads tile (0,0) only, and never reaches into lens B's tiles —
+        // an unclipped blit of tile (1,1) would have started 101px *before* B's cell and run 512
+        // wide, straight over A's.
+        let a = (38.0, 38.0, 474.0, 474.0);
+        let t00 = TileKey { tile_x: 0, tile_y: 0, zoom_bucket: 0 };
+        assert_eq!(tile_clip_device(t00, view, a), Some((38.0, 38.0, 474.0, 474.0)));
+        assert_eq!(tile_clip_device(t11, view, a), None);
+        // A clip is never wider than the rect it clips to, whichever tile it came from.
+        for tx in 0..4 {
+            for ty in 0..4 {
+                let k = TileKey { tile_x: tx, tile_y: ty, zoom_bucket: 0 };
+                if let Some((x, y, w, h)) = tile_clip_device(k, view, b) {
+                    assert!(x >= b.0 && y >= b.1, "clip starts before the rect");
+                    assert!(x + w <= b.0 + b.2 && y + h <= b.1 + b.3, "clip runs past the rect");
+                }
+            }
+        }
     }
 
     #[test]

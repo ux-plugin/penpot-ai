@@ -450,7 +450,7 @@ impl Sink {
         if let Some((view, aw, ah)) = self.dbg_atlas.take() {
             self.compositor.blit(device, &mut frame_enc, &sw_view, (width as f32, height as f32), &Blit {
                 src: &view,
-                dst: (0.0, 0.0, width as f32, height as f32),
+                dst: (0.0, 0.0, aw as f32, ah as f32),
                 src_rect: (0.0, 0.0, aw as f32, ah as f32),
                 src_size: (aw as f32, ah as f32),
                 alpha: 1.0,
@@ -929,6 +929,8 @@ impl Sink {
             gi: usize,
             bdx: f64,
             bdy: f64,
+            dw: f64,
+            dh: f64,
             k: f64,
             w: u32,
             h: u32,
@@ -944,7 +946,7 @@ impl Sink {
                 if w > max_dim || h > max_dim {
                     continue;
                 }
-                cells.push(Cell { gi, bdx, bdy, k, w, h });
+                cells.push(Cell { gi, bdx, bdy, dw, dh, k, w, h });
             }
             if cells.is_empty() {
                 continue;
@@ -961,25 +963,31 @@ impl Sink {
             let bd_atlas = self.pool.acquire(device, PoolKey { w: aw, h: ah, format, usage: bd_usage.bits() }, "gather backdrop atlas");
             let bd_view = bd_atlas.create_view(&wgpu::TextureViewDescriptor::default());
             Compositor::clear(enc, &bd_view, bgc);
-            let m = TILE_MARGIN as f32;
-            let ts = TILE_SIZE as f32;
+            let m = f64::from(TILE_MARGIN);
             for cell in &packing.cells {
                 let c = &cells[cell.index];
-                let kf = c.k as f32;
                 for &tile in &plan.gathers[c.gi].reads {
                     let src_ref = SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile);
                     let Some(src) = self.surfaces.get(&src_ref) else { continue };
                     let src_view = src.view.clone();
                     let (ox, oy) = tiling::tile_device_origin(tile, full_view);
+                    // Clip the tile to *this* lens's backdrop rect. Unlike `compose_backdrop`, whose
+                    // target is the lens's own surface and so clips the overhang for free, the atlas
+                    // is shared: an unclipped tile blit runs past its cell and paints the neighbour's,
+                    // which makes that lens blur another region of the page.
+                    let Some((ix0, iy0, iw, ih)) = tiling::tile_clip_device(tile, full_view, (c.bdx, c.bdy, c.dw, c.dh))
+                    else {
+                        continue;
+                    };
                     self.compositor.blit(device, enc, &bd_view, (aw as f32, ah as f32), &Blit {
                         src: &src_view,
                         dst: (
-                            cell.x as f32 + ((ox - c.bdx) as f32) * kf,
-                            cell.y as f32 + ((oy - c.bdy) as f32) * kf,
-                            ts * kf,
-                            ts * kf,
+                            cell.x as f32 + ((ix0 - c.bdx) * c.k) as f32,
+                            cell.y as f32 + ((iy0 - c.bdy) * c.k) as f32,
+                            (iw * c.k) as f32,
+                            (ih * c.k) as f32,
                         ),
-                        src_rect: (m, m, ts, ts),
+                        src_rect: ((m + ix0 - ox) as f32, (m + iy0 - oy) as f32, iw as f32, ih as f32),
                         src_size: (TILE_BUFFER as f32, TILE_BUFFER as f32),
                         alpha: 1.0,
                     });
