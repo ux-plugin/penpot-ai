@@ -684,9 +684,13 @@ pub fn sink_batch() -> u32 {
 }
 
 thread_local! {
-    /// Whether the batched background-blur gather collapse is on (default). Off = every deferrable
-    /// lens runs inline, exactly the pre-collapse path — the A/B toggle for pixel-parity + timing.
-    static GATHER_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Whether the batched background-blur gather collapse is on. **Default OFF: the batched atlas
+    /// path renders the wrong backdrop per lens.** Measured against a linear-light Gaussian of the
+    /// true backdrop, the inline path is exact (mean abs error 1.2/255) while the batched path is
+    /// ~50/255 off and visibly shows another region's content. It only misbehaves with 2+ deferrable
+    /// lenses (`GATHER_MIN`), which is why every single-lens test passed — those silently ran inline.
+    /// Kept behind this flag so the collapse can be debugged and re-enabled without reverting it.
+    static GATHER_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Enable/disable the batched gather collapse. `0` forces the inline path (the A/B baseline).

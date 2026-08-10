@@ -84,7 +84,12 @@ function main() {
     // case that OOMed). Default 32. Lets a sweep prove memory scales with batch size.
     if (X.set_sink_batch) X.set_sink_batch(Number(q.get('batch') ?? 32))
     // gatherBatch=0 forces the inline (pre-collapse) gather path — the A/B baseline for the batch.
-    if (X.set_gather_batch) X.set_gather_batch(Number(q.get('gatherBatch') ?? 1))
+    // Only override when the param is present, so the bench reflects the backend's own default
+    // (the collapse currently ships OFF — it renders the wrong backdrop per lens).
+    if (X.set_gather_batch && q.get('gatherBatch') !== null) X.set_gather_batch(Number(q.get('gatherBatch')))
+    // canvasBg=<argb hex> gives the canvas an OPAQUE background, so a background blur's backdrop
+    // composes over that colour instead of the default transparent clear — the veil test.
+    if (X.set_canvas_background && q.get('canvasBg')) X.set_canvas_background(parseInt(q.get('canvasBg'), 16) >>> 0)
 
     window.__X__ = X // expose wasm exports for ad-hoc probing
     const renderer = await mod.create_focus_renderer(canvas)
