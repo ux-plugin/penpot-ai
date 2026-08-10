@@ -31,8 +31,10 @@ pub enum Src {
 /// pipeline the backend resolves).
 #[derive(Debug, Clone, PartialEq)]
 pub enum EffectPass {
-    /// A full 2D Gaussian of `sigma` device pixels over its 1 input.
-    Blur { sigma: f32 },
+    /// A full 2D Gaussian of `sigma` device pixels over its 1 input. `linear` blurs in linear light
+    /// (sRGB-decode taps, re-encode the result) for a faithful, brighter mix — used by the background
+    /// blur; glass keeps `false` so its frost matches the gamma-space convention.
+    Blur { sigma: f32, linear: bool },
     /// Glass pass 1: rounded-box SDF → refraction field. 0 inputs (pure function of the uniform).
     GlassDisplacement { u: [f32; 20] },
     /// Glass pass 2: refraction + chromatic aberration. Inputs `[backdrop, displacement]`.
@@ -61,7 +63,7 @@ impl GraphPass {
 /// what the backend stamps through the shape's silhouette mask.
 #[must_use]
 pub fn background_blur_graph(sigma: f32) -> Vec<GraphPass> {
-    vec![GraphPass::new(EffectPass::Blur { sigma }, vec![Src::Input(0)])]
+    vec![GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Input(0)])]
 }
 
 /// The device-space Gaussian sigma for a background blur: the shape's page-space `radius` mapped
@@ -152,7 +154,7 @@ pub fn glass_graph(
     // composite reads the sharp refraction directly. One Blur pass = a full 2D Gaussian.
     let sigma = g.total_blur_sigma() * s;
     let blurred = if sigma > 0.5 {
-        passes.push(GraphPass::new(EffectPass::Blur { sigma }, vec![Src::Pass(1)]));
+        passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: false }, vec![Src::Pass(1)]));
         Src::Pass(2)
     } else {
         Src::Pass(1)
@@ -191,7 +193,7 @@ mod tests {
     fn background_blur_graph_is_one_pass_over_the_backdrop() {
         let g = background_blur_graph(4.0);
         assert_eq!(g.len(), 1);
-        assert_eq!(g[0], GraphPass::new(EffectPass::Blur { sigma: 4.0 }, vec![Src::Input(0)]));
+        assert_eq!(g[0], GraphPass::new(EffectPass::Blur { sigma: 4.0, linear: true }, vec![Src::Input(0)]));
     }
 
     #[test]

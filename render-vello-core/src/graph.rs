@@ -39,8 +39,9 @@ pub struct Pass {
 /// differing only in that `Custom` carries the resolved wgpu pipeline rather than just its uniform.
 pub enum PassKind {
     /// A full 2D Gaussian of `sigma` device pixels over its 1 input — separable H+V for a small
-    /// kernel, a downsample pyramid for a large one (see [`gaussian_blur`]).
-    Blur { sigma: f32 },
+    /// kernel, a downsample pyramid for a large one (see [`gaussian_blur`]). `linear` blurs in linear
+    /// light (sRGB-decode taps, re-encode the result).
+    Blur { sigma: f32, linear: bool },
     /// Glass pass 1: rounded-box SDF → refraction field. 0 inputs (pure function of the uniform).
     GlassDisplacement { u: [f32; 20] },
     /// Glass pass 2: refraction + chromatic aberration. Inputs `[backdrop, displacement]`.
@@ -61,7 +62,7 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
     let mut out = Vec::with_capacity(graph.len());
     for gp in graph {
         let kind = match &gp.pass {
-            EffectPass::Blur { sigma } => PassKind::Blur { sigma: *sigma },
+            EffectPass::Blur { sigma, linear } => PassKind::Blur { sigma: *sigma, linear: *linear },
             EffectPass::GlassDisplacement { u } => PassKind::GlassDisplacement { u: *u },
             EffectPass::GlassRefraction { u } => PassKind::GlassRefraction { u: *u },
             EffectPass::GlassComposite { u } => PassKind::GlassComposite { u: *u },
@@ -129,8 +130,8 @@ pub fn run_graph(
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
 
         match &pass.kind {
-            PassKind::Blur { sigma } => {
-                gaussian_blur(compositor, device, &mut enc, &view, &bound[0], w, h, *sigma, format, &mut keep, &mut keep_views);
+            PassKind::Blur { sigma, linear } => {
+                gaussian_blur(compositor, device, &mut enc, &view, &bound[0], w, h, *sigma, *linear, format, &mut keep, &mut keep_views);
             }
             PassKind::GlassDisplacement { u } => {
                 glass.displacement(device, &mut enc, &view, u);
@@ -173,6 +174,7 @@ fn gaussian_blur(
     w: u32,
     h: u32,
     sigma: f32,
+    linear: bool,
     format: wgpu::TextureFormat,
     keep: &mut Vec<wgpu::Texture>,
     keep_views: &mut Vec<wgpu::TextureView>,
@@ -182,8 +184,8 @@ fn gaussian_blur(
     if sigma <= BLUR_MAX_SIGMA {
         let scratch = new_target(device, w, h, format);
         let sv = scratch.create_view(&vd);
-        compositor.blur1d(device, enc, &sv, &BlurPass { src, size: (w as f32, h as f32), dir: (1.0, 0.0), sigma });
-        compositor.blur1d(device, enc, dst, &BlurPass { src: &sv, size: (w as f32, h as f32), dir: (0.0, 1.0), sigma });
+        compositor.blur1d(device, enc, &sv, &BlurPass { src, size: (w as f32, h as f32), dir: (1.0, 0.0), sigma, linear });
+        compositor.blur1d(device, enc, dst, &BlurPass { src: &sv, size: (w as f32, h as f32), dir: (0.0, 1.0), sigma, linear });
         keep.push(scratch);
         keep_views.push(sv);
         return;
@@ -226,8 +228,8 @@ fn gaussian_blur(
     let scv = scratch.create_view(&vd);
     let blurred = new_target(device, cw, ch, format);
     let bv = blurred.create_view(&vd);
-    compositor.blur1d(device, enc, &scv, &BlurPass { src: &cur, size: coarse_size, dir: (1.0, 0.0), sigma: coarse_sigma });
-    compositor.blur1d(device, enc, &bv, &BlurPass { src: &scv, size: coarse_size, dir: (0.0, 1.0), sigma: coarse_sigma });
+    compositor.blur1d(device, enc, &scv, &BlurPass { src: &cur, size: coarse_size, dir: (1.0, 0.0), sigma: coarse_sigma, linear });
+    compositor.blur1d(device, enc, &bv, &BlurPass { src: &scv, size: coarse_size, dir: (0.0, 1.0), sigma: coarse_sigma, linear });
 
     // Upsample the coarse blurred result to the full-size dst (bilinear). dst is fresh → clear first
     // so the SrcOver blit lands exactly (transparent dst → out == src).

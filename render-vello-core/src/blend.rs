@@ -63,6 +63,9 @@ pub struct BlurPass<'a> {
     pub dir: (f32, f32),
     /// Gaussian sigma in device pixels.
     pub sigma: f32,
+    /// Blur in linear light: sRGB-decode each tap, accumulate, then re-encode the result. `false`
+    /// keeps the historical gamma-space average (raw sRGB bytes).
+    pub linear: bool,
 }
 
 #[repr(C)]
@@ -72,7 +75,8 @@ struct BlurParams {
     dir: [f32; 2],
     sigma: f32,
     radius: f32,
-    _pad: [f32; 2],
+    linearize: f32,
+    _pad: f32,
 }
 
 /// A reusable SrcOver blit + Gaussian blur + mask-clipped blit pipeline for one target format.
@@ -432,7 +436,8 @@ impl Compositor {
             dir: [blur.dir.0, blur.dir.1],
             sigma: blur.sigma.max(1e-3),
             radius,
-            _pad: [0.0; 2],
+            linearize: if blur.linear { 1.0 } else { 0.0 },
+            _pad: 0.0,
         };
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("compositor blur params"),
@@ -601,10 +606,32 @@ struct Blur {
     dir: vec2<f32>,
     sigma: f32,
     radius: f32,
+    linearize: f32,
 };
 @group(0) @binding(0) var<uniform> b: Blur;
 @group(0) @binding(1) var tex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
+
+fn srgb_to_lin(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+fn lin_to_srgb(c: f32) -> f32 {
+    if (c <= 0.0031308) { return c * 12.92; }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+// Decode a premultiplied-sRGB sample to premultiplied-linear (unpremultiply → decode → re-premultiply),
+// so the Gaussian averages in linear light. Alpha is already linear and passes through.
+fn premul_srgb_to_lin(s: vec4<f32>) -> vec4<f32> {
+    let a = max(s.a, 1e-5);
+    let straight = s.rgb / a;
+    return vec4<f32>(vec3<f32>(srgb_to_lin(straight.r), srgb_to_lin(straight.g), srgb_to_lin(straight.b)) * a, s.a);
+}
+fn premul_lin_to_srgb(s: vec4<f32>) -> vec4<f32> {
+    let a = max(s.a, 1e-5);
+    let straight = s.rgb / a;
+    return vec4<f32>(vec3<f32>(lin_to_srgb(straight.r), lin_to_srgb(straight.g), lin_to_srgb(straight.b)) * a, s.a);
+}
 
 struct VSOut {
     @builtin(position) pos: vec4<f32>,
@@ -626,17 +653,22 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 fn fs(in: VSOut) -> @location(0) vec4<f32> {
     let r = i32(b.radius);
     let inv2s2 = 1.0 / (2.0 * b.sigma * b.sigma);
+    let lin = b.linearize > 0.5;
     var sum = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     var wsum = 0.0;
     for (var i = -r; i <= r; i = i + 1) {
         let fi = f32(i);
         let w = exp(-fi * fi * inv2s2);
         let uv = in.uv + b.dir * (fi * b.inv_size);
-        sum = sum + textureSample(tex, samp, uv) * w;
+        var s = textureSample(tex, samp, uv);
+        if (lin) { s = premul_srgb_to_lin(s); }
+        sum = sum + s * w;
         wsum = wsum + w;
     }
     // Premultiplied colours combine linearly, so a normalised weighted sum is the correct blur.
-    return sum / wsum;
+    var outc = sum / wsum;
+    if (lin) { outc = premul_lin_to_srgb(outc); }
+    return outc;
 }
 "#;
 
