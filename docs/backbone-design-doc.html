@@ -1,0 +1,775 @@
+<title>Backbone & Parallel Tracks — Animation · UI · Interactions · Preview</title>
+
+<style>
+  :root{
+    --paper:#F6F7FB; --surface:#FFFFFF; --surface-2:#EEF0F7;
+    --ink:#191B22; --ink-2:#565968; --ink-3:#8A8D9C;
+    --line:#E1E3ED; --line-2:#CDD0DE;
+    --spine:#4A45C7; --spine-soft:#ECEDFA; --spine-line:#C7C6EE;
+    --teal:#0E8C82; --teal-soft:#E2F2F0; --teal-line:#A7DAD3;
+    --amber:#B26A0C; --amber-soft:#F8ECD9; --amber-line:#EBC88C;
+    --purple:#7A4FD0; --purple-soft:#EFE9FB; --purple-line:#D2C3F2;
+    --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#14151A; --surface:#1B1D24; --surface-2:#23252F;
+      --ink:#ECEDF4; --ink-2:#AEB1C2; --ink-3:#7C7F90;
+      --line:#2A2C36; --line-2:#3A3D4A;
+      --spine:#A6A2F5; --spine-soft:#232445; --spine-line:#3E3E70;
+      --teal:#5FD6C8; --teal-soft:#123734; --teal-line:#1E5852;
+      --amber:#E7A23C; --amber-soft:#37280F; --amber-line:#6A4C1F;
+      --purple:#B99BF0; --purple-soft:#271E42; --purple-line:#45376F;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14151A; --surface:#1B1D24; --surface-2:#23252F;
+    --ink:#ECEDF4; --ink-2:#AEB1C2; --ink-3:#7C7F90;
+    --line:#2A2C36; --line-2:#3A3D4A;
+    --spine:#A6A2F5; --spine-soft:#232445; --spine-line:#3E3E70;
+    --teal:#5FD6C8; --teal-soft:#123734; --teal-line:#1E5852;
+    --amber:#E7A23C; --amber-soft:#37280F; --amber-line:#6A4C1F;
+    --purple:#B99BF0; --purple-soft:#271E42; --purple-line:#45376F;
+  }
+  :root[data-theme="light"]{
+    --paper:#F6F7FB; --surface:#FFFFFF; --surface-2:#EEF0F7;
+    --ink:#191B22; --ink-2:#565968; --ink-3:#8A8D9C;
+    --line:#E1E3ED; --line-2:#CDD0DE;
+    --spine:#4A45C7; --spine-soft:#ECEDFA; --spine-line:#C7C6EE;
+    --teal:#0E8C82; --teal-soft:#E2F2F0; --teal-line:#A7DAD3;
+    --amber:#B26A0C; --amber-soft:#F8ECD9; --amber-line:#EBC88C;
+    --purple:#7A4FD0; --purple-soft:#EFE9FB; --purple-line:#D2C3F2;
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:var(--font-sans);
+    -webkit-font-smoothing:antialiased;line-height:1.65;margin:0}
+  .page{max-width:832px;margin:0 auto;padding:40px 26px 72px}
+
+  /* ---------- masthead ---------- */
+  .mast{display:grid;grid-template-columns:1fr;gap:22px;
+    border-bottom:1.5px solid var(--line-2);padding-bottom:26px;margin-bottom:8px}
+  .eyebrow{font-family:var(--font-mono);font-size:11.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--spine);margin:0 0 12px}
+  h1{font-size:clamp(27px,4.4vw,37px);line-height:1.12;letter-spacing:-.021em;
+    font-weight:680;margin:0 0 14px;text-wrap:balance;max-width:20ch}
+  .thesis{font-size:16px;color:var(--ink-2);margin:0;max-width:62ch}
+  .thesis b{color:var(--ink);font-weight:640}
+
+  /* engineering "title block" */
+  .titleblock{display:grid;grid-template-columns:repeat(4,1fr);
+    border:1px solid var(--line-2);border-radius:9px;overflow:hidden;
+    background:var(--surface);font-family:var(--font-mono)}
+  .titleblock .cell{padding:11px 13px;border-right:1px solid var(--line);min-width:0}
+  .titleblock .cell:last-child{border-right:none}
+  .titleblock .k{font-size:10px;letter-spacing:.11em;text-transform:uppercase;
+    color:var(--ink-3);margin:0 0 5px}
+  .titleblock .v{font-size:12.5px;color:var(--ink);margin:0;font-variant-numeric:tabular-nums;
+    line-height:1.35;word-break:break-word}
+  .titleblock .v.accent{color:var(--spine)}
+  @media (max-width:560px){
+    .titleblock{grid-template-columns:repeat(2,1fr)}
+    .titleblock .cell:nth-child(2){border-right:none}
+    .titleblock .cell:nth-child(1),.titleblock .cell:nth-child(2){border-bottom:1px solid var(--line)}
+  }
+
+  /* ---------- the spine rail ---------- */
+  .body{position:relative;margin-top:38px;padding-left:36px}
+  .body::before{content:"";position:absolute;left:6px;top:6px;bottom:10px;
+    width:1.5px;background:var(--line-2)}
+  .sec{position:relative;margin:0 0 46px}
+  .sec::before{content:"";position:absolute;left:0;top:4px;width:13px;height:13px;
+    border-radius:3px;background:var(--spine);border:2px solid var(--paper);
+    box-shadow:0 0 0 1.5px var(--spine)}
+  @media (max-width:520px){
+    .body{padding-left:24px}
+    .body::before{left:4px}
+    .sec::before{width:9px;height:9px}
+  }
+
+  .sec > .eyebrow{margin-bottom:8px}
+  h2{font-size:20px;font-weight:650;letter-spacing:-.015em;margin:0 0 12px;text-wrap:balance}
+  h3{font-size:14.5px;font-weight:640;margin:20px 0 6px;letter-spacing:-.005em}
+  p{font-size:14.5px;color:var(--ink-2);margin:0 0 12px;max-width:64ch}
+  p b, li b{color:var(--ink);font-weight:600}
+  p .q{color:var(--ink);font-style:italic}
+  ul{margin:6px 0 14px;padding-left:20px;max-width:64ch}
+  li{font-size:14.5px;color:var(--ink-2);margin:5px 0}
+  a{color:var(--spine)}
+
+  .lead{font-size:15.5px;color:var(--ink);max-width:64ch}
+
+  .note{font-family:var(--font-mono);font-size:12px;color:var(--ink-3);
+    border-left:2px solid var(--line-2);padding:2px 0 2px 12px;margin:14px 0 0;max-width:64ch;line-height:1.55}
+  .note b{color:var(--ink-2)}
+
+  /* pills */
+  .kpill{display:inline-block;font-family:var(--font-mono);font-size:11.5px;font-weight:500;
+    color:var(--spine);background:var(--spine-soft);border:1px solid var(--spine-line);
+    border-radius:5px;padding:1px 7px;margin:1px 2px;white-space:nowrap}
+
+  /* spec code blocks */
+  .spec-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:26px 0 0}
+  .spec-head h3{margin:0}
+  .spec-head .role{font-family:var(--font-mono);font-size:11px;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--ink-3)}
+  pre{margin:10px 0 0;background:var(--surface-2);border:1px solid var(--line);
+    border-radius:10px;padding:14px 16px;overflow-x:auto;font-family:var(--font-mono);
+    font-size:12.5px;line-height:1.62;color:var(--ink);tab-size:2;white-space:pre}
+  pre .cm{color:var(--ink-3)}
+  pre .ty{color:var(--spine)}
+  pre .fn{color:var(--teal)}
+  code{font-family:var(--font-mono);font-size:.9em;background:var(--surface-2);
+    border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--ink)}
+
+  /* figures */
+  .figure{margin:16px 0 6px;border:1px solid var(--line);background:var(--surface);
+    border-radius:12px;padding:16px 16px 10px}
+  .figure .fig-wrap{overflow-x:auto}
+  .figure svg{display:block;width:100%;min-width:520px;height:auto}
+  figcaption{font-family:var(--font-mono);font-size:11px;letter-spacing:.04em;
+    color:var(--ink-3);margin-top:8px;text-transform:uppercase}
+  svg text{font-family:var(--font-sans)}
+  .d-t{font-size:14px;fill:var(--ink)}
+  .d-th{font-size:14px;font-weight:600;fill:var(--ink)}
+  .d-ts{font-size:12px;fill:var(--ink-2)}
+  .b{fill:var(--surface);stroke:var(--line-2);stroke-width:1}
+  .b-sp{fill:var(--spine-soft);stroke:var(--spine);stroke-width:1.4}
+  .b-in{fill:var(--spine-soft);stroke:var(--spine-line);stroke-width:1}
+  .b-te{fill:var(--teal-soft);stroke:var(--teal-line);stroke-width:1}
+  .b-am{fill:var(--amber-soft);stroke:var(--amber-line);stroke-width:1}
+  .b-pu{fill:var(--purple-soft);stroke:var(--purple-line);stroke-width:1}
+  .arr{stroke:var(--line-2);stroke-width:1.5;fill:none}
+
+  /* legend */
+  .legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);
+    font-size:11.5px;color:var(--ink-2);margin:2px 0 4px}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .swatch{width:11px;height:11px;border-radius:3px;border:1px solid}
+  .sw-sp{background:var(--spine-soft);border-color:var(--spine)}
+  .sw-te{background:var(--teal-soft);border-color:var(--teal-line)}
+  .sw-pu{background:var(--purple-soft);border-color:var(--purple-line)}
+  .sw-am{background:var(--amber-soft);border-color:var(--amber-line)}
+
+  /* contracts table */
+  .tbl-wrap{overflow-x:auto;margin-top:8px;border:1px solid var(--line);border-radius:11px}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:560px}
+  thead th{font-family:var(--font-mono);text-align:left;font-size:10.5px;letter-spacing:.07em;
+    text-transform:uppercase;color:var(--ink-3);font-weight:500;padding:11px 13px;
+    background:var(--surface-2);border-bottom:1px solid var(--line-2)}
+  tbody td{padding:11px 13px;border-bottom:1px solid var(--line);color:var(--ink-2);
+    vertical-align:top;line-height:1.5}
+  tbody tr:last-child td{border-bottom:none}
+  td .cname{font-family:var(--font-mono);font-size:12.5px;color:var(--ink);font-weight:500}
+
+  /* two-col cards for open questions */
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px}
+  @media (max-width:600px){.cards{grid-template-columns:1fr}}
+  .card{border:1px solid var(--line);background:var(--surface);border-radius:11px;padding:15px 16px}
+  .card .tag{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--amber);margin:0 0 7px}
+  .card h4{font-size:14px;margin:0 0 7px;font-weight:640;color:var(--ink);line-height:1.35}
+  .card p{font-size:13px;margin:0;max-width:none}
+
+  /* glossary */
+  .gloss{border-top:1px solid var(--line);margin-top:4px}
+  .gloss .row{display:grid;grid-template-columns:190px 1fr;gap:16px;
+    padding:11px 0;border-bottom:1px solid var(--line)}
+  .gloss dt{font-family:var(--font-mono);font-size:12.5px;color:var(--ink);font-weight:500}
+  .gloss dd{margin:0;font-size:13.5px;color:var(--ink-2);line-height:1.5}
+  @media (max-width:520px){.gloss .row{grid-template-columns:1fr;gap:3px}}
+
+  footer{margin-top:10px;padding-top:20px;border-top:1.5px solid var(--line-2);
+    font-family:var(--font-mono);font-size:11.5px;color:var(--ink-3);
+    display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+
+  @media (prefers-reduced-motion:no-preference){
+    .sec::before{transition:transform .2s ease}
+  }
+</style>
+
+<div class="page">
+
+  <!-- ===================== MASTHEAD ===================== -->
+  <header class="mast">
+    <div>
+      <p class="eyebrow">System design · reference doc</p>
+      <h1>One blueprint, many builders</h1>
+      <p class="thesis">Author <b>2D animation</b>, <b>3D scenes</b>, and <b>UI</b>, wire them with <b>interactions</b>, then <b>preview</b> the result as real, statically-generated web &amp; mobile code. This doc names the shared <b>backbone</b>, the <b>parallel tracks</b> that hang off it, and the <b>contracts</b> between them — so the pieces can be built independently without colliding.</p>
+    </div>
+    <div class="titleblock">
+      <div class="cell"><p class="k">Status</p><p class="v accent">Draft · v1</p></div>
+      <div class="cell"><p class="k">Updated</p><p class="v">2026-08-15</p></div>
+      <div class="cell"><p class="k">Critical path</p><p class="v">Blueprint · cells · IR</p></div>
+      <div class="cell"><p class="k">Parallel streams</p><p class="v">5</p></div>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <!-- ===================== 0 · HOW TO READ ===================== -->
+    <section class="sec">
+      <p class="eyebrow">00 · Orientation</p>
+      <h2>How to read this</h2>
+      <p class="lead">There is exactly one thing every part of the system touches: the <b>document blueprint</b>. Get its shape agreed early and the rest of the work stops needing to talk to itself.</p>
+      <p>The structure below follows that logic. <b>§1</b> is the whole system on one page. <b>§2</b> is the spine you lock first. <b>§3</b> is how five streams then run in parallel. <b>§4</b> names the interfaces that keep them from colliding and <b>§5</b> specs each one. <b>§6</b> is how a design becomes running preview code. <b>§7</b> flags the decisions still open, and <b>§8</b> defines the vocabulary.</p>
+      <p class="note"><b>One design rule underneath all of it:</b> authoring tools are <i>editors</i> of the blueprint; the runtime is its <i>interpreter</i>; the renderer and emitter are its <i>readers</i>. Nothing bypasses the blueprint.</p>
+    </section>
+
+    <!-- ===================== 1 · SYSTEM MAP ===================== -->
+    <section class="sec">
+      <p class="eyebrow">01 · The whole thing</p>
+      <h2>System at a glance</h2>
+      <p>Same picture, drawn the way you'll actually use it. Inside the <b>preview layer</b>, the <b>Doc</b> — the blueprint, holding its 2D, 3D, UI and interaction content — drives two things: the <b>engine</b> that plays vector / 3D / state-machine content, and the emitted <b>UI code</b>. The two talk (UI code hosts engine surfaces; the engine drives UI signals). The whole thing is then <b>handed off</b> into your own app, where the native components are yours to keep and the engine ships as a runtime.</p>
+
+      <div class="figure">
+        <div class="legend">
+          <span><i class="swatch sw-sp"></i>Doc / blueprint</span>
+          <span><i class="swatch sw-pu"></i>Engine — vector · 3D · state machine</span>
+          <span><i class="swatch sw-te"></i>UI code — native</span>
+        </div>
+        <div class="fig-wrap">
+        <svg viewBox="0 0 680 372" role="img" aria-labelledby="figA-t figA-d">
+          <title id="figA-t">Preview layer and handoff</title>
+          <desc id="figA-d">Inside the preview layer the Doc drives an animation engine and emitted UI code, which interact; the result is handed off into the user's app as native components plus an engine runtime.</desc>
+          <defs><marker id="arA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+          <rect class="b" x="40" y="24" width="600" height="228" rx="12"/>
+          <text class="d-th" x="58" y="45" text-anchor="start">Preview layer — fast prototyping</text>
+
+          <rect class="b-sp" x="56" y="56" width="568" height="50" rx="8"/>
+          <text class="d-th" x="74" y="86" text-anchor="start">Doc</text>
+          <rect class="b" x="130" y="68" width="108" height="28" rx="6"/>
+          <rect class="b" x="250" y="68" width="108" height="28" rx="6"/>
+          <rect class="b" x="370" y="68" width="108" height="28" rx="6"/>
+          <rect class="b" x="490" y="68" width="108" height="28" rx="6"/>
+          <text class="d-t" x="184" y="86" text-anchor="middle">2D</text>
+          <text class="d-t" x="304" y="86" text-anchor="middle">3D</text>
+          <text class="d-t" x="424" y="86" text-anchor="middle">UI</text>
+          <text class="d-t" x="544" y="86" text-anchor="middle">Interactions</text>
+
+          <line class="arr" x1="216" y1="106" x2="216" y2="120" marker-end="url(#arA)"/>
+          <line class="arr" x1="510" y1="106" x2="510" y2="120" marker-end="url(#arA)"/>
+
+          <rect class="b-pu" x="56" y="122" width="320" height="124" rx="8"/>
+          <text class="d-th" x="216" y="142" text-anchor="middle">Animation · graphics engine</text>
+          <text class="d-ts" x="216" y="158" text-anchor="middle">state machine · Rive-like</text>
+          <rect class="b" x="72" y="168" width="288" height="20" rx="5"/>
+          <rect class="b" x="72" y="192" width="288" height="20" rx="5"/>
+          <rect class="b" x="72" y="216" width="288" height="20" rx="5"/>
+          <text class="d-ts" x="216" y="182" text-anchor="middle">renderer · Vello / three / Myth</text>
+          <text class="d-ts" x="216" y="206" text-anchor="middle">sampler · keyframes + blend</text>
+          <text class="d-ts" x="216" y="230" text-anchor="middle">SoA storage · skin / particles</text>
+
+          <rect class="b-te" x="396" y="122" width="228" height="124" rx="8"/>
+          <text class="d-th" x="510" y="142" text-anchor="middle">UI code</text>
+          <text class="d-ts" x="510" y="158" text-anchor="middle">signals · div · RN</text>
+          <rect class="b" x="412" y="176" width="196" height="24" rx="5"/>
+          <rect class="b" x="412" y="208" width="196" height="24" rx="5"/>
+          <text class="d-ts" x="510" y="191" text-anchor="middle">hosts engine surfaces</text>
+          <text class="d-ts" x="510" y="223" text-anchor="middle">renders from signals</text>
+
+          <line class="arr" x1="380" y1="184" x2="392" y2="184" marker-start="url(#arA)" marker-end="url(#arA)"/>
+
+          <line class="arr" x1="340" y1="252" x2="340" y2="294" marker-end="url(#arA)"/>
+          <text class="d-ts" x="352" y="277" text-anchor="start">handoff, assisted</text>
+
+          <rect class="b" x="40" y="296" width="600" height="60" rx="12"/>
+          <text class="d-th" x="58" y="316" text-anchor="start">User app — your code</text>
+          <rect class="b-te" x="234" y="322" width="184" height="28" rx="7"/>
+          <rect class="b-pu" x="430" y="322" width="196" height="28" rx="7"/>
+          <text class="d-t" x="326" y="340" text-anchor="middle">Native components</text>
+          <text class="d-ts" x="528" y="340" text-anchor="middle">Engine runtime · WebGL/WebGPU</text>
+        </svg>
+        </div>
+        <figcaption>Fig. 1 — Doc drives the engine and the UI code inside the preview layer, then hands off into your app</figcaption>
+      </div>
+      <p class="note"><b>Animation is not a fifth surface.</b> It is <i>described</i> inside 2D, 3D and UI components — each keys its own properties and state machines — and all three feed the one animation IR (§5.3), played by the one engine. The blueprint is the only thing every box touches: freeze its shape early and the tracks stop needing each other.</p>
+    </section>
+
+    <!-- ===================== 2 · THE SPINE ===================== -->
+    <section class="sec">
+      <p class="eyebrow">02 · Lock this first</p>
+      <h2>The spine — what everyone must agree on</h2>
+      <p>Keep this layer <b>small and stable</b>. It is the coordination surface: the moment it is locked, the tracks fan out and stop depending on each other. Four parts.</p>
+      <ul>
+        <li><b>Document blueprint</b> — the persisted file: pages, boards, the shape tree, and everything below. The one format read &amp; written by every track.</li>
+        <li><b>Named-cell store</b> — one document-wide namespace of named cells. A cell is <b>state</b> (a stored value; a <i>parameter</i> when an element owns it) or <b>derived</b> (computed); shared state lives in <b>stores</b> owned by no element. Occurrences are interaction triggers, not cells. Wiring is <i>derived</i> from the names, not hand-plumbed.</li>
+        <li><b>Unified animation IR</b> — one time/state model (a superset of Lottie / Rive / interaction semantics) that 2D motion, 3D, and transitions all target. Own the format; transcode other formats into it.</li>
+        <li><b>Reactive runtime</b> — a reactive signal graph over state &amp; derived cells is the execution substrate. Animation sampling <i>and</i> interactions both compile down to it, so a single blending sampler resolves every driver.</li>
+      </ul>
+      <p class="note"><b>Why these four and nothing more:</b> each is high-agreement and cheap to settle, yet every downstream stream needs it. Anything that can be decided <i>inside</i> a single track does not belong on the spine.</p>
+    </section>
+
+    <!-- ===================== 3 · PARALLELIZATION ===================== -->
+    <section class="sec">
+      <p class="eyebrow">03 · The plan</p>
+      <h2>How the work parallelizes</h2>
+      <p>Serial where agreement is cheap; parallel where it is expensive. Lock the spine once (Phase&nbsp;0), then five streams run side-by-side against frozen contracts and fixtures — no cross-blocking until integration.</p>
+
+      <div class="figure">
+        <div class="fig-wrap">
+        <svg viewBox="0 0 680 284" role="img" aria-labelledby="figB-t figB-d">
+          <title id="figB-t">Three-phase parallelization plan</title>
+          <desc id="figB-d">Phase 0 locks the spine serially; Phase 1 runs five build streams in parallel; Phase 2 integrates and validates.</desc>
+          <defs><marker id="arB" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+          <rect class="b-sp" x="40" y="30" width="186" height="34" rx="8"/>
+          <rect class="b-te" x="247" y="30" width="186" height="34" rx="8"/>
+          <rect class="b-am" x="454" y="30" width="186" height="34" rx="8"/>
+          <text class="d-th" x="133" y="51" text-anchor="middle">Phase 0 · Lock spine</text>
+          <text class="d-th" x="340" y="51" text-anchor="middle">Phase 1 · Parallel</text>
+          <text class="d-th" x="547" y="51" text-anchor="middle">Phase 2 · Integrate</text>
+
+          <line class="arr" x1="228" y1="47" x2="245" y2="47" marker-end="url(#arB)"/>
+          <line class="arr" x1="435" y1="47" x2="452" y2="47" marker-end="url(#arB)"/>
+
+          <rect class="b" x="48" y="78" width="170" height="26" rx="6"/>
+          <rect class="b" x="48" y="112" width="170" height="26" rx="6"/>
+          <rect class="b" x="48" y="146" width="170" height="26" rx="6"/>
+          <rect class="b" x="48" y="180" width="170" height="26" rx="6"/>
+          <text class="d-t" x="133" y="95" text-anchor="middle">Blueprint schema</text>
+          <text class="d-t" x="133" y="129" text-anchor="middle">Named-cell model</text>
+          <text class="d-t" x="133" y="163" text-anchor="middle">Reactive runtime</text>
+          <text class="d-t" x="133" y="197" text-anchor="middle">Animation IR core</text>
+          <text class="d-ts" x="133" y="224" text-anchor="middle">high-agreement · serial</text>
+
+          <rect class="b-te" x="255" y="78" width="170" height="26" rx="6"/>
+          <rect class="b-te" x="255" y="112" width="170" height="26" rx="6"/>
+          <rect class="b-te" x="255" y="146" width="170" height="26" rx="6"/>
+          <rect class="b-te" x="255" y="180" width="170" height="26" rx="6"/>
+          <rect class="b-am" x="255" y="214" width="170" height="26" rx="6"/>
+          <text class="d-t" x="340" y="95" text-anchor="middle">2D authoring</text>
+          <text class="d-t" x="340" y="129" text-anchor="middle">3D Scene</text>
+          <text class="d-t" x="340" y="163" text-anchor="middle">UI &amp; Components</text>
+          <text class="d-t" x="340" y="197" text-anchor="middle">Interactions</text>
+          <text class="d-t" x="340" y="231" text-anchor="middle">Code emitter + fixtures</text>
+          <text class="d-ts" x="340" y="258" text-anchor="middle">code to frozen contracts</text>
+
+          <rect class="b" x="462" y="78" width="170" height="26" rx="6"/>
+          <rect class="b" x="462" y="112" width="170" height="26" rx="6"/>
+          <rect class="b" x="462" y="146" width="170" height="26" rx="6"/>
+          <text class="d-t" x="547" y="95" text-anchor="middle">Wire preview runtime</text>
+          <text class="d-t" x="547" y="129" text-anchor="middle">Cross-domain 2D↔3D</text>
+          <text class="d-t" x="547" y="163" text-anchor="middle">Validate web + mobile</text>
+          <text class="d-ts" x="547" y="190" text-anchor="middle">end-to-end</text>
+        </svg>
+        </div>
+        <figcaption>Fig. 2 — One serial phase, five parallel streams, one integration phase</figcaption>
+      </div>
+
+      <p>The emitter sits in Phase&nbsp;1 on purpose: it depends only on the frozen schema plus fixtures, so it can start immediately — long before any authoring track is finished. That is the payoff of freezing the blueprint first.</p>
+    </section>
+
+    <!-- ===================== 4 · CONTRACTS ===================== -->
+    <section class="sec">
+      <p class="eyebrow">04 · The seams</p>
+      <h2>Contracts that make it parallel</h2>
+      <p>Each track depends only on <i>interfaces</i>, never on another track's internals. Freeze these and independent teams — or independent sessions — never collide.</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr><th>Contract</th><th>What it fixes</th><th>Producers</th><th>Consumers</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="cname">Blueprint schema</span></td><td>File shape: pages, shapes, cells, motion</td><td>every authoring track</td><td>emitter · renderer · runtime</td></tr>
+            <tr><td><span class="cname">Named-cell API</span></td><td>How elements expose state / parameters &amp; shared stores</td><td>UI · interactions</td><td>interactions · animation · emitter</td></tr>
+            <tr><td><span class="cname">Animation IR / sampler</span></td><td>time + state → transform &amp; prop deltas</td><td>2D motion · 3D</td><td>renderer · runtime · emitter</td></tr>
+            <tr><td><span class="cname">Scene query</span></td><td>pick · measure · project (read-only, into the engine)</td><td>render team</td><td>UI · interactions · motion</td></tr>
+            <tr><td><span class="cname">Emit target</span></td><td>blueprint → component tree + runtime hooks</td><td>emitter</td><td>preview (web + mobile)</td></tr>
+            <tr><td><span class="cname">Interaction model</span></td><td>trigger · condition · action; nodes → state / animation / nav</td><td>interactions</td><td>runtime · emitter</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note"><b>Read-only, and draw stays out:</b> Scene query answers pick / measure / project — it never draws. Backend choice (Skia · Vello · three · Myth) is render-internal, not a contract. <b>Rule of thumb:</b> if a change forces two streams to coordinate, the missing piece is a contract — write it here before writing the code.</p>
+    </section>
+
+    <!-- ===================== 5 · CONTRACT SPECS ===================== -->
+    <section class="sec">
+      <p class="eyebrow">05 · Interfaces</p>
+      <h2>Contract specifications</h2>
+      <p>First-pass surface for each contract — the shapes to freeze in Phase&nbsp;0. Representative, not exhaustive. Everything is addressed by a stable <code>id</code>, so the five streams reference the same entities without sharing code.</p>
+
+      <div class="spec-head"><h3>5.1 · Blueprint schema</h3><span class="role">data · the file</span></div>
+      <p>Not functions — a shape. The one document every stream reads or writes; all cross-references are by id.</p>
+      <pre><span class="cm">// The persisted document — the single source of truth.</span>
+<span class="ty">Document</span> {
+  id: Id
+  pages: <span class="ty">Page</span>[]
+  cells: <span class="ty">CellStore</span>          <span class="cm">// §5.2 · document-wide namespace</span>
+  tokens: <span class="ty">TokenSet</span>          <span class="cm">// design tokens / styles</span>
+  schemaVersion: int
+}
+
+<span class="ty">Page</span> {
+  id: Id
+  root: <span class="ty">Shape</span>               <span class="cm">// board / shape tree</span>
+  motion?: <span class="ty">PageMotion</span>        <span class="cm">// §5.3 · persisted as page.motion</span>
+  scene3d?: <span class="ty">Scene3D</span>          <span class="cm">// optional 3D document</span>
+}
+
+<span class="ty">Shape</span> {
+  id: Id
+  type: 'frame' | 'rect' | 'path' | 'text' | 'instance' | 'slot' | ...
+  transform, geometry, fills, strokes, effects
+  children?: <span class="ty">Shape</span>[]
+  ports?: <span class="ty">CellRef</span>[]           <span class="cm">// exposes state into the cell store</span>
+  interactions?: <span class="ty">Interaction</span>[]  <span class="cm">// ECA sugar → signal graph</span>
+}</pre>
+      <p class="note"><b>Invariants:</b> ids are stable for a shape's lifetime · schema is additive/versioned (pre-production, so pick the cleanest shape) · nothing back-references except by id.</p>
+
+      <div class="spec-head"><h3>5.2 · Named-cell API</h3><span class="role">reactive · the wiring</span></div>
+      <p>One document-wide namespace of named reactive values. When you drop an element on the canvas, it <b>exposes</b> some of its values as named cells — a checkbox's <code>checked</code>, a slider's <code>value</code>. Everything else — interactions, animation inputs, other elements — binds to those <i>names</i> rather than reaching inside the element, which is why wiring is derived, not hand-plumbed.</p>
+      <p>A cell is one of just <b>two</b> kinds <span style="color:var(--ink-3)">(triggers aren't cells — they live in the interactions model, defined with their producer node)</span>:</p>
+      <ul>
+        <li><b>state</b> — a stored, writable value. Called a <b>parameter</b> when it is an element's own (<code>button.label</code>, <code>toggle.on</code>).</li>
+        <li><b>derived</b> — a read-only value computed from other cells, recomputed when they change (<code>cart.total = sum(items)</code>).</li>
+      </ul>
+      <p><b>Every cell has an owner, and the owner sets its lifetime.</b> Element-local parameters are owned by their element and <b>deleted with it</b>. <b>Shared state</b> is owned by a named <b>store</b> — it belongs to no UI element, is read and written by many, and outlives any one of them; it goes away only when the store does.</p>
+      <p><b>Reaching state you don't own — two ways, both read <i>and</i> write:</b></p>
+      <ul>
+        <li><b>From an ancestor (containment)</b> — a node reads and writes state owned by an enclosing node (<code>Card.expanded</code>, <code>App.theme</code>). Already in scope because it's above you; no setup. Use it when the state naturally belongs to a parent.</li>
+        <li><b>From a store (by name)</b> — reference a named store from anywhere in the tree. Use it when the state has no natural parent or is shared widely, so you never hunt for a common ancestor to hoist to.</li>
+      </ul>
+      <p>Both appear in one in-scope picker. Every write is an <b>explicit authored interaction</b> (<code>on press → App.theme = "dark"</code>), never silent mutation — and <code>derived</code> stays read-only.</p>
+      <div class="figure">
+        <div class="legend">
+          <span><i class="swatch sw-te"></i>state / parameter</span>
+          <span><i class="swatch sw-pu"></i>derived</span>
+          <span><i class="swatch sw-sp"></i>store</span>
+        </div>
+        <div class="fig-wrap">
+        <svg viewBox="0 0 680 200" role="img" aria-labelledby="figS-t figS-d">
+          <title id="figS-t">Cells, stores and scope</title>
+          <desc id="figS-d">The same kind of state is reached two ways: from an enclosing App (ancestor), read and written by a child; and from a named store, read and written by multiple elements. Element-local parameters live on their element.</desc>
+          <defs><marker id="arF" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+          <rect class="b" x="40" y="20" width="240" height="56" rx="8"/>
+          <text class="d-th" x="56" y="40" text-anchor="start">App (ancestor)</text>
+          <rect class="b-te" x="56" y="48" width="150" height="20" rx="5"/>
+          <text class="d-ts" x="131" y="62" text-anchor="middle">state · theme</text>
+
+          <rect class="b-sp" x="400" y="20" width="240" height="80" rx="10"/>
+          <text class="d-th" x="520" y="40" text-anchor="middle">Store · cart</text>
+          <rect class="b-te" x="412" y="50" width="216" height="20" rx="5"/>
+          <text class="d-ts" x="520" y="64" text-anchor="middle">state · count</text>
+          <rect class="b-pu" x="412" y="74" width="216" height="20" rx="5"/>
+          <text class="d-ts" x="520" y="88" text-anchor="middle">derived · total</text>
+
+          <rect class="b" x="110" y="130" width="140" height="58" rx="8"/>
+          <text class="d-th" x="180" y="152" text-anchor="middle">Button</text>
+          <rect class="b" x="122" y="160" width="116" height="18" rx="4"/>
+          <text class="d-ts" x="180" y="173" text-anchor="middle">param · label</text>
+
+          <rect class="b" x="430" y="132" width="140" height="50" rx="8"/>
+          <text class="d-th" x="500" y="154" text-anchor="middle">Badge</text>
+          <text class="d-ts" x="500" y="170" text-anchor="middle">reads count</text>
+
+          <line class="arr" x1="168" y1="130" x2="152" y2="78" marker-start="url(#arF)" marker-end="url(#arF)"/>
+          <text class="d-ts" x="114" y="106" text-anchor="middle">read / write</text>
+          <line class="arr" x1="250" y1="150" x2="406" y2="78" marker-end="url(#arF)"/>
+          <text class="d-ts" x="350" y="138" text-anchor="middle">write</text>
+          <line class="arr" x1="500" y1="100" x2="500" y2="130" marker-end="url(#arF)"/>
+          <text class="d-ts" x="518" y="118" text-anchor="middle">read</text>
+        </svg>
+        </div>
+        <figcaption>The same state reached two ways — read/written from an enclosing App (ancestor) and from a named store · element-local parameters live on their element</figcaption>
+      </div>
+      <dl class="gloss">
+        <div class="row"><dt>state / parameter</dt><dd>A stored, <b>writable</b> value — <code>toggle.on</code>, <code>cart.count</code>. Always has a current value; writing it notifies watchers. Element-owned ones (parameters) are deleted with the element.</dd></div>
+        <div class="row"><dt>derived</dt><dd>A <b>read-only</b> value computed from other cells, recomputed when they change — <code>cart.total = sum(items)</code>. You never write it.</dd></div>
+        <div class="row"><dt>shared state</dt><dd>State or derived owned by a <b>store</b>, not any element — read and written by multiple elements, referenced by name, independent of any element's lifetime.</dd></div>
+        <div class="row"><dt>Trigger</dt><dd>An <b>interactions</b> concept, not a cell — the momentary node occurrence (press, tick, load) that fires a rule; the "when" of when → condition → action. Defined with its producer node; may carry a payload. Nothing is stored.</dd></div>
+      </dl>
+      <pre><span class="cm">// One namespace. Two cell kinds — state and derived.</span>
+type <span class="ty">CellId</span> = string
+<span class="ty">Cell</span> = { id: CellId; kind: 'state' | 'derived'; owner: NodeId | StoreId }
+
+<span class="cm">// values — 'state' is a 'parameter' when the owner is an element</span>
+<span class="fn">defineState</span>(owner, id, init): CellId
+<span class="fn">derive</span>(owner, id, deps[], compute): CellId
+<span class="fn">get</span>&lt;T&gt;(id): T
+<span class="fn">set</span>&lt;T&gt;(id, value)                <span class="cm">// state only; derived is read-only</span>
+<span class="fn">subscribe</span>(id, fn): Unsub
+
+<span class="cm">// shared state lives in a named store, owned by no element</span>
+<span class="fn">createStore</span>(scope): StoreId      <span class="cm">// scope = an app boundary (or root); referenced by name</span>
+Store.<span class="fn">define</span>(id, kind, init?)      <span class="cm">// cells that outlive any element</span></pre>
+      <p class="note"><b>Lifetime:</b> deleting an element deletes its parameters (dangling references get flagged); a store's cells survive until the store is deleted. <b>Open:</b> how a component's parameters scope across its instances — each instance needs its own values under one declared name.</p>
+
+      <div class="spec-head"><h3>5.3 · Animation IR / sampler</h3><span class="role">time + state → deltas</span></div>
+      <p>Animation is <i>described</i> inside the 2D, 3D and UI-component surfaces — not a separate track — and all of it targets <b>one IR</b>, resolved by the <b>single blending sampler</b>. That shared IR is what lets one engine play motion authored in any surface.</p>
+      <pre><span class="cm">// IR — the data motion authoring produces</span>
+<span class="ty">Track</span>   { target: CellRef | ShapeProp; keys: Keyframe[]; easing }
+<span class="ty">Clip</span>    { tracks: Track[]; duration: Time }
+<span class="ty">Machine</span> { states: State[]; transitions: Transition[] }
+<span class="ty">PageMotion</span> { clips: Clip[]; machine?: Machine }
+
+<span class="cm">// Sampler — the one blending sampler. Pure &amp; deterministic.</span>
+<span class="fn">createSampler</span>(m: PageMotion): Sampler
+Sampler.<span class="fn">sample</span>(t: Time, s: MotionState): PropDelta[]
+Sampler.<span class="fn">blend</span>(layers: PropDelta[][]): PropDelta[]
+Sampler.<span class="fn">channels</span>(): ChannelDesc[]      <span class="cm">// what it can drive</span></pre>
+      <p class="note"><b>Invariant:</b> <code>sample</code> is pure in (t, state) — the same sampler runs at edit-scrub and at runtime, and deltas are keyed by the same ids as the blueprint &amp; cells. <b>Open:</b> blend priority when a timeline clip and a state-machine transition target the same channel.</p>
+
+      <h3>Runtime model — Rive, generalized to 3D</h3>
+      <p>The engine borrows Rive's runtime <i>model</i> as a reference — not a rulebook — and it is <b>not an ECS</b>: a retained object tree with id-keyed properties, a mixing animation system, and a dependency-ordered dirty update, behind a swappable renderer. Rive is deliberately not ECS either, which is why the shape fits a hierarchical, moderate-count scene. We take what fits and diverge where our needs do — 3D, and our named-cell data-binding. The core still maps almost 1:1 onto the contracts above:</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Rive</th><th>Here</th></tr></thead>
+          <tbody>
+            <tr><td><span class="cname">Core object · keyed properties</span></td><td>Shape tree, id-keyed props — §5.1</td></tr>
+            <tr><td><span class="cname">LinearAnimation · KeyedProperty · KeyFrame</span></td><td>Clip · Track · keyframes — §5.3</td></tr>
+            <tr><td><span class="cname">AnimationInstance mix</span></td><td>sampler blend over PropDelta layers</td></tr>
+            <tr><td><span class="cname">StateMachine · inputs · layers</span></td><td>Machine · named-cell inputs — §5.2</td></tr>
+            <tr><td><span class="cname">Dependency-ordered dirty update</span></td><td>2D transform dirty-propagation</td></tr>
+            <tr><td><span class="cname">Renderer (Skia / Rive Renderer)</span></td><td>render-internal backend + Scene query — §5.4</td></tr>
+            <tr><td><span class="cname">Data binding · view models</span></td><td>named-cell store — §5.2</td></tr>
+            <tr><td><span class="cname">Skin · bone · weight</span></td><td>3D skin / particle SoA buffers — the only ECS-shaped part</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note"><b>Extends Rive in two places:</b> a <b>3D applier</b> writes deltas onto the scene graph (TRS · bones · materials), not only 2D paths; and hot channels can go <b>columnar</b> beyond Rive's per-object apply where the count warrants. <b>Drive modes:</b> 3D and interactive 2D tick each frame; declarative 2D compiles to native drivers (WAAPI · Reanimated) where the platform allows. <b>Format:</b> <code>.riv</code> transcodes straight into this model; Lottie is the interop format.</p>
+
+      <div class="spec-head"><h3>5.4 · Scene query</h3><span class="role">read-only · into the engine</span></div>
+      <p>The queries authoring makes back into whichever engine owns the geometry. Never draws — backend choice stays render-internal.</p>
+      <pre><span class="cm">// Read-only queries into the engine that owns the geometry.</span>
+<span class="cm">// NOT how to draw — Skia/Vello/three/Myth stay render-internal.</span>
+interface <span class="ty">SceneQuery</span> {
+
+  <span class="cm">// pick — geometry-accurate hit testing</span>
+  <span class="fn">hitTest</span>(p: ScreenPt, opts?): ShapeId | null
+  <span class="fn">hitTestArea</span>(r: ScreenRect): ShapeId[]
+
+  <span class="cm">// measure — resolved geometry, not declared values</span>
+  <span class="fn">bounds</span>(id: ShapeId): Rect            <span class="cm">// after layout + transform</span>
+  <span class="fn">tightBounds</span>(id: ShapeId): Rect       <span class="cm">// ink bounds incl. effects</span>
+  <span class="fn">textMetrics</span>(id: ShapeId): TextBox
+
+  <span class="cm">// project — coordinate mapping, incl. 2D ↔ 3D</span>
+  <span class="fn">screenToCanvas</span>(p: ScreenPt): CanvasPt
+  <span class="fn">canvasToScreen</span>(p: CanvasPt): ScreenPt
+  <span class="fn">project3D</span>(id: ShapeId, p: Vec3): ScreenPt
+  <span class="fn">unproject3D</span>(p: ScreenPt): Ray        <span class="cm">// screen → scene ray</span>
+}</pre>
+      <p class="note"><b>Note:</b> may be async / worker-backed (this editor renders off the main thread), so treat returns as possibly-promised. Answers reflect the <i>rendered</i> result — effects and 3D projection included. Existence of this contract is the §7 retained-vs-immediate decision.</p>
+
+      <div class="spec-head"><h3>5.5 · Emit target</h3><span class="role">blueprint → what ships</span></div>
+      <p>Lower once, then emit per platform. Three distinct things ship — don't conflate them: the <b>components</b> (native code you own), the <b>runtime library</b> (generic engine — signal graph + sampler + the WebGL/WebGPU renderer for surfaces), and the <b>document bindings</b> (per-design glue that boots the runtime). Content takes two paths, by kind.</p>
+      <pre><span class="cm">// blueprint → what ships. Two paths by content kind.</span>
+<span class="fn">lower</span>(doc: Document): LoweredIR             <span class="cm">// shared, target-agnostic</span>
+<span class="fn">emit</span>(ir: LoweredIR, t: EmitTarget): Project  <span class="cm">// source + deps + assets</span>
+
+interface <span class="ty">EmitTarget</span> {                 <span class="cm">// 'react-dom' | 'react-native'</span>
+  <span class="fn">emitComponent</span>(node): CodeUnit        <span class="cm">// UI + interactions → native (div / RN)</span>
+  <span class="fn">emitSurface</span>(node): EngineMount        <span class="cm">// vector-2D / 3D → engine-hosted surface</span>
+  <span class="fn">emitBindings</span>(cells, motion): CodeUnit  <span class="cm">// per-doc glue: cells + sampler wiring</span>
+  <span class="fn">emitAsset</span>(asset): AssetRef           <span class="cm">// images · fonts · glTF · .riv → project</span>
+}</pre>
+      <p class="note"><b>Render split (decided):</b> UI &amp; interactions emit as <b>native code</b> (div / RN + signals); vector animations &amp; 3D ship <b>with the engine</b> that renders them — they can't exist without it. The engine runs on <b>WebGL + WebGPU</b>. <code>emitRuntime</code> was a misnomer: it emits the <i>bindings</i> that boot the runtime lib, not the lib itself.</p>
+      <p class="note"><b>Decided:</b> targets are div (web) + React Native; expressions stay untyped so the foundation is untouched. <b>Open:</b> ship the runtime lib as a tiny linked dependency, or inline it into the emitted project.</p>
+
+      <div class="spec-head"><h3>5.6 · Interactions (ECA)</h3><span class="role">trigger · condition · action</span></div>
+      <p>An interaction is a rule attached to a <b>producer node</b>: <b>when</b> a trigger fires, <b>if</b> a condition over state holds, run an ordered list of <b>actions</b>. That is the whole authoring act — "this trigger changes that cell." Everything outward (props, callbacks, server writes) is <i>derived at lowering</i>, never authored.</p>
+      <div class="figure">
+        <div class="fig-wrap">
+        <svg viewBox="0 0 680 200" role="img" aria-labelledby="figI-t figI-d">
+          <title id="figI-t">The interaction rule</title>
+          <desc id="figI-d">A producer node's trigger fires an interaction — when, if a condition over state holds, then run ordered actions: set state, animate, navigate, or emit.</desc>
+          <defs><marker id="arI" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+          <rect class="b" x="40" y="80" width="140" height="48" rx="8"/>
+          <text class="d-th" x="110" y="102" text-anchor="middle">Button</text>
+          <text class="d-ts" x="110" y="118" text-anchor="middle">producer node</text>
+          <line class="arr" x1="180" y1="104" x2="224" y2="104" marker-end="url(#arI)"/>
+          <text class="d-ts" x="202" y="96" text-anchor="middle">trigger</text>
+
+          <rect class="b-sp" x="228" y="36" width="200" height="132" rx="10"/>
+          <text class="d-th" x="328" y="58" text-anchor="middle">Interaction</text>
+          <rect class="b" x="244" y="70" width="168" height="24" rx="5"/>
+          <rect class="b" x="244" y="100" width="168" height="24" rx="5"/>
+          <rect class="b" x="244" y="130" width="168" height="24" rx="5"/>
+          <text class="d-ts" x="328" y="86" text-anchor="middle">when · press</text>
+          <text class="d-ts" x="328" y="116" text-anchor="middle">if · cart.count &gt; 0</text>
+          <text class="d-ts" x="328" y="146" text-anchor="middle">then · do actions</text>
+
+          <rect class="b" x="480" y="34" width="160" height="40" rx="6"/>
+          <rect class="b" x="480" y="90" width="160" height="32" rx="6"/>
+          <rect class="b" x="480" y="134" width="160" height="32" rx="6"/>
+          <text class="d-th" x="560" y="52" text-anchor="middle">set state</text>
+          <text class="d-ts" x="560" y="66" text-anchor="middle">app · animation · nav</text>
+          <text class="d-ts" x="560" y="110" text-anchor="middle">emit</text>
+          <text class="d-ts" x="560" y="154" text-anchor="middle">effect (platform)</text>
+
+          <line class="arr" x1="428" y1="142" x2="478" y2="54" marker-end="url(#arI)"/>
+          <line class="arr" x1="428" y1="142" x2="478" y2="106" marker-end="url(#arI)"/>
+          <line class="arr" x1="428" y1="142" x2="478" y2="150" marker-end="url(#arI)"/>
+        </svg>
+        </div>
+        <figcaption>An interaction = trigger (when) · condition (if) · ordered actions (then), attached to its producer node</figcaption>
+      </div>
+      <pre><span class="ty">Interaction</span> = {
+  on: <span class="ty">Trigger</span>          <span class="cm">// a node occurrence — press · hover · load · timer · swipe · animEnd …</span>
+  when?: Expr          <span class="cm">// condition over state / derived (untyped); default true</span>
+  do: <span class="ty">Action</span>[]         <span class="cm">// ordered</span>
+}
+
+<span class="ty">Trigger</span> = { node: NodeId; kind: TriggerKind; payload? }   <span class="cm">// lives on its producer node</span>
+
+<span class="cm">// One data verb: write a cell. Subsystems expose their controls AS cells.</span>
+<span class="ty">Action</span> =
+  | <span class="ty">SetState</span> { target: CellRef; value: Expr }
+        <span class="cm">// target = app state · a store · an ancestor</span>
+        <span class="cm">//        · an animation input / playback cell   → this IS "animate"</span>
+        <span class="cm">//        · the nav state / stack                → this IS "navigate" (lowers to the router)</span>
+        <span class="cm">// sugar: toggle · adjust ± · add/remove/clear · reset</span>
+  | <span class="ty">Emit</span>     { trigger: TriggerRef; payload? }    <span class="cm">// deliver an occurrence — chain a rule (or the rare bus)</span>
+  | <span class="ty">Effect</span>   { kind: 'toast' | 'haptic' | 'clipboard' | 'share' | 'media' | … }  <span class="cm">// platform side-effect, no cell</span>
+
+<span class="cm">// modifiers: delay(after) · per-action guard(if)</span>
+<span class="cm">// NOT actions (derived): server mutation/fetch ← store-backed writes · A/B arm ← run-mode picker</span></pre>
+      <p class="note"><b>One data verb.</b> "Animate" and "navigate" aren't separate primitives — they're <code>SetState</code> aimed at cells the animation runtime and the router already own; the authoring UI just offers them as labeled shortcuts. Only <b>Emit</b> (an occurrence) and <b>Effect</b> (a platform call) fall outside <code>SetState</code>.</p>
+      <p class="note"><b>Outward effects are derived, not authored:</b> the designer never says "call the server." Writing a <i>store-backed</i> cell lowers to a mutation / POST / callback as the target needs; a plain state write stays local. Expressions stay untyped so the foundation is untouched.</p>
+      <p class="note"><b>Lowering:</b> an interaction becomes a guarded handler on its node — state writes flow through the reactive graph, navigation through the router, animation through input writes; store-backed writes add the mutation/callback. <b>Attaches to any producer node</b> — a visual element, or a non-visual one (timer · page/lifecycle · data source).</p>
+    </section>
+
+    <!-- ===================== 6 · EMIT + PREVIEW ===================== -->
+    <section class="sec">
+      <p class="eyebrow">06 · Design → code</p>
+      <h2>From blueprint to running preview</h2>
+      <p>Preview mode is not a simulation of your design — it is <b>real generated code</b>. The blueprint is lowered, emitted to React DOM / React Native, and run. Because the editor runtime and the emitted runtime are the <b>same reactive graph</b>, what you preview is what ships.</p>
+
+      <div class="figure">
+        <div class="fig-wrap">
+        <svg viewBox="0 0 680 132" role="img" aria-labelledby="figC-t figC-d">
+          <title id="figC-t">Emit and preview pipeline</title>
+          <desc id="figC-d">Blueprint is lowered, emitted as code to DOM or React Native targets, and run in a preview on web and mobile.</desc>
+          <defs><marker id="arC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+          <rect class="b-sp" x="40" y="34" width="112" height="50" rx="8"/>
+          <rect class="b" x="160" y="34" width="112" height="50" rx="8"/>
+          <rect class="b" x="280" y="34" width="112" height="50" rx="8"/>
+          <rect class="b-pu" x="400" y="34" width="112" height="50" rx="8"/>
+          <rect class="b-am" x="520" y="34" width="112" height="50" rx="8"/>
+
+          <text class="d-th" x="96" y="60" text-anchor="middle">Blueprint</text>
+          <text class="d-ts" x="96" y="76" text-anchor="middle">source</text>
+          <text class="d-th" x="216" y="60" text-anchor="middle">Lower</text>
+          <text class="d-ts" x="216" y="76" text-anchor="middle">IR pass</text>
+          <text class="d-th" x="336" y="60" text-anchor="middle">Emit</text>
+          <text class="d-ts" x="336" y="76" text-anchor="middle">codegen</text>
+          <text class="d-th" x="456" y="60" text-anchor="middle">Targets</text>
+          <text class="d-ts" x="456" y="76" text-anchor="middle">DOM · RN</text>
+          <text class="d-th" x="576" y="60" text-anchor="middle">Preview</text>
+          <text class="d-ts" x="576" y="76" text-anchor="middle">web · mobile</text>
+
+          <line class="arr" x1="152" y1="59" x2="158" y2="59" marker-end="url(#arC)"/>
+          <line class="arr" x1="272" y1="59" x2="278" y2="59" marker-end="url(#arC)"/>
+          <line class="arr" x1="392" y1="59" x2="398" y2="59" marker-end="url(#arC)"/>
+          <line class="arr" x1="512" y1="59" x2="518" y2="59" marker-end="url(#arC)"/>
+
+          <text class="d-ts" x="336" y="112" text-anchor="middle">Editor runtime and emitted runtime share one reactive graph — preview equals ship.</text>
+        </svg>
+        </div>
+        <figcaption>Fig. 3 — Lower · emit · target · run — one reactive graph across editor and preview</figcaption>
+      </div>
+
+      <h3>The handoff — two paths into your app</h3>
+      <p>Handoff is <b>assisted</b>: you emit into an existing codebase, not a sealed export. Content splits by kind. <b>UI &amp; interactions</b> ship as <b>native code you own</b> — div / RN + signals. <b>Vector animations &amp; 3D</b> ship <b>with the engine</b>: they need a renderer to exist at all, so they travel as engine-hosted surfaces plus the runtime that draws them. The engine runs on <b>WebGL and WebGPU</b>.</p>
+      <div class="figure">
+        <div class="legend">
+          <span><i class="swatch sw-sp"></i>Blueprint</span>
+          <span><i class="swatch sw-te"></i>Native path</span>
+          <span><i class="swatch sw-pu"></i>Engine path</span>
+        </div>
+        <div class="fig-wrap">
+        <svg viewBox="0 0 680 310" role="img" aria-labelledby="figD-t figD-d">
+          <title id="figD-t">Handoff paths</title>
+          <desc id="figD-d">UI and interactions emit as native code; vector 2D and 3D ship with the WebGL/WebGPU engine; both are wired by one signal graph and sampler.</desc>
+          <defs><marker id="arD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+          <rect class="b-sp" x="40" y="20" width="592" height="54" rx="10"/>
+          <text class="d-th" x="68" y="51" text-anchor="start">Doc</text>
+          <rect class="b" x="150" y="34" width="104" height="26" rx="6"/>
+          <rect class="b" x="266" y="34" width="104" height="26" rx="6"/>
+          <rect class="b" x="382" y="34" width="104" height="26" rx="6"/>
+          <rect class="b" x="498" y="34" width="104" height="26" rx="6"/>
+          <text class="d-t" x="202" y="51" text-anchor="middle">2D</text>
+          <text class="d-t" x="318" y="51" text-anchor="middle">3D</text>
+          <text class="d-t" x="434" y="51" text-anchor="middle">UI</text>
+          <text class="d-t" x="550" y="51" text-anchor="middle">Interactions</text>
+
+          <line class="arr" x1="184" y1="74" x2="184" y2="104" marker-end="url(#arD)"/>
+          <line class="arr" x1="488" y1="74" x2="488" y2="104" marker-end="url(#arD)"/>
+
+          <rect class="b-te" x="40" y="106" width="288" height="58" rx="8"/>
+          <rect class="b-pu" x="344" y="106" width="288" height="58" rx="8"/>
+          <text class="d-th" x="184" y="130" text-anchor="middle">Native UI code</text>
+          <text class="d-ts" x="184" y="148" text-anchor="middle">UI + interactions · div / RN · signals</text>
+          <text class="d-th" x="488" y="130" text-anchor="middle">Engine content</text>
+          <text class="d-ts" x="488" y="148" text-anchor="middle">vector 2D + 3D + assets</text>
+
+          <line class="arr" x1="184" y1="164" x2="184" y2="210" marker-end="url(#arD)"/>
+          <line class="arr" x1="488" y1="164" x2="488" y2="210" marker-end="url(#arD)"/>
+          <text class="d-ts" x="336" y="190" text-anchor="middle">handoff, assisted</text>
+
+          <rect class="b" x="40" y="212" width="592" height="80" rx="10"/>
+          <text class="d-th" x="56" y="232" text-anchor="start">User app — your codebase</text>
+          <rect class="b-te" x="56" y="240" width="264" height="44" rx="8"/>
+          <rect class="b-pu" x="336" y="240" width="280" height="44" rx="8"/>
+          <text class="d-th" x="188" y="262" text-anchor="middle">Native components</text>
+          <text class="d-ts" x="188" y="278" text-anchor="middle">source you own</text>
+          <text class="d-th" x="476" y="262" text-anchor="middle">Engine runtime — WebGL + WebGPU</text>
+          <text class="d-ts" x="476" y="278" text-anchor="middle">renders vector + 3D</text>
+        </svg>
+        </div>
+        <figcaption>Fig. 4 — UI ships as native source · vector &amp; 3D ship with the WebGL/WebGPU engine · one signal graph + sampler across both</figcaption>
+      </div>
+      <p class="note"><b>Preview equals ship, precisely:</b> the semantics — signal graph + sampler — are identical on both paths. Native surfaces are re-rendered by the platform (any fidelity risk lives here); engine surfaces are drawn by the <i>same</i> engine as the editor, so they are pixel-identical.</p>
+    </section>
+
+    <!-- ===================== 7 · OPEN QUESTIONS ===================== -->
+    <section class="sec">
+      <p class="eyebrow">07 · Still to decide</p>
+      <h2>Open questions</h2>
+      <p>Two decisions are deliberately unresolved here — they change the shape of the spine, so settle them before Phase&nbsp;1 fans out.</p>
+      <div class="cards">
+        <div class="card">
+          <p class="tag">Decision · IR scope</p>
+          <h4>Are cross-domain 2D↔3D interactions first-class in the IR?</h4>
+          <p>This doc parks them in Phase&nbsp;2, since 2D and 3D are the one place the tracks genuinely couple. If they need to be authored from day one, the animation IR must model them up front — a spine change, not an integration task.</p>
+        </div>
+        <div class="card">
+          <p class="tag">Decision · editor mode</p>
+          <h4>Retained or immediate — does Scene query exist?</h4>
+          <p>If authoring only ever mutates the blueprint and the renderer redraws, there is no Scene query contract — the schema stands alone. If authoring drives the canvas imperatively (live scrub, overlays, worker-side picking, as today), the §5.4 surface must be frozen. This editor leans immediate, so the doc keeps it.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== 8 · GLOSSARY ===================== -->
+    <section class="sec">
+      <p class="eyebrow">08 · Vocabulary</p>
+      <h2>Glossary</h2>
+      <dl class="gloss">
+        <div class="row"><dt>Blueprint</dt><dd>The persisted document — pages, shape tree, cells, motion. The single source of truth every part reads or writes.</dd></div>
+        <div class="row"><dt>Named-cell store</dt><dd>One document-wide namespace of named cells — <b>state</b> (parameter when element-owned) and <b>derived</b>. Shared state lives in stores; occurrences are interaction triggers, not cells.</dd></div>
+        <div class="row"><dt>Store / shared state</dt><dd>A named reactive environment owned by no element, referenced by name — read &amp; written by multiple elements, and outliving any of them.</dd></div>
+        <div class="row"><dt>Reactive signal graph</dt><dd>The reactive execution substrate over state and derived cells. Both animation and interactions compile to it, so one sampler resolves every driver.</dd></div>
+        <div class="row"><dt>Animation IR</dt><dd>The unified time/state model — a superset of Lottie / Rive / interaction semantics — that 2D, 3D, and transitions all target.</dd></div>
+        <div class="row"><dt>ECA</dt><dd>Event-condition-action — an interaction rule: on a node's occurrence (the trigger), if a condition over state holds, then act. Lowers to the signal graph.</dd></div>
+        <div class="row"><dt>Sampler</dt><dd>Given a time and state, produces transform &amp; property deltas. One blending sampler serves every animated driver.</dd></div>
+        <div class="row"><dt>Lowering</dt><dd>The pass that turns the high-level blueprint into the intermediate form the emitter consumes.</dd></div>
+        <div class="row"><dt>Emitter</dt><dd>Reads the blueprint and generates real React DOM / React Native code for the preview.</dd></div>
+      </dl>
+    </section>
+
+    <footer>
+      <span>Backbone &amp; parallel tracks — animation · UI · interactions · preview</span>
+      <span>Draft v1 · 2026-08-15</span>
+    </footer>
+
+  </div>
+</div>
