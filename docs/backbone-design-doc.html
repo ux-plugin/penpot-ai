@@ -795,12 +795,12 @@ interface <span class="ty">EmitTarget</span> {                 <span class="cm">
     <section class="sec">
       <p class="eyebrow">07 · Still to decide</p>
       <h2>Open questions</h2>
-      <p>Two decisions are deliberately unresolved here — they change the shape of the spine, so settle them before Phase&nbsp;1 fans out.</p>
+      <p>These change the shape of the spine, so they matter before Phase&nbsp;1 fans out. One is now settled; one remains open.</p>
       <div class="cards">
         <div class="card">
-          <p class="tag">Decision · IR scope</p>
-          <h4>Are cross-domain 2D↔3D interactions first-class in the IR?</h4>
-          <p>This doc parks them in Phase&nbsp;2, since 2D and 3D are the one place the tracks genuinely couple. If they need to be authored from day one, the animation IR must model them up front — a spine change, not an integration task.</p>
+          <p class="tag">Decided · IR scope</p>
+          <h4>Cross-domain 2D↔3D is first-class in the IR</h4>
+          <p>A 3D object is a first-class node: its transform / material / visibility are ordinary cells, addressable by the same interaction, sampler and command machinery as any 2D shape — so a rule or a clip references 2D and 3D targets interchangeably, with no special-casing. The engine is demoted to a renderer + signal-source; spatial coupling (a 2D label pinned to a 3D anchor) is a derived binding through scene-query projection (§5.4). What remains is <b>engineering, not design</b>: cell↔engine sync and its per-frame cost, cross-domain compositing / hit-testing, and domain-only properties.</p>
         </div>
         <div class="card">
           <p class="tag">Decision · editor mode</p>
