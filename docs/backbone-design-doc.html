@@ -380,6 +380,7 @@
             <tr><td><span class="cname">Scene query</span></td><td>pick · measure · project (read-only, into the engine)</td><td>render team</td><td>UI · interactions · motion</td></tr>
             <tr><td><span class="cname">Emit target</span></td><td>blueprint → component tree + runtime hooks</td><td>emitter</td><td>preview (web + mobile)</td></tr>
             <tr><td><span class="cname">Interaction model</span></td><td>trigger · condition · action; nodes → state / animation / nav</td><td>interactions</td><td>runtime · emitter</td></tr>
+            <tr><td><span class="cname">Command API</span></td><td>the one write path — ops · proposals · authorization</td><td>UI · AI · plugins</td><td>blueprint · journal</td></tr>
           </tbody>
         </table>
       </div>
@@ -633,6 +634,66 @@ interface <span class="ty">EmitTarget</span> {                 <span class="cm">
       <p class="note"><b>One data verb.</b> "Animate" and "navigate" aren't separate primitives — they're <code>SetState</code> aimed at cells the animation runtime and the router already own; the authoring UI just offers them as labeled shortcuts. Only <b>Emit</b> (an occurrence) and <b>Effect</b> (a platform call) fall outside <code>SetState</code>.</p>
       <p class="note"><b>Outward effects are derived, not authored:</b> the designer never says "call the server." Writing a <i>store-backed</i> cell lowers to a mutation / POST / callback as the target needs; a plain state write stays local. Expressions stay untyped so the foundation is untouched.</p>
       <p class="note"><b>Lowering:</b> an interaction becomes a guarded handler on its node — state writes flow through the reactive graph, navigation through the router, animation through input writes; store-backed writes add the mutation/callback. <b>Attaches to any producer node</b> — a visual element, or a non-visual one (timer · page/lifecycle · data source).</p>
+
+      <div class="spec-head"><h3>5.7 · Document Command API</h3><span class="role">one write path · propose · authorize</span></div>
+      <p>Every change to the blueprint — a human gesture, the AI, a plugin, an importer — is a typed <b>command</b> applied through this one API. Nothing mutates the document any other way. That single seam is why undo, proposals, permissions and AI all fall out of the same machinery instead of each needing its own path.</p>
+      <div class="figure">
+        <div class="legend">
+          <span><i class="swatch sw-sp"></i>gated — review &amp; authorize</span>
+        </div>
+        <div class="fig-wrap">
+        <svg viewBox="0 0 680 224" role="img" aria-labelledby="figG-t figG-d">
+          <title id="figG-t">The one write path</title>
+          <desc id="figG-d">The author applies commands directly; AI, plugins and external actors submit proposals that go through review before both funnel into one authorize-and-validate gate, then the journal and the blueprint.</desc>
+          <defs><marker id="arG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+          <rect class="b" x="40" y="40" width="140" height="40" rx="8"/>
+          <text class="d-th" x="110" y="60" text-anchor="middle">Author</text>
+          <text class="d-ts" x="110" y="74" text-anchor="middle">apply</text>
+
+          <rect class="b" x="40" y="150" width="140" height="40" rx="8"/>
+          <text class="d-th" x="110" y="170" text-anchor="middle">AI · plugin · ext</text>
+          <text class="d-ts" x="110" y="184" text-anchor="middle">propose</text>
+
+          <rect class="b-sp" x="210" y="136" width="150" height="68" rx="10"/>
+          <text class="d-th" x="285" y="158" text-anchor="middle">Review</text>
+          <text class="d-ts" x="285" y="176" text-anchor="middle">diff · highlight</text>
+          <text class="d-ts" x="285" y="192" text-anchor="middle">walkthrough</text>
+
+          <rect class="b-sp" x="400" y="52" width="160" height="56" rx="10"/>
+          <text class="d-th" x="480" y="76" text-anchor="middle">authorize · validate</text>
+          <text class="d-ts" x="480" y="96" text-anchor="middle">allow | propose | deny</text>
+
+          <rect class="b" x="400" y="140" width="160" height="38" rx="8"/>
+          <text class="d-th" x="480" y="163" text-anchor="middle">journal → blueprint</text>
+
+          <line class="arr" x1="180" y1="60" x2="398" y2="74" marker-end="url(#arG)"/>
+          <line class="arr" x1="180" y1="170" x2="208" y2="168" marker-end="url(#arG)"/>
+          <line class="arr" x1="360" y1="158" x2="398" y2="98" marker-end="url(#arG)"/>
+          <text class="d-ts" x="382" y="128" text-anchor="middle">accept</text>
+          <line class="arr" x1="480" y1="108" x2="480" y2="138" marker-end="url(#arG)"/>
+        </svg>
+        </div>
+        <figcaption>The author applies directly; everything external proposes → is reviewed → accepted · both pass one authorize + validate gate into the journal</figcaption>
+      </div>
+      <pre><span class="ty">Command</span> = { op: OpKind; target: Ref; args }   <span class="cm">// setParam · createNode · wire · addInteraction · reparent …</span>
+<span class="ty">Ref</span>     = NodeId | CellId | StoreId
+
+<span class="cm">// external actors submit a Proposal — never a direct apply</span>
+<span class="ty">Proposal</span> = { by: Actor; steps: Step[] }
+<span class="ty">Step</span>     = { ops: Command[]; why: string; focus: Ref[] }   <span class="cm">// a human-legible chunk = one walkthrough step</span>
+
+<span class="cm">// review → apply</span>
+<span class="fn">preview</span>(Proposal): ShadowDoc      <span class="cm">// apply to a shadow copy; render / run, real doc untouched</span>
+<span class="fn">accept</span>(Proposal | Step)           <span class="cm">// ops become journal entries (undoable)</span>
+<span class="fn">reject</span>(Proposal | Step)
+
+<span class="cm">// authorization — checked at the boundary, before validate + apply</span>
+<span class="fn">authorize</span>(actor, op, target): 'allow' | 'propose' | 'deny'</pre>
+      <p class="note"><b>Suggest-vs-write is just authorization.</b> The author is <code>allow</code> on their own doc (auto-apply); AI and plugins are <code>propose</code> (staged) — or <code>allow</code> inside a delegated subtree, <code>deny</code> on anything locked. Rights <b>inherit down the tree</b>; an explicit override on a shape (lock / another owner) wins over what its parent grants.</p>
+      <p class="note"><b>Structural ops authorize their whole written set.</b> <code>reparent(C, A→B)</code> writes <i>{C, A, B}</i>; <code>delete(A)</code> writes A + its subtree. The decision is the <b>strictest across those targets</b> (deny &gt; propose &gt; allow), applied <b>atomically</b> — never half-moved. So a locked child can't be moved by the parent's owner, and you can't inject a shape into a container you don't own. Prefer downgrading a blocked structural op to <code>propose</code> (routed to the owner) over a hard deny.</p>
+      <p class="note"><b>A proposal is a script, so it renders as a walkthrough.</b> Because steps are ordered, semantic and targeted, review has three views of the same data: a <b>diff</b>, <b>in-place highlights</b>, or a <b>guided walkthrough</b> — fly to each step's <code>focus</code> (scene query, §5.4), show its <code>why</code>, render before → after on the shadow doc, and <i>run</i> the resulting interaction/animation in the sandbox (same reactive graph). Accept per step. This is the review UX that makes suggest-mode usable.</p>
+      <p class="note"><b>Author-time only.</b> This governs who may edit the <i>design</i>. Runtime permissions inside the emitted app are a separate layer, evaluated at a different time.</p>
     </section>
 
     <!-- ===================== 6 · EMIT + PREVIEW ===================== -->
@@ -760,6 +821,9 @@ interface <span class="ty">EmitTarget</span> {                 <span class="cm">
         <div class="row"><dt>Reactive signal graph</dt><dd>The reactive execution substrate over state and derived cells. Both animation and interactions compile to it, so one sampler resolves every driver.</dd></div>
         <div class="row"><dt>Animation IR</dt><dd>The unified time/state model — a superset of Lottie / Rive / interaction semantics — that 2D, 3D, and transitions all target.</dd></div>
         <div class="row"><dt>ECA</dt><dd>Event-condition-action — an interaction rule: on a node's occurrence (the trigger), if a condition over state holds, then act. Lowers to the signal graph.</dd></div>
+        <div class="row"><dt>Command / op</dt><dd>The atomic unit of change to the blueprint (<code>setParam</code>, <code>reparent</code>, <code>wire</code>…). The single write path; every actor — human, AI, plugin — produces these. Journal entries are commands.</dd></div>
+        <div class="row"><dt>Proposal</dt><dd>A staged change from an external actor — ordered <b>steps</b> of commands + a rationale + focus targets. Previewed on a shadow doc, reviewed (diff / highlight / walkthrough), then accepted or rejected.</dd></div>
+        <div class="row"><dt>Authorization</dt><dd>Per-target policy at the write boundary — <code>allow | propose | deny</code>, inherited down the tree. Subsumes suggest-vs-write, locking, ownership and AI/plugin scoping.</dd></div>
         <div class="row"><dt>Sampler</dt><dd>Given a time and state, produces transform &amp; property deltas. One blending sampler serves every animated driver.</dd></div>
         <div class="row"><dt>Lowering</dt><dd>The pass that turns the high-level blueprint into the intermediate form the emitter consumes.</dd></div>
         <div class="row"><dt>Emitter</dt><dd>Reads the blueprint and generates real React DOM / React Native code for the preview.</dd></div>
