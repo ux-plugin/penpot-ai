@@ -1527,10 +1527,7 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         acc_view: &wgpu::TextureView,
         root: Affine,
-        full_view: Affine,
         id: u128,
-        width: u32,
-        height: u32,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
@@ -1597,10 +1594,7 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         acc_view: &wgpu::TextureView,
         root: Affine,
-        full_view: Affine,
         id: u128,
-        width: u32,
-        height: u32,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
@@ -1692,7 +1686,7 @@ impl Sink {
                 // Under the body: a drop shadow's blurred silhouette.
                 (Source::Coverage { .. }, Compose::Under) => {
                     if let Some(c) = find(0, drop_i) {
-                        self.wv_paint_path_shadow(c, backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+                        self.wv_paint_path_shadow(c, backend, device, queue, enc, acc_view, root, id, format, sz);
                     }
                     drop_i += 1;
                 }
@@ -1703,7 +1697,7 @@ impl Sink {
                 // The body itself: isolated render, then its own shader chain and layer blur.
                 (Source::Body, _) => {
                     if let Some(c) = find(1, 0) {
-                        self.wv_composite_body(c, &effect.ops, backend, device, queue, enc, acc_view, root, full_view, id, root_index, width, height, format, sz);
+                        self.wv_composite_body(c, &effect.ops, backend, device, queue, enc, acc_view, root, id, root_index, format, sz);
                     }
                     body_done = true;
                 }
@@ -1713,12 +1707,12 @@ impl Sink {
                 (Source::Coverage { .. }, Compose::Over) => {
                     if !body_done {
                         if let Some(c) = find(1, 0) {
-                            self.wv_composite_body(c, &[], backend, device, queue, enc, acc_view, root, full_view, id, root_index, width, height, format, sz);
+                            self.wv_composite_body(c, &[], backend, device, queue, enc, acc_view, root, id, root_index, format, sz);
                         }
                         body_done = true;
                     }
                     if let Some(c) = find(2, inner_i) {
-                        self.wv_paint_inner_shadow(c, backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+                        self.wv_paint_inner_shadow(c, backend, device, queue, enc, acc_view, root, id, format, sz);
                     }
                     inner_i += 1;
                 }
@@ -1728,7 +1722,7 @@ impl Sink {
         // Nothing composited over the body (or there were no effects at all) — draw it now.
         if !body_done {
             if let Some(c) = find(1, 0) {
-                self.wv_composite_body(c, &[], backend, device, queue, enc, acc_view, root, full_view, id, root_index, width, height, format, sz);
+                self.wv_composite_body(c, &[], backend, device, queue, enc, acc_view, root, id, root_index, format, sz);
             }
         }
     }
@@ -1749,11 +1743,8 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         acc_view: &wgpu::TextureView,
         root: Affine,
-        full_view: Affine,
         id: u128,
         root_index: usize,
-        width: u32,
-        height: u32,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {

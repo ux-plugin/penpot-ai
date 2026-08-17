@@ -171,62 +171,26 @@ impl ClassicFocusRenderer {
 
         let root = self.transform;
 
-        // Whole-viewport path (vello-native compile, Slice 1): one scene, one rasterize, no schedule.
-        // Gated on `whole_viewport_can_render`: scenes with an effect the native walk can't render yet
-        // (layer blur, filter graphs, non-box shadows) fall through to the tiled scheduler, which is
-        // correct for every effect. The gate shrinks as effects are brought native (plan phases 1-3).
-        let wv = render_core::vello::abi::whole_viewport();
-        if wv && render_core::vello::abi::whole_viewport_can_render() {
-            // Drain here so the abi stays the single dirty consumer; hand the "content changed" bit to
-            // the sink's present-on-demand gate (a view/dims change it detects itself).
-            let (dirty_all, dirty_rects) = render_core::vello::abi::take_dirty();
-            let content_dirty = dirty_all || !dirty_rects.is_empty();
-            self.sink.render_whole_viewport(
-                &mut self.backend, &self.gpu.device, &self.gpu.queue,
-                &surface_texture.texture, root, self.width, self.height, content_dirty,
-            );
-            let _tpr = render_core::vello::prof::now();
-            surface_texture.present();
-            render_core::vello::prof::add_present(render_core::vello::prof::now() - _tpr);
-            return;
-        }
-
-        // Reached here with whole-viewport requested means the scene has an effect the native walk
-        // can't render yet — this frame falls back to the tiled scheduler. Watch this shrink to never
-        // as phases 1-3 land (RUST_LOG=debug).
-        if wv {
-            log::debug!(
-                "[vello-gpu] whole-viewport fallback: scene has an effect not yet native (layer blur / filter / non-box shadow); using tiled path"
-            );
-        }
-
-        let full_view = render_core::vello::abi::effective_view(root);
+        // Classic renders the whole document as ONE native vello scene: one walk, one rasterize, no
+        // schedule. There is no tiled branch here any more.
+        //
+        // The 512-tile scheduler remains the hybrid/WebGL2 backend's path, and the A/B harnesses drive
+        // it directly as the reference to check this against. Classic stopped needing it once the
+        // whole-viewport path could render every effect: the last gate, `whole_viewport_can_render`,
+        // only diverted scenes carrying a typed `filter_graph`, and the tiled path cannot draw those
+        // either (`push_filter_layer` is an inert stub there), so falling back bought nothing but a
+        // slower frame that dropped the same effect.
+        //
+        // Drain dirty here so the abi stays the single dirty consumer; hand the "content changed" bit
+        // to the sink's present-on-demand gate (a view/dims change it detects itself).
         let (dirty_all, dirty_rects) = render_core::vello::abi::take_dirty();
-        // Tile-cache invalidation + gather dirty expansion. Untimed until now, which is part of why
-        // the frame's measured wall time had a remainder no bucket explained.
-        let _tp = render_core::vello::prof::now();
-        let dirty = self.sink.plan_frame(full_view, self.width, self.height, dirty_all, &dirty_rects);
-        render_core::vello::prof::add_plan(render_core::vello::prof::now() - _tp);
-        let dirty_set: HashSet<TileKey> = dirty.iter().copied().collect();
-        // Timed the same way as hybrid's, so the `build` bucket is comparable across backends.
-        let _tb = render_core::vello::prof::now();
-        let schedule = render_core::vello::abi::build_schedule(root, &dirty_set, dirty_all);
-        render_core::vello::prof::add_build(render_core::vello::prof::now() - _tb);
-
-        self.sink.execute(
-            &schedule,
-            &dirty,
-            &mut self.backend,
-            &self.gpu.device,
-            &self.gpu.queue,
-            &surface_texture.texture,
-            root,
-            self.width,
-            self.height,
+        let content_dirty = dirty_all || !dirty_rects.is_empty();
+        self.sink.render_whole_viewport(
+            &mut self.backend, &self.gpu.device, &self.gpu.queue,
+            &surface_texture.texture, root, self.width, self.height, content_dirty,
         );
-        // Swapchain hand-off. Also untimed until now — and the one place in the frame where the
-        // browser could plausibly make the CPU wait on the compositor, so it is worth its own bucket
-        // rather than being lumped into the remainder.
+        // Swapchain hand-off. The one place in the frame where the browser could plausibly make the
+        // CPU wait on the compositor, so it is worth its own bucket rather than the remainder.
         let _tpr = render_core::vello::prof::now();
         surface_texture.present();
         render_core::vello::prof::add_present(render_core::vello::prof::now() - _tpr);
