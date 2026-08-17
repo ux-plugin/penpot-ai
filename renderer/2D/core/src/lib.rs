@@ -27,6 +27,7 @@ pub mod abi;
 pub mod atlas;
 pub mod blend;
 pub mod blur;
+pub mod effect;
 pub mod effect_graph;
 pub mod footprint;
 pub mod geometry;
