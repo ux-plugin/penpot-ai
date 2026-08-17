@@ -555,7 +555,7 @@ interface <span class="ty">SceneQuery</span> {
   <span class="fn">project3D</span>(id: ShapeId, p: Vec3): ScreenPt
   <span class="fn">unproject3D</span>(p: ScreenPt): Ray        <span class="cm">// screen → scene ray</span>
 }</pre>
-      <p class="note"><b>Note:</b> may be async / worker-backed (this editor renders off the main thread), so treat returns as possibly-promised. Answers reflect the <i>rendered</i> result — effects and 3D projection included. Existence of this contract is the §7 retained-vs-immediate decision.</p>
+      <p class="note"><b>Note:</b> may be async / worker-backed (this editor renders off the main thread), so treat returns as possibly-promised. Answers reflect the <i>rendered</i> result — effects and 3D projection included. <b>It stays a contract:</b> committed writes are retained (commands), but reads are immediate, and in-flight gestures live in a transient layer the blueprint never holds (§5.7).</p>
 
       <div class="spec-head"><h3>5.5 · Emit target</h3><span class="role">blueprint → what ships</span></div>
       <p>Lower once, then emit per platform. Three distinct things ship — don't conflate them: the <b>components</b> (native code you own), the <b>runtime library</b> (generic engine — signal graph + sampler + the WebGL/WebGPU renderer for surfaces), and the <b>document bindings</b> (per-design glue that boots the runtime). Content takes two paths, by kind.</p>
@@ -694,6 +694,7 @@ interface <span class="ty">EmitTarget</span> {                 <span class="cm">
       <p class="note"><b>Structural ops authorize their whole written set.</b> <code>reparent(C, A→B)</code> writes <i>{C, A, B}</i>; <code>delete(A)</code> writes A + its subtree. The decision is the <b>strictest across those targets</b> (deny &gt; propose &gt; allow), applied <b>atomically</b> — never half-moved. So a locked child can't be moved by the parent's owner, and you can't inject a shape into a container you don't own. Prefer downgrading a blocked structural op to <code>propose</code> (routed to the owner) over a hard deny.</p>
       <p class="note"><b>A proposal is a script, so it renders as a walkthrough.</b> Because steps are ordered, semantic and targeted, review has three views of the same data: a <b>diff</b>, <b>in-place highlights</b>, or a <b>guided walkthrough</b> — fly to each step's <code>focus</code> (scene query, §5.4), show its <code>why</code>, render before → after on the shadow doc, and <i>run</i> the resulting interaction/animation in the sandbox (same reactive graph). Accept per step. This is the review UX that makes suggest-mode usable.</p>
       <p class="note"><b>Author-time only.</b> This governs who may edit the <i>design</i>. Runtime permissions inside the emitted app are a separate layer, evaluated at a different time.</p>
+      <p class="note"><b>Gestures don't stream commands.</b> In-flight editing — dragging, reparenting, resizing — lives in a <b>transient layer</b> the blueprint never sees (ghosts, drop indicators, snap guides). It updates imperatively during the gesture (no journal churn), emits <i>one</i> command on <b>release</b> (one undo step), and is discarded on cancel. The render input is <code>blueprint + transient overlay</code> — so a drag "ghost" is the very same mechanism as a proposal's shadow doc: an uncommitted variant that either commits to command(s) or drops. This transient state is the editor's own — it never ships.</p>
     </section>
 
     <!-- ===================== 6 · EMIT + PREVIEW ===================== -->
@@ -793,9 +794,9 @@ interface <span class="ty">EmitTarget</span> {                 <span class="cm">
 
     <!-- ===================== 7 · OPEN QUESTIONS ===================== -->
     <section class="sec">
-      <p class="eyebrow">07 · Still to decide</p>
-      <h2>Open questions</h2>
-      <p>These change the shape of the spine, so they matter before Phase&nbsp;1 fans out. One is now settled; one remains open.</p>
+      <p class="eyebrow">07 · Decisions</p>
+      <h2>Spine decisions</h2>
+      <p>The two calls that most shape the spine — both now settled. Smaller open points live inline: instance scoping (§5.2), blend priority (§5.3), runtime packaging (§5.5).</p>
       <div class="cards">
         <div class="card">
           <p class="tag">Decided · IR scope</p>
@@ -803,9 +804,9 @@ interface <span class="ty">EmitTarget</span> {                 <span class="cm">
           <p>A 3D object is a first-class node: its transform / material / visibility are ordinary cells, addressable by the same interaction, sampler and command machinery as any 2D shape — so a rule or a clip references 2D and 3D targets interchangeably, with no special-casing. The engine is demoted to a renderer + signal-source; spatial coupling (a 2D label pinned to a 3D anchor) is a derived binding through scene-query projection (§5.4). What remains is <b>engineering, not design</b>: cell↔engine sync and its per-frame cost, cross-domain compositing / hit-testing, and domain-only properties.</p>
         </div>
         <div class="card">
-          <p class="tag">Decision · editor mode</p>
-          <h4>Retained or immediate — does Scene query exist?</h4>
-          <p>If authoring only ever mutates the blueprint and the renderer redraws, there is no Scene query contract — the schema stands alone. If authoring drives the canvas imperatively (live scrub, overlays, worker-side picking, as today), the §5.4 surface must be frozen. This editor leans immediate, so the doc keeps it.</p>
+          <p class="tag">Decided · editor mode</p>
+          <h4>Retained commits · immediate reads · a transient layer</h4>
+          <p>Committed writes are retained — every edit is a command into the blueprint (§5.7). Reads are immediate — the editor queries the live renderer via Scene query (§5.4), which stays a contract. And an essential <b>transient layer</b> holds in-flight gesture state the blueprint never sees (reparent ghosts, drag previews, drop indicators, snap guides): it updates imperatively during the gesture, commits to one command on release, and is discarded on cancel. Pure-retained was never possible.</p>
         </div>
       </div>
     </section>
