@@ -194,7 +194,7 @@ function main() {
     // native tree-walk example. Frame it 1:1 at its native size: pass w=1192&h=1002. Then screenshot
     // via the Chrome MCP (real GPU). Skips the stress-scene build + bench loop.
     const SCENE = q.get('scene')
-    if (SCENE === 'parity' || SCENE === 'showcase' || SCENE === 'image' || SCENE === 'path-shadow' || SCENE === 'layer-blur' || (SCENE && SCENE.startsWith('scope'))) {
+    if (SCENE !== 'scale' && (SCENE === 'parity' || SCENE === 'showcase' || SCENE === 'image' || SCENE === 'path-shadow' || SCENE === 'layer-blur' || (SCENE && SCENE.startsWith('scope')))) {
       const cells =
         SCENE === 'showcase' ? X.load_showcase_scene()
         : SCENE === 'scope' ? X.load_scope_scene()
@@ -221,6 +221,80 @@ function main() {
       renderer.render()
       log(SCENE + ': ' + cells + ' shapes rendered (' + BACKEND + ', ' + W + 'x' + H + ')')
       window.__PARITY_DONE__ = true
+      return
+    }
+
+    // ---- scene=scale: a document being USED -------------------------------------------
+    // Thousands of shapes, a minority with effects, driven through the four things an editor
+    // actually does — hold still, zoom, pan, drag — on the real GPU rather than a headless adapter.
+    // Knobs: shapes (4000), effectEvery (25), frames per phase (20).
+    // e.g. /bench.html?scene=scale&shapes=4000&effectEvery=25&wholeViewport=1&w=1600&h=900
+    if (SCENE === 'scale') {
+      const N = parseInt(q.get('shapes') || '4000', 10)
+      const EVERY = parseInt(q.get('effectEvery') || '25', 10)
+      const FRAMES = parseInt(q.get('frames') || '20', 10)
+      const cells = X.load_scale_scene(N, EVERY)
+      if (X.set_canvas_background) X.set_canvas_background(0xffffffff)
+      const FIT = parseFloat(q.get('zoom') || '0.5')
+
+      // Drag `count` shapes by (dx,dy) through the real modifier wire: 40 bytes each, the uuid
+      // quartet then a,b,c,d,e,f. Same path the editor's drag gesture takes.
+      function drag(count, dx, dy) {
+        const ptr = X.alloc_bytes(count * 40)
+        const view = new DataView(X.memory.buffer)
+        for (let i = 0; i < count; i++) {
+          const o = ptr + i * 40
+          view.setUint32(o, 0, true); view.setUint32(o + 4, 0, true)
+          view.setUint32(o + 8, 0, true); view.setUint32(o + 12, i + 1, true) // id = i+1
+          view.setFloat32(o + 16, 1, true); view.setFloat32(o + 20, 0, true)
+          view.setFloat32(o + 24, 0, true); view.setFloat32(o + 28, 1, true)
+          view.setFloat32(o + 32, dx, true); view.setFloat32(o + 36, dy, true)
+        }
+        X.set_modifiers()
+      }
+
+      const phases = [
+        ['static', (t) => { X.set_view(FIT, 0, 0); X.mark_dirty() }],
+        ['zoom',   (t) => X.set_view(FIT * (1 + 0.03 * (t % 8)), 0, 0)],
+        ['pan',    (t) => X.set_view(FIT, -12 * (t % 10), -7 * (t % 10))],
+        ['drag',   (t) => { X.set_view(FIT, 0, 0); drag(200, t * 1.5, t * -1.1) }],
+      ]
+      const results = []
+      let pi = 0, frame = 0, times = []
+
+      log('scale: ' + cells + ' shapes, 1 in ' + EVERY + ' with effects (' + BACKEND + ', ' + W + 'x' + H + ')')
+      function step() {
+        if (pi >= phases.length) {
+          // Report: median per phase, so one slow warm-up frame cannot skew it.
+          let out = 'phase      median ms   fps\n'
+          for (const r of results) {
+            out += r.name.padEnd(10) + String(r.median.toFixed(1)).padStart(9) +
+                   String((1000 / r.median).toFixed(1)).padStart(6) + '\n'
+          }
+          log(out)
+          window.__PERF__ = results
+          window.__PERF_DONE__ = true
+          if (X.clean_modifiers) X.clean_modifiers()
+          return
+        }
+        const [name, setup] = phases[pi]
+        setup(frame)
+        const t0 = performance.now()
+        renderer.render()
+        const dt = performance.now() - t0
+        // Discard the first 3 frames of each phase: pipeline warm-up, not steady state.
+        if (frame >= 3) times.push(dt)
+        frame++
+        if (frame >= FRAMES + 3) {
+          times.sort((a, b) => a - b)
+          results.push({ name, median: times[times.length >> 1] })
+          log(name + ': ' + times[times.length >> 1].toFixed(1) + ' ms')
+          if (X.clean_modifiers) X.clean_modifiers()
+          pi++; frame = 0; times = []
+        }
+        requestAnimationFrame(step)
+      }
+      requestAnimationFrame(step)
       return
     }
 
