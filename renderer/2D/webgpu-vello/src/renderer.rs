@@ -172,7 +172,11 @@ impl ClassicFocusRenderer {
         let root = self.transform;
 
         // Whole-viewport path (vello-native compile, Slice 1): one scene, one rasterize, no schedule.
-        if render_core::vello::abi::whole_viewport() {
+        // Gated on `whole_viewport_can_render`: scenes with an effect the native walk can't render yet
+        // (layer blur, filter graphs, non-box shadows) fall through to the tiled scheduler, which is
+        // correct for every effect. The gate shrinks as effects are brought native (plan phases 1-3).
+        let wv = render_core::vello::abi::whole_viewport();
+        if wv && render_core::vello::abi::whole_viewport_can_render() {
             // Drain here so the abi stays the single dirty consumer; hand the "content changed" bit to
             // the sink's present-on-demand gate (a view/dims change it detects itself).
             let (dirty_all, dirty_rects) = render_core::vello::abi::take_dirty();
@@ -185,6 +189,15 @@ impl ClassicFocusRenderer {
             surface_texture.present();
             render_core::vello::prof::add_present(render_core::vello::prof::now() - _tpr);
             return;
+        }
+
+        // Reached here with whole-viewport requested means the scene has an effect the native walk
+        // can't render yet — this frame falls back to the tiled scheduler. Watch this shrink to never
+        // as phases 1-3 land (RUST_LOG=debug).
+        if wv {
+            log::debug!(
+                "[vello-gpu] whole-viewport fallback: scene has an effect not yet native (layer blur / filter / non-box shadow); using tiled path"
+            );
         }
 
         let full_view = render_core::vello::abi::effective_view(root);

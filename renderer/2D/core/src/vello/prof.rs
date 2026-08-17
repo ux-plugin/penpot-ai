@@ -20,6 +20,12 @@ thread_local! {
     static RENDERS: Cell<u32> = const { Cell::new(0) };
     static POOL_HIT: Cell<u32> = const { Cell::new(0) };
     static POOL_MISS: Cell<u32> = const { Cell::new(0) };
+    // Whole-viewport effect-scratch residency: TRANSIENT_PEAK = the most intermediates any single
+    // effect node held at once (the peak with mid-frame recycling), TRANSIENT_SUM = the sum over all
+    // nodes (what would stay resident WITHOUT recycling — the old Σ(nodes) memory). Their ratio is the
+    // memory the node-boundary recycle saves.
+    static TRANSIENT_PEAK: Cell<u32> = const { Cell::new(0) };
+    static TRANSIENT_SUM: Cell<u32> = const { Cell::new(0) };
     static PAINTS: Cell<u32> = const { Cell::new(0) };
     static COMPOSITES: Cell<u32> = const { Cell::new(0) };
     static GATHERS: Cell<u32> = const { Cell::new(0) };
@@ -60,11 +66,20 @@ pub fn add_gpu(ms: f64) {
 pub fn add_pool_hit() {
     POOL_HIT.with(|c| c.set(c.get() + 1));
 }
+/// Record one whole-viewport effect node's scratch count as it is recycled at its boundary: feeds the
+/// peak (max over nodes = residency WITH recycling) and the sum (residency WITHOUT it).
+pub fn note_node_scratch(n: usize) {
+    let n = n as u32;
+    TRANSIENT_SUM.with(|c| c.set(c.get() + n));
+    TRANSIENT_PEAK.with(|c| c.set(c.get().max(n)));
+}
 pub fn add_pool_miss() {
     POOL_MISS.with(|c| c.set(c.get() + 1));
 }
 
-/// High-resolution wall clock in ms (`performance.now()` on wasm, 0 elsewhere).
+/// High-resolution wall clock in ms: `performance.now()` on wasm, a process-start-relative
+/// `Instant` elsewhere. Native must be real (not a 0.0 stub) or every `dbg_add` interval below
+/// collapses to zero and the native perf harnesses can't attribute CPU time at all.
 pub fn now() -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
@@ -74,7 +89,11 @@ pub fn now() -> f64 {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        0.0
+        use std::time::Instant;
+        thread_local! {
+            static EPOCH: Instant = Instant::now();
+        }
+        EPOCH.with(|e| e.elapsed().as_secs_f64() * 1000.0)
     }
 }
 
@@ -150,6 +169,8 @@ pub fn reset() {
     RENDERS.with(|c| c.set(0));
     POOL_HIT.with(|c| c.set(0));
     POOL_MISS.with(|c| c.set(0));
+    TRANSIENT_PEAK.with(|c| c.set(0));
+    TRANSIENT_SUM.with(|c| c.set(0));
     PAINTS.with(|c| c.set(0));
     COMPOSITES.with(|c| c.set(0));
     GATHERS.with(|c| c.set(0));
@@ -186,6 +207,8 @@ pub fn read(which: u32) -> f64 {
         17 => PRESENT.with(Cell::get),
         18 => GPU.with(Cell::get),
         19 => f64::from(GPUN.with(Cell::get)),
+        20 => f64::from(TRANSIENT_PEAK.with(Cell::get)),
+        21 => f64::from(TRANSIENT_SUM.with(Cell::get)),
         100..=131 => DBG.with(|c| c.borrow()[(which - 100) as usize]),
         _ => 0.0,
     }

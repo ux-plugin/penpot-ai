@@ -528,12 +528,13 @@ fn visit(
         }
     }
 
-    // Path (non-box) drop shadows: a rect/frame/circle shadow is the native inline blurred-rounded-rect
-    // (drawn with the body), but an arbitrary path has no such primitive, so each of its drop shadows is
-    // scheduled here as a blurred-silhouette effect that the sink renders + blurs + composites *behind*
-    // the body. Emitted before the body block so it lands under the shape's own paint. Inner path
-    // shadows are still deferred (a later slice).
-    if node.kind == ShapeKind::Path {
+    // Non-box drop shadows: a rect/frame/circle shadow is the native inline blurred-rounded-rect (drawn
+    // with the body), but an arbitrary path — or a text block — has no such primitive, so each of its
+    // drop shadows is scheduled here as a blurred-silhouette effect that the sink renders + blurs +
+    // composites *behind* the body. Text stamps a glyph-shaped silhouette (see `build_shadow_silhouette`).
+    // Emitted before the body block so it lands under the shape's own paint. Inner non-box shadows are
+    // still deferred (a later slice).
+    if matches!(node.kind, ShapeKind::Path | ShapeKind::Text) {
         for (i, shadow) in node.shadows.iter().filter(|s| !s.inset).enumerate() {
             let sigma = radius_to_sigma(shadow.blur);
             let reach = 3.0 * f64::from(sigma) + f64::from(shadow.spread);
@@ -603,6 +604,41 @@ fn visit(
                     clip: tile_page_rect(tile, view),
                     write_to: current(tile),
                 });
+            }
+        }
+
+        // Non-box (Path/Text) INNER shadows: a rect/frame/circle inner shadow is the native inline
+        // blurred-rounded-rect (drawn in the body), but an arbitrary silhouette has none, so each inner
+        // shadow is scheduled here — AFTER the body so the band lands OVER the shape's own paint. The
+        // sink floods the silhouette in the shadow colour and punches the blurred offset copy out of it.
+        if matches!(node.kind, ShapeKind::Path | ShapeKind::Text) {
+            for (i, shadow) in node.shadows.iter().filter(|s| s.inset).enumerate() {
+                let sigma = radius_to_sigma(shadow.blur);
+                let reach = 3.0 * f64::from(sigma);
+                let (ox, oy) = (shadow.offset.x, shadow.offset.y);
+                let pb = page_bounds(node, m);
+                // Bounds ∪ (bounds + offset), grown by the blur reach: contains the flood (at bounds) and
+                // the offset, blurred punch, giving the blur the same neighbourhood a full-viewport render
+                // would — so the extent-sized band matches the whole-viewport one.
+                let ext = Rect::new(
+                    pb.x0 + ox.min(0.0) - reach,
+                    pb.y0 + oy.min(0.0) - reach,
+                    pb.x1 + ox.max(0.0) + reach,
+                    pb.y1 + oy.max(0.0) + reach,
+                );
+                for tile in tiling::tiles_overlapping_page_rect(view, ext) {
+                    if !visible.contains(&tile) {
+                        continue;
+                    }
+                    steps.push(Step::PaintInnerShadow {
+                        shape: id,
+                        shadow: i,
+                        sigma,
+                        extent: ext,
+                        clip: tile_page_rect(tile, view),
+                        write_to: current(tile),
+                    });
+                }
             }
         }
     }

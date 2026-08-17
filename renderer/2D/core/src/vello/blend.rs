@@ -149,6 +149,9 @@ pub struct Compositor {
     masked_layout: wgpu::BindGroupLayout,
     blend_pipeline: wgpu::RenderPipeline,
     blend_layout: wgpu::BindGroupLayout,
+    /// Porter-Duff `DestOut` (`out = dst·(1 − src.a)`) — same shader/layout as `pipeline`, only the
+    /// blend state differs. Used to punch a blurred silhouette out of an inner-shadow band.
+    dstout_pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
 }
 
@@ -218,6 +221,48 @@ impl Compositor {
                         },
                         alpha: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        // DestOut variant: same vs/fs + bind layout, but the blend keeps only `dst·(1 − src.a)` — the
+        // source colour is discarded (`src_factor: Zero`), so drawing a coverage texture erases the
+        // target by that coverage. Punches the blurred offset silhouette out of the inner-shadow band.
+        let dstout_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("compositor dstout pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
                             dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
                             operation: wgpu::BlendOperation::Add,
                         },
@@ -500,6 +545,7 @@ impl Compositor {
             masked_layout,
             blend_pipeline,
             blend_layout,
+            dstout_pipeline,
             sampler,
         }
     }
@@ -743,6 +789,63 @@ impl Compositor {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind, &[]);
         // Triangle strip: 4 corners (0,0),(1,0),(0,1),(1,1) via vertex_index bit tricks in the shader.
+        pass.draw(0..4, 0..1);
+    }
+
+    /// Record one Porter-Duff `DestOut` blit (`target = target·(1 − src.a)`): erase `target` by the
+    /// source's coverage. Identical bind/geometry to [`Self::blit`]; only the pipeline's blend differs.
+    /// Used to punch the blurred, offset silhouette out of an inner-shadow band.
+    pub fn blit_dstout(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        target_size: (f32, f32),
+        blit: &Blit,
+    ) {
+        let (tw, th) = target_size;
+        let (dx, dy, dw, dh) = blit.dst;
+        let ndc_x = |x: f32| (x / tw) * 2.0 - 1.0;
+        let ndc_y = |y: f32| 1.0 - (y / th) * 2.0;
+        let (sw, sh) = blit.src_size;
+        let (sx, sy, srw, srh) = blit.src_rect;
+        let params = Params {
+            dst_min: [ndc_x(dx), ndc_y(dy)],
+            dst_max: [ndc_x(dx + dw), ndc_y(dy + dh)],
+            uv_min: [sx / sw, sy / sh],
+            uv_max: [(sx + srw) / sw, (sy + srh) / sh],
+            alpha: blit.alpha.clamp(0.0, 1.0),
+            _pad: [0.0; 3],
+        };
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("compositor dstout params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compositor dstout bind"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(blit.src) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("compositor dstout blit"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.dstout_pipeline);
+        pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..4, 0..1);
     }
 

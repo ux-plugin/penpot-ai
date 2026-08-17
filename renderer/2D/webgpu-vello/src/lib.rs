@@ -795,18 +795,35 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         });
     }
 
-    fn build_shadow_silhouette(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, shadow: usize) {
+    fn build_shadow_silhouette(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, shadow: usize, inset: bool, apply_offset: bool) {
+        // Borrowed before `with_scene` so the closure can lay text out (font/layout contexts) while it
+        // holds the model lock — the same discipline `draw_scene_range` uses.
+        let text = &mut self.text;
         render_core::vello::abi::with_scene(|model, viewport, modifiers| {
             let Some(node) = model.get(id) else { return };
-            let Some(s) = node.shadows.iter().filter(|s| !s.inset).nth(shadow) else { return };
+            // `inset` picks the subset the caller is indexing (drop vs inner shadows).
+            let Some(s) = node.shadows.iter().filter(|s| s.inset == inset).nth(shadow) else { return };
             let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
             // The offset rides in the shape's own space (so it rotates with the shape), exactly as the
-            // native box-shadow path applies it; the blur is added by the sink, not here.
+            // native box-shadow path applies it; the blur is added by the sink, not here. `apply_offset`
+            // false stamps the shape un-shifted (the inner-shadow flood before the offset punch).
+            let offset = if apply_offset { Affine::translate((s.offset.x, s.offset.y)) } else { Affine::IDENTITY };
             let matrix = transform
                 * viewport
                 * modifier
                 * node.effective_transform()
-                * Affine::translate((s.offset.x, s.offset.y));
+                * offset;
+            // Text casts a GLYPH-shaped shadow: stamp the block's inked coverage in the shadow colour
+            // through the shared text path (which handles layout + vertical align), then the sink blurs
+            // it exactly like a path silhouette. Spread doesn't apply to glyph runs (there is no
+            // per-glyph outline to dilate here), matching render-wasm's text drop shadow.
+            if node.kind == render_core::model::ShapeKind::Text {
+                let mut resources = ();
+                render_core::vello::text::draw_text_block(
+                    scene, &mut resources, &mut text.font_cx, &mut text.layout_cx, &ClassicEnv, node, matrix, Some(s.color),
+                );
+                return;
+            }
             scene.set_transform(matrix);
             scene.set_paint(s.color);
             // Spread grows the silhouette before the blur, matching render-wasm / the box path.
@@ -819,16 +836,15 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         });
     }
 
-    fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, effect_id: u32, params: [f32; 4]) {
-        render_core::vello::abi::with_scene(|model, viewport, modifiers| {
-            if let Some(node) = model.get(id) {
-                let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                let matrix = transform * viewport * modifier * node.effective_transform();
-                // The node silhouette is the marker's coverage, in the same placement `build_mask` uses,
-                // so the CMD_EFFECT lands in exactly the tiles the lens touches.
-                scene.draw_effect(matrix, &render_core::geometry::outline(node), effect_id, params);
-            }
-        });
+    fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, _transform: Affine, _id: u128, effect_id: u32, params: [f32; 4]) {
+        // Emit a FULL-VIEWPORT, coverage-free boundary marker: it must land in EVERY tile so segmented
+        // fine sees the same global z-boundary in all tiles (per-tile marker count == global segment
+        // index). A device-space viewport rect with identity transform bins into every tile regardless
+        // of the node's placement; the marker keeps its z from the call position in the draw stream, and
+        // coarse skips the coverage (`write_path`) so only the 6-word marker is written. The effect's
+        // actual compositing region (the shape extent) is handled separately by the sink.
+        let full = Rect::new(0.0, 0.0, f64::from(scene.width()), f64::from(scene.height()));
+        scene.draw_effect(Affine::IDENTITY, &full, effect_id, params);
     }
 
     fn rasterize(
@@ -922,6 +938,34 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             .inner
             .phased_phase_into(session, device, queue, enc, draw_start, draw_end, base, out)
             .expect("phased_phase_into");
+        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
+    }
+
+    fn phased_frontend_full(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder) {
+        let _trd = render_core::vello::prof::now();
+        let session = self.phased_session.as_mut().expect("phased_frontend_full without phased_begin");
+        self.renderer
+            .inner
+            .phased_frontend_full_into(session, device, queue, enc)
+            .expect("phased_frontend_full_into");
+        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
+    }
+
+    fn phased_fine_segment(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        seg_target: u32,
+        base: Option<&wgpu::TextureView>,
+        out: &wgpu::TextureView,
+    ) {
+        let _trd = render_core::vello::prof::now();
+        let session = self.phased_session.as_mut().expect("phased_fine_segment without phased_begin");
+        self.renderer
+            .inner
+            .phased_fine_segment_into(session, device, queue, enc, seg_target, base, out)
+            .expect("phased_fine_segment_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
 
@@ -1726,6 +1770,7 @@ mod tests {
             &ClassicEnv,
             &node,
             Affine::IDENTITY,
+            None,
         );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {

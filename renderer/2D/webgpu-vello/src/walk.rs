@@ -159,7 +159,7 @@ fn draw_node_kind_body<C: RenderingContext, E: DrawEnv>(
 ) {
     match node.kind {
         ShapeKind::Text => {
-            draw_text_block(ctx, resources, &mut text.font_cx, &mut text.layout_cx, env, node, matrix);
+            draw_text_block(ctx, resources, &mut text.font_cx, &mut text.layout_cx, env, node, matrix, None);
         }
         ShapeKind::Svg => {
             if let Some(content) = &node.svg {

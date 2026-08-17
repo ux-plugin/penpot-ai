@@ -798,6 +798,7 @@ fn draw_text<T: RenderingContext>(
         &AbiEnv,
         node,
         matrix,
+        None,
     );
 }
 
@@ -835,6 +836,7 @@ fn draw_focused_editor<T: RenderingContext>(
         oy as f32,
         node.bounds,
         &node.strokes,
+        None,
     );
 
     // The caret on top, in its visible blink phase.

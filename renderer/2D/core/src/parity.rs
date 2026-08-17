@@ -13,8 +13,8 @@
 use kurbo::{BezPath, Rect, RoundedRectRadii, Vec2};
 
 use crate::model::{
-    Brush, FilterGraph, FilterNode, Glass, ImageFill, Node, Paint, Scene, Shadow, ShapeKind, Stroke, StrokeAlign,
-    TileMode, ROOT_ID,
+    Brush, CustomShader, EffectSlot, FilterGraph, FilterNode, Glass, ImageFill, Node, Paint, Scene, Shadow, ShapeEffect,
+    ShapeKind, Stroke, StrokeAlign, TileMode, ROOT_ID,
 };
 
 /// Grid columns.
@@ -25,6 +25,11 @@ pub const CELL: f64 = 190.0;
 pub const MARGIN: f64 = 26.0;
 /// Inner padding inside each cell.
 pub const PAD: f64 = 22.0;
+
+/// Font identity the parity **text** cell references. No host uploads a face in a bare harness
+/// (bench.html), so [`crate::vello::abi::stage_parity_font`] stages an embedded Roboto under exactly
+/// this id/weight/style when the parity scene loads, and the text span resolves to it by alias.
+pub const PARITY_FONT_ID: u128 = 0x0000_0000_0000_0000_0000_0000_5041_5254; // "PART"
 
 fn col(r: u8, g: u8, b: u8) -> peniko::Color {
     peniko::Color::from_rgba8(r, g, b, 255)
@@ -533,6 +538,70 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
     b.scoped_backdrop_cell(false, "scoped backdrop-blur [sink]");
     b.scoped_backdrop_cell(true, "scoped glass [sink]");
 
+    // ── Random path shapes carrying GATHER effects (arbitrary geometry, not a rect) ──────────────
+    b.path_gather_cell(true, "glass on path [sink]");
+    b.path_gather_cell(false, "bg-blur on path [sink]");
+
+    // ── Text: glyph coverage through the shared text path (needs a registered font — the harness
+    //    stages the embedded Roboto via `load_parity_scene` → `stage_parity_font`). ───────────────
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Text);
+        n.bounds = r;
+        let span = crate::text::TextSpan {
+            text: "Aa Bb 012".to_string(),
+            font: crate::text::FontRef { id: PARITY_FONT_ID, weight: 400, italic: false },
+            size: 42.0,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            fills: vec![Paint::plain(Brush::Solid(col(24, 24, 28)))],
+            decoration: crate::text::TextDecoration::None,
+            transform: crate::text::TextTransform::None,
+        };
+        let para = crate::text::TextParagraph {
+            align: crate::text::TextAlign::Center,
+            direction: crate::text::TextDirection::Ltr,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            spans: vec![span],
+        };
+        n.text = Some(crate::text::TextBlock {
+            paragraphs: vec![para],
+            grow: crate::text::TextGrow::Fixed,
+            vertical_align: crate::text::VerticalAlign::Center,
+        });
+        // The text casts a glyph-shaped drop shadow (its own segment boundary), UNDER the lens below —
+        // exercising a shadow root and a gather root over the same cell.
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 7.0, spread: 0.0, offset: Vec2::new(4.0, 6.0), inset: false }];
+        b.root(n);
+        // A background-blur lens over the lower half: the gather reads the text out of the segmented
+        // accumulator and blurs it, so the top glyphs stay sharp and the bottom ones smear — proving
+        // text painted in one fine segment is a correct backdrop for an effect in the next.
+        let lid = b.id();
+        let mut lens = Node::new(lid, ShapeKind::Rect);
+        lens.bounds = Rect::new(r.x0, r.center().y, r.x1, r.y1);
+        lens.background_blur = Some(6.0);
+        b.root(lens);
+        b.advance("text + bg-blur [sink]");
+    }
+
+    // ── Random VECTOR shape (organic multi-curve path) WITH a drop shadow. A non-box shadow is not
+    //    native in the whole-viewport walk yet (Step 3), so a scene containing this trips the Phase-0
+    //    safety net and renders through the TILED path — where the silhouette-blur shadow is drawn.
+    //    Once Step 3 lands, the same cell renders through the front-end-once path. ───────────────────
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(Rect::new(r.x0 + 10.0, r.y0 + 6.0, r.x1 - 10.0, r.y1 - 16.0)));
+        n.fills = vec![Paint::plain(angular())];
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 12.0, spread: 0.0, offset: Vec2::new(7.0, 9.0), inset: false }];
+        b.root(n);
+        b.advance("vector shape + drop shadow");
+    }
+
     b.finish()
 }
 
@@ -722,6 +791,30 @@ impl Build {
         let mut lens = Node::new(id, ShapeKind::Rect);
         lens.bounds = Rect::new(r.x0 + 8.0, r.y0 + 8.0, r.x1 - 8.0, r.y1 - 8.0);
         lens.corners = Some(RoundedRectRadii::from_single_radius(if glass { 16.0 } else { 12.0 }));
+        if glass {
+            lens.glass = Some(glass_lens(TileMode::Decal));
+        } else {
+            lens.background_blur = Some(12.0);
+        }
+        self.root(lens);
+        self.advance(label);
+    }
+
+    /// A **random path shape carrying a gather effect**: an arrow-silhouette lens (glass or
+    /// background-blur) over a gradient backdrop. Unlike [`Self::backdrop_cell`]'s rounded-rect lens,
+    /// the gather coverage here is an arbitrary `Path`, exercising the whole-viewport gather path on
+    /// non-box geometry.
+    fn path_gather_cell(&mut self, glass: bool, label: &'static str) {
+        let r = self.rect();
+        let bid = self.id();
+        let mut backdrop = Node::new(bid, ShapeKind::Rect);
+        backdrop.bounds = r;
+        backdrop.fills = vec![Paint::plain(if glass { linear() } else { angular() })];
+        self.root(backdrop);
+        let id = self.id();
+        let mut lens = Node::new(id, ShapeKind::Path);
+        lens.bounds = r;
+        lens.path = Some(arrow_path(Rect::new(r.x0 + 6.0, r.y0 + 6.0, r.x1 - 6.0, r.y1 - 6.0)));
         if glass {
             lens.glass = Some(glass_lens(TileMode::Decal));
         } else {
@@ -1065,6 +1158,26 @@ fn arrow_path(r: Rect) -> BezPath {
     p
 }
 
+/// An organic, many-node closed vector shape — a stand-in for an arbitrary authored **vector
+/// network** face (several cubic segments, no symmetry), so effects run over irregular geometry, not
+/// the tidy arrow. Control points are fixed fractions of `r` (deterministic — the fixture must be
+/// reproducible), tuned to read as a lopsided blob.
+fn blob_path(r: Rect) -> BezPath {
+    let (w, h) = (r.width(), r.height());
+    let px = |fx: f64| r.x0 + fx * w;
+    let py = |fy: f64| r.y0 + fy * h;
+    let mut p = BezPath::new();
+    p.move_to((px(0.50), py(0.04)));
+    p.curve_to((px(0.80), py(0.00)), (px(1.00), py(0.30)), (px(0.88), py(0.52)));
+    p.curve_to((px(0.80), py(0.70)), (px(1.00), py(0.86)), (px(0.70), py(0.95)));
+    p.curve_to((px(0.54), py(1.00)), (px(0.42), py(0.80)), (px(0.24), py(0.93)));
+    p.curve_to((px(0.05), py(1.00)), (px(0.00), py(0.68)), (px(0.12), py(0.48)));
+    p.curve_to((px(0.19), py(0.33)), (px(0.02), py(0.16)), (px(0.30), py(0.09)));
+    p.curve_to((px(0.37), py(0.07)), (px(0.44), py(0.06)), (px(0.50), py(0.04)));
+    p.close_path();
+    p
+}
+
 /// Two cells over a light page: a bezier path WITH a soft drop shadow, and the same path WITHOUT one
 /// (reference). The shadow must trace the arrow's true silhouette, offset and blurred — proving the
 /// sink's silhouette-blur path, since classic vello has no inline arbitrary-shape blur.
@@ -1091,6 +1204,334 @@ pub fn build_path_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
         n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
         b.root(n);
         b.advance("path (no shadow)");
+    }
+    // Text with a drop shadow: the shadow is the GLYPH silhouette (not the text box), blurred + offset
+    // behind the ink. Needs the staged parity font (`load_path_shadow_scene` stages it).
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Text);
+        n.bounds = r;
+        let span = crate::text::TextSpan {
+            text: "Ag Ky 3".to_string(),
+            font: crate::text::FontRef { id: PARITY_FONT_ID, weight: 400, italic: false },
+            size: 48.0,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            fills: vec![Paint::plain(Brush::Solid(col(84, 74, 183)))],
+            decoration: crate::text::TextDecoration::None,
+            transform: crate::text::TextTransform::None,
+        };
+        let para = crate::text::TextParagraph {
+            align: crate::text::TextAlign::Center,
+            direction: crate::text::TextDirection::Ltr,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            spans: vec![span],
+        };
+        n.text = Some(crate::text::TextBlock {
+            paragraphs: vec![para],
+            grow: crate::text::TextGrow::Fixed,
+            vertical_align: crate::text::VerticalAlign::Center,
+        });
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 180), blur: 10.0, spread: 0.0, offset: Vec2::new(6.0, 8.0), inset: false }];
+        b.root(n);
+        b.advance("text + drop shadow");
+    }
+    b.finish()
+}
+
+// ── Inner (inset) shadows on non-box shapes (path + text) — the flood → DestOut-blurred-offset band ─
+
+/// Cells over a light page exercising non-box INNER shadows: a filled path and a text block, each with
+/// an inset shadow (a dark band hugging the inside edge on the offset side), beside the same path with
+/// no shadow. Classic has no inline non-box inner shadow, so this is driven through the sink
+/// (`paint_inner_shadow` / `wv_paint_inner_shadow`), not the tree walk. Needs the staged parity font.
+#[must_use]
+pub fn build_inner_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(Rect::new(r.x0 + 10.0, r.y0 + 6.0, r.x1 - 10.0, r.y1 - 16.0)));
+        n.fills = vec![Paint::plain(Brush::Solid(col(206, 212, 222)))];
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 200), blur: 12.0, spread: 0.0, offset: Vec2::new(8.0, 10.0), inset: true }];
+        b.root(n);
+        b.advance("vector shape + inner shadow");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Text);
+        n.bounds = r;
+        let span = crate::text::TextSpan {
+            text: "Ag Ky".to_string(),
+            font: crate::text::FontRef { id: PARITY_FONT_ID, weight: 400, italic: false },
+            size: 60.0,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            fills: vec![Paint::plain(Brush::Solid(col(206, 212, 222)))],
+            decoration: crate::text::TextDecoration::None,
+            transform: crate::text::TextTransform::None,
+        };
+        n.text = Some(crate::text::TextBlock {
+            paragraphs: vec![crate::text::TextParagraph {
+                align: crate::text::TextAlign::Center,
+                direction: crate::text::TextDirection::Ltr,
+                line_height: 1.2,
+                letter_spacing: 0.0,
+                spans: vec![span],
+            }],
+            grow: crate::text::TextGrow::Fixed,
+            vertical_align: crate::text::VerticalAlign::Center,
+        });
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 210), blur: 6.0, spread: 0.0, offset: Vec2::new(4.0, 5.0), inset: true }];
+        b.root(n);
+        b.advance("text + inner shadow");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(Rect::new(r.x0 + 10.0, r.y0 + 6.0, r.x1 - 10.0, r.y1 - 16.0)));
+        n.fills = vec![Paint::plain(Brush::Solid(col(206, 212, 222)))];
+        b.root(n);
+        b.advance("vector shape (no shadow)");
+    }
+    b.finish()
+}
+
+// ── Booleans (verify-only): a boolean reaches a renderer as a precomputed `Path`, so it draws like any
+//    other path. These cells prove the boolean RESULT renders in the whole-viewport walk — including a
+//    hole (winding) and composed with a native drop shadow. No renderer geometry work; a scan of the
+//    outputs vs the tiled reference is the whole test. ────────────────────────────────────────────────
+
+/// An L-shaped path — the exact outline of the union of two overlapping rects filling `r`.
+fn bool_union_path(r: Rect) -> BezPath {
+    let (a, c) = (0.30, 0.70);
+    let ax = r.x0 + (r.x1 - r.x0) * a;
+    let cy = r.y0 + (r.y1 - r.y0) * c;
+    let mut p = BezPath::new();
+    p.move_to((r.x0, r.y0));
+    p.line_to((ax, r.y0));
+    p.line_to((ax, cy));
+    p.line_to((r.x1, cy));
+    p.line_to((r.x1, r.y1));
+    p.line_to((r.x0, r.y1));
+    p.close_path();
+    p
+}
+
+/// A rectangular ring — the outline of (outer rect − inner rect), the two contours wound opposite so a
+/// non-zero fill leaves the middle empty. This is how a boolean *difference* result arrives: one path
+/// with sub-contours, not a special primitive.
+fn bool_difference_path(r: Rect) -> BezPath {
+    let o = r; // outer = r
+    let i = Rect::new(
+        r.x0 + r.width() * 0.28,
+        r.y0 + r.height() * 0.28,
+        r.x1 - r.width() * 0.28,
+        r.y1 - r.height() * 0.28,
+    );
+    let mut p = BezPath::new();
+    // Outer contour, clockwise.
+    p.move_to((o.x0, o.y0));
+    p.line_to((o.x1, o.y0));
+    p.line_to((o.x1, o.y1));
+    p.line_to((o.x0, o.y1));
+    p.close_path();
+    // Inner contour, counter-clockwise → punches the hole under non-zero winding.
+    p.move_to((i.x0, i.y0));
+    p.line_to((i.x0, i.y1));
+    p.line_to((i.x1, i.y1));
+    p.line_to((i.x1, i.y0));
+    p.close_path();
+    p
+}
+
+/// Boolean-result cells over a light page: a union (L outline), a difference (ring with a real hole),
+/// and a union carrying a native drop shadow — proving a boolean result composes with the effect path.
+#[must_use]
+pub fn build_boolean_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(bool_union_path(Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x1 - 12.0, r.y1 - 12.0)));
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        b.root(n);
+        b.advance("boolean union");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(bool_difference_path(Rect::new(r.x0 + 14.0, r.y0 + 14.0, r.x1 - 14.0, r.y1 - 14.0)));
+        n.fills = vec![Paint::plain(Brush::Solid(col(48, 150, 120)))];
+        b.root(n);
+        b.advance("boolean difference (hole)");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(bool_union_path(Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x1 - 12.0, r.y1 - 12.0)));
+        n.fills = vec![Paint::plain(Brush::Solid(col(216, 90, 48)))];
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 170), blur: 10.0, spread: 0.0, offset: Vec2::new(7.0, 9.0), inset: false }];
+        b.root(n);
+        b.advance("boolean union + drop shadow");
+    }
+    b.finish()
+}
+
+// ── Combined effects on ONE node: several effects stacked on a single shape, each list kept in its
+//    authored order (shadows, then the effects chain, plus a layer blur), proving they compose in WV the
+//    same way the tiled path composes them. ────────────────────────────────────────────────────────────
+
+/// A minimal body-only (spread) custom shader: tint the shape's own body toward `[r,g,b]` by `amount`.
+/// `reads_backdrop: false` marks it a spread (runs over the body, no backdrop) so the sink chains it in
+/// `custom_over_body` / `wv_composite_body`. `u[0].xy` is the resolution, then the params pack in.
+fn tint_shader(r: f32, g: f32, b: f32, amount: f32) -> CustomShader {
+    let wgsl = r"
+struct P { u: array<vec4<f32>, 2> };
+@group(0) @binding(0) var<uniform> params: P;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var tex: texture_2d<f32>;
+struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
+    var out: VsOut;
+    let x = f32(vi & 1u);
+    let y = f32(vi >> 1u);
+    out.uv = vec2<f32>(x, y);
+    out.pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    return out;
+}
+@fragment
+fn fs(inp: VsOut) -> @location(0) vec4<f32> {
+    let src = textureSample(tex, samp, inp.uv);
+    let tint = vec3<f32>(params.u[0].z, params.u[0].w, params.u[1].x);
+    let amount = params.u[1].y;
+    // Premultiplied: tint the colour toward `tint * a` by `amount`, keep the coverage alpha.
+    let rgb = mix(src.rgb, tint * src.a, amount);
+    return vec4<f32>(rgb, src.a);
+}
+".to_string();
+    CustomShader { wgsl, reach: 0.0, param_vec4s: 2, params: vec![r, g, b, amount], reads_backdrop: false, acceptable_downscale: 1.0 }
+}
+
+/// Cells over a light page, each stacking several effects on ONE shape: drop + inner shadow together; a
+/// drop shadow under a layer blur; and a custom tint (effects list) under a drop shadow. Verify-only —
+/// the point is that WV composes the whole stack, in the lists' authored order, the way tiled does.
+#[must_use]
+pub fn build_combined_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let blob = |b: &mut Build| {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(Rect::new(r.x0 + 12.0, r.y0 + 8.0, r.x1 - 12.0, r.y1 - 18.0)));
+        (id, r, n)
+    };
+    {
+        let (_id, _r, mut n) = blob(&mut b);
+        n.fills = vec![Paint::plain(Brush::Solid(col(216, 90, 48)))];
+        // Two shadows in ONE list — a drop (behind) and an inner (inside), kept in list order.
+        n.shadows = vec![
+            Shadow { color: cola(0, 0, 0, 170), blur: 11.0, spread: 0.0, offset: Vec2::new(8.0, 10.0), inset: false },
+            Shadow { color: cola(0, 0, 0, 190), blur: 7.0, spread: 0.0, offset: Vec2::new(-5.0, -6.0), inset: true },
+        ];
+        b.root(n);
+        b.advance("drop + inner shadow");
+    }
+    {
+        let (_id, _r, mut n) = blob(&mut b);
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 170), blur: 10.0, spread: 0.0, offset: Vec2::new(7.0, 9.0), inset: false }];
+        n.blur = Some(4.0);
+        b.root(n);
+        b.advance("drop shadow + layer blur");
+    }
+    {
+        let (_id, _r, mut n) = blob(&mut b);
+        n.fills = vec![Paint::plain(Brush::Solid(col(48, 150, 120)))];
+        // Effects list: one tint spread shader over the body, kept in order; plus a drop shadow behind.
+        n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.8, 0.1, 0.7) }];
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 160), blur: 10.0, spread: 0.0, offset: Vec2::new(6.0, 8.0), inset: false }];
+        b.root(n);
+        b.advance("tint shader + drop shadow");
+    }
+    b.finish()
+}
+
+/// A stress scene for pass-count / frame-time comparison: a grid of `n` shapes, EACH carrying a heavy
+/// effect stack — two drop shadows, an inner shadow, a layer blur, and a tint spread shader. Every one
+/// of those is one or more effect pass-graphs, and in the whole-viewport path each runs at FULL viewport
+/// resolution (extent-crop is a later opt), so this is the worst case: `n × (many full-screen passes)`.
+/// The tiled path crops each effect to its extent, so the same scene should cost it far less — which is
+/// exactly the gap this scene is meant to surface.
+#[must_use]
+pub fn build_stress_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    build_stress_scene_n(12)
+}
+
+/// [`build_stress_scene`] with an explicit shape count — used by the phased sweep to grow the number of
+/// effect boundaries (= segments), which is what the front-end-once path re-scans the whole PTCL for.
+#[must_use]
+pub fn build_stress_scene_n(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
+    build_stress_scene_mask(n, FX_ALL)
+}
+
+/// Effect-ablation bits for [`build_stress_scene_mask`]: turn one effect kind off at a time and the
+/// frame-time delta attributes that effect's GPU cost.
+pub const FX_DROP: u32 = 1;
+pub const FX_INNER: u32 = 2;
+pub const FX_BLUR: u32 = 4;
+pub const FX_SHADER: u32 = 8;
+/// Make every shadow SHARP (blur radius 0). The shadow still rasterizes its silhouette and
+/// composites, but skips the Gaussian pass-graph — so `blurred − sharp` splits a shadow's cost into
+/// raster+composite vs blur.
+pub const FX_SHARP: u32 = 16;
+pub const FX_ALL: u32 = FX_DROP | FX_INNER | FX_BLUR | FX_SHADER;
+
+/// [`build_stress_scene`] with an explicit shape count and an effect mask. `mask == 0` is the plain
+/// baseline (bodies only, no effects) — the floor every effect variant is measured against.
+#[must_use]
+pub fn build_stress_scene_mask(n: usize, mask: u32) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    for k in 0..n {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(Rect::new(r.x0 + 12.0, r.y0 + 8.0, r.x1 - 12.0, r.y1 - 18.0)));
+        let hue = (k * 37 % 255) as u8;
+        n.fills = vec![Paint::plain(Brush::Solid(col(60 + hue / 2, 120, 200 - hue / 2)))];
+        n.shadows = Vec::new();
+        let sh_blur = |r: f32| if mask & FX_SHARP != 0 { 0.0 } else { r };
+        if mask & FX_DROP != 0 {
+            n.shadows.push(Shadow { color: cola(0, 0, 0, 150), blur: sh_blur(12.0), spread: 0.0, offset: Vec2::new(8.0, 10.0), inset: false });
+            n.shadows.push(Shadow { color: cola(0, 0, 0, 120), blur: sh_blur(6.0), spread: 0.0, offset: Vec2::new(-4.0, -3.0), inset: false });
+        }
+        if mask & FX_INNER != 0 {
+            n.shadows.push(Shadow { color: cola(0, 0, 0, 170), blur: sh_blur(7.0), spread: 0.0, offset: Vec2::new(-5.0, -6.0), inset: true });
+        }
+        n.blur = if mask & FX_BLUR != 0 { Some(3.0) } else { None };
+        n.effects = if mask & FX_SHADER != 0 {
+            vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.9, 0.2, 0.5) }]
+        } else {
+            Vec::new()
+        };
+        b.root(n);
+        b.advance("stress");
     }
     b.finish()
 }

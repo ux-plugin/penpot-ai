@@ -162,6 +162,37 @@ pub fn effective_view(root: Affine) -> Affine {
     })
 }
 
+/// Whether the native **whole-viewport** path can render the current scene without silently dropping
+/// an effect. Whole-viewport handles fills/strokes, box (`Rect`/`Frame`/`Circle`) drop+inner shadows,
+/// non-box (path) drop shadows, layer blur (`node.blur`), groups/opacity/blend, clip, mask, and gathers
+/// (glass / background blur / backdrop shaders). It does **not** yet handle: body/spread custom shaders
+/// (filter graphs) or **non-box inset / text** shadows. If any visible node needs one of those, this
+/// returns `false` and the caller must route the frame to the tiled scheduler, which renders every
+/// effect correctly. This gate shrinks as each effect is brought native, and is removed at phase 5.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn whole_viewport_can_render() -> bool {
+    fn node_ok(scene: &Scene, id: u128) -> bool {
+        let Some(node) = scene.get(id) else { return true };
+        // A hidden node and its subtree contribute nothing — skip, exactly as `visit` does.
+        if node.hidden {
+            return true;
+        }
+        // The whole-viewport effect stack (`wv_paint_stack`) now composites a node's full effect set in
+        // z-order — box shadows inline; non-box drop + inner shadows (any mix, multiples) via the
+        // silhouette/DestOut bands; layer blur; and body-only (spread) custom shaders — exactly as the
+        // tiled path composes them, so all of those combine natively. The ONLY effect still without a
+        // classic renderer (in EITHER path — `push_filter_layer` is an inert stub) is the typed
+        // `filter_graph` (FilterNode chain); a scene with one falls back to the tiled scheduler so it
+        // isn't dropped silently. (Tiled can't render it either, but the gate stays honest for when it can.)
+        let needs_tiled = node.filter_graph.is_some();
+        if needs_tiled {
+            return false;
+        }
+        node.children.iter().all(|&c| node_ok(scene, c))
+    }
+    with_scene(|scene, _, _| scene.roots().iter().all(|&r| node_ok(scene, r)))
+}
+
 /// Whether a frame was requested since the last check, clearing the flag.
 ///
 /// The Vello module does not own a frame loop — Phase 0 put that in the host deliberately
@@ -373,6 +404,28 @@ pub extern "C" fn is_font_uploaded(
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn take_pending_fonts() -> Vec<UploadedFont> {
     std::mem::take(&mut *PENDING_FONTS.lock().expect("pending fonts poisoned"))
+}
+
+/// Stage the embedded parity font (idempotent) so the parity fixture's **text** cell resolves in a
+/// bare harness that never calls [`store_font`] (e.g. bench.html). It registers the bundled Roboto
+/// under exactly the alias the fixture's `FontRef { PARITY_FONT_ID, 400, normal }` resolves to; the
+/// backend drains it on the next `sync_fonts`. Real hosts upload their own faces and never call this.
+pub fn stage_parity_font() {
+    const PARITY_FONT_BYTES: &[u8] =
+        include_bytes!("../../../vello/examples/assets/roboto/Roboto-Regular.ttf");
+    let alias = font_alias(crate::parity::PARITY_FONT_ID, 400, false);
+    if !KNOWN_FONTS
+        .lock()
+        .expect("known fonts poisoned")
+        .insert(alias.clone())
+    {
+        return;
+    }
+    PENDING_FONTS
+        .lock()
+        .expect("pending fonts poisoned")
+        .push(UploadedFont { alias, bytes: PARITY_FONT_BYTES.to_vec(), is_emoji: false });
+    with_state(|state| state.needs_frame = true);
 }
 
 // --- text content ----------------------------------------------------------------------------
@@ -2282,6 +2335,7 @@ pub extern "C" fn clear_scene() {
 /// the harness can size the canvas.
 #[unsafe(no_mangle)]
 pub extern "C" fn load_parity_scene() -> u32 {
+    stage_parity_font();
     install_fixture(crate::parity::build_parity_scene())
 }
 
@@ -2307,6 +2361,9 @@ pub extern "C" fn load_showcase_scene() -> u32 {
 /// full scheduler + sink, not the tree walk. Returns the cell count.
 #[unsafe(no_mangle)]
 pub extern "C" fn load_path_shadow_scene() -> u32 {
+    // The fixture includes a text-with-shadow cell, so stage the embedded parity font the same way
+    // `load_parity_scene` does (its glyph coverage is the shadow silhouette).
+    stage_parity_font();
     install_fixture(crate::parity::build_path_shadow_scene())
 }
 
@@ -2316,6 +2373,48 @@ pub extern "C" fn load_path_shadow_scene() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn load_layer_blur_scene() -> u32 {
     install_fixture(crate::parity::build_layer_blur_scene())
+}
+
+/// Install the **boolean test** ([`crate::parity::build_boolean_scene`]) — union / difference /
+/// union-with-drop-shadow, all as precomputed paths (a boolean reaches a renderer flattened to a
+/// `Path`). Verify-only: the result draws like any path. Returns the cell count.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_boolean_scene() -> u32 {
+    install_fixture(crate::parity::build_boolean_scene())
+}
+
+/// Install the **stress test** ([`crate::parity::build_stress_scene`]) — a grid of shapes each carrying
+/// a heavy effect stack (2 drop + 1 inner shadow + layer blur + tint shader), for pass-count / frame-time
+/// comparison of the whole-viewport vs tiled paths. Returns the cell count.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_stress_scene() -> u32 {
+    install_fixture(crate::parity::build_stress_scene())
+}
+
+/// The stress fixture with an effect **ablation mask** ([`crate::parity::build_stress_scene_mask`]):
+/// bits `1` drop, `2` inner, `4` layer blur, `8` custom shader; `0` = plain bodies. Turning one bit
+/// off and re-measuring attributes that effect's GPU cost. Returns the cell count.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_stress_scene_mask(n: u32, mask: u32) -> u32 {
+    install_fixture(crate::parity::build_stress_scene_mask(n as usize, mask))
+}
+
+/// Install the **combined-effects test** ([`crate::parity::build_combined_scene`]) — several effects
+/// stacked on one shape (drop + inner shadow; drop shadow + layer blur; tint shader + drop shadow),
+/// each list kept in authored order. Drives the whole-viewport effect stack. Returns the cell count.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_combined_scene() -> u32 {
+    install_fixture(crate::parity::build_combined_scene())
+}
+
+/// Install the **inner-shadow test** ([`crate::parity::build_inner_shadow_scene`]) — a filled path and
+/// a text block with inset shadows, beside the same path with none. Classic has no inline non-box inner
+/// shadow, so this is driven through the sink (`paint_inner_shadow`). Stages the parity font for the
+/// text cell. Returns the cell count.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_inner_shadow_scene() -> u32 {
+    stage_parity_font();
+    install_fixture(crate::parity::build_inner_shadow_scene())
 }
 
 #[unsafe(no_mangle)]

@@ -75,6 +75,10 @@ impl TextState {
 /// Draw a text node's block: lay out its paragraphs, align them vertically in the box, and draw each
 /// laid-out paragraph at the node's origin under `matrix`. The focused-editor path (selection, caret,
 /// the editor's own live layout) is *not* here — that overlay stays in the hybrid backend.
+///
+/// `shadow` overrides every glyph-run's ink with one flat colour: `Some(c)` paints the block's whole
+/// inked coverage (glyph fills, glyph strokes, decoration) in `c`, which is how a drop shadow stamps a
+/// glyph-shaped silhouette to blur. `None` paints the real per-span fills/strokes/decoration.
 pub fn draw_text_block<C: RenderingContext, E: DrawEnv>(
     ctx: &mut C,
     resources: &mut C::Resources,
@@ -83,6 +87,7 @@ pub fn draw_text_block<C: RenderingContext, E: DrawEnv>(
     env: &E,
     node: &m::Node,
     matrix: Affine,
+    shadow: Option<crate::peniko::Color>,
 ) {
     let Some(block) = &node.text else {
         return;
@@ -118,7 +123,7 @@ pub fn draw_text_block<C: RenderingContext, E: DrawEnv>(
     let origin_x = node.bounds.x0 as f32;
     let mut origin_y = node.bounds.y0 as f32 + vertical_offset;
     for layout in &layouts {
-        draw_layout(ctx, resources, env, layout, origin_x, origin_y, node.bounds, &node.strokes);
+        draw_layout(ctx, resources, env, layout, origin_x, origin_y, node.bounds, &node.strokes, shadow);
         origin_y += layout.height();
     }
 }
@@ -206,11 +211,12 @@ pub fn draw_layout<C: RenderingContext, E: DrawEnv>(
     origin_y: f32,
     bounds: Rect,
     strokes: &[m::Stroke],
+    shadow: Option<crate::peniko::Color>,
 ) {
     for line in layout.lines() {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                draw_glyph_run(ctx, resources, env, &glyph_run, origin_x, origin_y, bounds, strokes);
+                draw_glyph_run(ctx, resources, env, &glyph_run, origin_x, origin_y, bounds, strokes, shadow);
             }
         }
     }
@@ -232,6 +238,7 @@ fn draw_glyph_run<C: RenderingContext, E: DrawEnv>(
     origin_y: f32,
     bounds: Rect,
     strokes: &[m::Stroke],
+    shadow: Option<crate::peniko::Color>,
 ) {
     let style = glyph_run.style();
     if style.brush.fills.is_empty() && strokes.is_empty() {
@@ -257,6 +264,47 @@ fn draw_glyph_run<C: RenderingContext, E: DrawEnv>(
     let font = run.font();
     let font_size = run.font_size();
     let normalized_coords: &[i16] = run.normalized_coords();
+
+    // Shadow silhouette: stamp the run's whole inked coverage — glyph fill, glyph strokes, and the
+    // decoration line — in one flat colour, ignoring the per-span paints. The caller has already
+    // offset the transform, so this lands as the shape to blur behind the sharp ink.
+    if let Some(sc) = shadow {
+        if !style.brush.fills.is_empty() {
+            ctx.set_paint(sc);
+            ctx.glyph_run(resources, font)
+                .font_size(font_size)
+                .normalized_coords(bytemuck::cast_slice(normalized_coords))
+                .hint(true)
+                .fill_glyphs(glyphs.iter().cloned());
+        }
+        for stroke in strokes {
+            ctx.set_paint(sc);
+            ctx.set_stroke(stroke.style.clone());
+            ctx.glyph_run(resources, font)
+                .font_size(font_size)
+                .normalized_coords(bytemuck::cast_slice(normalized_coords))
+                .hint(true)
+                .stroke_glyphs(glyphs.iter().cloned());
+        }
+        if style.brush.decoration != text::TextDecoration::None && !style.brush.fills.is_empty() {
+            use text::TextDecoration as D;
+            let metrics = run.metrics();
+            let (offset, size) = match style.brush.decoration {
+                D::Underline => (metrics.underline_offset, metrics.underline_size),
+                D::LineThrough => (metrics.strikethrough_offset, metrics.strikethrough_size),
+                D::Overline => (metrics.ascent, metrics.underline_size),
+                D::None => unreachable!(),
+            };
+            let x_range = run_start..=(run_start + glyph_run.advance());
+            ctx.set_paint(sc);
+            ctx.glyph_run(resources, font)
+                .font_size(font_size)
+                .normalized_coords(bytemuck::cast_slice(normalized_coords))
+                .hint(true)
+                .render_decoration(glyphs.iter().cloned(), x_range, baseline_y, offset, size, 0.0);
+        }
+        return;
+    }
 
     for fill in &style.brush.fills {
         if set_paint(ctx, env, fill, bounds) {

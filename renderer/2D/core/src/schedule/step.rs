@@ -138,6 +138,21 @@ pub enum Step {
         write_to: SurfaceRef,
     },
 
+    /// Draw node `shape`'s `shadow`-th **inner** (inset) shadow as a blurred-silhouette band, composited
+    /// into `write_to` OVER the shape's own body (emitted after the body block, unlike `PaintPathShadow`).
+    /// The sink floods the shape's silhouette in the shadow colour, then punches the same silhouette —
+    /// offset and blurred at `sigma` — out of it with a Porter-Duff `DestOut`, leaving colour only in the
+    /// inner band on the offset side (all clipped to the silhouette, since the flood IS the silhouette).
+    /// The non-box analogue of the inline `draw_box_inner_shadows`. `clip` is the tile's page-space rect.
+    PaintInnerShadow {
+        shape: u128,
+        shadow: usize,
+        sigma: f32,
+        extent: Rect,
+        clip: Rect,
+        write_to: SurfaceRef,
+    },
+
     /// Composite one surface into another with opacity/blend/clip. `erase_after` folds an
     /// `EraseSurface(from)` into the same step for short-lived intermediates.
     Composite {
@@ -193,6 +208,7 @@ impl Step {
             Step::WriteTileCache { from, .. } => vec![*from],
             Step::ClearTileCacheRegion { .. }
             | Step::PaintPathShadow { .. }
+            | Step::PaintInnerShadow { .. }
             | Step::BeginLayer { .. }
             | Step::EndLayer { .. }
             | Step::EraseSurface(_) => Vec::new(),
@@ -210,6 +226,7 @@ impl Step {
             Step::PaintGather { write_to, .. } => vec![*write_to],
             Step::Composite { .. }
             | Step::PaintPathShadow { .. }
+            | Step::PaintInnerShadow { .. }
             | Step::WriteTileCache { .. }
             | Step::ClearTileCacheRegion { .. }
             | Step::BeginLayer { .. }
@@ -227,6 +244,9 @@ impl Step {
             // The blurred shadow composites (SrcOver) into the tile scope behind the body, so like a
             // `Composite` it read-modify-writes its destination rather than producing it fresh.
             Step::PaintPathShadow { write_to, .. } => vec![*write_to],
+            // The inner-shadow band composites (SrcOver) into the tile scope OVER the body — also a
+            // read-modify-write of its destination.
+            Step::PaintInnerShadow { write_to, .. } => vec![*write_to],
             Step::BeginLayer { write_to, .. } | Step::EndLayer { write_to, .. } => vec![*write_to],
             _ => Vec::new(),
         }

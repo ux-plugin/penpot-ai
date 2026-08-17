@@ -44,6 +44,44 @@ use crate::vello::graph::{build_custom_pipeline, lower_graph, new_target_with_us
 /// the neutral `base_color` the backend rasterizes against.
 const CLEAR: Color = TRANSPARENT;
 
+/// The **`acceptable_downscale`** of a solid-coverage blur (a shadow silhouette or a layer-blurred body)
+/// of the given DEVICE sigma — the *downscale* input, NOT the final scale. A Gaussian is low-pass, so it
+/// can render at its band limit `2/3σ` (mirroring `builder::blur_policy_downscale`) and upscale on the
+/// composite; floored at 0.5 so the bilinear upscale never over-softens, `1.0` for a near-sharp blur.
+/// Safe for solid coverage (no sharp detail to alias — unlike a gather's backdrop, where the policy is
+/// off). This is only the *downscale*; the caller still combines it with the memory *limit*
+/// (`tiling::resolution_cap`) via `min` to get the render scale `k`, exactly like the gather path.
+/// The device-pixel box a page-space effect rect occupies, snapped outward to whole pixels and
+/// clamped to the viewport. `None` when it lands fully off-screen (nothing to render).
+///
+/// This is what lets a whole-viewport effect pass be **extent-cropped**: instead of rasterizing and
+/// blurring a shape's silhouette across the entire viewport (which a ~500px shape on a 4K screen does
+/// at ~20× the necessary pixels), the pass runs in a surface the size of this box and composites back
+/// at its origin. Mirrors the tiled path's `device_rect` + the gather path's scoped bbox.
+fn wv_device_box(page: crate::kurbo::Rect, full_view: Affine, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+    use crate::kurbo::Point;
+    let pts = [
+        full_view * Point::new(page.x0, page.y0),
+        full_view * Point::new(page.x1, page.y0),
+        full_view * Point::new(page.x0, page.y1),
+        full_view * Point::new(page.x1, page.y1),
+    ];
+    let bx = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min).floor().clamp(0.0, f64::from(width)) as u32;
+    let by = pts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min).floor().clamp(0.0, f64::from(height)) as u32;
+    let ex = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max).ceil().clamp(0.0, f64::from(width)) as u32;
+    let ey = pts.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max).ceil().clamp(0.0, f64::from(height)) as u32;
+    let (bw, bh) = (ex.saturating_sub(bx), ey.saturating_sub(by));
+    (bw > 0 && bh > 0).then_some((bx, by, bw, bh))
+}
+
+fn blur_acceptable_downscale(device_sigma: f32) -> f32 {
+    let reach = 3.0 * device_sigma;
+    if reach <= f32::EPSILON {
+        return 1.0;
+    }
+    (2.0 / reach).clamp(0.5, 1.0)
+}
+
 /// Distinct custom-shader render pipelines kept before the cache is dropped. Keyed by WGSL source
 /// hash, so live-editing a shader (a new source every keystroke) would otherwise grow this without
 /// bound. A pipeline recompiles cheaply on the next use, so clearing when full is a fine cap.
@@ -77,10 +115,14 @@ impl PoolKey {
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
 const MAX_POOL_PER_KEY: usize = 32;
 
-/// A free-list of reusable GPU textures keyed by [`PoolKey`]. The sink recycles only at frame
-/// boundaries (drained before this frame renders) and on tile eviction/replacement, so every pooled
-/// texture belongs to a frame whose `queue.submit` has already flushed — safe to hand back out as a
-/// fresh render target without extra synchronisation.
+/// A free-list of reusable GPU textures keyed by [`PoolKey`]. Fed at frame boundaries (drained before
+/// this frame renders), on tile eviction/replacement, AND — for the whole-viewport effect path — at
+/// each effect-node boundary MID-frame (see [`Sink::recycle_node_transient`]), so a node's scratch is
+/// reused by the next node instead of every node's intermediates staying resident until the one submit.
+/// Handing a texture back out as a fresh render target needs no extra synchronisation: a target is
+/// always fully overwritten (its render pass clears or the effect graph writes every texel), and wgpu's
+/// automatic hazard tracking serialises the write-after-read against any still-pending prior use —
+/// in-encoder for the collapsed path, cross-submit on the same queue for the per-segment path.
 #[derive(Default)]
 pub(crate) struct TexturePool {
     free: HashMap<PoolKey, Vec<wgpu::Texture>>,
@@ -475,6 +517,9 @@ impl Sink {
                 Step::PaintPathShadow { shape, shadow, sigma, extent, write_to, .. } => {
                     self.paint_path_shadow(*shape, *shadow, *sigma, *extent, *write_to, backend, device, queue, &mut frame_enc, root, full_view, format);
                 }
+                Step::PaintInnerShadow { shape, shadow, sigma, extent, write_to, .. } => {
+                    self.paint_inner_shadow(*shape, *shadow, *sigma, *extent, *write_to, backend, device, queue, &mut frame_enc, root, full_view, format);
+                }
                 // Layer brackets are not emitted by the builder yet.
                 _ => {}
             }
@@ -679,18 +724,43 @@ impl Sink {
         }
         self.last_view = Some(full_view);
 
-        // Top-level gather roots (background blur / glass / custom backdrop shader), in z-order.
+        // Top-level effect roots that force a segment boundary, in z-order. Two kinds, tagged by the
+        // trailing `bool` (`true` = path drop shadow, `false` = gather): a GATHER (background blur /
+        // glass / custom backdrop shader) reads the accumulator and stamps its lens back; a non-box
+        // PATH drop shadow composites a blurred silhouette UNDER the body. Both split the frame at the
+        // node's z so the effect runs between fine segments. (Name kept `gathers` for minimal churn.)
         // DIAG (bucket 26): scans every root (a `live.get(id)` HashMap lookup per root) — scales with
         // shape count, a suspect for the untimed `other` bucket.
         let _tgd = crate::vello::prof::now();
-        let gathers: Vec<(usize, u128)> = crate::vello::abi::with_scene(|live, _, _| {
+        // Two effect-node kinds. FX_GATHER = a PURE gather (background blur / glass / backdrop shader and
+        // nothing else): it reads the accumulator, stamps its lens, and leaves its body in the shared walk
+        // (drawn ABOVE the boundary, over the lens) — the verified stacked-gather path, untouched.
+        // FX_STACK = any node carrying a non-box drop/inner shadow, a layer blur, or a body/spread custom
+        // shader (optionally combined, and optionally also a gather): its body is EXCLUDED from the walk
+        // and its whole effect stack runs at the boundary in z-order — drops → gather → body[+spread
+        // +blur] → inner — so effects on one shape combine exactly as the tiled path already composes them
+        // (`PaintPathShadow` → `custom_over_body`/`layer_blur_over_body` → `PaintInnerShadow`).
+        const FX_GATHER: u8 = 0;
+        const FX_STACK: u8 = 1;
+        let gathers: Vec<(usize, u128, u8)> = crate::vello::abi::with_scene(|live, _, _| {
             live.roots()
                 .iter()
                 .enumerate()
                 .filter_map(|(i, &id)| {
                     let n = live.get(id)?;
-                    (n.background_blur.is_some() || n.glass.is_some() || n.gather_shader().is_some())
-                        .then_some((i, id))
+                    let non_box = matches!(n.kind, crate::model::ShapeKind::Path | crate::model::ShapeKind::Text);
+                    let has_gather = n.background_blur.is_some() || n.glass.is_some() || n.gather_shader().is_some();
+                    // Box drop/inner shadows draw inline in the walk (native blurred-rounded-rect), so only
+                    // NON-box shadows need the sink's silhouette stack.
+                    let has_silhouette_shadow = non_box && !n.shadows.is_empty();
+                    let needs_stack = has_silhouette_shadow || n.blur.is_some() || n.has_spread_shader();
+                    if needs_stack {
+                        Some((i, id, FX_STACK))
+                    } else if has_gather {
+                        Some((i, id, FX_GATHER))
+                    } else {
+                        None
+                    }
                 })
                 .collect()
         });
@@ -795,29 +865,43 @@ impl Sink {
             // guard tests for real geometry above the last gather, not for a trailing marker — otherwise
             // a pure-lens top would run an all-marker phase that clears the frame to black. Effect
             // stamping is unchanged, so the frame is pixel-identical to `cmd_effect` off.
-            let (boundaries, pre_final): (Vec<u32>, u32) = if crate::vello::abi::cmd_effect() {
+            // One walk builds the boundaries for BOTH paths; `cmd_effect` only decides whether a native
+            // CMD_EFFECT marker is also emitted at each boundary (the front-end-once fine needs them; the
+            // coarse-per-phase path doesn't). A layer blur's whole subtree is rendered isolated in the
+            // loop, so it is skipped from this shared walk entirely; gather/shadow keep their body here.
+            let use_markers = crate::vello::abi::cmd_effect();
+            let (boundaries, pre_final): (Vec<u32>, u32) = {
                 let mut b = Vec::with_capacity(gathers.len());
                 let mut cursor = 0usize;
-                for &(gi, gid) in &gathers {
+                for &(gi, gid, kind) in &gathers {
                     if gi > cursor {
                         backend.draw_scene_range(&mut scene, root, cursor, gi);
                         cursor = gi;
                     }
                     b.push(backend.draw_object_count(&scene));
-                    let effect_id = crate::vello::abi::with_scene(|live, _, _| {
-                        live.get(gid).map_or(1u32, |n| {
-                            if n.glass.is_some() { 0 } else if n.gather_shader().is_some() { 2 } else { 1 }
-                        })
-                    });
-                    backend.draw_effect_marker(&mut scene, root, gid, effect_id, [0.0; 4]);
+                    if use_markers {
+                        // effect_id: 0 glass, 1 background blur, 2 custom gather, 6 = effect stack. The
+                        // marker is only a boundary today (fine steps over it); the sink dispatches by the
+                        // node, so the id is informational.
+                        let effect_id = if kind == FX_STACK {
+                            6u32
+                        } else {
+                            crate::vello::abi::with_scene(|live, _, _| {
+                                live.get(gid).map_or(1u32, |n| {
+                                    if n.glass.is_some() { 0 } else if n.gather_shader().is_some() { 2 } else { 1 }
+                                })
+                            })
+                        };
+                        backend.draw_effect_marker(&mut scene, root, gid, effect_id, [0.0; 4]);
+                    }
+                    if kind == FX_STACK {
+                        // Exclude the whole stack node's subtree from the shared walk — `wv_paint_stack`
+                        // renders its body isolated (so blur/spread apply) and composites the full stack.
+                        cursor = gi + 1;
+                    }
                 }
                 let pf = backend.draw_object_count(&scene);
                 backend.draw_scene_range(&mut scene, root, cursor, usize::MAX);
-                (b, pf)
-            } else {
-                let gather_root_indices: Vec<usize> = gathers.iter().map(|&(gi, _)| gi).collect();
-                let b = backend.draw_whole_scene_counted(&mut scene, root, &gather_root_indices);
-                let pf = b.last().copied().unwrap_or(0);
                 (b, pf)
             };
             let total_draws = backend.draw_object_count(&scene);
@@ -848,19 +932,41 @@ impl Sink {
             backend.phased_begin(&scene, device, queue, &mut enc, width, height, crate::vello::abi::background());
             crate::vello::prof::dbg_add(31, crate::vello::prof::now() - _tpb);
 
+            // Front-end-once: with CMD_EFFECT markers in the encoding, build ONE shared PTCL — coarse
+            // runs a single time over the whole draw range — and paint each backdrop segment with a
+            // lone `fine` dispatch (seg_target), instead of re-running the flatten/bin/coarse stack per
+            // draw-window. `seg_mode` mirrors the marker gate used to build `boundaries` above, so the
+            // markers `fine` counts are present. With it off, the loop below drives the original
+            // coarse-per-phase path unchanged — the A/B that proves the two produce identical pixels.
+            let seg_mode = crate::vello::abi::cmd_effect();
+            if seg_mode {
+                backend.phased_frontend_full(device, queue, &mut enc);
+            }
+            let n_gathers = gathers.len() as u32;
+
             // DIAG (bucket 27): the phase loop + gather stamps + finish + swap blit — the CPU cost of
             // recording the actual render commands, closing the remaining `other`.
             let _tpl = crate::vello::prof::now();
             let mut drawn_upto = 0u32; // draws already rendered into `cur`
             let mut cur: Option<usize> = None; // slot holding the current accumulator
             let mut next_slot = 0usize; // next fine-phase output slot
-            for (j, &(_, gid)) in gathers.iter().enumerate() {
+            // Checkpoint the frame keepalives so each node's effect scratch can be recycled back into
+            // the pool at its boundary (the phase `texs`/`views` slots are held locally, not here, so
+            // they are untouched). Peak memory = phase slots + accumulator + one node, not Σ(nodes).
+            let (tex_cp, view_cp) = (self.frame_transient.len(), self.frame_transient_views.len());
+            for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
                 let b = boundaries[j];
                 if b > drawn_upto {
-                    // Render the backdrop segment [drawn_upto, b) over the running accumulator (the very
-                    // first phase has no base: `fine_area` clears to the page background).
+                    // Render the backdrop segment below gather j over the running accumulator (the very
+                    // first phase has no base: `fine_area` clears to the page background). Segmented:
+                    // `fine` paints segment j of the shared PTCL (bounded by gather j's marker). Windowed:
+                    // re-run coarse over draws [drawn_upto, b). Both cover the same backdrop geometry.
                     let base = cur.map(|c| &views[c]);
-                    backend.phased_phase(device, queue, &mut enc, drawn_upto, b, base, &views[next_slot]);
+                    if seg_mode {
+                        backend.phased_fine_segment(device, queue, &mut enc, j as u32, base, &views[next_slot]);
+                    } else {
+                        backend.phased_phase(device, queue, &mut enc, drawn_upto, b, base, &views[next_slot]);
+                    }
                     cur = Some(next_slot);
                     next_slot += 1;
                     drawn_upto = b;
@@ -873,12 +979,19 @@ impl Sink {
                     cur = Some(next_slot);
                     next_slot += 1;
                 }
-                // Gather j's effect reads the accumulator and stamps its lens back onto it in place,
-                // recorded into the SAME frame encoder as the phases (`wv_stamp_gather` →
-                // `run_graph_into`). No flush needed: wgpu orders the fine→effect read-after-write with
-                // an in-encoder barrier, and the whole frame is one `queue.submit` at the end.
+                // Effect j runs into the accumulator, recorded into the SAME frame encoder as the phases.
+                // No flush needed: wgpu orders the fine→effect read-after-write with an in-encoder
+                // barrier, and the whole frame is one `queue.submit` at the end. A gather reads the
+                // accumulator and stamps its lens back in place; a path shadow composites a blurred
+                // silhouette under the body the NEXT fine segment paints over `cur`.
                 let ci = cur.expect("accumulator seeded");
-                self.wv_stamp_gather(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, width, height, format, sz);
+                match kind {
+                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, sz),
+                    _ => self.wv_stamp_gather(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, width, height, format, sz),
+                }
+                // This node's result is now composited into `views[ci]`; its scratch is dead — recycle
+                // it so the next node reuses the same GPU textures instead of the frame holding all.
+                self.recycle_node_transient(tex_cp, view_cp);
             }
             // Final phase: the gather bodies + everything above the last backdrop segment, over the last
             // stamp — but ONLY if there is real geometry left to draw. When the topmost gathers are pure
@@ -888,7 +1001,12 @@ impl Sink {
             // `drawn_upto` — is what keeps a trailing CMD_EFFECT marker from being mistaken for geometry.
             let final_slot = if total_draws > pre_final {
                 let base = cur.map(|c| &views[c]);
-                backend.phased_phase(device, queue, &mut enc, drawn_upto, u32::MAX, base, &views[next_slot]);
+                if seg_mode {
+                    // The final segment (index == marker count) is everything above the last gather.
+                    backend.phased_fine_segment(device, queue, &mut enc, n_gathers, base, &views[next_slot]);
+                } else {
+                    backend.phased_phase(device, queue, &mut enc, drawn_upto, u32::MAX, base, &views[next_slot]);
+                }
                 next_slot
             } else {
                 cur.expect("no geometry and no gather seeded an accumulator")
@@ -942,9 +1060,13 @@ impl Sink {
         let bg = crate::vello::abi::background().components;
         Compositor::clear(&mut enc, &acc_view, [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])], None);
 
+        // Checkpoint the keepalives so each node's effect scratch is recycled at its boundary (see
+        // `recycle_node_transient`) — bounding peak memory to acc + one node instead of acc + Σ(nodes).
+        let (tex_cp, view_cp) = (self.frame_transient.len(), self.frame_transient_views.len());
         let mut seg_start = 0usize;
-        for (gi, gid) in gathers {
-            // 1) Everything below this gather (above the previous one).
+        for (gi, gid, kind) in gathers {
+            // 1) Everything below this effect (a stack node's own body is rendered isolated in the stack,
+            //    so it is NOT drawn here; a pure gather keeps its body for the next segment, over the lens).
             if gi > seg_start {
                 self.wv_paint_segment(backend, device, queue, &mut enc, &acc_view, root, seg_start, gi, width, height, format, sz);
             }
@@ -953,10 +1075,19 @@ impl Sink {
             let fresh = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("whole-viewport") });
             queue.submit([std::mem::replace(&mut enc, fresh).finish()]);
             backend.after_submit();
-            // 3) Run the gather's effect graph over `acc` and stamp the lens back onto it.
-            self.wv_stamp_gather(backend, device, queue, &mut enc, &acc_view, root, full_view, gid, width, height, format, sz);
-            // The gather's own body (fill/tint over the lens) draws in the next segment.
-            seg_start = gi;
+            // 3) Run the effect over `acc`: a pure gather stamps its lens (its body paints in the next
+            //    segment, over it); a stack node runs its whole ordered effect stack (drops → gather →
+            //    body[+spread+blur] → inner) with its body rendered isolated.
+            match kind {
+                FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &acc_view, root, full_view, gid, gi, width, height, format, sz),
+                _ => self.wv_stamp_gather(backend, device, queue, &mut enc, &acc_view, root, full_view, gid, width, height, format, sz),
+            }
+            // A pure gather keeps its body for the next segment (over the lens); a stack node consumed its
+            // whole subtree into the isolated stack, so skip it.
+            seg_start = if kind == FX_STACK { gi + 1 } else { gi };
+            // The node's scratch is composited into `acc` and (via the flush) submitted — recycle it so
+            // the next node reuses the same GPU textures rather than the frame holding every node's.
+            self.recycle_node_transient(tex_cp, view_cp);
         }
         // Final segment: the topmost gather's body + everything above the last gather.
         if root_count > seg_start {
@@ -967,6 +1098,28 @@ impl Sink {
         queue.submit([enc.finish()]);
         backend.after_submit();
         self.frame_transient.push(acc);
+    }
+
+    /// Release every frame-transient texture (and its view) acquired since the `tex_cp`/`view_cp`
+    /// checkpoint back into the pool. Called at each whole-viewport effect-node boundary, once the
+    /// node's result is already composited into the accumulator so all of its scratch is dead.
+    ///
+    /// Without this, the frame keeps EVERY node's intermediates resident until the single submit — a
+    /// node fully loaded with effects allocates ~19 full-viewport textures, so peak memory is Σ(nodes)
+    /// (~7 GB at 4K × 12 heavy nodes, which spills GPU memory). With it, the next node REUSES the same
+    /// GPU textures via the pool free-list, so peak is `accumulator + one node`.
+    ///
+    /// Safe because the node's last read of each scratch texture is already RECORDED (the composite
+    /// into the accumulator) before the next node re-acquires and writes it: wgpu's hazard tracking —
+    /// in-encoder for the collapsed path, cross-submit on the same queue for the per-segment path —
+    /// serialises the write-after-read on the recycled texture. The pool holds the handle between
+    /// release and re-acquire, so the resource is never dropped while commands still reference it.
+    fn recycle_node_transient(&mut self, tex_cp: usize, view_cp: usize) {
+        crate::vello::prof::note_node_scratch(self.frame_transient.len().saturating_sub(tex_cp));
+        self.frame_transient_views.truncate(view_cp);
+        for tex in self.frame_transient.drain(tex_cp..) {
+            self.pool.release(tex);
+        }
     }
 
     /// A full-viewport 1:1 src-over blit of `src` onto `target`.
@@ -1131,6 +1284,398 @@ impl Sink {
         }
         self.frame_transient.push(rtex);
         self.frame_transient_views.push(rview);
+    }
+
+    /// Composite a Path node's drop shadow(s) into the whole-viewport accumulator, UNDER the body.
+    /// The front-end-once analogue of the tiled [`Self::paint_path_shadow`]: for each non-inset shadow
+    /// (matching the scheduler's `!inset` filter), draw the offset silhouette in the shadow colour into
+    /// a viewport-sized scratch, Gaussian-blur it via `run_graph_into` (folded into the frame encoder,
+    /// no self-submit), then SrcOver it over the accumulator — so the shadow reads under the body the
+    /// next fine segment paints. Runs full-viewport (no bbox crop); the tight-extent crop the tiled
+    /// path uses is a later optimisation. Offset/colour/spread ride on the node (applied by
+    /// `build_shadow_silhouette`); only the per-shadow device sigma is computed here.
+    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
+    fn wv_paint_path_shadow<B: RasterBackend>(
+        &mut self,
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        acc_view: &wgpu::TextureView,
+        root: Affine,
+        full_view: Affine,
+        id: u128,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sz: (f32, f32),
+    ) {
+        // Per-shadow PAGE sigma + the page rect each shadow actually covers (bounds shifted by the
+        // shadow's offset, grown by its spread and blur reach) — read once so the scene lock isn't held
+        // across GPU work. The rect is what crops the pass to the shadow instead of the whole viewport.
+        let shadows: Vec<(f32, crate::kurbo::Rect)> = crate::vello::abi::with_scene(|live, _, modifiers| {
+            live.get(id).map_or_else(Vec::new, |node| {
+                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                let base = crate::schedule::page_bounds(node, m);
+                node.shadows
+                    .iter()
+                    .filter(|s| !s.inset)
+                    .map(|s| {
+                        let sigma = crate::blur::radius_to_sigma(s.blur);
+                        let reach = f64::from(3.0 * sigma + s.spread);
+                        let ext = crate::kurbo::Rect::new(
+                            base.x0 + s.offset.x,
+                            base.y0 + s.offset.y,
+                            base.x1 + s.offset.x,
+                            base.y1 + s.offset.y,
+                        )
+                        .inflate(reach, reach);
+                        (sigma, ext)
+                    })
+                    .collect()
+            })
+        });
+        // Page sigma → device sigma via the view's linear scale, matching the tiled path (no cap).
+        let c = full_view.as_coeffs();
+        let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
+        for (i, (page_sigma, ext)) in shadows.into_iter().enumerate() {
+            // Extent-crop: this shadow only touches `(bx,by,bw,bh)` device px. Everything below renders
+            // into a surface that size, translated so the box origin is the surface origin, and
+            // composites back at `(bx,by)`.
+            let Some((bx, by, bw, bh)) = wv_device_box(ext, full_view, width, height) else { continue };
+            let crop = Affine::translate((-f64::from(bx), -f64::from(by))) * root;
+            let (bxf, byf, bwf, bhf) = (bx as f32, by as f32, bw as f32, bh as f32);
+            let device_sigma = page_sigma * scale;
+            if device_sigma >= 0.5 {
+                // Render scale = memory LIMIT ∩ effect DOWNSCALE, the one formula the gather path uses:
+                // `resolution_cap(reach)` caps for memory; `blur_acceptable_downscale` is the blur's free
+                // band-limit quality floor. Render the silhouette AND the blur at `k`, upscale on the
+                // composite — the silhouette is solid coverage, so the downscale aliases nothing.
+                let reach = 3.0 * f64::from(page_sigma);
+                let k = (tiling::resolution_cap(full_view, reach).min(f64::from(blur_acceptable_downscale(device_sigma)))) as f32;
+                let (kw, kh) = (((bwf * k).round() as u32).max(1), ((bhf * k).round() as u32).max(1));
+                // 1. Sharp offset silhouette at reduced scale (backend applies offset + spread).
+                let sil = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv path shadow silhouette");
+                let sil_view = sil.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut sscene = backend.new_scene(kw as u16, kh as u16);
+                backend.build_shadow_silhouette(&mut sscene, Affine::scale(f64::from(k)) * crop, id, i, false, true);
+                backend.rasterize(&sscene, device, queue, enc, &sil_view, kw, kh, TRANSPARENT);
+                // 2. Blur at reduced scale (reduced sigma). Scratch lives in the frame keepalives.
+                let passes = lower_graph(&effect_graph::background_blur_graph(device_sigma * k), None);
+                let blurred = run_graph_into(
+                    &self.compositor, &self.glass, device, enc, &[&sil_view], &passes, kw, kh, format,
+                    &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
+                );
+                self.frame_transient.push(sil);
+                self.frame_transient_views.push(sil_view);
+                let Some((tex, view)) = blurred else { return };
+                // 3. Upscale-composite the blurred silhouette back at the crop box, under the body to come.
+                self.compositor.blit(device, enc, acc_view, sz, &Blit {
+                    src: &view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kw as f32, kh as f32), src_size: (kw as f32, kh as f32), alpha: 1.0,
+                });
+                self.frame_transient.push(tex);
+                self.frame_transient_views.push(view);
+            } else {
+                // Sub-half-pixel blur: the sharp silhouette IS the shadow — render at native res (no
+                // downscale), still cropped to the shadow's own box.
+                let sil = self.pool.acquire_target(device, bw, bh, format, self.raster_usage, "wv path shadow silhouette");
+                let sil_view = sil.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut sscene = backend.new_scene(bw as u16, bh as u16);
+                backend.build_shadow_silhouette(&mut sscene, crop, id, i, false, true);
+                backend.rasterize(&sscene, device, queue, enc, &sil_view, bw, bh, TRANSPARENT);
+                self.compositor.blit(device, enc, acc_view, sz, &Blit {
+                    src: &sil_view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, bwf, bhf), src_size: (bwf, bhf), alpha: 1.0,
+                });
+                self.frame_transient.push(sil);
+                self.frame_transient_views.push(sil_view);
+            }
+        }
+    }
+
+    /// Composite a node's non-box INNER (inset) shadows over the whole-viewport accumulator, on top of
+    /// the body already painted below this boundary. The band is built entirely in textures (no scene
+    /// layers): render the shadow-coloured silhouette at the shape's own position (the flood — already
+    /// clipped to the silhouette because it IS the silhouette), render the same silhouette OFFSET and
+    /// Gaussian-blur it (the punch), then `DestOut` the punch out of the flood — leaving colour only in
+    /// the inner band on the offset side. The front-end-once analogue of the tiled `paint_inner_shadow`;
+    /// mirrors the box `draw_box_inner_shadows` (flood → `DestOut` blurred offset silhouette).
+    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
+    fn wv_paint_inner_shadow<B: RasterBackend>(
+        &mut self,
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        acc_view: &wgpu::TextureView,
+        root: Affine,
+        full_view: Affine,
+        id: u128,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sz: (f32, f32),
+    ) {
+        // Per-inner-shadow PAGE sigma + the page rect the band construction needs. The band itself lives
+        // INSIDE the silhouette, but the punch is the silhouette shifted by the shadow offset and then
+        // blurred — so the box must hold `bounds ∪ (bounds + offset)` grown by the blur reach, or the
+        // punch would clip at the crop edge and eat the wrong side of the band.
+        let shadows: Vec<(f32, crate::kurbo::Rect)> = crate::vello::abi::with_scene(|live, _, modifiers| {
+            live.get(id).map_or_else(Vec::new, |node| {
+                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                let base = crate::schedule::page_bounds(node, m);
+                node.shadows
+                    .iter()
+                    .filter(|s| s.inset)
+                    .map(|s| {
+                        let sigma = crate::blur::radius_to_sigma(s.blur);
+                        let reach = f64::from(3.0 * sigma + s.spread);
+                        let shifted = crate::kurbo::Rect::new(
+                            base.x0 + s.offset.x,
+                            base.y0 + s.offset.y,
+                            base.x1 + s.offset.x,
+                            base.y1 + s.offset.y,
+                        );
+                        (sigma, base.union(shifted).inflate(reach, reach))
+                    })
+                    .collect()
+            })
+        });
+        let c = full_view.as_coeffs();
+        let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
+        for (i, (page_sigma, ext)) in shadows.into_iter().enumerate() {
+            let Some((bx, by, bw, bh)) = wv_device_box(ext, full_view, width, height) else { continue };
+            let crop = Affine::translate((-f64::from(bx), -f64::from(by))) * root;
+            let (bxf, byf, bwf, bhf) = (bx as f32, by as f32, bw as f32, bh as f32);
+            let device_sigma = page_sigma * scale;
+            let blurred = device_sigma >= 0.5;
+            // Same render scale as the drop shadow: memory LIMIT ∩ blur DOWNSCALE (the whole band — flood,
+            // punch, blur, DestOut — is built at `k`, then upscaled once on the final composite). A sharp
+            // (sub-half-px) inner shadow renders full-res.
+            let k = if blurred {
+                let reach = 3.0 * f64::from(page_sigma);
+                (tiling::resolution_cap(full_view, reach).min(f64::from(blur_acceptable_downscale(device_sigma)))) as f32
+            } else {
+                1.0
+            };
+            let (kw, kh) = (((bwf * k).round() as u32).max(1), ((bhf * k).round() as u32).max(1));
+            let scaled_root = Affine::scale(f64::from(k)) * crop;
+            let ksz = (kw as f32, kh as f32);
+            // 1. The flood: shadow-coloured silhouette at the shape's own position (inset, no offset).
+            let band = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv inner shadow band");
+            let band_view = band.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut bscene = backend.new_scene(kw as u16, kh as u16);
+            backend.build_shadow_silhouette(&mut bscene, scaled_root, id, i, true, false);
+            backend.rasterize(&bscene, device, queue, enc, &band_view, kw, kh, TRANSPARENT);
+            // 2. The punch: same silhouette OFFSET, then blurred.
+            let punch = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv inner shadow punch");
+            let punch_view = punch.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut pscene = backend.new_scene(kw as u16, kh as u16);
+            backend.build_shadow_silhouette(&mut pscene, scaled_root, id, i, true, true);
+            backend.rasterize(&pscene, device, queue, enc, &punch_view, kw, kh, TRANSPARENT);
+            if blurred {
+                let passes = lower_graph(&effect_graph::background_blur_graph(device_sigma * k), None);
+                let blur_out = run_graph_into(
+                    &self.compositor, &self.glass, device, enc, &[&punch_view], &passes, kw, kh, format,
+                    &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
+                );
+                self.frame_transient.push(punch);
+                self.frame_transient_views.push(punch_view);
+                let Some((ptex, pview)) = blur_out else {
+                    self.frame_transient.push(band);
+                    self.frame_transient_views.push(band_view);
+                    return;
+                };
+                // 3. Punch the blurred offset silhouette out of the flood: band = band·(1 − punch.a).
+                self.compositor.blit_dstout(device, enc, &band_view, ksz, &Blit {
+                    src: &pview, dst: (0.0, 0.0, ksz.0, ksz.1), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
+                });
+                self.frame_transient.push(ptex);
+                self.frame_transient_views.push(pview);
+            } else {
+                // Near-zero blur: punch the sharp offset silhouette directly (k == 1).
+                self.compositor.blit_dstout(device, enc, &band_view, ksz, &Blit {
+                    src: &punch_view, dst: (0.0, 0.0, ksz.0, ksz.1), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
+                });
+                self.frame_transient.push(punch);
+                self.frame_transient_views.push(punch_view);
+            }
+            // 4. Upscale-composite the inner band back at the crop box (over the body already drawn below).
+            self.compositor.blit(device, enc, acc_view, sz, &Blit {
+                src: &band_view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
+            });
+            self.frame_transient.push(band);
+            self.frame_transient_views.push(band_view);
+        }
+    }
+
+    /// Run a stack node's WHOLE ordered effect stack over the whole-viewport accumulator, at the node's
+    /// z. Its body is excluded from the shared walk, so this composites the full stack in the same order
+    /// the tiled path does — **drops (under) → gather lens → body[+spread shaders +layer blur] (over) →
+    /// inner shadows (over)** — which is what lets several effects on ONE shape (and several of the same
+    /// kind) combine correctly. Each sub-effect reuses the same building block the single-effect path did.
+    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
+    fn wv_paint_stack<B: RasterBackend>(
+        &mut self,
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        acc_view: &wgpu::TextureView,
+        root: Affine,
+        full_view: Affine,
+        id: u128,
+        root_index: usize,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sz: (f32, f32),
+    ) {
+        let (has_drop, has_inner, has_gather) = crate::vello::abi::with_scene(|live, _, _| {
+            live.get(id).map_or((false, false, false), |n| {
+                (
+                    n.shadows.iter().any(|s| !s.inset),
+                    n.shadows.iter().any(|s| s.inset),
+                    n.background_blur.is_some() || n.glass.is_some() || n.gather_shader().is_some(),
+                )
+            })
+        });
+        // 1. Drop shadows, under the body.
+        if has_drop {
+            self.wv_paint_path_shadow(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+        }
+        // 2. A combined gather reads the accumulator (backdrop + drops) and stamps its lens.
+        if has_gather {
+            self.wv_stamp_gather(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+        }
+        // 3. The body: isolated render → spread shaders → layer blur, composited over.
+        self.wv_composite_body(backend, device, queue, enc, acc_view, root, full_view, id, root_index, width, height, format, sz);
+        // 4. Inner shadows, over the body.
+        if has_inner {
+            self.wv_paint_inner_shadow(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+        }
+    }
+
+    /// Render a stack node's subtree isolated, run its body-only custom (spread) shaders and its layer
+    /// blur over it in order, then SrcOver-composite the result onto the accumulator. The front-end-once
+    /// analogue of the tiled `build_bodies` → `custom_over_body` → `layer_blur_over_body` chain. Each
+    /// transform threads the running body texture through `run_graph_into` into the frame encoder;
+    /// intermediates go to the frame keepalive. Full-viewport; extent-crop is a later opt.
+    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
+    fn wv_composite_body<B: RasterBackend>(
+        &mut self,
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        acc_view: &wgpu::TextureView,
+        root: Affine,
+        full_view: Affine,
+        id: u128,
+        root_index: usize,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sz: (f32, f32),
+    ) {
+        // Body render scale = memory LIMIT ∩ DOWNSCALE, the one formula. A layer blur is applied LAST, so
+        // it softens everything before it — the whole body (spread shaders included) tolerates the blur's
+        // band limit. With no layer blur the body is sharp, so it can only take the MOST-restrictive
+        // spread shader's declared `acceptable_downscale` (max; `1.0` when none → full res).
+        let (blur_radius, spread_floor, base, spread_reach) = crate::vello::abi::with_scene(|live, _, modifiers| {
+            live.get(id).map_or((None, 1.0_f32, crate::kurbo::Rect::ZERO, 0.0_f64), |n| {
+                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                (
+                    n.blur,
+                    n.spread_shaders().map(|c| c.acceptable_downscale).fold(1.0_f32, f32::max),
+                    crate::schedule::page_bounds(n, m),
+                    f64::from(n.max_spread_reach()),
+                )
+            })
+        });
+        let blur_sigma = blur_radius
+            .map(|r| crate::geometry::cap_sigma_to_device(crate::blur::radius_to_sigma(r), full_view))
+            .filter(|s| *s >= 0.5);
+        let k = if let Some(sigma) = blur_sigma {
+            let reach = 3.0 * f64::from(sigma);
+            (tiling::resolution_cap(full_view, reach).min(f64::from(blur_acceptable_downscale(sigma)))) as f32
+        } else {
+            (tiling::resolution_cap(full_view, 0.0).min(f64::from(spread_floor))) as f32
+        };
+        // Extent-crop the body the same way the tiled `effect_extent` sizes its surface: the node's page
+        // bounds grown by whatever samples past the silhouette — the layer blur's 3σ and the widest
+        // spread-shader reach. Without this the body of a shape covering 3% of the screen rasterizes and
+        // filters the whole viewport.
+        let body_reach = f64::from(blur_sigma.map_or(0.0, |s| 3.0 * s)).max(spread_reach);
+        let Some((bx, by, bw, bh)) = wv_device_box(base.inflate(body_reach, body_reach), full_view, width, height) else {
+            return;
+        };
+        let crop = Affine::translate((-f64::from(bx), -f64::from(by))) * root;
+        let (bxf, byf, bwf, bhf) = (bx as f32, by as f32, bw as f32, bh as f32);
+        let (kw, kh) = (((bwf * k).round() as u32).max(1), ((bhf * k).round() as u32).max(1));
+        let ksz = (kw as f32, kh as f32);
+
+        // 1. Render the node's whole subtree (its root range) into an isolated transparent surface at `k`.
+        let sub = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv stack body");
+        let sub_view = sub.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut scene = backend.new_scene(kw as u16, kh as u16);
+        backend.draw_scene_range(&mut scene, Affine::scale(f64::from(k)) * crop, root_index, root_index + 1);
+        backend.rasterize(&scene, device, queue, enc, &sub_view, kw, kh, TRANSPARENT);
+        // `cur` is the running body; each transform replaces it and parks the old in the keepalive.
+        let mut cur_tex = sub;
+        let mut cur_view = sub_view;
+
+        // 2. Body-only (spread) custom shaders, in application order — body → e0 → e1 → … (mirrors the
+        //    tiled `custom_over_body`). Run at the body's `k` (the shader's resolution is `u[0].xy`).
+        let chain: Vec<(String, Vec<f32>, u32)> = crate::vello::abi::with_scene(|live, _, _| {
+            live.get(id).map(|n| n.spread_shaders().map(|c| (c.wgsl.clone(), c.params.clone(), c.param_vec4s)).collect())
+        })
+        .unwrap_or_default();
+        for (wgsl, params, param_vec4s) in chain {
+            let n_inputs = 1;
+            let mut hasher = DefaultHasher::new();
+            wgsl.hash(&mut hasher);
+            n_inputs.hash(&mut hasher);
+            let key = hasher.finish();
+            self.cap_custom_pipelines(key);
+            let pipeline = self
+                .custom_pipelines
+                .entry(key)
+                .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
+                .clone();
+            let mut u = vec![ksz.0, ksz.1];
+            u.extend_from_slice(&params);
+            let passes = lower_graph(&effect_graph::custom_graph(u, param_vec4s), Some(&pipeline));
+            let out = run_graph_into(
+                &self.compositor, &self.glass, device, enc, &[&cur_view], &passes, kw, kh, format,
+                &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
+            );
+            let Some((tex, view)) = out else { break };
+            self.frame_transient.push(cur_tex);
+            self.frame_transient_views.push(cur_view);
+            cur_tex = tex;
+            cur_view = view;
+        }
+
+        // 3. Layer blur at the reduced scale (reduced sigma), matching the tiled `layer_blur_over_body`.
+        if let Some(sigma) = blur_sigma {
+            let passes = lower_graph(&effect_graph::background_blur_graph(sigma * k), None);
+            if let Some((tex, view)) = run_graph_into(
+                &self.compositor, &self.glass, device, enc, &[&cur_view], &passes, kw, kh, format,
+                &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
+            ) {
+                self.frame_transient.push(cur_tex);
+                self.frame_transient_views.push(cur_view);
+                cur_tex = tex;
+                cur_view = view;
+            }
+        }
+
+        // 4. Upscale-composite the finished body back at the crop box, at the node's z.
+        self.compositor.blit(device, enc, acc_view, sz, &Blit {
+            src: &cur_view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
+        });
+        self.frame_transient.push(cur_tex);
+        self.frame_transient_views.push(cur_view);
     }
 
     /// Bbox-scoped gather stamp (the default gather path): crop the backdrop to the lens's device
@@ -2796,7 +3341,7 @@ impl Sink {
         let sil_view = sil.create_view(&wgpu::TextureViewDescriptor::default());
         let root_for_sil = Affine::translate((-edx, -edy)) * root;
         let mut sscene = backend.new_scene(w as u16, h as u16);
-        backend.build_shadow_silhouette(&mut sscene, root_for_sil, shape, shadow);
+        backend.build_shadow_silhouette(&mut sscene, root_for_sil, shape, shadow, false, true);
         backend.rasterize(&sscene, device, queue, enc, &sil_view, w, h, TRANSPARENT);
 
         // 2) Blur (device sigma = page sigma × zoom). A near-zero sigma keeps the sharp silhouette.
@@ -2840,6 +3385,106 @@ impl Sink {
         let src_rect = ((ix0 - edx) as f32, (iy0 - edy) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
         let src_size = (w as f32, h as f32);
         self.compositor.blit(device, enc, &to_view, buf, &Blit { src: &blurred_view, dst, src_rect, src_size, alpha: 1.0 });
+    }
+
+    /// Draw one **inner** (inset) shadow of a non-box shape as a blurred-silhouette band, composited
+    /// (SrcOver) into the tile scope OVER the body (this step is scheduled after the body). Build the band
+    /// in textures: flood the shape's silhouette in the shadow colour, render the same silhouette OFFSET
+    /// and blur it, then punch that out of the flood with a Porter-Duff `DestOut` — colour survives only
+    /// in the inner band on the offset side. The non-box analogue of the inline `draw_box_inner_shadows`.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn paint_inner_shadow<B: RasterBackend>(
+        &mut self,
+        shape: u128,
+        shadow: usize,
+        sigma: f32,
+        extent: Rect,
+        write_to: SurfaceRef,
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        root: Affine,
+        full_view: Affine,
+        format: wgpu::TextureFormat,
+    ) {
+        let Some(tile) = write_to.tile else { return };
+        let (edx, edy, edw, edh) = tiling::device_rect(full_view, extent);
+        let w = edw.ceil().max(1.0) as u32;
+        let h = edh.ceil().max(1.0) as u32;
+        const MAX_SHADOW: u32 = 4096;
+        if w > MAX_SHADOW || h > MAX_SHADOW {
+            return;
+        }
+        let root_for_sil = Affine::translate((-edx, -edy)) * root;
+        let full = (w as f32, h as f32);
+
+        // 1) The flood: shadow-coloured silhouette at the shape's own position (inset, no offset).
+        let flood = self.pool.acquire_target(device, w, h, format, self.raster_usage, "inner shadow flood");
+        let flood_view = flood.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut fscene = backend.new_scene(w as u16, h as u16);
+        backend.build_shadow_silhouette(&mut fscene, root_for_sil, shape, shadow, true, false);
+        backend.rasterize(&fscene, device, queue, enc, &flood_view, w, h, TRANSPARENT);
+
+        // 2) The punch: same silhouette OFFSET, then blurred.
+        let punch = self.pool.acquire_target(device, w, h, format, self.raster_usage, "inner shadow punch");
+        let punch_view = punch.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pscene = backend.new_scene(w as u16, h as u16);
+        backend.build_shadow_silhouette(&mut pscene, root_for_sil, shape, shadow, true, true);
+        backend.rasterize(&pscene, device, queue, enc, &punch_view, w, h, TRANSPARENT);
+
+        let c = full_view.as_coeffs();
+        let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
+        let device_sigma = sigma * scale;
+        if device_sigma >= 0.5 {
+            let passes = lower_graph(&effect_graph::background_blur_graph(device_sigma), None);
+            let Some((ptex, pview)) = run_graph_into(
+                &self.compositor, &self.glass, device, enc, &[&punch_view], &passes, w, h, format,
+                &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
+            ) else {
+                self.frame_transient.push(flood);
+                self.frame_transient.push(punch);
+                return;
+            };
+            // 3) Punch the blurred offset silhouette out of the flood: flood = flood·(1 − punch.a).
+            self.compositor.blit_dstout(device, enc, &flood_view, full, &Blit {
+                src: &pview, dst: (0.0, 0.0, full.0, full.1), src_rect: (0.0, 0.0, full.0, full.1), src_size: full, alpha: 1.0,
+            });
+            self.frame_transient.push(ptex);
+            self.frame_transient_views.push(pview);
+        } else {
+            self.compositor.blit_dstout(device, enc, &flood_view, full, &Blit {
+                src: &punch_view, dst: (0.0, 0.0, full.0, full.1), src_rect: (0.0, 0.0, full.0, full.1), src_size: full, alpha: 1.0,
+            });
+        }
+        self.frame_transient.push(punch);
+        self.frame_transient_views.push(punch_view);
+
+        // 4) SrcOver the band into the tile scope, at the extent's device position ∩ this tile.
+        let (ox, oy) = tiling::tile_device_origin(tile, full_view);
+        let ts = f64::from(TILE_SIZE);
+        let ix0 = edx.max(ox);
+        let iy0 = edy.max(oy);
+        let ix1 = (edx + edw).min(ox + ts);
+        let iy1 = (edy + edh).min(oy + ts);
+        if ix1 <= ix0 || iy1 <= iy0 {
+            self.frame_transient.push(flood);
+            self.frame_transient_views.push(flood_view);
+            return;
+        }
+        self.ensure_surface(write_to, device, TILE_BUFFER, TILE_BUFFER, format);
+        let to_view = self.surfaces[&write_to].view.clone();
+        if self.written.insert(write_to) {
+            Compositor::clear(enc, &to_view, [0.0, 0.0, 0.0, 0.0], None);
+        }
+        let m = f64::from(TILE_MARGIN);
+        let buf = (TILE_BUFFER as f32, TILE_BUFFER as f32);
+        let dst = ((ix0 - ox + m) as f32, (iy0 - oy + m) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
+        let src_rect = ((ix0 - edx) as f32, (iy0 - edy) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
+        let src_size = (w as f32, h as f32);
+        self.compositor.blit(device, enc, &to_view, buf, &Blit { src: &flood_view, dst, src_rect, src_size, alpha: 1.0 });
+        self.frame_transient.push(flood);
+        self.frame_transient_views.push(flood_view);
     }
 
     /// Device-space Gaussian sigma for a background blur (render-core's [`effect_graph::background_blur_sigma`]):

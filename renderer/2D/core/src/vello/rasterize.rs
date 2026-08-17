@@ -134,7 +134,11 @@ pub trait RasterBackend {
     /// non-box shape (an arbitrary path) gets a soft drop shadow that follows its true outline, since
     /// classic vello has no inline arbitrary-silhouette blur (only a native blurred *rounded-rect*).
     /// The default is a no-op; a backend that supports sink-blurred shadows overrides it.
-    fn build_shadow_silhouette(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _shadow: usize) {}
+    ///
+    /// `inset` selects which subset `shadow` indexes — the drop shadows (`false`) or the inner shadows
+    /// (`true`). `apply_offset` shifts the silhouette by the shadow's offset: a drop shadow and an inner
+    /// shadow's *punch* pass `true`; the inner shadow's un-shifted flood passes `false`.
+    fn build_shadow_silhouette(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _shadow: usize, _inset: bool, _apply_offset: bool) {}
 
     /// Emit a native `CMD_EFFECT` boundary marker for gather node `id` into the z-ordered stream: the
     /// front-end carries `effect_id` + `params` with the node's silhouette as coverage, so the effect
@@ -230,6 +234,34 @@ pub trait RasterBackend {
         _enc: &mut wgpu::CommandEncoder,
         _draw_start: u32,
         _draw_end: u32,
+        _base: Option<&wgpu::TextureView>,
+        _out: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only; gate on phased_supported()")
+    }
+
+    /// Record the whole scene's front-end + tiling + coarse ONCE (front-end-once), building the shared
+    /// PTCL that [`Self::phased_fine_segment`] then walks per segment. Call once after
+    /// [`Self::phased_begin`], before the first segment. Records into `enc` (no submit). This is the
+    /// front-end-once alternative to driving [`Self::phased_phase`] per draw-window; it needs the
+    /// `CMD_EFFECT` markers present in the encoding so `fine` can count segments. Classic-only; default panics.
+    fn phased_frontend_full(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _enc: &mut wgpu::CommandEncoder) {
+        unimplemented!("phased session is classic-only; gate on phased_supported()")
+    }
+
+    /// Dispatch `fine` for ONE segment (`seg_target`) of the shared PTCL built by
+    /// [`Self::phased_frontend_full`] into `enc`, writing `out`. `fine` composites only the commands
+    /// whose running segment index (counted at each `CMD_EFFECT` marker) equals `seg_target`. `base`
+    /// (`Some`) is the previous segment's output — after the caller's effect passes — loaded and
+    /// composited over; `None` clears to the base color (segment 0). `base`/`out` are caller-owned
+    /// `STORAGE_BINDING | TEXTURE_BINDING` textures. Classic-only; default panics.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn phased_fine_segment(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_target: u32,
         _base: Option<&wgpu::TextureView>,
         _out: &wgpu::TextureView,
     ) {

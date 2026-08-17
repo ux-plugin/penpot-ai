@@ -214,6 +214,9 @@ function main() {
       // bug would still read black). The with-backdrop gradient frame covers the canvas, so gray never
       // shows there. Set AFTER load (the fixture install resets the view/background).
       if (SCENE.startsWith('scope') && X.set_canvas_background) X.set_canvas_background(0xff4a4a52)
+      // Explicit canvasBg wins for ANY fixture scene, applied AFTER load (which resets the background).
+      // e.g. scene=parity&canvasBg=ffffffff paints the grid on white so dark drop shadows are visible.
+      if (q.get('canvasBg') && X.set_canvas_background) X.set_canvas_background(parseInt(q.get('canvasBg'), 16) >>> 0)
       X.set_view(1, 0, 0)
       renderer.render()
       log(SCENE + ': ' + cells + ' shapes rendered (' + BACKEND + ', ' + W + 'x' + H + ')')
