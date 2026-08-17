@@ -76,11 +76,17 @@ fn wv_device_box(page: crate::kurbo::Rect, full_view: Affine, width: u32, height
 }
 
 fn blur_acceptable_downscale(device_sigma: f32) -> f32 {
-    let reach = 3.0 * device_sigma;
-    if reach <= f32::EPSILON {
+    if device_sigma <= f32::EPSILON {
         return 1.0;
     }
-    (2.0 / reach).clamp(0.5, 1.0)
+    // Keep at least ~2px of sigma AT THE REDUCED RESOLUTION: `sigma·k >= 2`, so `k >= 2/sigma`.
+    //
+    // Deriving this from the 3-sigma *reach* instead saturates — `2/(3·sigma)` is already below the
+    // 0.5 floor for any sigma over 1.33, so every blur got halved, a radius-4 the same as a
+    // radius-24. That is fine for a wide blur, whose own softness hides the coarser grid, but a
+    // narrow one leaves the shape's half-resolution silhouette visible at the edge. Sigma is the
+    // right scale to measure against: it is what says how much detail the blur actually destroys.
+    (2.0 / device_sigma).clamp(0.5, 1.0)
 }
 
 /// Distinct custom-shader render pipelines kept before the cache is dropped. Keyed by WGSL source
