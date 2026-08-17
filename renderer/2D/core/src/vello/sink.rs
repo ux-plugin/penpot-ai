@@ -112,6 +112,27 @@ impl PoolKey {
 
 }
 
+/// Effect-node kinds the whole-viewport driver dispatches on. `FX_GATHER` is a pure gather (its body
+/// stays in the shared walk); `FX_STACK` carries a non-box shadow, a layer blur or a spread shader, so
+/// its body is excluded from the walk and its whole ordered stack runs at the boundary.
+const FX_GATHER: u8 = 0;
+const FX_STACK: u8 = 1;
+
+/// One whole-viewport effect surface, resolved to geometry: which node/kind it belongs to, the device
+/// crop box it covers, the render scale `k`, the surface size at that scale, and its device sigma.
+#[derive(Clone, Copy)]
+struct WvCell {
+    key: (u128, u8, usize),
+    bx: u32,
+    by: u32,
+    bw: u32,
+    bh: u32,
+    kw: u32,
+    kh: u32,
+    k: f32,
+    sigma: f32,
+}
+
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
 const MAX_POOL_PER_KEY: usize = 32;
 
@@ -225,6 +246,15 @@ pub struct Sink {
     /// records into the frame encoder instead of self-submitting. Dropped (cleared) each frame.
     frame_transient_views: Vec<wgpu::TextureView>,
 
+    /// Whole-viewport effect surfaces materialised by [`Self::wv_atlas_prepass`], keyed by
+    /// `(node, kind, index)` — kind `0` a drop-shadow silhouette, `1` the node's isolated body.
+    ///
+    /// Every one of these used to be its own `backend.rasterize`, i.e. its own full vello front-end
+    /// (~13 dispatches) for a handful of geometry. The prepass draws them all into ONE shelf-packed
+    /// atlas with a single front-end and copies each cell out, so the per-surface cost collapses to a
+    /// texture copy. Rebuilt every frame; drained into `frame_transient` when the frame ends.
+    wv_atlas: HashMap<(u128, u8, usize), (wgpu::Texture, wgpu::TextureView)>,
+
     /// DEBUG: an atlas captured this frame (view, w, h) to blit over the swapchain so the batched
     /// gather's intermediates can be inspected. Selected by `abi::debug_atlas()`.
     dbg_atlas: Option<(wgpu::TextureView, u32, u32)>,
@@ -275,6 +305,7 @@ impl Sink {
             pool: TexturePool::default(),
             frame_transient: Vec::new(),
             frame_transient_views: Vec::new(),
+            wv_atlas: HashMap::new(),
             dbg_atlas: None,
             gpu_timer: None,
             gpu_timer_tried: false,
@@ -740,8 +771,6 @@ impl Sink {
         // and its whole effect stack runs at the boundary in z-order — drops → gather → body[+spread
         // +blur] → inner — so effects on one shape combine exactly as the tiled path already composes them
         // (`PaintPathShadow` → `custom_over_body`/`layer_blur_over_body` → `PaintInnerShadow`).
-        const FX_GATHER: u8 = 0;
-        const FX_STACK: u8 = 1;
         let gathers: Vec<(usize, u128, u8)> = crate::vello::abi::with_scene(|live, _, _| {
             live.roots()
                 .iter()
@@ -1060,8 +1089,12 @@ impl Sink {
         let bg = crate::vello::abi::background().components;
         Compositor::clear(&mut enc, &acc_view, [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])], None);
 
+        // Rasterize every effect surface for the frame in ONE scene, before any node runs. Each node's
+        // helpers then sample a ready cell instead of standing up their own vello front-end.
+        self.wv_atlas_prepass(&gathers, backend, device, queue, &mut enc, root, full_view, width, height, format);
         // Checkpoint the keepalives so each node's effect scratch is recycled at its boundary (see
         // `recycle_node_transient`) — bounding peak memory to acc + one node instead of acc + Σ(nodes).
+        // Taken AFTER the prepass so the atlas cells, which every node reads, are never recycled.
         let (tex_cp, view_cp) = (self.frame_transient.len(), self.frame_transient_views.len());
         let mut seg_start = 0usize;
         for (gi, gid, kind) in gathers {
@@ -1286,6 +1319,231 @@ impl Sink {
         self.frame_transient_views.push(rview);
     }
 
+    /// One effect surface a whole-viewport node needs, resolved to geometry: its device crop box, the
+    /// scale `k` it renders at, and the resulting surface size. Both the atlas prepass and the effect
+    /// helper that later consumes the surface derive it from here, so they cannot disagree.
+    fn wv_drop_cells(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Vec<WvCell> {
+        let shadows: Vec<(f32, crate::kurbo::Rect)> = crate::vello::abi::with_scene(|live, _, modifiers| {
+            live.get(id).map_or_else(Vec::new, |node| {
+                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                let base = crate::schedule::page_bounds(node, m);
+                node.shadows
+                    .iter()
+                    .filter(|s| !s.inset)
+                    .map(|s| {
+                        let sigma = crate::blur::radius_to_sigma(s.blur);
+                        let reach = f64::from(3.0 * sigma + s.spread);
+                        (
+                            sigma,
+                            crate::kurbo::Rect::new(
+                                base.x0 + s.offset.x,
+                                base.y0 + s.offset.y,
+                                base.x1 + s.offset.x,
+                                base.y1 + s.offset.y,
+                            )
+                            .inflate(reach, reach),
+                        )
+                    })
+                    .collect()
+            })
+        });
+        let c = full_view.as_coeffs();
+        let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
+        let mut out = Vec::with_capacity(shadows.len());
+        for (i, (page_sigma, ext)) in shadows.into_iter().enumerate() {
+            let Some((bx, by, bw, bh)) = wv_device_box(ext, full_view, width, height) else { continue };
+            let device_sigma = page_sigma * scale;
+            let k = if device_sigma >= 0.5 {
+                (tiling::resolution_cap(full_view, 3.0 * f64::from(page_sigma))
+                    .min(f64::from(blur_acceptable_downscale(device_sigma)))) as f32
+            } else {
+                1.0
+            };
+            let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
+            out.push(WvCell { key: (id, 0, i), bx, by, bw, bh, kw, kh, k, sigma: device_sigma });
+        }
+        out
+    }
+
+    /// The inner-shadow surfaces: the flood (kind `2`, the shape unshifted) and the punch (kind `3`,
+    /// the shape at the shadow's offset). Both share one box — it must hold the shifted punch plus its
+    /// blur reach, or the punch clips at the crop edge and eats the wrong side of the band.
+    fn wv_inner_cells(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Vec<WvCell> {
+        let shadows: Vec<(f32, crate::kurbo::Rect)> = crate::vello::abi::with_scene(|live, _, modifiers| {
+            live.get(id).map_or_else(Vec::new, |node| {
+                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                let base = crate::schedule::page_bounds(node, m);
+                node.shadows
+                    .iter()
+                    .filter(|s| s.inset)
+                    .map(|s| {
+                        let sigma = crate::blur::radius_to_sigma(s.blur);
+                        let reach = f64::from(3.0 * sigma + s.spread);
+                        let shifted = crate::kurbo::Rect::new(
+                            base.x0 + s.offset.x,
+                            base.y0 + s.offset.y,
+                            base.x1 + s.offset.x,
+                            base.y1 + s.offset.y,
+                        );
+                        (sigma, base.union(shifted).inflate(reach, reach))
+                    })
+                    .collect()
+            })
+        });
+        let c = full_view.as_coeffs();
+        let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
+        let mut out = Vec::with_capacity(shadows.len() * 2);
+        for (i, (page_sigma, ext)) in shadows.into_iter().enumerate() {
+            let Some((bx, by, bw, bh)) = wv_device_box(ext, full_view, width, height) else { continue };
+            let device_sigma = page_sigma * scale;
+            let k = if device_sigma >= 0.5 {
+                (tiling::resolution_cap(full_view, 3.0 * f64::from(page_sigma))
+                    .min(f64::from(blur_acceptable_downscale(device_sigma)))) as f32
+            } else {
+                1.0
+            };
+            let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
+            for kind in [2u8, 3u8] {
+                out.push(WvCell { key: (id, kind, i), bx, by, bw, bh, kw, kh, k, sigma: device_sigma });
+            }
+        }
+        out
+    }
+
+    /// The isolated-body surface for a stack node (kind `1`), sized like [`Self::wv_drop_cells`].
+    fn wv_body_cell(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Option<WvCell> {
+        let (blur_radius, spread_floor, base, spread_reach) = crate::vello::abi::with_scene(|live, _, modifiers| {
+            live.get(id).map_or((None, 1.0_f32, crate::kurbo::Rect::ZERO, 0.0_f64), |n| {
+                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                (
+                    n.blur,
+                    n.spread_shaders().map(|c| c.acceptable_downscale).fold(1.0_f32, f32::max),
+                    crate::schedule::page_bounds(n, m),
+                    f64::from(n.max_spread_reach()),
+                )
+            })
+        });
+        let blur_sigma = blur_radius
+            .map(|r| crate::geometry::cap_sigma_to_device(crate::blur::radius_to_sigma(r), full_view))
+            .filter(|s| *s >= 0.5);
+        let k = if let Some(sigma) = blur_sigma {
+            (tiling::resolution_cap(full_view, 3.0 * f64::from(sigma))
+                .min(f64::from(blur_acceptable_downscale(sigma)))) as f32
+        } else {
+            (tiling::resolution_cap(full_view, 0.0).min(f64::from(spread_floor))) as f32
+        };
+        let body_reach = f64::from(blur_sigma.map_or(0.0, |s| 3.0 * s)).max(spread_reach);
+        let (bx, by, bw, bh) = wv_device_box(base.inflate(body_reach, body_reach), full_view, width, height)?;
+        let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
+        Some(WvCell { key: (id, 1, 0), bx, by, bw, bh, kw, kh, k, sigma: blur_sigma.unwrap_or(0.0) })
+    }
+
+    /// Rasterize EVERY effect surface in the frame in one go.
+    ///
+    /// Each surface is a cell of one shelf-packed atlas, drawn by a single scene and so a single vello
+    /// front-end, then copied out into its own pooled texture. That replaces one full front-end per
+    /// surface (~13 dispatches each) with one for the whole frame plus N cheap texture copies. Cells are
+    /// sized to their own device extent and separated by `GAP`, so neither geometry nor a blur kernel
+    /// can reach a neighbouring cell — the same containment `atlas_effects` relies on.
+    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
+    fn wv_atlas_prepass<B: RasterBackend>(
+        &mut self,
+        gathers: &[(usize, u128, u8)],
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        root: Affine,
+        full_view: Affine,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) {
+        const GAP: u32 = 4;
+        // Last frame's cells go back to the pool, not the floor — otherwise every cell is a fresh
+        // `create_texture` each frame and the prepass trades front-ends for allocations.
+        for (_, (tex, _)) in std::mem::take(&mut self.wv_atlas) {
+            self.pool.release(tex);
+        }
+        let max_dim = device.limits().max_texture_dimension_2d;
+        // Collect every surface the frame's stack nodes will need, with its root index for the body.
+        let mut cells: Vec<(WvCell, usize)> = Vec::new();
+        for &(gi, gid, kind) in gathers {
+            if kind != FX_STACK {
+                continue;
+            }
+            for c in self.wv_drop_cells(gid, full_view, width, height) {
+                cells.push((c, gi));
+            }
+            for c in self.wv_inner_cells(gid, full_view, width, height) {
+                cells.push((c, gi));
+            }
+            if let Some(c) = self.wv_body_cell(gid, full_view, width, height) {
+                cells.push((c, gi));
+            }
+        }
+        cells.retain(|(c, _)| c.kw <= max_dim && c.kh <= max_dim);
+        if cells.len() < 2 {
+            return; // nothing to amortise a shared front-end over
+        }
+        let sizes: Vec<(u32, u32)> = cells.iter().map(|(c, _)| (c.kw, c.kh)).collect();
+        let Some(packing) = shelf_pack(&sizes, GAP, 2048, max_dim) else { return };
+        let (aw, ah) = (packing.width, packing.height);
+
+        // ONE scene, ONE front-end, for every surface in the frame.
+        let mut scene = backend.new_scene(aw as u16, ah as u16);
+        for cell in &packing.cells {
+            let (c, root_index) = &cells[cell.index];
+            // Place the cell's crop box at the cell origin, at the surface's own scale.
+            let m = Affine::translate((f64::from(cell.x), f64::from(cell.y)))
+                * Affine::scale(f64::from(c.k))
+                * Affine::translate((-f64::from(c.bx), -f64::from(c.by)))
+                * root;
+            match c.key.1 {
+                0 => backend.build_shadow_silhouette(&mut scene, m, c.key.0, c.key.2, false, true),
+                2 => backend.build_shadow_silhouette(&mut scene, m, c.key.0, c.key.2, true, false),
+                3 => backend.build_shadow_silhouette(&mut scene, m, c.key.0, c.key.2, true, true),
+                _ => backend.draw_scene_range(&mut scene, m, *root_index, *root_index + 1),
+            }
+        }
+        let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
+        let atlas = self.pool.acquire(
+            device,
+            PoolKey { w: aw, h: ah, format, usage: atlas_usage.bits() },
+            "wv effect atlas",
+        );
+        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
+        backend.rasterize(&scene, device, queue, enc, &atlas_view, aw, ah, TRANSPARENT);
+
+        // Copy each cell into its own surface, so every consumer keeps sampling a private texture.
+        for cell in &packing.cells {
+            let (c, _) = &cells[cell.index];
+            let tex = self.pool.acquire_target(
+                device, c.kw, c.kh, format,
+                self.raster_usage | wgpu::TextureUsages::COPY_DST,
+                "wv atlas cell",
+            );
+            enc.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: cell.x, y: cell.y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: c.kw, height: c.kh, depth_or_array_layers: 1 },
+            );
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.wv_atlas.insert(c.key, (tex, view));
+        }
+        self.frame_transient.push(atlas);
+    }
+
     /// Composite a Path node's drop shadow(s) into the whole-viewport accumulator, UNDER the body.
     /// The front-end-once analogue of the tiled [`Self::paint_path_shadow`]: for each non-inset shadow
     /// (matching the scheduler's `!inset` filter), draw the offset silhouette in the shadow colour into
@@ -1354,20 +1612,27 @@ impl Sink {
                 let reach = 3.0 * f64::from(page_sigma);
                 let k = (tiling::resolution_cap(full_view, reach).min(f64::from(blur_acceptable_downscale(device_sigma)))) as f32;
                 let (kw, kh) = (((bwf * k).round() as u32).max(1), ((bhf * k).round() as u32).max(1));
-                // 1. Sharp offset silhouette at reduced scale (backend applies offset + spread).
-                let sil = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv path shadow silhouette");
-                let sil_view = sil.create_view(&wgpu::TextureViewDescriptor::default());
-                let mut sscene = backend.new_scene(kw as u16, kh as u16);
-                backend.build_shadow_silhouette(&mut sscene, Affine::scale(f64::from(k)) * crop, id, i, false, true);
-                backend.rasterize(&sscene, device, queue, enc, &sil_view, kw, kh, TRANSPARENT);
+                // 1. The sharp offset silhouette. The atlas prepass already rasterized it as a cell of
+                //    the frame's shared scene, so take that; only stand up a private vello front-end
+                //    when it didn't (too few surfaces to amortise, or the packing declined).
+                let sil_view = if let Some((_, v)) = self.wv_atlas.get(&(id, 0, i)) {
+                    v.clone()
+                } else {
+                    let sil = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv path shadow silhouette");
+                    let v = sil.create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut sscene = backend.new_scene(kw as u16, kh as u16);
+                    backend.build_shadow_silhouette(&mut sscene, Affine::scale(f64::from(k)) * crop, id, i, false, true);
+                    backend.rasterize(&sscene, device, queue, enc, &v, kw, kh, TRANSPARENT);
+                    self.frame_transient.push(sil);
+                    self.frame_transient_views.push(v.clone());
+                    v
+                };
                 // 2. Blur at reduced scale (reduced sigma). Scratch lives in the frame keepalives.
                 let passes = lower_graph(&effect_graph::background_blur_graph(device_sigma * k), None);
                 let blurred = run_graph_into(
                     &self.compositor, &self.glass, device, enc, &[&sil_view], &passes, kw, kh, format,
                     &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
                 );
-                self.frame_transient.push(sil);
-                self.frame_transient_views.push(sil_view);
                 let Some((tex, view)) = blurred else { return };
                 // 3. Upscale-composite the blurred silhouette back at the crop box, under the body to come.
                 self.compositor.blit(device, enc, acc_view, sz, &Blit {
@@ -1461,30 +1726,41 @@ impl Sink {
             let scaled_root = Affine::scale(f64::from(k)) * crop;
             let ksz = (kw as f32, kh as f32);
             // 1. The flood: shadow-coloured silhouette at the shape's own position (inset, no offset).
-            let band = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv inner shadow band");
-            let band_view = band.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut bscene = backend.new_scene(kw as u16, kh as u16);
-            backend.build_shadow_silhouette(&mut bscene, scaled_root, id, i, true, false);
-            backend.rasterize(&bscene, device, queue, enc, &band_view, kw, kh, TRANSPARENT);
+            // Flood and punch both come from the frame's atlas prepass when it ran; the band is then
+            // mutated in place by the DestOut below, which is safe because each cell was copied out
+            // into its own texture rather than aliasing the atlas.
+            let band_view = if let Some((_, v)) = self.wv_atlas.get(&(id, 2, i)) {
+                v.clone()
+            } else {
+                let band = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv inner shadow band");
+                let v = band.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut bscene = backend.new_scene(kw as u16, kh as u16);
+                backend.build_shadow_silhouette(&mut bscene, scaled_root, id, i, true, false);
+                backend.rasterize(&bscene, device, queue, enc, &v, kw, kh, TRANSPARENT);
+                self.frame_transient.push(band);
+                self.frame_transient_views.push(v.clone());
+                v
+            };
             // 2. The punch: same silhouette OFFSET, then blurred.
-            let punch = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv inner shadow punch");
-            let punch_view = punch.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut pscene = backend.new_scene(kw as u16, kh as u16);
-            backend.build_shadow_silhouette(&mut pscene, scaled_root, id, i, true, true);
-            backend.rasterize(&pscene, device, queue, enc, &punch_view, kw, kh, TRANSPARENT);
+            let punch_view = if let Some((_, v)) = self.wv_atlas.get(&(id, 3, i)) {
+                v.clone()
+            } else {
+                let punch = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv inner shadow punch");
+                let v = punch.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut pscene = backend.new_scene(kw as u16, kh as u16);
+                backend.build_shadow_silhouette(&mut pscene, scaled_root, id, i, true, true);
+                backend.rasterize(&pscene, device, queue, enc, &v, kw, kh, TRANSPARENT);
+                self.frame_transient.push(punch);
+                self.frame_transient_views.push(v.clone());
+                v
+            };
             if blurred {
                 let passes = lower_graph(&effect_graph::background_blur_graph(device_sigma * k), None);
                 let blur_out = run_graph_into(
                     &self.compositor, &self.glass, device, enc, &[&punch_view], &passes, kw, kh, format,
                     &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
                 );
-                self.frame_transient.push(punch);
-                self.frame_transient_views.push(punch_view);
-                let Some((ptex, pview)) = blur_out else {
-                    self.frame_transient.push(band);
-                    self.frame_transient_views.push(band_view);
-                    return;
-                };
+                let Some((ptex, pview)) = blur_out else { return };
                 // 3. Punch the blurred offset silhouette out of the flood: band = band·(1 − punch.a).
                 self.compositor.blit_dstout(device, enc, &band_view, ksz, &Blit {
                     src: &pview, dst: (0.0, 0.0, ksz.0, ksz.1), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
@@ -1496,15 +1772,11 @@ impl Sink {
                 self.compositor.blit_dstout(device, enc, &band_view, ksz, &Blit {
                     src: &punch_view, dst: (0.0, 0.0, ksz.0, ksz.1), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
                 });
-                self.frame_transient.push(punch);
-                self.frame_transient_views.push(punch_view);
             }
             // 4. Upscale-composite the inner band back at the crop box (over the body already drawn below).
             self.compositor.blit(device, enc, acc_view, sz, &Blit {
                 src: &band_view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
             });
-            self.frame_transient.push(band);
-            self.frame_transient_views.push(band_view);
         }
     }
 
@@ -1614,15 +1886,20 @@ impl Sink {
         let (kw, kh) = (((bwf * k).round() as u32).max(1), ((bhf * k).round() as u32).max(1));
         let ksz = (kw as f32, kh as f32);
 
-        // 1. Render the node's whole subtree (its root range) into an isolated transparent surface at `k`.
-        let sub = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv stack body");
-        let sub_view = sub.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut scene = backend.new_scene(kw as u16, kh as u16);
-        backend.draw_scene_range(&mut scene, Affine::scale(f64::from(k)) * crop, root_index, root_index + 1);
-        backend.rasterize(&scene, device, queue, enc, &sub_view, kw, kh, TRANSPARENT);
-        // `cur` is the running body; each transform replaces it and parks the old in the keepalive.
-        let mut cur_tex = sub;
-        let mut cur_view = sub_view;
+        // 1. The node's whole subtree, isolated at `k`. Taken from the frame's atlas prepass when it
+        //    rasterized this body as a cell; otherwise rendered here with its own front-end.
+        let mut cur_view = if let Some((_, v)) = self.wv_atlas.get(&(id, 1, 0)) {
+            v.clone()
+        } else {
+            let sub = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv stack body");
+            let v = sub.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut scene = backend.new_scene(kw as u16, kh as u16);
+            backend.draw_scene_range(&mut scene, Affine::scale(f64::from(k)) * crop, root_index, root_index + 1);
+            backend.rasterize(&scene, device, queue, enc, &v, kw, kh, TRANSPARENT);
+            self.frame_transient.push(sub);
+            self.frame_transient_views.push(v.clone());
+            v
+        };
 
         // 2. Body-only (spread) custom shaders, in application order — body → e0 → e1 → … (mirrors the
         //    tiled `custom_over_body`). Run at the body's `k` (the shader's resolution is `u[0].xy`).
@@ -1650,9 +1927,8 @@ impl Sink {
                 &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
             );
             let Some((tex, view)) = out else { break };
-            self.frame_transient.push(cur_tex);
+            self.frame_transient.push(tex);
             self.frame_transient_views.push(cur_view);
-            cur_tex = tex;
             cur_view = view;
         }
 
@@ -1663,9 +1939,8 @@ impl Sink {
                 &self.compositor, &self.glass, device, enc, &[&cur_view], &passes, kw, kh, format,
                 &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
             ) {
-                self.frame_transient.push(cur_tex);
+                self.frame_transient.push(tex);
                 self.frame_transient_views.push(cur_view);
-                cur_tex = tex;
                 cur_view = view;
             }
         }
@@ -1674,7 +1949,6 @@ impl Sink {
         self.compositor.blit(device, enc, acc_view, sz, &Blit {
             src: &cur_view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
         });
-        self.frame_transient.push(cur_tex);
         self.frame_transient_views.push(cur_view);
     }
 
