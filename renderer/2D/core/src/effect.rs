@@ -25,7 +25,7 @@
 //! The derived order is the order the renderer already composites in, and each field's own authored
 //! list order is preserved within its group.
 
-use crate::kurbo::Vec2;
+use crate::kurbo::{Rect, Vec2};
 use crate::model::{CustomShader, Glass, Node};
 use crate::peniko::Color;
 
@@ -99,6 +99,66 @@ impl Effect {
                 Op::Tint(_) => 0.0,
             })
             .fold(0.0_f32, f32::max)
+    }
+
+    /// The page-space rect this effect covers, given the shape's page bounds.
+    ///
+    /// The pipeline is walked in order and each op is applied to the running rect, because footprint
+    /// **composes**: a silhouette dilated by spread, then translated by an offset, then blurred, ends
+    /// up displaced by all three. Taking a maximum instead would undersize the surface and clip the
+    /// result. `EraseBy` unions its own offset copy, since the band spans both positions.
+    #[must_use]
+    pub fn footprint(&self, base: Rect) -> Rect {
+        let mut r = match self.source {
+            Source::Coverage { spread } => base.inflate(f64::from(spread), f64::from(spread)),
+            Source::Body | Source::Backdrop => base,
+        };
+        for op in &self.ops {
+            r = match op {
+                Op::Offset(o) => Rect::new(r.x0 + o.x, r.y0 + o.y, r.x1 + o.x, r.y1 + o.y),
+                Op::Blur { radius } => {
+                    let reach = f64::from(3.0 * crate::blur::radius_to_sigma(*radius));
+                    r.inflate(reach, reach)
+                }
+                Op::EraseBy { offset, blur } => {
+                    let reach = f64::from(3.0 * crate::blur::radius_to_sigma(*blur));
+                    r.union(Rect::new(r.x0 + offset.x, r.y0 + offset.y, r.x1 + offset.x, r.y1 + offset.y))
+                        .inflate(reach, reach)
+                }
+                Op::Shader(sh) => r.inflate(f64::from(sh.reach), f64::from(sh.reach)),
+                Op::Lens(g) => {
+                    let reach = f64::from(3.0 * g.total_blur_sigma());
+                    r.inflate(reach, reach)
+                }
+                Op::Tint(_) => r,
+            };
+        }
+        r
+    }
+
+    /// The blur **radius** that governs this effect's render scale, if any — the last blur in the
+    /// chain. A blur applied last softens everything before it, so the whole chain tolerates that
+    /// blur's band limit; an earlier op's sharper requirement no longer applies.
+    #[must_use]
+    pub fn governing_blur(&self) -> Option<f32> {
+        self.ops.iter().rev().find_map(|op| match op {
+            Op::Blur { radius } => Some(*radius),
+            Op::EraseBy { blur, .. } => Some(*blur),
+            _ => None,
+        })
+    }
+
+    /// The most restrictive downscale floor its shader ops declare (`1.0` = full resolution). Only
+    /// consulted when no blur governs, since a blur's band limit supersedes it.
+    #[must_use]
+    pub fn shader_downscale_floor(&self) -> f32 {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Shader(s) => Some(s.acceptable_downscale),
+                _ => None,
+            })
+            .fold(1.0_f32, f32::max)
     }
 
     /// Whether this effect has to wait for the backdrop beneath the shape to be finished.
@@ -278,6 +338,46 @@ mod tests {
         assert_eq!(flat.reach(), 0.0);
         let blurred = Effect { source: Source::Body, ops: vec![Op::Blur { radius: 10.0 }], compose: Compose::Replace };
         assert!(blurred.reach() > 0.0);
+    }
+
+    /// Footprint composes along the chain — a spread silhouette, shifted, then blurred is displaced
+    /// by all three. This is the property that sizes every effect surface.
+    #[test]
+    fn footprint_composes_spread_offset_and_blur() {
+        let mut n = node();
+        n.shadows = vec![Shadow { spread: 2.0, ..shadow(false, 8.0) }];
+        let e = &effect_stack(&n)[0];
+        let base = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let f = e.footprint(base);
+        let blur_reach = f64::from(3.0 * crate::blur::radius_to_sigma(8.0));
+        // spread out by 2, shifted by (4,5), then blurred.
+        assert!((f.x0 - (0.0 - 2.0 + 4.0 - blur_reach)).abs() < 1e-9);
+        assert!((f.y1 - (10.0 + 2.0 + 5.0 + blur_reach)).abs() < 1e-9);
+    }
+
+    /// An inner shadow's band spans both the shape and its offset punch, so the footprint unions them.
+    #[test]
+    fn inner_shadow_footprint_unions_the_offset_punch() {
+        let mut n = node();
+        n.shadows = vec![shadow(true, 6.0)];
+        let base = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let f = effect_stack(&n)[0].footprint(base);
+        let blur_reach = f64::from(3.0 * crate::blur::radius_to_sigma(6.0));
+        assert!((f.x0 - (0.0 - blur_reach)).abs() < 1e-9, "unshifted side kept");
+        assert!((f.x1 - (10.0 + 4.0 + blur_reach)).abs() < 1e-9, "shifted side included");
+    }
+
+    /// A trailing blur governs the render scale even when a sharper shader precedes it.
+    #[test]
+    fn a_trailing_blur_governs_the_render_scale() {
+        let mut n = node();
+        n.effects = vec![ShapeEffect { slot: crate::model::EffectSlot::Custom, shader: shader(1.0, false) }];
+        n.blur = Some(4.0);
+        let e = &effect_stack(&n)[0];
+        assert_eq!(e.governing_blur(), Some(4.0));
+        n.blur = None;
+        let e2 = &effect_stack(&n)[0];
+        assert_eq!(e2.governing_blur(), None, "no blur -> the shader floor decides instead");
     }
 
     #[test]

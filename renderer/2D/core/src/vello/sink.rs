@@ -24,6 +24,7 @@ use crate::atlas::{pack_grid, shelf_pack};
 use crate::model::TileMode;
 use crate::peniko::color::palette::css::TRANSPARENT;
 use crate::peniko::Color;
+use crate::effect::{Compose, Source};
 use crate::schedule::{
     first_write_paints, GatherPlan, LayerPaint, PaintOp, Schedule, Step, SurfaceRef, SurfaceRole,
 };
@@ -1319,123 +1320,75 @@ impl Sink {
         self.frame_transient_views.push(rview);
     }
 
-    /// One effect surface a whole-viewport node needs, resolved to geometry: its device crop box, the
-    /// scale `k` it renders at, and the resulting surface size. Both the atlas prepass and the effect
-    /// helper that later consumes the surface derive it from here, so they cannot disagree.
-    fn wv_drop_cells(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Vec<WvCell> {
-        let shadows: Vec<(f32, crate::kurbo::Rect)> = crate::vello::abi::with_scene(|live, _, modifiers| {
-            live.get(id).map_or_else(Vec::new, |node| {
-                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                let base = crate::schedule::page_bounds(node, m);
-                node.shadows
-                    .iter()
-                    .filter(|s| !s.inset)
-                    .map(|s| {
-                        let sigma = crate::blur::radius_to_sigma(s.blur);
-                        let reach = f64::from(3.0 * sigma + s.spread);
-                        (
-                            sigma,
-                            crate::kurbo::Rect::new(
-                                base.x0 + s.offset.x,
-                                base.y0 + s.offset.y,
-                                base.x1 + s.offset.x,
-                                base.y1 + s.offset.y,
-                            )
-                            .inflate(reach, reach),
-                        )
-                    })
-                    .collect()
-            })
-        });
+    /// Every effect surface a whole-viewport node needs, resolved to geometry, in ONE pass over the
+    /// node's unified effect list ([`crate::effect::effect_stack`]).
+    ///
+    /// This used to be three planners — one for drop silhouettes, one for the inner-shadow flood and
+    /// punch, one for the body — each re-deriving its own extent and render scale from a different
+    /// authoring field. They are the same computation: take the shape's page bounds, let the effect's
+    /// own pipeline displace and spread them ([`Effect::footprint`]), snap to device pixels, and pick
+    /// a render scale. Asking the effect instead of asking which field it came from collapses all
+    /// three into this loop, and a new effect kind needs no new planner.
+    ///
+    /// Backdrop readers are skipped: a gather samples the accumulator, which does not exist yet when
+    /// the prepass runs, so it cannot be batched into it.
+    ///
+    /// Cell keys stay `(node, kind, index)` with kind `0` drop silhouette, `1` body, `2` inner flood,
+    /// `3` inner punch, because that is what the consuming helpers look up.
+    fn wv_effect_cells(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Vec<WvCell> {
+        let Some((base, stack)) = crate::vello::abi::with_scene(|live, _, modifiers| {
+            let node = live.get(id)?;
+            let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+            Some((crate::schedule::page_bounds(node, m), crate::effect::effect_stack(node)))
+        }) else {
+            return Vec::new();
+        };
         let c = full_view.as_coeffs();
-        let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
-        let mut out = Vec::with_capacity(shadows.len());
-        for (i, (page_sigma, ext)) in shadows.into_iter().enumerate() {
-            let Some((bx, by, bw, bh)) = wv_device_box(ext, full_view, width, height) else { continue };
-            let device_sigma = page_sigma * scale;
-            let k = if device_sigma >= 0.5 {
-                (tiling::resolution_cap(full_view, 3.0 * f64::from(page_sigma))
-                    .min(f64::from(blur_acceptable_downscale(device_sigma)))) as f32
-            } else {
-                1.0
+        let view_scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
+        let (mut drop_i, mut inner_i) = (0usize, 0usize);
+        let mut out = Vec::new();
+        for effect in &stack {
+            if effect.reads_backdrop() {
+                continue;
+            }
+            // Which surfaces this effect materialises, and under which keys.
+            let kinds: &[u8] = match (&effect.source, effect.compose) {
+                (Source::Coverage { .. }, Compose::Under) => &[0],
+                (Source::Coverage { .. }, Compose::Over) => &[2, 3],
+                (Source::Body, _) => &[1],
+                _ => continue,
+            };
+            let Some((bx, by, bw, bh)) = wv_device_box(effect.footprint(base), full_view, width, height) else {
+                continue;
+            };
+            // Render scale = memory LIMIT ∩ effect DOWNSCALE. A trailing blur's band limit supersedes
+            // any sharper requirement before it; with no blur, the strictest shader floor decides.
+            let device_sigma = effect
+                .governing_blur()
+                .map(|r| crate::blur::radius_to_sigma(r) * view_scale)
+                .filter(|s| *s >= 0.5);
+            let k = match device_sigma {
+                Some(sigma) => (tiling::resolution_cap(full_view, 3.0 * f64::from(sigma / view_scale))
+                    .min(f64::from(blur_acceptable_downscale(sigma)))) as f32,
+                None => (tiling::resolution_cap(full_view, 0.0)
+                    .min(f64::from(effect.shader_downscale_floor()))) as f32,
             };
             let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
-            out.push(WvCell { key: (id, 0, i), bx, by, bw, bh, kw, kh, k, sigma: device_sigma });
-        }
-        out
-    }
-
-    /// The inner-shadow surfaces: the flood (kind `2`, the shape unshifted) and the punch (kind `3`,
-    /// the shape at the shadow's offset). Both share one box — it must hold the shifted punch plus its
-    /// blur reach, or the punch clips at the crop edge and eats the wrong side of the band.
-    fn wv_inner_cells(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Vec<WvCell> {
-        let shadows: Vec<(f32, crate::kurbo::Rect)> = crate::vello::abi::with_scene(|live, _, modifiers| {
-            live.get(id).map_or_else(Vec::new, |node| {
-                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                let base = crate::schedule::page_bounds(node, m);
-                node.shadows
-                    .iter()
-                    .filter(|s| s.inset)
-                    .map(|s| {
-                        let sigma = crate::blur::radius_to_sigma(s.blur);
-                        let reach = f64::from(3.0 * sigma + s.spread);
-                        let shifted = crate::kurbo::Rect::new(
-                            base.x0 + s.offset.x,
-                            base.y0 + s.offset.y,
-                            base.x1 + s.offset.x,
-                            base.y1 + s.offset.y,
-                        );
-                        (sigma, base.union(shifted).inflate(reach, reach))
-                    })
-                    .collect()
-            })
-        });
-        let c = full_view.as_coeffs();
-        let scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
-        let mut out = Vec::with_capacity(shadows.len() * 2);
-        for (i, (page_sigma, ext)) in shadows.into_iter().enumerate() {
-            let Some((bx, by, bw, bh)) = wv_device_box(ext, full_view, width, height) else { continue };
-            let device_sigma = page_sigma * scale;
-            let k = if device_sigma >= 0.5 {
-                (tiling::resolution_cap(full_view, 3.0 * f64::from(page_sigma))
-                    .min(f64::from(blur_acceptable_downscale(device_sigma)))) as f32
-            } else {
-                1.0
+            let index = match kinds[0] {
+                0 => drop_i,
+                2 => inner_i,
+                _ => 0,
             };
-            let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
-            for kind in [2u8, 3u8] {
-                out.push(WvCell { key: (id, kind, i), bx, by, bw, bh, kw, kh, k, sigma: device_sigma });
+            for &kind in kinds {
+                out.push(WvCell { key: (id, kind, index), bx, by, bw, bh, kw, kh, k, sigma: device_sigma.unwrap_or(0.0) });
+            }
+            match kinds[0] {
+                0 => drop_i += 1,
+                2 => inner_i += 1,
+                _ => {}
             }
         }
         out
-    }
-
-    /// The isolated-body surface for a stack node (kind `1`), sized like [`Self::wv_drop_cells`].
-    fn wv_body_cell(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Option<WvCell> {
-        let (blur_radius, spread_floor, base, spread_reach) = crate::vello::abi::with_scene(|live, _, modifiers| {
-            live.get(id).map_or((None, 1.0_f32, crate::kurbo::Rect::ZERO, 0.0_f64), |n| {
-                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                (
-                    n.blur,
-                    n.spread_shaders().map(|c| c.acceptable_downscale).fold(1.0_f32, f32::max),
-                    crate::schedule::page_bounds(n, m),
-                    f64::from(n.max_spread_reach()),
-                )
-            })
-        });
-        let blur_sigma = blur_radius
-            .map(|r| crate::geometry::cap_sigma_to_device(crate::blur::radius_to_sigma(r), full_view))
-            .filter(|s| *s >= 0.5);
-        let k = if let Some(sigma) = blur_sigma {
-            (tiling::resolution_cap(full_view, 3.0 * f64::from(sigma))
-                .min(f64::from(blur_acceptable_downscale(sigma)))) as f32
-        } else {
-            (tiling::resolution_cap(full_view, 0.0).min(f64::from(spread_floor))) as f32
-        };
-        let body_reach = f64::from(blur_sigma.map_or(0.0, |s| 3.0 * s)).max(spread_reach);
-        let (bx, by, bw, bh) = wv_device_box(base.inflate(body_reach, body_reach), full_view, width, height)?;
-        let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
-        Some(WvCell { key: (id, 1, 0), bx, by, bw, bh, kw, kh, k, sigma: blur_sigma.unwrap_or(0.0) })
     }
 
     /// Rasterize EVERY effect surface in the frame in one go.
@@ -1472,13 +1425,7 @@ impl Sink {
             if kind != FX_STACK {
                 continue;
             }
-            for c in self.wv_drop_cells(gid, full_view, width, height) {
-                cells.push((c, gi));
-            }
-            for c in self.wv_inner_cells(gid, full_view, width, height) {
-                cells.push((c, gi));
-            }
-            if let Some(c) = self.wv_body_cell(gid, full_view, width, height) {
+            for c in self.wv_effect_cells(gid, full_view, width, height) {
                 cells.push((c, gi));
             }
         }
