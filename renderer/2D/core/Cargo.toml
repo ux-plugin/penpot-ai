@@ -17,6 +17,13 @@ license = "Apache-2.0 OR MIT"
 description = "The 2D renderer core: geometry/color atoms, scene model, document state and the tile/SSA scheduler, plus the backend-agnostic Vello layer (device-generic wgpu effect executor, neutral drawer, production sink, FFI shell). Shared by the webgl-vello and webgpu-vello backends."
 publish = false
 
+[features]
+# The 512-tile CPU scheduler and its tile cache. Hybrid/WebGL2 renders through it; classic renders
+# the whole viewport in one native scene and has no use for it, so classic turns it off and drops the
+# machinery from its cdylib. Defaults ON so any consumer that does not opt out keeps the old surface.
+default = ["tiled-scheduler"]
+tiled-scheduler = []
+
 [lib]
 
 [dependencies]

@@ -39,6 +39,7 @@ pub mod quadtree;
 pub mod schedule;
 pub mod selection;
 pub mod text;
+#[cfg(feature = "tiled-scheduler")]
 pub mod tile_cache;
 pub mod tiling;
 

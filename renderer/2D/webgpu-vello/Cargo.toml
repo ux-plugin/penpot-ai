@@ -21,7 +21,12 @@ name = "vello_gpu_renderer"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-render-core = { path = "../core" }
+# Classic renders the whole viewport in one native scene, so it has no use for the 512-tile CPU
+# scheduler — turned off here to keep it out of the shipped cdylib. The dev-dependency below turns it
+# back on for tests and examples, where the tiled path is the independent reference the whole-viewport
+# path is pixel-checked against. Cargo pulls dev-deps in for `cargo test`/`--example` but not for
+# `cargo build --lib`, which is exactly the split we want.
+render-core = { path = "../core", default-features = false }
 # The shared device-generic effect executor (compositor, glass, blur, custom pass-graph). Classic
 # vello reuses it unchanged — its pipelines run on any wgpu device, including classic's.
 
@@ -65,6 +70,8 @@ console_error_panic_hook = "0.1.7"
 console_log = "1.0"
 
 [dev-dependencies]
+# The tiled scheduler, as the A/B oracle. Examples and tests only — never the cdylib.
+render-core = { path = "../core", features = ["tiled-scheduler"] }
 # Headless native render + readback proof (no browser): block on wgpu's async device/adapter/map.
 pollster = "0.4"
 # Encode the readback buffer to a PNG proof (already in the tree via the vello graphics stack).

@@ -28,6 +28,7 @@ use crate::effect::{Compose, Source};
 use crate::schedule::{
     first_write_paints, GatherPlan, LayerPaint, PaintOp, Schedule, Step, SurfaceRef, SurfaceRole,
 };
+#[cfg(feature = "tiled-scheduler")]
 use crate::tile_cache::TileCache;
 use crate::tiling::{self, TileKey, TILE_BUFFER, TILE_MARGIN, TILE_SIZE};
 use crate::vello::rasterize::RasterBackend;
@@ -233,6 +234,7 @@ pub struct Sink {
     /// only the newly-exposed tiles and blits the rest from here. The invalidation + eviction policy
     /// (scale change → drop all, dirty rect → drop covered, LRU beyond budget) is backend-neutral and
     /// lives in [`TileCache`]; this sink only owns the `Surface` values it stores.
+    #[cfg(feature = "tiled-scheduler")]
     tile_cache: TileCache<Surface>,
 
     /// The usage every texture this frame's backend rasterizes into must carry (see
@@ -307,6 +309,7 @@ impl Sink {
             backdrop_origin: HashMap::new(),
             backdrop_scale: HashMap::new(),
             custom_pipelines: HashMap::new(),
+            #[cfg(feature = "tiled-scheduler")]
             tile_cache: TileCache::new(),
             raster_usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             pool: TexturePool::default(),
@@ -324,6 +327,7 @@ impl Sink {
         }
     }
 
+    #[cfg(feature = "tiled-scheduler")]
     /// Decide, for this frame, which visible tiles must be (re)rendered. A zoom drops the whole cache
     /// (tile pixels are scale-variant). Otherwise the edited region — the page-space rects the caller
     /// drained from the abi, or everything when `dirty_all` — is invalidated tile by tile, so an edit
@@ -366,6 +370,7 @@ impl Sink {
         dirty
     }
 
+    #[cfg(feature = "tiled-scheduler")]
     /// Execute one frame's schedule onto `surface` (the swapchain texture).
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     pub fn execute<B: RasterBackend>(
@@ -2459,6 +2464,7 @@ impl Sink {
         handled
     }
 
+    #[cfg(feature = "tiled-scheduler")]
     /// The batched background-blur gather stage — **the collapse**. Instead of a backdrop-compose +
     /// blur pass *per* deferrable blur lens (a GPU round-trip each, the ~90 ms cost), it composes every
     /// lens's backdrop into one atlas, blurs the atlas **once** per radius group, rasterizes every
@@ -2711,6 +2717,7 @@ impl Sink {
         }
     }
 
+    #[cfg(feature = "tiled-scheduler")]
     /// The pixels to read for one backdrop source tile: this frame's live surface if the tile is being
     /// re-rendered, otherwise the tile cache's copy.
     ///
@@ -2763,6 +2770,7 @@ impl Sink {
         crate::vello::prof::inc_step();
     }
 
+    #[cfg(feature = "tiled-scheduler")]
     fn backdrop_source(&self, src_ref: &SurfaceRef) -> Option<wgpu::TextureView> {
         if let Some(s) = self.surfaces.get(src_ref) {
             return Some(s.view.clone());
@@ -3179,6 +3187,7 @@ impl Sink {
         scratch.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
+    #[cfg(feature = "tiled-scheduler")]
     /// Fuse the below-z-order content over a gather's sample rect into one `Backdrop` surface (sized
     /// to the sample rect, pre-filled with the page background), by blitting each covered tile's
     /// centre into it. The backdrop is the *input* the blur samples — assembling it here, at the
