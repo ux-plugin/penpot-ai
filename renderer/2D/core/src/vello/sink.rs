@@ -1514,6 +1514,7 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_paint_path_shadow<B: RasterBackend>(
         &mut self,
+        cell: WvCell,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1527,12 +1528,7 @@ impl Sink {
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        let cells: Vec<WvCell> = self
-            .wv_effect_cells(id, full_view, width, height)
-            .into_iter()
-            .filter(|c| c.key.1 == 0)
-            .collect();
-        for cell in cells {
+        {
             let WvCell { bx, by, bw, bh, kw, kh, k, sigma, key } = cell;
             let (bxf, byf, bwf, bhf) = (bx as f32, by as f32, bw as f32, bh as f32);
             // The prepass rasterized this silhouette as an atlas cell; fall back to a private vello
@@ -1558,7 +1554,7 @@ impl Sink {
                     &self.compositor, &self.glass, device, enc, &[&sil_view], &passes, kw, kh, format,
                     &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
                 );
-                let Some((tex, view)) = blurred else { continue };
+                let Some((tex, view)) = blurred else { return };
                 self.compositor.blit(device, enc, acc_view, sz, &Blit {
                     src: &view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kwf, khf), src_size: (kwf, khf), alpha: 1.0,
                 });
@@ -1588,6 +1584,7 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_paint_inner_shadow<B: RasterBackend>(
         &mut self,
+        cell: WvCell,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1601,13 +1598,8 @@ impl Sink {
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        // Kind 2 is the flood, kind 3 the punch; the planner emits them as a pair per inset shadow.
-        let cells: Vec<WvCell> = self
-            .wv_effect_cells(id, full_view, width, height)
-            .into_iter()
-            .filter(|c| c.key.1 == 2)
-            .collect();
-        for cell in cells {
+        // `cell` is the flood (kind 2); its punch (kind 3) shares the same box and index.
+        {
             let WvCell { bx, by, bw, bh, kw, kh, k, sigma, key } = cell;
             let i = key.2;
             let ksz = (kw as f32, kh as f32);
@@ -1638,7 +1630,7 @@ impl Sink {
                     &self.compositor, &self.glass, device, enc, &[&punch_view], &passes, kw, kh, format,
                     &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
                 );
-                let Some((ptex, pview)) = blur_out else { continue };
+                let Some((ptex, pview)) = blur_out else { return };
                 self.compositor.blit_dstout(device, enc, &band_view, ksz, &Blit {
                     src: &pview, dst: (0.0, 0.0, ksz.0, ksz.1), src_rect: full_src, src_size: ksz, alpha: 1.0,
                 });
@@ -1679,28 +1671,59 @@ impl Sink {
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        let (has_drop, has_inner, has_gather) = crate::vello::abi::with_scene(|live, _, _| {
-            live.get(id).map_or((false, false, false), |n| {
-                (
-                    n.shadows.iter().any(|s| !s.inset),
-                    n.shadows.iter().any(|s| s.inset),
-                    n.background_blur.is_some() || n.glass.is_some() || n.gather_shader().is_some(),
-                )
-            })
+        let stack = crate::vello::abi::with_scene(|live, _, _| {
+            live.get(id).map(crate::effect::effect_stack).unwrap_or_default()
         });
-        // 1. Drop shadows, under the body.
-        if has_drop {
-            self.wv_paint_path_shadow(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+        let cells = self.wv_effect_cells(id, full_view, width, height);
+        let find = |kind: u8, idx: usize| cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).copied();
+
+        // The list IS the order. Each effect says what it reads and where its result goes, so the
+        // sequence here is the authored sequence rather than four phases hardcoded in this function.
+        let (mut drop_i, mut inner_i) = (0usize, 0usize);
+        let mut body_done = false;
+        for effect in &stack {
+            match (&effect.source, effect.compose) {
+                // Under the body: a drop shadow's blurred silhouette.
+                (Source::Coverage { .. }, Compose::Under) => {
+                    if let Some(c) = find(0, drop_i) {
+                        self.wv_paint_path_shadow(c, backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+                    }
+                    drop_i += 1;
+                }
+                // Reads the accumulator (backdrop + whatever composited under it) and stamps its lens.
+                (Source::Backdrop, _) => {
+                    self.wv_stamp_gather(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+                }
+                // The body itself: isolated render, then its own shader chain and layer blur.
+                (Source::Body, _) => {
+                    if let Some(c) = find(1, 0) {
+                        self.wv_composite_body(c, &effect.ops, backend, device, queue, enc, acc_view, root, full_view, id, root_index, width, height, format, sz);
+                    }
+                    body_done = true;
+                }
+                // Over the body — so the body has to exist first. A node with only shadows carries no
+                // `Source::Body` effect, yet its body is excluded from the shared walk and still needs
+                // drawing; painting it here keeps the inner band on top of it either way.
+                (Source::Coverage { .. }, Compose::Over) => {
+                    if !body_done {
+                        if let Some(c) = find(1, 0) {
+                            self.wv_composite_body(c, &[], backend, device, queue, enc, acc_view, root, full_view, id, root_index, width, height, format, sz);
+                        }
+                        body_done = true;
+                    }
+                    if let Some(c) = find(2, inner_i) {
+                        self.wv_paint_inner_shadow(c, backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+                    }
+                    inner_i += 1;
+                }
+                _ => {}
+            }
         }
-        // 2. A combined gather reads the accumulator (backdrop + drops) and stamps its lens.
-        if has_gather {
-            self.wv_stamp_gather(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
-        }
-        // 3. The body: isolated render → spread shaders → layer blur, composited over.
-        self.wv_composite_body(backend, device, queue, enc, acc_view, root, full_view, id, root_index, width, height, format, sz);
-        // 4. Inner shadows, over the body.
-        if has_inner {
-            self.wv_paint_inner_shadow(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+        // Nothing composited over the body (or there were no effects at all) — draw it now.
+        if !body_done {
+            if let Some(c) = find(1, 0) {
+                self.wv_composite_body(c, &[], backend, device, queue, enc, acc_view, root, full_view, id, root_index, width, height, format, sz);
+            }
         }
     }
 
@@ -1712,6 +1735,8 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_composite_body<B: RasterBackend>(
         &mut self,
+        cell: WvCell,
+        ops: &[crate::effect::Op],
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1730,13 +1755,6 @@ impl Sink {
         // that places it are sized by one derivation. The planner also resolves the render scale:
         // a trailing layer blur governs it (applied last, it softens everything before it, so the
         // whole chain tolerates its band limit); with no blur the strictest shader floor decides.
-        let Some(cell) = self
-            .wv_effect_cells(id, full_view, width, height)
-            .into_iter()
-            .find(|c| c.key.1 == 1)
-        else {
-            return;
-        };
         let WvCell { bx, by, bw, bh, kw, kh, k, sigma, .. } = cell;
         let blur_sigma = (sigma >= 0.5).then_some(sigma);
         let crop = Affine::translate((-f64::from(bx), -f64::from(by))) * root;
@@ -1760,10 +1778,14 @@ impl Sink {
 
         // 2. Body-only (spread) custom shaders, in application order — body → e0 → e1 → … (mirrors the
         //    tiled `custom_over_body`). Run at the body's `k` (the shader's resolution is `u[0].xy`).
-        let chain: Vec<(String, Vec<f32>, u32)> = crate::vello::abi::with_scene(|live, _, _| {
-            live.get(id).map(|n| n.spread_shaders().map(|c| (c.wgsl.clone(), c.params.clone(), c.param_vec4s)).collect())
-        })
-        .unwrap_or_default();
+        // The shader chain is this effect's own ops, in order — no second read of the node.
+        let chain: Vec<(String, Vec<f32>, u32)> = ops
+            .iter()
+            .filter_map(|op| match op {
+                crate::effect::Op::Shader(c) => Some((c.wgsl.clone(), c.params.clone(), c.param_vec4s)),
+                _ => None,
+            })
+            .collect();
         for (wgsl, params, param_vec4s) in chain {
             let n_inputs = 1;
             let mut hasher = DefaultHasher::new();
