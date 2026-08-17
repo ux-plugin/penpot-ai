@@ -1490,6 +1490,93 @@ pub fn build_stress_scene_n(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
     build_stress_scene_mask(n, FX_ALL)
 }
 
+/// Every effect combination the whole-viewport path can hit, one per cell — the broad net the five
+/// narrow fixtures do not cast.
+///
+/// The narrow fixtures each exercise one effect well, which is exactly why they missed a body cell
+/// going absent for shapes with no `Source::Body` effect: every node in the stress scene carries a
+/// blur and a shader. This walks the axes instead — how many shadows, drop versus inner versus both,
+/// spread, sharp versus blurred, body effects present or absent, gathers alone and combined — so a
+/// gap in one combination shows up as a cell that differs rather than as silence.
+///
+/// Cells are labelled, so an A/B run names the combination that broke.
+#[must_use]
+pub fn build_matrix_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    // (label, how to load the node's effects)
+    type Setup = (&'static str, fn(&mut Node));
+    let cells: &[Setup] = &[
+        ("plain", |_n| {}),
+        ("drop x1", |n| n.shadows = vec![drop_shadow(10.0, 0.0)]),
+        ("drop x2", |n| n.shadows = vec![drop_shadow(12.0, 0.0), drop_shadow(5.0, 0.0)]),
+        ("drop sharp", |n| n.shadows = vec![drop_shadow(0.0, 0.0)]),
+        ("drop spread", |n| n.shadows = vec![drop_shadow(8.0, 4.0)]),
+        ("inner x1", |n| n.shadows = vec![inner_shadow(8.0, 0.0)]),
+        ("inner x2", |n| n.shadows = vec![inner_shadow(9.0, 0.0), inner_shadow(4.0, 0.0)]),
+        ("inner sharp", |n| n.shadows = vec![inner_shadow(0.0, 0.0)]),
+        ("drop+inner", |n| n.shadows = vec![drop_shadow(10.0, 0.0), inner_shadow(7.0, 0.0)]),
+        ("blur", |n| n.blur = Some(4.0)),
+        ("shader", |n| n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(0.2, 0.9, 1.0, 0.5) }]),
+        ("shader+blur", |n| {
+            n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.5, 0.2, 0.5) }];
+            n.blur = Some(3.0);
+        }),
+        ("drop+blur", |n| {
+            n.shadows = vec![drop_shadow(10.0, 0.0)];
+            n.blur = Some(3.0);
+        }),
+        ("drop+shader", |n| {
+            n.shadows = vec![drop_shadow(10.0, 0.0)];
+            n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(0.3, 1.0, 0.4, 0.5) }];
+        }),
+        ("inner+blur", |n| {
+            n.shadows = vec![inner_shadow(8.0, 0.0)];
+            n.blur = Some(3.0);
+        }),
+        ("bg blur", |n| n.background_blur = Some(14.0)),
+        ("bg blur+drop", |n| {
+            n.background_blur = Some(14.0);
+            n.shadows = vec![drop_shadow(10.0, 0.0)];
+        }),
+        ("glass", |n| n.glass = Some(glass_lens(TileMode::Decal))),
+        ("glass+inner", |n| {
+            n.glass = Some(glass_lens(TileMode::Decal));
+            n.shadows = vec![inner_shadow(7.0, 0.0)];
+        }),
+        ("everything", |n| {
+            n.shadows = vec![drop_shadow(11.0, 0.0), drop_shadow(5.0, 2.0), inner_shadow(7.0, 0.0)];
+            n.background_blur = Some(10.0);
+            n.blur = Some(3.0);
+            n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.8, 0.3, 0.5) }];
+        }),
+    ];
+    for (label, setup) in cells {
+        // A backdrop for the gathers to read, so a gather cell is not blurring blank canvas.
+        let r = b.rect();
+        let mut under = Node::new(b.id(), ShapeKind::Rect);
+        under.bounds = Rect::new(r.x0 + 6.0, r.y0 + 6.0, r.x1 - 6.0, r.y1 - 6.0);
+        under.fills = vec![Paint::plain(Brush::Solid(col(210, 170, 90)))];
+        b.root(under);
+
+        let mut n = Node::new(b.id(), ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(Rect::new(r.x0 + 14.0, r.y0 + 10.0, r.x1 - 14.0, r.y1 - 20.0)));
+        n.fills = vec![Paint::plain(Brush::Solid(col(70, 110, 190)))];
+        setup(&mut n);
+        b.root(n);
+        b.advance(label);
+    }
+    b.finish()
+}
+
+fn drop_shadow(blur: f32, spread: f32) -> Shadow {
+    Shadow { color: cola(0, 0, 0, 150), blur, spread, offset: Vec2::new(7.0, 9.0), inset: false }
+}
+
+fn inner_shadow(blur: f32, spread: f32) -> Shadow {
+    Shadow { color: cola(0, 0, 0, 170), blur, spread, offset: Vec2::new(-5.0, -6.0), inset: true }
+}
+
 /// Effect-ablation bits for [`build_stress_scene_mask`]: turn one effect kind off at a time and the
 /// frame-time delta attributes that effect's GPU cost.
 pub const FX_DROP: u32 = 1;

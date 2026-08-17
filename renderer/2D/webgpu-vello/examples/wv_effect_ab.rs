@@ -4,7 +4,8 @@
 //! definitive per-pixel proof that a whole-viewport effect matches its tiled reference, with no
 //! browser/screenshot resampling in the loop.
 //!
-//! Scenes (SCENE env, default `layer-blur`): `layer-blur`, `path-shadow`.
+//! Scenes (SCENE env, default `layer-blur`): `layer-blur`, `path-shadow`, `inner-shadow`,
+//! `combined`, `boolean`, and `matrix` — every effect combination, one per cell.
 //! Whole-viewport mode: renders the DEFAULT (`wvPhased=0`, per-segment) AND the collapsed
 //! (`wvPhased=1`, front-end-once) path, diffing each against the tiled reference.
 //!
@@ -26,6 +27,7 @@ fn install(scene: &str) -> u32 {
         "inner-shadow" => render_core::vello::abi::load_inner_shadow_scene(),
         "combined" => render_core::vello::abi::load_combined_scene(),
         "boolean" => render_core::vello::abi::load_boolean_scene(),
+        "matrix" => render_core::vello::abi::load_matrix_scene(),
         _ => render_core::vello::abi::load_layer_blur_scene(),
     }
 }
@@ -112,6 +114,47 @@ fn main() {
         println!(
             "  WV {mode:<7} vs tiled: {diff_px}/{total} px differ ({pct:.4}%), max channel delta {max_delta}"
         );
+        // The matrix scene exists to find the ONE combination that broke, which an aggregate number
+        // hides — a whole cell rendering blank is a few percent of the canvas, indistinguishable from
+        // the soft-gradient noise the render-scale downscale leaves everywhere. So report per cell.
+        if scene == "matrix" {
+            per_cell_report(&tiled_rgba, &wv_rgba, w);
+        }
+    }
+}
+
+/// Diff each fixture cell separately and print them worst-first, named.
+fn per_cell_report(tiled: &[u8], wv: &[u8], w: u32) {
+    let labels: Vec<&'static str> =
+        render_core::parity::build_matrix_scene().1.into_iter().map(|(_, l)| l).collect();
+    let cell = render_core::parity::CELL as u32;
+    let margin = render_core::parity::MARGIN as u32;
+    let cols = render_core::parity::COLS as u32;
+    let mut rows: Vec<(String, usize, u8, f64)> = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        let i = i as u32;
+        let (x0, y0) = (margin + (i % cols) * cell, margin + (i / cols) * cell);
+        let (mut count, mut max_delta) = (0usize, 0u8);
+        for y in y0..(y0 + cell) {
+            for x in x0..(x0 + cell) {
+                let o = ((y * w + x) * 4) as usize;
+                if o + 4 > tiled.len() {
+                    continue;
+                }
+                let d = (0..4).map(|k| tiled[o + k].abs_diff(wv[o + k])).max().unwrap_or(0);
+                max_delta = max_delta.max(d);
+                if d > 1 {
+                    count += 1;
+                }
+            }
+        }
+        let pct = 100.0 * count as f64 / (cell * cell) as f64;
+        rows.push(((*label).to_string(), count, max_delta, pct));
+    }
+    rows.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap());
+    println!("    {:<16} {:>10} {:>9} {:>7}", "cell", "px differ", "of cell", "max Δ");
+    for (label, count, max_delta, pct) in rows {
+        println!("    {label:<16} {count:>10} {pct:>8.2}% {max_delta:>7}");
     }
 }
 
