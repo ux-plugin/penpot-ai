@@ -3443,20 +3443,33 @@ mod tests {
         );
     }
 
-    /// Inner and outer strokes are offsetting decisions kurbo cannot express. Drawing them
-    /// centred would put paint visibly in the wrong place — worse than drawing nothing, because
-    /// it reads as a rendering bug rather than a missing feature.
+    /// Inner and outer strokes put the whole weight on one side of the edge, which a plain
+    /// centre-aligned `kurbo::Stroke` cannot express. They were once dropped here on the grounds
+    /// that painting them centred puts paint visibly in the wrong place — worse than drawing
+    /// nothing. `draw.rs` now expresses them exactly (a double-width centre stroke clipped to the
+    /// shape's interior for inner, to its complement for outer), so the ABI has to *preserve* the
+    /// alignment: dropping one now loses a stroke the renderer can draw correctly, and silently
+    /// flattening one to `Center` would resurrect the misplaced-paint bug.
     #[test]
-    fn inner_and_outer_strokes_are_dropped_not_centred() {
+    fn stroke_alignment_survives_the_abi() {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
 
         add_shape_inner_stroke(4.0, 0, 0, 0);
         add_shape_outer_stroke(4.0, 0, 0, 0);
-        assert!(current_scene().get(1).unwrap().strokes.is_empty());
-
         add_shape_center_stroke(4.0, 0, 0, 0);
-        assert_eq!(current_scene().get(1).unwrap().strokes.len(), 1);
+
+        let scene = current_scene();
+        let aligns: Vec<crate::model::StrokeAlign> =
+            scene.get(1).unwrap().strokes.iter().map(|s| s.align).collect();
+        assert_eq!(
+            aligns,
+            vec![
+                crate::model::StrokeAlign::Inner,
+                crate::model::StrokeAlign::Outer,
+                crate::model::StrokeAlign::Center
+            ]
+        );
     }
 
     /// `add_shape_stroke_fill`, `set_shape_stroke_props` and `set_shape_stroke_dashes` all act
