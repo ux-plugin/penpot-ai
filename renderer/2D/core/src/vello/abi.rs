@@ -2387,6 +2387,12 @@ pub extern "C" fn load_boolean_scene() -> u32 {
 /// a heavy effect stack (2 drop + 1 inner shadow + layer blur + tint shader), for pass-count / frame-time
 /// comparison of the whole-viewport vs tiled paths. Returns the cell count.
 #[unsafe(no_mangle)]
+pub extern "C" fn load_scale_scene(n: u32, effect_every: u32) -> u32 {
+    install_fixture(crate::parity::build_scale_scene(n as usize, effect_every as usize))
+}
+
+/// Install the **matrix** fixture (every effect combination). Returns the cell count.
+#[unsafe(no_mangle)]
 pub extern "C" fn load_matrix_scene() -> u32 {
     install_fixture(crate::parity::build_matrix_scene())
 }

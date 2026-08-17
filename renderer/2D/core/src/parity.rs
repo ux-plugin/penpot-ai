@@ -1577,6 +1577,49 @@ fn inner_shadow(blur: f32, spread: f32) -> Shadow {
     Shadow { color: cola(0, 0, 0, 170), blur, spread, offset: Vec2::new(-5.0, -6.0), inset: true }
 }
 
+/// A document at editing scale: thousands of shapes, mostly plain, a minority carrying effects, laid
+/// out overlapping so z-order actually interleaves.
+///
+/// Every other stress fixture in this file is a dozen shapes on a grid, which measures effect cost
+/// but says nothing about what a real document costs: the per-shape walk, the encoding rebuild, and
+/// how those behave while the view is moving. `n` shapes, every `effect_every`-th one loaded with an
+/// effect stack, all packed into a band so they overlap rather than tile neatly.
+#[must_use]
+pub fn build_scale_scene(n: usize, effect_every: usize) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let step = 26.0;
+    // One cell holds the whole document; shapes are placed by hand inside it so they overlap.
+    let r = b.rect();
+    for i in 0..n {
+        let (cx, cy) = ((i % cols) as f64, (i / cols) as f64);
+        // 1.9x the step, so each shape overlaps its neighbours instead of sitting in its own cell.
+        let x = r.x0 + cx * step;
+        let y = r.y0 + cy * step;
+        let box_ = Rect::new(x, y, x + step * 1.9, y + step * 1.9);
+        let mut node = Node::new(b.id(), ShapeKind::Path);
+        node.bounds = box_;
+        node.path = Some(blob_path(box_));
+        let hue = (i * 53 % 255) as u8;
+        node.fills = vec![Paint::plain(Brush::Solid(col(60 + hue / 3, 90 + hue / 4, 200 - hue / 3)))];
+        node.opacity = if i % 7 == 0 { 0.75 } else { 1.0 };
+        if effect_every > 0 && i % effect_every == 0 {
+            // A rotating mix so the effect population is not all one kind.
+            match (i / effect_every) % 4 {
+                0 => node.shadows = vec![Shadow { color: cola(0, 0, 0, 140), blur: 9.0, spread: 0.0, offset: Vec2::new(5.0, 6.0), inset: false }],
+                1 => node.blur = Some(3.0),
+                2 => {
+                    node.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 7.0, spread: 0.0, offset: Vec2::new(-4.0, -5.0), inset: true }];
+                }
+                _ => node.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.85, 0.3, 0.45) }],
+            }
+        }
+        b.root(node);
+    }
+    b.advance("scale");
+    b.finish()
+}
+
 /// Effect-ablation bits for [`build_stress_scene_mask`]: turn one effect kind off at a time and the
 /// frame-time delta attributes that effect's GPU cost.
 pub const FX_DROP: u32 = 1;
