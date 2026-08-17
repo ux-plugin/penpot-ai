@@ -11,7 +11,7 @@ Fork of Penpot (open-source design tool) extended with AI features and a Figma p
 | `backend/` | Clojure | RPC API, auth, db (postgres), http, storage, worker, migrations, audit logs |
 | `frontend/` | ClojureScript | Workspace UI, viewer, dashboard, data layer, worker, `render_wasm` bridge, design system (`ui.ds`), tokens management |
 | `render-wasm/` | Rust → WASM | Canvas/Skia render engine. Submodules: `shapes` (paths, modifiers), `render`, `wasm` (text, fills, layouts, paths), `state`, `math` |
-| `skia-rs-wasm/` | Rust | Skia bindings packaged for WASM target |
+| `zoetrope-editor/` | Rust | Skia bindings packaged for WASM target |
 | `exporter/` | Node | Headless rendering service (`handlers`, `renderer`) for export pipelines |
 | `figma_plugin_api/` | Java/Kotlin + Gradle (Spring) | Plugin backend — OAuth (GitHub/Figma/Auth0), JDBC + R2DBC postgres |
 | `figma_plugin_fe/` | TS/JS | Figma plugin UI (FillEditor, StrokeEditor, RightSidePanel, LayersPanel, EditorShell, etc.) |
@@ -40,7 +40,7 @@ Fork of Penpot (open-source design tool) extended with AI features and a Figma p
 - Edge mix: DEFINES 28.7k, CALLS 12.0k, USAGE 4.9k, IMPORTS 1.1k, HTTP_CALLS 45
 
 ## Architectural notes / decisions to remember
-1. **Render split:** Heavy 2D rendering offloaded to WASM (`render-wasm/`) called from CLJS via `frontend/.../render_wasm/api` + `mem` bridge. Skia bindings come through `skia-rs-wasm/`.
+1. **Render split:** Heavy 2D rendering offloaded to WASM (`render-wasm/`) called from CLJS via `frontend/.../render_wasm/api` + `mem` bridge. Skia bindings come through `zoetrope-editor/`.
 2. **Code sharing via cljc:** `common/` is dual-targeted Clojure/ClojureScript — geom and types must stay platform-neutral.
 3. **Two distinct backends:** Penpot's own Clojure backend (RPC, auth, storage) and a separate Spring Boot service `figma_plugin_api/` for the Figma integration. They use different postgres databases (`penpot` vs `figma_plugin`).
 4. **AI integration is OpenAI-compatible:** routes follow `/v1/chat/completions` shape, backed by Fireworks + a local AI server on `:8002`. Configurable via `AI_SERVER_URL` / `FIREWORKS_API_BASE_URL` env vars.

@@ -1,7 +1,7 @@
 packages:
   - "figma_plugin_fe"
-  - "skia-rs-wasm"
-  - "skia-rs-wasm/packages/*"
+  - "zoetrope-editor"
+  - "zoetrope-editor/packages/*"
   - "sdk/wrappers/*/*"
   - "demo-app"
   - "zoetrope-frontend"

@@ -2,16 +2,22 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "skia-rs-wasm",
+      "name": "zoetrope-editor",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "skia-rs-wasm", "run", "dev", "--port", "5190", "--strictPort"],
+      "runtimeArgs": ["--dir", "zoetrope-editor", "run", "dev", "--port", "5190", "--strictPort"],
       "port": 5190
     },
     {
       "name": "skia-vello-proof",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "skia-rs-wasm", "run", "dev", "--port", "5308", "--strictPort"],
+      "runtimeArgs": ["--dir", "zoetrope-editor", "run", "dev", "--port", "5308", "--strictPort"],
       "port": 5308
+    },
+    {
+      "name": "hybrid-webgl-proof",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "zoetrope-editor", "run", "dev", "--port", "5313", "--strictPort"],
+      "port": 5313
     },
     {
       "name": "figma_plugin_fe",

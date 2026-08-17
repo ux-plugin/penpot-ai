@@ -1,5 +1,5 @@
 //! Thin FFI shell over `anim_runtime::session::Session` — the portable animation
-//! runtime (a Rust port of skia-rs-wasm's `anim/` IR). All logic lives in the
+//! runtime (a Rust port of zoetrope-editor's `anim/` IR). All logic lives in the
 //! crate; this only moves bytes across the wasm boundary.
 //!
 //! The output buffer is pre-allocated once in `Session::load`, so `anim_eval`

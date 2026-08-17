@@ -21,7 +21,7 @@ const api = {
 }
 
 // BYOK bridge, exposed as window.zoetrope. Its mere presence is what flips
-// SessionCaps.canBYOK on in the renderer (skia-rs-wasm platform.ts probes
+// SessionCaps.canBYOK on in the renderer (zoetrope-editor platform.ts probes
 // window.zoetrope.keyStore). The plaintext key only ever travels renderer→main on
 // set(); it never comes back — the renderer sees only non-secret status.
 const zoetrope: ZoetropeApi = {

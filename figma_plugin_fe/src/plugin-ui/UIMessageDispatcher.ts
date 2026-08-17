@@ -19,7 +19,7 @@ import {
   ExtractResultType
 } from '@shared-types/messageTypes.ts';
 import { nodeManager } from '@/plugin-ui/stores/NodeManager';
-import { setSelectedIds, docProxy, subscribe } from 'skia-rs-wasm';
+import { setSelectedIds, docProxy, subscribe } from 'zoetrope-editor';
 // Create UI message dispatcher (pluginId required for non-null origin iframes per Figma docs)
 export const uiMessageDispatcher = new UniversalMessageDispatcher(
   'ui',

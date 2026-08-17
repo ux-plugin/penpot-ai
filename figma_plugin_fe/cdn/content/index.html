@@ -38178,12 +38178,12 @@ function SP(e) {
   const { id: t } = e;
   if (!xP(t))
     throw new Error(
-      `[skia-rs-wasm] add-obj id must be a canonical 36-char UUID (Penpot v8). Got length=${(t == null ? void 0 : t.length) ?? 0}: ${String(t).slice(0, 80)}`
+      `[zoetrope-editor] add-obj id must be a canonical 36-char UUID (Penpot v8). Got length=${(t == null ? void 0 : t.length) ?? 0}: ${String(t).slice(0, 80)}`
     );
   const r4 = e.obj.id;
   if (r4 != null && r4 !== t)
     throw new Error(
-      `[skia-rs-wasm] add-obj change.id and obj.id must match. change.id=${t} obj.id=${r4}`
+      `[zoetrope-editor] add-obj change.id and obj.id must match. change.id=${t} obj.id=${r4}`
     );
 }
 const kP = "00000000-0000-0000-0000-000000000000";

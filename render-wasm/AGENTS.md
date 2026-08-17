@@ -1,6 +1,6 @@
 # Agent guide for `render-wasm`
 
-Rust crate compiled to WebAssembly via Emscripten + Skia. Provides the 2D canvas rendering backend consumed by both the Penpot frontend (ClojureScript) and `skia-rs-wasm` (TypeScript).
+Rust crate compiled to WebAssembly via Emscripten + Skia. Provides the 2D canvas rendering backend consumed by both the Penpot frontend (ClojureScript) and `zoetrope-editor` (TypeScript).
 
 ## Commands
 
@@ -149,7 +149,7 @@ pub enum RawFillData {
 | Undo | `start_temp_objects()`, `end_temp_objects()` |
 | Query | `get_selection_rect()`, `get_grid_coords()` |
 
-**Never change export function signatures without updating the consuming bridge** (ClojureScript `app.render-wasm.*` namespaces, and `skia-rs-wasm` `src/lib/renderer/api/`).
+**Never change export function signatures without updating the consuming bridge** (ClojureScript `app.render-wasm.*` namespaces, and `zoetrope-editor` `src/lib/renderer/api/`).
 
 ## Key dependencies (`Cargo.toml`)
 

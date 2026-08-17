@@ -11,8 +11,8 @@ import {
   useSnapshot,
   viewport as viewportSignal,
   useSignalCoalesced,
-} from 'skia-rs-wasm';
-import type { DocumentModel } from 'skia-rs-wasm';
+} from 'zoetrope-editor';
+import type { DocumentModel } from 'zoetrope-editor';
 
 /** Minimal shape for display (documentModel.getPage returns IndexedPage). */
 interface PageSummary {

@@ -12,7 +12,7 @@ the SSA rewrite (Step 2). Each row pairs:
 Step 1 produces this list and ensures every `GAP` is filled before Step 2
 starts deleting code. Step 3 walks this list manually as final acceptance.
 
-`tests/golden_legacy/` (= `skia-rs-wasm/test/visual/baselines/`) holds the
+`tests/golden_legacy/` (= `zoetrope-editor/test/visual/baselines/`) holds the
 pixel snapshots; this doc says what each snapshot is testing.
 
 ## Status legend
@@ -136,8 +136,8 @@ Items marked `GAP` above need a visual cell before Step 2 starts. Each
 gap addition:
 
 1. Add a scene to `render-wasm/src/test_fixtures.rs` (new preset ID)
-2. Mirror it in `skia-rs-wasm/test/perf/scenes.ts` (same name, next ID)
-3. Add a cell to `skia-rs-wasm/test/visual/cells.ts`
+2. Mirror it in `zoetrope-editor/test/perf/scenes.ts` (same name, next ID)
+3. Add a cell to `zoetrope-editor/test/visual/cells.ts`
 4. Run `pnpm visual:baseline` to capture the PNG
 5. Verify the cell renders something non-blank (or note if legacy is broken)
 

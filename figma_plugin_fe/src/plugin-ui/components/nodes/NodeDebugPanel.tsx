@@ -4,7 +4,7 @@ import { Input } from '@/plugin-ui/components/ui/input';
 import { ChevronDown, ChevronRight, X, Search } from 'lucide-react';
 import { DesignNode } from "@shared-types/types.ts";
 
-/** Minimal shape for document-model nodes (from skia-rs-wasm getPage().objects). */
+/** Minimal shape for document-model nodes (from zoetrope-editor getPage().objects). */
 export interface DocumentModelNode {
   id?: string;
   type?: string;

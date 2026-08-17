@@ -28,7 +28,7 @@ Plus the existing `bench_rebuild_e2e_*` family (gather-only configurations) that
 
 ### Run the bench
 
-The bench is a normal `cargo test` running natively (not WASM). To avoid setting up Skia binaries per-platform, run inside the same `penpotapp/devenv:latest` Docker image that [scripts/build-wasm.sh](../../skia-rs-wasm/scripts/build-wasm.sh) uses for skia-rs-wasm — it already has Rust + Linux skia binaries cached.
+The bench is a normal `cargo test` running natively (not WASM). To avoid setting up Skia binaries per-platform, run inside the same `penpotapp/devenv:latest` Docker image that [scripts/build-wasm.sh](../../zoetrope-editor/scripts/build-wasm.sh) uses for zoetrope-editor — it already has Rust + Linux skia binaries cached.
 
 From the repo root:
 

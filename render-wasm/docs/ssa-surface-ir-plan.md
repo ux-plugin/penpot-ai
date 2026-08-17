@@ -224,7 +224,7 @@ outputs, delete legacy, rebuild from scratch, diff against the snapshot.
 Before deleting anything, lock in what "correct" means.
 
 **Pixel snapshots:**
-- Run every test in `skia-rs-wasm/test/visual/*` through the current
+- Run every test in `zoetrope-editor/test/visual/*` through the current
   renderer. Save each tile's PNG output to `render-wasm/tests/golden_legacy/`
   keyed by `(test_name, tile)`.
 - Add a small CLI / test harness to `render-wasm` that takes a scene and
@@ -235,7 +235,7 @@ Before deleting anything, lock in what "correct" means.
   legacy mid-development if the diff isn't enough to debug.
 
 **Perf snapshots:**
-- Run the perf benches in `skia-rs-wasm/test/perf/` against representative
+- Run the perf benches in `zoetrope-editor/test/perf/` against representative
   scenes. Capture `perf_trace`'s JSON output to
   `render-wasm/tests/perf_baseline/`.
 - Numbers needed per scene: `frame_TOTAL`, `tile_grid_rebuild`,

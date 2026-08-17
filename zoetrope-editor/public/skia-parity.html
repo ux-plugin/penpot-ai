@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>skia render probe</title>
+<style>
+  body { margin: 0; background: #111; color: #ccc; font: 12px monospace; }
+  #log { position: fixed; top: 4px; left: 8px; z-index: 2; white-space: pre; }
+  #c { display: block; }
+</style>
+<div id="log">booting…</div>
+<canvas id="c" width="800" height="600"></canvas>
+<script type="module">
+  // Minimal proof that the SKIA (render-wasm, Emscripten + WebGL2) backend renders a scene built
+  // through the shared set_shape_* C-ABI wire — the gating unknown for a real Skia-vs-vello parity
+  // diff. Boot path mirrors zoetrope-editor/src/lib/renderer/api/canvas.ts (initCanvasContext).
+  const log = (m) => { document.getElementById('log').textContent = m }
+  const REC = 164 // fill record size (matches bench.html)
+
+  try {
+    const mod = await import('/wasm/render-wasm.js')
+    const module = await mod.default({
+      locateFile: (f) => (f.includes('.wasm') ? '/wasm/' + f : f),
+    })
+
+    const canvas = document.getElementById('c')
+    const W = canvas.width, H = canvas.height, dpr = 1
+    const gl = module.GL
+    const ctx = canvas.getContext('webgl2', { alpha: true, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: true })
+    if (!ctx) throw new Error('no webgl2')
+    const handle = gl.registerContext(ctx, { majorVersion: 2 })
+    gl.makeContextCurrent(handle)
+    ctx.getExtension('WEBGL_debug_renderer_info')
+    module._init(W, H)
+    module._set_render_options(0, dpr) // flags 0, dpr 1
+
+    // ---- wire helpers (Emscripten: _fn + HEAPU8, republished after alloc) ----
+    const use = (id) => module._use_shape(0, 0, 0, id)
+    const type = (t) => module._set_shape_type(t) // 0 Frame, 1 Group, 3 Rect, 6 Circle
+    const rect = (x0, y0, x1, y1) => module._set_shape_selrect(x0, y0, x1, y1)
+    const child = (id) => module._add_shape_child(0, 0, 0, id)
+    const solid = (argb) => {
+      const size = 4 + REC
+      const ptr = module._alloc_bytes(size)
+      const u8 = module.HEAPU8 // re-read: alloc may have grown/republished memory
+      u8.fill(0, ptr, ptr + size)
+      u8[ptr] = 1 // fill count
+      u8[ptr + 4] = 0x00 // record tag: Solid
+      new DataView(u8.buffer).setUint32(ptr + 8, argb >>> 0, true)
+      module._set_shape_fills()
+    }
+
+    // ---- a small scene: two solid rects + a glass lens over a solid backdrop ----
+    let id = 1
+    const add = (build) => { const my = id++; use(my); build(); use(0); child(my); return my }
+
+    add(() => { type(3); rect(40, 40, 240, 240); solid(0xff3666d6) })          // blue
+    add(() => { type(3); rect(280, 40, 480, 240); solid(0xffd85a30) })         // orange
+    add(() => { type(6); rect(520, 40, 720, 240); solid(0xff1d9e75) })         // green circle
+    // glass lens over a backdrop
+    add(() => { type(3); rect(40, 300, 300, 540); solid(0xffe84266) })          // pink backdrop
+    // A background-blur GATHER lens straddling the pink/black edge (x=300), so the blur is actually
+    // VISIBLE (a soft pink→black transition) — over a flat colour it would be invisible. This also
+    // proves Skia executes the gather via the wire, not just that a 5th shape exists.
+    // NOTE: set_shape_glass on Skia expects 15 args (no acceptable_downscale); vello wants 16 — a real
+    // cross-backend wire divergence, so the lens is background-blur (no mismatch), not glass.
+    add(() => { type(3); rect(200, 360, 440, 500); module._set_shape_blur(1, false, 16) })
+
+    module._set_view(1, 0, 0)
+    // render-wasm renders "fast mode" (no effects) first, then re-renders WITH effects on SUBSEQUENT
+    // real rAF frames (the tile scheduler settles across frames). Drive a handful with real
+    // timestamps, exactly like the app's requestRender loop (api/rendering.ts) — a synchronous
+    // ts=0 loop never lets the effect pass run, which is why the gather was blank.
+    let n = 0
+    const tick = (ts) => {
+      module._render(ts)
+      if (++n < 12) requestAnimationFrame(tick)
+      else {
+        log('skia: rendered ' + (id - 1) + ' shapes over ' + n + ' frames (' + W + 'x' + H + ')')
+        window.__SKIA_DONE__ = true
+      }
+    }
+    requestAnimationFrame(tick)
+  } catch (e) {
+    log('skia FAILED: ' + (e && e.message ? e.message : String(e)))
+    console.error(e)
+  }
+</script>

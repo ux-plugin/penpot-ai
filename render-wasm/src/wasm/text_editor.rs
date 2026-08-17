@@ -919,7 +919,7 @@ pub extern "C" fn text_editor_get_current_styles() -> *mut u8 {
         }
 
         // Style-data buffer contract (consumed by the TS decoder in
-        // skia-rs-wasm api/text-editor.ts and the cljs text_editor.cljs).
+        // zoetrope-editor api/text-editor.ts and the cljs text_editor.cljs).
         // All little-endian. Two fixed sections then a fills array:
         //   - header: u32 indices 0..=12 (bytes 0..52) — vertical_align (0),
         //     per-property state words (1..=10; 0=Undefined/1=Single/2=Multiple),

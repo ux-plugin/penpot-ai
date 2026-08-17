@@ -530,7 +530,7 @@ fn surface_ref_per_tile_scopes_are_distinct() {
 // - `EraseSurface` unbinds explicitly
 //
 // What needs the GPU-backed `SurfaceMap` (Checkpoint C tests in
-// skia-rs-wasm/test/visual/): actual pixel content, allocator hit
+// zoetrope-editor/test/visual/): actual pixel content, allocator hit
 // rates under real workloads, end-to-end schedule execution.
 
 mod dispatcher_logic {
@@ -953,7 +953,7 @@ mod schedule_builder_tests {
         let builder = ScheduleBuilder::new();
         // No inputs supplied; just verifying the builder constructs
         // without panic. Real input-driven tests live in
-        // skia-rs-wasm/test/visual once the lowering is wired.
+        // zoetrope-editor/test/visual once the lowering is wired.
         let _ = builder;
     }
 

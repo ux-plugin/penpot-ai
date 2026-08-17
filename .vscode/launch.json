@@ -6,7 +6,7 @@
             "request": "launch",
             "name": "Debug Vite App",
             "url": "http://localhost:5173",
-            "webRoot": "${workspaceFolder}/skia-rs-wasm",
+            "webRoot": "${workspaceFolder}/zoetrope-editor",
             "sourceMapPathOverrides": {
                 "webpack:///src/*": "${webRoot}/src/*",
                 "webpack:///./*": "${webRoot}/*",
@@ -22,7 +22,7 @@
             "request": "attach",
             "name": "Attach to Chrome",
             "port": 9222,
-            "webRoot": "${workspaceFolder}/skia-rs-wasm",
+            "webRoot": "${workspaceFolder}/zoetrope-editor",
             "sourceMapPathOverrides": {
                 "webpack:///src/*": "${webRoot}/src/*",
                 "webpack:///./*": "${webRoot}/*"

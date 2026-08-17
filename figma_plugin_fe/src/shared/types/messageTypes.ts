@@ -540,7 +540,7 @@ export interface SetFigmaSelectionResponse extends MessageResponse {
   };
 }
 
-// Set Penpot Page (code → UI): full page for skia-rs-wasm document. Payload is serialized PenpotPage.
+// Set Penpot Page (code → UI): full page for zoetrope-editor document. Payload is serialized PenpotPage.
 export interface SetPenpotPageRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.SET_PENPOT_PAGE;
@@ -557,7 +557,7 @@ export interface SetPenpotPageResponse extends MessageResponse {
   };
 }
 
-// Add Penpot Page (code → UI): add a new page to existing document via skia-rs-wasm page-crud addPage.
+// Add Penpot Page (code → UI): add a new page to existing document via zoetrope-editor page-crud addPage.
 export interface AddPenpotPageRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.ADD_PENPOT_PAGE;
@@ -574,7 +574,7 @@ export interface AddPenpotPageResponse extends MessageResponse {
   };
 }
 
-// Apply Penpot Changes (code → UI): incremental changes for skia-rs-wasm (page-crud applyChanges).
+// Apply Penpot Changes (code → UI): incremental changes for zoetrope-editor (page-crud applyChanges).
 export interface ApplyPenpotChangesRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.APPLY_PENPOT_CHANGES;
@@ -592,7 +592,7 @@ export interface ApplyPenpotChangesResponse extends MessageResponse {
   };
 }
 
-// Request Penpot Page (UI → code): UI requests current page for skia-rs-wasm; code responds with page.
+// Request Penpot Page (UI → code): UI requests current page for zoetrope-editor; code responds with page.
 export interface RequestPenpotPageRequest extends MessageRequest {
   category: MessageCategory.SYSTEM;
   type: SystemMessageType.REQUEST_PENPOT_PAGE;

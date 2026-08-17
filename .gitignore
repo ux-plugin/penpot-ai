@@ -79,10 +79,12 @@
 /blob-report/
 /playwright/.cache/
 /render-wasm/target/
-/render-core/target/
-/render-macros/target/
-/render-vello/target/
-/render-vello/dev/pkg/
+# Rendering crates moved under renderer/ (see renderer/README.md): ignore all their build output.
+renderer/**/target/
+renderer/**/pkg/
+renderer/2D/webgl-vello/dev/pkg/
+# Session scratch: render pixel-proof screenshots (kept on disk, not in history).
+/.vello-proofs/
 /**/node_modules
 /**/.yarn/*
 /.pnpm-store
@@ -93,8 +95,8 @@
 .idea/
 .DS_Store
 
-# Built by skia-rs-wasm/scripts/build-vello.sh, alongside the Skia wasm artifacts.
-/skia-rs-wasm/public/wasm-vello/
-/skia-rs-wasm/public/wasm-vello-gpu/
+# Built by zoetrope-editor/scripts/build-vello.sh, alongside the Skia wasm artifacts.
+/zoetrope-editor/public/wasm-vello/
+/zoetrope-editor/public/wasm-vello-gpu/
 
 /vello-gpu-renderer/target

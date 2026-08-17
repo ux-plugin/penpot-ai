@@ -44,17 +44,26 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         Type::Rect(_) => (m::ShapeKind::Rect, None),
         Type::Circle => (m::ShapeKind::Circle, None),
         Type::Path(path) => (m::ShapeKind::Path, Some(path_to_core(path))),
+        // A boolean shape is a *precomputed path* by the time it renders — `math::bools` has already
+        // unioned/subtracted the children into `bool.path` — so it projects to a `Path` carrying that
+        // result. Nothing boolean-specific survives into the neutral model; the geometry is the path.
+        Type::Bool(b) => (m::ShapeKind::Path, Some(path_to_core(&b.path))),
         Type::Frame(_) => (m::ShapeKind::Frame, None),
         Type::Group(_) => (m::ShapeKind::Group, None),
         Type::Text(_) => (m::ShapeKind::Text, None),
-        // Bool/SVGRaw are deferred to later increments.
-        _ => return None,
+        // Raw SVG: the markup crosses on `Node::svg` (set below) and each backend parses + draws it.
+        Type::SVGRaw(_) => (m::ShapeKind::Svg, None),
     };
 
     // Text carries its content as the *input* both backends shape (see `render_core::text`). The
     // box is `bounds`; vertical align lives on the shape, not the content.
     let text = match &shape.shape_type {
         Type::Text(content) => Some(text_to_core(content, shape.vertical_align)),
+        _ => None,
+    };
+    // Raw SVG crosses as its source markup; the vello side parses it with usvg, Skia with its SVG DOM.
+    let svg = match &shape.shape_type {
+        Type::SVGRaw(sr) => Some(sr.content.clone()),
         _ => None,
     };
 
@@ -75,6 +84,7 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         bounds: rect_to_core(shape.selrect),
         path,
         text,
+        svg,
         corners: corners_to_core(shape.shape_type.corners()),
         transform: affine_to_core(&shape.transform),
         children: shape.children.iter().map(|id| id.as_u128()).collect(),
@@ -93,6 +103,12 @@ pub fn node_from_shape(shape: &Shape) -> Option<m::Node> {
         blend: skia_blend_to_peniko(shape.blend_mode.0),
         blur,
         shadows,
+        // Backdrop effects (background blur, glass, the effect list) and filter graphs are all
+        // Vello-only surface features — there are no Skia users of them — so the Skia projection
+        // carries the neutral empties and render-wasm never draws them.
+        background_blur: None,
+        glass: None,
+        effects: Vec::new(),
         // Filter graphs (custom multi-pass effects) are Vello-only — there are no Skia users of
         // effects — so the Skia projection always carries `None`, and render-wasm never draws them.
         filter_graph: None,
@@ -400,14 +416,16 @@ fn stroke_to_core(stroke: &crate::shapes::Stroke) -> Option<m::Stroke> {
         &stroke.dashes,
     );
 
-    // `StrokeKind` (inner/outer/center) is an offsetting decision, not a stroke style, and
-    // kurbo has no slot for it. Centre needs nothing; inner/outer need the path offset before
-    // it reaches this model, which is not done yet — so they are dropped rather than projected
-    // as if they were centred.
-    match stroke.kind {
-        StrokeKind::Center => Some(m::Stroke { style, paint }),
-        StrokeKind::Inner | StrokeKind::Outer => None,
-    }
+    // `StrokeKind` (inner/outer/center) is an alignment decision the neutral model now carries on
+    // `Stroke.align`, which the vello drawer realises by clipping a double-width band. Project it
+    // through so a differential run agrees on where the stroke sits, instead of dropping the two
+    // aligned kinds.
+    let align = match stroke.kind {
+        StrokeKind::Center => m::StrokeAlign::Center,
+        StrokeKind::Inner => m::StrokeAlign::Inner,
+        StrokeKind::Outer => m::StrokeAlign::Outer,
+    };
+    Some(m::Stroke { style, paint, align })
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
-import { resetViewport } from 'skia-rs-wasm';
+import { resetViewport } from 'zoetrope-editor';
 import { uiMessageDispatcher } from '@/plugin-ui/UIMessageDispatcher.ts';
 import { MessageCategory, SystemMessageType, ResizeRequest, ExtractResultType, ResizeResponse } from '@shared-types/messageTypes.ts';
 

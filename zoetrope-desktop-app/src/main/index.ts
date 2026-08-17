@@ -6,9 +6,9 @@ import { registerChatIpc } from './chat'
 
 const isDev = !app.isPackaged
 
-// Thin shell: in dev the window loads skia-rs-wasm's own Vite dev server, which serves
+// Thin shell: in dev the window loads zoetrope-editor's own Vite dev server, which serves
 // the full app (WASM, worker, fonts) and the /__ai-chat bridge. Override the host/port
-// with ZOETROPE_APP_URL if skia-rs-wasm runs elsewhere.
+// with ZOETROPE_APP_URL if zoetrope-editor runs elsewhere.
 const APP_URL = process.env['ZOETROPE_APP_URL'] ?? 'http://localhost:5173'
 
 // electron-vite emits the renderer to out/renderer; __dirname here is out/main.
@@ -59,7 +59,7 @@ const MIME: Record<string, string> = {
   '.ttf': 'font/ttf',
 }
 
-// Allow wasm compilation ('wasm-unsafe-eval') and blob workers (skia-rs-wasm ships a worker).
+// Allow wasm compilation ('wasm-unsafe-eval') and blob workers (zoetrope-editor ships a worker).
 const CSP = [
   "default-src 'self' app:",
   "script-src 'self' app: 'wasm-unsafe-eval'",
@@ -141,7 +141,7 @@ function createWindow(): BrowserWindow {
   })
 
   if (isDev) {
-    // skia-rs-wasm's dev server is started concurrently and may not be up yet,
+    // zoetrope-editor's dev server is started concurrently and may not be up yet,
     // so retry the load until it answers (and again if HMR restarts it).
     const load = () => win.loadURL(APP_URL)
     win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
@@ -151,7 +151,7 @@ function createWindow(): BrowserWindow {
     // Open DevTools manually with Cmd/Ctrl+Alt+I when you need it.
   } else {
     // Prod: serve the bundled app over app://. NOTE: today this serves the desktop
-    // splash (out/renderer). Pointing it at skia-rs-wasm's production build is the
+    // splash (out/renderer). Pointing it at zoetrope-editor's production build is the
     // next packaging slice (needs an app-build target + the /__ai-chat bridge ported
     // into this main process).
     win.loadURL('app://bundle/index.html')

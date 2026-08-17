@@ -50,7 +50,7 @@ export CARGO_PARAMS="${@:2}";
 
 # Enable permanent perf instrumentation (per-tag accumulator, snapshot
 # export). Set PERF_TRACE=1 to layer on top of any base build. Used by
-# the skia-rs-wasm perf bench harness.
+# the zoetrope-editor perf bench harness.
 if [ "$PERF_TRACE" = "1" ]; then
     export CARGO_PARAMS="--features perf-trace $CARGO_PARAMS"
 fi
@@ -99,7 +99,7 @@ function copy_artifacts {
 }
 
 function copy_artifacts_to_skia_rs_wasm {
-    DEST="../skia-rs-wasm/public/wasm";
+    DEST="../zoetrope-editor/public/wasm";
 
     mkdir -p $DEST;
 

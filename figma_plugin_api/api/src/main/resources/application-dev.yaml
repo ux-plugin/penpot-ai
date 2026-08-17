@@ -204,7 +204,7 @@ management:
 
 # DEV identity: use the in-process Auth0 mock (DevAuth0Mock) as the JWT issuer so the editor can
 # authenticate with a long-lived local token — no real Auth0 or login flow needed. Mint one at
-# GET /dev/token and paste `access_token` into skia-rs-wasm's VITE_AI_BACKEND_KEY.
+# GET /dev/token and paste `access_token` into zoetrope-editor's VITE_AI_BACKEND_KEY.
 # The real auth0JwtDecoder still validates it (signature via JWKS + issuer + audience + expiry);
 # in prod auth0.issuer points at real Auth0, so these dev tokens are rejected — no bypass ships.
 # jwk-set-uri is explicit because the base application.yaml sets it to "" (empty), which would

@@ -1,0 +1,56 @@
+# The 2D renderer core. Formerly two crates — the backend-neutral `render-core` (geometry/color
+# atoms, scene model, document state, tile/SSA scheduler) and the backend-agnostic Vello layer
+# `render-vello-core` (device-generic wgpu effect executor: compositor, glass, blur, custom-WGSL
+# pass runner, the neutral drawer, the production sink, and the shared FFI shell). They were merged
+# here (the Vello half nested as `pub mod vello`) once Skia was detached: nothing needed the
+# scheduler to stay Vello-free anymore, so the split stopped earning its keep. Shared by both
+# branches — webgl-vello (vello_hybrid) and webgpu-vello (classic vello).
+#
+# Versions pinned by hand (outside the vello workspace) to keep in step with the vello fork's
+# [workspace.dependencies], wgpu especially.
+[package]
+name = "render-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+description = "The 2D renderer core: geometry/color atoms, scene model, document state and the tile/SSA scheduler, plus the backend-agnostic Vello layer (device-generic wgpu effect executor, neutral drawer, production sink, FFI shell). Shared by the webgl-vello and webgpu-vello backends."
+publish = false
+
+[lib]
+
+[dependencies]
+# Neutral core atoms. Pinned to the vello fork's workspace so the backends and this crate share one
+# kurbo/peniko rather than linking two incompatible copies.
+kurbo = "0.13.1"
+peniko = "0.6.1"
+render-macros = { path = "macros" }
+
+# Vello layer (nested `mod vello`): the device-generic wgpu effect executor runs our own pipelines
+# against any `wgpu::Device`.
+wgpu = { version = "29.0.3" }
+bytemuck = "1.25.0"
+log = "0.4.29"
+
+# The neutral drawer (`vello::draw`) walks a model into any `RenderingContext`, so this crate needs
+# the trait (vello_example_scenes) and the paint atoms (vello_common). Path deps into the same fork,
+# so they unify with the branches' copies.
+vello_common = { path = "../vello/sparse_strips/vello_common", default-features = false }
+vello_example_scenes = { path = "../vello/sparse_strips/vello_example_scenes" }
+
+# Raw-SVG shapes (`ShapeKind::Svg`) are parsed with usvg and walked into the shared `RenderingContext`
+# (`vello::svg`). `default-features = false` drops fontdb/system fonts (SVG text is deferred).
+usvg = { version = "0.47", default-features = false }
+
+# The neutral text draw path (`vello::text`) lays out with Parley and positions glyphs (glifo's
+# `Glyph`), then draws them through the `RenderingContext` glyph-run backend.
+parley = { version = "0.11.0", default-features = false, features = ["std"] }
+glifo = { path = "../vello/glifo" }
+
+# wasm-only: the profiler (`vello::prof`) reads `performance.now()`. Behind the same
+# `target_arch = "wasm32"` cfg the code uses, so a host build needs neither.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3.91", features = ["Window", "Performance"] }
+
+[dev-dependencies]
+naga = { version = "29.0.4", features = ["wgsl-in"] }
