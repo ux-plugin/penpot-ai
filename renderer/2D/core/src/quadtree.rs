@@ -57,10 +57,10 @@ impl Quadtree {
         let (x, y) = (self.bounds.x0, self.bounds.y0);
         let quad = |qx: f64, qy: f64| Rect::new(qx, qy, qx + sw, qy + sh);
         self.children = vec![
-            Self::at_level(quad(x + sw, y), next), // top-right
-            Self::at_level(quad(x, y), next),      // top-left
-            Self::at_level(quad(x, y + sh), next), // bottom-left
-            Self::at_level(quad(x + sw, y + sh), next), // bottom-right
+            Self::at_level(quad(x + sw, y), next),
+            Self::at_level(quad(x, y), next),
+            Self::at_level(quad(x, y + sh), next),
+            Self::at_level(quad(x + sw, y + sh), next),
         ];
     }
 
@@ -161,15 +161,12 @@ mod tests {
     #[test]
     fn a_split_prunes_the_far_corner_from_a_query() {
         let mut t = Quadtree::new(Rect::new(0.0, 0.0, 1000.0, 1000.0));
-        // Enough clustered shapes to force a split (a lone unsplit leaf returns everything — the
-        // query is a superset until the tree subdivides).
         for i in 0..20u128 {
             let x = (i % 5) as f64 * 5.0;
             let y = (i / 5) as f64 * 5.0;
             t.insert(i, Rect::new(x, y, x + 2.0, y + 2.0));
         }
-        t.insert(99, Rect::new(900.0, 900.0, 950.0, 950.0)); // opposite corner
-        // A top-left query returns the cluster but NOT the far-corner shape — the split pruned it.
+        t.insert(99, Rect::new(900.0, 900.0, 950.0, 950.0));
         let hits = ids(&t, Rect::new(0.0, 0.0, 40.0, 40.0));
         assert!(hits.contains(&0) && hits.contains(&19));
         assert!(!hits.contains(&99));
@@ -178,13 +175,11 @@ mod tests {
     #[test]
     fn a_leaf_overflow_splits_and_still_finds_everything() {
         let mut t = Quadtree::new(Rect::new(0.0, 0.0, 1000.0, 1000.0));
-        // More than MAX_OBJECTS small shapes clustered in the top-left → forces a split.
         for i in 0..40u128 {
             let x = (i % 8) as f64 * 5.0;
             let y = (i / 8) as f64 * 5.0;
             t.insert(i, Rect::new(x, y, x + 2.0, y + 2.0));
         }
-        // All of them still come back for a query over their cluster.
         assert_eq!(ids(&t, Rect::new(0.0, 0.0, 60.0, 60.0)).len(), 40);
     }
 
@@ -195,7 +190,7 @@ mod tests {
             let x = (i % 8) as f64 * 5.0;
             t.insert(i + 100, Rect::new(x, 0.0, x + 2.0, 2.0));
         }
-        t.insert(7, Rect::new(-10.0, -10.0, 1010.0, 1010.0)); // background
+        t.insert(7, Rect::new(-10.0, -10.0, 1010.0, 1010.0));
         assert!(ids(&t, Rect::new(0.0, 0.0, 10.0, 10.0)).contains(&7));
         assert!(ids(&t, Rect::new(980.0, 980.0, 1000.0, 1000.0)).contains(&7));
     }

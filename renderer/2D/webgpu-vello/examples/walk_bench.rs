@@ -26,7 +26,7 @@ use render_core::schedule::step::Step;
 use render_core::tiling::{visible_tiles, TileKey};
 use vello_gpu_renderer::walk_gpu::{walk_on_gpu, WalkPipelines, WalkResources};
 
-const VIEWPORT_W: u32 = 3840; // 4K, DPR 1
+const VIEWPORT_W: u32 = 3840;
 const VIEWPORT_H: u32 = 2160;
 const RUNS: usize = 9;
 const SIZES: &[usize] = &[2_000, 20_000, 100_000, 500_000];
@@ -100,7 +100,6 @@ fn measure(n_leaves: usize, device: &wgpu::Device, queue: &wgpu::Queue, pipes: &
     let dirty = dirty_page_bbox(view, &visible);
     let flat: Vec<FlatShape> = flatten_leaves(&scene, &modifiers).expect("flatten-eligible");
 
-    // Correctness at this scale + the record count (walk size), then resident buffers for the floor.
     let records = walk_on_gpu(device, queue, pipes, &flat, view, &visible, dirty);
     let total = records.len() as u32;
     let cpu_schedule = build_visible(&scene, view, &modifiers, &visible, None);

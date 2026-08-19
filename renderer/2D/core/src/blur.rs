@@ -32,7 +32,6 @@ mod tests {
     #[test]
     fn a_positive_radius_follows_skias_formula() {
         assert!((radius_to_sigma(10.0) - (BLUR_SIGMA_SCALE * 10.0 + 0.5)).abs() < 1e-6);
-        // Monotonic — a bigger radius is a bigger sigma.
         assert!(radius_to_sigma(20.0) > radius_to_sigma(10.0));
     }
 }

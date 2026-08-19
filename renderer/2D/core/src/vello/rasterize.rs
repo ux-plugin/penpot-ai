@@ -41,7 +41,14 @@ use vello_example_scenes::RenderingContext;
 /// Keeping both behind one trait is what lets the sink be written once: it allocates surfaces, runs
 /// the schedule, and composites — all in backend-neutral terms — while each flavor supplies only how
 /// a scene is built and rasterized.
+
+/// Sentinel `seg_target` for [`RasterBackend::phased_fine_segment`]: no upper bound on the
+/// tile-round window (the final window, or — with `seg_lo == 0` — a full render). Matches vello's
+/// `SEG_ALL`.
+pub const SEG_ALL: u32 = u32::MAX;
+
 pub trait RasterBackend {
+
     /// The backend's scene type (a `vello_hybrid::Scene`, or the classic `RenderingContext` wrapper).
     ///
     /// Bounded by `RenderingContext` so the seam can express a *clip* once, for both backends —
@@ -56,48 +63,12 @@ pub trait RasterBackend {
     /// how a `Paint` becomes a single rasterize.
     fn build_bodies(&mut self, scene: &mut Self::Scene, transform: Affine, ops: &[PaintOp]);
 
-    /// Draw the WHOLE document tree (all roots, z-order) into `scene` for the viewport at `root` — the
-    /// non-scheduled whole-viewport path (one vello scene, one rasterize). Defaults to a no-op for
-    /// backends that don't implement the whole-tree walk (only classic does today). `root` is the
-    /// page→device transform *without* the viewport applied; the backend composes in the viewport the
-    /// same way `build_bodies` does.
-    fn draw_whole_scene(&mut self, _scene: &mut Self::Scene, _root: Affine) {}
-
-    /// [`Self::draw_whole_scene`] restricted to the root subtrees in z-index range `[start, end)` — the
-    /// whole-viewport gather phasing renders the content below/above a gather as separate passes.
-    /// Defaults to a no-op (only classic implements the whole-tree walk).
+    /// Draw the document's root subtrees in z-index range `[start, end)` into `scene` for the viewport
+    /// at `root` — the whole-viewport walk, segmented so effect boundaries can split it. `[0, usize::MAX)`
+    /// is the whole tree. Defaults to a no-op (only classic implements the whole-tree walk). `root` is
+    /// the page→device transform *without* the viewport applied; the backend composes in the viewport
+    /// the same way `build_bodies` does.
     fn draw_scene_range(&mut self, _scene: &mut Self::Scene, _root: Affine, _start: usize, _end: usize) {}
-
-    /// Encode the WHOLE document into `scene` in ONE segmented walk, recording — for each gather root
-    /// index in `gather_roots` (ascending z-order) — the draw-object count of the prefix below it. That
-    /// count is the phased render's per-gather draw boundary.
-    ///
-    /// This replaces re-encoding the prefix `[0, gi)` into a throwaway scene once per gather (a full
-    /// duplicate encode of the document — ~⅓ of the CPU frame at 20k shapes) with a single walk: draw
-    /// up to each boundary into the accumulating scene, snapshot the running count, then draw the rest.
-    /// Concatenating the segments `[0,g0) + [g0,g1) + … + [gk,end)` is byte-identical to one whole-scene
-    /// walk, so the encoding — and every boundary count — matches the old path exactly. Uses only the
-    /// trait's own methods, so every backend gets it for free.
-    fn draw_whole_scene_counted(
-        &mut self,
-        scene: &mut Self::Scene,
-        root: Affine,
-        gather_roots: &[usize],
-    ) -> Vec<u32> {
-        let mut boundaries = Vec::with_capacity(gather_roots.len());
-        let mut cursor = 0usize;
-        for &gi in gather_roots {
-            if gi > cursor {
-                self.draw_scene_range(scene, root, cursor, gi);
-                cursor = gi;
-            }
-            // Draws already in `scene` == draws in roots [0, gi) == this gather's boundary.
-            boundaries.push(self.draw_object_count(scene));
-        }
-        // Finish everything above the last gather so `scene` holds the full document.
-        self.draw_scene_range(scene, root, cursor, usize::MAX);
-        boundaries
-    }
 
     /// [`Self::build_bodies`], clipped to `clip` — a rect in the **scene's own** pixel space.
     ///
@@ -116,8 +87,6 @@ pub trait RasterBackend {
         ops: &[PaintOp],
         clip: Rect,
     ) {
-        // A clip path is captured under whatever transform is current at push time, so pin identity
-        // first to express `clip` in raw scene pixels rather than in `transform`'s space.
         scene.set_transform(Affine::IDENTITY);
         scene.push_clip_layer(&clip.to_path(0.1));
         self.build_bodies(scene, transform, ops);
@@ -140,12 +109,14 @@ pub trait RasterBackend {
     /// shadow's *punch* pass `true`; the inner shadow's un-shifted flood passes `false`.
     fn build_shadow_silhouette(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _shadow: usize, _inset: bool, _apply_offset: bool) {}
 
-    /// Emit a native `CMD_EFFECT` boundary marker for gather node `id` into the z-ordered stream: the
-    /// front-end carries `effect_id` + `params` with the node's silhouette as coverage, so the effect
-    /// boundary lives in the PTCL. `fine` steps over it (inert); the effect still stamps post-fine. This
-    /// is the seam the marker-driven dispatch will later hang on. Default no-op — only the phased
-    /// (classic) backend emits markers.
-    fn draw_effect_marker(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _effect_id: u32, _params: [f32; 4]) {}
+    /// Emit a native `CMD_EFFECT` boundary marker for effect node `id` into the z-ordered stream.
+    /// `seg_after` (= boundary index + 1) rides in the marker payload: `fine` SETS its running
+    /// segment index from it rather than counting markers, so the marker only needs to bin into the
+    /// tiles inside `reach` — the device-space `[x0, y0, x1, y1]` box the effect's stamp or blur can
+    /// touch. Binning per-reach (not full-viewport) keeps the marker's PTCL/tile cost proportional to
+    /// the effect's area instead of `O(all tiles × boundaries)`, which overflowed vello's fixed
+    /// budgets at document scale. Default no-op — only the phased (classic) backend emits markers.
+    fn draw_effect_marker(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _effect_id: u32, _seg_after: u32, _round: u32, _reach: [f32; 4]) {}
 
     /// Rasterize `scene` into `target` (a `width × height` texture), clearing to `base_color` first.
     ///
@@ -166,47 +137,17 @@ pub trait RasterBackend {
         base_color: Color,
     );
 
-    /// The number of vello draw objects the built `scene` encodes — the index space the phased render's
-    /// `(draw_start, draw_end)` ranges live in. Only classic (the phased backend) reports it; others
-    /// return `0` and never phase.
+    /// The number of vello draw objects the built `scene` encodes — the index space the segmented
+    /// render's boundaries live in. Only classic (the phased backend) reports it; others return `0`.
     fn draw_object_count(&self, _scene: &Self::Scene) -> u32 {
         0
     }
 
-    /// Whether this backend can run the whole-viewport **phased** render (front-end once, N draw-range
-    /// coarse+fine phases sharing one setup). Only classic implements it today.
-    fn phased_supported(&self) -> bool {
-        false
-    }
-
-    /// Rasterize `scene` as a **phased** render: one coarse+fine phase per `(draw_start, draw_end)`
-    /// range in `phases`, sharing a single front-end/setup. Phase 0 clears to `base_color`; each later
-    /// phase composites over the previous phase's output. `targets` supplies one texture per phase (a
-    /// phase's output is a fine storage target and the next phase's sampled base, so it must be a real
-    /// `STORAGE_BINDING | TEXTURE_BINDING` texture); the frame result is the last target. Records into
-    /// `enc` (no submit). Only called when [`Self::phased_supported`]; the default panics.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn rasterize_phased(
-        &mut self,
-        _scene: &Self::Scene,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _targets: &[&wgpu::TextureView],
-        _width: u32,
-        _height: u32,
-        _base_color: Color,
-        _phases: &[(u32, u32)],
-    ) {
-        unimplemented!("phased render is classic-only; gate on phased_supported()")
-    }
-
-    /// Begin a **persistent** phased render over the whole-viewport `scene`: run the geometry
-    /// front-end once and hold the shared setup on the backend. Unlike [`Self::rasterize_phased`] —
-    /// which records every phase up front, so nothing can run between them — this lets the sink drive
-    /// phases one at a time with [`Self::phased_phase`] and record a gather's effect (blur/glass) into
-    /// the *same* encoder between phases, collapsing a whole gather frame to one setup. Records the
-    /// front-end into `enc` (no submit). End with [`Self::phased_finish`]. Only classic; default panics.
+    /// Begin a **persistent** phased render over the whole-viewport `scene`: allocate the session's
+    /// shared buffers and hold them on the backend, so the sink can drive fine segments one at a time
+    /// with [`Self::phased_fine_segment`] and record an effect's passes (blur/glass/shadow) into the
+    /// *same* encoder between them — a whole effect frame in one setup and one submit. Records into
+    /// `enc` (no submit). End with [`Self::phased_finish`]. Only classic; default panics.
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn phased_begin(
         &mut self,
@@ -218,54 +159,63 @@ pub trait RasterBackend {
         _height: u32,
         _base_color: Color,
     ) {
-        unimplemented!("phased session is classic-only; gate on phased_supported()")
-    }
-
-    /// Run ONE phase (draw range `[draw_start, draw_end)`) of the session begun by [`Self::phased_begin`]
-    /// into `enc`, writing `out`. `base` (`Some`) is composited over — the previous phase's output
-    /// *after* the caller's own effect passes — via the load-fine permutation; `None` clears to the
-    /// session's base color (phase 0). `base` and `out` are caller-owned `STORAGE_BINDING |
-    /// TEXTURE_BINDING` textures. Only valid between a [`Self::phased_begin`]/[`Self::phased_finish`] pair.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
-    fn phased_phase(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _enc: &mut wgpu::CommandEncoder,
-        _draw_start: u32,
-        _draw_end: u32,
-        _base: Option<&wgpu::TextureView>,
-        _out: &wgpu::TextureView,
-    ) {
-        unimplemented!("phased session is classic-only; gate on phased_supported()")
+        unimplemented!("phased session is classic-only")
     }
 
     /// Record the whole scene's front-end + tiling + coarse ONCE (front-end-once), building the shared
     /// PTCL that [`Self::phased_fine_segment`] then walks per segment. Call once after
-    /// [`Self::phased_begin`], before the first segment. Records into `enc` (no submit). This is the
-    /// front-end-once alternative to driving [`Self::phased_phase`] per draw-window; it needs the
+    /// [`Self::phased_begin`], before the first segment. Records into `enc` (no submit). It needs the
     /// `CMD_EFFECT` markers present in the encoding so `fine` can count segments. Classic-only; default panics.
     fn phased_frontend_full(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _enc: &mut wgpu::CommandEncoder) {
-        unimplemented!("phased session is classic-only; gate on phased_supported()")
+        unimplemented!("phased session is classic-only")
     }
 
-    /// Dispatch `fine` for ONE segment (`seg_target`) of the shared PTCL built by
+    /// Dispatch `fine` for the segment WINDOW `[seg_lo, seg_target]` of the shared PTCL built by
     /// [`Self::phased_frontend_full`] into `enc`, writing `out`. `fine` composites only the commands
-    /// whose running segment index (counted at each `CMD_EFFECT` marker) equals `seg_target`. `base`
-    /// (`Some`) is the previous segment's output — after the caller's effect passes — loaded and
-    /// composited over; `None` clears to the base color (segment 0). `base`/`out` are caller-owned
-    /// `STORAGE_BINDING | TEXTURE_BINDING` textures. Classic-only; default panics.
+    /// whose running segment index (the payload of the last `CMD_EFFECT` marker) falls in the window
+    /// — a window because reach-scoped markers give each tile only the boundaries that matter to it,
+    /// and because globally-empty segments are skipped, widening the next dispatch. `base`
+    /// (`Some`) is the previous window's output — after the caller's effect passes — loaded and
+    /// composited over; `None` clears to the base color (the first window). The window is
+    /// `[seg_lo, seg_target)` over per-tile rounds; [`SEG_ALL`] as `seg_target` removes the upper
+    /// bound. `base`/`out` are caller-owned `STORAGE_BINDING | TEXTURE_BINDING` textures.
+    /// Classic-only; default panics.
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn phased_fine_segment(
         &mut self,
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
         _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
         _seg_target: u32,
         _base: Option<&wgpu::TextureView>,
         _out: &wgpu::TextureView,
     ) {
-        unimplemented!("phased session is classic-only; gate on phased_supported()")
+        unimplemented!("phased session is classic-only")
+    }
+
+    /// Whether this backend's device can bind `rgba8unorm` as a READ-WRITE storage texture — the
+    /// single-accumulator fast path ([`Self::phased_fine_segment_rw`]). Default false: the driver
+    /// keeps the two-texture ping-pong.
+    fn rw_accumulator(&self) -> bool {
+        false
+    }
+
+    /// Dispatch the READ-WRITE fine permutation for one tile-round window `[seg_lo, seg_target)`,
+    /// updating the accumulator `target` IN PLACE — no base texture, no ping-pong; a tile with no
+    /// work in the window returns untouched. The caller clears `target` before the first window
+    /// (this mode never clears). Only valid when [`Self::rw_accumulator`] is true; `target` carries
+    /// `STORAGE_BINDING` alongside the usual attachment/sampling usages. Classic-only; default panics.
+    fn phased_fine_segment_rw(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _target: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
     }
 
     /// End the session begun by [`Self::phased_begin`], freeing its shared buffers into `enc` (deferred

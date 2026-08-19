@@ -45,7 +45,6 @@ fn push_modifiers(entries: &[(u128, f64, f64)]) {
         }
     }
     let ptr = render_core::vello::abi::alloc_bytes(bytes.len());
-    // SAFETY: `alloc_bytes` returned an allocation of exactly this size, which `set_modifiers` drains.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
     render_core::vello::abi::set_modifiers();
 }
@@ -67,6 +66,8 @@ fn main() {
     };
     let (device, queue) =
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("interactive"), ..Default::default() })).expect("device");
+    device.on_uncaptured_error(std::sync::Arc::new(|e| eprintln!("\nWGPU UNCAPTURED: {e}\n")));
+    device.set_device_lost_callback(|reason, msg| eprintln!("\nWGPU DEVICE LOST ({reason:?}): {msg}\n"));
     let mut backend = ClassicBackend::new(&device);
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("interactive target"),
@@ -79,8 +80,6 @@ fn main() {
         view_formats: &[],
     });
 
-    // Install once. The phases below drive the view and the modifiers, NOT a rebuild — re-installing
-    // per frame would measure fixture construction rather than rendering.
     render_core::vello::abi::load_scale_scene(shapes, effect_every);
     let cells = render_core::parity::canvas_size(1);
     let fit = (w as f32 / cells.0 as f32).min(h as f32 / cells.1 as f32);
@@ -103,8 +102,6 @@ fn main() {
     ];
 
     let root = Affine::IDENTITY;
-    for (mode_name, phased) in [("per-segment", 0u32), ("front-end-once", 1u32)] {
-    println!("-- {mode_name}");
     for (pi, phase) in phases.iter().enumerate() {
         let mut sink = Sink::new(&device, FORMAT);
         let (mut tot, mut rec) = (Vec::new(), Vec::new());
@@ -112,8 +109,6 @@ fn main() {
         for i in 0..(WARMUP + TIMED) {
             let t = i as f32;
             match pi {
-                // Static: fixed view, no modifiers. Still marked dirty so the present-on-demand gate
-                // does not simply re-blit the retained canvas and report a fictional 0 ms.
                 0 => {
                     render_core::vello::abi::set_view(fit, 0.0, 0.0);
                     render_core::vello::abi::mark_dirty();
@@ -122,15 +117,12 @@ fn main() {
                 2 => render_core::vello::abi::set_view(fit, -12.0 * (t % 10.0), -7.0 * (t % 10.0)),
                 _ => {
                     render_core::vello::abi::set_view(fit, 0.0, 0.0);
-                    // Ids are sequential from the fixture builder; drag a contiguous slice of them.
                     let moved: Vec<(u128, f64, f64)> = (1u128..=200)
                         .map(|id| (id, f64::from(t) * 1.5, f64::from(t) * -1.1))
                         .collect();
                     push_modifiers(&moved);
                 }
             }
-            render_core::vello::abi::set_wv_phased(phased);
-            render_core::vello::abi::set_cmd_effect(phased);
             render_core::vello::prof::reset();
             let t0 = Instant::now();
             let _ = render_core::vello::abi::take_dirty();
@@ -154,9 +146,7 @@ fn main() {
             median - cpu,
             phase.detail,
         );
-        // Leave the modifiers clean so the next phase starts from rest.
         render_core::vello::abi::clean_modifiers();
-    }
     }
     println!("\n60 fps is 16.7 ms. CPU-heavy phases point at the per-shape walk and encoding rebuild;");
     println!("GPU-heavy ones at the effect passes.");

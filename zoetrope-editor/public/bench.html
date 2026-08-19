@@ -9,103 +9,35 @@
 <canvas id="c"></canvas>
 <div id="out">booting…</div>
 <script type="module">
-// Standalone renderer benchmark: loads a vello backend directly, with NO app, no React, no
-// document proxies — so the numbers are the renderer's, not the editor's.
-//
-//   /bench.html?backend=hybrid|classic&n=20000&depth=0&effects=none
-//
-//   depth    nesting: `depth` nested frames above the shapes (transform/clip stack depth)
-//   effects  none | shadow | blur | both — applied to every `effectEvery`-th shape
-//
-// Shapes are built straight through the C ABI (the same entry points the app uses), so every
-// backend rasterizes byte-identical input.
 
 const q = new URLSearchParams(location.search)
 const BACKEND = q.get('backend') ?? 'hybrid'
 const N = Number(q.get('n') ?? 20000)
 const FRAMES = Number(q.get('frames') ?? 40)
-// dirtyEvery=<N>: force a content-dirty signal every Nth frame (0 = never). The present-on-demand
-// A/B: presentOnDemand=1&dirtyEvery=1 must render every frame exactly like presentOnDemand=0.
 const DIRTY_EVERY = Number(q.get('dirtyEvery') ?? 0)
 const W = Number(q.get('w') ?? 1600)
 const H = Number(q.get('h') ?? 1000)
 const DEPTH = Number(q.get('depth') ?? 0)
-// nestType=group nests trivial GROUPS above the shapes instead of frames — the flat GPU-walk oracle
-// linearises those (frames paint a body / can clip, so they fall back to the recursive visit).
 const NEST_TYPE = q.get('nestType') ?? 'frame'
 const EFFECTS = q.get('effects') ?? 'none'
 const EFFECT_EVERY = Number(q.get('effectEvery') ?? 10)
-// Blur radius for bgblur/blur/glass. Held or swept to separate per-pass overhead (round-trip) from
-// blur compute: the backdrop is capped to a one-tile ring, so compute/blur is ~radius-invariant —
-// if GPU time tracks pass COUNT and is flat vs RADIUS, the cost is the round-trip, not the math.
 const RADIUS = Number(q.get('radius') ?? 6)
-// Glass blur/frost overrides. The default frosted-glass scene (blur=RADIUS, frost=3) exercises the
-// two-pass path (a blur barrier + a frost-scatter composite). `glassFrost=0&glassBlur=0` makes SHARP
-// glass — no scatter, no blur — which the footprint partition collapses to ONE fused refraction+
-// composite draw. Sweep these to A/B the fused single-pass path against the two-pass one.
 const GLASS_BLUR = q.has('glassBlur') ? Number(q.get('glassBlur')) : RADIUS
 const GLASS_FROST = q.has('glassFrost') ? Number(q.get('glassFrost')) : 3
-// Declared quality floor k∈(0,1] — the effect-resolution-scale lever. 1 (default) = render the lens
-// at full device resolution; <1 declares the lens soft, so its gather surface renders at
-// min(memoryCap, k) and upscales ×1/k at the stamp. glassDownscale=0.5 renders the whole lens at half
-// resolution (the "render smaller, upscale" case) — measure GPU savings vs the bilinear softening.
 const GLASS_DOWNSCALE = q.has('glassDownscale') ? Number(q.get('glassDownscale')) : 1
-// Stacked-gather stress: `stack` concentric gather rects at the canvas centre, each nested inside the
-// one below so every higher one covers the ones under it. This is the WORST case for the collapse —
-// a genuine gather-on-gather dependency chain — so it should NOT collapse (deferrable≈1, passes≈stack).
-// Contrast with the grid gathers (effects=bgblur|glass on scattered cells), which are independent and
-// SHOULD collapse to one pass. Compare buckets 108-111 across the two to see the optimization's reach.
 const STACK = Number(q.get('stack') ?? 0)
 const STACK_FX = q.get('stackFx') ?? 'bgblur'
-// stackShapes=1 interleaves an OPAQUE coloured panel just below each stacked gather, so the stack is
-// shape,glass,shape,glass,… — each lens refracts a DISTINCT backdrop (a real gather-on-shape-on-gather
-// chain). Under the phased collapse this makes each lens its own non-empty fine phase (distinct draw
-// boundary), the multi-phase worst case, vs the pure-lens stack where all lenses share one backdrop.
 const STACK_SHAPES = Number(q.get('stackShapes') ?? 0)
-// Base half-size (px) of the outermost stacked lens; each inner lens is 18px smaller. Sweep this to
-// test whether gather GPU cost scales with lens AREA (with wvScope=1) or is flat (full-viewport).
 const STACK_HALF = Number(q.get('stackHalf') ?? 220)
-// stacks=N lays out N SEPARATE stacked-gather groups in a grid across the canvas (default 1). Each is
-// an independent concentric chain — many instances of the stack, not one deeper stack.
 const STACKS = Number(q.get('stacks') ?? 1)
-// stackBetween=K inserts K real filled shapes BETWEEN each glass layer (scattered in the lens region),
-// so each lens refracts genuine content, not one flat panel. stackSpread=1 gives those shapes a drop
-// shadow (a SPREAD effect — own-body, no backdrop read; it renders in the whole-viewport walk, unlike
-// layer blur which is a tiled-path effect surface and is skipped here).
 const STACK_BETWEEN = Number(q.get('stackBetween') ?? 0)
 const STACK_SPREAD = Number(q.get('stackSpread') ?? 0)
-// The lens grid's gather flavor, independent of the stacked chain's. Defaults to `stackFx` so every
-// existing URL keeps its meaning; set it to run BOTH gather families in one scene (e.g.
-// `effects=both&lenses=24&lensFx=bgblur&stack=6&stackFx=glass` gives drop shadow + layer blur
-// (spread) + background blur + glass (gather) over the same grid — the all-effects scene).
 const LENS_FX = q.get('lensFx') ?? STACK_FX
-// Isolated topmost lenses: `lenses` fill-less blur rects spread across the canvas in a grid, each
-// small enough that its sample rect (output + blur reach) never reaches a neighbour, and all added
-// LAST so nothing is painted above them. This is the "panels over a background" case the collapse
-// targets — every lens is topmost and independent, so they all defer into ONE batched pass.
 const LENSES = Number(q.get('lenses') ?? 0)
-// bgFill=1 lays one full-canvas opaque rect UNDER everything, so a lens's backdrop has no transparent
-// gaps — isolates true blur fidelity from the grid's transparent-seam "show-through" artifact.
 const BGFILL = Number(q.get('bgFill') ?? 0)
-// The collapse only batches lenses that are pure (no fill/stroke) AND share one radius. These two
-// knobs turn each of those off so the bench can show what the optimization is worth on content that
-// is NOT its best case: `lensTint` gives every lens a translucent fill (a tinted frosted panel — it
-// stops being a pure lens), `lensRadii` spreads the radius over N distinct values (lenses only group
-// with others of the same radius, so a spread splits the batch into singletons).
 const LENS_TINT = Number(q.get('lensTint') ?? 0)
 const LENS_RADII = Number(q.get('lensRadii') ?? 1)
-// `lensFringe=1` paints a small opaque tab ABOVE each lens, sitting in the ring between the lens
-// output and the edge of its sample rect. It never covers the lens, so the lens' result can still be
-// scattered last — but the finished tiles no longer hold the backdrop it read, so it can only batch
-// off a frozen copy. This is the case the snapshot pool exists for.
 const LENS_FRINGE = Number(q.get('lensFringe') ?? 0)
-// Frame pacing. `raf` is vsync-paced — what a real app does, but `requestAnimationFrame` does NOT
-// fire while the page is hidden, which stalls the whole bench in a background tab or an off-screen
-// preview pane. `msg` paces on a MessageChannel round-trip instead: immune to visibility throttling,
-// and *unpaced* — the loop runs as fast as the pipeline allows, so the swapchain backpressures and
-// `nonCpuMs` becomes real GPU/present wait instead of vsync idle. That is the measurement that
-// separates CPU-bound from GPU-bound; under `raf` a frame that costs 3 ms and one that costs 15 ms
-// both report 60 fps and a meaningless residue.
 const PACE = q.get('pace') ?? 'raf'
 
 const out = document.getElementById('out')
@@ -116,8 +48,6 @@ const URLS = {
   classic: '/wasm-vello-gpu/render-vello-gpu.js',
 }
 
-// One solid fill record: 4-byte header (count) + one RAW_FILL_DATA_SIZE record.
-// Record layout: tag u8 @0 (0x00 = Solid), payload @4, solid colour u32 @payload+0.
 const REC = 164
 const CELL = 40
 
@@ -125,14 +55,12 @@ function main() {
   const url = URLS[BACKEND]
   if (!url) { log('unknown backend ' + BACKEND); return }
 
-  import(/* @vite-ignore */ url).then(async (mod) => {
-    // `init()` returns the raw wasm instance exports — that is where the `#[no_mangle]` C-ABI
-    // lives (and `memory`). `create_focus_renderer` is a wasm-bindgen item, on the namespace.
+  import( url).then(async (mod) => {
     const X = await mod.default()
-    window.X = X // DEBUG: let the harness read prof_read()/diagnostics after a once=1 render.
+    window.X = X
 
     const canvas = document.getElementById('c')
-    const dpr = 1 // pin to 1 so every backend rasterizes the same pixel count
+    const dpr = 1
     canvas.width = W; canvas.height = H
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px'
 
@@ -140,59 +68,25 @@ function main() {
     X.set_render_options(0, dpr)
     X.set_scheduler(1)
     X.set_tile_effects(1)
-    // Sink submit-batch size (steps per encoder). 0 = unbounded (whole frame in one encoder — the
-    // case that OOMed). Default 32. Lets a sweep prove memory scales with batch size.
     if (X.set_sink_batch) X.set_sink_batch(Number(q.get('batch') ?? 32))
-    // gatherBatch=0 forces the inline (pre-collapse) gather path — the A/B baseline for the batch.
-    // Only override when the param is present, so the bench reflects the backend's own default
-    // (the collapse ships ON: independent pure-lens blur groups batch; disturbed/glass/stacked
-    // gathers stay inline via batched_groups).
     if (X.set_gather_batch && q.get('gatherBatch') !== null) X.set_gather_batch(Number(q.get('gatherBatch')))
-    // fuseGathers=1 lets atlas_fuse fuse spread tiles a topmost inline gather touches (raster-count
-    // fix). Off by default so it can be A/B'd against the shattering baseline for pixel parity.
     if (X.set_fuse_gathers && q.get('fuseGathers') !== null) X.set_fuse_gathers(Number(q.get('fuseGathers')))
-    // noFuse=1 forces atlas_fuse to handle nothing (every tile → per-paint main loop). Correctness A/B:
-    // the fused frame must match the noFuse frame pixel-for-pixel. Use with capture=<mode> to diff a
-    // fuse-on run against a noFuse run under pan/zoom/edit.
     if (X.set_no_fuse && q.get('noFuse') !== null) X.set_no_fuse(Number(q.get('noFuse')))
-    // wholeViewport=1 draws the whole document in ONE vello scene / one render_full (vello-native
-    // compile, Slice 1). Correct only for native-effect scenes (no layer blur / gather) for now.
     if (X.set_whole_viewport && q.get('wholeViewport') !== null) X.set_whole_viewport(Number(q.get('wholeViewport')))
-    // wvPhased=1 runs the whole-viewport path as draw-range phases sharing ONE front-end/setup (the
-    // single-render_full gather collapse). Requires wholeViewport=1.
     if (X.set_wv_phased && q.get('wvPhased') !== null) X.set_wv_phased(Number(q.get('wvPhased')))
-    // flatWalk=0 forces the recursive `visit` scheduler; default (or 1) uses the flat GPU-walk oracle.
     if (X.set_flat_walk && q.get('flatWalk') !== null) X.set_flat_walk(Number(q.get('flatWalk')))
-    // wvScope=1 restricts each glass gather's effect to the lens bbox (area experiment). Needs wholeViewport=1&wvPhased=1.
     if (X.set_wv_scope && q.get('wvScope') !== null) X.set_wv_scope(Number(q.get('wvScope')))
-    // cmdEffect=1 emits a native CMD_EFFECT boundary marker per gather into the phased stream (front-end
-    // carries effect_id + coverage). fine steps over it; the effect still stamps post-fine, so on vs off
-    // must be pixel-identical. Needs wholeViewport=1&wvPhased=1.
+    if (X.set_wv_atlas && q.get('wvAtlas') !== null) X.set_wv_atlas(Number(q.get('wvAtlas')))
     if (X.set_cmd_effect && q.get('cmdEffect') !== null) X.set_cmd_effect(Number(q.get('cmdEffect')))
-    // profPasses=1 stamps a GPU timestamp between each effect-graph pass so the per-pass GPU ms shows
-    // up in the DBG buckets (read back as result.passes). Best with stack=1 (one gather = clean deltas).
     if (X.set_prof_passes && q.get('profPasses') !== null) X.set_prof_passes(Number(q.get('profPasses')))
-    // canvasBg=<argb hex> gives the canvas an OPAQUE background, so a background blur's backdrop
-    // composes over that colour instead of the default transparent clear — the veil test.
     if (X.set_canvas_background && q.get('canvasBg')) X.set_canvas_background(parseInt(q.get('canvasBg'), 16) >>> 0)
-    // presentOnDemand=1 retains the composited frame in a persistent canvas; an unchanged frame (no
-    // content edit AND same view AND same dims) skips the whole render and re-presents the canvas.
-    // Needs wholeViewport=1. Read result.skippedFrames to see how many frames were re-presented.
     if (X.set_present_on_demand && q.get('presentOnDemand') !== null) X.set_present_on_demand(Number(q.get('presentOnDemand')))
-    // zoomProxy=1 (with presentOnDemand=1): a view-change frame first blits the retained canvas under
-    // the new transform as an instant proxy, then the real render replaces it.
     if (X.set_zoom_proxy && q.get('zoomProxy') !== null) X.set_zoom_proxy(Number(q.get('zoomProxy')))
 
-    window.__X__ = X // expose wasm exports for ad-hoc probing
+    window.__X__ = X
     const renderer = await mod.create_focus_renderer(canvas)
-    window.__R__ = renderer // so a probe can force a cold full redraw and diff it against the incremental frame
+    window.__R__ = renderer
 
-    // ---- parity dashboard ----------------------------------------------------------
-    // scene=parity installs the shared render_core::parity fixture (every neutral-model feature in a
-    // labelled grid) and renders ONE frame through the full scheduler sink — so the GATHER cells
-    // (background blur, glass, and their scoped-in-a-frame variants) actually execute, unlike the
-    // native tree-walk example. Frame it 1:1 at its native size: pass w=1192&h=1002. Then screenshot
-    // via the Chrome MCP (real GPU). Skips the stress-scene build + bench loop.
     const SCENE = q.get('scene')
     if (SCENE !== 'scale' && (SCENE === 'parity' || SCENE === 'showcase' || SCENE === 'image' || SCENE === 'path-shadow' || SCENE === 'layer-blur' || (SCENE && SCENE.startsWith('scope')))) {
       const cells =
@@ -207,15 +101,8 @@ function main() {
         : SCENE === 'path-shadow' ? X.load_path_shadow_scene()
         : SCENE === 'layer-blur' ? X.load_layer_blur_scene()
         : X.load_parity_scene()
-      // White page for the path-shadow / layer-blur scenes so the effect reads against it.
       if ((SCENE === 'path-shadow' || SCENE === 'layer-blur') && X.set_canvas_background) X.set_canvas_background(0xffffffff)
-      // Neutral-gray page background for the scope scenes: a correctly *transparent* gather over an
-      // empty scope reveals this gray, so the no-backdrop proof is unambiguous (a residual opaque-black
-      // bug would still read black). The with-backdrop gradient frame covers the canvas, so gray never
-      // shows there. Set AFTER load (the fixture install resets the view/background).
       if (SCENE.startsWith('scope') && X.set_canvas_background) X.set_canvas_background(0xff4a4a52)
-      // Explicit canvasBg wins for ANY fixture scene, applied AFTER load (which resets the background).
-      // e.g. scene=parity&canvasBg=ffffffff paints the grid on white so dark drop shadows are visible.
       if (q.get('canvasBg') && X.set_canvas_background) X.set_canvas_background(parseInt(q.get('canvasBg'), 16) >>> 0)
       X.set_view(1, 0, 0)
       renderer.render()
@@ -224,28 +111,26 @@ function main() {
       return
     }
 
-    // ---- scene=scale: a document being USED -------------------------------------------
-    // Thousands of shapes, a minority with effects, driven through the four things an editor
-    // actually does — hold still, zoom, pan, drag — on the real GPU rather than a headless adapter.
-    // Knobs: shapes (4000), effectEvery (25), frames per phase (20).
-    // e.g. /bench.html?scene=scale&shapes=4000&effectEvery=25&wholeViewport=1&w=1600&h=900
     if (SCENE === 'scale') {
       const N = parseInt(q.get('shapes') || '4000', 10)
       const EVERY = parseInt(q.get('effectEvery') || '25', 10)
       const FRAMES = parseInt(q.get('frames') || '20', 10)
-      const cells = X.load_scale_scene(N, EVERY)
+      const STEP = parseFloat(q.get('step') || '26')
+      const SIZE = parseFloat(q.get('size') || '1.9')
+      const OP_EVERY = parseInt(q.get('opEvery') || '7', 10)
+      const cells = X.load_scale_scene_sized
+        ? X.load_scale_scene_sized(N, EVERY, STEP, SIZE, OP_EVERY)
+        : X.load_scale_scene(N, EVERY)
       if (X.set_canvas_background) X.set_canvas_background(0xffffffff)
       const FIT = parseFloat(q.get('zoom') || '0.5')
 
-      // Drag `count` shapes by (dx,dy) through the real modifier wire: 40 bytes each, the uuid
-      // quartet then a,b,c,d,e,f. Same path the editor's drag gesture takes.
       function drag(count, dx, dy) {
         const ptr = X.alloc_bytes(count * 40)
         const view = new DataView(X.memory.buffer)
         for (let i = 0; i < count; i++) {
           const o = ptr + i * 40
           view.setUint32(o, 0, true); view.setUint32(o + 4, 0, true)
-          view.setUint32(o + 8, 0, true); view.setUint32(o + 12, i + 1, true) // id = i+1
+          view.setUint32(o + 8, 0, true); view.setUint32(o + 12, i + 1, true)
           view.setFloat32(o + 16, 1, true); view.setFloat32(o + 20, 0, true)
           view.setFloat32(o + 24, 0, true); view.setFloat32(o + 28, 1, true)
           view.setFloat32(o + 32, dx, true); view.setFloat32(o + 36, dy, true)
@@ -265,7 +150,6 @@ function main() {
       log('scale: ' + cells + ' shapes, 1 in ' + EVERY + ' with effects (' + BACKEND + ', ' + W + 'x' + H + ')')
       function step() {
         if (pi >= phases.length) {
-          // Report: median per phase, so one slow warm-up frame cannot skew it.
           let out = 'phase      median ms   fps\n'
           for (const r of results) {
             out += r.name.padEnd(10) + String(r.median.toFixed(1)).padStart(9) +
@@ -282,7 +166,6 @@ function main() {
         const t0 = performance.now()
         renderer.render()
         const dt = performance.now() - t0
-        // Discard the first 3 frames of each phase: pipeline warm-up, not steady state.
         if (frame >= 3) times.push(dt)
         frame++
         if (frame >= FRAMES + 3) {
@@ -298,7 +181,6 @@ function main() {
       return
     }
 
-    // ---- scene ---------------------------------------------------------------------
     const u8 = () => new Uint8Array(X.memory.buffer)
     const dv = () => new DataView(X.memory.buffer)
 
@@ -306,8 +188,8 @@ function main() {
       const size = 4 + REC
       const ptr = X.alloc_bytes(size)
       u8().fill(0, ptr, ptr + size)
-      u8()[ptr] = 1            // fill count
-      u8()[ptr + 4] = 0x00     // record tag: Solid
+      u8()[ptr] = 1
+      u8()[ptr + 4] = 0x00
       dv().setUint32(ptr + 8, color, true)
       X.set_shape_fills()
     }
@@ -318,7 +200,6 @@ function main() {
     const STACK_TOTAL = STACKS * STACK * (1 + STACK_BETWEEN + (STACK_SHAPES ? 1 : 0))
     X.init_shapes_pool(N + DEPTH + STACK + LENSES + 200 + STACK_TOTAL + 32)
 
-    // Opaque full-canvas backdrop as the first root child (lowest z), under the grid + lenses.
     if (BGFILL) {
       const id = N + DEPTH + STACK + LENSES + 5
       X.use_shape(0, 0, 0, id)
@@ -329,20 +210,18 @@ function main() {
       X.add_shape_child(0, 0, 0, id)
     }
 
-    // Nested frames above the shapes: root -> f1 -> ... -> fDEPTH -> shapes. This is what makes
-    // the walk pay for a transform/clip stack rather than a flat list.
     const FRAME_BASE = N + 1
     let parent = [0, 0, 0, 0]
     for (let d = 0; d < DEPTH; d++) {
       const id = FRAME_BASE + d
       X.use_shape(0, 0, 0, id)
       if (NEST_TYPE === 'group') {
-        X.set_shape_type(1)                     // Group — trivial, no clip → the flat walk linearises it
+        X.set_shape_type(1)
         X.set_shape_selrect(0, 0, cols * CELL, cols * CELL)
       } else {
-        X.set_shape_type(0)                     // Frame
+        X.set_shape_type(0)
         X.set_shape_selrect(0, 0, cols * CELL, cols * CELL)
-        X.set_shape_clip_content(false)         // clipping would cull, hiding the depth cost
+        X.set_shape_clip_content(false)
       }
       X.use_shape(...parent)
       X.add_shape_child(0, 0, 0, id)
@@ -352,35 +231,22 @@ function main() {
     for (let i = 0; i < N; i++) {
       const [cx, cy] = shapeXY(i)
       X.use_shape(0, 0, 0, i + 1)
-      X.set_shape_type(3)                       // Rect
+      X.set_shape_type(3)
       X.set_shape_selrect(cx + 2, cy + 2, cx + CELL - 2, cy + CELL - 2)
       const isEffect = EFFECTS !== 'none' && i % EFFECT_EVERY === 0
-      // Gather lenses (bgblur/glass) stay fill-less so they are *pure lenses* — the batched gather
-      // stage only collapses those (nothing composites over the blur). Everything else gets a fill so
-      // there is a colourful backdrop to blur.
       const isGatherLens = isEffect && (EFFECTS === 'bgblur' || EFFECTS === 'glass')
       if (!isGatherLens) solidFill(0xff000000 | (i * 2654435761 & 0xffffff))
       if (isEffect) {
-        // Two scheduler families:
-        //   SPREAD  — own surface, composited onto every tile it overlaps (additive, no backdrop read).
-        //     shadow = drop shadow;  blur = LAYER blur (blur_type 0, the shape's own paint).
-        //   GATHER  — reads the backdrop beneath, so it forces a compose-backdrop + read pass.
-        //     bgblur = BACKGROUND blur (blur_type 1);  glass = frosted glass.
         if (EFFECTS === 'shadow' || EFFECTS === 'both') X.add_shape_shadow(0x80000000, 8, 0, 4, 4, 0, false)
         if (EFFECTS === 'blur' || EFFECTS === 'both') X.set_shape_blur(0, false, RADIUS)
         if (EFFECTS === 'bgblur') X.set_shape_blur(1, false, RADIUS)
         if (EFFECTS === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.1, 0, 0, 0, 1, GLASS_BLUR, GLASS_FROST, GLASS_DOWNSCALE, 0)
-        // texture = a built-in custom-shader SPREAD (effects.rs TEXTURE_WGSL) — exercises the migrated
-        // storage params binding (build_custom_pipeline / custom_over_body).
         if (EFFECTS === 'texture') X.set_shape_texture(20, 30, 0, 0)
       }
       X.use_shape(...parent)
       X.add_shape_child(0, 0, 0, i + 1)
     }
 
-    // STACKS separate concentric stacked-gather groups, laid out in a grid across the canvas. Each is a
-    // gather-on-gather dependency chain; between each glass layer we can insert real shapes (a distinct
-    // backdrop per lens) and give them a drop shadow (spread). Fresh high ID range to avoid collisions.
     let stackId = N + DEPTH + STACK + LENSES + 100
     const newId = () => stackId++
     const gc = Math.max(1, Math.ceil(Math.sqrt(STACKS)))
@@ -389,7 +255,6 @@ function main() {
       const gcy = (Math.floor(g / gc) + 0.5) * H / gc
       for (let s = 0; s < STACK; s++) {
         const half = STACK_HALF - s * 18
-        // Optional single opaque panel below the lens (legacy stackShapes).
         if (STACK_SHAPES) {
           const sid = newId()
           X.use_shape(0, 0, 0, sid)
@@ -399,8 +264,6 @@ function main() {
           X.use_shape(...parent)
           X.add_shape_child(0, 0, 0, sid)
         }
-        // Real shapes scattered in the lens region — the genuine backdrop each lens refracts. With
-        // stackSpread they carry a drop shadow (a spread effect: own body, no backdrop read).
         for (let k = 0; k < STACK_BETWEEN; k++) {
           const id = newId()
           const span = Math.max(1, 2 * half - 48)
@@ -414,7 +277,6 @@ function main() {
           X.use_shape(...parent)
           X.add_shape_child(0, 0, 0, id)
         }
-        // The glass (or bgblur) lens for this layer — no fill, a pure gather.
         const id = newId()
         X.use_shape(0, 0, 0, id)
         X.set_shape_type(3)
@@ -426,27 +288,24 @@ function main() {
       }
     }
 
-    // Isolated topmost blur lenses spread over the canvas — the collapse's best case.
     const LENS_BASE = N + DEPTH + STACK + 2
     if (LENSES > 0) {
       const lc = Math.ceil(Math.sqrt(LENSES))
       const cw = W / lc, ch = H / lc
-      const half = Math.min(cw, ch) * 0.28   // small enough that output+reach stays inside its cell
+      const half = Math.min(cw, ch) * 0.28
       for (let s = 0; s < LENSES; s++) {
         const id = LENS_BASE + s
         const gx = (s % lc + 0.5) * cw, gy = (Math.floor(s / lc) + 0.5) * ch
         X.use_shape(0, 0, 0, id)
-        X.set_shape_type(3)                       // Rect
+        X.set_shape_type(3)
         X.set_shape_selrect(gx - half, gy - half, gx + half, gy + half)
-        if (LENS_TINT) solidFill(0x30ffffff)      // a tinted panel — no longer a `pure_lens`
+        if (LENS_TINT) solidFill(0x30ffffff)
         const radius = RADIUS + (s % LENS_RADII) * 4
         if (LENS_FX === 'glass') X.set_shape_glass(0, 4, 8, 1.5, 0, 0.4, 1, 0.2, 0, 0, 0, 1, GLASS_BLUR, GLASS_FROST, GLASS_DOWNSCALE, 0)
-        else X.set_shape_blur(1, false, radius)   // background blur (gather)
+        else X.set_shape_blur(1, false, radius)
         X.use_shape(...parent)
         X.add_shape_child(0, 0, 0, id)
         if (LENS_FRINGE) {
-          // A tab just outside the lens but inside its sample rect (reach = 3 sigma, sigma = r/2+0.5),
-          // added AFTER the lens so it is above it in z.
           const reach = 3 * (0.5 * radius + 0.5)
           const fid = LENS_BASE + LENSES + s
           X.use_shape(0, 0, 0, fid)
@@ -459,7 +318,6 @@ function main() {
       }
     }
 
-    // ---- regimes -------------------------------------------------------------------
     const chan = new MessageChannel()
     const raf = PACE === 'msg'
       ? () => new Promise((r) => { chan.port1.onmessage = () => r(); chan.port2.postMessage(0) })
@@ -473,18 +331,11 @@ function main() {
     }
 
     const MODES = {
-      // Nothing changes: every visible tile should come from cache. Floor cost of a frame.
       idle: () => { X.set_view(1, 0, 0) },
-      // Constant scale, moving origin: cache stays valid, only newly-exposed tiles rebuild.
       pan: (i) => { X.set_view(1, (i * 13) % 2000, (i * 7) % 1200) },
-      // A different zoom bucket each frame drops the whole cache => genuine full redraw.
       zoom: (i) => { X.set_view(ZOOMS[i % ZOOMS.length], 0, 0) },
-      // One shape, sub-tile movement: the minimum dirty footprint.
       edit1: (i) => { X.set_view(1, 0, 0); moveShape(8, i % 40, i % 40) },
-      // One shape hopping >1 tile (512px) per frame: it leaves one tile and enters another, so
-      // the dirty set must cover both — a stricter test of the invalidation than a nudge.
       editFar: (i) => { X.set_view(1, 0, 0); moveShape(8, (i % 6) * 600, (i % 3) * 600) },
-      // 50 shapes moved in one frame, scattered: many independent dirty rects at once.
       editMulti: (i) => {
         X.set_view(1, 0, 0)
         for (let k = 0; k < 50; k++) moveShape(1 + ((k * 137) % N), (i % 20) * 30, (i % 20) * 30)
@@ -493,10 +344,6 @@ function main() {
 
     async function runMode(name) {
       const apply = MODES[name]
-      // oneShot=N renders just N rAF-paced frames (default 4) and STOPS — no warm-up, no timing loop,
-      // no sustain loop. This is the GPU-safe path for visual verification: a handful of frames instead
-      // of ~90 frames/1.5s of the sustain loop, which can back work up faster than the GPU drains it
-      // and wedge the machine on a heavy effect scene. Use this for any screenshot/A-B check.
       if (q.get('oneShot') !== null) {
         const n = Math.max(1, Number(q.get('oneShot')) || 4)
         for (let i = 0; i < n; i++) { apply(i); renderer.render(); await raf() }
@@ -517,54 +364,27 @@ function main() {
         await raf()
       }
       const b = [0, 1, 2, 3, 4, 5, 6].map((i) => X.prof_read(i))
-      // 15 plan · 16 blit · 17 present — the phases that used to land in the remainder.
-      // 18 gpu ms · 19 gpu samples — real GPU execution, from a timestamp query bracketing every
-      // pass the sink records. Readback is async so samples lag; divide by the sample count, not by
-      // FRAMES. 0 samples means the device has no TIMESTAMP_QUERY and there is no GPU measurement.
       const plan = X.prof_read(15), blit = X.prof_read(16), present = X.prof_read(17)
       const gpuMs = X.prof_read(18), gpuN = X.prof_read(19)
-      // 10 paints · 11 composites · 12 gathers · 13 queue submissions
       const kinds = {
         paints: +(X.prof_read(10) / FRAMES).toFixed(1),
         composites: +(X.prof_read(11) / FRAMES).toFixed(1),
         gathers: +(X.prof_read(12) / FRAMES).toFixed(1),
         submits: +(X.prof_read(13) / FRAMES).toFixed(1),
-        // bucket 7 = actual backend rasterize (render_to_texture) calls; the atlas is meant to keep
-        // this well below the paint-step count. bucket 8/9 = texture-pool hits/misses.
         renders: +(X.prof_read(7) / FRAMES).toFixed(1),
         poolHit: +(X.prof_read(8) / FRAMES).toFixed(1),
         poolMiss: +(X.prof_read(9) / FRAMES).toFixed(1),
-        // bucket 14 = run_graph executions (the blur/glass/custom pass-graph round-trips). This is the
-        // real gather cost `renders` hides — the number the batched collapse is meant to crater.
         graphRuns: +(X.prof_read(14) / FRAMES).toFixed(1),
       }
-      // Gather-collapse projection (buckets 108-111, last timed frame): total gathers vs how many
-      // defer, the passes with the collapse applied vs `total` today, and the batched dispatch count.
-      // gathersTotal→estPasses is the whole point: it should crater for independent grid gathers and
-      // stay ≈ total for the stacked chain.
       const gather = {
         total: X.prof_read(108), deferrable: X.prof_read(109),
         estPasses: X.prof_read(110), batchedDispatches: X.prof_read(111),
       }
-      // TEMP atlas_effects diagnostics (last timed frame): 100 cands · 101 widest · 102 tallest ·
-      // 103 shelf-declined · 104 atlas height
       const dbg = { cands: X.prof_read(100), widest: X.prof_read(101), tallest: X.prof_read(102), declined: X.prof_read(103), atlasH: X.prof_read(104) }
-      // Render-source attribution (last timed frame): how many step indices each atlas pass handled
-      // (105-107), and the schedule's composition (112-114). Paints the atlas passes did NOT claim
-      // leak to the per-step main loop — each is its own rasterize. That leak is the shatter.
       const src = {
         atlasEffects: X.prof_read(105), atlasFuse: X.prof_read(106), atlasPrepass: X.prof_read(107),
         schedSteps: X.prof_read(112), schedPaints: X.prof_read(113), schedComposites: X.prof_read(114),
       }
-      // Per-ROLE GPU ms (profPasses=1): the PassProfiler accumulates each region into a fixed DBG
-      // bucket SUMMED across every gather in the frame (depth-independent) — all dependency-anchored so
-      // stamps order correctly on the TBDR GPU. Bucket ids: 16 crop, 17 displacement, 18 refraction,
-      // 19 blur, 20 composite, 21 silhouette stamp, 22 swapBlit, 23 other (inter-phase/vello), 28 =
-      // profiled-frame count. Works for any stack depth; velloRender is the residual (front-end + all
-      // fine phases), which is what the OTHER bucket + the uncaptured frame head add up to.
-      // Whole-viewport CPU sub-phases (DBG 29/30/31, accumulated per frame → divide by FRAMES):
-      // 29 = redundant boundary re-encode, 30 = the real full-scene encode, 31 = vello phased_begin
-      // CPU resolve+alloc. Splits the coarse `scene` and `other` buckets so the 20k-shape CPU is named.
       const cpuBreakdown = {
         gatherDetect_ms: +(X.prof_read(126) / FRAMES).toFixed(3),
         phaseLoopRecord_ms: +(X.prof_read(127) / FRAMES).toFixed(3),
@@ -582,25 +402,20 @@ function main() {
         const velloRender = +(((gpuN > 0 ? gpuMs / gpuN : 0)) - gatherTotal - swapBlit).toFixed(3)
         passes = {
           profiledFrames: pf,
-          velloDocumentRender_ms: velloRender,   // residual: front-end + every fine phase (all gathers)
+          velloDocumentRender_ms: velloRender,
           swapBlit_ms: swapBlit,
-          gatherTotal_ms: gatherTotal,           // crop+effects+stamp, SUMMED over all gathers
+          gatherTotal_ms: gatherTotal,
           backdropCrop_ms: crop,
           glassDisplacement_ms: disp,
           glassRefraction_ms: refr,
           blur_ms: blur,
           glassComposite_ms: comp,
           glassStamp_ms: stamp,
-          effectPassesOnly_ms: effectPasses,      // disp+refr+blur+comp summed — the shaders we optimize
+          effectPassesOnly_ms: effectPasses,
         }
       }
-      // Time the blocking render() inside the sustain loop too. The CPU-vs-GPU split below is
-      // period-minus-CPU, and taking those two numbers from different loops (timed phase vs sustain
-      // phase) let run-to-run drift leak straight into the residue — it read as 465 ms of "GPU" on
-      // one run and 6 ms on the next for the same scene. Same loop, same frames, no drift.
       let frames = 0, sustainCpu = 0
       const t1 = performance.now()
-      // Cap the sustain window so a heavy scene can never spin the GPU for an unbounded stretch.
       const sustainMs = Math.min(Math.max(0, Number(q.get('sustainMs') ?? 1500)), 3000)
       while (performance.now() - t1 < sustainMs) {
         apply(frames)
@@ -616,31 +431,19 @@ function main() {
       return {
         cpuMsPerFrame: +(sum / FRAMES).toFixed(3),
         worstMs: +worst.toFixed(2),
-        // present-on-demand: how many of the FRAMES timed frames were re-presented from the retained
-        // canvas instead of really rendered (DBG bucket 24). 0 unless presentOnDemand=1.
         skippedFrames: X.prof_read(124),
-        // zoom/pan proxy: frames presented as a transformed re-blit of the retained canvas while the
-        // view was actively navigating (DBG bucket 25). 0 unless presentOnDemand=1&zoomProxy=1.
         proxyFrames: X.prof_read(125),
         tilesRendered: +(rendered / FRAMES).toFixed(2),
         tilesReused: +(reused / FRAMES).toFixed(2),
-        // `tex` (device.create_texture in the sink's allocation helpers) was measured all along but
-        // never reported, which made the phase breakdown look like it had a large unexplained
-        // remainder. `other` closes the books explicitly: measured wall time minus every bucket. A
-        // big `other` means the cost is somewhere the profiler does not instrument; a big `tex`
-        // means the texture pool is missing and the frame is paying for fresh allocations.
         phases_ms: {
           build: +(b[0] / FRAMES).toFixed(3), scene: +(b[1] / FRAMES).toFixed(3),
           render: +(b[2] / FRAMES).toFixed(3), submit: +(b[3] / FRAMES).toFixed(3),
           tex: +(b[4] / FRAMES).toFixed(3),
           plan: +(plan / FRAMES).toFixed(3), blit: +(blit / FRAMES).toFixed(3),
           present: +(present / FRAMES).toFixed(3),
-          // swapchain acquire (DBG 15): under Fifo this is the vsync block — display idle, not work.
           acquire: +(X.prof_read(115) / FRAMES).toFixed(3),
           other: +((sum - b[0] - b[1] - b[2] - b[3] - b[4] - plan - blit - present) / FRAMES).toFixed(3),
         },
-        // Every phase above is CPU wall clock — time spent *recording* commands. This one is the GPU
-        // actually executing them, so it is not part of the sum and can overlap the CPU freely.
         gpuMsPerFrame: gpuN > 0 ? +(gpuMs / gpuN).toFixed(3) : null,
         gpuSamples: gpuN,
         texturesCreated: +(b[6] / FRAMES).toFixed(1),
@@ -652,12 +455,6 @@ function main() {
         passes,
         cpuBreakdown,
         sustainedFps: fps,
-        // CPU-vs-rest split, both halves measured in the SAME (sustain) loop. `sustainCpuMs` is wall
-        // time around the *blocking* render() call, so it is CPU: schedule build, scene building,
-        // command encoding. `framePeriodMs` is the achieved period. The difference is time the main
-        // thread was NOT executing render. Under `pace=raf` that difference is mostly vsync idle and
-        // means little; under `pace=msg` there is no vsync to wait for, so it is present/GPU
-        // backpressure. So with pace=msg: residue ≈ 0 => CPU-bound; large residue => GPU-bound.
         sustainCpuMs: +sustainCpuMs.toFixed(3),
         framePeriodMs: +(1000 / fps).toFixed(2),
         nonCpuMs: +(1000 / fps - sustainCpuMs).toFixed(2),
@@ -665,13 +462,6 @@ function main() {
     }
 
     const res = { backend: BACKEND, shapes: N, depth: DEPTH, effects: EFFECTS, radius: RADIUS, effectEvery: EFFECT_EVERY, stack: STACK, stackFx: STACK_FX, stacks: STACKS, stackBetween: STACK_BETWEEN, stackSpread: STACK_SPREAD, lenses: LENSES, lensFx: LENS_FX, bgFill: BGFILL, pace: PACE, canvas: W + 'x' + H, modes: {} }
-    // once=1: render exactly ONE fresh frame at view (1,0,0) and stop — no tile-cache reuse, so
-    // gathers are actually rendered this frame. The clean A/B substrate (batched vs inline) that idle
-    // can't give (idle blits cached tiles) and zoom can't give (its view differs frame to frame).
-    // capture=<mode>: run a mode's frame sequence (exercising the tile cache / dirty-region /
-    // incremental-fuse path, unlike once=1's cold frame) for capFrames frames, then STOP with the
-    // final frame left on the canvas for the harness to read. Deterministic (each MODES[name](i) sets
-    // absolute state), so fuse-on and noFuse land on the same final state and can be pixel-diffed.
     const capMode = q.get('capture')
     if (capMode && MODES[capMode]) {
       const apply = MODES[capMode]

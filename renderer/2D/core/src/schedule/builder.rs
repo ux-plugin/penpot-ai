@@ -118,8 +118,6 @@ pub fn build(scene: &Scene, view: Affine, viewport_w: u32, viewport_h: u32) -> S
     let visible: HashSet<TileKey> = tiling::visible_tiles(view, viewport_w, viewport_h)
         .into_iter()
         .collect();
-    // No gesture in flight (the whole-frame convenience form): commit-geometry tiling. No index — the
-    // whole-frame form always walks the full tree.
     build_visible(scene, view, &Modifiers::new(), &visible, None)
 }
 
@@ -139,24 +137,12 @@ pub fn build_visible(
     let _t0 = buildprof::now();
     let mut steps = Vec::new();
 
-    // The current scope each visible tile paints into. Starts at the tile's own `TileOutput`; a
-    // scope-wrapping container swaps these to its `ScopeOf` for the duration of its subtree.
     let mut scopes: HashMap<TileKey, SurfaceRef> = visible
         .iter()
         .map(|&t| (t, SurfaceRef::tile_ref(SurfaceRole::TileOutput, t)))
         .collect();
 
-    // The dirty region's bounding box in page space — the union of the target tiles' rects. A leaf
-    // whose effect-expanded bounds miss this can emit nothing this frame, so `visit` rejects it before
-    // the per-tile coverage work. `None` only when nothing is dirty, in which case the walk is skipped
-    // entirely: an empty schedule is a correct frame (the sink re-blits every visible cached tile from
-    // the GPU cache), at O(1) instead of an O(shapes) walk that would emit nothing anyway.
     let dirty_bbox: Option<Rect> = dirty_page_bbox(view, visible);
-    // Fast path (flat scene + spatial index): query the index for the leaves near the dirty region
-    // and walk only those, in paint order — O(k), not O(shapes). Output is identical to the full walk:
-    // a skipped root is not in the dirty region so it emits nothing, and the query is a superset that
-    // already includes static shapes overlapping dirty tiles (so a gather's backdrop stays complete).
-    // The candidate `visit`s at depth 0, exactly as `scene.roots()` would.
     let fast: Option<Vec<u128>> = match (index, dirty_bbox) {
         (Some(ix), Some(bbox)) if ix.flat => {
             let mut set: HashSet<u128> = HashSet::new();
@@ -174,11 +160,6 @@ pub fn build_visible(
             }
         }
         (None, Some(_)) => {
-            // Full rebuild (no spatial index — a zoom drops the cache). This is the O(shapes) walk
-            // whose per-shape work dominates the build cost, so it is the one the flat kernel replaces:
-            // when the scene is all plain leaves, emit the paints via `walk_flat_into` (the GPU-walk
-            // oracle) instead of the recursive `visit`. Byte-identical output (see flatten tests), and
-            // the seam the classic backend's WGSL dispatch slots into.
             let flat = super::flatten::flat_walk_enabled()
                 .then(|| super::flatten::flatten_leaves(scene, modifiers))
                 .flatten();
@@ -194,11 +175,8 @@ pub fn build_visible(
         (None, None) => {}
     }
 
-    // Finalize: fold each target tile's accumulated output into the single Target the swapchain
-    // presents.
     steps.extend(finalize_composites(view, visible));
 
-    // Sub-phase boundary: everything above is the per-shape *walk* (tile assignment + step emission).
     let _t1 = buildprof::now();
     if let (Some(a), Some(b)) = (_t0, _t1) {
         buildprof::add_walk(b - a);
@@ -242,8 +220,6 @@ pub fn finalize_composites(view: Affine, visible: &HashSet<TileKey>) -> Vec<Step
 /// ~16% of the build that stays on the CPU in both backends.
 #[must_use]
 pub fn finish_schedule(steps: Vec<Step>, scene: &Scene, modifiers: &Modifiers) -> Schedule {
-    // Gathers the sink will defer do not touch their tiles during the walk, so they must not split
-    // those tiles' paint runs.
     let _t1 = buildprof::now();
     let gather_plan = super::gather_plan::analyze_gathers(scene, modifiers, &steps);
     let deferred: HashSet<u128> = gather_plan
@@ -252,17 +228,13 @@ pub fn finish_schedule(steps: Vec<Step>, scene: &Scene, modifiers: &Modifiers) -
         .flatten()
         .map(|gi| gather_plan.gathers[gi].shape)
         .collect();
-    // Sub-phase boundary: the *gather*-collapse analysis (global overlap / z-dependency).
     let _t2 = buildprof::now();
     if let (Some(a), Some(b)) = (_t1, _t2) {
         buildprof::add_gather(b - a);
     }
 
-    // Insert a snapshot of each sample-disturbed batched gather's backdrop at its z, so the batch can
-    // read a frozen copy instead of the finished (wrong) tiles. No-op unless the snapshot tier is on.
     let steps = insert_snapshots(steps, &gather_plan);
     let steps = coalesce(steps, &deferred);
-    // Sub-phase boundary: the *assemble* (snapshot insertion + paint-run coalesce).
     let _t3 = buildprof::now();
     if let (Some(a), Some(b)) = (_t2, _t3) {
         buildprof::add_assemble(b - a);
@@ -293,8 +265,6 @@ fn insert_snapshots(steps: Vec<Step>, plan: &super::gather_plan::GatherPlan) -> 
         if let Step::ComposeBackdrop { shape, read_from, .. } = &step {
             if let Some(tiles) = by_shape.get(shape) {
                 for &tile in tiles {
-                    // The surface this gather reads for `tile` — a `ScopeOf`/`TileOutput` ref. Copy
-                    // exactly that, so a scoped gather freezes its scope, not the raw tile.
                     if let Some(from) = read_from.iter().find(|r| r.tile == Some(tile)).copied() {
                         out.push(Step::Snapshot { from, write_to: SurfaceRef::snapshot(*shape, tile) });
                     }
@@ -317,7 +287,6 @@ fn insert_snapshots(steps: Vec<Step>, plan: &super::gather_plan::GatherPlan) -> 
 /// paints merge; a spread's `RasterEffectOutput` is a per-shape isolated surface and never merges.
 fn coalesce(steps: Vec<Step>, deferred: &HashSet<u128>) -> Vec<Step> {
     let mut out: Vec<Step> = Vec::with_capacity(steps.len());
-    // Surface → index in `out` of a still-open batched `Paint` we may append to.
     let mut open: HashMap<SurfaceRef, usize> = HashMap::new();
     for step in steps {
         if let Step::Paint { ops, write_to, .. } = &step {
@@ -330,20 +299,13 @@ fn coalesce(steps: Vec<Step>, deferred: &HashSet<u128>) -> Vec<Step> {
                 }
                 open.insert(*write_to, out.len());
             }
-            // A `Paint` writes only its own surface, so it never closes another surface's batch —
-            // just open/extend its own (above) or pass an isolated effect paint through.
             out.push(step);
             continue;
         }
-        // A gather bound for the end-of-frame batch is the one exception: it observes the tile only
-        // after every paint has landed, and the deferral rule guarantees nothing is drawn over its
-        // output, so the run of shapes it sits between still merges into one rasterize.
         let deferred_gather = matches!(
             &step,
             Step::ComposeBackdrop { shape, .. } | Step::PaintGather { shape, .. } if deferred.contains(shape)
         );
-        // Any other non-`Paint` step closes the batch of every surface it touches, so nothing merges
-        // past a composite/gather/fold that must observe the tile mid-way.
         if !deferred_gather {
             for s in step.reads().into_iter().chain(step.writes()).chain(step.rewrites()) {
                 open.remove(&s);
@@ -397,20 +359,10 @@ fn visit(
     }
     let Some(node) = scene.get(id) else { return };
     if node.hidden || node.kind == ShapeKind::Unsupported {
-        // Skip the node and its subtree, matching draw_node's reachability.
         return;
     }
-    // The node's live gesture transform (identity when committed). Every tile-coverage computation
-    // below uses it, so the shape is scheduled into the tiles the body paint (which applies the same
-    // modifier) actually draws into.
     let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
 
-    // Dirty-scope reject (leaf only): a childless node whose effect-expanded page bounds miss the
-    // frame's dirty region emits nothing, so skip it before the per-tile coverage work. This is the
-    // O(1) pre-filter that makes an incremental frame stop paying for shapes far from the edit; the
-    // exact per-tile `visible.contains` culling below still runs for anything that passes. Restricted
-    // to leaves because a container's own bounds don't bound its children — subtree-level pruning
-    // needs the cached subtree-bbox index (the next slice), not an O(subtree) recompute here.
     if node.children.is_empty() {
         if let Some(db) = dirty_bbox {
             let r = affected_page_rect(node, m);
@@ -422,28 +374,9 @@ fn visit(
 
     let is_group = node.kind == ShapeKind::Group;
     let lp = layer_paint(node);
-    // A masked group: its first child is a mask that clips the rest to its alpha (a `DstIn` mask, not
-    // a hard clip — a soft mask masks softly). It needs an isolation layer even when its own paint is
-    // trivial, so the `DstIn` only affects the group's own content and not what sits below it. Needs
-    // both a mask child and at least one content child to mean anything.
     let is_masked = is_group && node.masked && node.children.len() >= 2;
-    // A container (frame/group) with a non-trivial layer paint isolates so overlapping children don't
-    // double-composite and the group opacity/blend is preserved. There are two ways to isolate:
-    //
-    // - **In-scene layer** (`PushLayer`/`PopLayer` ops): the backend composites the group as a layer
-    //   inside the *same* pass, so the whole subtree stays in one submission. This is the cheap path
-    //   and the default — but a layer cannot span two scene renders, so it is only valid when nothing
-    //   in the subtree forces a raster surface (a spread/gather effect, which would break the batch).
-    // - **`ScopeOf` surface**: the subtree paints into its own buffer, folded to the parent on close.
-    //   Required when the subtree *does* contain such an effect.
-    //
-    // A trivial container (opacity 1, SrcOver) needs neither and just recurses into the parent scope.
     let scope_wrap = node.kind.is_container() && (!lp.is_trivial() || is_masked);
     let use_layer = scope_wrap && !subtree_needs_surface(scene, id);
-    // The mask is realised only on the in-scene-layer path (a `DstIn` sub-layer needs the content
-    // isolated in a layer this pass). A masked group whose subtree forces a raster surface falls back
-    // to the current unmasked isolation — the same "carry it in the model, phase the pixels" contract
-    // as the other surface-forced cases; the mask child then still draws as ordinary content.
     let apply_mask = is_masked && use_layer;
     let saved: Option<Vec<(TileKey, SurfaceRef)>> = if scope_wrap && !use_layer {
         let saved: Vec<(TileKey, SurfaceRef)> = scopes.iter().map(|(&t, &s)| (t, s)).collect();
@@ -454,9 +387,6 @@ fn visit(
     } else {
         None
     };
-    // The tiles an in-scene layer brackets: only those its subtree actually covers, so a group does
-    // not spawn empty push/pop layer-paints (each its own scene render) in tiles it never touches.
-    // Same set at open and close, since a layer group never swaps `scopes`.
     let layer_tiles: Vec<(TileKey, SurfaceRef)> = if use_layer {
         let cover: HashSet<TileKey> = subtree_page_bounds(scene, id, modifiers)
             .map(|b| tiling::tiles_overlapping_page_rect(view, b).into_iter().collect())
@@ -465,9 +395,6 @@ fn visit(
     } else {
         Vec::new()
     };
-    // Open the in-scene layer: one `PushLayer` op into each covered tile's current scope, before the
-    // body and children paint. It merges into that tile's open batch (a `Paint` op never closes a
-    // batch), so the group opens without spilling to a surface or a new submission.
     for &(tile, scope) in &layer_tiles {
         steps.push(Step::Paint {
             ops: vec![PaintOp::PushLayer(id)],
@@ -483,16 +410,7 @@ fn visit(
             .unwrap_or_else(|| SurfaceRef::tile_ref(SurfaceRole::TileOutput, tile))
     };
 
-    // Gather (background blur / glass): reads the backdrop **beneath** the shape, so it must run at
-    // this z-position — after everything below has painted, before the shape's own body and before
-    // any higher shape. `ComposeBackdrop` fuses the current scope's content over the sample rect
-    // into one `Backdrop` surface (sized to the sample rect, not a tile — that is what stops the
-    // blur cropping and fading on zoom-in); `PaintGather` blurs it and paints it through the shape's
-    // silhouette into each tile the shape covers.
     if has_gather_effect(node) {
-        // The gather is only needed if the shape covers a target tile. Culling here matters for the
-        // tile cache: with a small dirty set (a pan), a gather whose shape is entirely in reused tiles
-        // must emit nothing — otherwise its (expensive, z-serial) backdrop compose runs every frame.
         let paint_tiles: Vec<TileKey> = tiling::tiles_overlapping_page_rect(view, page_bounds(node, m))
             .into_iter()
             .filter(|t| visible.contains(t))
@@ -501,18 +419,10 @@ fn visit(
             let reach = gather_reach(node);
             let sample = page_bounds(node, m).inflate(reach, reach);
             let backdrop = SurfaceRef::new(SurfaceRole::Backdrop(id), None, 0);
-            // Deliberately NOT filtered to the frame's tile set. A gather's sample rect routinely
-            // reaches into tiles this frame is not re-rendering, and those tiles' pixels are still
-            // valid in the tile cache — the sink resolves a source with no live surface from there.
-            // Filtering here would punch a hole in the backdrop wherever the sample crosses into a
-            // clean tile, and the only way to avoid the hole would be to repaint that tile purely to
-            // have something to read.
             let read_from: Vec<SurfaceRef> = tiling::tiles_overlapping_page_rect(view, sample)
                 .into_iter()
                 .map(current)
                 .collect();
-            // A backdrop-reading custom shader is opaque, so bound its surface unconditionally; a
-            // reasoned gather (background blur, glass) does not need the cap.
             let always_cap = custom_reads_backdrop(node);
             let acceptable_downscale = effect_acceptable_downscale(node);
             let tile_mode = node.glass.map(|g| g.tile_mode).unwrap_or_default();
@@ -528,12 +438,6 @@ fn visit(
         }
     }
 
-    // Non-box drop shadows: a rect/frame/circle shadow is the native inline blurred-rounded-rect (drawn
-    // with the body), but an arbitrary path — or a text block — has no such primitive, so each of its
-    // drop shadows is scheduled here as a blurred-silhouette effect that the sink renders + blurs +
-    // composites *behind* the body. Text stamps a glyph-shaped silhouette (see `build_shadow_silhouette`).
-    // Emitted before the body block so it lands under the shape's own paint. Inner non-box shadows are
-    // still deferred (a later slice).
     if matches!(node.kind, ShapeKind::Path | ShapeKind::Text) {
         for (i, shadow) in node.shadows.iter().filter(|s| !s.inset).enumerate() {
             let sigma = radius_to_sigma(shadow.blur);
@@ -557,23 +461,9 @@ fn visit(
         }
     }
 
-    // Body: everything except a group draws its own paint (a frame contributes its background). It
-    // lands in the *current* scope — the parent's, or this container's own `ScopeOf` after the swap.
-    // For a gather shape the body (a fill/tint/stroke) paints *over* the blurred backdrop above.
     if !is_group {
-        // A leaf's own opacity/blend also forces its own surface, even with no spread effect: painting
-        // it once and compositing (with `lp`) keeps the blend/opacity a single operation against each
-        // tile's real backdrop. Splitting it across tiles as a per-tile inline layer instead lets a
-        // non-`SrcOver` blend read an inconsistent backdrop at a tile boundary and *seam* (proven on a
-        // `Multiply` rect straddling a tile row). Containers already isolate via their `ScopeOf` scope.
         let own_surface = has_spread_effect(node) || (!node.kind.is_container() && !lp.is_trivial());
         if own_surface {
-            // Paint the whole body once into an extrect-sized effect surface, then composite it into
-            // every tile the extrect overlaps — at this shape's z-position in the walk. Only emit the
-            // (expensive) effect-surface paint when a target tile actually needs it: the paint is
-            // per-shape, not per-tile, so without this gate a pan would re-blur every off-screen /
-            // reused-tile shape every frame — the tile cache's whole cost. With no spread effect the
-            // extent is just the shape's page bounds.
             let ext = effect_extent(node, m);
             let comp_tiles: Vec<TileKey> = tiling::tiles_overlapping_page_rect(view, ext)
                 .into_iter()
@@ -593,7 +483,6 @@ fn visit(
                 }
             }
         } else {
-            // Plain body: paint directly into each overlapped tile's current scope.
             let pb = page_bounds(node, m);
             for tile in tiling::tiles_overlapping_page_rect(view, pb) {
                 if !visible.contains(&tile) {
@@ -607,19 +496,12 @@ fn visit(
             }
         }
 
-        // Non-box (Path/Text) INNER shadows: a rect/frame/circle inner shadow is the native inline
-        // blurred-rounded-rect (drawn in the body), but an arbitrary silhouette has none, so each inner
-        // shadow is scheduled here — AFTER the body so the band lands OVER the shape's own paint. The
-        // sink floods the silhouette in the shadow colour and punches the blurred offset copy out of it.
         if matches!(node.kind, ShapeKind::Path | ShapeKind::Text) {
             for (i, shadow) in node.shadows.iter().filter(|s| s.inset).enumerate() {
                 let sigma = radius_to_sigma(shadow.blur);
                 let reach = 3.0 * f64::from(sigma);
                 let (ox, oy) = (shadow.offset.x, shadow.offset.y);
                 let pb = page_bounds(node, m);
-                // Bounds ∪ (bounds + offset), grown by the blur reach: contains the flood (at bounds) and
-                // the offset, blurred punch, giving the blur the same neighbourhood a full-viewport render
-                // would — so the extent-sized band matches the whole-viewport one.
                 let ext = Rect::new(
                     pb.x0 + ox.min(0.0) - reach,
                     pb.y0 + oy.min(0.0) - reach,
@@ -644,20 +526,12 @@ fn visit(
     }
 
     for (i, &child) in node.children.iter().enumerate() {
-        // The mask child (first) is not drawn as content; it is drawn into the `DstIn` sub-layer
-        // below, after the content, so its alpha clips what the content painted.
         if apply_mask && i == 0 {
             continue;
         }
         visit(scene, child, view, modifiers, visible, scopes, steps, depth + 1, dirty_bbox);
     }
 
-    // Mask pass: after the content has painted into this group's isolation layer, draw the mask child
-    // inside a `DstIn` sub-layer so its alpha multiplies the content's — the masked pixels survive,
-    // the rest are cleared. Bracketed per covered tile (the same set as the outer layer), so a tile
-    // the content covers but the mask misses ends up with an empty `DstIn` layer and its content is
-    // correctly erased. Emitted as three single-op steps, mirroring the `PushLayer`/`PopLayer` pattern
-    // (so the gather planner and coalescer treat them exactly as the existing layer brackets).
     if apply_mask {
         let mask_id = node.children[0];
         for &(tile, scope) in &layer_tiles {
@@ -668,9 +542,6 @@ fn visit(
         }
     }
 
-    // Close the in-scene layer: one `PopLayer` op per bracketed tile, matching the `PushLayer`s, so
-    // every descendant painted since the push composites as the group and later siblings paint
-    // outside it.
     for &(tile, scope) in &layer_tiles {
         steps.push(Step::Paint {
             ops: vec![PaintOp::PopLayer],
@@ -679,9 +550,6 @@ fn visit(
         });
     }
 
-    // Close the scope surface: fold this container's `ScopeOf` into the saved parent scope, per tile,
-    // at the container's opacity/blend. Restore the parent scopes. The sink no-ops any tile whose
-    // `ScopeOf` was never painted (the container had no content there), so emitting per tile is safe.
     if let Some(saved) = saved {
         for (tile, parent_scope) in saved {
             steps.push(Step::Composite {
@@ -728,7 +596,6 @@ fn subtree_page_bounds(scene: &Scene, id: u128, modifiers: &Modifiers) -> Option
         return None;
     }
     let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-    // A group has no body; a frame/leaf contributes its own page bounds.
     let mut acc = (node.kind != ShapeKind::Group).then(|| page_bounds(node, m));
     for &child in &node.children {
         if let Some(cb) = subtree_page_bounds(scene, child, modifiers) {
@@ -791,7 +658,6 @@ pub fn gather_dirty_expansion(scene: &Scene, modifiers: &Modifiers, view: Affine
     if dirty.is_empty() {
         return Vec::new();
     }
-    // (what it depends on, what it produces) for every gather in the scene.
     let gathers: Vec<(Rect, Rect)> = scene
         .iter_nodes()
         .filter(|n| has_gather_effect(n))
@@ -806,8 +672,6 @@ pub fn gather_dirty_expansion(scene: &Scene, modifiers: &Modifiers, view: Affine
         return Vec::new();
     }
 
-    // `active` holds what the frame will actually repaint — whole tiles — so a lens is promoted when
-    // a *repainted tile* touches its sample, not merely when the edit itself does.
     let align = |r: &Rect| tiling::tile_aligned_page_rect(view, *r);
     let mut active: Vec<Rect> = dirty.iter().map(align).collect();
     let mut added: Vec<Rect> = Vec::new();
@@ -820,8 +684,6 @@ pub fn gather_dirty_expansion(scene: &Scene, modifiers: &Modifiers, view: Affine
             }
             if active.iter().any(|r| rects_overlap(r, sample)) {
                 taken[i] = true;
-                // Repainting the output repaints its whole tiles, and that is what the next round has
-                // to test against — a lens reading any of those tiles is now stale too.
                 active.push(align(output));
                 added.push(*output);
                 changed = true;
@@ -874,8 +736,6 @@ fn gather_reach(node: &Node) -> f64 {
         reach = reach.max(f64::from(displacement + blur + frost));
     }
     if let Some(c) = node.gather_shader() {
-        // Only a backdrop-reading custom shader contributes to the *gather* sample rect; body-only
-        // spread shaders size their own surface instead (see `effect_extent`).
         reach = reach.max(f64::from(c.reach));
     }
     reach
@@ -949,7 +809,6 @@ fn effect_extent(node: &Node, modifier: Affine) -> Rect {
     let base = page_bounds(node, modifier);
     let mut ext = base;
     for s in node.shadows.iter().filter(|s| !s.inset) {
-        // The silhouette, offset by the shadow, then grown by blur reach (3σ) + spread on every side.
         let reach = f64::from(3.0 * radius_to_sigma(s.blur) + s.spread);
         ext = ext.union(Rect::new(
             base.x0 + s.offset.x - reach,
@@ -962,8 +821,6 @@ fn effect_extent(node: &Node, modifier: Affine) -> Rect {
         let reach = f64::from(3.0 * radius_to_sigma(radius));
         ext = ext.union(base.inflate(reach, reach));
     }
-    // Body-only spread shaders sample up to their declared reach past the silhouette; the chain shares
-    // one surface, so size it to the largest reach among them.
     let spread_reach = f64::from(node.max_spread_reach());
     if spread_reach > 0.0 {
         ext = ext.union(base.inflate(spread_reach, spread_reach));
@@ -1033,30 +890,22 @@ mod gather_dirty_tests {
 
     #[test]
     fn dirty_rect_in_one_corner_returns_the_whole_lens_output() {
-        // A lens spanning several tiles (0..1200 crosses 512-tile boundaries twice).
         let lens = Rect::new(100.0, 100.0, 1200.0, 1200.0);
         let scene = scene_with(vec![plain(1, Rect::new(0.0, 0.0, 1300.0, 1300.0)), bg_blur(2, lens)]);
-        // A shape moved inside the top-left corner of the lens' backdrop — one tile's worth.
         let dirty = [Rect::new(150.0, 150.0, 220.0, 220.0)];
         let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &dirty);
         assert_eq!(extra.len(), 1, "the lens is promoted exactly once");
-        // The whole output, so the lens repaints as one unit and cannot tear on a tile seam — but not
-        // a pixel more: the sample's outer ring is only ever *read*, and the sink reads it from cache.
         assert_eq!(extra[0], lens, "the lens repaints whole, and nothing around it is dragged in");
     }
 
     #[test]
     fn a_lens_sharing_the_edit_s_tile_promotes_even_though_it_misses_the_edit() {
-        // The regression the bench showed: one small shape moves near the origin, and a lens far from
-        // it — but straddling that tile's boundary — re-blurred only its half inside the repainted
-        // tile, tearing along x = TILE_SIZE. The edit rect misses the lens' sample entirely; the
-        // *tile* the edit repaints does not.
-        let straddler = Rect::new(424.0, 244.0, 536.0, 356.0); // crosses the 512 tile boundary
+        let straddler = Rect::new(424.0, 244.0, 536.0, 356.0);
         let scene = scene_with(vec![
             plain(1, Rect::new(0.0, 0.0, 1600.0, 1000.0)),
             bg_blur(2, straddler),
         ]);
-        let edit = Rect::new(20.0, 20.0, 60.0, 60.0); // top-left, nowhere near the lens
+        let edit = Rect::new(20.0, 20.0, 60.0, 60.0);
         assert!(!super::rects_overlap(&edit, &straddler), "the edit really does miss the lens");
         let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &[edit]);
         assert_eq!(extra.len(), 1, "sharing the repainted tile is enough to promote the lens");
@@ -1065,12 +914,6 @@ mod gather_dirty_tests {
 
     #[test]
     fn a_grid_of_touching_gathers_invalidates_as_one_unit() {
-        // A gather depends on every tile its sample rect covers, so invalidating any of those tiles
-        // invalidates the gather — and the gather's own sample then invalidates its neighbours' in
-        // turn. Lay one lens over each tile of a 5x5 grid: each sample spills `reach` into the four
-        // tiles around it, so the whole grid is one dependency component and a single edit anywhere
-        // must promote all 25. That transitive closure is the point of the fixpoint; the cost of it
-        // is real and is why an edit near a lens repaints far more than the shape it touched.
         let t = f64::from(crate::tiling::TILE_SIZE);
         let mut nodes = vec![plain(1, Rect::new(0.0, 0.0, 5.0 * t, 5.0 * t))];
         for i in 0..5_u128 {
@@ -1080,18 +923,13 @@ mod gather_dirty_tests {
             }
         }
         let scene = scene_with(nodes);
-        let edit = [Rect::new(10.0, 10.0, 30.0, 30.0)]; // one small shape in the very first tile
+        let edit = [Rect::new(10.0, 10.0, 30.0, 30.0)];
         let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &edit);
         assert_eq!(extra.len(), 25, "one edit invalidates every lens in the connected grid");
     }
 
     #[test]
     fn a_grid_of_tile_local_gathers_does_not_cascade() {
-        // The same 5x5 grid, but each lens is small and sits well inside its tile, so its sample rect
-        // never leaves that tile. Gathers are not uniform: the dependency is each shape's OWN sample
-        // rect, which is its output grown by its OWN reach. A lens that reads nothing outside its tile
-        // has a purely local dependency and must not drag its neighbours in — otherwise the rule would
-        // collapse to "any edit repaints every lens", which is what a per-effect-class rule would do.
         let t = f64::from(crate::tiling::TILE_SIZE);
         let mut nodes = vec![plain(1, Rect::new(0.0, 0.0, 5.0 * t, 5.0 * t))];
         for i in 0..5_u128 {
@@ -1101,16 +939,13 @@ mod gather_dirty_tests {
             }
         }
         let scene = scene_with(nodes);
-        let edit = [Rect::new(10.0, 10.0, 30.0, 30.0)]; // first tile again
+        let edit = [Rect::new(10.0, 10.0, 30.0, 30.0)];
         let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &edit);
         assert_eq!(extra.len(), 1, "only the lens in the edited tile depends on it");
     }
 
     #[test]
     fn independent_gathers_do_not_chain() {
-        // The cascade is through *overlap*, not through being a gather: two lenses far enough apart
-        // that neither sample reaches the other stay independent, and an edit in one leaves the other
-        // alone. Without this the rule would degenerate into "any edit repaints every lens".
         let near = Rect::new(100.0, 100.0, 300.0, 300.0);
         let far = Rect::new(2000.0, 2000.0, 2200.0, 2200.0);
         let scene = scene_with(vec![
@@ -1127,7 +962,6 @@ mod gather_dirty_tests {
     fn dirty_rect_outside_sample_returns_nothing() {
         let lens = Rect::new(100.0, 100.0, 500.0, 500.0);
         let scene = scene_with(vec![bg_blur(2, lens)]);
-        // Far outside the lens output + its ~12px blur reach.
         let dirty = [Rect::new(2000.0, 2000.0, 2100.0, 2100.0)];
         let extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &dirty);
         assert!(extra.is_empty(), "a dirty rect that misses the sample rect promotes no lens");
@@ -1142,20 +976,17 @@ mod gather_dirty_tests {
 
     #[test]
     fn stacked_lenses_promote_transitively() {
-        // Inner lens A; outer lens B sits far away but its sample overlaps A's output. A dirty rect in
-        // A's backdrop must promote A, and A's output must then promote B.
         let a = Rect::new(100.0, 100.0, 400.0, 400.0);
-        let b = Rect::new(380.0, 380.0, 700.0, 700.0); // sample overlaps A's output corner
+        let b = Rect::new(380.0, 380.0, 700.0, 700.0);
         let scene = scene_with(vec![
             plain(1, Rect::new(0.0, 0.0, 800.0, 800.0)),
             bg_blur(2, a),
             bg_blur(3, b),
         ]);
-        let dirty = [Rect::new(120.0, 120.0, 160.0, 160.0)]; // inside A only
+        let dirty = [Rect::new(120.0, 120.0, 160.0, 160.0)];
         let mut extra = gather_dirty_expansion(&scene, &Modifiers::new(), Affine::IDENTITY, &dirty);
         extra.sort_by(|p, q| p.x0.partial_cmp(&q.x0).unwrap());
         assert_eq!(extra.len(), 2, "both lenses promote — A directly, B transitively");
-        // Each promotes its sample rect, which contains its output.
         assert!(extra[0].contains_rect(a), "A's promotion covers A's output");
         assert!(extra[1].contains_rect(b), "B's promotion covers B's output");
     }

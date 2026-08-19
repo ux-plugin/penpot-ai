@@ -41,8 +41,6 @@ fn time_mask(device: &wgpu::Device, queue: &wgpu::Queue, backend: &mut ClassicBa
     let mut graphs = 0.0;
     for i in 0..(WARMUP + TIMED) {
         install(mask);
-        render_core::vello::abi::set_wv_phased(0);
-        render_core::vello::abi::set_cmd_effect(0);
         backend.sync_fonts();
         backend.upload_pending_images();
         render_core::vello::prof::reset();
@@ -100,8 +98,6 @@ fn main() {
     println!("\neffect total = full - plain = {:.0} ms; base render floor = {plain:.0} ms.", full - plain);
     println!("A per-effect saving is that effect's whole cost: silhouette/body raster + blur graph + composites.");
 
-    // Split a shadow's cost into RASTER+composite vs BLUR: sharp shadows still rasterize their
-    // silhouette and composite it, but skip the Gaussian pass-graph entirely.
     println!("\n-- shadow cost split (silhouette raster+composite vs Gaussian blur) --");
     let shadows_only = FX_DROP | FX_INNER;
     let (blurred, _, bg) = time_mask(&device, &queue, &mut backend, &target, shadows_only);

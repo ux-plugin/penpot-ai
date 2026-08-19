@@ -22,7 +22,7 @@ const TIMED: usize = 6;
 fn install() {
     render_core::vello::abi::load_path_shadow_scene();
     render_core::vello::abi::set_render_options(0, 1.0);
-    render_core::vello::abi::set_view(1.0, 0.0, 0.0); // zoom 1 → shape + device sigma fixed across sizes
+    render_core::vello::abi::set_view(1.0, 0.0, 0.0);
     render_core::vello::abi::set_canvas_background(0xffff_ffff);
 }
 
@@ -47,8 +47,6 @@ fn time_path(device: &wgpu::Device, queue: &wgpu::Queue, backend: &mut ClassicBa
     let mut graphs = 0.0;
     for i in 0..(WARMUP + TIMED) {
         install();
-        render_core::vello::abi::set_wv_phased(0);
-        render_core::vello::abi::set_cmd_effect(0);
         backend.sync_fonts();
         backend.upload_pending_images();
         render_core::vello::prof::reset();

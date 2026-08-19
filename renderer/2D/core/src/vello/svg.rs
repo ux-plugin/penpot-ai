@@ -28,7 +28,6 @@ pub fn render_svg<C: RenderingContext>(ctx: &mut C, content: &str, bounds: Rect,
     if sw <= 0.0 || sh <= 0.0 {
         return;
     }
-    // viewBox → bounds (fit, non-uniform), then the node's own transform.
     let base = matrix
         * Affine::translate((bounds.x0, bounds.y0))
         * Affine::scale_non_uniform(bounds.width() / sw, bounds.height() / sh);
@@ -38,7 +37,6 @@ pub fn render_svg<C: RenderingContext>(ctx: &mut C, content: &str, bounds: Rect,
 }
 
 fn render_group<C: RenderingContext>(ctx: &mut C, stack: &mut Vec<Affine>, group: &usvg::Group) {
-    // A group's clip path is captured in this group's transform space, like the fork's toy renderer.
     let current = *stack.last().unwrap();
     let clip = group.clip_path().map(|p| {
         let mut path = BezPath::new();
@@ -54,7 +52,6 @@ fn render_group<C: RenderingContext>(ctx: &mut C, stack: &mut Vec<Affine>, group
         match child {
             Node::Group(g) => render_group(ctx, stack, g),
             Node::Path(p) => render_path(ctx, stack, p),
-            // Deferred (see module docs): SVG raster images and text.
             Node::Image(_) | Node::Text(_) => {}
         }
     }
@@ -88,7 +85,6 @@ fn render_path<C: RenderingContext>(ctx: &mut C, stack: &mut Vec<Affine>, path: 
             ctx.stroke_path(&convert_path_data(path));
         }
     };
-    // SVG paint order: fill-then-stroke by default, or the reverse when the document asks.
     if path.paint_order() == PaintOrder::FillAndStroke {
         do_fill(ctx);
         do_stroke(ctx);

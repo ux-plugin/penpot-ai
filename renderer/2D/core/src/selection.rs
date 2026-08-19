@@ -84,9 +84,6 @@ fn oriented_rect(quad: &[Point; 4]) -> [f32; SELECTION_RECT_LEN] {
     let cx = (nw.x + se.x) * 0.5;
     let cy = (nw.y + se.y) * 0.5;
 
-    // A degenerate edge has no direction to recover; fall back to the identity rather than
-    // dividing by zero and handing the host NaNs, which it would reject wholesale — turning a
-    // zero-width shape into "no selection at all".
     let (a, b) = if width > 0.0 {
         ((ne.x - nw.x) / width, (ne.y - nw.y) / width)
     } else {
@@ -137,7 +134,6 @@ mod tests {
 
         assert!((w - 100.0).abs() < 1e-3, "width is the shape's own: {w}");
         assert!((h - 50.0).abs() < 1e-3, "height is the shape's own: {h}");
-        // Rotation is about the shape's own centre, so the centre does not move.
         assert!((cx - 50.0).abs() < 1e-3 && (cy - 25.0).abs() < 1e-3);
         assert!((a - 0.5f64.cos() as f32).abs() < 1e-3);
         assert!((b - 0.5f64.sin() as f32).abs() < 1e-3);
@@ -165,7 +161,6 @@ mod tests {
             (1.0, 0.0, 0.0, 1.0),
             "the hull is never rotated"
         );
-        // The hull must contain the rotated shape's swept extent, not just its selrect.
         let quad = node_quad(&rotated, Affine::IDENTITY);
         let min_x = quad.iter().map(|p| p.x).fold(f64::MAX, f64::min) as f32;
         let hull_left = together[2] - together[0] * 0.5;

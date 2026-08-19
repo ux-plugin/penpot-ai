@@ -18,6 +18,25 @@ use std::collections::HashMap;
 use kurbo::{Affine, Rect};
 use peniko::Color;
 
+/// Monotonic scene-mutation epoch: bumped by every structural or per-shape edit (node upsert,
+/// children replacement, every `with_current` setter, scene clear/install). Frame-level caches —
+/// the whole-viewport gathers list, the per-node outline cache — validate against it: an unchanged
+/// epoch across frames (idle, pan, zoom, modifier-driven drags) means the cached derivation is
+/// still exact. Deliberately coarse: any edit invalidates everything, trading precision for a
+/// trivially correct contract.
+static SCENE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record one scene mutation (see [`scene_epoch`]).
+pub fn bump_scene_epoch() {
+    SCENE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The current scene-mutation epoch, for cache validation.
+#[must_use]
+pub fn scene_epoch() -> u64 {
+    SCENE_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 use crate::model::{Node, Scene, ShapeKind};
 use crate::schedule::affected_page_rect;
 
@@ -110,10 +129,9 @@ impl SceneState {
     pub fn upsert(&mut self, id: u128) {
         if self.scene.get(id).is_none() {
             self.scene.insert(Node::new(id, ShapeKind::Rect));
-            // A fresh node has no geometry yet (its property setters will dirty its area), but it is
-            // usually linked in via `set_children` next — a structural change we treat as full-dirty.
             self.dirty_all = true;
             self.invalidate_quadtree();
+            bump_scene_epoch();
         }
         self.current = Some(id);
     }
@@ -136,10 +154,9 @@ impl SceneState {
         } else {
             return;
         }
-        // A structural change (what's drawn where in the container) is coarse and off the pan hot
-        // path — a full rebuild is simpler than tracking the subtree's before/after footprint.
         self.dirty_all = true;
         self.invalidate_quadtree();
+        bump_scene_epoch();
     }
 
     /// A leaf's committed page-space footprint (modifier-free), the key the spatial index stores it
@@ -179,7 +196,6 @@ impl SceneState {
         if self.quadtree.is_some() {
             return;
         }
-        // `collect_leaves` yields in paint order, so enumeration gives each leaf its z-rank.
         let mut leaves: Vec<(u128, Rect)> = Vec::new();
         collect_leaves(&self.scene, crate::model::ROOT_ID, &mut |id, r| leaves.push((id, r)));
         self.seq_of.clear();
@@ -194,8 +210,6 @@ impl SceneState {
             qt.insert(*id, *r);
         }
         self.quadtree = Some(qt);
-        // Flat when every drawable child of the root is itself a leaf — no container opens a scope, so
-        // candidates can be emitted straight from the query with no ancestor context.
         self.qt_flat = self.scene.get(crate::model::ROOT_ID).is_none_or(|root| {
             root.children
                 .iter()
@@ -287,7 +301,6 @@ mod tests {
         use crate::model::ROOT_ID;
         let mut s = SceneState::default();
         s.upsert(ROOT_ID);
-        // 15 leaves clustered near the origin → enough to force a split.
         for id in 1..=15u128 {
             let i = (id - 1) as f64;
             s.scene.insert(Node::new(id, ShapeKind::Rect));
@@ -297,17 +310,14 @@ mod tests {
         s.current = Some(ROOT_ID);
         s.set_children((1..=15).collect());
 
-        // A structural edit invalidated the index; the query rebuilds it.
         s.ensure_quadtree();
         assert!(s.leaf_candidates(Rect::new(0.0, 0.0, 8.0, 8.0)).unwrap().contains(&1));
 
-        // Move shape 1 far away and update the index in place (no rebuild).
         let before = s.leaf_rect(1);
         s.scene.get_mut(1).unwrap().bounds = Rect::new(900.0, 900.0, 903.0, 903.0);
         let after = s.leaf_rect(1);
         s.note_leaf_moved(1, before, after);
 
-        // It's gone from the origin cluster and present at the far corner.
         assert!(!s.leaf_candidates(Rect::new(0.0, 0.0, 8.0, 8.0)).unwrap().contains(&1));
         assert!(s.leaf_candidates(Rect::new(895.0, 895.0, 910.0, 910.0)).unwrap().contains(&1));
     }
@@ -329,7 +339,7 @@ mod tests {
         }
         assert_eq!(s.dirty_rects.len(), MAX_DIRTY_RECTS);
         assert!(!s.dirty_all);
-        s.mark_dirty(Rect::new(0.0, 0.0, 1.0, 1.0)); // one past the cap
+        s.mark_dirty(Rect::new(0.0, 0.0, 1.0, 1.0));
         assert!(s.dirty_all && s.dirty_rects.is_empty(), "over the cap → collapse to full dirty");
     }
 

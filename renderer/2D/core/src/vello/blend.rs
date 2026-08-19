@@ -38,7 +38,6 @@ struct Params {
     uv_min: [f32; 2],
     uv_max: [f32; 2],
     alpha: f32,
-    // Uniform structs pad to 16 bytes; keep the layout explicit for `bytemuck::Pod`.
     _pad: [f32; 3],
 }
 
@@ -104,8 +103,6 @@ struct BlendParams {
     dst_max: [f32; 2],
     uv_min: [f32; 2],
     uv_max: [f32; 2],
-    // Backdrop UV rect = the target device rect / target size, so the copy is sampled at each
-    // fragment's own position (backdrop is the same size as the target).
     bg_min: [f32; 2],
     bg_max: [f32; 2],
     alpha: f32,
@@ -152,6 +149,12 @@ pub struct Compositor {
     /// Porter-Duff `DestOut` (`out = dst·(1 − src.a)`) — same shader/layout as `pipeline`, only the
     /// blend state differs. Used to punch a blurred silhouette out of an inner-shadow band.
     dstout_pipeline: wgpu::RenderPipeline,
+    /// Detail-preserving upscale blit: Catmull-Rom reconstruction with an anti-ringing clamp and a
+    /// mild neighborhood sharpen. Same bind layout and `Params` as `pipeline`; used when a gather
+    /// surface rendered at `k < 1` stamps onto the frame, where plain bilinear visibly mushes edges.
+    sharp_pipeline: wgpu::RenderPipeline,
+    /// The mask-clipped twin of `sharp_pipeline` (same layout as `masked_pipeline`).
+    masked_sharp_pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
 }
 
@@ -166,7 +169,6 @@ impl Compositor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    // Vertex reads the rects; fragment reads `alpha`.
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -212,7 +214,6 @@ impl Compositor {
                 entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    // Premultiplied SrcOver: out = src + dst·(1 − src.a). Vello renders premultiplied.
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::One,
@@ -238,9 +239,6 @@ impl Compositor {
             multiview_mask: None,
             cache: None,
         });
-        // DestOut variant: same vs/fs + bind layout, but the blend keeps only `dst·(1 − src.a)` — the
-        // source colour is discarded (`src_factor: Zero`), so drawing a coverage texture erases the
-        // target by that coverage. Punches the blurred offset silhouette out of the inner-shadow band.
         let dstout_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("compositor dstout pipeline"),
             layout: Some(&pipeline_layout),
@@ -280,7 +278,6 @@ impl Compositor {
             multiview_mask: None,
             cache: None,
         });
-        // Separable Gaussian blur: one directional pass, no blending (it overwrites a full target).
         let blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compositor blur"),
             source: wgpu::ShaderSource::Wgsl(BLUR_SHADER.into()),
@@ -335,7 +332,7 @@ impl Compositor {
                 entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: None, // overwrites a full scratch target
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -350,8 +347,6 @@ impl Compositor {
             cache: None,
         });
 
-        // Mask-clipped blit: like the plain blit, but multiplies in a coverage mask (binding 3) so
-        // the blurred backdrop shows only through the shape's silhouette.
         let masked_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compositor masked"),
             source: wgpu::ShaderSource::Wgsl(MASKED_SHADER.into()),
@@ -416,7 +411,6 @@ impl Compositor {
                 entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    // Same premultiplied SrcOver as the plain blit — it composites onto the tile.
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::One,
@@ -443,10 +437,6 @@ impl Compositor {
             cache: None,
         });
 
-        // Non-`SrcOver` blend: read `src` and a `backdrop` copy (bindings 1 and 3), compute the full
-        // W3C blend + source-over result in the shader, and **replace** the target (blend `None`) — the
-        // shader already folded in the backdrop, so a hardware SrcOver would double it. Same 4-binding
-        // layout as the masked blit (uniform, src, sampler, extra texture).
         let blend_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compositor blend"),
             source: wgpu::ShaderSource::Wgsl(BLEND_SHADER.into()),
@@ -511,8 +501,90 @@ impl Compositor {
                 entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    // Replace: the fragment output already includes the backdrop.
                     blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let sharp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("compositor sharp blit"),
+            source: wgpu::ShaderSource::Wgsl(SHARP_SHADER.into()),
+        });
+        let premul_srcover = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let sharp_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("compositor sharp pipeline layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let sharp_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("compositor sharp pipeline"),
+            layout: Some(&sharp_pl),
+            vertex: wgpu::VertexState {
+                module: &sharp_shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &sharp_shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(premul_srcover),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let masked_sharp_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("compositor masked sharp pipeline layout"),
+            bind_group_layouts: &[Some(&masked_layout)],
+            immediate_size: 0,
+        });
+        let masked_sharp_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("compositor masked sharp pipeline"),
+            layout: Some(&masked_sharp_pl),
+            vertex: wgpu::VertexState {
+                module: &sharp_shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &sharp_shader,
+                entry_point: Some("fs_masked"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(premul_srcover),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -529,7 +601,6 @@ impl Compositor {
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("compositor sampler"),
-            // Clamp so blur taps past the edge repeat the edge texel rather than wrap.
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
@@ -546,6 +617,8 @@ impl Compositor {
             blend_pipeline,
             blend_layout,
             dstout_pipeline,
+            sharp_pipeline,
+            masked_sharp_pipeline,
             sampler,
         }
     }
@@ -595,6 +668,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(blit.mask) },
             ],
         });
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor masked blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -623,7 +697,6 @@ impl Compositor {
         blur: &BlurPass,
     ) {
         let (w, h) = blur.size;
-        // 3σ covers the Gaussian; cap the tap count so a pathological sigma can't stall the GPU.
         let radius = (3.0 * blur.sigma).ceil().clamp(1.0, 160.0);
         let params = BlurParams {
             inv_size: [1.0 / w, 1.0 / h],
@@ -647,6 +720,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor blur pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -710,6 +784,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(blend.backdrop) },
             ],
         });
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor blend composite"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -741,13 +816,10 @@ impl Compositor {
     ) {
         let (tw, th) = target_size;
         let (dx, dy, dw, dh) = blit.dst;
-        // Device rect → NDC. y is flipped (device y-down, NDC y-up).
         let ndc_x = |x: f32| (x / tw) * 2.0 - 1.0;
         let ndc_y = |y: f32| 1.0 - (y / th) * 2.0;
         let (sw, sh) = blit.src_size;
         let (sx, sy, srw, srh) = blit.src_rect;
-        // `corner` runs (0,0)→(1,1); position and UV must agree on the y direction or the sample is
-        // flipped. corner.y=0 → device-top (`dy`, higher NDC) and source-top (`uv_min`).
         let params = Params {
             dst_min: [ndc_x(dx), ndc_y(dy)],
             dst_max: [ndc_x(dx + dw), ndc_y(dy + dh)],
@@ -770,6 +842,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -788,7 +861,120 @@ impl Compositor {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind, &[]);
-        // Triangle strip: 4 corners (0,0),(1,0),(0,1),(1,1) via vertex_index bit tricks in the shader.
+        pass.draw(0..4, 0..1);
+    }
+
+    /// [`Self::blit`] through the detail-preserving upscale pipeline (Catmull-Rom + anti-ring +
+    /// sharpen). Use when the source rendered at a reduced scale and the blit is the ×1/k upscale.
+    pub fn blit_sharp(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        target_size: (f32, f32),
+        blit: &Blit,
+    ) {
+        let (tw, th) = target_size;
+        let (dx, dy, dw, dh) = blit.dst;
+        let ndc_x = |x: f32| (x / tw) * 2.0 - 1.0;
+        let ndc_y = |y: f32| 1.0 - (y / th) * 2.0;
+        let (sw, sh) = blit.src_size;
+        let (sx, sy, srw, srh) = blit.src_rect;
+        let params = Params {
+            dst_min: [ndc_x(dx), ndc_y(dy)],
+            dst_max: [ndc_x(dx + dw), ndc_y(dy + dh)],
+            uv_min: [sx / sw, sy / sh],
+            uv_max: [(sx + srw) / sw, (sy + srh) / sh],
+            alpha: blit.alpha.clamp(0.0, 1.0),
+            _pad: [0.0; 3],
+        };
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("compositor sharp params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compositor sharp bind"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(blit.src) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        crate::vello::sink::note_passes(1);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("compositor sharp blit"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.sharp_pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..4, 0..1);
+    }
+
+    /// [`Self::blit_masked`] through the detail-preserving upscale pipeline.
+    pub fn blit_masked_sharp(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        target_size: (f32, f32),
+        blit: &MaskedBlit,
+    ) {
+        let (tw, th) = target_size;
+        let (dx, dy, dw, dh) = blit.dst;
+        let ndc_x = |x: f32| (x / tw) * 2.0 - 1.0;
+        let ndc_y = |y: f32| 1.0 - (y / th) * 2.0;
+        let (sw, sh) = blit.src_size;
+        let (sx, sy, srw, srh) = blit.src_rect;
+        let params = Params {
+            dst_min: [ndc_x(dx), ndc_y(dy)],
+            dst_max: [ndc_x(dx + dw), ndc_y(dy + dh)],
+            uv_min: [sx / sw, sy / sh],
+            uv_max: [(sx + srw) / sw, (sy + srh) / sh],
+            alpha: blit.alpha.clamp(0.0, 1.0),
+            _pad: [0.0; 3],
+        };
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("compositor masked sharp params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compositor masked sharp bind"),
+            layout: &self.masked_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(blit.src) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(blit.mask) },
+            ],
+        });
+        crate::vello::sink::note_passes(1);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("compositor masked sharp blit"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.masked_sharp_pipeline);
+        pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..4, 0..1);
     }
 
@@ -831,6 +1017,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor dstout blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -859,6 +1046,7 @@ impl Compositor {
         color: [f64; 4],
         timestamp: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
+        crate::vello::sink::note_passes(1);
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -919,6 +1107,89 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 fn fs(in: VSOut) -> @location(0) vec4<f32> {
     // Premultiplied source; scaling the whole RGBA by the layer opacity is the correct group fade.
     return textureSample(tex, samp, in.uv) * p.alpha;
+}
+"#;
+
+const SHARP_SHADER: &str = r#"
+struct Params {
+    dst_min: vec2<f32>,
+    dst_max: vec2<f32>,
+    uv_min: vec2<f32>,
+    uv_max: vec2<f32>,
+    alpha: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var tex: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var mask: texture_2d<f32>;
+
+struct VSOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
+    let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
+    var out: VSOut;
+    out.pos = vec4<f32>(mix(p.dst_min, p.dst_max, corner), 0.0, 1.0);
+    out.uv = mix(p.uv_min, p.uv_max, corner);
+    return out;
+}
+
+// Catmull-Rom via 9 bilinear taps, then clamp to the nearest-2x2 min/max (kills the negative-lobe
+// ringing) and a mild neighborhood sharpen re-clamped to the same bounds (halo-free). Operates on
+// premultiplied RGBA, which combines linearly.
+fn sample_sharp(uv: vec2<f32>) -> vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(tex));
+    let sp = uv * dims;
+    let tc = floor(sp - 0.5) + 0.5;
+    let f = sp - tc;
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    let w3 = f * f * (-0.5 + 0.5 * f);
+    let w12 = w1 + w2;
+    let o12 = w2 / w12;
+    let p0 = (tc - 1.0) / dims;
+    let p3 = (tc + 2.0) / dims;
+    let p12 = (tc + o12) / dims;
+    var c = vec4<f32>(0.0);
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p0.x, p0.y), 0.0) * w0.x * w0.y;
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p12.x, p0.y), 0.0) * w12.x * w0.y;
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p3.x, p0.y), 0.0) * w3.x * w0.y;
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p0.x, p12.y), 0.0) * w0.x * w12.y;
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p12.x, p12.y), 0.0) * w12.x * w12.y;
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p3.x, p12.y), 0.0) * w3.x * w12.y;
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p0.x, p3.y), 0.0) * w0.x * w3.y;
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p12.x, p3.y), 0.0) * w12.x * w3.y;
+    c = c + textureSampleLevel(tex, samp, vec2<f32>(p3.x, p3.y), 0.0) * w3.x * w3.y;
+    let maxi = vec2<i32>(dims) - vec2<i32>(1, 1);
+    let b0 = clamp(vec2<i32>(tc - 0.5), vec2<i32>(0, 0), maxi);
+    let b1 = min(b0 + vec2<i32>(1, 1), maxi);
+    let t00 = textureLoad(tex, b0, 0);
+    let t10 = textureLoad(tex, vec2<i32>(b1.x, b0.y), 0);
+    let t01 = textureLoad(tex, vec2<i32>(b0.x, b1.y), 0);
+    let t11 = textureLoad(tex, b1, 0);
+    let lo = min(min(t00, t10), min(t01, t11));
+    let hi = max(max(t00, t10), max(t01, t11));
+    c = clamp(c, lo, hi);
+    let mean = (t00 + t10 + t01 + t11) * 0.25;
+    return clamp(c + (c - mean) * 0.35, lo, hi);
+}
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4<f32> {
+    return sample_sharp(in.uv) * p.alpha;
+}
+
+@fragment
+fn fs_masked(in: VSOut) -> @location(0) vec4<f32> {
+    let cover = textureSample(mask, samp, in.uv).a;
+    return sample_sharp(in.uv) * (p.alpha * cover);
 }
 "#;
 

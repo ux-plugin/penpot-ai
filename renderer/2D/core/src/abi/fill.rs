@@ -37,7 +37,6 @@ pub struct RawGradientData {
     pub end_x: f32,
     pub end_y: f32,
     pub opacity: u8,
-    // 24-bit padding here, reserved for future use
     pub width_x: f32,
     pub width_y: f32,
     pub stop_count: u8,
@@ -73,7 +72,6 @@ pub struct RawImageFillData {
     pub d: u32,
     pub opacity: u8,
     pub flags: u8,
-    // 16-bit padding here, reserved for future use
     pub width: i32,
     pub height: i32,
     /// Optional destination sub-rect (local/selrect coords), valid iff `FLAG_HAS_DEST` — a
@@ -138,11 +136,9 @@ mod layout {
         pub const END_X: usize = 8;
         pub const END_Y: usize = 12;
         pub const OPACITY: usize = 16;
-        // 17..20 padding
         pub const WIDTH_X: usize = 20;
         pub const WIDTH_Y: usize = 24;
         pub const STOP_COUNT: usize = 28;
-        // 29..32 padding
         pub const STOPS: usize = 32;
         pub const STOP_SIZE: usize = 8;
         pub const SIZE: usize = STOPS + STOP_SIZE * super::super::MAX_GRADIENT_STOPS;
@@ -155,7 +151,6 @@ mod layout {
         pub const D: usize = 12;
         pub const OPACITY: usize = 16;
         pub const FLAGS: usize = 17;
-        // 18..20 padding
         pub const WIDTH: usize = 20;
         pub const HEIGHT: usize = 24;
         pub const DEST_L: usize = 28;
@@ -166,9 +161,6 @@ mod layout {
     }
 }
 
-// Wire invariants, checked at compile time on every build rather than only under `cargo test`.
-// The record is sized by its largest variant, so if a gradient ever stops being the largest —
-// or the record size drifts from tag + payload — the build fails here.
 const _: () = assert!(RAW_FILL_DATA_SIZE == layout::PAYLOAD + layout::gradient::SIZE);
 const _: () = assert!(layout::solid::SIZE <= layout::gradient::SIZE);
 const _: () = assert!(layout::image::SIZE <= layout::gradient::SIZE);
@@ -386,10 +378,6 @@ mod tests {
         assert_eq!(img.dest(), Some([1.0, 2.0, 3.0, 4.0]));
     }
 
-    // ------------------------------------------------------------------------------------
-    // Codec
-    // ------------------------------------------------------------------------------------
-
     /// The load-bearing test. The codec writes explicit offsets; these must stay equal to what
     /// `#[repr(C)]` produces, or the safe codec and the layouts silently disagree and every
     /// fill after the first is misread. Adding or reordering a field fails here.
@@ -420,7 +408,6 @@ mod tests {
         assert_eq!(offset_of!(RawImageFillData, dest_b), i::DEST_B);
         assert_eq!(core::mem::size_of::<RawImageFillData>(), i::SIZE);
 
-        // Tag at 0, payload at 4, record = 4 + the largest variant.
         assert_eq!(RAW_FILL_DATA_SIZE, layout::PAYLOAD + g::SIZE);
         assert_eq!(RAW_FILL_DATA_SIZE, 164);
     }
@@ -506,9 +493,7 @@ mod tests {
         )
         .unwrap();
 
-        // Bytes 1..4 are the tag's alignment padding.
         assert_eq!(&buf[1..4], &[0, 0, 0]);
-        // The solid payload is 4 bytes; the rest of the record is padding.
         assert!(buf[8..].iter().all(|&b| b == 0));
     }
 

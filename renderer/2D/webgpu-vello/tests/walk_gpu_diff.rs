@@ -70,7 +70,7 @@ fn gpu_walk_matches_oracle_flat() {
     s.insert(root);
     for n in [
         rect(1, 20.0, 20.0, 300.0, 300.0),
-        rect(2, 480.0, 100.0, 1600.0, 1200.0), // spans many 512px tiles
+        rect(2, 480.0, 100.0, 1600.0, 1200.0),
         rect(3, 700.0, 700.0, 760.0, 760.0),
         rect(4, 0.0, 1500.0, 60.0, 1560.0),
     ] {
@@ -88,10 +88,10 @@ fn gpu_walk_matches_oracle_with_dirty_reject() {
     root.children = vec![1, 2, 3, 4];
     s.insert(root);
     for n in [
-        rect(1, 20.0, 20.0, 300.0, 300.0),       // inside dirty
-        rect(2, 1800.0, 1800.0, 2000.0, 2000.0), // outside dirty → rejected
-        rect(3, 100.0, 900.0, 400.0, 1100.0),    // straddles the dirty edge
-        rect(4, 1900.0, 40.0, 2000.0, 140.0),    // outside dirty → rejected
+        rect(1, 20.0, 20.0, 300.0, 300.0),
+        rect(2, 1800.0, 1800.0, 2000.0, 2000.0),
+        rect(3, 100.0, 900.0, 400.0, 1100.0),
+        rect(4, 1900.0, 40.0, 2000.0, 140.0),
     ] {
         s.insert(n);
     }

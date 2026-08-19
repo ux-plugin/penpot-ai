@@ -17,6 +17,32 @@
 use crate::blend::DEFAULT_BLEND;
 use crate::geometry::outline;
 use crate::gradient::DIAMOND_TILE;
+
+std::thread_local! {
+    /// Per-node outline cache, validated wholesale against [`crate::host::scene_epoch`]: while no
+    /// shape is edited (idle, pan, zoom, modifier drags), every frame re-walks the same geometry —
+    /// rebuilding a rounded-rect `BezPath` per shape per frame was ~30% of the 20k-shape encode
+    /// walk. Any edit flushes the whole map (coarse but trivially correct; an edit frame simply
+    /// pays today's cost once).
+    static OUTLINE_CACHE: std::cell::RefCell<(u64, rustc_hash::FxHashMap<u128, std::rc::Rc<BezPath>>)> =
+        std::cell::RefCell::new((0, rustc_hash::FxHashMap::default()));
+}
+
+/// The node's outline through the epoch-validated cache — same result as
+/// [`crate::geometry::outline`], amortized to one build per shape per edit.
+fn outline_cached(node: &Node) -> std::rc::Rc<BezPath> {
+    let epoch = crate::host::scene_epoch();
+    OUTLINE_CACHE.with(|cell| {
+        let (cached_epoch, map) = &mut *cell.borrow_mut();
+        if *cached_epoch != epoch {
+            map.clear();
+            *cached_epoch = epoch;
+        }
+        map.entry(node.id)
+            .or_insert_with(|| std::rc::Rc::new(outline(node)))
+            .clone()
+    })
+}
 use crate::kurbo::{Affine, BezPath, Rect, Shape};
 use crate::model::{self as m, Brush, Node, ShapeKind, StrokeAlign};
 use vello_common::paint::ImageId;
@@ -54,7 +80,6 @@ pub fn paint_body<C: RenderingContext, E: DrawEnv>(
     matrix: Affine,
     group_inline: bool,
 ) {
-    // A group has no geometry of its own; it exists to carry the layer.
     if node.kind == ShapeKind::Group {
         return;
     }
@@ -65,28 +90,31 @@ pub fn paint_body<C: RenderingContext, E: DrawEnv>(
     ctx.set_fill_rule(Fill::NonZero);
     ctx.set_transform(matrix);
 
-    // A leaf's own opacity/blend, applied inline only when the caller owns compositing here
-    // (`group_inline`); under the sink it is deferred to the `Composite` step — see the doc above.
     let leaf_layer = group_inline
         && !node.kind.is_container()
         && (node.opacity < 1.0 || node.blend != DEFAULT_BLEND);
     if leaf_layer {
         let blend = (node.blend != DEFAULT_BLEND).then_some(node.blend);
         let alpha = (node.opacity < 1.0).then_some(node.opacity);
-        ctx.push_layer(None, blend, alpha, None, None);
+        let pad = node
+            .strokes
+            .iter()
+            .map(|s| s.style.width)
+            .fold(0.0_f64, f64::max)
+            .mul_add(2.0, 1.0);
+        let bbox = match (&node.kind, &node.path) {
+            (crate::model::ShapeKind::Path, Some(p)) => p.bounding_box(),
+            _ => node.bounds,
+        };
+        let clip = bbox.inflate(pad, pad).to_path(0.1);
+        ctx.push_layer(Some(&clip), blend, alpha, None, None);
     }
 
-    // Every fill paints, back to front, so a translucent fill blends over the ones beneath it.
-    // render-wasm draws `fills[0]` on top (`merge_fills` / `fills.iter().rev()`), so iterate in
-    // reverse — `fills[last]` first, `fills[0]` last. `SrcOver` is associative, so painting the shape
-    // once per fill matches render-wasm's single merged-shader result exactly. A fill this backend
-    // can't paint yet (an unstaged image/diamond) is skipped, and the fills under it still draw.
     for fill in node.fills.iter().rev() {
         if !set_paint(ctx, env, fill, node.bounds) {
             continue;
         }
         match node.kind {
-            // The one case worth a fast path: a square-cornered rect needs no path at all.
             ShapeKind::Rect | ShapeKind::Frame if node.corners.is_none() => {
                 ctx.fill_rect(&node.bounds)
             }
@@ -95,34 +123,26 @@ pub fn paint_body<C: RenderingContext, E: DrawEnv>(
                     ctx.fill_path(path);
                 }
             }
-            _ => ctx.fill_path(&outline(node)),
+            _ => ctx.fill_path(&outline_cached(node)),
         }
     }
 
-    // Strokes go over the fills, back to front, on this node's own outline.
     if !node.strokes.is_empty() {
-        let path = outline(node);
+        let path = outline_cached(node);
         for stroke in &node.strokes {
             if !set_paint(ctx, env, &stroke.paint, node.bounds) {
                 continue;
             }
             match stroke.align {
-                // Centre: kurbo strokes are centre-aligned already, so paint the outline directly.
                 StrokeAlign::Center => {
                     ctx.set_stroke(stroke.style.clone());
                     ctx.stroke_path(&path);
                 }
-                // Inner/outer put the full stroke weight on one side of the edge (Skia/Figma
-                // semantics), which a centre-aligned stroke cannot express. Draw a **double-width**
-                // centre stroke — a `2·w` band straddling the edge, `w` inside and `w` outside — then
-                // clip to just the half we want: the shape interior for inner, its complement for
-                // outer. What survives is exactly a `w`-wide band flush against the edge, matching
-                // render-wasm's `clip(Intersect)` (inner) / draw-then-`Clear`-the-interior (outer).
                 StrokeAlign::Inner | StrokeAlign::Outer => {
                     let mut style = stroke.style.clone();
                     style.width *= 2.0;
                     let clip = match stroke.align {
-                        StrokeAlign::Inner => path.clone(),
+                        StrokeAlign::Inner => (*path).clone(),
                         _ => complement_of(&path),
                     };
                     ctx.push_layer(Some(&clip), None, None, None, None);
@@ -134,8 +154,6 @@ pub fn paint_body<C: RenderingContext, E: DrawEnv>(
         }
     }
 
-    // The paint transform is context state, not an argument: left set, the next shape's solid fill
-    // would be drawn through this shape's gradient mapping.
     ctx.set_paint_transform(Affine::IDENTITY);
     if leaf_layer {
         ctx.pop_layer();
@@ -173,9 +191,6 @@ pub fn set_paint<C: RenderingContext, E: DrawEnv>(
             true
         }
         Brush::Image(image) => {
-            // Resolve the reference against the atlas the renderer filled from `store_image_rgba`.
-            // Absent means the pixels have not arrived yet — draw nothing this frame rather than a
-            // placeholder, and the next frame after the upload will show it.
             let Some(image_id) = env.resolve_image(image.id) else {
                 return false;
             };
@@ -184,8 +199,6 @@ pub fn set_paint<C: RenderingContext, E: DrawEnv>(
             ctx.set_paint(vello_common::paint::Image {
                 image: vello_common::paint::ImageSource::opaque_id(image_id),
                 sampler: vello_common::peniko::ImageSampler {
-                    // Clamp at the edges: with the cover/stretch transform the fill never samples
-                    // outside the image, so the extend mode only matters at sub-pixel borders.
                     x_extend: vello_common::peniko::Extend::Pad,
                     y_extend: vello_common::peniko::Extend::Pad,
                     quality: vello_common::peniko::ImageQuality::Medium,
@@ -195,19 +208,9 @@ pub fn set_paint<C: RenderingContext, E: DrawEnv>(
             true
         }
         Brush::Diamond(d) => {
-            // Diamond has no peniko kind, so it is baked to a tile and drawn as an image. The
-            // renderer's pre-pass (`stage_diamond_bakes`) rasterises the L1 field and uploads it
-            // under this content key; here it resolves exactly like an image fill. Absent means the
-            // bake has not landed yet — draw nothing this frame, painted the next.
             let Some(image_id) = env.resolve_image(d.content_key()) else {
                 return false;
             };
-            // The bake covers the unit box, but it is an *image* now, sampled in pixel space — so
-            // the transform maps the whole tile `[0, TILE]²` onto the shape, exactly the stretch a
-            // plain image uses. (Mapping unit space `[0,1]` here samples only the tile's first pixel
-            // across the whole shape — which is how the first cut rendered solid.) The non-square
-            // distortion comes from this stretch, matching render-wasm's normalised-space shader.
-            // Stop alphas are baked in; the sampler adds none.
             let tile = f64::from(DIAMOND_TILE);
             ctx.set_paint_transform(
                 Affine::translate((bounds.x0, bounds.y0))
@@ -239,7 +242,6 @@ fn image_paint_transform(image: &m::ImageFill, target: Rect) -> Affine {
 
     if image.keep_aspect {
         let scale = (tw / iw).max(th / ih);
-        // Centre the scaled image over the target; the fill clips whatever spills past it.
         let ox = target.x0 + (tw - iw * scale) * 0.5;
         let oy = target.y0 + (th - ih * scale) * 0.5;
         Affine::translate((ox, oy)) * Affine::scale(scale)
@@ -257,7 +259,6 @@ fn image_paint_transform(image: &m::ImageFill, target: Rect) -> Affine {
 /// whenever its signed area shares the rect's sign — making the winding cancel inside it regardless
 /// of the source path's original direction.
 fn complement_of(path: &BezPath) -> BezPath {
-    // Far larger than any surface, so the rect's own edges never clip the finite outer band.
     let mut out = Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6).to_path(0.0);
     let mut hole = path.clone();
     if hole.area().signum() == out.area().signum() {
@@ -269,8 +270,6 @@ fn complement_of(path: &BezPath) -> BezPath {
 
 /// Maps the unit box onto `bounds` — the space Penpot's gradient coordinates live in.
 fn unit_box_to(bounds: Rect) -> Affine {
-    // A zero-extent axis would collapse the paint onto a line and hand the rasteriser a singular
-    // matrix; leaving that axis unscaled keeps the fill finite and visible.
     let sx = if bounds.width().abs() > f64::EPSILON {
         bounds.width()
     } else {

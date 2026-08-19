@@ -57,7 +57,6 @@ mod tests {
 
     #[test]
     fn every_raw_mode_maps_and_composites_source_over() {
-        // The sixteen bytes Penpot can send, in RawBlendMode order.
         let expected = [
             (3u8, Mix::Normal),
             (14, Mix::Screen),

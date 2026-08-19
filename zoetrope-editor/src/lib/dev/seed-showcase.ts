@@ -24,6 +24,7 @@ import {
   createFrame,
   createGroup,
   createPolyline,
+  createText,
 } from '../renderer/node-factory'
 import type {
   AddObjChange,
@@ -253,6 +254,20 @@ export async function seedShowcaseDocument(): Promise<number> {
   {
     const n = createRect({ x: 700, y: 420, width: 300, height: 260, parentId: rootId, borderRadius: 24, fillColor: '#ffffff', fillOpacity: 26 / 255 }) as AnyNode
     n.backgroundBlur = { type: 'background-blur', value: 18, hidden: false } as Blur
+    add(n)
+  }
+
+  // 14. TEXT block — the renderer's text path (Parley layout + glyph draw) over the page.
+  {
+    const n = createText({
+      x: 60,
+      y: 640,
+      width: 420,
+      height: 60,
+      text: 'Showcase text Aa Bb 012',
+      parentId: rootId,
+      fillColor: '#1a1a2e',
+    })
     add(n)
   }
 

@@ -13,7 +13,7 @@
 //! hit-testing, word boundaries and selection geometry are reused verbatim — the only genuinely new
 //! logic is the span-transform on insert/delete ([`StyledText::replace_range`]).
 //!
-//! This module depends only on `parley` + `render_core` (no wgpu, no wasm), so the span-transform —
+//! This module depends only on `parley` + `render_core` (as `crate`) (no wgpu, no wasm), so the span-transform —
 //! the part most worth testing — is unit-tested on the host below.
 //!
 //! **Scope of this slice.** Editing preserves and correctly lays out per-span styles: the caret no
@@ -28,8 +28,8 @@ use parley::{
     Affinity, Alignment, AlignmentOptions, BoundingBox, Cursor, FontContext, FontFamily,
     LayoutContext, LineHeight, Selection, StyleProperty,
 };
-use render_core::model::Paint;
-use render_core::text::{
+use crate::model::Paint;
+use crate::text::{
     FontRef, TextAlign, TextBlock, TextBrush, TextDecoration, TextGrow, TextSpan,
 };
 
@@ -224,7 +224,7 @@ impl StyledText {
 /// selection over that layout. Mirrors what [`parley::PlainEditor`] does, but with per-range styles
 /// instead of one `StyleSet`. The `FontContext`/`LayoutContext` live on the scene's text engine (the
 /// render pass owns them), so every layout-building method takes them by reference.
-pub(crate) struct RichEditor {
+pub struct RichEditor {
     model: StyledText,
     layout: Layout<TextBrush>,
     selection: Selection,
@@ -238,7 +238,7 @@ pub(crate) struct RichEditor {
 
 impl RichEditor {
     /// Build the editor for a block, laid out to `width`, caret at the start.
-    pub(crate) fn build(
+    pub fn build(
         block: &TextBlock,
         width: f32,
         font_cx: &mut FontContext,
@@ -267,7 +267,7 @@ impl RichEditor {
     /// Apply one queued command against the live layout. Selection-only commands read the current
     /// layout; text-changing commands rewrite the model and relayout. `overtype` makes a collapsed
     /// insert replace the character ahead first.
-    pub(crate) fn apply(
+    pub fn apply(
         &mut self,
         command: EditorCommandRef<'_>,
         overtype: bool,
@@ -428,34 +428,40 @@ impl RichEditor {
 
     // --- read-back for the render pass / ABI ---------------------------------------------------
 
-    pub(crate) fn text(&self) -> &str {
+    pub fn text(&self) -> &str {
         &self.model.text
     }
 
-    pub(crate) fn selection_range(&self) -> (usize, usize) {
+    pub fn selection_range(&self) -> (usize, usize) {
         self.sel_range()
     }
 
-    pub(crate) fn layout(&self) -> &Layout<TextBrush> {
+    pub fn layout(&self) -> &Layout<TextBrush> {
         &self.layout
     }
 
     /// The caret rectangle `[left, top, width, height]` in text-local space.
-    pub(crate) fn caret_rect(&self, width: f32) -> [f32; 4] {
+    pub fn caret_rect(&self, width: f32) -> [f32; 4] {
         let b = self.selection.focus().geometry(&self.layout, width);
         [b.x0 as f32, b.y0 as f32, (b.x1 - b.x0) as f32, (b.y1 - b.y0) as f32]
     }
 
     /// The selection highlight rectangles, one per covered line fragment.
-    pub(crate) fn selection_geometry(&self) -> Vec<BoundingBox> {
+    pub fn selection_geometry(&self) -> Vec<BoundingBox> {
         self.selection.geometry(&self.layout).into_iter().map(|(b, _)| b).collect()
+    }
+
+    /// The live layout's `[width, height]` — what an auto-grow box should size itself to while the
+    /// user types (the committed node content lags until the session ends).
+    pub fn layout_size(&self) -> [f32; 2] {
+        [self.layout.width(), self.layout.height()]
     }
 }
 
 /// A borrowed edit command, so the render pass can apply the queue without cloning the payload
 /// strings. Mirrors `crate::editor::EditorCommand`; kept separate so this module has no dependency on
 /// the ABI state.
-pub(crate) enum EditorCommandRef<'a> {
+pub enum EditorCommandRef<'a> {
     PointerDown(f32, f32),
     ExtendToPoint(f32, f32),
     SelectWord(f32, f32),
@@ -494,7 +500,7 @@ fn build_layout(
     let aliases: Vec<String> = model
         .segments
         .iter()
-        .map(|seg| crate::abi::font_alias(seg.style.font.id, seg.style.font.weight, seg.style.font.italic))
+        .map(|seg| crate::vello::abi::font_alias(seg.style.font.id, seg.style.font.weight, seg.style.font.italic))
         .collect();
 
     let mut builder = layout_cx.ranged_builder(font_cx, &model.text, 1.0, true);
@@ -530,7 +536,7 @@ fn build_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use render_core::text::{TextParagraph, TextTransform};
+    use crate::text::{TextParagraph, TextTransform};
 
     fn span(text: &str, size: f32) -> TextSpan {
         TextSpan {
@@ -548,7 +554,7 @@ mod tests {
     fn paragraph(spans: Vec<TextSpan>) -> TextParagraph {
         TextParagraph {
             align: TextAlign::Left,
-            direction: render_core::text::TextDirection::Ltr,
+            direction: crate::text::TextDirection::Ltr,
             line_height: 1.2,
             letter_spacing: 0.0,
             spans,
@@ -556,7 +562,7 @@ mod tests {
     }
 
     fn block(paragraphs: Vec<TextParagraph>) -> TextBlock {
-        TextBlock { paragraphs, grow: TextGrow::AutoWidth, vertical_align: render_core::text::VerticalAlign::Top }
+        TextBlock { paragraphs, grow: TextGrow::AutoWidth, vertical_align: crate::text::VerticalAlign::Top }
     }
 
     fn seg_lens(t: &StyledText) -> Vec<usize> {

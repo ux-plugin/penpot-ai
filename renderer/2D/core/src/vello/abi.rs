@@ -33,9 +33,6 @@ static BUFFER: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 static STATE: Mutex<Option<SceneState>> = Mutex::new(None);
 
-// The host scene-state machine (the document the ABI accumulates: shape tree, cursor, viewport,
-// modifiers, dirty tracking) is backend-neutral and lives in render-core; this module owns only the
-// static instance of it plus the FFI shell that drives it. See `crate::host`.
 pub use crate::host::{Modifiers, SceneState, Viewport};
 
 fn with_state<R>(f: impl FnOnce(&mut SceneState) -> R) -> R {
@@ -44,14 +41,10 @@ fn with_state<R>(f: impl FnOnce(&mut SceneState) -> R) -> R {
 }
 
 fn with_current<R>(f: impl FnOnce(&mut Node) -> R) -> Option<R> {
+    crate::host::bump_scene_epoch();
     with_state(|state| {
         let id = state.current?;
-        // Snapshot the shape's footprint before and after the edit, so a geometry change (its rect
-        // moves) dirties both the tiles it left and the tiles it entered; a plain property change
-        // (opacity, fill) records the same rect twice, which is harmless.
         let before = state.shape_rect(id);
-        // Committed footprints bracket the edit for the spatial index (modifier-free, unlike the
-        // dirty rects above which include the gesture). A container yields `None` → the index skips it.
         let qt_before = state.leaf_rect(id);
         let out = state.scene.get_mut(id).map(f)?;
         let after = state.shape_rect(id);
@@ -81,7 +74,6 @@ pub fn take_bytes() -> Vec<u8> {
 ///
 /// Borrowed rather than returned by value because this runs once a frame, and cloning the whole
 /// node map per frame is exactly the cost this backend exists to avoid.
-// `scene.rs` is wasm-only, so a host build sees no caller outside the tests.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn with_scene<R>(f: impl FnOnce(&Scene, Affine, &Modifiers) -> R) -> R {
     with_state(|state| {
@@ -116,8 +108,6 @@ pub fn build_schedule(
                 flat: state.qt_flat,
             })
         };
-        // Decompose the "build" CPU cost into walk / gather / assemble (dbg buckets 20-22, read via
-        // prof_read(120-122)) — the split that decides whether the scheduler is worth a GPU pass.
         buildprof::set_clock(crate::vello::prof::now);
         buildprof::reset();
         let sched = build_visible(&state.scene, view, &state.modifiers, dirty_set, index);
@@ -173,17 +163,9 @@ pub fn effective_view(root: Affine) -> Affine {
 pub fn whole_viewport_can_render() -> bool {
     fn node_ok(scene: &Scene, id: u128) -> bool {
         let Some(node) = scene.get(id) else { return true };
-        // A hidden node and its subtree contribute nothing — skip, exactly as `visit` does.
         if node.hidden {
             return true;
         }
-        // The whole-viewport effect stack (`wv_paint_stack`) now composites a node's full effect set in
-        // z-order — box shadows inline; non-box drop + inner shadows (any mix, multiples) via the
-        // silhouette/DestOut bands; layer blur; and body-only (spread) custom shaders — exactly as the
-        // tiled path composes them, so all of those combine natively. The ONLY effect still without a
-        // classic renderer (in EITHER path — `push_filter_layer` is an inert stub) is the typed
-        // `filter_graph` (FilterNode chain); a scene with one falls back to the tiled scheduler so it
-        // isn't dropped silently. (Tiled can't render it either, but the gate stays honest for when it can.)
         let needs_tiled = node.filter_graph.is_some();
         if needs_tiled {
             return false;
@@ -202,8 +184,6 @@ pub fn whole_viewport_can_render() -> bool {
 pub fn take_needs_frame() -> bool {
     with_state(|state| std::mem::take(&mut state.needs_frame))
 }
-
-// --- transport -------------------------------------------------------------------------
 
 /// Reserve `len` bytes in the wasm heap and hand back a pointer for the host to write into.
 ///
@@ -226,18 +206,6 @@ pub extern "C" fn alloc_bytes(len: usize) -> *mut u8 {
 pub extern "C" fn free_bytes() {
     *BUFFER.lock().expect("byte buffer poisoned") = None;
 }
-
-// --- image store ------------------------------------------------------------------------
-//
-// Images take a different door from every other fill. Solid, gradient and even the image
-// *reference* are self-describing bytes the ABI decodes inline; the image *pixels* are not —
-// they must land in the renderer's GPU atlas, and the atlas needs the wgpu device/queue that
-// only the renderer owns (D2). So the ABI cannot upload; it can only stage.
-//
-// `store_image_rgba` pushes decoded RGBA into `PENDING_IMAGES`. The renderer drains that queue
-// each frame, uploads to the atlas, and records `id -> ImageId` in `RESOLVED_IMAGES`, which
-// `scene.rs` reads to resolve a `Brush::Image` at paint time. An id absent from the resolved map
-// is an image that has not finished loading — it draws nothing that frame rather than guessing.
 
 /// An image whose pixels have arrived but are not yet in the atlas.
 pub struct PendingImage {
@@ -271,7 +239,6 @@ pub extern "C" fn store_image_rgba() {
     let height = word(20);
     let expected = 24 + (width as usize) * (height as usize) * 4;
     if bytes.len() < expected {
-        // A short buffer would upload garbage past the end; drop it rather than corrupt the atlas.
         return;
     }
     let rgba = bytes[24..expected].to_vec();
@@ -304,20 +271,14 @@ pub fn record_image(id: u128, image_id: vello_common::paint::ImageId) {
         .insert(id, image_id);
 }
 
-// --- fonts -----------------------------------------------------------------------------------
-//
-// render-vello targets `wasm32-unknown-unknown`, which has no system fonts, so every face the
-// document needs is uploaded by the host and registered into a Parley collection `scene.rs`
-// owns. `store_font` stages the bytes here under an alias derived from the face's identity;
-// `scene.rs` drains the queue each frame and registers what is new. Mirrors the image path, and
-// render-wasm's own `store_font` → `FontStore::add`.
-
-/// A font face whose bytes have arrived but are not yet in the Parley collection.
-pub struct UploadedFont {
+/// One published font face in the registry. The bytes are an Arc-backed [`peniko::Blob`], so
+/// handing a face to a consumer is a refcount bump, never a copy.
+#[derive(Clone)]
+pub struct FontFace {
     /// The family alias to register under — see [`font_alias`]. The draw path builds
     /// the same alias from a span's [`crate::text::FontRef`], so the two meet by string.
     pub alias: String,
-    pub bytes: Vec<u8>,
+    pub bytes: peniko::Blob<u8>,
     /// A colour-emoji face. Registered like any other, but also wired into Parley's `Emoji`
     /// generic family so an emoji the primary font lacks falls through to it (glifo then draws its
     /// COLR/bitmap layers). Text never references it by name.
@@ -334,14 +295,19 @@ pub fn font_alias(id: u128, weight: u16, italic: bool) -> String {
     format!("penpot-{id:032x}-{weight}-{}", if italic { 'i' } else { 'n' })
 }
 
-static PENDING_FONTS: Mutex<Vec<UploadedFont>> = Mutex::new(Vec::new());
+/// The publish-once font registry: every face the host has ever uploaded, in upload order,
+/// never removed. Consumers (each backend's Parley collection, text measurement, any renderer
+/// created at any time) read it through [`fonts_since`] with their own cursor, so a face reaches
+/// every consumer no matter how many exist or in what order they were created — the draining
+/// queue this replaces lost faces to whichever single consumer synced first.
+static FONT_REGISTRY: Mutex<Vec<FontFace>> = Mutex::new(Vec::new());
 /// Aliases the host has ever uploaded, so `is_font_uploaded` can answer without re-sending and a
 /// repeated `store_font` is a no-op. Deliberately *not* cleared by `clean_up`: a face is a device
 /// resource that survives a page change, like the registered fonts in render-wasm's `FontStore`.
 static KNOWN_FONTS: Mutex<std::collections::BTreeSet<String>> =
     Mutex::new(std::collections::BTreeSet::new());
 
-/// Stage one font face for registration. The bytes arrive through the shared heap buffer; the
+/// Publish one font face into the registry. The bytes arrive through the shared heap buffer; the
 /// identity comes as the family UUID (four LE `u32`), a CSS weight, and a style byte
 /// (`0` normal, `1` italic), matching render-wasm's `store_font`. `is_emoji`/`is_fallback` are
 /// accepted for wire compatibility but not acted on yet — emoji and fallback chaining are a later
@@ -355,8 +321,6 @@ pub extern "C" fn store_font(
     weight: u32,
     style: u8,
     is_emoji: bool,
-    // A general (non-emoji) fallback face. Wiring these into per-script fallback needs the run's
-    // script, which the wire does not carry, so they stay registered-by-name only for now.
     _is_fallback: bool,
 ) {
     let bytes = take_bytes();
@@ -364,8 +328,6 @@ pub extern "C" fn store_font(
         return;
     }
     let alias = font_alias(uuid_u128(a, b, c, d), weight as u16, style == 1);
-    // `insert` returns false when the alias was already present — then the face is already staged
-    // or registered and this upload is redundant.
     if !KNOWN_FONTS
         .lock()
         .expect("known fonts poisoned")
@@ -373,11 +335,34 @@ pub extern "C" fn store_font(
     {
         return;
     }
-    PENDING_FONTS
-        .lock()
-        .expect("pending fonts poisoned")
-        .push(UploadedFont { alias, bytes, is_emoji });
+    FONT_REGISTRY.lock().expect("font registry poisoned").push(FontFace {
+        alias,
+        bytes: peniko::Blob::new(std::sync::Arc::new(bytes)),
+        is_emoji,
+    });
     with_state(|state| state.needs_frame = true);
+}
+
+/// The implicit current-shape cursor (set by `use_shape`), so entry points that operate "on the
+/// current shape" outside this module — text measurement — can read it.
+pub fn current_shape() -> Option<u128> {
+    with_state(|state| state.current)
+}
+
+/// Whether an image's pixels are already staged or resolved, so the host can skip re-fetching them.
+/// Mirrors render-wasm's `is_image_cached`; the thumbnail flag is part of the wire signature but
+/// both resolutions share one cache entry here.
+#[unsafe(no_mangle)]
+pub extern "C" fn is_image_cached(a: u32, b: u32, c: u32, d: u32, _thumbnail: bool) -> bool {
+    let id = uuid_u128(a, b, c, d);
+    if resolve_image(id).is_some() {
+        return true;
+    }
+    PENDING_IMAGES
+        .lock()
+        .expect("pending images poisoned")
+        .iter()
+        .any(|img| img.id == id)
 }
 
 /// Whether a face is already uploaded, so the host can skip re-sending its bytes. Mirrors
@@ -400,16 +385,22 @@ pub extern "C" fn is_font_uploaded(
         .contains(&alias)
 }
 
-/// Hand the scene every face staged since the last call, leaving the queue empty.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub fn take_pending_fonts() -> Vec<UploadedFont> {
-    std::mem::take(&mut *PENDING_FONTS.lock().expect("pending fonts poisoned"))
+/// Every face published since the consumer's last call, advancing its cursor to the end of the
+/// registry. Reading never removes: each consumer owns a cursor (starting at 0, so a consumer
+/// created after uploads still receives everything) and the returned faces share their bytes with
+/// the registry via [`peniko::Blob`]. The registry is append-only, so a cursor is always valid.
+pub fn fonts_since(cursor: &mut usize) -> Vec<FontFace> {
+    let registry = FONT_REGISTRY.lock().expect("font registry poisoned");
+    let fresh = registry[(*cursor).min(registry.len())..].to_vec();
+    *cursor = registry.len();
+    fresh
 }
 
-/// Stage the embedded parity font (idempotent) so the parity fixture's **text** cell resolves in a
-/// bare harness that never calls [`store_font`] (e.g. bench.html). It registers the bundled Roboto
-/// under exactly the alias the fixture's `FontRef { PARITY_FONT_ID, 400, normal }` resolves to; the
-/// backend drains it on the next `sync_fonts`. Real hosts upload their own faces and never call this.
+/// Publish the embedded parity font (idempotent) so the parity fixture's **text** cell resolves in
+/// a bare harness that never calls [`store_font`] (e.g. bench.html). It registers the bundled
+/// Roboto under exactly the alias the fixture's `FontRef { PARITY_FONT_ID, 400, normal }` resolves
+/// to; consumers pick it up on their next `sync_fonts`. Real hosts upload their own faces and
+/// never call this.
 pub fn stage_parity_font() {
     const PARITY_FONT_BYTES: &[u8] =
         include_bytes!("../../../vello/examples/assets/roboto/Roboto-Regular.ttf");
@@ -421,22 +412,13 @@ pub fn stage_parity_font() {
     {
         return;
     }
-    PENDING_FONTS
-        .lock()
-        .expect("pending fonts poisoned")
-        .push(UploadedFont { alias, bytes: PARITY_FONT_BYTES.to_vec(), is_emoji: false });
+    FONT_REGISTRY.lock().expect("font registry poisoned").push(FontFace {
+        alias,
+        bytes: peniko::Blob::new(std::sync::Arc::new(PARITY_FONT_BYTES)),
+        is_emoji: false,
+    });
     with_state(|state| state.needs_frame = true);
 }
-
-// --- text content ----------------------------------------------------------------------------
-//
-// A text shape's content arrives one paragraph at a time (`set_shape_text_content`), the same as
-// render-wasm. Each call carries a `RawParagraphData` header, its spans, then the concatenated
-// UTF-8 text — this decodes exactly those bytes into a `crate::text::TextParagraph` and
-// appends it. `grow` and `vertical_align` come as their own setters, so they are stored on the
-// block whenever they arrive. Deferred to a later slice (dropped, not faked, on both sides so the
-// digest still agrees): decorations, transforms, explicit direction, and per-span multi-fill —
-// only the first solid fill's colour is read here.
 
 /// Size of `RawParagraphData` (`span_count: u32`, four align/dir/decoration/transform bytes,
 /// `line_height: f32`, `letter_spacing: f32`). `#[repr(C, align(4))]`, so exactly 16.
@@ -469,7 +451,6 @@ fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
     }
     let span_count = le_u32(bytes, 0) as usize;
     let align = TextAlign::from_wire(bytes[4]);
-    // Byte 5 is the paragraph's base direction (`RawTextDirection`); render-wasm reads the same.
     let direction = TextDirection::from_wire(bytes[5]);
     let para_line_height = le_f32(bytes, 8);
     let para_letter_spacing = le_f32(bytes, 12);
@@ -479,18 +460,17 @@ fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
         return None;
     }
 
-    // The per-span slices of the shared text buffer, taken in order by each span's `text_length`.
     let mut text_offset = spans_end;
     let mut spans = Vec::with_capacity(span_count);
     for i in 0..span_count {
         let base = RAW_PARAGRAPH_DATA_SIZE + i * RAW_SPAN_DATA_SIZE;
         let span = &bytes[base..base + RAW_SPAN_DATA_SIZE];
 
-        let italic = span[0] == 1; // RawFontStyle::Italic
+        let italic = span[0] == 1;
         let font_size = le_f32(span, 4);
         let line_height = le_f32(span, 8);
         let letter_spacing = le_f32(span, 12);
-        let font_weight = le_u32(span, 16); // wire is i32; weights are positive
+        let font_weight = le_u32(span, 16);
         let font_id = uuid_u128(
             le_u32(span, 20),
             le_u32(span, 24),
@@ -498,13 +478,9 @@ fn parse_paragraph(bytes: &[u8]) -> Option<TextParagraph> {
             le_u32(span, 32),
         );
         let text_length = le_u32(span, 56) as usize;
-        // Bytes 1 and 2 of the header are decoration and case transform (`RawTextDecoration` /
-        // `RawTextTransform`); render-wasm reads the same bytes.
         let decoration = TextDecoration::from_wire(span[1]);
         let transform = TextTransform::from_wire(span[2]);
 
-        // Every paintable fill, in wire order — the same decode, filter and order render-wasm's
-        // `span.fills` projection uses, so the two hash identically. Fill records follow the header.
         let fill_count = le_u32(span, 60) as usize;
         let fills = span
             .get(RAW_SPAN_HEADER_SIZE..)
@@ -617,9 +593,6 @@ pub use crate::gradient::DIAMOND_TILE;
 /// [`DiamondGradient::content_key`], so an unchanged diamond is baked once and reused.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn stage_diamond_bakes() {
-    // The scan below walks the whole tree, so gate it on a fill actually having changed — a diamond
-    // can only appear through `set_shape_fills`. Without this it ran O(shapes) every frame (finding
-    // nothing on a diamondless scene), which was the dominant per-frame cost at high shape counts.
     if !with_state(|state| std::mem::replace(&mut state.diamonds_dirty, false)) {
         return;
     }
@@ -631,10 +604,10 @@ pub fn stage_diamond_bakes() {
     for d in diamonds {
         let key = d.content_key();
         if !seen.insert(key) {
-            continue; // same diamond on two shapes — bake once
+            continue;
         }
         if resolve_image(key).is_some() {
-            continue; // already in the atlas
+            continue;
         }
         let already_pending = PENDING_IMAGES
             .lock()
@@ -647,7 +620,7 @@ pub fn stage_diamond_bakes() {
         let stops: Vec<_> = d.stops.iter().copied().collect();
         let Some(rgba) = crate::gradient::bake_diamond_rgba(d.geometry, &stops, DIAMOND_TILE)
         else {
-            continue; // degenerate — nothing to draw
+            continue;
         };
         PENDING_IMAGES
             .lock()
@@ -660,19 +633,6 @@ pub fn stage_diamond_bakes() {
             });
     }
 }
-
-// --- module lifecycle and viewport ------------------------------------------------------
-//
-// One asymmetry with render-wasm, and it is not incidental: **`init` does not create the
-// drawing surface here.** Emscripten binds a GL context to a canvas in its JS glue, so
-// render-wasm's `init(width, height)` can be synchronous and canvas-free. Acquiring a wgpu
-// adapter and device is asynchronous and needs the canvas element itself, so surface creation
-// stays where Phase 0 put it — `create_focus_renderer(canvas)`, a wasm-bindgen call the host
-// makes once, reachable through the facade because it passes non-underscore names straight
-// through. Everything after that goes through this ABI.
-//
-// Phase 3's `Renderer` interface is where that difference gets absorbed, as an async `create`
-// both backends implement.
 
 /// Record the surface size. See the note above on why this does not create the surface.
 #[unsafe(no_mangle)]
@@ -922,18 +882,15 @@ pub fn whole_viewport() -> bool {
 }
 
 thread_local! {
-    /// Phased whole-viewport render (the single-`render_full` gather collapse). When set, the
-    /// whole-viewport path runs vello's geometry front-end ONCE and emits the frame as several
-    /// draw-range-restricted coarse+fine phases sharing that one setup, instead of one `render_full`
-    /// per gather z-phase. Default off — the A/B lever that proves the setup-count collapse.
-    static WV_PHASED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-
     /// Bbox-scope each gather's effect: run its passes over the lens's device bounding box (expanded
     /// by the blur reach) instead of the full viewport, then stamp the small result back through the
     /// shape silhouette. Glass + background blur (bounded reach); custom shaders sample anywhere so they
     /// stay full-viewport. DEFAULT ON — it is the gather cost fix; `set_wv_scope(0)` forces the old
     /// full-viewport effect for A/B.
     static WV_SCOPE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+
+    /// Whole-viewport atlas prepass gate — see [`set_wv_atlas`]. Default on.
+    static WV_ATLAS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 
     /// Per-pass GPU profiling: stamp a timestamp boundary between each effect-graph pass (glass
     /// displacement / refraction / blur / composite) so the host can read the GPU ms of each
@@ -950,25 +907,6 @@ thread_local! {
     /// retained canvas transformed by the relative view delta — an instant, cheap proxy — before the
     /// real render replaces it. Default off.
     static ZOOM_PROXY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-
-    /// Native effect markers: when set, the phased whole-viewport path emits a `CMD_EFFECT` boundary
-    /// marker (`scene.draw_effect`) into the z-ordered stream at each gather, carrying its `effect_id`,
-    /// so the effect boundary lives in the PTCL that the front-end already builds — not in CPU-side
-    /// `gather_root_indices` bookkeeping. `fine` steps over the marker; the effect still stamps as a
-    /// post-fine dispatch (unchanged), so with the flag on vs off the frame is pixel-identical. Default
-    /// off — the A/B lever proving the marker is z-correct and inert before it drives anything.
-    static CMD_EFFECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn set_cmd_effect(on: u32) {
-    CMD_EFFECT.with(|c| c.set(on != 0));
-}
-
-/// Whether the phased path emits native `CMD_EFFECT` boundary markers. See [`CMD_EFFECT`].
-#[must_use]
-pub fn cmd_effect() -> bool {
-    CMD_EFFECT.with(std::cell::Cell::get)
 }
 
 #[unsafe(no_mangle)]
@@ -1010,18 +948,21 @@ pub fn prof_passes() -> bool {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn set_wv_phased(on: u32) {
-    WV_PHASED.with(|c| c.set(on != 0));
+pub extern "C" fn set_wv_scope(on: u32) {
+    WV_SCOPE.with(|c| c.set(on != 0));
+}
+
+/// Whole-viewport effect-surface atlas prepass gate. Default ON (one shared front-end for every
+/// effect surface). `set_wv_atlas(0)` forces the per-node fallback front-ends — the A/B lever for
+/// isolating atlas-specific rendering bugs (browser-only artifact hunts).
+#[unsafe(no_mangle)]
+pub extern "C" fn set_wv_atlas(on: u32) {
+    WV_ATLAS.with(|c| c.set(on != 0));
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub fn wv_phased() -> bool {
-    WV_PHASED.with(std::cell::Cell::get)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn set_wv_scope(on: u32) {
-    WV_SCOPE.with(|c| c.set(on != 0));
+pub fn wv_atlas() -> bool {
+    WV_ATLAS.with(std::cell::Cell::get)
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -1110,21 +1051,13 @@ pub extern "C" fn init_shapes_pool(capacity: usize) {
 /// state only.
 #[unsafe(no_mangle)]
 pub extern "C" fn clean_up() {
+    crate::host::bump_scene_epoch();
     with_state(|state| {
         state.scene.clear();
         state.current = None;
         state.dirty_all = true;
         state.invalidate_quadtree();
-        // Force one diamond scan after a page load, covering any bulk path that sets fills without
-        // going through `set_shape_fills`.
         state.diamonds_dirty = true;
-        // Reset the document's *view* — pan, zoom and background — but keep the surface metrics
-        // `dpr`, `width` and `height`. Those describe the device and the canvas, not the document:
-        // the host sets `dpr` once at surface bring-up (`set_render_options`) and does not resend
-        // it on every page load, so folding it into the default here left a retina canvas
-        // rendering at `zoom` instead of `zoom · dpr` — every shape at half scale and panning at
-        // half speed, drifting away from the CSS-space selection overlay — until the next resize
-        // happened to re-apply it. (Was `state.viewport = Viewport::default()`, which reset all six.)
         let Viewport {
             dpr, width, height, ..
         } = state.viewport;
@@ -1135,18 +1068,11 @@ pub extern "C" fn clean_up() {
             ..Viewport::default()
         };
         state.needs_frame = false;
-        // A gesture left in flight across a page change would displace whichever shapes happened
-        // to inherit those ids.
         state.modifiers.clear();
     });
-    // The atlas slots leak until Phase 3 gives the module a real lifecycle — the same debt as
-    // orphaned nodes — but the *maps* must clear, or a new page's image ids resolve to the old
-    // page's pixels.
     PENDING_IMAGES.lock().expect("pending images poisoned").clear();
     *RESOLVED_IMAGES.lock().expect("resolved images poisoned") = None;
 }
-
-// --- shape lifecycle -------------------------------------------------------------------
 
 /// Select (creating if absent) the shape subsequent setters apply to. The id arrives as a
 /// UUID split into four little-endian u32s, same as render-wasm.
@@ -1199,10 +1125,6 @@ pub extern "C" fn set_shape_type(shape_type: u8) {
             4 => ShapeKind::Path,
             5 => ShapeKind::Text,
             6 => ShapeKind::Circle,
-            // Bool and SVGRaw have no model kind yet. Marking them `Unsupported` (rather than
-            // standing in a rect) is what lets the digest agree with render-wasm, which drops
-            // these shapes entirely — see `ShapeKind::Unsupported`. Both the renderer and the
-            // digest then treat the node, and its subtree, as inert.
             _ => ShapeKind::Unsupported,
         };
     });
@@ -1269,10 +1191,7 @@ pub extern "C" fn set_shape_glass(
     zoom: f32,
     blur: f32,
     frost: f32,
-    // Quality floor `k ∈ (0, 1]` — the free downscale this lens tolerates (`1.0` = full resolution).
     acceptable_downscale: f32,
-    // Past-scope fill mode (`TileMode`): 0 Decal (transparent), 1 Clamp, 2 Black. Only affects a lens
-    // inside an isolated scope that overhangs its scope's content.
     tile_mode: u32,
     hidden: u8,
 ) {
@@ -1397,7 +1316,6 @@ pub extern "C" fn set_shape_noise(noise_size: f32, density: f32, softness: f32, 
     }
     .min(crate::vello::effects::MAX_NOISE_SLOTS);
 
-    // Colors start after [u32 count][kinds…] padded up to a 4-byte boundary (mirrors the writer).
     let colors_offset = 4 + ((count + 3) & !3);
     let mut slots: Vec<crate::vello::effects::NoiseSlot> = Vec::with_capacity(count);
     for i in 0..count {
@@ -1406,7 +1324,6 @@ pub extern "C" fn set_shape_noise(noise_size: f32, density: f32, softness: f32, 
         if off + 4 > bytes.len() {
             break;
         }
-        // 0xAARRGGBB little-endian: byte[0]=B, [1]=G, [2]=R, [3]=A. Straight RGBA in [0, 1].
         let rgba = [
             f32::from(bytes[off + 2]) / 255.0,
             f32::from(bytes[off + 1]) / 255.0,
@@ -1442,7 +1359,7 @@ pub extern "C" fn add_shape_shadow(
     hidden: bool,
 ) {
     if hidden {
-        return; // hidden — dropped at the wire, matching model_export
+        return;
     }
     with_current(|node| {
         node.shadows.push(crate::model::Shadow {
@@ -1525,7 +1442,7 @@ fn parse_filter_graph(bytes: &[u8]) -> Option<crate::model::FilterGraph> {
                 }
                 FilterNode::Custom { effect, params }
             }
-            _ => return None, // unknown node tag — drop the whole graph rather than guess
+            _ => return None,
         };
         nodes.push(node);
     }
@@ -1551,12 +1468,6 @@ pub extern "C" fn set_shape_clip_content(clip_content: bool) {
 pub extern "C" fn set_shape_masked_group(masked: bool) {
     with_current(|node| node.masked = masked);
 }
-
-// --- hierarchy -------------------------------------------------------------------------
-//
-// Paint order comes from each container's `children`, which is what `set_children*` writes.
-// `set_parent` records the back-reference only — that is all render-wasm does with it too
-// (it uses the parent link to invalidate cached bounds, which this module does not cache).
 
 #[unsafe(no_mangle)]
 pub extern "C" fn set_parent(a: u32, b: u32, c: u32, d: u32) {
@@ -1723,8 +1634,6 @@ pub extern "C" fn set_shape_corners(r1: f32, r2: f32, r3: f32, r4: f32) {
     with_current(|node| node.corners = corners);
 }
 
-// --- path geometry ---------------------------------------------------------------------
-
 /// Accumulator for chunked path uploads, mirroring render-wasm's `PATH_UPLOAD_BUFFER`. Paths
 /// can exceed one `alloc_bytes` window, so the host streams them: start, N chunks, then commit.
 static PATH_BUFFER: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -1779,8 +1688,6 @@ fn apply_path_bytes(bytes: &[u8]) {
     });
 }
 
-// --- fills -----------------------------------------------------------------------------
-
 /// Replace the current shape's fills from the pending buffer.
 ///
 /// Layout matches render-wasm exactly: a 4-byte header whose first byte is the fill count,
@@ -1803,7 +1710,6 @@ pub extern "C" fn set_shape_fills() {
         .unwrap_or_default();
 
     with_current(|node| node.fills = fills);
-    // A fill changed → a diamond gradient may have appeared/changed; let the next frame's bake scan run.
     with_state(|state| state.diamonds_dirty = true);
 }
 
@@ -1835,8 +1741,6 @@ fn paint_from_raw(raw: crate::abi::RawFillData) -> Option<crate::model::Paint> {
         end: g.end(),
         width: (g.width_x, g.width_y),
     };
-    // Both halves come from render-core, so the rotation, the ellipse ratio and the seam are
-    // computed once for both backends rather than mirrored here.
     let gradient = |shape: GradientShape, g: &crate::abi::RawGradientData| {
         gradient_paint(shape, geometry(g), &stops(g)[..]).map(|(gradient, transform)| Paint {
             brush: Brush::Gradient(gradient),
@@ -1849,16 +1753,10 @@ fn paint_from_raw(raw: crate::abi::RawFillData) -> Option<crate::model::Paint> {
         R::Linear(g) => gradient(GradientShape::Linear, &g),
         R::Radial(g) => gradient(GradientShape::Radial, &g),
         R::Angular(g) => gradient(GradientShape::Angular, &g),
-        // Diamond has no peniko equivalent, so it is carried un-resolved: its geometry and stops
-        // go into the model and the digest, and painting it is the D10 custom-shader path. Dropped
-        // (as it was) a diamond fill hashes the same as no fill, and the harness cannot see it.
         R::Diamond(g) => Some(Paint::plain(Brush::Diamond(crate::model::DiamondGradient {
             geometry: geometry(&g),
             stops: stops(&g)[..].into(),
         }))),
-        // An image *reference*. The pixels arrive separately (`store_image_rgba`) and are
-        // resolved against the image store at paint time — the model carries only the id and
-        // placement, so the digest can compare an image fill without either backend's texture.
         R::Image(i) => Some(Paint::plain(Brush::Image(ImageFill {
             id: uuid_u128(i.a, i.b, i.c, i.d),
             width: i.width.max(0) as u32,
@@ -1905,27 +1803,8 @@ pub fn request_frame() {
     with_state(|state| state.needs_frame = true);
 }
 
-// --- strokes ----------------------------------------------------------------------------
-//
-// Penpot's stroke arrives in pieces: `add_shape_*_stroke` opens one, then `add_shape_stroke_fill`
-// gives it paint and `set_shape_stroke_props`/`set_shape_stroke_dashes` refine it — all three
-// acting on "the last stroke added". That implicit cursor is the same accepted debt as the
-// current-shape one (D17), and mirroring it is what lets the host drive both backends.
-//
-// **Inner and outer strokes are aligned, not centred.** They carry the alignment onto the model's
-// `Stroke.align`, and the shared drawer ([`crate::vello::draw::paint_body`]) realises it by stroking a
-// double-width centre band and clipping to the shape interior (inner) or its complement (outer),
-// so the full weight lands on the correct side of the edge — matching render-wasm's
-// clip/erase construction rather than the old "drop it" stub.
-
 /// Build a kurbo stroke from the wire parameters, shared by all three alignment entry points.
 fn build_wire_stroke(width: f32, style: u8, cap_start: u8, cap_end: u8) -> crate::kurbo::Stroke {
-    // Start from **Skia's** defaults, not kurbo's. `kurbo::Stroke::new` gives a round join and
-    // round caps; Skia gives a miter join and butt caps, and render-wasm leaves those untouched
-    // when the host sends nothing (`_ => {} // Miter / None → Skia default`). Inheriting kurbo's
-    // would make every unstyled stroke differ between the two backends — round-ended and
-    // round-cornered on one side, square on the other — with nothing in the document to explain
-    // it.
     let mut kstroke = crate::kurbo::Stroke::new(f64::from(width))
         .with_join(crate::kurbo::Join::Miter)
         .with_caps(crate::kurbo::Cap::Butt);
@@ -1955,8 +1834,6 @@ fn add_aligned_stroke(
     with_current(|node| {
         node.strokes.push(crate::model::Stroke {
             style: kstroke.clone(),
-            // Penpot sends the paint separately, in `add_shape_stroke_fill`. Black is the
-            // stand-in until it arrives, matching what an unpainted stroke defaults to.
             paint: crate::model::Paint::plain(crate::model::Brush::Solid(
                 crate::peniko::Color::BLACK,
             )),
@@ -2069,17 +1946,6 @@ fn cap_from_wire(value: u8) -> Option<crate::kurbo::Cap> {
     }
 }
 
-// --- modifiers --------------------------------------------------------------------------
-//
-// Move, resize and rotate are all the same mechanism: rather than committing to the document on
-// every pointer move, the host pushes a per-shape transform here and commits once, at the end.
-// So all three gestures are dead until these exist — a stubbed `set_modifiers` means the shape
-// simply never leaves its committed position.
-//
-// The host's gesture block is `clean` → `set_structure_modifiers` → `propagate_modifiers` →
-// `set_modifiers(propagated)`, and it *uses the value propagate returns* — so propagate cannot
-// be a no-op that returns nothing, or the final `set_modifiers` is handed an empty list.
-
 /// One wire entry: uuid (four `u32`) then six `f32`, optionally followed by a `u32` kind.
 const MODIFIER_ENTRY: usize = 40;
 const PROPAGATE_ENTRY: usize = 44;
@@ -2115,8 +1981,6 @@ pub extern "C" fn set_modifiers() {
 
     with_state(|state| {
         let new: Modifiers = entries.into_iter().collect();
-        // A move only changes the tiles the shape leaves and the tiles it enters — dirty both, for
-        // every shape whose gesture transform actually changed.
         let ids: std::collections::HashSet<u128> =
             state.modifiers.keys().chain(new.keys()).copied().collect();
         let mut rects = Vec::new();
@@ -2142,7 +2006,6 @@ pub extern "C" fn set_modifiers() {
 #[unsafe(no_mangle)]
 pub extern "C" fn clean_modifiers() {
     with_state(|state| {
-        // Each modified shape snaps from its gesture position back to committed geometry — dirty both.
         let mut rects = Vec::new();
         for (&id, &m) in &state.modifiers {
             if let Some(node) = state.scene.get(id) {
@@ -2179,7 +2042,6 @@ pub extern "C" fn propagate_modifiers(_pixel_precision: bool) -> *mut u8 {
             let (id, matrix) = decode_modifier_entry(chunk);
             out.push((id, matrix));
 
-            // kind: 0 = Parent (descendants already accounted for), 1 = Child (walk them).
             let kind = u32::from_le_bytes([chunk[40], chunk[41], chunk[42], chunk[43]]);
             if kind == 1 {
                 collect_descendants(&state.scene, id, matrix, &mut out, 0);
@@ -2187,7 +2049,6 @@ pub extern "C" fn propagate_modifiers(_pixel_precision: bool) -> *mut u8 {
         }
     });
 
-    // `[len, (uuid, matrix)…]`, which is what `mem::write_vec` produces on the Skia side.
     let mut words = Vec::with_capacity(1 + out.len() * (MODIFIER_ENTRY / 4));
     words.push(out.len() as u32);
     for (id, m) in &out {
@@ -2241,8 +2102,6 @@ pub extern "C" fn set_absolute_modifiers() {
     let _ = take_bytes();
 }
 
-// --- queries ----------------------------------------------------------------------------
-
 /// The last query result, kept alive for the host to read.
 ///
 /// `Vec<u32>` rather than `Vec<u8>` on purpose: the host divides the returned pointer by four to
@@ -2266,8 +2125,6 @@ pub extern "C" fn get_selection_rect() -> *mut u8 {
         })
         .collect();
 
-    // Modifier-aware on purpose: mid-drag the host expects the *displaced* box, so the handles
-    // travel with the shape instead of staying at its committed position.
     let quads: Vec<[kurbo::Point; 4]> = with_state(|state| {
         ids.iter()
             .filter_map(|id| state.scene.get(*id).map(|node| (id, node)))
@@ -2284,8 +2141,6 @@ pub extern "C" fn get_selection_rect() -> *mut u8 {
     *guard = values.iter().map(|v| v.to_bits()).collect();
     guard.as_mut_ptr().cast()
 }
-
-// --- introspection ---------------------------------------------------------------------
 
 /// Node count, so the host and tests can assert the scene took without reading pixels.
 #[unsafe(no_mangle)]
@@ -2322,6 +2177,7 @@ pub extern "C" fn scene_digest() -> u32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_scene() {
+    crate::host::bump_scene_epoch();
     with_state(|state| {
         state.scene.clear();
         state.current = None;
@@ -2361,8 +2217,6 @@ pub extern "C" fn load_showcase_scene() -> u32 {
 /// full scheduler + sink, not the tree walk. Returns the cell count.
 #[unsafe(no_mangle)]
 pub extern "C" fn load_path_shadow_scene() -> u32 {
-    // The fixture includes a text-with-shadow cell, so stage the embedded parity font the same way
-    // `load_parity_scene` does (its glyph coverage is the shadow silhouette).
     stage_parity_font();
     install_fixture(crate::parity::build_path_shadow_scene())
 }
@@ -2389,6 +2243,15 @@ pub extern "C" fn load_boolean_scene() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn load_scale_scene(n: u32, effect_every: u32) -> u32 {
     install_fixture(crate::parity::build_scale_scene(n as usize, effect_every as usize))
+}
+
+/// [`load_scale_scene`] with geometry knobs: `step` = grid pitch px, `size` = shape edge as a
+/// multiple of the pitch (stacking depth ≈ `size²`), `opacity_every` = every k-th shape translucent.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_scale_scene_sized(n: u32, effect_every: u32, step: f32, size: f32, opacity_every: u32) -> u32 {
+    install_fixture(crate::parity::build_scale_scene_sized(
+        n as usize, effect_every as usize, f64::from(step), f64::from(size), opacity_every as usize,
+    ))
 }
 
 /// Install the **matrix** fixture (every effect combination). Returns the cell count.
@@ -2486,6 +2349,7 @@ pub extern "C" fn load_scope_scene_clamp() -> u32 {
 /// Swap a prebuilt fixture in as the live scene and mark everything dirty so the next frame rebuilds.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn install_fixture((scene, legend): (Scene, Vec<(usize, &'static str)>)) -> u32 {
+    crate::host::bump_scene_epoch();
     with_state(|state| {
         state.scene = scene;
         state.current = None;
@@ -2517,13 +2381,7 @@ mod tests {
     }
 
     fn reset() -> std::sync::MutexGuard<'static, ()> {
-        // A panicking test poisons the lock; the state is reset here anyway, so recover.
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // `clean_up` rather than `clear_scene`: the scene, pending-frame flag and image maps are
-        // module-global too, and leftovers from the previous test would otherwise leak into this
-        // one. `clean_up` deliberately *preserves* the surface metrics (dpr, width, height) — that
-        // is the whole point of the fix it now encodes — so the guard resets the full viewport
-        // itself, or a test that set a dpr would leak it forward.
         clean_up();
         with_state(|state| state.viewport = Viewport::default());
         free_bytes();
@@ -2561,7 +2419,7 @@ mod tests {
     fn blend_mode_maps_through_the_shared_authority() {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
-        set_shape_blend_mode(24); // Multiply
+        set_shape_blend_mode(24);
         assert_eq!(
             current_scene().get(1).unwrap().blend,
             crate::blend::blend_from_raw(24)
@@ -2582,11 +2440,11 @@ mod tests {
     fn blur_and_shadows_reach_the_model_but_the_undrawable_do_not() {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
-        set_shape_blur(0, false, 12.0); // layer
-        add_shape_shadow(0xff_00_00_00, 6.0, 1.0, 4.0, 5.0, 0, false); // drop
-        add_shape_shadow(0xff_00_00_00, 7.0, 0.0, 1.0, 1.0, 1, false); // inner → kept, inset
-        add_shape_shadow(0xff_00_00_00, 6.0, 0.0, 1.0, 1.0, 0, true); // hidden → dropped
-        set_shape_blur(1, false, 9.0); // background → its own slot, doesn't touch the layer blur
+        set_shape_blur(0, false, 12.0);
+        add_shape_shadow(0xff_00_00_00, 6.0, 1.0, 4.0, 5.0, 0, false);
+        add_shape_shadow(0xff_00_00_00, 7.0, 0.0, 1.0, 1.0, 1, false);
+        add_shape_shadow(0xff_00_00_00, 6.0, 0.0, 1.0, 1.0, 0, true);
+        set_shape_blur(1, false, 9.0);
 
         {
             let scene = current_scene();
@@ -2602,7 +2460,6 @@ mod tests {
             assert!(node.shadows[1].inset, "the second is an inner shadow");
         }
 
-        // A hidden layer blur clears only that slot; the background blur stays.
         set_shape_blur(0, true, 12.0);
         assert_eq!(current_scene().get(1).unwrap().blur, None);
         assert_eq!(current_scene().get(1).unwrap().background_blur, Some(9.0));
@@ -2632,13 +2489,12 @@ mod tests {
 
         let size = crate::abi::RAW_FILL_DATA_SIZE;
         let mut payload = vec![0u8; 4 + size];
-        payload[0] = 1; // one fill
-        payload[4] = 0x00; // tag: solid
+        payload[0] = 1;
+        payload[4] = 0x00;
         payload[8..12].copy_from_slice(&0xff112233u32.to_le_bytes());
 
         let ptr = alloc_bytes(payload.len());
         assert!(!ptr.is_null());
-        // Stand in for the host's `HEAPU8.set(bytes, ptr)`.
         {
             let mut guard = BUFFER.lock().unwrap();
             guard.as_mut().unwrap().copy_from_slice(&payload);
@@ -2663,24 +2519,23 @@ mod tests {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
 
-        // blur(4) → offset(10,0) → inner_shadow(6,6,4,#80ff0000) → custom(effect 0, [1,0.45,0,0.7]).
         let mut payload = Vec::new();
         let push_u32 = |p: &mut Vec<u8>, v: u32| p.extend_from_slice(&v.to_le_bytes());
         let push_f32 = |p: &mut Vec<u8>, v: f32| p.extend_from_slice(&v.to_le_bytes());
-        push_u32(&mut payload, 4); // node count
-        push_u32(&mut payload, 0); // Blur
+        push_u32(&mut payload, 4);
+        push_u32(&mut payload, 0);
         push_f32(&mut payload, 4.0);
-        push_u32(&mut payload, 1); // Offset
+        push_u32(&mut payload, 1);
         push_f32(&mut payload, 10.0);
         push_f32(&mut payload, 0.0);
-        push_u32(&mut payload, 3); // InnerShadow
+        push_u32(&mut payload, 3);
         push_f32(&mut payload, 6.0);
         push_f32(&mut payload, 6.0);
         push_f32(&mut payload, 4.0);
-        push_u32(&mut payload, 0x80ff_0000); // color ARGB
-        push_u32(&mut payload, 2); // Custom
-        push_u32(&mut payload, 0); // effect id
-        push_u32(&mut payload, 4); // param count
+        push_u32(&mut payload, 0x80ff_0000);
+        push_u32(&mut payload, 2);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 4);
         for v in [1.0_f32, 0.45, 0.0, 0.7] {
             push_f32(&mut payload, v);
         }
@@ -2717,29 +2572,24 @@ mod tests {
     fn unknown_shape_types_become_unsupported_and_paint_nothing() {
         let _guard = reset();
 
-        // Deliver a child carrying a solid fill, then link it under the root.
         use_shape(0, 0, 0, 1);
         set_shape_selrect(0.0, 0.0, 50.0, 50.0);
         let mut fill = vec![0u8; 4 + crate::abi::RAW_FILL_DATA_SIZE];
-        fill[0] = 1; // one fill
+        fill[0] = 1;
         fill[8..12].copy_from_slice(&0xff112233u32.to_le_bytes());
         upload(&fill);
         set_shape_fills();
         use_shape(0, 0, 0, 0);
         add_shape_child(0, 0, 0, 1);
 
-        // The same fill paints as a rect; once the kind is Text it paints nothing *until content
-        // arrives* (glyphs are the paint, not the fill) — the contrast is what makes the count
-        // mean anything.
         use_shape(0, 0, 0, 1);
-        set_shape_type(3); // Rect
+        set_shape_type(3);
         assert_eq!(scene_paintable_count(), 1);
 
-        set_shape_type(5); // Text — a drawn kind now, but empty, so still nothing to paint.
+        set_shape_type(5);
         assert_eq!(current_scene().get(1).unwrap().kind, ShapeKind::Text);
         assert_eq!(scene_paintable_count(), 0, "text with no content draws nothing");
 
-        // Bool and SVGRaw remain unsupported.
         for raw in [2u8, 7] {
             use_shape(0, 0, 0, 1);
             set_shape_type(raw);
@@ -2755,39 +2605,34 @@ mod tests {
     fn text_content_decodes_into_the_block() {
         let _guard = reset();
         use_shape(0, 0, 0, 7);
-        set_shape_type(5); // Text
-        set_shape_grow_type(2); // AutoHeight
-        set_shape_vertical_align(1); // Center
+        set_shape_type(5);
+        set_shape_grow_type(2);
+        set_shape_vertical_align(1);
 
         let word = "Hi";
         let mut buf = vec![0u8; RAW_PARAGRAPH_DATA_SIZE + RAW_SPAN_DATA_SIZE + word.len()];
-        // Paragraph header: one span, align Center, line-height 1.5, letter-spacing 0.
         buf[0..4].copy_from_slice(&1u32.to_le_bytes());
-        buf[4] = 1; // TextAlign::Center
-        buf[5] = 1; // RawTextDirection::Rtl
+        buf[4] = 1;
+        buf[5] = 1;
         buf[8..12].copy_from_slice(&1.5f32.to_le_bytes());
-        // Span header at offset 16.
         let s = RAW_PARAGRAPH_DATA_SIZE;
-        buf[s] = 1; // italic
-        buf[s + 1] = 1; // RawTextDecoration::Underline
-        buf[s + 2] = 1; // RawTextTransform::Uppercase
-        buf[s + 4..s + 8].copy_from_slice(&24.0f32.to_le_bytes()); // font_size
-        buf[s + 8..s + 12].copy_from_slice(&1.3f32.to_le_bytes()); // line_height
-        buf[s + 16..s + 20].copy_from_slice(&700i32.to_le_bytes()); // font_weight
-        buf[s + 20..s + 24].copy_from_slice(&0xAAu32.to_le_bytes()); // font_id[0]
-        buf[s + 56..s + 60].copy_from_slice(&(word.len() as u32).to_le_bytes()); // text_length
-        buf[s + 60..s + 64].copy_from_slice(&1u32.to_le_bytes()); // fill_count
-        // One solid fill record at the span's fill area (header type 0, argb at +4).
+        buf[s] = 1;
+        buf[s + 1] = 1;
+        buf[s + 2] = 1;
+        buf[s + 4..s + 8].copy_from_slice(&24.0f32.to_le_bytes());
+        buf[s + 8..s + 12].copy_from_slice(&1.3f32.to_le_bytes());
+        buf[s + 16..s + 20].copy_from_slice(&700i32.to_le_bytes());
+        buf[s + 20..s + 24].copy_from_slice(&0xAAu32.to_le_bytes());
+        buf[s + 56..s + 60].copy_from_slice(&(word.len() as u32).to_le_bytes());
+        buf[s + 60..s + 64].copy_from_slice(&1u32.to_le_bytes());
         let f = s + RAW_SPAN_HEADER_SIZE;
-        buf[f] = 0x00; // RawFillData::Solid
+        buf[f] = 0x00;
         buf[f + 4..f + 8].copy_from_slice(&0xff_11_22_33u32.to_le_bytes());
-        // The text buffer follows the (single) span.
         let t = RAW_PARAGRAPH_DATA_SIZE + RAW_SPAN_DATA_SIZE;
         buf[t..t + word.len()].copy_from_slice(word.as_bytes());
         upload(&buf);
         set_shape_text_content();
 
-        // Parent it to the root so it is reachable for the paintable walk.
         use_shape(0, 0, 0, 0);
         add_shape_child(0, 0, 0, 7);
 
@@ -2851,7 +2696,7 @@ mod tests {
     fn path_content_decodes_from_the_shared_buffer() {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
-        set_shape_type(4); // Path
+        set_shape_type(4);
 
         upload(&triangle_bytes());
         set_shape_path_content();
@@ -2896,7 +2741,6 @@ mod tests {
             4
         );
 
-        // Committing drains the accumulator, so a second commit does not replay the path.
         use_shape(0, 0, 0, 2);
         set_shape_type(4);
         set_shape_path_buffer();
@@ -2909,7 +2753,7 @@ mod tests {
     fn path_content_is_ignored_on_a_non_path_shape() {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
-        set_shape_type(3); // Rect
+        set_shape_type(3);
 
         upload(&triangle_bytes());
         set_shape_path_content();
@@ -2954,7 +2798,7 @@ mod tests {
     fn the_nil_uuid_is_the_root() {
         let _guard = reset();
         use_shape(0, 0, 0, 0);
-        set_shape_type(1); // Group
+        set_shape_type(1);
         set_children_2(0, 0, 0, 10, 0, 0, 0, 20);
 
         use_shape(0, 0, 0, 10);
@@ -2991,7 +2835,6 @@ mod tests {
         add_shape_child(0, 0, 0, 10);
         assert_eq!(current_scene().get(1).unwrap().children, vec![7, 8, 9, 10]);
 
-        // Replace, not merge — and the dropped ids simply stop being reachable.
         set_children_1(0, 0, 0, 99);
         assert_eq!(current_scene().get(1).unwrap().children, vec![99]);
 
@@ -3020,7 +2863,6 @@ mod tests {
         assert_eq!(children.len(), 2);
         assert_eq!(children[1], 77);
 
-        // Same id via the quartet entry point lands on the same u128.
         use_shape(0, 0, 0, 2);
         set_children_1(1, 2, 3, 4);
         assert_eq!(current_scene().get(2).unwrap().children[0], children[0]);
@@ -3069,8 +2911,6 @@ mod tests {
         assert!(!current_scene().get(4).unwrap().masked);
     }
 
-    // --- lifecycle and viewport ---------------------------------------------------------
-
     fn viewport_transform() -> Affine {
         with_scene(|_, t, _| t)
     }
@@ -3093,7 +2933,6 @@ mod tests {
         set_view(2.0, 0.0, 0.0);
         set_render_options(0, 3.0);
 
-        // A 10-unit page span becomes 60 device pixels.
         let t = viewport_transform();
         let span = (t * Point::new(10.0, 0.0)) - (t * Point::ZERO);
         assert!((span.x - 60.0).abs() < 1e-9);
@@ -3129,11 +2968,32 @@ mod tests {
         assert!(take_needs_frame());
         assert!(!take_needs_frame());
 
-        // Anything that changes what is on screen also requests one.
         set_view(1.5, 0.0, 0.0);
         assert!(take_needs_frame());
         resize_viewbox(800, 600);
         assert!(take_needs_frame());
+    }
+
+    /// The registry is publish-once: every consumer reads every face through its own cursor, no
+    /// matter when the consumer was created — the draining queue this replaced handed each face to
+    /// whichever single consumer synced first and lost it for everyone else.
+    #[test]
+    fn font_registry_serves_late_consumers_and_never_drains() {
+        let _guard = reset();
+        stage_parity_font();
+        let parity_alias = font_alias(crate::parity::PARITY_FONT_ID, 400, false);
+
+        let mut first = 0usize;
+        let early = fonts_since(&mut first);
+        assert!(early.iter().any(|f| f.alias == parity_alias));
+
+        let mut second = 0usize;
+        let late = fonts_since(&mut second);
+        assert_eq!(early.len(), late.len());
+        assert!(late.iter().any(|f| f.alias == parity_alias));
+
+        assert!(fonts_since(&mut first).is_empty());
+        assert!(fonts_since(&mut second).is_empty());
     }
 
     #[test]
@@ -3146,11 +3006,8 @@ mod tests {
     #[test]
     fn clean_up_resets_the_document_and_camera_but_keeps_surface_metrics() {
         let _guard = reset();
-        // Surface metrics: dpr from the host, size from a resize. These describe the device, not
-        // the document, and must survive a page clear.
         set_render_options(0, 2.0);
         resize_viewbox(1280, 720);
-        // Document + camera state that *should* reset.
         use_shape(0, 0, 0, 1);
         set_view(3.0, 10.0, 20.0);
         set_canvas_background(0xff_ff_ff_ff);
@@ -3160,9 +3017,6 @@ mod tests {
         assert_eq!(scene_node_count(), 0);
         assert_eq!(background().components[3], 0.0);
         assert!(!take_needs_frame());
-        // Pan and zoom are gone (zoom back to 1, no pan), but dpr survives — so the transform is a
-        // pure `scale(dpr)`, not identity. Were dpr reset to 1 (the old bug), this would be
-        // `IDENTITY` and every shape would render at half scale on a retina canvas.
         assert_eq!(viewport_transform(), Affine::scale(2.0));
     }
 
@@ -3176,10 +3030,10 @@ mod tests {
         let _guard = reset();
 
         use_shape(0, 0, 0, 1);
-        set_shape_type(3); // Rect — a kind that actually draws (Bool is now Unsupported).
+        set_shape_type(3);
         set_shape_selrect(0.0, 0.0, 10.0, 10.0);
         let mut fills = vec![0u8; 4 + crate::abi::RAW_FILL_DATA_SIZE];
-        fills[0] = 1; // count header
+        fills[0] = 1;
         fills[8..12].copy_from_slice(&0xff_ff_00_00_u32.to_le_bytes());
         upload(&fills);
         set_shape_fills();
@@ -3200,8 +3054,6 @@ mod tests {
         );
         assert_eq!(scene_node_count(), 2, "still delivered");
     }
-
-    // --- modifiers -----------------------------------------------------------------------
 
     fn uuid_bytes(id: u128) -> Vec<u8> {
         let mut out = Vec::new();
@@ -3332,7 +3184,6 @@ mod tests {
     fn selection_rect(ids: &[u128]) -> [f32; 10] {
         let mut payload = Vec::new();
         for id in ids {
-            // The host writes each uuid as four little-endian u32s, most significant first.
             for shift in [96, 64, 32, 0] {
                 payload.extend_from_slice(&(((*id >> shift) as u32).to_le_bytes()));
             }
@@ -3355,15 +3206,12 @@ mod tests {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
         set_shape_selrect(0.0, 0.0, 100.0, 50.0);
-        // A quarter turn about the shape's own centre. These are kurbo's column-major
-        // coefficients, so this sends the x-basis to (0, -1) and the y-basis to (1, 0).
         set_shape_transform(0.0, -1.0, 1.0, 0.0, 0.0, 0.0);
 
         let [w, h, cx, cy, a, b, c, d, e, f] = selection_rect(&[1]);
         assert!((w - 100.0).abs() < 1e-3, "width stays the shape's own: {w}");
         assert!((h - 50.0).abs() < 1e-3, "height stays the shape's own: {h}");
         assert!((cx - 50.0).abs() < 1e-3 && (cy - 25.0).abs() < 1e-3);
-        // The rotation lives in the matrix, following the bases set above.
         assert!((a - 0.0).abs() < 1e-3 && (b + 1.0).abs() < 1e-3, "{a},{b}");
         assert!((c - 1.0).abs() < 1e-3 && (d - 0.0).abs() < 1e-3, "{c},{d}");
         assert!((e - cx).abs() < 1e-3 && (f - cy).abs() < 1e-3);
@@ -3420,8 +3268,6 @@ mod tests {
         assert_eq!(scene_node_count(), 1);
     }
 
-    // --- strokes -------------------------------------------------------------------------
-
     /// One solid fill record in the shared buffer, as `add_shape_stroke_fill` expects — no
     /// count header, unlike `set_shape_fills`.
     fn upload_solid_fill(argb: u32) {
@@ -3436,7 +3282,6 @@ mod tests {
         let _guard = reset();
         use_shape(0, 0, 0, 1);
 
-        // RawStrokeCap: 6 = Round, 7 = Square. Style 0 = Solid.
         add_shape_center_stroke(4.0, 0, 6, 7);
         upload_solid_fill(0xff_11_22_33);
         add_shape_stroke_fill();
@@ -3499,7 +3344,7 @@ mod tests {
         add_shape_center_stroke(8.0, 0, 0, 0);
         upload_solid_fill(0xff_00_ff_00);
         add_shape_stroke_fill();
-        set_shape_stroke_props(2, -1, 3.5); // join = Bevel, cap unchanged, miter = 3.5
+        set_shape_stroke_props(2, -1, 3.5);
 
         let scene = current_scene();
         let strokes = &scene.get(1).unwrap().strokes;
@@ -3545,10 +3390,10 @@ mod tests {
                 .to_vec()
         };
 
-        assert!(pattern_for(0, 4.0).is_empty()); // Solid
-        assert_eq!(pattern_for(2, 4.0), vec![14.0, 14.0]); // Dashed: width + 10
-        assert_eq!(pattern_for(3, 4.0), vec![9.0, 9.0, 5.0, 9.0]); // Mixed
-        assert_eq!(pattern_for(1, 4.0), vec![0.01, 8.99]); // Dotted: near-zero dash, round caps
+        assert!(pattern_for(0, 4.0).is_empty());
+        assert_eq!(pattern_for(2, 4.0), vec![14.0, 14.0]);
+        assert_eq!(pattern_for(3, 4.0), vec![9.0, 9.0, 5.0, 9.0]);
+        assert_eq!(pattern_for(1, 4.0), vec![0.01, 8.99]);
     }
 
     #[test]

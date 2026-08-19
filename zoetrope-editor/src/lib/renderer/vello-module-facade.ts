@@ -130,7 +130,35 @@ export function createModuleFacade(
   const bound = new Map<string, unknown>()
 
   const base = Object.defineProperties(
-    {},
+    {
+      /**
+       * Emscripten's C-string reader, reimplemented over the same heap: decode UTF-8 from `ptr`
+       * up to the first NUL. The editor ABI returns NUL-terminated buffers
+       * (`text_editor_export_content`) that `api/text-editor.ts` reads through this.
+       */
+      UTF8ToString(ptr: number, maxBytesToRead?: number): string {
+        if (!ptr) return ''
+        const heap = view('HEAPU8') as Uint8Array
+        const limit = maxBytesToRead === undefined ? heap.length : Math.min(heap.length, ptr + maxBytesToRead)
+        let end = ptr
+        while (end < limit && heap[end] !== 0) end++
+        return new TextDecoder().decode(heap.subarray(ptr, end))
+      },
+      /**
+       * Emscripten's C-string writer: encode `str` as UTF-8 at `outPtr`, NUL-terminated, never
+       * exceeding `maxBytesToWrite`. Returns the number of bytes written excluding the NUL,
+       * matching Emscripten's contract (`api/svg.ts` writes SVG payloads through this).
+       */
+      stringToUTF8(str: string, outPtr: number, maxBytesToWrite: number): number {
+        if (maxBytesToWrite <= 0) return 0
+        const heap = view('HEAPU8') as Uint8Array
+        const encoded = new TextEncoder().encode(str)
+        const written = Math.min(encoded.length, maxBytesToWrite - 1)
+        heap.set(encoded.subarray(0, written), outPtr)
+        heap[outPtr + written] = 0
+        return written
+      },
+    },
     Object.fromEntries(
       (Object.keys(HEAP_VIEWS) as HeapName[]).map((name) => [
         name,
@@ -144,7 +172,8 @@ export function createModuleFacade(
   return new Proxy(base, {
     get(target, prop, receiver) {
       if (typeof prop !== 'string') return Reflect.get(target, prop, receiver)
-      if (isHeapName(prop)) return Reflect.get(target, prop, receiver)
+      // Heap views and the runtime helpers (UTF8ToString / stringToUTF8) live on the base object.
+      if (isHeapName(prop) || Object.hasOwn(target, prop)) return Reflect.get(target, prop, receiver)
 
       if (bound.has(prop)) return bound.get(prop)
 
@@ -167,7 +196,7 @@ export function createModuleFacade(
 
     has(target, prop) {
       if (typeof prop !== 'string') return Reflect.has(target, prop)
-      if (isHeapName(prop)) return true
+      if (isHeapName(prop) || Object.hasOwn(target, prop)) return true
       const name = prop.startsWith('_') ? prop.slice(1) : prop
       if (name in exports) return true
       return options.stubMissingExports === true && prop.startsWith('_')

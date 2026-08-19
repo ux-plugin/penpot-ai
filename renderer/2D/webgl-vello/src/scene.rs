@@ -98,6 +98,8 @@ struct TextEngine {
     editor: Option<RichEditor>,
     /// The shape id `editor` was built for, so a focus change triggers a rebuild.
     editor_for: Option<u128>,
+    /// This engine's position in the shared font registry — see [`crate::abi::fonts_since`].
+    font_cursor: usize,
 }
 
 /// Caret width in text-local units. Parley draws the caret as a thin rect of this width.
@@ -110,16 +112,18 @@ impl TextEngine {
             layout_cx: LayoutContext::new(),
             editor: None,
             editor_for: None,
+            font_cursor: 0,
         }
     }
 
-    /// Register every face the host has uploaded since the last frame. The ABI queue is drained
-    /// (each face is staged at most once, deduped by alias there), so this is idempotent. The face
+    /// Register every face published since this engine's last frame. Reads the shared registry
+    /// through this engine's own cursor ([`crate::abi::fonts_since`]) — reading never removes, so
+    /// other consumers (another renderer, text measurement) see the same faces. Idempotent. The face
     /// is registered under our own alias — see [`font_alias`] — which the draw path looks it up by.
     fn sync_fonts(&mut self) {
-        for font in crate::abi::take_pending_fonts() {
+        for font in crate::abi::fonts_since(&mut self.font_cursor) {
             let registered = self.font_cx.collection.register_fonts(
-                font.bytes.into(),
+                font.bytes,
                 Some(FontInfoOverride {
                     family_name: Some(&font.alias),
                     width: None,
@@ -151,6 +155,7 @@ impl TextEngine {
             layout_cx,
             editor,
             editor_for,
+            font_cursor: _,
         } = self;
 
         let Some(id) = focused else {
@@ -199,7 +204,12 @@ impl TextEngine {
         let (start, end) = ed.selection_range();
         // The caret in shape-local space, for `get_cursor_rect` (IME candidate placement).
         let caret = Some(ed.caret_rect(CARET_WIDTH));
-        crate::editor::set_snapshot(ed.text().to_string(), (start, end), caret);
+        crate::editor::set_snapshot(
+            ed.text().to_string(),
+            (start, end),
+            caret,
+            Some(ed.layout_size()),
+        );
     }
 }
 

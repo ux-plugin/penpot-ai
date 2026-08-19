@@ -179,8 +179,6 @@ impl GpuTimer {
                         b.copy_from_slice(&view[j * 8..j * 8 + 8]);
                         *slot = u64::from_le_bytes(b);
                     }
-                    // Saturating: a timestamp pair can come back out of order on some drivers, and a
-                    // wrapped subtraction would report an absurd span instead of dropping the sample.
                     let ticks = t[1].saturating_sub(t[0]);
                     if ticks > 0 {
                         crate::vello::prof::add_gpu(ticks as f64 * period / 1.0e6);
@@ -268,6 +266,7 @@ impl PassProfiler {
         }
         self.labels.push(bucket);
         let idx = (i * PMAX + self.n) as u32;
+        crate::vello::sink::note_passes(1);
         enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pass gpu stamp"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -326,7 +325,6 @@ impl PassProfiler {
                         b.copy_from_slice(&view[j * 8..j * 8 + 8]);
                         *slot = u64::from_le_bytes(b);
                     }
-                    // Delta [k, k+1] belongs to the role its ending stamp declared (labels[k+1]).
                     for k in 0..n - 1 {
                         let ticks = t[k + 1].saturating_sub(t[k]);
                         if ticks > 0 {

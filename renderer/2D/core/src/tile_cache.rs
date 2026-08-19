@@ -181,7 +181,6 @@ impl<S> TileCache<S> {
 mod tests {
     use super::*;
 
-    // A tiny stand-in for a backend surface — the cache never looks inside `S`.
     fn tile(x: i32, y: i32) -> TileKey {
         TileKey { tile_x: x, tile_y: y, zoom_bucket: tiling::zoom_bucket(1.0) }
     }
@@ -189,17 +188,15 @@ mod tests {
     #[test]
     fn a_pan_reuses_cached_tiles_and_only_plans_the_newly_exposed_strip() {
         let mut cache: TileCache<u32> = TileCache::new();
-        // Frame 1 at identity: everything is uncached → all visible tiles are planned.
         let (first, _) = cache.plan(Affine::IDENTITY, 1024, 512, false, &[]);
-        assert_eq!(first.len(), 2); // tiles (0,0) and (1,0)
+        assert_eq!(first.len(), 2);
         cache.advance_frame();
         for t in &first {
             cache.store(*t, Some(1));
         }
-        // Frame 2 panned left by one tile: (1,0) stays visible+cached, (2,0) is new.
         let (panned, _) = cache.plan(Affine::translate((-512.0, 0.0)), 1024, 512, false, &[]);
-        assert_eq!(panned, vec![tile(2, 0)]); // only the exposed column is re-planned
-        assert!(cache.contains(tile(1, 0))); // the overlapping tile was reused, not re-planned
+        assert_eq!(panned, vec![tile(2, 0)]);
+        assert!(cache.contains(tile(1, 0)));
     }
 
     #[test]
@@ -210,10 +207,9 @@ mod tests {
         for t in &first {
             cache.store(*t, Some(1));
         }
-        // Any zoom invalidates: the 1:1 composite is only valid at the render scale.
         let (zoomed, _) = cache.plan(Affine::scale(2.0), 1024, 512, false, &[]);
         assert!(!zoomed.is_empty());
-        assert!(!cache.contains(tile(0, 0))); // old-scale entry gone
+        assert!(!cache.contains(tile(0, 0)));
     }
 
     #[test]
@@ -224,11 +220,9 @@ mod tests {
         for t in &first {
             cache.store(*t, Some(1));
         }
-        // An edit confined to tile (0,0) re-plans only it; (1,0) is reused.
         let (dirty, _) = cache.plan(Affine::IDENTITY, 1024, 512, false, &[Rect::new(20.0, 20.0, 100.0, 100.0)]);
         assert_eq!(dirty, vec![tile(0, 0)]);
         assert!(cache.contains(tile(1, 0)));
-        // dirty_all re-plans every visible tile.
         let (all, _) = cache.plan(Affine::IDENTITY, 1024, 512, true, &[]);
         assert_eq!(all.len(), 2);
     }
@@ -237,21 +231,19 @@ mod tests {
     fn a_cached_empty_tile_is_clean_but_yields_no_surface() {
         let mut cache: TileCache<u32> = TileCache::new();
         cache.advance_frame();
-        cache.store(tile(0, 0), None); // empty tile
-        assert!(cache.contains(tile(0, 0))); // clean — plan won't re-dirty it
-        assert!(cache.get(tile(0, 0)).is_none()); // but nothing to blit
+        cache.store(tile(0, 0), None);
+        assert!(cache.contains(tile(0, 0)));
+        assert!(cache.get(tile(0, 0)).is_none());
     }
 
     #[test]
     fn eviction_drops_the_least_recently_used_and_never_a_visible_tile() {
         let mut cache: TileCache<u32> = TileCache::with_budget(2);
-        // Store three non-visible content tiles across ascending frames so LRU order is defined.
         for (f, t) in [tile(0, 0), tile(1, 0), tile(2, 0)].into_iter().enumerate() {
             cache.advance_frame();
             cache.store(t, Some(f as u32));
             let _ = f;
         }
-        // Nothing visible → over budget (3 > 2) → evict the single oldest (tile (0,0), frame 1).
         let freed = cache.evict(&[]);
         assert_eq!(freed.len(), 1);
         assert!(!cache.contains(tile(0, 0)));
@@ -265,7 +257,6 @@ mod tests {
             cache.advance_frame();
             cache.store(t, Some(0));
         }
-        // Both are visible → none may be evicted, even though 2 > budget 1.
         let freed = cache.evict(&[tile(0, 0), tile(1, 0)]);
         assert!(freed.is_empty());
         assert!(cache.contains(tile(0, 0)) && cache.contains(tile(1, 0)));

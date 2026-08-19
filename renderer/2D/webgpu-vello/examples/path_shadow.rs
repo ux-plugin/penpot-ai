@@ -20,10 +20,7 @@ use vello_gpu_renderer::ClassicBackend;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 fn main() {
-    // Which sink-path effect scene to render (default path-shadow); pass another via the SCENE env var,
-    // e.g. `SCENE=layer-blur cargo run --release --example path_shadow`.
     let scene = std::env::var("SCENE").unwrap_or_else(|_| "path-shadow".to_string());
-    // Install the fixture into the ABI globals + frame it 1:1 (dpr 1, zoom 1, no pan) over a white page.
     let cells = match scene.as_str() {
         "layer-blur" => render_core::vello::abi::load_layer_blur_scene(),
         _ => render_core::vello::abi::load_path_shadow_scene(),
@@ -31,7 +28,7 @@ fn main() {
     let (w, h) = render_core::parity::canvas_size(cells as usize);
     render_core::vello::abi::set_render_options(0, 1.0);
     render_core::vello::abi::set_view(1.0, 0.0, 0.0);
-    render_core::vello::abi::set_canvas_background(0xffff_ffff); // opaque white, so the dark shadow reads
+    render_core::vello::abi::set_canvas_background(0xffff_ffff);
     println!("path shadow: {cells} cells, {w}x{h}");
 
     let instance = wgpu::Instance::default();
@@ -49,8 +46,6 @@ fn main() {
     let mut backend = ClassicBackend::new(&device);
     let mut sink = Sink::new(&device, FORMAT);
 
-    // Same frame setup the renderer does (non-whole-viewport path): plan the dirty tiles, build the
-    // schedule, execute it onto a texture target.
     let root = Affine::IDENTITY;
     let full_view = render_core::vello::abi::effective_view(root);
     let (dirty_all, dirty_rects) = render_core::vello::abi::take_dirty();

@@ -20,10 +20,6 @@ thread_local! {
     static RENDERS: Cell<u32> = const { Cell::new(0) };
     static POOL_HIT: Cell<u32> = const { Cell::new(0) };
     static POOL_MISS: Cell<u32> = const { Cell::new(0) };
-    // Whole-viewport effect-scratch residency: TRANSIENT_PEAK = the most intermediates any single
-    // effect node held at once (the peak with mid-frame recycling), TRANSIENT_SUM = the sum over all
-    // nodes (what would stay resident WITHOUT recycling — the old Σ(nodes) memory). Their ratio is the
-    // memory the node-boundary recycle saves.
     static TRANSIENT_PEAK: Cell<u32> = const { Cell::new(0) };
     static TRANSIENT_SUM: Cell<u32> = const { Cell::new(0) };
     static PAINTS: Cell<u32> = const { Cell::new(0) };

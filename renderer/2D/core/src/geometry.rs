@@ -107,16 +107,12 @@ pub fn spread_outline(node: &m::Node, spread: f64) -> BezPath {
                 .path
                 .clone()
                 .unwrap_or_else(|| node.bounds.to_path(TOLERANCE));
-            // Round join/cap (the `Stroke::new` default) makes the band a disk sweep, so the grown
-            // outline is the Minkowski sum with a disk.
             let stroke = Stroke::new(2.0 * spread);
             let mut grown = stroke_expand(base.iter(), &stroke, &StrokeOpts::default(), TOLERANCE);
             grown.extend(base.iter());
             grown
         }
         _ => match node.corners {
-            // A box dilation grows each corner radius by the spread too (Skia dilates the rendered
-            // rounded corner, which is the same as a larger radius on the larger rect).
             Some(radii) => {
                 RoundedRect::from_rect(bounds, grow_radii(radii, spread)).to_path(TOLERANCE)
             }
@@ -141,7 +137,7 @@ mod tests {
 
     fn node(kind: m::ShapeKind) -> m::Node {
         let mut n = m::Node::new(1, kind);
-        n.bounds = Rect::new(100.0, 100.0, 200.0, 180.0); // 100 × 80
+        n.bounds = Rect::new(100.0, 100.0, 200.0, 180.0);
         n
     }
 
@@ -177,14 +173,8 @@ mod tests {
         let grown = spread_outline(&n, 5.0);
         let bbox = grown.bounding_box();
 
-        // Bounds inflated by the spread as usual.
         assert_eq!(bbox.x0, 95.0);
         assert_eq!(bbox.x1, 205.0);
-        // And a radius of 8+5=13 keeps the corner rounded: the path's leftmost point sits at the
-        // inflated edge, but the top-left of its bounding box is empty of fill (the arc cuts in).
-        // A square-cornered growth would instead have filled that corner, so simply assert the box
-        // matches the inflated rect while the geometry below the arc differs — covered by the
-        // rect/circle extent checks; here we just pin the inflate.
         assert_eq!(bbox.y0, 95.0);
         assert_eq!(bbox.y1, 185.0);
     }
@@ -203,7 +193,6 @@ mod tests {
         let capped = cap_sigma_to_device(40.0, Affine::scale(100.0));
         let expected = (MAX_DEVICE_SIGMA / 100.0) as f32;
         assert!((capped - expected).abs() < 1e-4, "{capped} vs {expected}");
-        // And the device sigma it implies is exactly the ceiling.
         assert!((f64::from(capped) * 100.0 - MAX_DEVICE_SIGMA).abs() < 1e-3);
     }
 
@@ -224,7 +213,6 @@ mod tests {
         let (s1, r1) = cap_shadow_blur(40.0, Affine::scale(100.0));
         assert!((r1 - f64::from(s1 / 40.0)).abs() < 1e-6);
         assert!(r1 < 1.0, "clamped, so the offset shrinks with the blur");
-        // The device offset a 10px user offset would produce shrinks by the same factor the blur did.
         assert!((10.0 * r1 * 100.0 - f64::from(s1) * 100.0 / 40.0 * 10.0).abs() < 1e-3);
     }
 
@@ -235,7 +223,6 @@ mod tests {
     #[test]
     fn spread_grows_a_path_outward() {
         let mut n = node(m::ShapeKind::Path);
-        // A triangle inside the bounds, so the growth is genuinely path-driven, not the bounds.
         let mut p = BezPath::new();
         p.move_to((110.0, 170.0));
         p.line_to((190.0, 170.0));
@@ -246,8 +233,6 @@ mod tests {
         let base = p.bounding_box();
         let grown = spread_outline(&n, 10.0).bounding_box();
 
-        // Grew outward on every side, by at least most of the spread (round joins fall a hair short
-        // of the full radius at acute corners, so allow a small margin).
         assert!(grown.x0 <= base.x0 - 9.0, "left: {} vs {}", grown.x0, base.x0);
         assert!(grown.y0 <= base.y0 - 9.0, "top: {} vs {}", grown.y0, base.y0);
         assert!(grown.x1 >= base.x1 + 9.0, "right: {} vs {}", grown.x1, base.x1);

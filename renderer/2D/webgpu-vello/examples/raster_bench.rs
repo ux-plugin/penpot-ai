@@ -116,8 +116,12 @@ fn bench_classic(device: &wgpu::Device, queue: &wgpu::Queue, n: usize) -> (f64, 
     let mut times = Vec::new();
     for it in 0..(WARMUP + ITERS) {
         let s = std::time::Instant::now();
-        renderer.rasterize(&ctx, device, queue, &view, W.into(), H.into(), Color::WHITE);
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("bench classic") });
+        renderer.rasterize(&ctx, device, queue, &mut enc, &view, W.into(), H.into(), Color::WHITE);
+        queue.submit([enc.finish()]);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        renderer.release_pending();
         if it >= WARMUP {
             times.push(s.elapsed().as_secs_f64() * 1000.0);
         }

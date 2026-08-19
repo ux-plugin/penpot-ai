@@ -237,13 +237,10 @@ impl GatherPlan {
 /// against. Run before `coalesce`; the tiles/shape-ids it records survive it.
 #[must_use]
 pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> GatherPlan {
-    // Gather-free frames (the overwhelming common case) skip all of this: no ComposeBackdrop, so the
-    // coverage machinery below never allocates.
     if !steps.iter().any(|s| matches!(s, Step::ComposeBackdrop { .. })) {
         return GatherPlan::default();
     }
 
-    // Accumulate each gather shape's compose/paint footprint by scanning the steps once.
     let mut gathers: Vec<GatherInfo> = Vec::new();
     let mut index_of: std::collections::HashMap<u128, usize> = std::collections::HashMap::new();
     for (i, step) in steps.iter().enumerate() {
@@ -264,7 +261,7 @@ pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> 
                     reach: *reach,
                     acceptable_downscale: *acceptable_downscale,
                     output,
-                    deferrable: true, // provisional; the coverage pass below decides the tier
+                    deferrable: true,
                     needs_snapshot: false,
                     pure_lens: node.fills.is_empty() && node.strokes.is_empty(),
                 });
@@ -280,14 +277,10 @@ pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> 
         }
     }
 
-    // Every write in z-order, as (step index, page rect, owning shape if excludable). A gather is
-    // deferrable only if none of these — from a *later* step, over its output, and not its own —
-    // overlaps it. `owner = Some(s)` lets a gather skip its own body/compose/paint steps.
     let mut writes: Vec<(usize, Rect, Option<u128>)> = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         match step {
             Step::Paint { ops, .. } => {
-                // Pre-coalesce each Paint is a single op; a Body contributes its shape's bounds.
                 for op in ops {
                     if let PaintOp::Body(s) = op {
                         if let Some(r) = shape_rect(scene, modifiers, *s) {
@@ -296,22 +289,14 @@ pub fn analyze_gathers(scene: &Scene, modifiers: &Modifiers, steps: &[Step]) -> 
                     }
                 }
             }
-            // A fold into `Target` is the finalize/present of a whole tile, not content painted over
-            // the gather — it never blocks deferral. Only composites into a tile/scope surface do.
             Step::Composite { rect, to, .. } if !to.is_target() => writes.push((i, *rect, None)),
             Step::PaintGather { shape, clip, .. } => writes.push((i, *clip, Some(*shape))),
             _ => {}
         }
     }
 
-    // Every gather's read region, so a gather that *feeds* a later one can be spotted. This is not a
-    // write and so is invisible to the loop above, but it is just as disqualifying: the batch composes
-    // all backdrops before it scatters any result, so a producer can never share a batch with its
-    // consumer.
     let reads: Vec<(usize, Rect)> = gathers.iter().map(|g| (g.order, g.sample)).collect();
 
-    // Tier each gather (see the module docs): covered output → inline; covered sample only →
-    // deferrable but the sink must freeze its backdrop; neither → deferrable off the finished tiles.
     let tiers: Vec<(bool, bool)> = gathers
         .iter()
         .map(|g| {
@@ -421,14 +406,12 @@ mod tests {
 
     fn plan_for(scene: &Scene) -> super::GatherPlan {
         let visible = tiling::visible_tiles(Affine::IDENTITY, W, H).into_iter().collect();
-        // Rebuild the raw (pre-coalesce) steps the way build_visible does, then analyze them.
         let sched = build_visible(scene, Affine::IDENTITY, &Modifiers::new(), &visible, None);
         analyze_gathers(scene, &Modifiers::new(), &sched.steps)
     }
 
     #[test]
     fn independent_gathers_all_defer_into_one_pass() {
-        // Three background-blur rects, far apart, nothing above any of them.
         let scene = scene_tree(
             vec![1, 2, 3],
             vec![
@@ -446,8 +429,6 @@ mod tests {
 
     #[test]
     fn stacked_gathers_do_not_collapse() {
-        // Three concentric background blurs: each higher one covers the ones below, so only the top is
-        // topmost. The collapse must refuse — one pass per level, same as today.
         let scene = scene_tree(
             vec![1, 2, 3],
             vec![
@@ -464,8 +445,6 @@ mod tests {
 
     #[test]
     fn a_plain_shape_above_a_gather_blocks_its_deferral() {
-        // Gather 1, then a plain rect 2 painted over it (higher z, overlapping). The gather cannot
-        // defer past the plain content.
         let scene = scene_tree(
             vec![1, 2],
             vec![bg_blur(1, 100.0, 100.0, 400.0, 400.0), plain(2, 200.0, 200.0, 300.0, 300.0)],
@@ -477,12 +456,8 @@ mod tests {
 
     #[test]
     fn a_shape_in_the_blur_fringe_above_still_batches_but_needs_a_snapshot() {
-        // Plain rect 2 does NOT overlap gather 1's output (400..470 vs 100..380) but sits within its
-        // blur reach — inside the sample rect. The scatter is still z-correct (nothing covers the
-        // lens), but the finished tiles no longer hold the backdrop it read, so it batches only with a
-        // frozen copy.
         let mut blur = bg_blur(1, 100.0, 100.0, 380.0, 380.0);
-        blur.background_blur = Some(64.0); // a wide blur → a fat fringe past the output
+        blur.background_blur = Some(64.0);
         let scene = scene_tree(vec![1, 2], vec![blur, plain(2, 400.0, 100.0, 470.0, 380.0)]);
         let plan = plan_for(&scene);
         assert_eq!(plan.deferrable_count(), 1, "a covered fringe no longer costs the whole deferral");
@@ -491,7 +466,6 @@ mod tests {
 
     #[test]
     fn an_undisturbed_gather_batches_without_a_snapshot() {
-        // Nothing above at all: the finished tiles still hold exactly the backdrop the lens read.
         let scene = scene_tree(
             vec![1, 2],
             vec![plain(1, 0.0, 0.0, 600.0, 600.0), bg_blur(2, 150.0, 150.0, 350.0, 350.0)],
@@ -503,13 +477,10 @@ mod tests {
 
     #[test]
     fn a_gather_feeding_a_later_gather_cannot_batch() {
-        // B's sample reaches over A's output while B's own output stays clear of A's sample, so no
-        // *write* test catches it. But the batch composes every backdrop before it scatters any
-        // result, so B would read A's region un-blurred. A must run inline.
         let mut a = bg_blur(1, 100.0, 100.0, 300.0, 300.0);
-        a.background_blur = Some(4.0); // a narrow fringe, so B's output stays outside A's sample
+        a.background_blur = Some(4.0);
         let mut b = bg_blur(2, 360.0, 100.0, 560.0, 300.0);
-        b.background_blur = Some(160.0); // a wide reach, so B's sample swallows A's output
+        b.background_blur = Some(160.0);
         let scene = scene_tree(vec![1, 2], vec![a, b]);
         let plan = plan_for(&scene);
         assert!(!plan.gathers[0].deferrable, "the producer cannot share a batch with its consumer");
@@ -518,7 +489,6 @@ mod tests {
 
     #[test]
     fn a_plain_shape_below_a_gather_is_just_backdrop() {
-        // Plain rect 1 below, gather 2 above it. The plain shape is backdrop; the gather is topmost.
         let scene = scene_tree(
             vec![1, 2],
             vec![plain(1, 100.0, 100.0, 400.0, 400.0), bg_blur(2, 150.0, 150.0, 350.0, 350.0)],

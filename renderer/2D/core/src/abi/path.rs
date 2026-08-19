@@ -144,10 +144,8 @@ mod layout {
     }
 }
 
-// Wire invariants, checked on every build rather than only under `cargo test`.
 const _: () = assert!(RAW_SEGMENT_DATA_SIZE == layout::PAYLOAD + layout::curve::SIZE);
 const _: () = assert!(layout::point::SIZE <= layout::curve::SIZE);
-// The shared end point is the property the host's writer depends on.
 const _: () = assert!(layout::point::X == layout::curve::X);
 const _: () = assert!(layout::point::Y == layout::curve::Y);
 
@@ -341,7 +339,6 @@ mod tests {
         for (segment, tag) in cases {
             encode_segment(&segment, &mut buf).unwrap();
             assert_eq!(u16_at(&buf, 0), tag);
-            // And the round trip agrees, so the decoder's match arms line up too.
             assert_eq!(decode_segment(&buf).unwrap(), segment);
         }
         assert_eq!(
@@ -376,7 +373,6 @@ mod tests {
         )
         .unwrap();
 
-        // Bytes 2..4 are the tag's alignment padding; 4..20 is the explicit leading padding.
         assert!(buf[2..20].iter().all(|&b| b == 0));
 
         let mut buf = vec![0xAAu8; RAW_SEGMENT_DATA_SIZE];
@@ -424,7 +420,6 @@ mod tests {
             })
         );
 
-        // Tag 0 is the case `api/path.ts` explicitly guards against sending.
         let zeroed = vec![0u8; RAW_SEGMENT_DATA_SIZE];
         assert_eq!(decode_segment(&zeroed), Err(AbiError::UnknownSegmentTag(0)));
 

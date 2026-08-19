@@ -37,6 +37,10 @@ const BLUR_MAX_SIGMA: f32 = 32.0;
 pub struct Pass {
     pub kind: PassKind,
     pub inputs: Vec<Src>,
+    /// Render-scale fraction of the graph's surface this pass's target is allocated at (`1.0` =
+    /// surface size); carried from [`crate::effect_graph::GraphPass::scale`]. Readers sample
+    /// normalized, so a reduced pass upscales transparently at its consumer.
+    pub scale: f32,
 }
 
 /// The pipeline a lowered pass dispatches to — the backend twin of render-core's [`EffectPass`],
@@ -68,11 +72,6 @@ pub enum PassKind {
 /// compiled pipeline (the caller resolved + cached it from the shader source). A `Custom` pass with
 /// no pipeline provided is dropped with a warning rather than panicking mid-frame.
 pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>>) -> Vec<Pass> {
-    // Partition the graph into fused segments + barriers, then lower each. The one multi-pass fusion the
-    // built-in effects produce is sharp glass — a `Fused([GlassRefraction, GlassComposite])` segment
-    // (which by construction is the whole graph: any blur between them is a barrier that splits them).
-    // Collapse that to a single `GlassFused` draw; everything else lowers pass-for-pass, so `Src::Pass`
-    // indices stay valid (the collapse only fires when there are no downstream passes to reference it).
     let stages = crate::footprint::partition(graph);
     let mut out = Vec::with_capacity(graph.len());
     for stage in &stages {
@@ -87,7 +86,8 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                     {
                         out.push(Pass {
                             kind: PassKind::GlassFused { refr_u: *refr_u, comp_u: *comp_u },
-                            inputs: graph[*i].inputs.clone(), // the backdrop, Input(0)
+                            inputs: graph[*i].inputs.clone(),
+                            scale: graph[*j].scale,
                         });
                         continue;
                     }
@@ -124,7 +124,7 @@ fn lower_pass(gp: &GraphPass, custom: Option<&Rc<wgpu::RenderPipeline>>) -> Opti
             }
         },
     };
-    Some(Pass { kind, inputs: gp.inputs.clone() })
+    Some(Pass { kind, inputs: gp.inputs.clone(), scale: gp.scale })
 }
 
 /// DBG buckets the [`crate::vello::gputime::PassProfiler`] accumulates each whole-viewport region into, by
@@ -192,17 +192,12 @@ pub fn run_graph_into(
     let sampler = compositor.sampler();
     let mut outputs: Vec<(wgpu::Texture, wgpu::TextureView)> = Vec::with_capacity(passes.len());
 
-    // Opening boundary stamp for the per-pass profiler: mark the GPU timeline just before pass 0, so
-    // the first delta (this → after-pass-0) is pass 0's own GPU-busy time. Any live view works as the
-    // empty pass's attachment; the first input is always present for the effects that carry inputs.
     if let (Some(p), Some(v)) = (prof.as_deref_mut(), inputs.first()) {
-        // The interval ending here (since the caller's pre-crop stamp) is the backdrop crop blit.
         p.stamp(enc, v, prof_bucket::CROP);
     }
 
     let last = passes.len().saturating_sub(1);
     for (idx, pass) in passes.iter().enumerate() {
-        // Resolve (cloned, so allocating the new output below can't collide with these borrows).
         let bound: Vec<wgpu::TextureView> = pass
             .inputs
             .iter()
@@ -212,24 +207,21 @@ pub fn run_graph_into(
             })
             .collect();
 
-        // The final pass's texture is the returned result — a caller may install it as a durable sink
-        // surface and the tile-fuse then inlines it via `register_texture`, which COPIES from it. So the
-        // last output must carry `COPY_SRC` (without it a custom-shader spread surface can't be inlined
-        // and the shape renders empty). `COPY_SRC` ONLY — emphatically NOT `COPY_DST`: adding COPY_DST
-        // widens the pool bucket so this gather-output texture aliases a copy-destination surface and gets
-        // overwritten mid-frame, corrupting ~500k px of the phased render (measured). Intermediates are
-        // only ever sampled by a later pass, so they stay lean.
         let extra = if idx == last {
             wgpu::TextureUsages::COPY_SRC
         } else {
             wgpu::TextureUsages::empty()
         };
-        let tex = pool.acquire_target(device, w, h, pass.kind.output_format(format), extra, "effect target");
+        let (pw, ph) = (
+            crate::effect_graph::pass_dim(w, pass.scale),
+            crate::effect_graph::pass_dim(h, pass.scale),
+        );
+        let tex = pool.acquire_target(device, pw, ph, pass.kind.output_format(format), extra, "effect target");
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
 
         match &pass.kind {
             PassKind::Blur { sigma, linear } => {
-                gaussian_blur(compositor, device, enc, &view, &bound[0], w, h, *sigma, *linear, format, pool, keep_tex, keep_views);
+                gaussian_blur(compositor, device, enc, &view, &bound[0], pw, ph, *sigma, *linear, format, pool, keep_tex, keep_views);
             }
             PassKind::GlassRefraction { u } => {
                 glass.refraction(device, enc, &view, &bound[0], u);
@@ -244,7 +236,6 @@ pub fn run_graph_into(
                 custom_pass(device, enc, &view, pipeline, sampler, &bound, u, *param_vec4s);
             }
         }
-        // Closing boundary stamp for this pass: the delta from the previous stamp is this pass's time.
         if let Some(p) = prof.as_deref_mut() {
             p.stamp(enc, &view, pass.kind.prof_bucket());
         }
@@ -252,8 +243,6 @@ pub fn run_graph_into(
     }
 
     let final_out = outputs.pop();
-    // Every non-final pass output is read by a later pass but not by the returned result; it must
-    // still outlive the caller's submit, so hand it to the keepalive rather than dropping it here.
     for (tex, view) in outputs {
         keep_tex.push(tex);
         keep_views.push(view);
@@ -277,8 +266,6 @@ pub fn run_graph(
 ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
     let mut enc =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("effect graph") });
-    // Standalone: a throwaway pool (this call owns its whole lifetime, so there is nothing to reuse
-    // across). The whole-viewport path uses `run_graph_into` with the sink's persistent pool instead.
     let mut pool = crate::vello::sink::TexturePool::default();
     let mut keep_tex: Vec<wgpu::Texture> = Vec::new();
     let mut keep_views: Vec<wgpu::TextureView> = Vec::new();
@@ -333,7 +320,6 @@ fn gaussian_blur(
     let target_w = ((w as f32 / level).round() as u32).max(1);
     let target_h = ((h as f32 / level).round() as u32).max(1);
 
-    // Downsample by repeated halving (each ×2 bilinear = a 2×2 box, no aliasing).
     let mut cur = src.clone();
     let (mut cw, mut ch) = (w, h);
     while cw > target_w || ch > target_h {
@@ -356,7 +342,6 @@ fn gaussian_blur(
         ch = nh;
     }
 
-    // Blur at the coarse level with the reduced sigma.
     let coarse_sigma = sigma / level;
     let coarse_size = (cw as f32, ch as f32);
     let scratch = pool.acquire_target(device, cw, ch, format, wgpu::TextureUsages::empty(), "blur coarse scratch");
@@ -366,8 +351,6 @@ fn gaussian_blur(
     compositor.blur1d(device, enc, &scv, &BlurPass { src: &cur, size: coarse_size, dir: (1.0, 0.0), sigma: coarse_sigma, linear });
     compositor.blur1d(device, enc, &bv, &BlurPass { src: &scv, size: coarse_size, dir: (0.0, 1.0), sigma: coarse_sigma, linear });
 
-    // Upsample the coarse blurred result to the full-size dst (bilinear). dst is fresh → clear first
-    // so the SrcOver blit lands exactly (transparent dst → out == src).
     Compositor::clear(enc, dst, [0.0, 0.0, 0.0, 0.0], None);
     compositor.blit(device, enc, dst, (w as f32, h as f32), &Blit {
         src: &bv,
@@ -402,10 +385,6 @@ pub fn build_custom_pipeline(
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
     let mut entries = vec![
-        // binding 0: resolution + params, a small uniform block sized to the shader's declared
-        // `array<vec4<f32>, N>` (may be unused by the shader). The backend binds a buffer of exactly
-        // `param_vec4s * 4` floats (see `custom_pass`), so its size always matches the shader's fixed
-        // `N` — no size mismatch is possible, hence no runtime-sized array / storage buffer needed.
         wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -416,7 +395,6 @@ pub fn build_custom_pipeline(
             },
             count: None,
         },
-        // binding 1: the shared effect sampler.
         wgpu::BindGroupLayoutEntry {
             binding: 1,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -424,7 +402,6 @@ pub fn build_custom_pipeline(
             count: None,
         },
     ];
-    // bindings 2..: the sampled input textures (backdrop and/or body).
     for i in 0..n_inputs {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: 2 + i as u32,
@@ -460,7 +437,7 @@ pub fn build_custom_pipeline(
             entry_point: Some("fs"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: None, // overwrites its full target
+                blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -490,7 +467,6 @@ fn custom_pass(
     u: &[f32],
     param_vec4s: u32,
 ) {
-    // Resize to exactly the declared `N * 4` floats: pad short with zeros, drop any overflow.
     let mut padded = u.to_vec();
     padded.resize(param_vec4s as usize * 4, 0.0);
     let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -507,6 +483,7 @@ fn custom_pass(
         entries.push(wgpu::BindGroupEntry { binding: 2 + i as u32, resource: wgpu::BindingResource::TextureView(v) });
     }
     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("custom bind"), layout: &layout, entries: &entries });
+    crate::vello::sink::note_passes(1);
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("custom pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {

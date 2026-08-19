@@ -252,13 +252,6 @@ pub fn apply_stroke_style(
     match style {
         StrokeStyle::Solid => {}
         StrokeStyle::Dotted => {
-            // A round-capped dash of (almost) no length draws a dot of diameter equal to the
-            // stroke width, which is what Skia's stamped circles come to for a centre stroke.
-            //
-            // The length has to be *nearly* zero rather than zero: an exactly-zero dash is
-            // dropped rather than drawn — verified in the browser, where the dotted stroke
-            // simply did not appear — so the caps never get their chance. `DOT_LENGTH` is small
-            // enough to read as round at any zoom and large enough to survive.
             stroke.dash_pattern = [DOT_LENGTH, w + 5.0 - DOT_LENGTH].into_iter().collect();
             stroke.start_cap = kurbo::Cap::Round;
             stroke.end_cap = kurbo::Cap::Round;
@@ -713,8 +706,6 @@ impl Scene {
     /// right default for a format check; comparing rasterised output is a separate question.
     pub fn digest(&self) -> u64 {
         let mut hash = FNV_OFFSET;
-        // Depth cap for the same reason the renderer has one: the tree comes off the wire and a
-        // cycle would otherwise spin forever.
         for id in self.roots() {
             self.digest_node(*id, &mut hash, 0);
         }
@@ -746,13 +737,8 @@ impl Scene {
             return;
         }
         if node.kind == ShapeKind::Unsupported {
-            // Inert, and its subtree with it — mirrors `digest_node` and `scene::draw_node`.
             return;
         }
-        // Matches `scene::paint_self`: a group carries a layer, never geometry, and anything
-        // with neither fill nor stroke is skipped before a path is even built. A text node is the
-        // exception — its paint is the glyph colour inside its spans, not a `fills` entry — so it
-        // counts when it has any non-empty text.
         let paints = if node.kind == ShapeKind::Text {
             node.text.as_ref().is_some_and(|t| !t.is_empty())
         } else {
@@ -790,7 +776,6 @@ impl Scene {
             return;
         }
         if node.kind == ShapeKind::Unsupported {
-            // Inert, and its subtree with it — mirrors `digest_node` and `scene::draw_node`.
             return;
         }
         for paint in &node.fills {
@@ -813,8 +798,6 @@ impl Scene {
             return;
         }
         let Some(node) = self.get(id) else {
-            // A child listed but not yet delivered. Hash the id anyway: "referenced but absent"
-            // is a real difference between two scenes, not something to paper over.
             fnv_u128(hash, id);
             fnv_u64(hash, MISSING_NODE_TAG);
             return;
@@ -823,8 +806,6 @@ impl Scene {
             return;
         }
         if node.kind == ShapeKind::Unsupported {
-            // A shape neither backend draws. Hash it exactly as the missing-child branch above,
-            // so render-vello's marked node and render-wasm's dropped one land on one hash.
             fnv_u128(hash, node.id);
             fnv_u64(hash, MISSING_NODE_TAG);
             return;
@@ -845,13 +826,7 @@ impl Scene {
         }
         fnv_f64(hash, f64::from(node.opacity));
         fnv_u64(hash, u64::from(node.clip));
-        // A masked group and a plain one with the same children are different pictures — the
-        // first hides its bottom child and clips the rest to it. Hashed unconditionally (like
-        // `clip`), so the default `false` is part of every node's fingerprint.
         fnv_u64(hash, u64::from(node.masked));
-        // Blend is two `#[repr(u8)]` enums; hashing both discriminants catches a mix *or* a
-        // compose change. Hashed unconditionally, so the default source-over is part of the
-        // fingerprint — cheap, and it keeps the two projections honest about the field existing.
         fnv_u64(hash, u64::from(node.blend.mix as u8));
         fnv_u64(hash, u64::from(node.blend.compose as u8));
 
@@ -863,8 +838,6 @@ impl Scene {
             None => fnv_u64(hash, 0),
         }
 
-        // Background blur is a distinct effect kind (gather, not spread); hashed with its own tag so
-        // a layer-blurred and a background-blurred node never collide.
         match node.background_blur {
             Some(radius) => {
                 fnv_u64(hash, 1);
@@ -873,7 +846,6 @@ impl Scene {
             None => fnv_u64(hash, 0),
         }
 
-        // Glass — the other gather effect. Every parameter is part of the picture, so hash them all.
         match node.glass {
             Some(g) => {
                 fnv_u64(hash, 1);
@@ -901,8 +873,6 @@ impl Scene {
             None => fnv_u64(hash, 0),
         }
 
-        // Authored effects — hash the ordered list (source, reach, params, class per entry) so an edit
-        // or a reorder re-digests.
         fnv_u64(hash, node.effects.len() as u64);
         for e in &node.effects {
             let c = &e.shader;
@@ -929,9 +899,6 @@ impl Scene {
             fnv_u64(hash, u64::from(shadow.inset));
         }
 
-        // The filter graph — its node sequence and each node's params. The picture depends on the
-        // order of passes, so the chain is hashed in order; a Vello-only feature, but hashed
-        // unconditionally so a graphed and an ungraphed node never collide.
         match &node.filter_graph {
             Some(graph) => {
                 fnv_u64(hash, 1);
@@ -986,18 +953,12 @@ impl Scene {
             }
         }
 
-        // Text is hashed as the *input* the host sent, not resolved glyphs — the two backends
-        // shape it differently, so hashing positions would make them disagree by construction.
-        // Gated on the kind, not merely on `text.is_some()`: render-wasm only projects text for a
-        // Text shape, whereas render-vello's streaming ABI could leave a stray block on another
-        // kind (a `set_shape_vertical_align` before the type arrives); gating keeps the two equal.
         if node.kind == ShapeKind::Text {
             if let Some(text) = &node.text {
                 digest_text(hash, text);
             }
         }
 
-        // Raw SVG is hashed as its source markup (the byte content), gated on the kind like text.
         if node.kind == ShapeKind::Svg {
             if let Some(svg) = &node.svg {
                 fnv_u64(hash, svg.len() as u64);
@@ -1179,9 +1140,6 @@ fn digest_brush(hash: &mut u64, brush: &Brush) {
         }
         Brush::Gradient(g) => {
             fnv_u64(hash, 2);
-            // Geometry as well as stops. Hashing colours alone would let two backends disagree
-            // about a gradient's *direction* — the same stops running left-to-right on one and
-            // top-to-bottom on the other — and report a match.
             digest_gradient_kind(hash, &g.kind);
             fnv_u64(hash, g.extend as u64);
             fnv_u64(hash, g.stops.len() as u64);
@@ -1194,8 +1152,6 @@ fn digest_brush(hash: &mut u64, brush: &Brush) {
         }
         Brush::Image(image) => {
             fnv_u64(hash, 3);
-            // The id is the identity both backends share; the pixels are each backend's own.
-            // Dimensions, placement and opacity round out what would change the picture.
             fnv_u128(hash, image.id);
             fnv_u64(hash, u64::from(image.width));
             fnv_u64(hash, u64::from(image.height));
@@ -1212,8 +1168,6 @@ fn digest_brush(hash: &mut u64, brush: &Brush) {
         }
         Brush::Diamond(d) => {
             fnv_u64(hash, 4);
-            // Geometry and stops — enough that a diamond differs from a radial with the same
-            // numbers (the tag) and from another diamond with a different sweep or ramp.
             let g = &d.geometry;
             for (x, y) in [g.start, g.end, g.width] {
                 fnv_f64(hash, f64::from(x));
@@ -1361,15 +1315,13 @@ mod tests {
     #[test]
     fn effective_transform_is_centred_on_the_bounds() {
         let mut n = node(1, ShapeKind::Rect);
-        n.bounds = Rect::new(10.0, 20.0, 30.0, 40.0); // centre (20, 30)
+        n.bounds = Rect::new(10.0, 20.0, 30.0, 40.0);
         n.transform = Affine::rotate(std::f64::consts::FRAC_PI_2);
 
-        // A quarter turn about the centre leaves the centre fixed.
         let centre = Point::new(20.0, 30.0);
         let moved = n.effective_transform() * centre;
         assert!((moved - centre).hypot() < 1e-9);
 
-        // Applying the raw transform instead would swing it right across the page.
         let naive = n.transform * centre;
         assert!((naive - centre).hypot() > 1.0);
     }
@@ -1495,9 +1447,7 @@ mod tests {
         assert_ne!(b, with(Shadow { blur: 9.0, ..base }));
         assert_ne!(b, with(Shadow { spread: 2.0, ..base }));
         assert_ne!(b, with(Shadow { offset: kurbo::Vec2::new(-2.0, 3.0), ..base }));
-        // An inner shadow is a different document from a drop shadow of the same geometry.
         assert_ne!(b, with(Shadow { inset: true, ..base }));
-        // Two shadows are not one.
         let mut two = tree(&[0, 1, 2]);
         two.get_mut(1).unwrap().shadows = vec![base, base];
         assert_ne!(b, two.digest());
@@ -1529,7 +1479,6 @@ mod tests {
         assert_ne!(base, with(vec![offset.clone(), blur.clone(), tint.clone()]), "order matters");
         assert_ne!(base, with(vec![blur.clone(), tint.clone()]), "node count matters");
         assert_ne!(base, with(vec![FilterNode::Blur { sigma: 9.0 }, offset, tint.clone()]), "params matter");
-        // The inner-shadow node hashes its offset, sigma and colour.
         assert_ne!(with(vec![inner.clone()]), with(vec![tint]), "node kind matters");
         assert_ne!(
             with(vec![inner]),
@@ -1579,31 +1528,22 @@ mod tests {
         };
 
         let base = with(&|_| {});
-        // A text node is not the same as the plain rect it replaced.
         assert_ne!(base, tree(&[0, 1, 2]).digest());
-        // Every attribute moves it.
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].text = "Hallo".into()));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].size = 17.0));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.weight = 700));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.italic = true));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].font.id = 0xCD));
-        // Recolouring the one fill.
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].fills[0] = solid(Color::from_rgba8(255, 0, 0, 255))));
-        // A second fill over the first (multi-fill).
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].fills.push(solid(Color::from_rgba8(0, 255, 0, 128)))));
-        // A decoration line.
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].decoration = TextDecoration::Underline));
-        // A case transform.
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans[0].transform = TextTransform::Uppercase));
-        // A base direction.
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].direction = TextDirection::Rtl));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].align = TextAlign::Center));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().vertical_align = VerticalAlign::Bottom));
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().grow = TextGrow::AutoWidth));
-        // A second span is not one.
         assert_ne!(base, with(&|n| n.text.as_mut().unwrap().paragraphs[0].spans.push(span())));
 
-        // And it is paintable when it has text, inert when empty.
         let mut painted = tree(&[0, 1, 2]);
         let n = painted.get_mut(1).unwrap();
         n.kind = ShapeKind::Text;
@@ -1657,12 +1597,9 @@ mod tests {
             r
         };
 
-        // A — render-wasm's projection: the child is listed but never inserted.
         let mut a = Scene::new();
         a.insert(root_frame());
 
-        // B — render-vello's projection: the child is present and marked, carrying whatever
-        // bounds and fills arrived on the wire before the kind did. None of it must count.
         let mut b = Scene::new();
         b.insert(root_frame());
         let mut x = node(X, ShapeKind::Unsupported);
@@ -1672,7 +1609,6 @@ mod tests {
 
         assert_eq!(a.digest(), b.digest(), "drop and mark must reconcile");
 
-        // C — the safety property: the day a backend really draws this shape, parity must break.
         let mut c = Scene::new();
         c.insert(root_frame());
         let mut real = node(X, ShapeKind::Rect);
@@ -1680,7 +1616,6 @@ mod tests {
         c.insert(real);
         assert_ne!(a.digest(), c.digest(), "a supported shape is not a hole");
 
-        // D — a hole is still distinct from never referencing the child at all.
         let mut d = Scene::new();
         let mut childless = root_frame();
         childless.children = vec![];
@@ -1740,7 +1675,6 @@ mod tests {
         }));
         assert_ne!(left_to_right, top_to_bottom, "direction must be hashed");
 
-        // …and a radial with numerically similar parameters is still a different picture.
         let radial = with(GradientKind::Radial(peniko::RadialGradientPosition {
             start_center: (0.0, 0.0).into(),
             start_radius: 0.0,
@@ -1787,7 +1721,6 @@ mod tests {
             }),
             "dest presence"
         );
-        // …and a *moved* dest, not just its presence.
         assert_ne!(
             with(ImageFill { dest: Some(Rect::new(0.0, 0.0, 1.0, 1.0)), ..base.clone() }),
             with(ImageFill { dest: Some(Rect::new(0.0, 0.0, 2.0, 1.0)), ..base.clone() }),
@@ -1831,7 +1764,6 @@ mod tests {
         }));
         assert_ne!(diamond, base, "a diamond fill is not an empty node");
 
-        // A radial built from the same geometry and stops must still hash apart — the tag differs.
         let (radial, _) = crate::gradient::gradient_paint(
             crate::gradient::GradientShape::Radial,
             geometry,
@@ -1853,7 +1785,6 @@ mod tests {
         assert_eq!(tree(&[0, 1, 2]).paintable_count(), 1);
         assert_eq!(Scene::new().paintable_count(), 0);
 
-        // A scene the host filled in but never parented: every node present, nothing drawn.
         let mut unrooted = tree(&[0, 1, 2]);
         unrooted.get_mut(ROOT_ID).unwrap().children.clear();
         assert_eq!(unrooted.paintable_count(), 0);
@@ -1862,13 +1793,10 @@ mod tests {
         hidden.get_mut(1).unwrap().hidden = true;
         assert_eq!(hidden.paintable_count(), 0);
 
-        // A group is a layer, never geometry — a fill on one paints nothing, matching
-        // `scene::paint_self`.
         let mut group = tree(&[0, 1, 2]);
         group.get_mut(1).unwrap().kind = ShapeKind::Group;
         assert_eq!(group.paintable_count(), 0);
 
-        // A stroke alone is enough to put paint down.
         let mut stroked = tree(&[0, 1, 2]);
         let n = stroked.get_mut(2).unwrap();
         n.strokes = vec![Stroke {

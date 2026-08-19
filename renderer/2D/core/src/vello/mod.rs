@@ -19,12 +19,14 @@
 pub mod abi;
 pub mod blend;
 pub mod draw;
+pub mod editor;
 pub mod effects;
 pub mod glass;
 pub mod gputime;
 pub mod graph;
 pub mod prof;
 pub mod rasterize;
+pub mod rich_editor;
 pub mod svg;
 /// The GPU production sink — executes a `crate::schedule::Schedule` on a Vello backend. Generic
 /// over [`rasterize::RasterBackend`], so both flavors run this one copy; it holds only wgpu + the

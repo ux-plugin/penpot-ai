@@ -3,7 +3,7 @@
 //! Unlike everything else render-vello draws, the editor is **not** part of the neutral document
 //! model or its digest: it is ephemeral interaction state (which shape is being edited, where the
 //! caret sits, what is selected). render-wasm hand-builds all of this on top of Skia's read-only
-//! paragraph API (~2800 lines); render-vello instead drives [`crate::rich_editor::RichEditor`],
+//! paragraph API (~2800 lines); render-vello instead drives [`crate::vello::rich_editor::RichEditor`],
 //! which reuses Parley's `Selection`/`Cursor` (cursor movement, bidi-aware hit-testing, selection
 //! geometry, IME) over a **multi-style** layout, so per-span styles survive editing.
 //!
@@ -11,7 +11,7 @@
 //! lives on the scene's `TextEngine`, which only the render pass touches (D3: the host owns the
 //! frame loop; the renderer owns the GPU and the fonts). The `text_editor_*` ABI runs *outside* that
 //! pass. So the ABI here only records intent — a focused id, theme colours, a queue of edit
-//! commands — and reads back state the render pass cached. The render pass ([`crate::scene`]) drains
+//! commands — and reads back state the render pass cached. The render pass (the backend render pass) drains
 //! the queue against the live `RichEditor`, then draws the caret and selection inline. The host
 //! drives both backends through the *same* `text_editor_*` names (D17), so its editor code is
 //! unchanged.
@@ -21,13 +21,13 @@
 //! (the span model is preserved across edits, but serialising it back through render-wasm's export
 //! JSON is host-coupled — a separate slice).
 
-use render_core::model::ShapeKind;
+use crate::model::ShapeKind;
 
 /// One queued edit, applied by the render pass against the live `PlainEditor`. Coordinates are in
 /// the shape's own space (the host transforms screen → shape before calling, exactly as it does for
 /// render-wasm's `get_caret_position_from_shape_coords`).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum EditorCommand {
+pub enum EditorCommand {
     /// Place the caret at a point (pointer down).
     PointerDown(f32, f32),
     /// Extend the selection to a point (pointer drag / up).
@@ -58,7 +58,7 @@ pub(crate) enum EditorCommand {
     CommitCompose(String),
 }
 
-pub(crate) struct EditorState {
+pub struct EditorState {
     /// The shape being edited, if any.
     pub focused: Option<u128>,
     /// Selection highlight colour (ARGB), set by `text_editor_apply_theme`.
@@ -81,6 +81,9 @@ pub(crate) struct EditorState {
     /// The caret rectangle in shape-local space `[left, top, width, height]`, cached each frame so
     /// `get_cursor_rect` (used for IME candidate placement) can serve it without the `PlainEditor`.
     pub caret_rect: Option<[f32; 4]>,
+    /// The live editor layout's `[width, height]`, cached each frame so `get_text_dimensions` can
+    /// serve the *edited* size (auto-grow reads it every keystroke) without the render-pass layout.
+    pub layout_size: Option<[f32; 2]>,
     /// Caret visibility from the host's blink clock; the render pass draws the caret only when set.
     pub blink_on: bool,
     /// A redraw is needed (focus/selection/blink changed). Polled and cleared by `poll_event`.
@@ -102,6 +105,7 @@ static EDITOR: std::sync::Mutex<EditorState> = std::sync::Mutex::new(EditorState
     text_cache: String::new(),
     selection: (0, 0),
     caret_rect: None,
+    layout_size: None,
     blink_on: true,
     dirty: false,
 });
@@ -111,49 +115,63 @@ fn with_editor<R>(f: impl FnOnce(&mut EditorState) -> R) -> R {
 }
 
 /// The render pass takes the focused id and the pending commands to apply this frame.
-pub(crate) fn take_focus_and_commands() -> (Option<u128>, Vec<EditorCommand>) {
+pub fn take_focus_and_commands() -> (Option<u128>, Vec<EditorCommand>) {
     with_editor(|e| (e.focused, std::mem::take(&mut e.commands)))
 }
 
 /// The render pass reports back what it computed against the live editor: the current text, the
 /// selection byte range, and whether that selection is non-empty. Cleared to empty when nothing is
 /// focused.
-pub(crate) fn set_snapshot(text: String, selection: (usize, usize), caret_rect: Option<[f32; 4]>) {
+pub fn set_snapshot(
+    text: String,
+    selection: (usize, usize),
+    caret_rect: Option<[f32; 4]>,
+    layout_size: Option<[f32; 2]>,
+) {
     with_editor(|e| {
         e.has_selection = selection.0 != selection.1;
         e.text_cache = text;
         e.selection = selection;
         e.caret_rect = caret_rect;
+        e.layout_size = layout_size;
     });
 }
 
 /// Clear the cached editor snapshot (no focused editor this frame).
-pub(crate) fn clear_snapshot() {
+pub fn clear_snapshot() {
     with_editor(|e| {
         e.has_selection = false;
         e.text_cache.clear();
         e.selection = (0, 0);
         e.caret_rect = None;
+        e.layout_size = None;
     });
 }
 
+/// The live editor layout's `[width, height]` cached by the render pass, if `id` is the focused
+/// shape — so `get_text_dimensions` measures what the user is typing, not the stale committed
+/// content. None when unfocused or before the first frame laid the editor out.
+pub fn focused_layout_size(id: u128) -> Option<[f32; 2]> {
+    with_editor(|e| if e.focused == Some(id) { e.layout_size } else { None })
+}
+
 /// Whether overtype (replace) mode is on — read by the render pass when applying an insert.
-pub(crate) fn overtype() -> bool {
+pub fn overtype() -> bool {
     with_editor(|e| e.overtype)
 }
 
 /// The caret colour the render pass should paint with (ARGB).
-pub(crate) fn cursor_color() -> u32 {
+pub fn cursor_color() -> u32 {
     with_editor(|e| e.cursor_color)
 }
 
 /// The selection colour the render pass should paint with (ARGB).
-pub(crate) fn selection_color() -> u32 {
+pub fn selection_color() -> u32 {
     with_editor(|e| e.selection_color)
 }
 
 /// Whether the caret is currently in its visible blink phase.
-pub(crate) fn blink_on() -> bool {
+pub fn blink_on() -> bool {
     with_editor(|e| e.blink_on)
 }
 
@@ -166,15 +184,15 @@ pub extern "C" fn text_editor_apply_theme(selection_color: u32, cursor_color: u3
         e.cursor_color = cursor_color;
         e.dirty = true;
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 /// Begin editing a text shape. Fails (returns false) if the id is not a text shape in the scene —
 /// the host retries next frame, since a just-created box may not have synced yet.
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_focus(a: u32, b: u32, c: u32, d: u32) -> bool {
-    let id = crate::abi::uuid_u128(a, b, c, d);
-    let is_text = crate::abi::with_scene(|scene, _, _| {
+    let id = crate::vello::abi::uuid_u128(a, b, c, d);
+    let is_text = crate::vello::abi::with_scene(|scene, _, _| {
         scene
             .get(id)
             .is_some_and(|n| n.kind == ShapeKind::Text && n.text.is_some())
@@ -190,7 +208,7 @@ pub extern "C" fn text_editor_focus(a: u32, b: u32, c: u32, d: u32) -> bool {
         e.blink_on = true;
         e.dirty = true;
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
     true
 }
 
@@ -205,7 +223,7 @@ pub extern "C" fn text_editor_blur() -> bool {
         e.dirty = true;
         had
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
     had
 }
 
@@ -223,7 +241,7 @@ pub extern "C" fn text_editor_has_focus() -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_has_focus_with_id(a: u32, b: u32, c: u32, d: u32) -> bool {
-    let id = crate::abi::uuid_u128(a, b, c, d);
+    let id = crate::vello::abi::uuid_u128(a, b, c, d);
     with_editor(|e| e.focused == Some(id))
 }
 
@@ -242,7 +260,7 @@ pub extern "C" fn text_editor_get_active_shape_id(buffer_ptr: *mut u32) {
     let Some(id) = with_editor(|e| e.focused) else {
         return;
     };
-    let (a, b, c, d) = crate::abi::uuid_to_quartet(id);
+    let (a, b, c, d) = crate::vello::abi::uuid_to_quartet(id);
     unsafe {
         *buffer_ptr = a;
         *buffer_ptr.add(1) = b;
@@ -261,7 +279,7 @@ pub extern "C" fn text_editor_pointer_down(x: f32, y: f32) {
         e.commands.push(EditorCommand::PointerDown(x, y));
         e.dirty = true;
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 #[unsafe(no_mangle)]
@@ -273,7 +291,7 @@ pub extern "C" fn text_editor_pointer_move(x: f32, y: f32) {
         e.commands.push(EditorCommand::ExtendToPoint(x, y));
         e.dirty = true;
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 #[unsafe(no_mangle)]
@@ -286,7 +304,7 @@ pub extern "C" fn text_editor_pointer_up(x: f32, y: f32) {
         e.pointer_selecting = false;
         e.dirty = true;
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 #[unsafe(no_mangle)]
@@ -298,7 +316,7 @@ pub extern "C" fn text_editor_select_word_boundary(x: f32, y: f32) {
         e.commands.push(EditorCommand::SelectWord(x, y));
         e.dirty = true;
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 #[unsafe(no_mangle)]
@@ -312,7 +330,7 @@ pub extern "C" fn text_editor_select_all() -> bool {
         true
     });
     if ok {
-        crate::abi::request_frame();
+        crate::vello::abi::request_frame();
     }
     ok
 }
@@ -329,14 +347,14 @@ pub extern "C" fn text_editor_update_blink(timestamp_ms: f32) {
             e.dirty = true;
         }
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 /// The caret and selection are drawn *inline* by the render pass when the focused text node is
 /// painted, so there is no separate overlay to render — this only nudges a frame.
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_render_overlay() {
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 /// Return whether a redraw is pending, clearing the flag. The host polls this to decide whether to
@@ -363,7 +381,7 @@ fn enqueue(command: EditorCommand) {
         true
     });
     if queued {
-        crate::abi::request_frame();
+        crate::vello::abi::request_frame();
     }
 }
 
@@ -371,7 +389,7 @@ fn enqueue(command: EditorCommand) {
 /// `insert_text`, which reads the same shared byte buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_insert_text() {
-    let bytes = crate::abi::take_bytes();
+    let bytes = crate::vello::abi::take_bytes();
     if let Ok(text) = String::from_utf8(bytes) {
         if !text.is_empty() {
             enqueue(EditorCommand::Insert(text));
@@ -409,7 +427,7 @@ pub extern "C" fn text_editor_toggle_overtype_mode() {
         e.overtype = !e.overtype;
         e.dirty = true;
     });
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 // --- export (stage 2) -------------------------------------------------------------------------
@@ -491,13 +509,13 @@ pub extern "C" fn text_editor_get_selection(buffer_ptr: *mut u32) -> bool {
 /// nudges a frame; the caret stays where it is until pre-edit text arrives.
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_composition_start() {
-    crate::abi::request_frame();
+    crate::vello::abi::request_frame();
 }
 
 /// Update the IME pre-edit text (read from the shared byte buffer).
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_composition_update() {
-    let bytes = crate::abi::take_bytes();
+    let bytes = crate::vello::abi::take_bytes();
     if let Ok(text) = String::from_utf8(bytes) {
         enqueue(EditorCommand::SetCompose(text));
     }
@@ -506,7 +524,7 @@ pub extern "C" fn text_editor_composition_update() {
 /// End the IME composition, committing the final text (empty cancels the pre-edit).
 #[unsafe(no_mangle)]
 pub extern "C" fn text_editor_composition_end() {
-    let bytes = crate::abi::take_bytes();
+    let bytes = crate::vello::abi::take_bytes();
     let text = String::from_utf8(bytes).unwrap_or_default();
     enqueue(EditorCommand::CommitCompose(text));
 }

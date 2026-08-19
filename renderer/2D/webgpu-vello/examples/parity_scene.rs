@@ -39,7 +39,7 @@ fn main() {
     let mut renderer = ClassicRenderer::new(&device);
     let mut ctx = renderer.new_scene(w as u16, h as u16);
     let mut text = render_core::vello::text::TextState::new();
-    draw_scene(&mut ctx, &mut (), &ClassicEnv, &mut text, &scene, Affine::IDENTITY);
+    draw_scene(&mut ctx, &mut (), &ClassicEnv, &mut text, &scene, Affine::IDENTITY, &Default::default());
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("parity target"),

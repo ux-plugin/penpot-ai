@@ -66,7 +66,7 @@ pub fn wasm_error(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 },
                 Err(__payload) => {
-                    crate::mem::set_error_code(0x02); // critical, same as Error::Critical
+                    crate::mem::set_error_code(0x02);
                     crate::mem::free_bytes().expect("Failed to free bytes");
                     std::panic::resume_unwind(__payload);
                 }
@@ -99,7 +99,6 @@ fn crate_error_result_inner_type(ty: &Type) -> Option<&Type> {
     if args.len() != 1 {
         return None;
     }
-    // Accept crate::error::Result<T> or bare Result<T> (from use)
     let ok = segs.len() == 1
         || (segs.len() == 3 && segs[0].ident == "crate" && segs[1].ident == "error");
     if !ok {
@@ -133,7 +132,7 @@ pub fn derive_to_cljs(input: TokenStream) -> TokenStream {
         eprintln!("Error writing enum {} to file: {}", enum_id, e);
     }
 
-    TokenStream::new() // we don't need to return any generated code
+    TokenStream::new()
 }
 
 fn parse_variants(variants: &[syn::Variant]) -> Result<HashMap<String, u32>> {
@@ -188,7 +187,6 @@ fn write_enum_to_temp_file(js_code: &str) -> std::io::Result<()> {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR environment variable is not set");
     let out_path = Path::new(&out_dir).join("render_wasm_shared.js");
 
-    // clean the file the first time this function is called
     INIT.call_once(|| {
         fs::OpenOptions::new()
             .create(true)

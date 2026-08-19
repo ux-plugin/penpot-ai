@@ -93,7 +93,6 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(c * 2.0 - 1.0, 0.0, 1.0);
 }
 "#,
-    // fractalNoise() is shared, appended at build time in `texture_wgsl()`.
     r#"
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -153,7 +152,6 @@ fn rgb2hue(c: vec3<f32>) -> f32 {
     return fract(h / 6.0);
 }
 "#,
-    // fractalNoise() is shared, appended at build time in `noise_wgsl()`.
     r#"
 fn slotColor(idx: i32, noiseRgb: vec3<f32>) -> vec4<f32> {
     var kind: f32;
@@ -251,10 +249,10 @@ pub fn texture_shader(noise_size: f32, radius: f32, clip_to_shape: bool, hidden:
     Some(CustomShader {
         wgsl: texture_wgsl(),
         reach: magnitude_px,
-        param_vec4s: 2, // TEXTURE_WGSL declares `array<vec4<f32>, 2>` (resolution + 3 params).
+        param_vec4s: 2,
         params,
         reads_backdrop: false,
-        acceptable_downscale: 1.0, // grain/texture is high-frequency — never downsample.
+        acceptable_downscale: 1.0,
     })
 }
 
@@ -282,8 +280,6 @@ pub fn noise_shader(
     let slot_count = slots.len().clamp(1, MAX_NOISE_SLOTS);
     let density = density.clamp(0.0, 1.0);
 
-    // Density → coverage threshold (mirrors render-wasm's mapping): a single slot uses d/(d+1) so
-    // full density still leaves the fill mostly visible; 2+ slots map density straight to coverage.
     let target_p_less = if slot_count <= 1 { 1.0 / (density + 1.0) } else { 1.0 - density };
     let threshold = percentile_threshold(target_p_less);
 
@@ -298,8 +294,6 @@ pub fn noise_shader(
         _ => (0.0, 0.0, 0.0),
     };
 
-    // Softness → feather half-width in n.r space (Skia maps it to a blur; a feather is the cheap
-    // single-pass equivalent since noise/displace carry no blur barrier).
     let feather = softness.clamp(0.0, 1.0) * FRACTAL_NOISE_SIGMA;
     let grain_divisor = noise_size.max(1.0);
 
@@ -310,7 +304,6 @@ pub fn noise_shader(
         colors[i] = s.rgba;
     }
 
-    // Layout: u[0].zw + u[1..8]; the sink prepends resolution into u[0].xy.
     let mut params = vec![
         grain_divisor,
         if apply_to_fill { 1.0 } else { 0.0 },
@@ -334,10 +327,10 @@ pub fn noise_shader(
     Some(CustomShader {
         wgsl: noise_wgsl(),
         reach: 0.0,
-        param_vec4s: 8, // NOISE_WGSL declares `array<vec4<f32>, 8>` (resolution + 30 params).
+        param_vec4s: 8,
         params,
         reads_backdrop: false,
-        acceptable_downscale: 1.0, // grain/texture is high-frequency — never downsample.
+        acceptable_downscale: 1.0,
     })
 }
 
@@ -429,7 +422,7 @@ mod tests {
     fn texture_shader_packs_expected_params() {
         let s = texture_shader(20.0, 10.0, true, false).expect("visible texture");
         assert!(!s.reads_backdrop, "texture is a spread");
-        assert_eq!(s.params, vec![30.0, 20.0, 1.0]); // magPx=radius*3, grain=noise_size, clip=1
+        assert_eq!(s.params, vec![30.0, 20.0, 1.0]);
         assert!((s.reach - 30.0).abs() < 1e-6);
     }
 
@@ -447,8 +440,6 @@ mod tests {
         ];
         let s = noise_shader(&slots, 16.0, 0.5, 0.3, true, false).expect("visible noise");
         assert!(!s.reads_backdrop, "noise is a spread");
-        // 14 scalar params + 4 slots × 4 = 30; with the sink's 2-float resolution prefix that's
-        // 32 floats = 8 vec4, matching NOISE_WGSL's `array<vec4<f32>, 8>`.
         assert_eq!(s.params.len(), 30);
         assert_eq!((2 + s.params.len()) % 4, 0);
     }

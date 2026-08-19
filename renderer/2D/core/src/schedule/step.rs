@@ -241,11 +241,7 @@ impl Step {
     pub fn rewrites(&self) -> Vec<SurfaceRef> {
         match self {
             Step::Composite { to, .. } => vec![*to],
-            // The blurred shadow composites (SrcOver) into the tile scope behind the body, so like a
-            // `Composite` it read-modify-writes its destination rather than producing it fresh.
             Step::PaintPathShadow { write_to, .. } => vec![*write_to],
-            // The inner-shadow band composites (SrcOver) into the tile scope OVER the body — also a
-            // read-modify-write of its destination.
             Step::PaintInnerShadow { write_to, .. } => vec![*write_to],
             Step::BeginLayer { write_to, .. } | Step::EndLayer { write_to, .. } => vec![*write_to],
             _ => Vec::new(),

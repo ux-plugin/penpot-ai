@@ -74,8 +74,6 @@ fn radial(g: GradientGeometry, stops: &[ColorStop]) -> Option<(Gradient, Affine)
         return None;
     }
     let radius = radius_sq.sqrt().max(1e-6);
-    // `+ 90°` because the stored direction is the gradient's *vertical* axis, which is what
-    // makes an un-squashed radial look identical however it is rotated — until `width` is not 1.
     let angle = dy.atan2(dx) + core::f64::consts::FRAC_PI_2;
     let centre = point(g.start);
 
@@ -102,9 +100,6 @@ fn angular(g: GradientGeometry, stops: &[ColorStop]) -> Option<(Gradient, Affine
     let v2x = f64::from(g.width.0) - cx;
     let v2y = f64::from(g.width.1) - cy;
 
-    // Column-major `[a, b, c, d, e, f]`: `(a, b)` is the x-basis and `(c, d)` the y-basis. Skia
-    // spells the same matrix row-major in `new_all`, which is the element-order trap this
-    // codebase keeps meeting — writing the axes in Skia's order here transposes the shear.
     let axes = Affine::new([2.0 * v1x, 2.0 * v1y, 2.0 * v2x, 2.0 * v2y, 0.0, 0.0]);
     if axes.determinant().abs() < 1e-12 {
         return None;
@@ -150,9 +145,6 @@ fn wrap_angular_stops(stops: &[ColorStop]) -> Vec<ColorStop> {
         (false, true) => 1.0 - last.offset,
         (false, false) => unreachable!("handled above"),
     };
-    // Component-wise in sRGB, matching Skia's `lerp_color` — which interpolates the raw channels
-    // with no colour-space conversion. A perceptually smarter blend here would be a *better*
-    // seam colour and a worse match, and the two backends must agree on the pixel.
     let seam = |a: ColorStop, b: ColorStop| {
         if gap <= EPSILON {
             return a.color;
@@ -183,15 +175,6 @@ fn wrap_angular_stops(stops: &[ColorStop]) -> Vec<ColorStop> {
     out
 }
 
-// --- diamond -----------------------------------------------------------------------------
-//
-// The diamond gradient is Penpot's, not CSS's: the ramp sampled along the L1 (Manhattan)
-// distance `|x| + |y|` instead of a radius or an angle. peniko has no such kind, so Vello draws
-// it by *baking* the field to a texture and sampling it as an image. Both the field transform
-// and the bake live here — shared and testable without a GPU — so render-vello only stages the
-// bytes, and there is no second, divergent copy of the maths (the same argument as the gradients
-// and the selection rect).
-
 /// The map from unit-box space into diamond-local space, where `|p.x| + |p.y| = 1` is the
 /// gradient's outer edge. `None` when the span is degenerate — no direction to build the field
 /// along, so painting it would be a guess.
@@ -210,13 +193,11 @@ pub fn diamond_transform(g: GradientGeometry) -> Option<Affine> {
     let (cos_a, sin_a) = (angle.cos(), angle.sin());
     let aspect = if g.width.0 > 0.0 { f64::from(g.width.0) } else { 1.0 };
 
-    // local = M_inv · (coord − centre). kurbo's column-major `[a, b, c, d, e, f]` maps
-    // `(x, y) → (a·x + c·y + e, b·x + d·y + f)`, so the linear rows go in as (a, c) then (b, d).
     let linear = Affine::new([
-        cos_a / r,          // a: local.x from coord.x
-        -sin_a / (r * aspect), // b: local.y from coord.x
-        sin_a / r,          // c: local.x from coord.y
-        cos_a / (r * aspect),  // d: local.y from coord.y
+        cos_a / r,
+        -sin_a / (r * aspect),
+        sin_a / r,
+        cos_a / (r * aspect),
         0.0,
         0.0,
     ]);
@@ -234,7 +215,6 @@ pub fn sample_stops(stops: &[ColorStop], t: f32) -> [u8; 4] {
         return [0, 0, 0, 0];
     }
     let t = t.clamp(0.0, 1.0);
-    // Before the first / after the last stop, clamp to the end colour (Skia's `TileMode::Clamp`).
     if t <= stops[0].offset {
         return srgb_u8(stops[0]);
     }
@@ -282,7 +262,6 @@ pub fn bake_diamond_rgba(g: GradientGeometry, stops: &[ColorStop], size: u32) ->
     let s = f64::from(size);
     for y in 0..size {
         for x in 0..size {
-            // Sample at pixel centres so the field is symmetric about the tile.
             let u = (f64::from(x) + 0.5) / s;
             let v = (f64::from(y) + 0.5) / s;
             let p = inv * Point::new(u, v);
@@ -417,7 +396,6 @@ mod tests {
         assert_ne!(sheared, square);
 
         let [a, b, c, d, ..] = sheared.as_coeffs();
-        // x-basis and y-basis are not perpendicular — that is the shear, surviving.
         assert!((a * c + b * d).abs() > 1e-9);
     }
 
@@ -475,9 +453,9 @@ mod tests {
             },
         ];
         let g = GradientGeometry {
-            start: (0.5, 0.5), // centre of the unit tile
-            end: (1.0, 0.5),   // radius 0.5 along +x, no rotation
-            width: (1.0, 0.0), // square metric
+            start: (0.5, 0.5),
+            end: (1.0, 0.5),
+            width: (1.0, 0.0),
         };
         let size = 64u32;
         let rgba = bake_diamond_rgba(g, stops, size).expect("not degenerate");
@@ -487,15 +465,10 @@ mod tests {
         };
         let c = size / 2;
 
-        // Centre: t≈0 → red.
         let [r, _, b, _] = at(c, c);
         assert!(r > 200 && b < 60, "centre should be the start colour, got {:?}", at(c, c));
 
-        // A diamond, not a circle: with the span 0.5 along x, the edge (t=1) is at x=1.0 on the
-        // axis but pulled in on the diagonal. So the point straight out along x at distance ~0.5
-        // is near the end colour, while a diagonal point the *same Euclidean* distance is further
-        // along the ramp — the L1 metric reaches 1 sooner on the diagonal.
-        let axis = at((0.98 * f64::from(size)) as u32, c); // far along +x → blue-ish
+        let axis = at((0.98 * f64::from(size)) as u32, c);
         assert!(axis[2] > axis[0], "far along the axis should trend to the end colour: {axis:?}");
     }
 

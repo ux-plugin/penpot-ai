@@ -27,8 +27,7 @@ pub use render_core::vello::abi;
 // executor). Re-exported so `crate::sink::Sink` in `tiles.rs` resolves unchanged; the hybrid backend
 // (`hybrid_backend.rs`) plugs into it as the `RasterBackend`.
 pub use render_core::vello::sink;
-pub mod editor;
-pub mod rich_editor;
+pub use render_core::vello::{editor, rich_editor};
 
 // The device-generic wgpu effect executor + profiler now live in render_core::vello; re-export their
 // modules under the same crate paths (`crate::blend` / `glass` / `graph` / `prof`) the sink uses, so

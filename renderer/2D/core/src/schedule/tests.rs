@@ -79,7 +79,6 @@ fn a_plain_shape_paints_direct_into_its_tile_then_folds_to_target() {
     let scene = scene_with(vec![rect(1, 100.0, 100.0, 300.0, 300.0)]);
     let sched = build(&scene, VIEW, W, H);
 
-    // Exactly one Paint, writing directly into a TileOutput (no effect surface).
     let paints: Vec<_> = sched
         .steps
         .iter()
@@ -90,7 +89,6 @@ fn a_plain_shape_paints_direct_into_its_tile_then_folds_to_target() {
         paints[0],
         Step::Paint { write_to, .. } if write_to.role == SurfaceRole::TileOutput
     ));
-    // And it folds to Target in the finalize pass.
     assert!(sched.steps.iter().any(|s| matches!(
         s,
         Step::Composite { to, .. } if to.is_target()
@@ -104,12 +102,10 @@ fn a_drop_shadow_paints_its_whole_body_into_an_effect_surface_then_composites_it
     let scene = scene_with(vec![r]);
     let sched = build(&scene, VIEW, W, H);
 
-    // The body paints into a RasterEffectOutput surface (one Paint, to the effect surface).
     let paint = find(&sched.steps, |s| {
         matches!(s, Step::Paint { write_to, .. } if matches!(write_to.role, SurfaceRole::RasterEffectOutput(1)))
     });
     assert!(paint.is_some(), "spread body must paint into its own effect surface");
-    // That surface is then composited into a tile — and the produce precedes the composite.
     let composite = find(&sched.steps, |s| {
         matches!(s, Step::Composite { from, to, .. }
             if matches!(from.role, SurfaceRole::RasterEffectOutput(1)) && to.role == SurfaceRole::TileOutput)
@@ -120,8 +116,6 @@ fn a_drop_shadow_paints_its_whole_body_into_an_effect_surface_then_composites_it
 
 #[test]
 fn a_spread_effect_that_spills_past_a_tile_edge_composites_into_the_neighbour() {
-    // Body hugs the x=512 boundary; a big shadow pushes the extrect across it, so the one effect
-    // surface must composite into both tile columns — the spill the seam bug dropped.
     let mut r = rect(1, 360.0, 100.0, 500.0, 300.0);
     r.shadows = vec![drop_shadow(60.0, 20.0, Vec2::new(40.0, 0.0))];
     let scene = scene_with(vec![r]);
@@ -146,7 +140,6 @@ fn a_spread_effect_that_spills_past_a_tile_edge_composites_into_the_neighbour() 
 
 #[test]
 fn a_lower_plain_shape_paints_before_a_higher_shadowed_shape_composites() {
-    // Z-order: shape 1 (plain, below) then shape 2 (shadowed, above), both in tile (0,0).
     let mut hi = rect(2, 120.0, 120.0, 320.0, 320.0);
     hi.shadows = vec![drop_shadow(30.0, 0.0, Vec2::new(10.0, 10.0))];
     let scene = scene_with(vec![rect(1, 100.0, 100.0, 300.0, 300.0), hi]);
@@ -168,9 +161,6 @@ fn a_lower_plain_shape_paints_before_a_higher_shadowed_shape_composites() {
 
 #[test]
 fn a_plain_opacity_group_isolates_as_an_in_scene_layer() {
-    // Group 10 at 50% opacity holds two overlapping plain rects. Isolation is still required (the
-    // overlap must not double-composite), but nothing in the subtree needs a raster surface — so the
-    // group folds in as an in-scene `PushLayer`/`PopLayer` bracket, no `ScopeOf`, no separate submit.
     let scene = scene_tree(
         vec![10],
         vec![
@@ -181,7 +171,6 @@ fn a_plain_opacity_group_isolates_as_an_in_scene_layer() {
     );
     let sched = build(&scene, VIEW, W, H);
 
-    // No scope surface, and no fold composite off one.
     assert!(
         !sched.steps.iter().any(|s| matches!(s, Step::Paint { write_to, .. } if matches!(write_to.role, SurfaceRole::ScopeOf(_)))),
         "a plain opacity group must not open a scope surface"
@@ -191,7 +180,6 @@ fn a_plain_opacity_group_isolates_as_an_in_scene_layer() {
         "a layer group has no scope to fold"
     );
 
-    // The whole group is one coalesced tile paint: push the layer, both children in z-order, pop.
     let tile_paints: Vec<_> = sched
         .steps
         .iter()
@@ -213,16 +201,11 @@ fn a_plain_opacity_group_isolates_as_an_in_scene_layer() {
 
 #[test]
 fn a_group_with_an_effect_in_its_subtree_uses_a_scope_surface() {
-    // A shadowed child forces a raster surface (its `Composite` breaks the batch), and a layer can't
-    // span two scene renders — so the enclosing opacity group must isolate into its own `ScopeOf`,
-    // folded at group opacity, rather than an in-scene layer.
     let mut child = rect(1, 100.0, 100.0, 300.0, 300.0);
     child.shadows = vec![drop_shadow(30.0, 0.0, Vec2::new(10.0, 10.0))];
     let scene = scene_tree(vec![10], vec![group(10, 0.5, vec![1]), child]);
     let sched = build(&scene, VIEW, W, H);
 
-    // The shadowed child spreads into its own effect surface, which composites into the group's
-    // ScopeOf — so the scope is a `Composite` target (a rewrite), not a `Paint` target.
     assert!(
         sched.steps.iter().any(|s| s.rewrites().iter().any(|r| matches!(r.role, SurfaceRole::ScopeOf(10)))),
         "a group with an effect in its subtree isolates into a scope surface"
@@ -262,7 +245,6 @@ fn a_fully_opaque_group_needs_no_scope() {
 
 #[test]
 fn a_masked_group_brackets_its_mask_in_a_dstin_sublayer_after_the_content() {
-    // A masked group at opacity 1 (trivially painted, but masked): mask child id 2, content id 3.
     let mut g = group(1, 1.0, vec![2, 3]);
     g.masked = true;
     let mask = rect(2, 100.0, 100.0, 300.0, 300.0);
@@ -270,7 +252,6 @@ fn a_masked_group_brackets_its_mask_in_a_dstin_sublayer_after_the_content() {
     let scene = scene_tree(vec![1], vec![g, mask, content]);
     let sched = build(&scene, VIEW, W, H);
 
-    // The whole single-tile group coalesces into one Paint step; assert the op ORDER within it.
     let step = sched
         .steps
         .iter()
@@ -288,7 +269,6 @@ fn a_masked_group_brackets_its_mask_in_a_dstin_sublayer_after_the_content() {
     assert!(push_mask < mask_body, "the DstIn sublayer opens before the mask body");
     assert!(mask_body < ops.len() - 1, "two PopLayers close the mask and the isolation after the mask");
 
-    // The mask child is consumed as the mask, never drawn as ordinary content.
     let mask_draws: usize = sched.steps.iter().map(|s| bodies(s).iter().filter(|&&b| b == 2).count()).sum();
     assert_eq!(mask_draws, 1, "mask child drawn exactly once (as the mask, not as content)");
 }
@@ -354,8 +334,6 @@ fn a_glass_shape_schedules_as_a_gather() {
 
 #[test]
 fn a_gather_backdrop_is_composed_after_the_shapes_below_it_paint() {
-    // Z-order: a lower plain shape, then a higher background-blur shape over it. The backdrop must
-    // freeze AFTER the lower shape paints (so the blur samples it) and reads the tile it painted.
     let lower = rect(1, 100.0, 100.0, 400.0, 400.0);
     let mut glass = rect(2, 150.0, 150.0, 350.0, 350.0);
     glass.background_blur = Some(16.0);
@@ -393,8 +371,6 @@ fn the_schedule_dependency_graph_is_acyclic_and_in_natural_order() {
 
 #[test]
 fn coalesce_merges_adjacent_plain_shapes_into_one_paint() {
-    // Two plain rects in the same tile (0,0), nothing between them → one batched Paint of both, in
-    // z-order. This is the optimization: N plain shapes become one `renderer.render`, not N.
     let scene = scene_with(vec![rect(1, 50.0, 50.0, 200.0, 200.0), rect(2, 60.0, 60.0, 210.0, 210.0)]);
     let sched = build(&scene, VIEW, W, H);
 
@@ -409,8 +385,6 @@ fn coalesce_merges_adjacent_plain_shapes_into_one_paint() {
 
 #[test]
 fn coalesce_breaks_a_plain_run_at_an_interleaved_effect() {
-    // Z-order in tile (0,0): plain(1), shadowed(2), plain(3). The shadow must layer between 1 and 3,
-    // so they must NOT share a batch — two separate tile paints, with the effect composite between.
     let mut mid = rect(2, 70.0, 70.0, 220.0, 220.0);
     mid.shadows = vec![drop_shadow(20.0, 0.0, Vec2::new(8.0, 8.0))];
     let scene = scene_with(vec![
@@ -437,7 +411,6 @@ fn custom(reads_backdrop: bool, reach: f32) -> crate::model::CustomShader {
 
 #[test]
 fn a_backdrop_reading_custom_shader_schedules_as_a_gather() {
-    // Declared to sample the backdrop → the expensive, z-serial gather path (and the resolution cap).
     let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
     r.upsert_effect(crate::model::EffectSlot::Custom, custom(true, 8.0));
     let scene = scene_with(vec![r]);
@@ -456,7 +429,6 @@ fn a_backdrop_reading_custom_shader_schedules_as_a_gather() {
 
 #[test]
 fn a_body_only_custom_shader_schedules_as_a_spread_not_a_gather() {
-    // Declared to read only its own body → the cheap spread path: its own effect surface, no backdrop.
     let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
     r.upsert_effect(crate::model::EffectSlot::Custom, custom(false, 8.0));
     let scene = scene_with(vec![r]);
@@ -477,8 +449,6 @@ fn a_body_only_custom_shader_schedules_as_a_spread_not_a_gather() {
 #[test]
 fn a_chain_of_spread_effects_keeps_order_and_schedules_one_spread_surface() {
     use crate::model::EffectSlot;
-    // [texture, noise] — two body-only spreads. They chain over one effect surface (the sink threads
-    // each output into the next), so the schedule still emits a single RasterEffectOutput spread.
     let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
     r.upsert_effect(EffectSlot::Texture, custom(false, 12.0));
     r.upsert_effect(EffectSlot::Noise, custom(false, 0.0));
@@ -488,7 +458,6 @@ fn a_chain_of_spread_effects_keeps_order_and_schedules_one_spread_surface() {
         "call order is chain order"
     );
     assert_eq!(r.spread_shaders().count(), 2);
-    // The surface must be padded to the largest reach among the chained spreads.
     assert!((r.max_spread_reach() - 12.0).abs() < 1e-6);
 
     let scene = scene_with(vec![r]);
@@ -508,11 +477,9 @@ fn upsert_updates_in_place_and_clear_removes_only_its_slot() {
     let mut r = rect(1, 150.0, 150.0, 350.0, 350.0);
     r.upsert_effect(EffectSlot::Texture, custom(false, 12.0));
     r.upsert_effect(EffectSlot::Noise, custom(false, 0.0));
-    // Re-setting texture (a param edit) keeps it first, does not move it after noise.
     r.upsert_effect(EffectSlot::Texture, custom(false, 20.0));
     assert_eq!(r.effects[0].slot, EffectSlot::Texture);
     assert!((r.effects[0].shader.reach - 20.0).abs() < 1e-6);
-    // Clearing texture leaves noise intact.
     r.remove_effect(EffectSlot::Texture);
     assert_eq!(r.effects.iter().map(|e| e.slot).collect::<Vec<_>>(), vec![EffectSlot::Noise]);
 }
@@ -545,16 +512,13 @@ fn a_dragged_shape_schedules_into_the_tile_it_moves_into() {
     use super::builder::build_visible;
     use crate::host::Modifiers;
 
-    // A small rect wholly inside tile column 0 (0..512 page px at identity view).
     let scene = scene_with(vec![rect(1, 10.0, 10.0, 100.0, 100.0)]);
     let visible: std::collections::HashSet<_> =
         crate::tiling::visible_tiles(VIEW, W, H).into_iter().collect();
 
-    // Committed (no gesture): the body paints into tile column 0.
     let base = build_visible(&scene, VIEW, &Modifiers::new(), &visible, None);
     assert_eq!(body_tile_cols(&base.steps, 1), vec![0], "committed body lives in tile column 0");
 
-    // Dragged +600px right: the rect now sits in tile column 1 (512..1024) and must be scheduled there.
     let mut mods = Modifiers::new();
     mods.insert(1, Affine::translate((600.0, 0.0)));
     let moved = build_visible(&scene, VIEW, &mods, &visible, None);
@@ -570,7 +534,7 @@ fn a_dragged_shape_schedules_into_the_tile_it_moves_into() {
 /// tile-clipped body and drew the shadow at every internal tile edge — a grid over the shape.
 #[test]
 fn an_inner_shadow_isolates_instead_of_painting_per_tile() {
-    let mut r = rect(1, 10.0, 10.0, 300.0, 900.0); // tall enough to straddle several tiles
+    let mut r = rect(1, 10.0, 10.0, 300.0, 900.0);
     r.shadows.push(super::super::model::Shadow {
         color: peniko::Color::BLACK,
         blur: 8.0,

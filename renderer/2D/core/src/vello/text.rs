@@ -12,6 +12,7 @@
 //! to build, so it is kept across frames on the backend, not here.
 
 use crate::vello::draw::{set_paint, DrawEnv};
+use crate::vello::rich_editor::{EditorCommandRef, RichEditor};
 use glifo::Glyph;
 use parley::fontique::{FontInfoOverride, GenericFamily};
 use parley::{
@@ -31,11 +32,28 @@ use vello_example_scenes::RenderingContext;
 pub struct TextState {
     pub font_cx: FontContext,
     pub layout_cx: LayoutContext<TextBrush>,
+    /// This consumer's position in the shared font registry — see
+    /// [`crate::vello::abi::fonts_since`]. Starts at 0 so a `TextState` created after faces were
+    /// uploaded still registers all of them on its first sync.
+    registry_cursor: usize,
+    /// The live editor for the focused text shape, if any ([`RichEditor`] holds the span model, its
+    /// multi-style layout, and the caret/selection over it). Rebuilt when focus moves; `None` when
+    /// nothing is being edited. See [`crate::vello::editor`] for why the ABI only queues into this
+    /// via the render pass.
+    pub editor: Option<RichEditor>,
+    /// The shape id `editor` was built for, so a focus change triggers a rebuild.
+    pub editor_for: Option<u128>,
 }
 
 impl Default for TextState {
     fn default() -> Self {
-        Self { font_cx: FontContext::new(), layout_cx: LayoutContext::new() }
+        Self {
+            font_cx: FontContext::new(),
+            layout_cx: LayoutContext::new(),
+            registry_cursor: 0,
+            editor: None,
+            editor_for: None,
+        }
     }
 }
 
@@ -45,15 +63,16 @@ impl TextState {
         Self::default()
     }
 
-    /// Register every face the host has uploaded since the last call into the font collection, under
-    /// the same alias [`crate::vello::abi::font_alias`] produces — so [`DrawEnv::font_alias`] finds it. Drains
-    /// the ABI queue (each face staged at most once, deduped by alias there), so it is idempotent; the
-    /// backend calls it once per frame before laying text out. Mirrors the hybrid `NeutralModelScene`'s
-    /// `sync_fonts`, shared here so the classic backend registers faces the identical way.
+    /// Register every face published since this state's last call into the font collection, under
+    /// the same alias [`crate::vello::abi::font_alias`] produces — so [`DrawEnv::font_alias`] finds it.
+    /// Reads the shared registry through this state's own cursor ([`crate::vello::abi::fonts_since`]),
+    /// so any number of `TextState`s — one per renderer, one for measurement — each receive every
+    /// face exactly once, regardless of creation order. Idempotent; the backend calls it once per
+    /// frame before laying text out.
     pub fn sync_fonts(&mut self) {
-        for font in crate::vello::abi::take_pending_fonts() {
+        for font in crate::vello::abi::fonts_since(&mut self.registry_cursor) {
             let registered = self.font_cx.collection.register_fonts(
-                font.bytes.into(),
+                font.bytes,
                 Some(FontInfoOverride {
                     family_name: Some(&font.alias),
                     width: None,
@@ -62,14 +81,337 @@ impl TextState {
                     axes: None,
                 }),
             );
-            // An emoji face also joins Parley's `Emoji` generic family, so a cluster the primary font
-            // lacks falls through to it (glifo then draws its COLR/bitmap layers). `append` accumulates.
             if font.is_emoji {
                 let ids = registered.iter().map(|(family_id, _)| *family_id);
                 self.font_cx.collection.append_generic_families(GenericFamily::Emoji, ids);
             }
         }
     }
+
+    /// Bring the editor in step with the ABI: rebuild it when focus moves, apply the queued edit
+    /// commands, and report the selection state back. Runs inside the render pass — the only place
+    /// the `FontContext` the edited text lays out against is reachable (see
+    /// [`crate::vello::editor`]). Shared by both backends: each calls it once per frame with the
+    /// live scene before drawing.
+    pub fn sync_editor(&mut self, scene: &m::Scene) {
+        let (focused, commands) = crate::vello::editor::take_focus_and_commands();
+        let Self { font_cx, layout_cx, editor, editor_for, .. } = self;
+
+        let Some(id) = focused else {
+            *editor = None;
+            *editor_for = None;
+            crate::vello::editor::clear_snapshot();
+            return;
+        };
+
+        if *editor_for != Some(id) {
+            *editor = scene.get(id).and_then(|node| node.text.as_ref()).map(|block| {
+                let width = scene.get(id).map_or(0.0, |n| n.bounds.width() as f32);
+                RichEditor::build(block, width, font_cx, layout_cx)
+            });
+            *editor_for = Some(id);
+        }
+
+        let Some(ed) = editor.as_mut() else {
+            crate::vello::editor::clear_snapshot();
+            return;
+        };
+
+        let overtype = crate::vello::editor::overtype();
+        for command in &commands {
+            use crate::vello::editor::EditorCommand as C;
+            let borrowed = match command {
+                C::PointerDown(x, y) => EditorCommandRef::PointerDown(*x, *y),
+                C::ExtendToPoint(x, y) => EditorCommandRef::ExtendToPoint(*x, *y),
+                C::SelectWord(x, y) => EditorCommandRef::SelectWord(*x, *y),
+                C::SelectAll => EditorCommandRef::SelectAll,
+                C::Insert(s) => EditorCommandRef::Insert(s),
+                C::InsertParagraph => EditorCommandRef::InsertParagraph,
+                C::DeleteBackward(word) => EditorCommandRef::DeleteBackward(*word),
+                C::DeleteForward(word) => EditorCommandRef::DeleteForward(*word),
+                C::Move { direction, word, extend } => {
+                    EditorCommandRef::Move { direction: *direction, word: *word, extend: *extend }
+                }
+                C::SetCompose(s) => EditorCommandRef::SetCompose(s),
+                C::CommitCompose(s) => EditorCommandRef::CommitCompose(s),
+            };
+            ed.apply(borrowed, overtype, font_cx, layout_cx);
+        }
+
+        let (start, end) = ed.selection_range();
+        let caret = Some(ed.caret_rect(CARET_WIDTH));
+        crate::vello::editor::set_snapshot(
+            ed.text().to_string(),
+            (start, end),
+            caret,
+            Some(ed.layout_size()),
+        );
+    }
+}
+
+/// Caret width in text-local units. Parley draws the caret as a thin rect of this width.
+pub const CARET_WIDTH: f32 = 2.0;
+
+/// Draw a text node, routing through the focused editor when this node is being edited: the editor's
+/// own layout (so caret/selection align with the drawn glyphs) instead of the committed content.
+/// The non-edited path is [`draw_text_block`] unchanged.
+pub fn draw_text_node<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    resources: &mut C::Resources,
+    state: &mut TextState,
+    env: &E,
+    node: &m::Node,
+    matrix: Affine,
+) {
+    if state.editor_for == Some(node.id) && state.editor.is_some() {
+        draw_focused_editor(ctx, resources, state, env, node, matrix);
+        return;
+    }
+    draw_text_block(
+        ctx,
+        resources,
+        &mut state.font_cx,
+        &mut state.layout_cx,
+        env,
+        node,
+        matrix,
+        None,
+    );
+}
+
+/// Draw a text shape that is being edited: its selection highlights, then its glyphs (from the
+/// editor's own layout), then the caret — all in the node's space so they align with each other.
+pub fn draw_focused_editor<C: RenderingContext, E: DrawEnv>(
+    ctx: &mut C,
+    resources: &mut C::Resources,
+    state: &TextState,
+    env: &E,
+    node: &m::Node,
+    matrix: Affine,
+) {
+    let Some(editor) = state.editor.as_ref() else {
+        return;
+    };
+    let (ox, oy) = (node.bounds.x0, node.bounds.y0);
+
+    ctx.set_transform(matrix);
+    ctx.set_paint_transform(Affine::IDENTITY);
+    ctx.set_paint(crate::vello::abi::argb_to_color(crate::vello::editor::selection_color()));
+    for bbox in editor.selection_geometry() {
+        ctx.fill_rect(&Rect::new(ox + bbox.x0, oy + bbox.y0, ox + bbox.x1, oy + bbox.y1));
+    }
+
+    draw_layout(
+        ctx,
+        resources,
+        env,
+        editor.layout(),
+        ox as f32,
+        oy as f32,
+        node.bounds,
+        &node.strokes,
+        None,
+    );
+
+    if crate::vello::editor::blink_on() {
+        let [cx, cy, cw, ch] = editor.caret_rect(CARET_WIDTH);
+        ctx.set_transform(matrix);
+        ctx.set_paint_transform(Affine::IDENTITY);
+        ctx.set_paint(crate::vello::abi::argb_to_color(crate::vello::editor::cursor_color()));
+        ctx.fill_rect(&Rect::new(
+            ox + f64::from(cx),
+            oy + f64::from(cy),
+            ox + f64::from(cx + cw),
+            oy + f64::from(cy + ch),
+        ));
+    }
+}
+
+/// The measurement-only `DrawEnv`: font aliases resolve through the shared ABI naming (the same
+/// names every backend registers under), and images never resolve — measurement lays out glyphs,
+/// it does not paint.
+struct MeasureEnv;
+
+impl DrawEnv for MeasureEnv {
+    fn resolve_image(&self, _id: u128) -> Option<vello_common::paint::ImageId> {
+        None
+    }
+    fn font_alias(&self, id: u128, weight: u16, italic: bool) -> String {
+        crate::vello::abi::font_alias(id, weight, italic)
+    }
+}
+
+std::thread_local! {
+    /// The measurement consumer: its own Parley state, fed from the shared font registry through
+    /// its own cursor ([`crate::vello::abi::fonts_since`]) — the third registry consumer besides
+    /// the two backends. Lives outside any renderer so `get_text_dimensions` /
+    /// `calculate_position_data` can lay text out synchronously from the C ABI.
+    static MEASURE: std::cell::RefCell<Option<TextState>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Lay the current shape's committed text out and hand back its metrics. When the queried shape is
+/// the focused editor, the *live* editor layout's size (cached by the render pass each frame) wins,
+/// so auto-grow follows what the user is typing rather than the stale committed content.
+fn measure_current_shape() -> [f32; 5] {
+    let Some(id) = crate::vello::abi::current_shape() else {
+        return [0.0; 5];
+    };
+    crate::vello::abi::with_scene(|scene, _, _| {
+        let Some(node) = scene.get(id) else {
+            return [0.0; 5];
+        };
+        let (x, y) = (node.bounds.x0 as f32, node.bounds.y0 as f32);
+        if let Some([w, h]) = crate::vello::editor::focused_layout_size(id) {
+            let w = w.max(1.0);
+            return [w, h, w, x, y];
+        }
+        let Some(block) = &node.text else {
+            return [0.0, 0.0, 0.0, x, y];
+        };
+        let max_advance = match block.grow {
+            crate::text::TextGrow::AutoWidth => None,
+            _ => Some(node.bounds.width() as f32),
+        };
+        MEASURE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let state = slot.get_or_insert_with(TextState::new);
+            state.sync_fonts();
+            let mut width: f32 = 0.0;
+            let mut height: f32 = 0.0;
+            for paragraph in &block.paragraphs {
+                let layout = layout_paragraph(
+                    &mut state.font_cx,
+                    &mut state.layout_cx,
+                    &MeasureEnv,
+                    paragraph,
+                    max_advance,
+                );
+                width = width.max(layout.width());
+                height += layout.height();
+            }
+            let width = width.max(1.0);
+            [width, height, width, x, y]
+        })
+    })
+}
+
+/// Keeps the last measurement result alive for the host to read (the same pattern as the editor's
+/// `RESULT_STR`): the returned pointer is valid until the next call.
+static MEASURE_RESULT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+fn measure_result(bytes: Vec<u8>) -> *mut u8 {
+    let mut guard = MEASURE_RESULT.lock().expect("measure result poisoned");
+    *guard = bytes;
+    guard.as_mut_ptr()
+}
+
+/// The laid-out dimensions of the current shape's text as five little-endian `f32`s
+/// `[width, height, max_width, x, y]` — the wire format render-wasm's `get_text_dimensions` used,
+/// which the host's auto-grow (`computeAutoSize`) reads every keystroke.
+#[unsafe(no_mangle)]
+pub extern "C" fn get_text_dimensions() -> *mut u8 {
+    let dims = measure_current_shape();
+    let mut bytes = Vec::with_capacity(20);
+    for v in dims {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    measure_result(bytes)
+}
+
+/// Re-lay-out after a content change. Layout here happens at draw (and on demand in
+/// [`get_text_dimensions`]), so there is no cached layout to invalidate — this only schedules a
+/// frame, keeping render-wasm's wire contract.
+#[unsafe(no_mangle)]
+pub extern "C" fn update_shape_text_layout() {
+    crate::vello::abi::request_frame();
+}
+
+/// Per-line position data for the current shape's text, in render-wasm's wire format: a `u32`
+/// count, then 9 little-endian words per entry — `paragraph, span, start, end` (`u32`, byte
+/// offsets within the paragraph), `x, y, width, height` (`f32`, shape-local), `direction` (`u32`).
+/// The host attaches these to the saved document for line-level hit testing.
+#[unsafe(no_mangle)]
+pub extern "C" fn calculate_position_data() -> *mut u8 {
+    let entries = position_data_entries();
+    let mut bytes = Vec::with_capacity(4 + entries.len() * 36);
+    bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for e in entries {
+        bytes.extend_from_slice(&e.paragraph.to_le_bytes());
+        bytes.extend_from_slice(&e.span.to_le_bytes());
+        bytes.extend_from_slice(&e.start.to_le_bytes());
+        bytes.extend_from_slice(&e.end.to_le_bytes());
+        for v in [e.x, e.y, e.width, e.height] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&e.direction.to_le_bytes());
+    }
+    measure_result(bytes)
+}
+
+struct PositionEntry {
+    paragraph: u32,
+    span: u32,
+    start: u32,
+    end: u32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    direction: u32,
+}
+
+/// One entry per laid-out line: its byte range within its paragraph and its box in shape-local
+/// space. Spans are not split per-line (`span` stays 0) — the host's consumers key on the line
+/// geometry.
+fn position_data_entries() -> Vec<PositionEntry> {
+    let Some(id) = crate::vello::abi::current_shape() else {
+        return Vec::new();
+    };
+    crate::vello::abi::with_scene(|scene, _, _| {
+        let Some(node) = scene.get(id) else {
+            return Vec::new();
+        };
+        let Some(block) = &node.text else {
+            return Vec::new();
+        };
+        let max_advance = match block.grow {
+            crate::text::TextGrow::AutoWidth => None,
+            _ => Some(node.bounds.width() as f32),
+        };
+        MEASURE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let state = slot.get_or_insert_with(TextState::new);
+            state.sync_fonts();
+            let mut entries = Vec::new();
+            let mut para_y: f32 = 0.0;
+            for (pi, paragraph) in block.paragraphs.iter().enumerate() {
+                let layout = layout_paragraph(
+                    &mut state.font_cx,
+                    &mut state.layout_cx,
+                    &MeasureEnv,
+                    paragraph,
+                    max_advance,
+                );
+                for line in layout.lines() {
+                    let metrics = line.metrics();
+                    let range = line.text_range();
+                    entries.push(PositionEntry {
+                        paragraph: pi as u32,
+                        span: 0,
+                        start: range.start as u32,
+                        end: range.end as u32,
+                        x: 0.0,
+                        y: para_y + metrics.baseline - metrics.ascent,
+                        width: metrics.advance,
+                        height: metrics.ascent + metrics.descent,
+                        direction: 0,
+                    });
+                }
+                para_y += layout.height();
+            }
+            entries
+        })
+    })
 }
 
 /// Draw a text node's block: lay out its paragraphs, align them vertically in the box, and draw each
@@ -93,14 +435,11 @@ pub fn draw_text_block<C: RenderingContext, E: DrawEnv>(
         return;
     };
 
-    // `Fixed`/`AutoHeight` wrap to the box width; `AutoWidth` never wraps.
     let max_advance = match block.grow {
         text::TextGrow::AutoWidth => None,
         _ => Some(node.bounds.width() as f32),
     };
 
-    // Lay out every paragraph first, so the total height is known before placing them — vertical
-    // alignment needs it.
     let layouts: Vec<Layout<TextBrush>> = block
         .paragraphs
         .iter()
@@ -115,9 +454,6 @@ pub fn draw_text_block<C: RenderingContext, E: DrawEnv>(
         text::VerticalAlign::Bottom => box_height - total_height,
     };
 
-    // Glyphs are placed in the node's own space (the same space `bounds` is in), then drawn under the
-    // shape matrix — exactly how a rect's fill is positioned, so rotation and viewport apply the same
-    // way.
     ctx.set_transform(matrix);
     ctx.set_paint_transform(Affine::IDENTITY);
     let origin_x = node.bounds.x0 as f32;
@@ -136,15 +472,6 @@ fn layout_paragraph<E: DrawEnv>(
     paragraph: &text::TextParagraph,
     max_advance: Option<f32>,
 ) -> Layout<TextBrush> {
-    // Concatenate the spans into one string, remembering each span's byte range so its style is
-    // pushed over exactly the characters it covers. The span text is folded by its case transform
-    // here (the model keeps it raw); ranges track the folded length, which `to_uppercase` can grow.
-    //
-    // A right-to-left paragraph is forced by prepending a RIGHT-TO-LEFT MARK: Parley resolves the
-    // bidi algorithm from content and has no explicit base-direction knob, so this zero-width,
-    // unstyled control char sets the base level to RTL the way render-wasm's `set_text_direction`
-    // does. Real RTL scripts (Arabic/Hebrew) already reorder on their own; this only fixes the base
-    // for neutral or mixed text.
     let mut string = String::new();
     if paragraph.direction == text::TextDirection::Rtl {
         string.push('\u{200F}');
@@ -156,8 +483,6 @@ fn layout_paragraph<E: DrawEnv>(
         ranges.push(start..string.len());
     }
 
-    // Family aliases must outlive the builder (Parley borrows the name through `build`), so collect
-    // them up front.
     let aliases: Vec<String> = paragraph
         .spans
         .iter()
@@ -248,7 +573,6 @@ fn draw_glyph_run<C: RenderingContext, E: DrawEnv>(
     let run_start = origin_x + glyph_run.offset();
     let baseline_y = origin_y + glyph_run.baseline();
 
-    // Positioned glyphs, materialised once so each fill pass and the decoration reuse them.
     let mut run_x = glyph_run.offset();
     let glyphs: Vec<Glyph> = glyph_run
         .glyphs()
@@ -265,9 +589,6 @@ fn draw_glyph_run<C: RenderingContext, E: DrawEnv>(
     let font_size = run.font_size();
     let normalized_coords: &[i16] = run.normalized_coords();
 
-    // Shadow silhouette: stamp the run's whole inked coverage — glyph fill, glyph strokes, and the
-    // decoration line — in one flat colour, ignoring the per-span paints. The caller has already
-    // offset the transform, so this lands as the shape to blur behind the sharp ink.
     if let Some(sc) = shadow {
         if !style.brush.fills.is_empty() {
             ctx.set_paint(sc);
@@ -316,10 +637,6 @@ fn draw_glyph_run<C: RenderingContext, E: DrawEnv>(
         }
     }
 
-    // Strokes over the fills, outlining the glyphs with glifo's `stroke_glyphs` — the text
-    // counterpart of the `set_stroke` + `stroke_path` a shape uses. Only centre strokes reach here
-    // (inner/outer are dropped at projection on both sides, like shape strokes), so the width
-    // straddles the glyph edge with no offsetting decision to make.
     for stroke in strokes {
         if set_paint(ctx, env, &stroke.paint, bounds) {
             ctx.set_stroke(stroke.style.clone());
@@ -331,13 +648,10 @@ fn draw_glyph_run<C: RenderingContext, E: DrawEnv>(
         }
     }
 
-    // The decoration line, tinted by the topmost (last) fill so it matches the visible ink.
     let decoration = style.brush.decoration;
     if decoration != text::TextDecoration::None {
         use text::TextDecoration as D;
         let metrics = run.metrics();
-        // `*_offset` is the top of the line from the baseline; overline has no metric of its own, so
-        // it rides at the ascent with the underline's thickness.
         let (offset, size) = match decoration {
             D::Underline => (metrics.underline_offset, metrics.underline_size),
             D::LineThrough => (metrics.strikethrough_offset, metrics.strikethrough_size),

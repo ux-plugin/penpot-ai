@@ -29,7 +29,7 @@ pub const PAD: f64 = 22.0;
 /// Font identity the parity **text** cell references. No host uploads a face in a bare harness
 /// (bench.html), so [`crate::vello::abi::stage_parity_font`] stages an embedded Roboto under exactly
 /// this id/weight/style when the parity scene loads, and the text span resolves to it by alias.
-pub const PARITY_FONT_ID: u128 = 0x0000_0000_0000_0000_0000_0000_5041_5254; // "PART"
+pub const PARITY_FONT_ID: u128 = 0x0000_0000_0000_0000_0000_0000_5041_5254;
 
 fn col(r: u8, g: u8, b: u8) -> peniko::Color {
     peniko::Color::from_rgba8(r, g, b, 255)
@@ -75,10 +75,6 @@ fn glass_lens(tile_mode: TileMode) -> Glass {
         splay: 0.0,
         tilt_angle: 0.0,
         edge_boost: 0.2,
-        // Neutral zoom = 1.0 (the frontend's "100% = no zoom", `zoom/100`). 0.0 is NOT neutral: the
-        // field's `1/max(zoom,0.1) - 1` turns it into a 9× magnification that shoves interior samples
-        // ~1000px away — invisible over a uniform backdrop, but it drags a scoped lens's content
-        // (e.g. B1 over B's teal) off and bleeds the surrounding gradient in.
         zoom: 1.0,
         blur: 2.0,
         frost: 0.2,
@@ -172,7 +168,6 @@ impl Build {
 pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
 
-    // ── Fills ──────────────────────────────────────────────────────────────────
     b.fill_cell(Brush::Solid(col(54, 102, 214)), "solid fill");
     b.fill_cell(linear(), "linear gradient");
     {
@@ -186,8 +181,6 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
     }
     b.fill_cell(angular(), "angular gradient");
     {
-        // Three stacked fills: an opaque yellow base with two translucent layers over it. `fills[0]`
-        // is on top (render-wasm order), so the blue tints the red tints the yellow — visibly warm.
         let r = b.rect();
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -201,7 +194,6 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("multi-fill (3 layers)");
     }
     {
-        // GAP (classic native): image resolves to None → blank.
         let r = b.rect();
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -218,7 +210,6 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("image fill [GAP]");
     }
 
-    // ── Shapes & corners ───────────────────────────────────────────────────────
     {
         let r = b.rect();
         let id = b.id();
@@ -265,7 +256,6 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("bezier path");
     }
 
-    // ── Strokes (centre strokes only in the neutral model) ───────────────────────
     let stroked = |b: &mut Build, style: kurbo::Stroke, label: &'static str, fill: Option<peniko::Color>| {
         let r = b.rect();
         let id = b.id();
@@ -320,18 +310,12 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("multiple strokes");
     }
 
-    // Inner/outer alignment: a fat stroke on a filled rect makes the alignment obvious — an inner
-    // stroke sits entirely inside the box edge (fill still visible as a border), an outer stroke
-    // sits entirely outside it (box grows by the stroke width). Centre would straddle the edge.
     let aligned = |b: &mut Build, align: StrokeAlign, label: &'static str| {
         let r = b.rect();
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
-        // Inset the box so an outer stroke has room to paint without clipping against the cell edge.
         n.bounds = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x1 - 12.0, r.y1 - 12.0);
         n.fills = vec![Paint::plain(Brush::Solid(col(232, 200, 96)))];
-        // Miter join + butt caps to match the wire's Skia defaults (`add_shape_*_stroke`), so the
-        // aligned corners read as sharp rather than kurbo's default round.
         let style = kurbo::Stroke::new(16.0)
             .with_join(kurbo::Join::Miter)
             .with_caps(kurbo::Cap::Butt);
@@ -342,7 +326,6 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
     aligned(&mut b, StrokeAlign::Inner, "inner stroke");
     aligned(&mut b, StrokeAlign::Outer, "outer stroke");
 
-    // ── Effects (spread — render in the tree walk) ───────────────────────────────
     {
         let r = b.rect();
         let id = b.id();
@@ -386,11 +369,9 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("filter graph");
     }
 
-    // ── Backdrop effects (GATHER — need the sink; blank in the tree walk) ─────────
     b.backdrop_cell(false, "backdrop blur [sink]");
     b.backdrop_cell(true, "glass [sink]");
 
-    // ── Compositing (classic leaf-blend/opacity gaps show here) ──────────────────
     {
         let r = b.rect();
         let bid = b.id();
@@ -458,9 +439,6 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("masked (opaque circle)");
     }
     {
-        // Soft mask: the mask rect's fill is a horizontal alpha ramp (opaque → transparent), so the
-        // solid content fades left→right — a true `DstIn` alpha mask, which a hard silhouette clip
-        // cannot express.
         let r = b.rect();
         let gid = b.id();
         let mask_id = b.id();
@@ -486,14 +464,8 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("soft mask (alpha ramp)");
     }
     {
-        // Boolean shapes are a *precomputed path* by the time they reach a renderer (render-wasm's
-        // `math::bools` unions/subtracts the children into one `Path`, stored on the shape; the vello
-        // side receives that path). So a boolean renders exactly like a `Path` — here the union of two
-        // overlapping rects, whose outline is an authored L-shape (an exact union result), proving the
-        // boolean *result* draws. The projection `Type::Bool → Path(bool.path)` (model_export) is the
-        // matching render-wasm→neutral bridge.
         let r = b.rect();
-        let (a, c) = (0.30, 0.70); // overlap split
+        let (a, c) = (0.30, 0.70);
         let ax = r.x0 + (r.x1 - r.x0) * a;
         let cy = r.y0 + (r.y1 - r.y0) * c;
         let mut p = BezPath::new();
@@ -513,8 +485,6 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("boolean (union path)");
     }
     {
-        // Raw SVG: a few primitives (circle, stroked rounded rect, translucent triangle) parsed by
-        // usvg and drawn through the shared RenderingContext, scaled into the cell bounds.
         let r = b.rect();
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Svg);
@@ -531,19 +501,12 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("svg-raw");
     }
 
-    // ── Scoped backdrop effects: a gather inside a clipping Frame reads only the FRAME's content,
-    //    not the whole page — the scheduler's ScopeOf surface. These exercise the scoped-gather path
-    //    (distinct from the page-scoped gathers above). Each frame holds a colourful backdrop child
-    //    plus a lens child that reads it.
     b.scoped_backdrop_cell(false, "scoped backdrop-blur [sink]");
     b.scoped_backdrop_cell(true, "scoped glass [sink]");
 
-    // ── Random path shapes carrying GATHER effects (arbitrary geometry, not a rect) ──────────────
     b.path_gather_cell(true, "glass on path [sink]");
     b.path_gather_cell(false, "bg-blur on path [sink]");
 
-    // ── Text: glyph coverage through the shared text path (needs a registered font — the harness
-    //    stages the embedded Roboto via `load_parity_scene` → `stage_parity_font`). ───────────────
     {
         let r = b.rect();
         let id = b.id();
@@ -571,13 +534,8 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
             grow: crate::text::TextGrow::Fixed,
             vertical_align: crate::text::VerticalAlign::Center,
         });
-        // The text casts a glyph-shaped drop shadow (its own segment boundary), UNDER the lens below —
-        // exercising a shadow root and a gather root over the same cell.
         n.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 7.0, spread: 0.0, offset: Vec2::new(4.0, 6.0), inset: false }];
         b.root(n);
-        // A background-blur lens over the lower half: the gather reads the text out of the segmented
-        // accumulator and blurs it, so the top glyphs stay sharp and the bottom ones smear — proving
-        // text painted in one fine segment is a correct backdrop for an effect in the next.
         let lid = b.id();
         let mut lens = Node::new(lid, ShapeKind::Rect);
         lens.bounds = Rect::new(r.x0, r.center().y, r.x1, r.y1);
@@ -586,10 +544,6 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.advance("text + bg-blur [sink]");
     }
 
-    // ── Random VECTOR shape (organic multi-curve path) WITH a drop shadow. A non-box shadow is not
-    //    native in the whole-viewport walk yet (Step 3), so a scene containing this trips the Phase-0
-    //    safety net and renders through the TILED path — where the silhouette-blur shadow is drawn.
-    //    Once Step 3 lands, the same cell renders through the front-end-once path. ───────────────────
     {
         let r = b.rect();
         let id = b.id();
@@ -622,7 +576,6 @@ pub fn build_showcase_scene() -> Scene {
     let rect = Rect::new;
     let round = |r: f64| Some(RoundedRectRadii::from_single_radius(r));
 
-    // 1. Backdrop: full-canvas linear gradient.
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -630,7 +583,6 @@ pub fn build_showcase_scene() -> Scene {
         n.fills = vec![Paint::plain(linear())];
         b.root(n);
     }
-    // 2. Hero panel: angular gradient, rounded.
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -639,7 +591,6 @@ pub fn build_showcase_scene() -> Scene {
         n.fills = vec![Paint::plain(angular())];
         b.root(n);
     }
-    // 3. Radial-gradient circle, overlapping the hero.
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Circle);
@@ -647,7 +598,6 @@ pub fn build_showcase_scene() -> Scene {
         n.fills = vec![Paint::plain(radial())];
         b.root(n);
     }
-    // 4. Orange rect with a LAYER BLUR.
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -657,17 +607,15 @@ pub fn build_showcase_scene() -> Scene {
         n.blur = Some(8.0);
         b.root(n);
     }
-    // 5. Translucent blue rect, MULTIPLY blend + 60% opacity, over the warm shapes below it.
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
         n.bounds = rect(640.0, 280.0, 1000.0, 560.0);
         n.fills = vec![Paint::plain(Brush::Solid(col(59, 130, 246)))];
         n.opacity = 0.6;
-        n.blend = crate::blend::blend_from_raw(24); // Multiply
+        n.blend = crate::blend::blend_from_raw(24);
         b.root(n);
     }
-    // 6. Multi-fill card (three stacked translucent fills) with a DROP SHADOW.
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -681,7 +629,6 @@ pub fn build_showcase_scene() -> Scene {
         n.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 16.0, spread: 0.0, offset: Vec2::new(8.0, 12.0), inset: false }];
         b.root(n);
     }
-    // 7. Rounded rect with an INNER SHADOW + a centred stroke.
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -692,7 +639,6 @@ pub fn build_showcase_scene() -> Scene {
         n.shadows = vec![Shadow { color: cola(0, 0, 0, 170), blur: 12.0, spread: 0.0, offset: Vec2::new(4.0, 6.0), inset: true }];
         b.root(n);
     }
-    // 8. Boolean-style L path with an OUTER stroke.
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Path);
@@ -710,7 +656,6 @@ pub fn build_showcase_scene() -> Scene {
         n.strokes = vec![Stroke { style: kurbo::Stroke::new(6.0), paint: Paint::plain(Brush::Solid(col(20, 20, 30))), align: StrokeAlign::Outer }];
         b.root(n);
     }
-    // 9. MASKED GROUP: an angular-gradient rect clipped to a circle silhouette.
     {
         let mask_id = b.id();
         let mut mask = Node::new(mask_id, ShapeKind::Circle);
@@ -728,7 +673,6 @@ pub fn build_showcase_scene() -> Scene {
         g.children = vec![mask_id, content_id];
         b.root(g);
     }
-    // 10. CLIP FRAME (scope): an oversized radial circle clipped to the frame's rounded rect.
     {
         let child_id = b.id();
         let mut child = Node::new(child_id, ShapeKind::Circle);
@@ -745,7 +689,6 @@ pub fn build_showcase_scene() -> Scene {
         frame.children = vec![child_id];
         b.root(frame);
     }
-    // 11. Dashed outline rect (no fill).
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -754,7 +697,6 @@ pub fn build_showcase_scene() -> Scene {
         n.strokes = vec![outline_stroke()];
         b.root(n);
     }
-    // 12. GLASS panel over the backdrop (a gather — refracts everything behind it).
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -763,7 +705,6 @@ pub fn build_showcase_scene() -> Scene {
         n.glass = Some(glass_lens(TileMode::Decal));
         b.root(n);
     }
-    // 13. BACKGROUND-BLUR panel over the backdrop (a gather — frosts everything behind it).
     {
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
@@ -840,8 +781,6 @@ impl Build {
         self.root(frame);
 
         let mut backdrop = Node::new(back_id, ShapeKind::Rect);
-        // Oversized so, without the frame's clip scope, it would bleed past the cell — the clip proves
-        // the gather is scoped to the frame.
         backdrop.bounds = Rect::new(r.x0 - 20.0, r.y0 - 20.0, r.x1 + 20.0, r.y1 + 20.0);
         backdrop.fills = vec![Paint::plain(if glass { angular() } else { linear() })];
         self.child(backdrop);
@@ -957,8 +896,6 @@ fn build_scope_test_scene_impl(
     root.children = vec![g];
     s.insert(root);
 
-    // Grandparent G — a non-clipping Frame that isolates (opacity 0.99). Its fill (a full-canvas
-    // blue→purple gradient) is the backdrop a G-scoped gather reads.
     let g_stops = [
         peniko::ColorStop { offset: 0.0, color: col(54, 102, 214).into() },
         peniko::ColorStop { offset: 1.0, color: col(120, 74, 183).into() },
@@ -975,8 +912,6 @@ fn build_scope_test_scene_impl(
     ng.children = vec![a, b];
     s.insert(ng);
 
-    // Parent A — a non-clipping Frame that isolates (opacity 0.98). Its fill (orange) is the backdrop
-    // an A-scoped gather reads.
     let mut na = Node::new(a, ShapeKind::Frame);
     na.opacity = 0.98;
     na.bounds = Rect::new(80.0, 120.0, 460.0, 600.0);
@@ -987,9 +922,6 @@ fn build_scope_test_scene_impl(
     na.children = vec![a1, a2];
     s.insert(na);
 
-    // A1: glass lens scoped to A. Sits inside A (x=280) and extends to x=620 — crossing A's right
-    // border (460) into G-only territory. A doesn't clip, so it paints there; past A's fill its scope
-    // is empty, so with the alpha fix it goes transparent and G's gradient shows through (not black).
     let mut n_a1 = Node::new(a1, ShapeKind::Rect);
     n_a1.bounds = Rect::new(280.0, 260.0, 620.0, 540.0);
     n_a1.corners = Some(RoundedRectRadii::from_single_radius(16.0));
@@ -1001,8 +933,6 @@ fn build_scope_test_scene_impl(
     n_a2.fills = vec![Paint::plain(Brush::Solid(col(240, 244, 250)))];
     s.insert(n_a2);
 
-    // Parent B — a non-clipping Frame, TRIVIAL (opacity 1.0), so it establishes NO scope and its
-    // subtree (fill + children) lands in G's scope. Its fill (teal) therefore joins G's backdrop.
     let mut nb = Node::new(b, ShapeKind::Frame);
     nb.bounds = Rect::new(600.0, 100.0, 900.0, 560.0);
     if show_backdrop {
@@ -1012,8 +942,6 @@ fn build_scope_test_scene_impl(
     nb.children = vec![b1, b2];
     s.insert(nb);
 
-    // B1: glass lens with no isolating parent → reads ScopeOf(G) (gradient + B's teal). Sits inside B
-    // (x=660) and extends to x=1000 — crossing B's right border (900) into gradient-only territory.
     let mut n_b1 = Node::new(b1, ShapeKind::Rect);
     n_b1.bounds = Rect::new(660.0, 180.0, 1000.0, 480.0);
     n_b1.corners = Some(RoundedRectRadii::from_single_radius(16.0));
@@ -1038,8 +966,6 @@ fn build_scope_test_scene_impl(
     (s, legend)
 }
 
-// ── Image fills (needs staged pixels, so it is driven from the ABI, not the neutral model alone) ──
-
 /// The content id the [`build_image_test_scene`] cells reference. The ABI stages
 /// [`image_test_pixels`] under this id before installing the scene, so the fills resolve to real
 /// pixels on either backend — the one thing the pure neutral model cannot carry.
@@ -1057,10 +983,10 @@ pub fn image_test_pixels() -> (u32, u32, Vec<u8>) {
     for y in 0..H {
         for x in 0..W {
             let (r, g, b, a) = match (x < W / 2, y < H / 2) {
-                (true, true) => (220, 60, 60, 255),   // TL red
-                (false, true) => (60, 200, 90, 255),  // TR green
-                (true, false) => (60, 110, 220, 255), // BL blue
-                (false, false) => (230, 210, 60, 140), // BR half-alpha yellow
+                (true, true) => (220, 60, 60, 255),
+                (false, true) => (60, 200, 90, 255),
+                (true, false) => (60, 110, 220, 255),
+                (false, false) => (230, 210, 60, 140),
             };
             rgba.extend_from_slice(&[r, g, b, a]);
         }
@@ -1087,7 +1013,6 @@ pub fn build_image_test_scene() -> (Scene, Vec<(usize, &'static str)>) {
         }))
     };
 
-    // Stretch: square box, image aspect matches, so the four quadrants fill the cell undistorted.
     {
         let r = b.rect();
         let id = b.id();
@@ -1097,9 +1022,6 @@ pub fn build_image_test_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.root(n);
         b.advance("image stretch");
     }
-    // Cover into a wide, short box: keep_aspect scales the square image to the box width and centres
-    // it vertically, so the overflow is clipped and only the middle band shows (red|blue on the left,
-    // green|yellow on the right).
     {
         let r = b.rect();
         let id = b.id();
@@ -1109,7 +1031,6 @@ pub fn build_image_test_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.root(n);
         b.advance("image cover (wide)");
     }
-    // Image-filled circle: the fill clips to the ellipse, proving image paint follows non-rect geometry.
     {
         let r = b.rect();
         let id = b.id();
@@ -1119,7 +1040,6 @@ pub fn build_image_test_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.root(n);
         b.advance("image on circle");
     }
-    // Rounded rect: corner clip.
     {
         let r = b.rect();
         let id = b.id();
@@ -1130,8 +1050,6 @@ pub fn build_image_test_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.root(n);
         b.advance("image rounded");
     }
-    // Half opacity: the per-fill 0..255 opacity rides the sampler alpha, dimming all four quadrants
-    // over the black page (and the yellow quadrant, already half-alpha, dims further).
     {
         let r = b.rect();
         let id = b.id();
@@ -1143,8 +1061,6 @@ pub fn build_image_test_scene() -> (Scene, Vec<(usize, &'static str)>) {
     }
     b.finish()
 }
-
-// ── Path drop shadow (needs the SINK's run_graph blur, so verified via a sink harness) ───────────
 
 /// A bezier arrow shape used by the path-shadow test — a non-box silhouette whose shadow must follow
 /// the real outline (a blurred rounded-rect would be visibly wrong).
@@ -1205,8 +1121,6 @@ pub fn build_path_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
         b.root(n);
         b.advance("path (no shadow)");
     }
-    // Text with a drop shadow: the shadow is the GLYPH silhouette (not the text box), blurred + offset
-    // behind the ink. Needs the staged parity font (`load_path_shadow_scene` stages it).
     {
         let r = b.rect();
         let id = b.id();
@@ -1240,8 +1154,6 @@ pub fn build_path_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
     }
     b.finish()
 }
-
-// ── Inner (inset) shadows on non-box shapes (path + text) — the flood → DestOut-blurred-offset band ─
 
 /// Cells over a light page exercising non-box INNER shadows: a filled path and a text block, each with
 /// an inset shadow (a dark band hugging the inside edge on the offset side), beside the same path with
@@ -1304,11 +1216,6 @@ pub fn build_inner_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
     b.finish()
 }
 
-// ── Booleans (verify-only): a boolean reaches a renderer as a precomputed `Path`, so it draws like any
-//    other path. These cells prove the boolean RESULT renders in the whole-viewport walk — including a
-//    hole (winding) and composed with a native drop shadow. No renderer geometry work; a scan of the
-//    outputs vs the tiled reference is the whole test. ────────────────────────────────────────────────
-
 /// An L-shaped path — the exact outline of the union of two overlapping rects filling `r`.
 fn bool_union_path(r: Rect) -> BezPath {
     let (a, c) = (0.30, 0.70);
@@ -1329,7 +1236,7 @@ fn bool_union_path(r: Rect) -> BezPath {
 /// non-zero fill leaves the middle empty. This is how a boolean *difference* result arrives: one path
 /// with sub-contours, not a special primitive.
 fn bool_difference_path(r: Rect) -> BezPath {
-    let o = r; // outer = r
+    let o = r;
     let i = Rect::new(
         r.x0 + r.width() * 0.28,
         r.y0 + r.height() * 0.28,
@@ -1337,13 +1244,11 @@ fn bool_difference_path(r: Rect) -> BezPath {
         r.y1 - r.height() * 0.28,
     );
     let mut p = BezPath::new();
-    // Outer contour, clockwise.
     p.move_to((o.x0, o.y0));
     p.line_to((o.x1, o.y0));
     p.line_to((o.x1, o.y1));
     p.line_to((o.x0, o.y1));
     p.close_path();
-    // Inner contour, counter-clockwise → punches the hole under non-zero winding.
     p.move_to((i.x0, i.y0));
     p.line_to((i.x0, i.y1));
     p.line_to((i.x1, i.y1));
@@ -1390,10 +1295,6 @@ pub fn build_boolean_scene() -> (Scene, Vec<(usize, &'static str)>) {
     }
     b.finish()
 }
-
-// ── Combined effects on ONE node: several effects stacked on a single shape, each list kept in its
-//    authored order (shadows, then the effects chain, plus a layer blur), proving they compose in WV the
-//    same way the tiled path composes them. ────────────────────────────────────────────────────────────
 
 /// A minimal body-only (spread) custom shader: tint the shape's own body toward `[r,g,b]` by `amount`.
 /// `reads_backdrop: false` marks it a spread (runs over the body, no backdrop) so the sink chains it in
@@ -1444,7 +1345,6 @@ pub fn build_combined_scene() -> (Scene, Vec<(usize, &'static str)>) {
     {
         let (_id, _r, mut n) = blob(&mut b);
         n.fills = vec![Paint::plain(Brush::Solid(col(216, 90, 48)))];
-        // Two shadows in ONE list — a drop (behind) and an inner (inside), kept in list order.
         n.shadows = vec![
             Shadow { color: cola(0, 0, 0, 170), blur: 11.0, spread: 0.0, offset: Vec2::new(8.0, 10.0), inset: false },
             Shadow { color: cola(0, 0, 0, 190), blur: 7.0, spread: 0.0, offset: Vec2::new(-5.0, -6.0), inset: true },
@@ -1463,7 +1363,6 @@ pub fn build_combined_scene() -> (Scene, Vec<(usize, &'static str)>) {
     {
         let (_id, _r, mut n) = blob(&mut b);
         n.fills = vec![Paint::plain(Brush::Solid(col(48, 150, 120)))];
-        // Effects list: one tint spread shader over the body, kept in order; plus a drop shadow behind.
         n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.8, 0.1, 0.7) }];
         n.shadows = vec![Shadow { color: cola(0, 0, 0, 160), blur: 10.0, spread: 0.0, offset: Vec2::new(6.0, 8.0), inset: false }];
         b.root(n);
@@ -1503,7 +1402,6 @@ pub fn build_stress_scene_n(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
 #[must_use]
 pub fn build_matrix_scene() -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
-    // (label, how to load the node's effects)
     type Setup = (&'static str, fn(&mut Node));
     let cells: &[Setup] = &[
         ("plain", |_n| {}),
@@ -1551,7 +1449,6 @@ pub fn build_matrix_scene() -> (Scene, Vec<(usize, &'static str)>) {
         }),
     ];
     for (label, setup) in cells {
-        // A backdrop for the gathers to read, so a gather cell is not blurring blank canvas.
         let r = b.rect();
         let mut under = Node::new(b.id(), ShapeKind::Rect);
         under.bounds = Rect::new(r.x0 + 6.0, r.y0 + 6.0, r.x1 - 6.0, r.y1 - 6.0);
@@ -1586,25 +1483,35 @@ fn inner_shadow(blur: f32, spread: f32) -> Shadow {
 /// effect stack, all packed into a band so they overlap rather than tile neatly.
 #[must_use]
 pub fn build_scale_scene(n: usize, effect_every: usize) -> (Scene, Vec<(usize, &'static str)>) {
+    build_scale_scene_sized(n, effect_every, 26.0, 1.9, 7)
+}
+
+/// [`build_scale_scene`] with explicit geometry knobs: `step` = grid pitch in px, `size` = shape edge
+/// as a multiple of the pitch (`size > 1` overlaps neighbours; big values stack shapes deeply), and
+/// `opacity_every` = every k-th shape is translucent (0 = none).
+#[must_use]
+pub fn build_scale_scene_sized(
+    n: usize,
+    effect_every: usize,
+    step: f64,
+    size: f64,
+    opacity_every: usize,
+) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;
-    let step = 26.0;
-    // One cell holds the whole document; shapes are placed by hand inside it so they overlap.
     let r = b.rect();
     for i in 0..n {
         let (cx, cy) = ((i % cols) as f64, (i / cols) as f64);
-        // 1.9x the step, so each shape overlaps its neighbours instead of sitting in its own cell.
         let x = r.x0 + cx * step;
         let y = r.y0 + cy * step;
-        let box_ = Rect::new(x, y, x + step * 1.9, y + step * 1.9);
+        let box_ = Rect::new(x, y, x + step * size, y + step * size);
         let mut node = Node::new(b.id(), ShapeKind::Path);
         node.bounds = box_;
         node.path = Some(blob_path(box_));
         let hue = (i * 53 % 255) as u8;
         node.fills = vec![Paint::plain(Brush::Solid(col(60 + hue / 3, 90 + hue / 4, 200 - hue / 3)))];
-        node.opacity = if i % 7 == 0 { 0.75 } else { 1.0 };
+        node.opacity = if opacity_every > 0 && i % opacity_every == 0 { 0.75 } else { 1.0 };
         if effect_every > 0 && i % effect_every == 0 {
-            // A rotating mix so the effect population is not all one kind.
             match (i / effect_every) % 4 {
                 0 => node.shadows = vec![Shadow { color: cola(0, 0, 0, 140), blur: 9.0, spread: 0.0, offset: Vec2::new(5.0, 6.0), inset: false }],
                 1 => node.blur = Some(3.0),
@@ -1666,8 +1573,6 @@ pub fn build_stress_scene_mask(n: usize, mask: u32) -> (Scene, Vec<(usize, &'sta
     b.finish()
 }
 
-// ── Layer blur (needs the SINK's run_graph blur on classic, so verified via the sink harness) ────
-
 /// Two cells over a light page: a shape WITH a layer blur (`node.blur`) and the same shape WITHOUT.
 /// Layer blur softens the whole body — a sharp rect edge becomes a gradient — proving the sink's
 /// `layer_blur_over_body` path (classic vello has no inline layer-blur primitive).
@@ -1678,7 +1583,6 @@ pub fn build_layer_blur_scene() -> (Scene, Vec<(usize, &'static str)>) {
         let r = b.rect();
         let id = b.id();
         let mut n = Node::new(id, ShapeKind::Rect);
-        // Inset so the blur has room to fade inside the cell rather than clipping at the edge.
         n.bounds = Rect::new(r.x0 + 18.0, r.y0 + 18.0, r.x1 - 18.0, r.y1 - 18.0);
         n.corners = Some(RoundedRectRadii::from_single_radius(8.0));
         n.fills = vec![Paint::plain(Brush::Solid(col(216, 90, 48)))];

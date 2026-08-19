@@ -69,6 +69,40 @@ impl GraphPass {
     }
 }
 
+/// Target dimension of a pass rendering at `scale` of a `d`-texel surface — the one formula the
+/// builder (uniform resolution) and the executor (texture allocation) must share, or a pass's
+/// declared resolution drifts a texel from its actual target.
+#[must_use]
+pub fn pass_dim(d: u32, scale: f32) -> u32 {
+    ((f64::from(d) * f64::from(scale)).round() as u32).max(1)
+}
+
+/// Assign the optimal-chain render scales ([`crate::footprint::chain_scales`]) to a built graph and
+/// rewrite each scaled pass into its own texel space: the texel-linear field entries (resolution,
+/// centre, half-extents, corner, bezel, scale factor) multiply by the pass scale, and a blur's sigma
+/// shrinks with its target. Scales are relative to the surface the graph was built for, so a graph
+/// whose passes all stay at `1.0` is bit-for-bit the uniform render.
+fn apply_chain_scales(passes: &mut [GraphPass], w: u32, h: u32) {
+    let scales = crate::footprint::chain_scales(passes, 1.0, 1.0);
+    for (gp, sc) in passes.iter_mut().zip(scales) {
+        gp.scale = sc;
+        if sc >= 0.999 {
+            continue;
+        }
+        match &mut gp.pass {
+            EffectPass::Blur { sigma, .. } => *sigma *= sc,
+            EffectPass::GlassRefraction { u } | EffectPass::GlassComposite { u } => {
+                u[0] = pass_dim(w, sc) as f32;
+                u[1] = pass_dim(h, sc) as f32;
+                for i in [2, 3, 4, 5, 6, 8, 16] {
+                    u[i] *= sc;
+                }
+            }
+            EffectPass::Custom { .. } => {}
+        }
+    }
+}
+
 /// The background-blur graph: one 2D Gaussian over the assembled backdrop (input 0). Its result is
 /// what the backend stamps through the shape's silhouette mask.
 #[must_use]
@@ -143,37 +177,23 @@ pub fn glass_graph(
     let s = eff as f32;
     let (bwf, bhf) = (bw as f32, bh as f32);
 
-    // The shared field uniform (indices 0..16) — the geometry both fused passes recompute the SDF
-    // refraction field from. Identical layout to the former standalone displacement uniform; the three
-    // trailing slots [17][18][19] are spare and carry each pass's own params below.
     let field: [f32; 20] = [
         bwf, bhf, gcx, gcy,
-        // hx/hy/corner and the SDF `dist` all live in reduced-backdrop texels (scaled by `eff`), so
-        // the bezel width — a page-space distance like the corner radius — must be scaled the same way.
-        // Left raw, it mixes units with `dist` in `distFromBorder = -dist/bezel`, so the refraction band
-        // (and the specular gaussian keyed off it) shifts as zoom changes `eff`.
         hx, hy, corner, g.surface_type as f32,
         g.bezel_width * s, g.thickness, g.refractive_index, g.specular_angle,
         g.splay, g.tilt_angle, g.edge_boost, g.zoom,
         s, 0.0, 0.0, 0.0,
     ];
-    // Refraction packs chromatic aberration into the first spare slot (read as `u[4].y`).
     let mut refr_u = field;
     refr_u[17] = g.chromatic_aberration;
-    // Composite packs its frost/specular params into the three spare slots (read as `u[4].yzw`).
     let mut comp_u = field;
     comp_u[17] = g.frost;
     comp_u[18] = g.specular_opacity;
     comp_u[19] = g.specular_saturation;
 
-    // Fused to two passes: refraction (with the field inline) → optional blur → composite (field inline
-    // again). The displacement pass + its Rgba16Float texture are gone — the field is pure arithmetic
-    // on `field`, cheaper to recompute than to store and read twice.
     let mut passes = vec![
         GraphPass::new(EffectPass::GlassRefraction { u: refr_u }, vec![Src::Input(0)]),
     ];
-    // Glass blur (blur + frost softening) of the refracted image, when meaningful; otherwise the
-    // composite reads the sharp refraction directly. One Blur pass = a full 2D Gaussian.
     let sigma = g.total_blur_sigma() * s;
     let blurred = if sigma > 0.5 {
         passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: false }, vec![Src::Pass(0)]));
@@ -185,6 +205,22 @@ pub fn glass_graph(
         EffectPass::GlassComposite { u: comp_u },
         vec![blurred, Src::Input(0)],
     ));
+    passes
+}
+
+/// [`glass_graph`] with the optimal-chain render scales applied — the variant the sinks execute.
+/// The pure builder stays scale-free so footprint analysis and tests see the un-mutated pipeline.
+#[must_use]
+pub fn glass_graph_scaled(
+    g: &Glass,
+    geom: GlassGeometry,
+    backdrop_size: (u32, u32),
+    backdrop_origin: (f64, f64),
+    view: Affine,
+    k: f64,
+) -> Vec<GraphPass> {
+    let mut passes = glass_graph(g, geom, backdrop_size, backdrop_origin, view, k);
+    apply_chain_scales(&mut passes, backdrop_size.0, backdrop_size.1);
     passes
 }
 
@@ -222,7 +258,6 @@ mod tests {
 
     #[test]
     fn sigma_scales_the_page_radius_by_the_effective_device_scale() {
-        // radius_to_sigma(r) * scale — at scale 2 the device sigma doubles.
         let a = background_blur_sigma(12.0, 1.0);
         let b = background_blur_sigma(12.0, 2.0);
         assert!((b - 2.0 * a).abs() < 1e-6);
@@ -231,15 +266,12 @@ mod tests {
     #[test]
     fn glass_without_blur_is_two_passes_and_with_blur_is_three() {
         let geom = GlassGeometry { center: Point::new(50.0, 50.0), width: 80.0, height: 60.0, corner_radius: 10.0, is_circle: false };
-        // frost 0 + blur 0 → total_blur_sigma 0 → no blur pass. Fused: refraction (field inline),
-        // composite (field inline) — the standalone displacement pass is gone.
         let sharp = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         assert_eq!(sharp.len(), 2);
         assert!(matches!(sharp[0].pass, EffectPass::GlassRefraction { .. }));
         assert!(matches!(sharp[1].pass, EffectPass::GlassComposite { .. }));
-        // A frosted glass adds the blur pass between them; the composite then reads Pass(1), not Pass(0).
         let mut frosted = glass();
-        frosted.frost = 1.0; // total_blur_sigma = 8 · s > 0.5
+        frosted.frost = 1.0;
         let g = glass_graph(&frosted, geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         assert_eq!(g.len(), 3);
         assert!(matches!(g[1].pass, EffectPass::Blur { .. }));
@@ -250,9 +282,7 @@ mod tests {
     fn a_circle_clamps_the_corner_to_the_min_half_extent() {
         let geom = GlassGeometry { center: Point::new(0.0, 0.0), width: 80.0, height: 60.0, corner_radius: 999.0, is_circle: true };
         let g = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
-        // The field geometry now rides in the refraction pass's uniform (index 6 = corner).
         let EffectPass::GlassRefraction { u } = g[0].pass else { panic!("expected refraction") };
-        // hx = 40, hy = 30 → corner = min(40,30) = 30, not the 999 radius.
         assert!((u[6] - 30.0).abs() < 1e-4);
     }
 }

@@ -72,8 +72,6 @@ pub fn shelf_pack(sizes: &[(u32, u32)], gap: u32, target_w: u32, max_dim: u32) -
     let mut cells = Vec::with_capacity(sizes.len());
     let (mut x, mut y, mut row_h, mut atlas_w) = (0u32, 0u32, 0u32, 0u32);
     for (i, &(w, h)) in sizes.iter().enumerate() {
-        // Wrap to a new shelf when this cell would overflow the target width — but never on an empty
-        // shelf (`x > 0`), so an oversize cell still gets placed rather than looping.
         if x + w > target_w && x > 0 {
             x = 0;
             y += row_h + gap;
@@ -97,43 +95,37 @@ mod tests {
 
     #[test]
     fn grid_packs_near_square_and_places_cells_in_row_major_order() {
-        // 5 cells → 3 columns × 2 rows.
         let p = pack_grid(5, 100, 4096).unwrap();
         assert_eq!((p.width, p.height), (300, 200));
         assert_eq!(p.cells[0], Placement { index: 0, x: 0, y: 0, w: 100, h: 100 });
-        assert_eq!(p.cells[3], Placement { index: 3, x: 0, y: 100, w: 100, h: 100 }); // wraps to row 2
+        assert_eq!(p.cells[3], Placement { index: 3, x: 0, y: 100, w: 100, h: 100 });
         assert_eq!(p.cells[4], Placement { index: 4, x: 100, y: 100, w: 100, h: 100 });
     }
 
     #[test]
     fn grid_declines_when_it_would_exceed_the_device_max() {
         assert!(pack_grid(0, 100, 4096).is_none());
-        // 4 cells → 2×2 grid of 3000px cells = 6000px, past a 4096 limit.
         assert!(pack_grid(4, 3000, 4096).is_none());
     }
 
     #[test]
     fn shelf_pack_wraps_at_target_width_with_a_gap_between_cells() {
-        // Three 100-wide cells, target 250 → cells 0,1 on shelf 0 (x=0,104), cell 2 wraps to shelf 1.
         let p = shelf_pack(&[(100, 40), (100, 60), (100, 30)], 4, 250, 4096).unwrap();
         assert_eq!(p.cells[0], Placement { index: 0, x: 0, y: 0, w: 100, h: 40 });
         assert_eq!(p.cells[1], Placement { index: 1, x: 104, y: 0, w: 100, h: 60 });
-        // shelf 0 height = max(40,60) = 60; shelf 1 starts at y = 60 + gap 4 = 64.
         assert_eq!(p.cells[2], Placement { index: 2, x: 0, y: 64, w: 100, h: 30 });
         assert_eq!(p.height, 64 + 30);
     }
 
     #[test]
     fn shelf_pack_keeps_a_gap_so_a_cell_cannot_touch_its_neighbour() {
-        // Two cells that fit on one shelf: the second starts a full gap past the first's right edge.
         let p = shelf_pack(&[(50, 50), (50, 50)], 4, 2048, 4096).unwrap();
-        assert_eq!(p.cells[1].x, 54); // 50 + gap 4 — never abutting
+        assert_eq!(p.cells[1].x, 54);
     }
 
     #[test]
     fn shelf_pack_declines_empty_or_oversize() {
         assert!(shelf_pack(&[], 4, 2048, 4096).is_none());
-        // A shelf taller than max_dim (many rows of tall cells) is declined.
         let tall: Vec<(u32, u32)> = (0..10).map(|_| (2000, 1000)).collect();
         assert!(shelf_pack(&tall, 4, 2048, 4096).is_none());
     }

@@ -183,7 +183,6 @@ impl Effect {
 pub fn effect_stack(node: &Node) -> Vec<Effect> {
     let mut out = Vec::new();
 
-    // Drop shadows, behind the body, in authored order.
     for s in node.shadows.iter().filter(|s| !s.inset) {
         out.push(Effect {
             source: Source::Coverage { spread: s.spread },
@@ -192,7 +191,6 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
         });
     }
 
-    // A backdrop gather reads what is beneath and shows through the outline. At most one applies.
     if let Some(g) = &node.glass {
         out.push(Effect {
             source: Source::Backdrop,
@@ -213,8 +211,6 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
         });
     }
 
-    // The body: its shader chain in authored order, then the layer blur, which is applied last and so
-    // softens everything before it. Both replace the body rather than adding to it.
     let body_ops: Vec<Op> = node
         .spread_shaders()
         .map(|s| Op::Shader(Box::new(s.clone())))
@@ -224,8 +220,6 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
         out.push(Effect { source: Source::Body, ops: body_ops, compose: Compose::Replace });
     }
 
-    // Inner shadows, over the body: the coverage tinted, with the offset blurred coverage erased out
-    // of it — which leaves colour only in the band along the offset side.
     for s in node.shadows.iter().filter(|s| s.inset) {
         out.push(Effect {
             source: Source::Coverage { spread: s.spread },
@@ -289,7 +283,7 @@ mod tests {
     #[test]
     fn drops_go_under_and_inners_go_over_the_body() {
         let mut n = node();
-        n.shadows = vec![shadow(true, 6.0), shadow(false, 8.0)]; // authored inner-first on purpose
+        n.shadows = vec![shadow(true, 6.0), shadow(false, 8.0)];
         n.blur = Some(3.0);
         let order: Vec<Compose> = effect_stack(&n).iter().map(|e| e.compose).collect();
         assert_eq!(order, vec![Compose::Under, Compose::Replace, Compose::Over]);
@@ -350,7 +344,6 @@ mod tests {
         let base = Rect::new(0.0, 0.0, 10.0, 10.0);
         let f = e.footprint(base);
         let blur_reach = f64::from(3.0 * crate::blur::radius_to_sigma(8.0));
-        // spread out by 2, shifted by (4,5), then blurred.
         assert!((f.x0 - (0.0 - 2.0 + 4.0 - blur_reach)).abs() < 1e-9);
         assert!((f.y1 - (10.0 + 2.0 + 5.0 + blur_reach)).abs() < 1e-9);
     }

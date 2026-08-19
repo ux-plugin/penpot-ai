@@ -49,16 +49,8 @@ pub struct FootprintDescriptor {
 #[must_use]
 pub fn pass_reach(pass: &EffectPass) -> Reach {
     match pass {
-        // A Gaussian reads a ~3σ neighbourhood of taps — the canonical barrier pass.
         EffectPass::Blur { sigma, .. } => Reach::Neighborhood(3.0 * sigma),
-        // Refraction samples the (already-materialised) backdrop at a bounded displaced coord and
-        // recomputes its SDF field inline. It depends on no earlier *pass*, so it fuses.
         EffectPass::GlassRefraction { .. } => Reach::SamePixel,
-        // Composite's reach is frost-dependent: its 12-tap frost scatter reads its refracted input at
-        // offsets up to ~frost·6·scale texels — a *neighbourhood* read — but below the shader's
-        // `frost > 0.01` threshold the scatter is off and it reads its input at its own pixel. Reading
-        // the frost/scale straight off the uniform (glass_graph packs frost at 17, scale at 16) keeps
-        // the classifier honest: refraction+composite fuse only when the scatter is genuinely absent.
         EffectPass::GlassComposite { u } => {
             let frost = u[17];
             if frost > 0.01 {
@@ -67,8 +59,6 @@ pub fn pass_reach(pass: &EffectPass) -> Reach {
                 Reach::SamePixel
             }
         }
-        // Unclassified hand-written WGSL: assume the worst so correctness never rests on a promise. A
-        // declared reach annotation narrows this later; until then it takes the conservative barrier.
         EffectPass::Custom { .. } => Reach::Global,
     }
 }
@@ -127,16 +117,18 @@ pub fn barrier_count(stages: &[Stage]) -> usize {
 /// band-limit so a huge blur can't shrink its input to a handful of texels.
 const SCALE_FLOOR: f32 = 0.1;
 
-/// The render scale at which a `Neighborhood(radius)` pass's output is faithfully captured: its finest
-/// feature is ~`radius` device px wide, so a texel spacing of `radius/2` (Nyquist) suffices — i.e.
-/// `k ≈ 2/radius`, clamped to `[SCALE_FLOOR, 1]`. This is both the coarsest scale the pass itself needs
-/// to render at *and* the coarsest scale any pass feeding it needs to supply — a blur band-limits, so
-/// everything up to and including it can ride this cheap. `SamePixel`/`Procedural`/`Global` passes
-/// impose no such limit (they preserve or can't be assumed to reduce detail), so they return `1.0`.
+/// The render scale at which a `Neighborhood(radius)` pass's output is faithfully captured. The
+/// theoretical Nyquist bound is `2/radius`, but that renders a Gaussian at a reduced sigma of
+/// ~0.67px — under-filtered enough that residual aliasing survives, and under a drag the crop
+/// origin shifts the resample phase every frame, so the residue *shimmers* (visible as freckles
+/// beneath a lightly-frosted lens). `3.75/radius` keeps the reduced sigma at ~1.25px, which
+/// genuinely buries the energy above the reduced Nyquist; small blurs (σ ≲ 1.25) stay at native.
+/// This is both the coarsest scale the pass itself renders at *and* the coarsest scale any pass
+/// feeding it needs to supply. `SamePixel`/`Global` passes impose no limit and return `1.0`.
 #[must_use]
 fn pass_band_limit(pass: &EffectPass) -> f32 {
     match pass_reach(pass) {
-        Reach::Neighborhood(radius) if radius > 0.0 => (2.0 / radius).clamp(SCALE_FLOOR, 1.0),
+        Reach::Neighborhood(radius) if radius > 0.0 => (3.75 / radius).clamp(SCALE_FLOOR, 1.0),
         _ => 1.0,
     }
 }
@@ -160,7 +152,6 @@ fn pass_band_limit(pass: &EffectPass) -> f32 {
 pub fn chain_scales(graph: &[GraphPass], acceptable_downscale: f32, cap: f32) -> Vec<f32> {
     let n = graph.len();
     let surface = acceptable_downscale.min(cap).clamp(SCALE_FLOOR, 1.0);
-    // consumers[i] = passes that read pass i's output (via Src::Pass(i)).
     let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (j, gp) in graph.iter().enumerate() {
         for s in &gp.inputs {
@@ -172,17 +163,13 @@ pub fn chain_scales(graph: &[GraphPass], acceptable_downscale: f32, cap: f32) ->
         }
     }
     let mut scale = vec![1.0_f32; n];
-    // Reverse order: a pass's consumers sit at higher indices in a well-formed graph, so their scale is
-    // already resolved when we reach it. (Effect graphs are small, acyclic, mostly linear.)
     for i in (0..n).rev() {
         let needed = if consumers[i].is_empty() {
-            1.0 // final output — pinned to the surface scale below.
+            1.0
         } else {
             consumers[i]
                 .iter()
                 .map(|&j| {
-                    // A blur consumer only demands its input at its band-limit; any other pass demands
-                    // its input at the scale it itself renders.
                     if matches!(pass_reach(&graph[j].pass), Reach::Neighborhood(_)) {
                         pass_band_limit(&graph[j].pass)
                     } else {
@@ -191,7 +178,8 @@ pub fn chain_scales(graph: &[GraphPass], acceptable_downscale: f32, cap: f32) ->
                 })
                 .fold(0.0_f32, f32::max)
         };
-        scale[i] = surface.min(needed).min(pass_band_limit(&graph[i].pass)).clamp(SCALE_FLOOR, 1.0);
+        let own = if consumers[i].is_empty() { 1.0 } else { pass_band_limit(&graph[i].pass) };
+        scale[i] = surface.min(needed).min(own).clamp(SCALE_FLOOR, 1.0);
     }
     scale
 }
@@ -256,14 +244,12 @@ mod tests {
 
     #[test]
     fn footprint_reads_dst_when_a_pass_binds_the_backdrop_input() {
-        // background blur binds Input(0) → gather.
         let g = background_blur_graph(4.0);
         assert!(footprint(&g[0]).reads_dst);
     }
 
     #[test]
     fn sharp_glass_fuses_to_one_segment() {
-        // refraction (same-pixel) + composite (same-pixel), no blur → a single fused stage.
         let g = glass_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let stages = partition(&g);
         assert_eq!(stages, vec![Stage::Fused(vec![0, 1])]);
@@ -272,8 +258,6 @@ mod tests {
 
     #[test]
     fn frosted_glass_materialises_refraction_and_the_scatter() {
-        // frost 1.0 → a Blur pass AND a frost-scatter composite (neighborhood). refraction stands
-        // alone (materialised for the blur), blur is a barrier, composite neighbourhood-reads it.
         let mut frosted = glass();
         frosted.frost = 1.0;
         let g = glass_graph(&frosted, geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
@@ -284,8 +268,6 @@ mod tests {
 
     #[test]
     fn light_frost_without_a_blur_pass_still_bars_the_scatter() {
-        // frost 0.03: total_blur_sigma = 0.24 ≤ 0.5 → no Blur pass, but the composite's frost scatter
-        // (frost > 0.01) is a neighborhood read of refraction → the two cannot fuse.
         let mut frosted = glass();
         frosted.frost = 0.03;
         let g = glass_graph(&frosted, geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
@@ -301,14 +283,12 @@ mod tests {
 
     #[test]
     fn undeclared_custom_is_a_barrier() {
-        // A custom pass is Global until it declares a reach → conservative barrier, never a silent fuse.
         let stages = partition(&custom_graph(vec![256.0, 256.0], 1));
         assert_eq!(stages, vec![Stage::Barrier(0)]);
     }
 
     #[test]
     fn sharp_chain_is_uniform_surface_scale() {
-        // Sharp glass = two same-pixel passes, no blur → every pass at min(acceptable_downscale, cap), uniform.
         let g = glass_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let s = chain_scales(&g, 0.6, 0.8);
         assert_eq!(s.len(), 2);
@@ -319,28 +299,21 @@ mod tests {
 
     #[test]
     fn single_custom_uses_its_declared_acceptable_downscale() {
-        // One Global pass, no consumers → scale = min(acceptable_downscale, cap).
         let s = chain_scales(&custom_graph(vec![256.0, 256.0], 1), 0.3, 1.0);
         assert_eq!(s, vec![0.3]);
-        // The memory cap can force it lower than the declared floor.
         let s2 = chain_scales(&custom_graph(vec![256.0, 256.0], 1), 0.8, 0.25);
         assert_eq!(s2, vec![0.25]);
     }
 
     #[test]
     fn passes_feeding_a_blur_ride_the_blur_band_limit() {
-        // Frosted glass: refraction (0) → blur (1, big radius) → frost composite (2). With no surface
-        // cap (acceptable_downscale=cap=1), the composite's own frost scatter is small, but the refraction and the
-        // blur must be able to drop below 1 — they feed a wide blur that destroys their detail.
         let mut frosted = glass();
-        frosted.frost = 1.0; // total_blur_sigma = 8 → Blur pass with 3σ = 24 device px reach.
+        frosted.frost = 1.0;
         let g = glass_graph(&frosted, geom(), (400, 400), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let s = chain_scales(&g, 1.0, 1.0);
         assert_eq!(s.len(), 3);
-        // refraction (feeds only the blur) and the blur itself ride the blur's band-limit < 1.
         assert!(s[0] < 1.0, "refraction feeding a wide blur should ride cheap, got {}", s[0]);
         assert!(s[1] < 1.0, "the blur itself should render at its band-limit, got {}", s[1]);
-        // and never below the floor.
         assert!(s[0] >= SCALE_FLOOR && s[1] >= SCALE_FLOOR);
     }
 

@@ -13,8 +13,6 @@
 //! pieces still deferred on classic are blurred-rect drop shadows and filter layers (effects route
 //! through our own `run_graph` instead) and external-texture images.
 
-// The wasm backend shell (surface + `create_focus_renderer` over a host canvas). wasm-only; the
-// native rlib + tests never build it.
 #[cfg(target_arch = "wasm32")]
 mod renderer;
 pub mod walk;
@@ -24,9 +22,23 @@ pub mod walk_gpu;
 #[cfg(target_arch = "wasm32")]
 pub use renderer::{create_focus_renderer, ClassicFocusRenderer};
 
-// Re-export the shared C-style ABI + host scene-state so this cdylib exports the identical host
-// interface the hybrid module does — the same wholesale-carve trick proven in render-vello: the 82
-// `#[no_mangle]` exports surface from the cdylib even though they live in the dependency rlib.
+/// Whether the current device can bind `rgba8unorm` as a read-write storage texture — the single-
+/// accumulator fast path. Written once at device creation (the wasm shell probes the adapter; a
+/// native harness probes and sets it itself), read by the sink driver via
+/// [`RasterBackend::rw_accumulator`](render_core::vello::rasterize::RasterBackend::rw_accumulator).
+static RW_ACCUMULATOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_rw_accumulator_supported(on: bool) {
+    RW_ACCUMULATOR.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Host-visible capability probe: `true` once a device with `rgba8unorm` read-write storage exists
+/// (browser: the `texture-formats-tier2` feature was granted; native: Metal/Vulkan/D3D caps).
+#[unsafe(no_mangle)]
+pub extern "C" fn wv_rw_supported() -> bool {
+    RW_ACCUMULATOR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub use render_core::vello::abi;
 
 use glifo::{Glyph, GlyphRun, GlyphRunBackend, GlyphRunBuilder};
@@ -162,11 +174,7 @@ impl<'a> ClassicGlyphBackend<'a> {
     /// sink is needed (that is the sparse-strips path). glifo's `Glyph` maps 1:1 to `vello::Glyph`.
     fn draw(self, run: &GlyphRun<'a>, glyphs: impl Iterator<Item = Glyph> + Clone, stroked: bool) {
         let scene_pt = run.scene_paint_transform();
-        // glifo carries variation coords as skrifa `F2Dot14`; classic wants raw `i16` bits (same
-        // value). Materialise them into a Vec that outlives the builder.
         let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
-        // `draw_glyphs` reborrows `self.scene` for a local lifetime, so the owned `self.brush` (and
-        // `self.stroke`) outlive the builder and can supply the `BrushRef` — disjoint field borrows.
         let db = self
             .scene
             .draw_glyphs(run.font())
@@ -177,7 +185,6 @@ impl<'a> ClassicGlyphBackend<'a> {
             .normalized_coords(&coords)
             .hint(run.hint());
         let items = glyphs.map(|g| vello::Glyph { id: g.id, x: g.x, y: g.y });
-        // The brush and the fill/stroke style are chosen together so the builder is consumed once.
         match (&self.brush, stroked) {
             (ClassicPaint::Solid(c), false) => db.brush(*c).draw(Fill::NonZero, items),
             (ClassicPaint::Gradient(gr), false) => db.brush(gr).draw(Fill::NonZero, items),
@@ -191,7 +198,6 @@ impl<'a> ClassicGlyphBackend<'a> {
 
 impl<'a> GlyphRunBackend<'a> for ClassicGlyphBackend<'a> {
     fn atlas_cache(self, _enabled: bool) -> Self {
-        // Classic vello does its own glyph caching inside the renderer; nothing to toggle here.
         self
     }
     fn fill_glyphs<G>(self, run: GlyphRun<'a>, glyphs: G)
@@ -222,7 +228,6 @@ impl<'a> GlyphRunBackend<'a> for ClassicGlyphBackend<'a> {
     ) where
         G: Iterator<Item = Glyph> + Clone,
     {
-        // `offset` is the top of the line measured down from the baseline; `size` its thickness.
         let top = f64::from(baseline_y + offset);
         let rect = Rect::new(
             f64::from(*x_range.start()),
@@ -260,14 +265,6 @@ impl RenderingContext for ClassicCtx {
         self.fill_rule = fill_rule;
     }
     fn set_paint(&mut self, paint: impl Into<PaintType>) {
-        // PaintType is `peniko::Brush<vello_common::paint::Image, Gradient>`. Solid and gradient are
-        // peniko-native and map straight through. An image paint arrives as an atlas *handle*
-        // (`ImageSource::OpaqueId`, the shape the shared `set_paint` emits) plus a **sampler** carrying
-        // the fill's opacity, extend mode and quality. Classic carries pixels in the scene, so we
-        // resolve that handle back to the pixels `upload_pending_images` staged and attach them as a
-        // peniko `ImageBrush` *with the incoming sampler* — `ImageBrush::new` would reset it to
-        // defaults and silently drop the fill opacity (and extend/quality). An unstaged/absent image
-        // falls back to the placeholder.
         self.paint = match paint.into() {
             vello_common::peniko::Brush::Solid(color) => ClassicPaint::Solid(color),
             vello_common::peniko::Brush::Gradient(g) => ClassicPaint::Gradient(g),
@@ -284,7 +281,6 @@ impl RenderingContext for ClassicCtx {
                                 sampler,
                             })
                         }),
-                    // The shared draw path only ever emits OpaqueId; a direct-pixmap source isn't produced.
                     vello_common::paint::ImageSource::Pixmap(_) => ClassicPaint::default(),
                 }
             }
@@ -294,22 +290,15 @@ impl RenderingContext for ClassicCtx {
         self.stroke = stroke;
     }
 
-    // Effects do not go through the Scene on classic — the sink runs blur/glass/shadow/custom through
-    // our own `run_graph` — so the filter hooks are inert here.
     fn set_filter_effect(&mut self, _filter: Filter) {}
     fn reset_filter_effect(&mut self) {}
     fn push_filter_layer(&mut self, _filter: Filter) {
-        // Classic vello has no layer-filter primitive (layer blur / inner shadow / filter graph);
-        // real filtering routes through our own `run_graph` at the sink. Until that lands, push a
-        // plain unclipped layer so the push/pop stack stays balanced and the content draws unfiltered
-        // rather than panicking — a visible-but-unblurred degradation, not a corruption.
         let full = Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6);
         self.scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, Affine::IDENTITY, &full);
     }
 
     fn fill_path(&mut self, path: &BezPath) {
         let pt = (self.paint_transform != Affine::IDENTITY).then_some(self.paint_transform);
-        // Disjoint field borrows: `self.paint` read for the brush, `self.scene` mutated by `fill`.
         match &self.paint {
             ClassicPaint::Solid(c) => self.scene.fill(self.fill_rule, self.transform, *c, pt, path),
             ClassicPaint::Gradient(g) => self.scene.fill(self.fill_rule, self.transform, g, pt, path),
@@ -325,8 +314,6 @@ impl RenderingContext for ClassicCtx {
         }
     }
     fn fill_rect(&mut self, rect: &Rect) {
-        // Honour the paint transform here too: a gradient-filled square rect takes this fast path (no
-        // corners → no `fill_path`), and the unit-box→bounds gradient mapping lives in that transform.
         let pt = (self.paint_transform != Affine::IDENTITY).then_some(self.paint_transform);
         match &self.paint {
             ClassicPaint::Solid(c) => self.scene.fill(self.fill_rule, self.transform, *c, pt, rect),
@@ -336,9 +323,6 @@ impl RenderingContext for ClassicCtx {
     }
 
     fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32) {
-        // Classic vello has a native blurred-rounded-rect primitive (its own gaussian), so a box
-        // drop shadow needs no filter layer or run_graph. Shadows are solid; a gradient in the pen
-        // here is not meaningful, so fall back to black.
         let color = match &self.paint {
             ClassicPaint::Solid(c) => *c,
             ClassicPaint::Gradient(_) | ClassicPaint::Image(_) => {
@@ -360,8 +344,6 @@ impl RenderingContext for ClassicCtx {
         font: &FontData,
     ) -> GlyphRunBuilder<'a, Self::GlyphRunBackend<'a>> {
         let (t, pt) = (self.transform, self.paint_transform);
-        // Snapshot the current brush/stroke so the backend can paint the glyphs — glifo's run carries
-        // font + geometry but not paint. Cloned (not borrowed) so it doesn't alias `&mut self.scene`.
         let (brush, stroke) = (self.paint.clone(), self.stroke.clone());
         GlyphRunBuilder::new(
             font.clone(),
@@ -375,7 +357,6 @@ impl RenderingContext for ClassicCtx {
         self.scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, self.transform, path);
     }
     fn push_clip_path(&mut self, path: &BezPath) {
-        // No standalone clip-path stack on classic; model it as a clip layer.
         self.scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, self.transform, path);
     }
     fn push_layer(
@@ -391,7 +372,6 @@ impl RenderingContext for ClassicCtx {
         match clip {
             Some(path) => self.scene.push_layer(Fill::NonZero, blend, alpha, self.transform, path),
             None => {
-                // An unclipped layer: clip to a rect large enough to cover any surface, at identity.
                 let full = Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6);
                 self.scene.push_layer(Fill::NonZero, blend, alpha, Affine::IDENTITY, &full);
             }
@@ -410,8 +390,6 @@ impl RenderingContext for ClassicCtx {
         _quality: ImageQuality,
         _rects: impl IntoIterator<Item = SampleRect>,
     ) {
-        // Externally-bound textures are a hybrid capability (the trait leaks its TextureId/SampleRect
-        // here). Classic uploads images through vello's own image path — a later slice; unadvertised.
         unimplemented!("classic-vello external textures are not supported")
     }
 }
@@ -492,13 +470,8 @@ impl ClassicRenderer {
             })
         };
 
-        // PREMULT TEST: our effect surfaces (shadows) are semi-transparent, rendered into a transparent
-        // target — so the stored texels are *premultiplied*. `register_texture` documents *unpremult*
-        // input, so this checks whether a 50%-alpha surface, drawn back as an image over green, matches
-        // the same 50%-alpha colour filled *directly* over green. If they differ, premult is wrong.
         let half_red = css::RED.with_alpha(0.5);
 
-        // (1) Render a 50%-alpha red into an offscreen (transparent) texture → premultiplied texels.
         let pat_side = 200u32;
         let tex = storage_tex("spike pattern", pat_side);
         let tview = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -508,12 +481,8 @@ impl ClassicRenderer {
             .render_to_texture(device, queue, &pat, &tview, &params(pat_side, pat_side, css::TRANSPARENT))
             .expect("spike: render pattern");
 
-        // (2) Register the GPU texture; the returned image can be drawn in scenes on this renderer.
         let img = self.inner.register_texture(tex);
 
-        // (3) Output scene: green background; a DIRECT 50%-red reference rect at (40,40)-(180,180); the
-        // registered surface drawn *as an image* at (250,100),200×200. Both sit over green, so the
-        // reference and the image region should read the same colour if the round-trip is correct.
         let out_tex = storage_tex("spike out", SIDE);
         let out_view = out_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let mut out = Scene::new();
@@ -528,10 +497,6 @@ impl ClassicRenderer {
             None,
             &Rect::new(0.0, 0.0, 200.0, 200.0),
         );
-        // CMD_EFFECT boundary sync test: emit an (inert) effect marker over a green region, then draw a
-        // blue rect ON TOP of it. If fine steps over the 6-word marker correctly, the region stays green
-        // and the blue rect paints normally; a wrong cursor advance would desync the tile and corrupt
-        // both. (The effect does nothing yet — the post-fine dispatch that consumes the marker is next.)
         out.draw_effect(Affine::IDENTITY, &Rect::new(100.0, 100.0, 300.0, 300.0), 7, [0.0, 0.0, 0.0, 0.0]);
         out.fill(Fill::NonZero, Affine::IDENTITY, css::BLUE, None, &Rect::new(150.0, 150.0, 250.0, 250.0));
 
@@ -540,8 +505,7 @@ impl ClassicRenderer {
             .expect("spike: render output");
         self.inner.unregister_texture(img);
 
-        // (4) Copy the offscreen texture into a mappable buffer and read the RGBA bytes back.
-        let bpr = SIDE * 4; // 2048, already 256-aligned
+        let bpr = SIDE * 4;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("spike readback"),
             size: u64::from(bpr) * u64::from(SIDE),
@@ -571,7 +535,6 @@ impl ClassicRenderer {
         let slice = readback.slice(..);
         let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        // No-op on web (the browser event loop drives the map callback); real work on native.
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
         rx.receive().await.expect("spike: map channel").expect("spike: map failed");
         let data = slice.get_mapped_range().to_vec();
@@ -670,6 +633,12 @@ pub struct ClassicBackend {
     /// The in-progress persistent phased render, live between `phased_begin` and `phased_finish` so
     /// the sink can drive phases one at a time with a gather's effect recorded between them.
     phased_session: Option<vello::low_level::PhasedSession>,
+    /// DEBUG (native only): the phased session's bump-buffer resource id + a device/queue clone, so
+    /// `after_submit` can dump vello's overflow counters when `WV_DEBUG_BUMP` is set.
+    #[cfg(not(target_arch = "wasm32"))]
+    debug_bump_id: Option<vello::low_level::ResourceId>,
+    #[cfg(not(target_arch = "wasm32"))]
+    debug_gpu: Option<(wgpu::Device, wgpu::Queue)>,
 }
 
 impl ClassicBackend {
@@ -684,6 +653,10 @@ impl ClassicBackend {
             inline_images: std::collections::HashMap::new(),
             next_inline: 0,
             phased_session: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            debug_bump_id: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            debug_gpu: None,
         }
     }
 
@@ -701,7 +674,6 @@ impl ClassicBackend {
             }
             let data = vello_common::peniko::ImageData {
                 data: vello_common::peniko::Blob::new(std::sync::Arc::new(img.rgba)),
-                // The ABI hands straight (unpremultiplied) top-left RGBA — exactly `Rgba8` + `Alpha`.
                 format: vello_common::peniko::ImageFormat::Rgba8,
                 alpha_type: vello_common::peniko::ImageAlphaType::Alpha,
                 width: img.width,
@@ -715,16 +687,25 @@ impl ClassicBackend {
     }
 
     /// The Parley engine, so a test can register a face directly (the browser path uses
-    /// [`Self::sync_fonts`] instead, draining the ABI upload queue).
+    /// [`Self::sync_fonts`] instead, reading the shared ABI font registry).
     pub fn text_mut(&mut self) -> &mut render_core::vello::text::TextState {
         &mut self.text
     }
 
-    /// Register any faces the host uploaded since the last frame into the Parley collection, under the
-    /// aliases [`ClassicEnv::font_alias`] resolves to — so text laid out this frame finds its font. The
-    /// wasm shell calls this once per frame before the sink runs.
+    /// Register any faces published since this backend's last frame into the Parley collection, under
+    /// the aliases [`ClassicEnv::font_alias`] resolves to — so text laid out this frame finds its
+    /// font. Reads the shared font registry through this backend's own cursor, so other consumers
+    /// see the same faces. The wasm shell calls this once per frame before the sink runs.
     pub fn sync_fonts(&mut self) {
         self.text.sync_fonts();
+    }
+
+    /// Fold the queued text-editor commands into the live [`render_core::vello::rich_editor::RichEditor`]
+    /// and refresh the ABI snapshot, before this frame draws — so the caret and selection it paints
+    /// are up to date. The wasm shell calls this once per frame after `sync_fonts`.
+    pub fn sync_editor(&mut self) {
+        let text = &mut self.text;
+        render_core::vello::abi::with_scene(|scene, _, _| text.sync_editor(scene));
     }
 }
 
@@ -738,13 +719,9 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
     }
 
     fn build_bodies(&mut self, scene: &mut ClassicCtx, transform: Affine, ops: &[render_core::schedule::PaintOp]) {
-        // Timed like hybrid's, so `scene` (CPU scene building) is comparable across backends.
         let _tsc = render_core::vello::prof::now();
         let mut resources = ();
         let text = &mut self.text;
-        // The live model + host viewport + gesture modifiers come off the shared ABI, the same source
-        // the hybrid `NeutralModelScene` reads; `view = transform · viewport` mirrors its `root ·
-        // viewport`, with `transform` the surface-placement matrix the sink baked in.
         render_core::vello::abi::with_scene(|model, viewport, modifiers| {
             crate::walk::draw_paint_batch(
                 scene,
@@ -760,25 +737,12 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         render_core::vello::prof::add_scene(render_core::vello::prof::now() - _tsc);
     }
 
-    fn draw_whole_scene(&mut self, scene: &mut ClassicCtx, root: Affine) {
-        // Whole-viewport path: walk the entire document tree in z-order into one scene, letting vello
-        // bin it internally — instead of the sink's per-tile `build_bodies` calls. `view = root ·
-        // viewport`, same as `build_bodies`, with no per-tile surface-placement offset.
-        let _tsc = render_core::vello::prof::now();
-        let mut resources = ();
-        let text = &mut self.text;
-        render_core::vello::abi::with_scene(|model, viewport, _modifiers| {
-            crate::walk::draw_scene(scene, &mut resources, &ClassicEnv, text, model, root * viewport);
-        });
-        render_core::vello::prof::add_scene(render_core::vello::prof::now() - _tsc);
-    }
-
     fn draw_scene_range(&mut self, scene: &mut ClassicCtx, root: Affine, start: usize, end: usize) {
         let _tsc = render_core::vello::prof::now();
         let mut resources = ();
         let text = &mut self.text;
-        render_core::vello::abi::with_scene(|model, viewport, _modifiers| {
-            crate::walk::draw_scene_range(scene, &mut resources, &ClassicEnv, text, model, root * viewport, start, end);
+        render_core::vello::abi::with_scene(|model, viewport, modifiers| {
+            crate::walk::draw_scene_range(scene, &mut resources, &ClassicEnv, text, model, root * viewport, start, end, modifiers);
         });
         render_core::vello::prof::add_scene(render_core::vello::prof::now() - _tsc);
     }
@@ -796,27 +760,17 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
     }
 
     fn build_shadow_silhouette(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, shadow: usize, inset: bool, apply_offset: bool) {
-        // Borrowed before `with_scene` so the closure can lay text out (font/layout contexts) while it
-        // holds the model lock — the same discipline `draw_scene_range` uses.
         let text = &mut self.text;
         render_core::vello::abi::with_scene(|model, viewport, modifiers| {
             let Some(node) = model.get(id) else { return };
-            // `inset` picks the subset the caller is indexing (drop vs inner shadows).
             let Some(s) = node.shadows.iter().filter(|s| s.inset == inset).nth(shadow) else { return };
             let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-            // The offset rides in the shape's own space (so it rotates with the shape), exactly as the
-            // native box-shadow path applies it; the blur is added by the sink, not here. `apply_offset`
-            // false stamps the shape un-shifted (the inner-shadow flood before the offset punch).
             let offset = if apply_offset { Affine::translate((s.offset.x, s.offset.y)) } else { Affine::IDENTITY };
             let matrix = transform
                 * viewport
                 * modifier
                 * node.effective_transform()
                 * offset;
-            // Text casts a GLYPH-shaped shadow: stamp the block's inked coverage in the shadow colour
-            // through the shared text path (which handles layout + vertical align), then the sink blurs
-            // it exactly like a path silhouette. Spread doesn't apply to glyph runs (there is no
-            // per-glyph outline to dilate here), matching render-wasm's text drop shadow.
             if node.kind == render_core::model::ShapeKind::Text {
                 let mut resources = ();
                 render_core::vello::text::draw_text_block(
@@ -826,7 +780,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             }
             scene.set_transform(matrix);
             scene.set_paint(s.color);
-            // Spread grows the silhouette before the blur, matching render-wasm / the box path.
             let path = if s.spread > 0.0 {
                 render_core::geometry::spread_outline(node, f64::from(s.spread))
             } else {
@@ -836,15 +789,22 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         });
     }
 
-    fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, _transform: Affine, _id: u128, effect_id: u32, params: [f32; 4]) {
-        // Emit a FULL-VIEWPORT, coverage-free boundary marker: it must land in EVERY tile so segmented
-        // fine sees the same global z-boundary in all tiles (per-tile marker count == global segment
-        // index). A device-space viewport rect with identity transform bins into every tile regardless
-        // of the node's placement; the marker keeps its z from the call position in the draw stream, and
-        // coarse skips the coverage (`write_path`) so only the 6-word marker is written. The effect's
-        // actual compositing region (the shape extent) is handled separately by the sink.
-        let full = Rect::new(0.0, 0.0, f64::from(scene.width()), f64::from(scene.height()));
-        scene.draw_effect(Affine::IDENTITY, &full, effect_id, params);
+    fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, _transform: Affine, _id: u128, effect_id: u32, seg_after: u32, round: u32, reach: [f32; 4]) {
+        let r = Rect::new(
+            f64::from(reach[0]).max(0.0),
+            f64::from(reach[1]).max(0.0),
+            f64::from(reach[2]).min(f64::from(scene.width())),
+            f64::from(reach[3]).min(f64::from(scene.height())),
+        );
+        if r.x1 <= r.x0 || r.y1 <= r.y0 {
+            return;
+        }
+        scene.draw_effect(
+            Affine::IDENTITY,
+            &r,
+            effect_id,
+            [f32::from_bits(seg_after), f32::from_bits(round), 0.0, 0.0],
+        );
     }
 
     fn rasterize(
@@ -859,7 +819,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         base_color: render_core::peniko::Color,
     ) {
         use render_core::vello::rasterize::SceneRasterizer;
-        // Timed like hybrid's `render` bucket — encode only now that the submit moved to the sink.
         let _trd = render_core::vello::prof::now();
         self.renderer.rasterize(scene, device, queue, enc, target, width, height, base_color);
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
@@ -868,34 +827,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
 
     fn draw_object_count(&self, scene: &ClassicCtx) -> u32 {
         scene.scene().encoding().draw_tags.len() as u32
-    }
-
-    fn phased_supported(&self) -> bool {
-        true
-    }
-
-    /// Whole-viewport phased render: front-end once, one coarse+fine phase per draw range, one setup.
-    /// Counts as a SINGLE render for the profiler (bucket 7) — that collapse is the whole point.
-    fn rasterize_phased(
-        &mut self,
-        scene: &ClassicCtx,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        targets: &[&wgpu::TextureView],
-        width: u32,
-        height: u32,
-        base_color: render_core::peniko::Color,
-        phases: &[(u32, u32)],
-    ) {
-        let _trd = render_core::vello::prof::now();
-        let params = RenderParams { base_color, width, height, antialiasing_method: AaConfig::Area };
-        self.renderer
-            .inner
-            .render_phased_into(device, queue, scene.scene(), targets, &params, phases, enc)
-            .expect("render_phased_into");
-        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
-        render_core::vello::prof::inc_render();
     }
 
     /// Begin a persistent phased session (front-end once), holding it on the backend. Counts as the
@@ -917,28 +848,14 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             .inner
             .phased_begin_into(device, queue, scene.scene(), &params, enc)
             .expect("phased_begin_into");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.debug_bump_id = Some(session.debug_bump_proxy_id());
+            self.debug_gpu = Some((device.clone(), queue.clone()));
+        }
         self.phased_session = Some(session);
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
         render_core::vello::prof::inc_render();
-    }
-
-    fn phased_phase(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        draw_start: u32,
-        draw_end: u32,
-        base: Option<&wgpu::TextureView>,
-        out: &wgpu::TextureView,
-    ) {
-        let _trd = render_core::vello::prof::now();
-        let session = self.phased_session.as_mut().expect("phased_phase without phased_begin");
-        self.renderer
-            .inner
-            .phased_phase_into(session, device, queue, enc, draw_start, draw_end, base, out)
-            .expect("phased_phase_into");
-        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
 
     fn phased_frontend_full(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder) {
@@ -956,6 +873,7 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         enc: &mut wgpu::CommandEncoder,
+        seg_lo: u32,
         seg_target: u32,
         base: Option<&wgpu::TextureView>,
         out: &wgpu::TextureView,
@@ -964,8 +882,30 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         let session = self.phased_session.as_mut().expect("phased_fine_segment without phased_begin");
         self.renderer
             .inner
-            .phased_fine_segment_into(session, device, queue, enc, seg_target, base, out)
+            .phased_fine_segment_into(session, device, queue, enc, seg_lo, seg_target, base, out)
             .expect("phased_fine_segment_into");
+        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
+    }
+
+    fn rw_accumulator(&self) -> bool {
+        wv_rw_supported()
+    }
+
+    fn phased_fine_segment_rw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        seg_lo: u32,
+        seg_target: u32,
+        target: &wgpu::TextureView,
+    ) {
+        let _trd = render_core::vello::prof::now();
+        let session = self.phased_session.as_mut().expect("phased_fine_segment_rw without phased_begin");
+        self.renderer
+            .inner
+            .phased_fine_segment_rw_into(session, device, queue, enc, seg_lo, seg_target, target)
+            .expect("phased_fine_segment_rw_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
 
@@ -979,12 +919,22 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
     }
 
     fn rasterize_target_usage(&self) -> wgpu::TextureUsages {
-        // Classic writes the target from a compute shader, not as a render attachment.
         wgpu::TextureUsages::STORAGE_BINDING
     }
 
     /// The frame has been submitted, so vello's retired buffers are safe to recycle now.
     fn after_submit(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DEBUG_BUMP").is_ok() {
+            if let (Some(id), Some((device, queue))) = (self.debug_bump_id.take(), self.debug_gpu.clone()) {
+                if let Some(v) = self.renderer.inner.engine_debug_read(&device, &queue, id, 8) {
+                    eprintln!(
+                        "BUMP: failed={:#x} binning={} ptcl={} tile={} seg_counts={} segments={} blend={} lines={}",
+                        v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]
+                    );
+                }
+            }
+        }
         self.renderer.release_pending();
     }
 
@@ -1031,19 +981,15 @@ mod tests {
     /// rest); using disjoint shape ids keeps their scenes from colliding through the lock.
     static ABI_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    // The whole point of the spike: the impl exists and a scene can be driven through the trait
-    // exactly as `scene.rs` would, with no GPU. If this compiles and runs, R1's core is proven.
     #[test]
     fn a_scene_can_be_driven_through_the_rendering_context_trait() {
         fn draw<C: RenderingContext>(ctx: &mut C) {
-            // A solid rect...
             ctx.set_fill_rule(Fill::NonZero);
             ctx.set_transform(Affine::translate((10.0, 10.0)));
             ctx.set_paint(vello_common::peniko::Brush::Solid(
                 vello_common::color::palette::css::REBECCA_PURPLE,
             ));
             ctx.fill_rect(&Rect::new(0.0, 0.0, 40.0, 40.0));
-            // ...inside an isolating layer (a group), the PushLayer/PopLayer the schedule emits.
             ctx.push_layer(None, Some(BlendMode::default()), Some(0.5), None, None);
             let mut path = BezPath::new();
             path.move_to((0.0, 0.0));
@@ -1056,14 +1002,10 @@ mod tests {
 
         let mut ctx = ClassicCtx::new(256, 256);
         draw(&mut ctx);
-        // A non-empty scene came out the other side.
         assert_eq!(ctx.width(), 256);
         assert!(ctx.scene().encoding().n_paths > 0, "expected encoded paths in the classic scene");
     }
 
-    // The end-to-end pixel proof: build a scene through the trait, rasterize it with classic vello's
-    // compute pipeline to a real GPU texture, read it back, and check the pixels. Needs a wgpu device;
-    // skipped (not failed) on a machine with no suitable adapter (e.g. CI with no GPU).
     #[test]
     fn classic_vello_rasterizes_our_scene_to_a_texture() {
         let instance = wgpu::Instance::default();
@@ -1081,10 +1023,8 @@ mod tests {
         }))
         .expect("device");
 
-        // 64×64 so bytes-per-row = 64·4 = 256 (already the required 256-byte alignment).
         let (w, h) = (64u32, 64u32);
         let mut ctx = ClassicCtx::new(w as u16, h as u16);
-        // A purple square from (16,16) to (48,48) over a white background.
         ctx.set_paint(vello_common::peniko::Brush::Solid(
             vello_common::color::palette::css::REBECCA_PURPLE,
         ));
@@ -1103,9 +1043,11 @@ mod tests {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut renderer = ClassicRenderer::new(&device);
-        renderer.rasterize(&ctx, &device, &queue, &view, w, h, vello_common::color::palette::css::WHITE);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.rasterize(&ctx, &device, &queue, &mut enc, &view, w, h, vello_common::color::palette::css::WHITE);
+        queue.submit([enc.finish()]);
+        renderer.release_pending();
 
-        // Copy the texture into a mappable buffer and read it back.
         let bytes_per_row = w * 4;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
@@ -1142,10 +1084,8 @@ mod tests {
             let o = (y * bytes_per_row + x * 4) as usize;
             [data[o], data[o + 1], data[o + 2], data[o + 3]]
         };
-        // Centre (32,32) is inside the square → purple (rebecca purple ≈ #663399).
         let c = px(32, 32);
         assert!(c[0] > 60 && c[0] < 130 && c[2] > 120 && c[1] < 90, "centre should be purple, got {c:?}");
-        // A corner (4,4) is background → white.
         let bg = px(4, 4);
         assert!(bg[0] > 240 && bg[1] > 240 && bg[2] > 240, "corner should be white, got {bg:?}");
     }
@@ -1178,10 +1118,7 @@ mod tests {
         }))
         .expect("device");
 
-        // Drive the shared ABI exactly as the host does: two overlapping solid rects under ROOT.
         fn solid_fill_bytes(argb: u32) -> Vec<u8> {
-            // header: [count, pad, pad, pad] then one RAW_FILL_DATA_SIZE (=164) chunk. Solid tag 0x00
-            // at chunk[0]; color u32 (ARGB, LE) at PAYLOAD(4)+COLOR(0) = buffer offset 8.
             let mut b = vec![0u8; 4 + 164];
             b[0] = 1;
             b[8..12].copy_from_slice(&argb.to_le_bytes());
@@ -1189,12 +1126,10 @@ mod tests {
         }
         let rect = |id: u32, l: f32, t: f32, r: f32, bt: f32, argb: u32| {
             render_core::vello::abi::use_shape(id, 0, 0, 0);
-            render_core::vello::abi::set_shape_type(3); // Rect
+            render_core::vello::abi::set_shape_type(3);
             render_core::vello::abi::set_shape_selrect(l, t, r, bt);
             let bytes = solid_fill_bytes(argb);
             let ptr = render_core::vello::abi::alloc_bytes(bytes.len());
-            // SAFETY: `alloc_bytes` handed back a `bytes.len()`-sized allocation it owns; we fill it,
-            // then `set_shape_fills` drains it.
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
             render_core::vello::abi::set_shape_fills();
         };
@@ -1202,13 +1137,12 @@ mod tests {
         render_core::vello::abi::init(256, 256);
         render_core::vello::abi::set_render_options(0, 1.0);
         render_core::vello::abi::set_view(1.0, 0.0, 0.0);
-        render_core::vello::abi::set_canvas_background(0xFFFF_FFFF); // opaque white
-        rect(1, 40.0, 40.0, 150.0, 150.0, 0xFFE2_3B3B); // red
-        rect(2, 90.0, 90.0, 200.0, 200.0, 0xFF2B_6CF0); // blue, drawn on top
-        render_core::vello::abi::use_shape(0, 0, 0, 0); // ROOT
+        render_core::vello::abi::set_canvas_background(0xFFFF_FFFF);
+        rect(1, 40.0, 40.0, 150.0, 150.0, 0xFFE2_3B3B);
+        rect(2, 90.0, 90.0, 200.0, 200.0, 0xFF2B_6CF0);
+        render_core::vello::abi::use_shape(0, 0, 0, 0);
         render_core::vello::abi::set_children_2(1, 0, 0, 0, 2, 0, 0, 0);
 
-        // Run the SHARED sink with the classic backend.
         let (w, h) = (256u32, 256u32);
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let mut sink = Sink::new(&device, format);
@@ -1261,7 +1195,6 @@ mod tests {
             blue[2] > 150 && blue[2] > blue[0] + 40 && blue[2] > blue[1] + 40,
             "expected the blue rect at (178,178), got {blue:?}"
         );
-        // The overlap: blue is drawn after red, so it wins there.
         let overlap = px(120, 120);
         assert!(overlap[2] > overlap[0], "overlap should be blue-over-red, got {overlap:?}");
     }
@@ -1297,9 +1230,6 @@ mod tests {
         slice.get_mapped_range().to_vec()
     }
 
-    // Phase 1b: the shared device-generic effect executor (render-vello-core) runs on classic vello's
-    // OWN wgpu device — proving the classic sink reuses our blur/glass/blit unchanged. Rasterize a
-    // sharp square, blur it through run_graph, and confirm the edge bled (soft) rather than a hard step.
     #[test]
     fn classic_device_runs_the_shared_effect_executor() {
         use render_core::effect_graph::background_blur_graph;
@@ -1330,7 +1260,6 @@ mod tests {
         ));
         ctx.fill_rect(&Rect::new(16.0, 16.0, 48.0, 48.0));
 
-        // The rasterized square: STORAGE_BINDING (vello writes it) + TEXTURE_BINDING (the blur samples it).
         let src = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rasterized"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1342,17 +1271,21 @@ mod tests {
             view_formats: &[],
         });
         let src_view = src.create_view(&wgpu::TextureViewDescriptor::default());
-        ClassicRenderer::new(&device).rasterize(
+        let mut renderer = ClassicRenderer::new(&device);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.rasterize(
             &ctx,
             &device,
             &queue,
+            &mut enc,
             &src_view,
             w,
             h,
             vello_common::color::palette::css::WHITE,
         );
+        queue.submit([enc.finish()]);
+        renderer.release_pending();
 
-        // Blur it with the SHARED executor (our own pipelines) on classic's device.
         let compositor = Compositor::new(&device, format);
         let glass = GlassPipeline::new(&device, format);
         let passes = lower_graph(&background_blur_graph(6.0), None);
@@ -1360,7 +1293,6 @@ mod tests {
             run_graph(&compositor, &glass, &device, &queue, &[&src_view], &passes, w, h, format)
                 .expect("blur produced a texture");
 
-        // Blit the blurred result into a COPY_SRC target to read it back.
         let dst = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("readback-target"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1393,19 +1325,12 @@ mod tests {
             let o = ((y * w + x) * 4) as usize;
             [data[o], data[o + 1], data[o + 2], data[o + 3]]
         };
-        // Centre stays strongly purple (square is 32px wide; 3σ=18 < 16 half-width → centre untouched).
         let c = px(32, 32);
         assert!(c[2] > 110 && c[1] < 120, "blurred centre should stay purple, got {c:?}");
-        // 4px OUTSIDE the sharp left edge (x=16): a hard render is pure white here; the blur bleeds
-        // purple, pulling green down and leaving blue above green. That delta is the proof it ran.
         let bleed = px(12, 32);
         assert!(bleed[1] < 245 && bleed[2] > bleed[1], "edge should show blur bleed, got {bleed:?}");
     }
 
-    // The Phase-1c milestone: classic vello renders a REAL render-core document — built with the
-    // model API, walked by the shared neutral drawer (render_core::vello::draw) into ClassicCtx — not
-    // a hand-built scene. A red rect, plus a blue rect inside a 0.5-opacity group (so the group
-    // isolation → push/pop layer path is exercised), over white.
     #[test]
     fn classic_renders_a_real_render_core_document() {
         use render_core::kurbo::Rect as PageRect;
@@ -1426,7 +1351,7 @@ mod tests {
         scene.insert(na);
 
         let mut ng = Node::new(g, ShapeKind::Group);
-        ng.opacity = 0.5; // → isolation layer
+        ng.opacity = 0.5;
         ng.children = vec![b];
         scene.insert(ng);
 
@@ -1460,6 +1385,7 @@ mod tests {
             &mut render_core::vello::text::TextState::new(),
             &scene,
             render_core::kurbo::Affine::IDENTITY,
+            &Default::default(),
         );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1473,30 +1399,24 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.rasterize(&ctx, &device, &queue, &mut enc, &view, w, h, Color::WHITE);
+        queue.submit([enc.finish()]);
+        renderer.release_pending();
 
         let data = read_back(&device, &queue, &texture, w, h);
         let px = |x: u32, y: u32| -> [u8; 4] {
             let o = ((y * w + x) * 4) as usize;
             [data[o], data[o + 1], data[o + 2], data[o + 3]]
         };
-        // Rect A (8..28) is opaque red.
         let ra = px(18, 18);
         assert!(ra[0] > 190 && ra[1] < 90 && ra[2] < 90, "rect A should be red, got {ra:?}");
-        // Rect B (36..56) is blue at 0.5 group opacity over white → a lighter blue (blue high, red/green
-        // lifted toward white). The 0.5 layer is the proof the group isolation path ran.
         let rb = px(46, 46);
         assert!(rb[2] > 150 && rb[0] > 100 && rb[0] < 210, "rect B should be half-opacity blue, got {rb:?}");
-        // Background stays white.
         let bg = px(2, 2);
         assert!(bg[0] > 240 && bg[1] > 240 && bg[2] > 240, "background should be white, got {bg:?}");
     }
 
-    // The new capability this slice unlocks: a NON-solid paint kind on classic. A linear gradient
-    // fill goes through the shared `render_core::vello::draw::set_paint` — the unit-box→bounds mapping
-    // and peniko gradient it builds — proving classic gained gradient/image/diamond from the port,
-    // not just solids. The fill visibly varies across the box (red left, blue right); a flat or
-    // collapsed gradient (the top-left-pixel bug the mapping guards against) would fail both ends.
     #[test]
     fn classic_renders_a_gradient_through_shared_draw() {
         use render_core::kurbo::Rect as PageRect;
@@ -1504,8 +1424,6 @@ mod tests {
         use render_core::peniko::{Color, ColorStop, Gradient};
         use crate::walk::draw_scene;
 
-        // Unit-box linear gradient, red→blue left to right — exactly what a Penpot gradient fill
-        // carries; `set_paint` maps the unit box onto the shape's bounds.
         let stops = [
             ColorStop { offset: 0.0, color: Color::from_rgba8(230, 30, 30, 255).into() },
             ColorStop { offset: 1.0, color: Color::from_rgba8(30, 40, 230, 255).into() },
@@ -1546,6 +1464,7 @@ mod tests {
             &mut render_core::vello::text::TextState::new(),
             &scene,
             render_core::kurbo::Affine::IDENTITY,
+            &Default::default(),
         );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1559,7 +1478,10 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.rasterize(&ctx, &device, &queue, &mut enc, &view, w, h, Color::WHITE);
+        queue.submit([enc.finish()]);
+        renderer.release_pending();
 
         let data = read_back(&device, &queue, &texture, w, h);
         let px = |x: u32, y: u32| -> [u8; 4] {
@@ -1572,10 +1494,6 @@ mod tests {
         assert!(right[2] > right[0] + 60, "gradient right end should be blue-dominant, got {right:?}");
     }
 
-    // Slice B milestone: classic vello rasterizes TEXT through ClassicGlyphBackend. "HELLO" is shaped
-    // by hand (charmap char→gid, real advances) and drawn via ctx.glyph_run(...).fill_glyphs — the
-    // exact path scene.rs's draw_glyph_run will take once the layout migrates — routing to classic's
-    // native Scene::draw_glyphs. Proof: blue ink appears in the text band, background stays white.
     #[test]
     fn classic_renders_text_through_the_glyph_backend() {
         use render_core::kurbo::Affine;
@@ -1595,7 +1513,6 @@ mod tests {
         let charmap = font_ref.charmap();
         let gm = font_ref.glyph_metrics(Size::new(font_size), LocationRef::default());
 
-        // Shape "HELLO" by hand: char → glyph id, advance by the font's real widths.
         let (mut x, baseline) = (12.0f32, 62.0f32);
         let mut glyphs: Vec<Glyph> = Vec::new();
         for ch in "HELLO".chars() {
@@ -1623,8 +1540,6 @@ mod tests {
         let (w, h) = (256u32, 96u32);
         let mut renderer = ClassicRenderer::new(&device);
         let mut ctx = renderer.new_scene(w as u16, h as u16);
-        // Set the pen exactly as scene.rs's draw_glyph_run does before a fill pass: transform, then
-        // the fill's paint. glyph_run snapshots this brush into the backend.
         ctx.set_transform(Affine::IDENTITY);
         ctx.set_paint(Color::from_rgba8(20, 30, 160, 255));
         let mut resources = ();
@@ -1644,11 +1559,13 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.rasterize(&ctx, &device, &queue, &mut enc, &view, w, h, Color::WHITE);
+        queue.submit([enc.finish()]);
+        renderer.release_pending();
 
         let data = read_back(&device, &queue, &texture, w, h);
 
-        // Count ink: any pixel visibly darker than white is glyph coverage.
         let mut ink = 0usize;
         for i in (0..data.len()).step_by(4) {
             if data[i] < 200 || data[i + 1] < 200 || data[i + 2] < 200 {
@@ -1656,17 +1573,14 @@ mod tests {
             }
         }
         assert!(ink > 300, "expected glyph ink from HELLO, got only {ink} non-white px");
-        // The blue tint means it took the brush, not the default black.
         let blue = data.chunks_exact(4).any(|p| p[2] > 120 && p[0] < 90 && p[1] < 90);
         assert!(blue, "glyph ink should carry the blue brush");
-        // Top-left corner is outside the text band → white.
         let c = {
             let o = ((2 * w + 2) * 4) as usize;
             [data[o], data[o + 1], data[o + 2]]
         };
         assert!(c[0] > 240 && c[1] > 240 && c[2] > 240, "corner should be white, got {c:?}");
 
-        // Keep the pixel proof.
         let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../proofs/slice-b-classic-text.png");
         if let Ok(file) = std::fs::File::create(out) {
             let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
@@ -1678,11 +1592,6 @@ mod tests {
         }
     }
 
-    // Slice B Part 2 milestone: classic lays out and renders a real model TEXT BLOCK through the
-    // SHARED neutral text path (render_core::vello::text::draw_text_block) — the same code render-
-    // vello's scene.rs now delegates to. A model TextBlock (one blue "Vello" span) is laid out with
-    // Parley against a FontContext this backend registered Roboto into, then drawn on classic. Proof:
-    // blue glyph ink appears, background stays white.
     #[test]
     fn classic_renders_a_text_block_through_shared_layout() {
         use parley::fontique::FontInfoOverride;
@@ -1701,8 +1610,6 @@ mod tests {
             return;
         };
 
-        // A Parley engine with Roboto registered under exactly the name ClassicEnv::font_alias returns
-        // — this is the classic backend's stand-in for the ABI font-upload path.
         let mut font_cx = FontContext::new();
         font_cx.collection.register_fonts(
             bytes.into(),
@@ -1716,7 +1623,6 @@ mod tests {
         );
         let mut layout_cx: LayoutContext<TextBrush> = LayoutContext::new();
 
-        // A real model text node: one paragraph, one blue "Vello" span.
         let span = TextSpan {
             text: "Vello".to_string(),
             font: FontRef { id: 7, weight: 400, italic: false },
@@ -1761,7 +1667,6 @@ mod tests {
         let mut renderer = ClassicRenderer::new(&device);
         let mut ctx = renderer.new_scene(w as u16, h as u16);
         let mut resources = ();
-        // The whole point: drive the SHARED neutral text path, not a hand-built glyph run.
         render_core::vello::text::draw_text_block(
             &mut ctx,
             &mut resources,
@@ -1784,7 +1689,10 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.rasterize(&ctx, &device, &queue, &mut enc, &view, w, h, Color::WHITE);
+        queue.submit([enc.finish()]);
+        renderer.release_pending();
 
         let data = read_back(&device, &queue, &texture, w, h);
         let mut ink = 0usize;
@@ -1808,10 +1716,6 @@ mod tests {
         }
     }
 
-    // Neutral-walk completeness: classic renders a FULL document in one draw_scene call — a clipping
-    // frame that cuts an overflowing rect, plus a text label — exercising the child-clip layer and the
-    // Text dispatch the walk gained. The overflowing rect must be clipped to the frame; the label's
-    // glyphs must appear outside it.
     #[test]
     fn classic_renders_a_clipped_document_with_text() {
         use parley::fontique::FontInfoOverride;
@@ -1841,8 +1745,6 @@ mod tests {
         root.children = vec![10, 20];
         scene.insert(root);
 
-        // A clipping frame (light grey) at 20..120, clip on, containing a blue rect that overflows to
-        // 200 — the clip must cut it at the frame edge.
         let mut frame = Node::new(10, ShapeKind::Frame);
         frame.bounds = PageRect::new(20.0, 20.0, 120.0, 120.0);
         frame.clip = true;
@@ -1854,7 +1756,6 @@ mod tests {
         inner.fills = vec![Paint::plain(Brush::Solid(Color::from_rgba8(30, 60, 210, 255)))];
         scene.insert(inner);
 
-        // A text label to the right of the frame.
         let span = TextSpan {
             text: "Clip".to_string(),
             font: FontRef { id: 1, weight: 400, italic: false },
@@ -1899,7 +1800,7 @@ mod tests {
         let mut renderer = ClassicRenderer::new(&device);
         let mut ctx = renderer.new_scene(w as u16, h as u16);
         let mut resources = ();
-        draw_scene(&mut ctx, &mut resources, &ClassicEnv, &mut text, &scene, Affine::IDENTITY);
+        draw_scene(&mut ctx, &mut resources, &ClassicEnv, &mut text, &scene, Affine::IDENTITY, &Default::default());
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("clip-doc target"),
@@ -1912,23 +1813,23 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.rasterize(&ctx, &device, &queue, &mut enc, &view, w, h, Color::WHITE);
+        queue.submit([enc.finish()]);
+        renderer.release_pending();
 
         let data = read_back(&device, &queue, &texture, w, h);
         let px = |x: u32, y: u32| -> [u8; 4] {
             let o = ((y * w + x) * 4) as usize;
             [data[o], data[o + 1], data[o + 2], data[o + 3]]
         };
-        // Inside the frame, over the rect → blue.
         let p_in = px(100, 100);
         assert!(p_in[2] > 150 && p_in[0] < 90, "inside frame should be blue, got {p_in:?}");
-        // The rect geometrically covers (150,150) but it is OUTSIDE the frame → the clip removed it → white.
         let p_clip = px(150, 150);
         assert!(
             p_clip[0] > 230 && p_clip[1] > 230 && p_clip[2] > 230,
             "overflow past the frame must be clipped to white, got {p_clip:?}"
         );
-        // The label band carries red glyph ink.
         let red_ink = (36..90).any(|y| {
             (150..250).any(|x| {
                 let p = px(x, y);
@@ -1948,9 +1849,6 @@ mod tests {
         }
     }
 
-    // Effects: classic renders a box DROP SHADOW through the shared neutral walk, using vello's
-    // native blurred-rounded-rect (no filter layer / run_graph). A rounded rect with an offset soft
-    // shadow — the shadow shows as grey blur down-right of the shape, outside its own footprint.
     #[test]
     fn classic_renders_a_box_drop_shadow() {
         use render_core::kurbo::{Affine, Rect as PageRect, RoundedRectRadii, Vec2};
@@ -1996,7 +1894,7 @@ mod tests {
         let mut ctx = renderer.new_scene(w as u16, h as u16);
         let mut resources = ();
         let mut text = TextState::new();
-        draw_scene(&mut ctx, &mut resources, &ClassicEnv, &mut text, &scene, Affine::IDENTITY);
+        draw_scene(&mut ctx, &mut resources, &ClassicEnv, &mut text, &scene, Affine::IDENTITY, &Default::default());
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shadow target"),
@@ -2009,7 +1907,10 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.rasterize(&ctx, &device, &queue, &view, w, h, Color::WHITE);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.rasterize(&ctx, &device, &queue, &mut enc, &view, w, h, Color::WHITE);
+        queue.submit([enc.finish()]);
+        renderer.release_pending();
 
         let data = read_back(&device, &queue, &texture, w, h);
 
@@ -2027,8 +1928,6 @@ mod tests {
             let o = ((y * w + x) * 4) as usize;
             [data[o], data[o + 1], data[o + 2], data[o + 3]]
         };
-        // Shadow ink: any grey pixel (darker than white, roughly neutral) below-right of the card,
-        // outside the card's own footprint (x>150 or y>110), proves the blurred shadow rendered.
         let shadow_px = (111..150).any(|y: u32| {
             (150..190).any(|x: u32| {
                 let p = px(x, y);
@@ -2036,10 +1935,8 @@ mod tests {
             })
         });
         assert!(shadow_px, "expected a soft grey drop shadow below-right of the card");
-        // The card's own area is its near-white fill.
         let c = px(100, 75);
         assert!(c[0] > 225 && c[1] > 225, "card fill should be near-white, got {c:?}");
-        // Far top-left corner is clean white (shadow offsets down-right).
         let bg = px(6, 6);
         assert!(bg[0] > 245 && bg[1] > 245 && bg[2] > 245, "corner should be white, got {bg:?}");
     }

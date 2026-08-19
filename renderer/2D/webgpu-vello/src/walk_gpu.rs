@@ -138,8 +138,6 @@ fn uniforms(n: u32, view: Affine, visible: &HashSet<TileKey>, dirty_bbox: Option
         vy1 = vy1.max(t.tile_y);
     }
     let [a, b, c, d, e, f] = view.as_coeffs().map(|v| v as f32);
-    // No dirty region ⇒ nothing is rejected; a rect spanning all of f32 makes the shader's half-open
-    // reject never fire, matching the oracle's `None` branch.
     let dirty = dirty_bbox.map_or([f32::MIN, f32::MIN, f32::MAX, f32::MAX], |r| {
         [r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32]
     });
@@ -179,7 +177,6 @@ pub fn walk_on_gpu(
         return Vec::new();
     };
 
-    // ---- Buffers -----------------------------------------------------------------------------
     let shapes: Vec<GpuShape> = flat
         .iter()
         .map(|fs| GpuShape {
@@ -197,8 +194,6 @@ pub fn walk_on_gpu(
         contents: bytemuck::bytes_of(&u),
         usage: wgpu::BufferUsages::UNIFORM,
     });
-    // Two `n`-length u32 buffers ping-ponged by the scan; `count` writes its result straight into
-    // `buf_a` (the first scan source).
     let scan_buf = |label: &str| {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
@@ -210,7 +205,6 @@ pub fn walk_on_gpu(
     let buf_a = scan_buf("walk counts/scan A");
     let buf_b = scan_buf("walk scan B");
 
-    // ---- Pass 1: count → buf_a --------------------------------------------------------------
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("walk count+scan") });
     {
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -228,10 +222,6 @@ pub fn walk_on_gpu(
         pass.dispatch_workgroups(workgroups(n), 1, 1);
     }
 
-    // ---- Pass 2: Hillis-Steele scan, buf_a ↔ buf_b, one dispatch per stride ------------------
-    // `final_src` tracks which buffer holds the running result. Each round needs its own params
-    // buffer (all rounds record into one encoder, so a single rewritten uniform would race — every
-    // pass would see the last stride). log2(n) tiny uniforms is nothing.
     let mut src = &buf_a;
     let mut dst = &buf_b;
     let mut stride = 1u32;
@@ -261,19 +251,15 @@ pub fn walk_on_gpu(
         std::mem::swap(&mut src, &mut dst);
         stride <<= 1;
     }
-    // After the loop `src` holds the inclusive prefix sum (offsets).
     let offsets_buf = src;
     queue.submit([enc.finish()]);
 
-    // The record buffer's size is the grand total = offsets[n-1], which lives on the GPU — read the
-    // offsets back to learn it before allocating and scattering.
     let offsets = read_u32(device, queue, offsets_buf, n);
     let total = *offsets.last().unwrap_or(&0);
     if total == 0 {
         return Vec::new();
     }
 
-    // ---- Pass 3: scatter → records ----------------------------------------------------------
     let records_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("walk records"),
         size: u64::from(total) * std::mem::size_of::<GpuRecord>() as u64,

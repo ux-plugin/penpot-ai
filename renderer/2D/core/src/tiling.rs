@@ -97,12 +97,6 @@ pub fn visible_tiles(view: Affine, viewport_w: u32, viewport_h: u32) -> Vec<Tile
     let [.., e, f] = view.as_coeffs();
     let size = f64::from(TILE_SIZE);
 
-    // The grid is anchored to page space: grid lines sit at device `e + k*512` (x) / `f + k*512`
-    // (y), so panning slides the lines with the content. Tile `k` spans the half-open device
-    // interval `[e + k*512, e + (k+1)*512)`; the viewport covers device pixels `[0, w)`. So the
-    // first visible tile contains the left edge (`floor((0 - e) / 512)`) and the last is the tile
-    // whose *start* is still inside the viewport (`ceil((w - e) / 512) - 1`) — using `ceil - 1`
-    // instead of `floor` drops a tile the viewport would only touch at its exclusive far edge.
     let w = f64::from(viewport_w);
     let h = f64::from(viewport_h);
     let x_min = ((0.0 - e) / size).floor() as i32;
@@ -151,7 +145,6 @@ pub fn tile_aligned_page_rect(view: Affine, page: Rect) -> Rect {
     };
     let (x0, y0) = (snap(dx, e, false), snap(dy, f, false));
     let (x1, y1) = (snap(dx + dw, e, true), snap(dy + dh, f, true));
-    // Back to page space through the view's inverse, as a bbox so a rotated view still bounds it.
     let inv = view.inverse();
     let mut r = Rect::from_points(inv * Point::new(x0, y0), inv * Point::new(x1, y1));
     for p in [inv * Point::new(x1, y0), inv * Point::new(x0, y1)] {
@@ -213,8 +206,6 @@ pub fn tiles_overlapping_page_rect(view: Affine, rect: Rect) -> Vec<TileKey> {
     if scale <= f64::EPSILON || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return Vec::new();
     }
-    // Device bbox of the rect's four transformed corners (general enough for a rotated view, though
-    // the tile sweep below assumes an axis-aligned grid).
     let corners = [
         view * Point::new(rect.x0, rect.y0),
         view * Point::new(rect.x1, rect.y0),
@@ -230,9 +221,6 @@ pub fn tiles_overlapping_page_rect(view: Affine, rect: Rect) -> Vec<TileKey> {
     }
     let [.., e, f] = view.as_coeffs();
     let size = f64::from(TILE_SIZE);
-    // Tiles whose `[origin, origin+512)` interval intersects the device bbox `[dx0, dx1)`. Same
-    // `floor` / `ceil-1` convention as `visible_tiles`, so a rect that only grazes a tile's far
-    // exclusive edge does not pull that tile in.
     let x_min = ((dx0 - e) / size).floor() as i32;
     let x_max = ((dx1 - e) / size).ceil() as i32 - 1;
     let y_min = ((dy0 - f) / size).floor() as i32;
@@ -323,26 +311,20 @@ mod tests {
     #[test]
     fn buffer_is_content_plus_two_margins() {
         assert_eq!(TILE_BUFFER, TILE_SIZE + 2 * TILE_MARGIN);
-        // A non-zero apron is required so the composite seam sits inside the buffer, not on its
-        // clip edge (otherwise strokes/AA seam at tile joins even for plain content).
         assert!(TILE_MARGIN > 0);
     }
 
     #[test]
     fn identity_view_tiles_the_viewport_from_the_origin() {
-        // 1024×512 viewport at identity → tiles x∈{0,1}, y∈{0}.
         let tiles = visible_tiles(Affine::IDENTITY, 1024, 512);
         assert_eq!(tiles.len(), 2);
         assert!(tiles.iter().any(|t| t.tile_x == 0 && t.tile_y == 0));
         assert!(tiles.iter().any(|t| t.tile_x == 1 && t.tile_y == 0));
-        // A viewport that just crosses the next boundary pulls in the next column.
         assert_eq!(visible_tiles(Affine::IDENTITY, 1025, 512).len(), 3);
     }
 
     #[test]
     fn a_pan_shifts_which_tiles_are_visible_by_an_integer() {
-        // Panning content left by one whole tile (view translate -512) shifts every index +1,
-        // keeping the count — the invariant that lets slice 2 reuse tiles across a pan.
         let base = visible_tiles(Affine::IDENTITY, 1024, 512);
         let panned = visible_tiles(Affine::translate((-512.0, 0.0)), 1024, 512);
         assert_eq!(base.len(), panned.len());
@@ -352,8 +334,6 @@ mod tests {
 
     #[test]
     fn a_sub_tile_pan_can_expose_one_more_column() {
-        // Panning content right by half a tile exposes a new column on the left (index -1) and
-        // makes tile 1 the last partly-visible column on the right (tile 2 stays off-screen).
         let tiles = visible_tiles(Affine::translate((256.0, 0.0)), 1024, 512);
         assert!(tiles.iter().any(|t| t.tile_x == -1));
         assert!(tiles.iter().any(|t| t.tile_x == 1));
@@ -362,9 +342,7 @@ mod tests {
 
     #[test]
     fn render_transform_centres_the_tile_content_in_the_buffer() {
-        // The content-origin of a tile must map to (TILE_MARGIN, TILE_MARGIN) in its buffer, so
-        // the content sits centred with a full margin — this is what gives the effect its bleed.
-        let view = Affine::new([2.0, 0.0, 0.0, 2.0, 30.0, 40.0]); // scale 2, pan (30,40)
+        let view = Affine::new([2.0, 0.0, 0.0, 2.0, 30.0, 40.0]);
         let key = TileKey {
             tile_x: 3,
             tile_y: 1,
@@ -372,7 +350,6 @@ mod tests {
         };
         let (ox, oy) = tile_device_origin(key, view);
         let m = tile_render_transform(key, view);
-        // The content-origin is the page point that renders at device (ox, oy) under `view`.
         let page_origin = view.inverse() * kurbo::Point::new(ox, oy);
         let in_buffer = m * page_origin;
         assert!((in_buffer.x - f64::from(TILE_MARGIN)).abs() < 1e-9);
@@ -397,7 +374,6 @@ mod tests {
 
     #[test]
     fn a_small_effect_rect_schedules_into_only_its_own_tile() {
-        // A shape's extrect fully inside tile (0,0) at identity → one tile, no spill.
         let tiles = tiles_overlapping_page_rect(Affine::IDENTITY, Rect::new(40.0, 40.0, 300.0, 300.0));
         assert_eq!(tiles.len(), 1);
         assert_eq!((tiles[0].tile_x, tiles[0].tile_y), (0, 0));
@@ -405,8 +381,6 @@ mod tests {
 
     #[test]
     fn an_effect_spilling_past_a_tile_edge_schedules_into_the_neighbour() {
-        // An extrect that starts in tile (0,0) but reaches past x=512 (e.g. a wide drop shadow)
-        // must schedule into tile (1,0) too — the spill-over the seam bug dropped.
         let tiles = tiles_overlapping_page_rect(Affine::IDENTITY, Rect::new(400.0, 100.0, 620.0, 300.0));
         assert!(tiles.iter().any(|t| (t.tile_x, t.tile_y) == (0, 0)));
         assert!(tiles.iter().any(|t| (t.tile_x, t.tile_y) == (1, 0)));
@@ -415,16 +389,11 @@ mod tests {
 
     #[test]
     fn zoom_grows_the_scheduled_tile_set() {
-        // The same page rect at 2× spans more device pixels, so it spills into more tiles — the
-        // reason a fixed margin cannot hold an effect across zoom, and scheduling must.
-        // Fits inside tile (0,0) at 1× (device 100..400); at 2× it is device 200..800, crossing
-        // the 512 boundary on both axes → four tiles.
         let rect = Rect::new(100.0, 100.0, 400.0, 400.0);
         let at1 = tiles_overlapping_page_rect(Affine::IDENTITY, rect);
         let at2 = tiles_overlapping_page_rect(Affine::scale(2.0), rect);
         assert_eq!(at1.len(), 1);
         assert_eq!(at2.len(), 4);
-        // The bucket tracks the scale, so the two sets never collide as cache keys.
         assert_ne!(at1[0].zoom_bucket, at2[0].zoom_bucket);
     }
 
@@ -436,24 +405,16 @@ mod tests {
 
     #[test]
     fn tile_clip_device_keeps_a_tile_inside_its_own_rect() {
-        // Two lenses whose backdrop rects sit in different tiles — the batched-gather atlas case.
-        // Tile (1,1) covers device 512..1024 in both axes; lens B's backdrop is 613..1087.
         let view = Affine::IDENTITY;
         let b = (613.0, 613.0, 474.0, 474.0);
         let t11 = TileKey { tile_x: 1, tile_y: 1, zoom_bucket: 0 };
-        // The overhang on every side is dropped: only 613..1024 of the tile belongs to this lens.
         assert_eq!(tile_clip_device(t11, view, b), Some((613.0, 613.0, 411.0, 411.0)));
-        // The far tile is clipped by the rect's far edge, not by its own size.
         let t21 = TileKey { tile_x: 2, tile_y: 1, zoom_bucket: 0 };
         assert_eq!(tile_clip_device(t21, view, b), Some((1024.0, 613.0, 63.0, 411.0)));
-        // Lens A's backdrop (38..512) reads tile (0,0) only, and never reaches into lens B's tiles —
-        // an unclipped blit of tile (1,1) would have started 101px *before* B's cell and run 512
-        // wide, straight over A's.
         let a = (38.0, 38.0, 474.0, 474.0);
         let t00 = TileKey { tile_x: 0, tile_y: 0, zoom_bucket: 0 };
         assert_eq!(tile_clip_device(t00, view, a), Some((38.0, 38.0, 474.0, 474.0)));
         assert_eq!(tile_clip_device(t11, view, a), None);
-        // A clip is never wider than the rect it clips to, whichever tile it came from.
         for tx in 0..4 {
             for ty in 0..4 {
                 let k = TileKey { tile_x: tx, tile_y: ty, zoom_bucket: 0 };
@@ -467,27 +428,20 @@ mod tests {
 
     #[test]
     fn device_rect_snaps_to_integer_pixels_and_is_never_degenerate() {
-        // A page rect with a fractional device origin floors the origin and ceils the far corner, so
-        // the surface covers the shape's every touched pixel and composites 1:1 with no resample.
-        let view = Affine::new([2.0, 0.0, 0.0, 2.0, 10.5, 20.25]); // scale 2, sub-pixel pan
+        let view = Affine::new([2.0, 0.0, 0.0, 2.0, 10.5, 20.25]);
         let (x, y, w, h) = device_rect(view, Rect::new(5.0, 5.0, 6.0, 6.0));
-        // device corners: (20.5,30.25)..(22.5,32.25) → floor origin, ceil far.
         assert_eq!((x, y), (20.0, 30.0));
         assert_eq!((w, h), (3.0, 3.0));
-        // A zero-area page rect still yields at least a 1×1 surface (never a zero-sized texture).
         let (_, _, w0, h0) = device_rect(Affine::IDENTITY, Rect::new(4.0, 4.0, 4.0, 4.0));
         assert!(w0 >= 1.0 && h0 >= 1.0);
     }
 
     #[test]
     fn resolution_cap_is_one_until_the_reach_exceeds_a_tile_then_shrinks() {
-        // Reach that fits a tile in device space → no cap.
         assert_eq!(resolution_cap(Affine::IDENTITY, 100.0), 1.0);
         assert_eq!(resolution_cap(Affine::IDENTITY, 0.0), 1.0);
         assert_eq!(resolution_cap(Affine::IDENTITY, -5.0), 1.0);
-        // A reach of one full tile is exactly the budget → still 1.0 (boundary).
         assert_eq!(resolution_cap(Affine::IDENTITY, f64::from(TILE_SIZE)), 1.0);
-        // Zoom that pushes the device reach past a tile caps so reach·zoom·k == TILE_SIZE.
         let k = resolution_cap(Affine::scale(4.0), f64::from(TILE_SIZE));
         assert!((k - 0.25).abs() < 1e-9);
         assert!((f64::from(TILE_SIZE) * 4.0 * k - f64::from(TILE_SIZE)).abs() < 1e-6);

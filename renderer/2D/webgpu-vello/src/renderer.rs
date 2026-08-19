@@ -60,21 +60,29 @@ impl Gpu {
         let info = adapter.get_info();
         log::info!("vello-gpu backend = {:?} | adapter = {} ({:?})", info.backend, info.name, info.device_type);
 
-        // Ask for timestamp queries when the adapter has them, so the sink can report real GPU
-        // execution time instead of leaving it to be inferred from frame pacing. Strictly optional:
-        // every CPU bucket measures only how long it took to *record* commands, so without this
-        // there is no measurement of the GPU at all. Requested, never required — an adapter without
-        // it just reports zero.
         let timestamps = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+        // Adapter-specific format features unlock rgba8unorm READ-WRITE storage — the single
+        // whole-viewport accumulator. On the browser the (patched) wgpu maps this bit to the
+        // `texture-formats-tier2` feature; on native it surfaces the real per-format caps. Optional:
+        // absent, the driver keeps the two-texture ping-pong.
+        let format_caps =
+            adapter.features() & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("vello-gpu device"),
-                required_features: timestamps,
+                required_features: timestamps | format_caps,
                 required_limits: adapter.limits(),
                 ..Default::default()
             })
             .await
             .expect("device");
+        let rw_accumulator = adapter
+            .get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm)
+            .flags
+            .contains(wgpu::TextureFormatFeatureFlags::STORAGE_READ_WRITE)
+            && !format_caps.is_empty();
+        log::info!("vello-gpu rgba8unorm read-write storage: {rw_accumulator}");
+        crate::set_rw_accumulator_supported(rw_accumulator);
 
         let gpu = Self { device, queue, surface };
         gpu.configure(canvas.width(), canvas.height());
@@ -85,8 +93,6 @@ impl Gpu {
         self.surface.configure(
             &self.device,
             &wgpu::SurfaceConfiguration {
-                // The sink composites tiles onto the swapchain through the shared compositor (a render
-                // pipeline), so RENDER_ATTACHMENT is all it needs.
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: FORMAT,
                 width: width.max(1),
@@ -148,14 +154,10 @@ pub async fn create_focus_renderer(canvas: HtmlCanvasElement) -> ClassicFocusRen
 impl ClassicFocusRenderer {
     /// Render one frame of the live document onto the host canvas through the shared sink.
     pub fn render(&mut self) {
-        // Register any faces + images the host staged since last frame, so text and image fills drawn
-        // below resolve their font / pixels.
         self.backend.sync_fonts();
+        self.backend.sync_editor();
         self.backend.upload_pending_images();
 
-        // DIAG (bucket 15 → prof_read(115)): swapchain acquire time. Under Fifo present mode this is
-        // where the CPU blocks on vsync, so it captures the "phantom floor" that otherwise hides in the
-        // untimed `other` remainder — separating display idle from real per-frame work.
         let _tacq = render_core::vello::prof::now();
         let acquired = self.gpu.surface.get_current_texture();
         render_core::vello::prof::dbg_add(15, render_core::vello::prof::now() - _tacq);
@@ -171,26 +173,12 @@ impl ClassicFocusRenderer {
 
         let root = self.transform;
 
-        // Classic renders the whole document as ONE native vello scene: one walk, one rasterize, no
-        // schedule. There is no tiled branch here any more.
-        //
-        // The 512-tile scheduler remains the hybrid/WebGL2 backend's path, and the A/B harnesses drive
-        // it directly as the reference to check this against. Classic stopped needing it once the
-        // whole-viewport path could render every effect: the last gate, `whole_viewport_can_render`,
-        // only diverted scenes carrying a typed `filter_graph`, and the tiled path cannot draw those
-        // either (`push_filter_layer` is an inert stub there), so falling back bought nothing but a
-        // slower frame that dropped the same effect.
-        //
-        // Drain dirty here so the abi stays the single dirty consumer; hand the "content changed" bit
-        // to the sink's present-on-demand gate (a view/dims change it detects itself).
         let (dirty_all, dirty_rects) = render_core::vello::abi::take_dirty();
         let content_dirty = dirty_all || !dirty_rects.is_empty();
         self.sink.render_whole_viewport(
             &mut self.backend, &self.gpu.device, &self.gpu.queue,
             &surface_texture.texture, root, self.width, self.height, content_dirty,
         );
-        // Swapchain hand-off. The one place in the frame where the browser could plausibly make the
-        // CPU wait on the compositor, so it is worth its own bucket rather than the remainder.
         let _tpr = render_core::vello::prof::now();
         surface_texture.present();
         render_core::vello::prof::add_present(render_core::vello::prof::now() - _tpr);

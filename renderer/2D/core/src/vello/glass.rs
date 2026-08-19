@@ -97,7 +97,7 @@ fn make_pipeline(
             entry_point: Some("fs"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: None, // each pass overwrites its own full target
+                blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -128,12 +128,10 @@ impl GlassPipeline {
             source: wgpu::ShaderSource::Wgsl(fused_shader().into()),
         });
 
-        // Refraction reads only the backdrop now — the displacement field is recomputed inline.
         let refraction_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("glass refraction layout"),
             entries: &[uniform_entry(0), texture_entry(1), sampler_entry(2)],
         });
-        // Composite reads the blurred refraction + the original backdrop; the field is inline.
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("glass composite layout"),
             entries: &[uniform_entry(0), texture_entry(1), sampler_entry(2), texture_entry(3)],
@@ -141,9 +139,7 @@ impl GlassPipeline {
 
         let refraction = make_pipeline(device, "glass refraction", &refr_shader, &refraction_layout, format);
         let composite = make_pipeline(device, "glass composite", &comp_shader, &composite_layout, format);
-        // The fused pass reads only the backdrop, so it reuses the refraction layout (uniform/tex/sampler).
         let fused = make_pipeline(device, "glass fused", &fused_shader, &refraction_layout, format);
-        // Clamp-fill also reads one texture with the same (uniform/tex/sampler) layout.
         let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("glass clamp-fill"),
             source: wgpu::ShaderSource::Wgsl(clamp_fill_shader().into()),
@@ -200,6 +196,7 @@ impl GlassPipeline {
     }
 
     fn full_pass(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pipeline: &wgpu::RenderPipeline, bind: &wgpu::BindGroup) {
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("glass pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

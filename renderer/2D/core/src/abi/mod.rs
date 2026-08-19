@@ -65,9 +65,6 @@ impl core::fmt::Display for AbiError {
     }
 }
 
-// Little-endian readers shared by both payload families. The wire is always little-endian:
-// both wasm targets are, and so is every host that writes these buffers.
-
 #[inline]
 pub(crate) fn u16_at(b: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([b[off], b[off + 1]])

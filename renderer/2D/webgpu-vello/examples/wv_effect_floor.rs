@@ -37,8 +37,6 @@ fn time_it(device: &wgpu::Device, queue: &wgpu::Queue, backend: &mut ClassicBack
         render_core::vello::abi::set_render_options(0, 1.0);
         render_core::vello::abi::set_view(zoom, 0.0, 0.0);
         render_core::vello::abi::set_canvas_background(0xffff_ffff);
-        render_core::vello::abi::set_wv_phased(0);
-        render_core::vello::abi::set_cmd_effect(0);
         backend.sync_fonts();
         backend.upload_pending_images();
         render_core::vello::prof::reset();
@@ -90,7 +88,6 @@ fn main() {
     println!("{:>8} {:>10} {:>10} {:>12} {:>9} {:>8} {:>12}", "nodes", "total ms", "cpu ms", "gpu ms", "rasters", "graphs", "gpu ms/call");
     for &n in &[3u32, 6, 12, 24] {
         let (t, c) = time_it(&device, &queue, &mut backend, &target, n, 1.0);
-        // `renders` counts backend.rasterize (a whole vello pipeline run); `graphs` counts run_graph.
         let (r, g) = (render_core::vello::prof::read(7), render_core::vello::prof::read(14));
         println!("{n:>8} {t:>10.1} {c:>10.1} {:>12.1} {r:>9.0} {g:>8.0} {:>12.2}", t - c, (t - c) / (r + g).max(1.0));
     }

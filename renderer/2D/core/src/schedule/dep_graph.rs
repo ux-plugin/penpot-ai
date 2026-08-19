@@ -33,8 +33,6 @@ impl DepGraph {
             graph.in_degree.insert(idx, 0);
         }
 
-        // Latest producer of each ref. For relaxed-SSA rewrites (`Target`, layer brackets) this is
-        // the "current value" a read should depend on.
         let mut latest_producer: HashMap<SurfaceRef, usize> = HashMap::new();
 
         for (idx, step) in schedule.iter().enumerate() {

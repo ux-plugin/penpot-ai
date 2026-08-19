@@ -104,14 +104,9 @@ fn collect(scene: &Scene, id: u128, modifiers: &Modifiers, depth: u32, out: &mut
     }
     let node = scene.get(id)?;
     if node.hidden || node.kind == ShapeKind::Unsupported {
-        // Skipped wholesale, exactly as `visit` skips a hidden / unsupported subtree.
         return Some(());
     }
     if node.kind.is_container() {
-        // V1 only linearises a pure organizational group: a `Group` (a `Frame` paints its own body and
-        // can clip), trivial layer paint (no isolation), not clipping, not masking, no effect. Anything
-        // else bails to the recursive `visit`, which owns isolation/clip/mask emission — a masked group
-        // at opacity 1 has trivial layer paint but its `DstIn` mask still needs `visit`.
         if node.kind != ShapeKind::Group
             || node.clip
             || node.masked
@@ -126,7 +121,6 @@ fn collect(scene: &Scene, id: u128, modifiers: &Modifiers, depth: u32, out: &mut
         }
         return Some(());
     }
-    // A drawable leaf: plain body only (a gather/spread leaf needs its own surface — not V1).
     if !node.children.is_empty() || has_gather_effect(node) || has_spread_effect(node) {
         return None;
     }
@@ -148,8 +142,6 @@ pub fn walk_flat_into(
     steps: &mut Vec<Step>,
 ) {
     for fs in flat {
-        // Leaf dirty-reject: effect-affected bounds entirely outside the dirty region → nothing. Same
-        // strict half-open test `visit` uses, against the same `affected_page_rect`.
         if let Some(db) = dirty_bbox {
             let r = fs.affected;
             if r.x1 <= db.x0 || r.x0 >= db.x1 || r.y1 <= db.y0 || r.y0 >= db.y1 {
@@ -209,7 +201,6 @@ pub fn count_and_scatter(
     dirty_bbox: Option<Rect>,
 ) -> Vec<StepRecord> {
     let n = flat.len();
-    // Pass 1 — count.
     let mut counts = vec![0u32; n];
     for (i, fs) in flat.iter().enumerate() {
         if dirty_culled(fs, dirty_bbox) {
@@ -220,14 +211,12 @@ pub fn count_and_scatter(
             .filter(|t| visible.contains(t))
             .count() as u32;
     }
-    // Pass 2 — exclusive prefix sum.
     let mut offsets = vec![0u32; n];
     let mut acc = 0u32;
     for i in 0..n {
         offsets[i] = acc;
         acc += counts[i];
     }
-    // Pass 3 — scatter.
     let mut records = vec![StepRecord::default(); acc as usize];
     for (i, fs) in flat.iter().enumerate() {
         if dirty_culled(fs, dirty_bbox) {
@@ -325,9 +314,9 @@ mod tests {
                 group(10, vec![1, 20]),
                 rect(1, 20.0, 20.0, 300.0, 300.0),
                 group(20, vec![2, 4]),
-                rect(2, 480.0, 100.0, 900.0, 620.0), // spans tiles
+                rect(2, 480.0, 100.0, 900.0, 620.0),
                 rect(4, 700.0, 700.0, 760.0, 760.0),
-                rect(3, -30.0, 520.0, 60.0, 620.0), // straddles the left edge
+                rect(3, -30.0, 520.0, 60.0, 620.0),
             ],
         )
     }
@@ -352,7 +341,7 @@ mod tests {
     fn flat_walk_matches_visit_step_for_step() {
         let scene = scene_of(vec![
             rect(1, 20.0, 20.0, 300.0, 300.0),
-            rect(2, 480.0, 100.0, 900.0, 620.0), // spans several 512px tiles
+            rect(2, 480.0, 100.0, 900.0, 620.0),
             rect(3, 700.0, 700.0, 760.0, 760.0),
             rect(4, 10.0, 800.0, 40.0, 830.0),
         ]);
@@ -417,7 +406,7 @@ mod tests {
             rect(1, 20.0, 20.0, 300.0, 300.0),
             rect(2, 480.0, 100.0, 900.0, 620.0),
             rect(3, 700.0, 700.0, 760.0, 760.0),
-            rect(4, -50.0, -50.0, 40.0, 40.0), // straddles the origin corner
+            rect(4, -50.0, -50.0, 40.0, 40.0),
         ]);
         let flat = flatten_leaves(&scene, &host).expect("flat scene");
 

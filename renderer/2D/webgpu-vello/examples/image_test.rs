@@ -38,9 +38,6 @@ fn main() {
     let mut renderer = ClassicRenderer::new(&device);
     let mut ctx = renderer.new_scene(w as u16, h as u16);
 
-    // Stage the synthetic image the same way the browser's `upload_pending_images` does: decode into a
-    // peniko `ImageData`, mint a stable `ImageId`, register the pixels on the ctx, and record the
-    // content-id → id map that `ClassicEnv::resolve_image` (→ `abi::resolve_image`) consults.
     let (iw, ih, rgba) = image_test_pixels();
     let data = vello_common::peniko::ImageData {
         data: vello_common::peniko::Blob::new(std::sync::Arc::new(rgba)),
@@ -54,7 +51,7 @@ fn main() {
     render_core::vello::abi::record_image(IMAGE_TEST_ID, image_id);
 
     let mut text = render_core::vello::text::TextState::new();
-    draw_scene(&mut ctx, &mut (), &ClassicEnv, &mut text, &scene, Affine::IDENTITY);
+    draw_scene(&mut ctx, &mut (), &ClassicEnv, &mut text, &scene, Affine::IDENTITY, &Default::default());
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("image target"),
@@ -68,8 +65,6 @@ fn main() {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("image enc") });
-    // Black page: opaque quadrants read true, and the half-alpha yellow + 50%-opacity cell dim against
-    // it predictably.
     renderer.rasterize(&ctx, &device, &queue, &mut enc, &view, w, h, Color::BLACK);
     queue.submit([enc.finish()]);
 

@@ -6,8 +6,8 @@
 //!
 //! Scenes (SCENE env, default `layer-blur`): `layer-blur`, `path-shadow`, `inner-shadow`,
 //! `combined`, `boolean`, and `matrix` — every effect combination, one per cell.
-//! Whole-viewport mode: renders the DEFAULT (`wvPhased=0`, per-segment) AND the collapsed
-//! (`wvPhased=1`, front-end-once) path, diffing each against the tiled reference.
+//! The whole-viewport path has ONE driver (front-end once, segmented fine over the shared PTCL), so
+//! one column diffs against the tiled reference.
 //!
 //! Run: `SCENE=layer-blur cargo run --release --example wv_effect_ab`.
 
@@ -51,7 +51,7 @@ fn frame_setup(cells: u32) -> (u32, u32) {
     let (w, h) = render_core::parity::canvas_size(cells as usize);
     render_core::vello::abi::set_render_options(0, 1.0);
     render_core::vello::abi::set_view(1.0, 0.0, 0.0);
-    render_core::vello::abi::set_canvas_background(0xffff_ffff); // opaque white, so effects read
+    render_core::vello::abi::set_canvas_background(0xffff_ffff);
     (w, h)
 }
 
@@ -64,16 +64,29 @@ fn main() {
         eprintln!("no wgpu adapter — cannot run the wv A/B");
         return;
     };
+    let rw = std::env::var("WV_RW").is_ok_and(|v| v == "1")
+        && adapter
+            .get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm)
+            .flags
+            .contains(wgpu::TextureFormatFeatureFlags::STORAGE_READ_WRITE);
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("wv_effect_ab"),
+        required_features: if rw {
+            wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        } else {
+            wgpu::Features::empty()
+        },
         ..Default::default()
     }))
     .expect("device");
+    vello_gpu_renderer::set_rw_accumulator_supported(rw);
+    if rw {
+        println!("wv A/B: single-accumulator (rgba8unorm read-write) path ON");
+    }
 
     let mut backend = ClassicBackend::new(&device);
     let root = Affine::IDENTITY;
 
-    // ---- Tiled reference (the proven path) ----
     let cells = install(&scene);
     let (w, h) = frame_setup(cells);
     println!("wv A/B [{scene}]: {cells} cells, {w}x{h}");
@@ -90,36 +103,24 @@ fn main() {
     let tiled_rgba = read_back(&device, &queue, &tiled_target, w, h);
     write_png(&format!("{PROOFS}/{scene}-tiled.png"), &tiled_rgba, w, h);
 
-    // ---- Whole-viewport, both modes ----
-    for phased in [false, true] {
-        // Reinstall so the fixture's dirty state is fresh for this WV render.
-        let cells = install(&scene);
-        let (w2, h2) = frame_setup(cells);
-        assert_eq!((w, h), (w2, h2), "fixture size must be stable across installs");
-        render_core::vello::abi::set_wv_phased(u32::from(phased));
-        backend.sync_fonts();
-        backend.upload_pending_images();
-        let mut wv_sink = Sink::new(&device, FORMAT);
-        let wv_target = make_target(&device, w, h, "wv ab whole-viewport");
-        // Drain dirty so present-on-demand doesn't matter; force the render with content_dirty=true.
-        let _ = render_core::vello::abi::take_dirty();
-        wv_sink.render_whole_viewport(&mut backend, &device, &queue, &wv_target, root, w, h, true);
-        let wv_rgba = read_back(&device, &queue, &wv_target, w, h);
-        let mode = if phased { "phased" } else { "default" };
-        write_png(&format!("{PROOFS}/{scene}-wv-{mode}.png"), &wv_rgba, w, h);
+    let cells = install(&scene);
+    let (w2, h2) = frame_setup(cells);
+    assert_eq!((w, h), (w2, h2), "fixture size must be stable across installs");
+    backend.sync_fonts();
+    backend.upload_pending_images();
+    let mut wv_sink = Sink::new(&device, FORMAT);
+    let wv_target = make_target(&device, w, h, "wv ab whole-viewport");
+    let _ = render_core::vello::abi::take_dirty();
+    wv_sink.render_whole_viewport(&mut backend, &device, &queue, &wv_target, root, w, h, true);
+    let wv_rgba = read_back(&device, &queue, &wv_target, w, h);
+    write_png(&format!("{PROOFS}/{scene}-wv.png"), &wv_rgba, w, h);
 
-        let (diff_px, max_delta) = diff(&tiled_rgba, &wv_rgba);
-        let total = (w * h) as usize;
-        let pct = 100.0 * diff_px as f64 / total as f64;
-        println!(
-            "  WV {mode:<7} vs tiled: {diff_px}/{total} px differ ({pct:.4}%), max channel delta {max_delta}"
-        );
-        // The matrix scene exists to find the ONE combination that broke, which an aggregate number
-        // hides — a whole cell rendering blank is a few percent of the canvas, indistinguishable from
-        // the soft-gradient noise the render-scale downscale leaves everywhere. So report per cell.
-        if scene == "matrix" {
-            per_cell_report(&tiled_rgba, &wv_rgba, w);
-        }
+    let (diff_px, max_delta) = diff(&tiled_rgba, &wv_rgba);
+    let total = (w * h) as usize;
+    let pct = 100.0 * diff_px as f64 / total as f64;
+    println!("  WV vs tiled: {diff_px}/{total} px differ ({pct:.4}%), max channel delta {max_delta}");
+    if scene == "matrix" {
+        per_cell_report(&tiled_rgba, &wv_rgba, w);
     }
 }
 
@@ -160,7 +161,7 @@ fn per_cell_report(tiled: &[u8], wv: &[u8], w: u32) {
 
 /// Per-pixel diff: count pixels whose max channel delta exceeds a small tolerance, and the overall max.
 fn diff(a: &[u8], b: &[u8]) -> (usize, u8) {
-    const TOL: u8 = 1; // ±1/255 rounding between an isolated-subtree blit and the tiled composite
+    const TOL: u8 = 1;
     let mut count = 0usize;
     let mut max_delta = 0u8;
     for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
