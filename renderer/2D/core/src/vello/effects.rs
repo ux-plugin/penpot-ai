@@ -46,36 +46,16 @@ const FRACTAL_NOISE_SIGMA: f32 = 0.12;
 /// Shared noise field: a 4-octave value-noise fBm with four decorrelated channels. `r` drives coverage
 /// and the X displacement, `g` the slot split and the Y displacement, `rgb` the prism hue. Each channel
 /// has mean ≈ [`FRACTAL_NOISE_MU`], range ≈ `[0, 0.94)`. `concat!`'d into both effect shaders.
-pub const FRACTAL_NOISE_WGSL: &str = r#"
-fn _hash(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
+pub const FRACTAL_NOISE_WGSL: &str = crate::field::FIELD_NOISE;
+
+/// The noise source these effect shaders splice in — [`crate::field::FIELD_NOISE`], the same text
+/// the [`crate::field::FieldOp::Noise`] operator emits. Exposed so a test can assert the two paths
+/// cannot drift apart.
+#[must_use]
+pub fn fractal_noise_wgsl() -> &'static str {
+    FRACTAL_NOISE_WGSL
 }
-fn _vnoise(p: vec2<f32>, seed: f32) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let w = f * f * (3.0 - 2.0 * f);
-    let s = vec2<f32>(seed, 0.0);
-    let a = _hash(i + vec2<f32>(0.0, 0.0) + s);
-    let b = _hash(i + vec2<f32>(1.0, 0.0) + s);
-    let c = _hash(i + vec2<f32>(0.0, 1.0) + s);
-    let d = _hash(i + vec2<f32>(1.0, 1.0) + s);
-    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
-}
-fn _fbm(p: vec2<f32>, seed: f32) -> f32 {
-    var v = 0.0;
-    var amp = 0.5;
-    var freq = 1.0;
-    for (var o = 0; o < 4; o = o + 1) {
-        v = v + amp * _vnoise(p * freq, seed);
-        freq = freq * 2.0;
-        amp = amp * 0.5;
-    }
-    return v;
-}
-fn fractalNoise(p: vec2<f32>) -> vec4<f32> {
-    return vec4<f32>(_fbm(p, 0.0), _fbm(p, 37.0), _fbm(p, 71.0), _fbm(p, 113.0));
-}
-"#;
+
 
 /// **Texture** = noise → displace, fused. Reads the body at `uv + (noise.rg - 0.5)·magnitude` so the
 /// whole shape (fill included) warps coherently — Skia's "displaces pixels rather than masking them".

@@ -105,6 +105,13 @@ pub enum FieldOp {
     /// A Gaussian band around `centre`, width `width` — a stroke, an outline, or a specular streak,
     /// depending only on what the caller multiplies it by.
     Band { x: FieldRef, centre: Slot, centre_gain: f32, width: Slot },
+    /// Fractal noise sampled at the pixel divided by `div` — grain, turbulence, procedural
+    /// texture. Produces four decorrelated channels.
+    Noise { div: Slot },
+    /// A noise (or any multi-channel field) turned into a centred displacement vector:
+    /// `(v.rg - 0.5) * gain`. What a warp consumes when the displacement is procedural rather than
+    /// derived from a shape's geometry.
+    Displacement { source: FieldRef, gain: Slot },
     /// The field's gradient — the true outward surface normal, by central difference of the source.
     /// The honest normal for any shape, including concave ones where a centre-radial guess points
     /// the wrong way.
@@ -137,10 +144,15 @@ impl FieldProgram {
     }
 
     /// `localPos`, the pixel relative to the source's centre — what the distance is measured from
-    /// and what [`FieldRef::Local`] names.
+    /// and what [`FieldRef::Local`] names. Empty for a program with no shape source at all: a purely
+    /// procedural field (noise, a coordinate warp) has no centre to be relative to, which is the
+    /// point of keeping the source separate from the operators.
     #[must_use]
     pub fn wgsl_prologue(&self) -> String {
-        format!("    let localPos = fc - {};\n", self.centre_wgsl())
+        match self.source() {
+            Some(_) => format!("    let localPos = fc - {};\n", self.centre_wgsl()),
+            None => String::new(),
+        }
     }
 
     /// A contiguous run of nodes, so a consumer can interleave its own code between them — a lens
@@ -197,6 +209,12 @@ impl FieldProgram {
                 centre.wgsl(),
                 width.wgsl()
             ),
+            FieldOp::Noise { div } => format!("fractalNoise(fc / max({}, 1.0))", div.wgsl()),
+            FieldOp::Displacement { source, gain } => format!(
+                "(({}.rg - vec2<f32>(0.5, 0.5)) * {})",
+                reference(*source),
+                gain.wgsl()
+            ),
             FieldOp::Gradient => "fieldGradient(gi, fc)".to_string(),
             FieldOp::RadialDirection { half, splay, tilt } => format!(
                 "fieldRadialDirection(localPos, {h}, {sp}, {ti})",
@@ -214,23 +232,27 @@ impl FieldProgram {
         }
     }
 
-    fn source(&self) -> FieldSource {
-        self.nodes
-            .iter()
-            .find_map(|n| match n {
-                FieldOp::Distance(s) => Some(*s),
-                _ => None,
-            })
-            .expect("a field program starts from a distance")
+    /// The shape this program measures distance from, if it has one.
+    fn source(&self) -> Option<FieldSource> {
+        self.nodes.iter().find_map(|n| match n {
+            FieldOp::Distance(s) => Some(*s),
+            _ => None,
+        })
     }
 
+    /// The source's half-extents. Only the operators that clamp to the shape ask for this, and they
+    /// are meaningless without a shape.
     fn extent_wgsl(&self) -> String {
-        let FieldSource::RoundedBox { half, .. } = self.source();
+        let Some(FieldSource::RoundedBox { half, .. }) = self.source() else {
+            panic!("this operator needs a shape source; the program has none")
+        };
         half.wgsl()
     }
 
     fn centre_wgsl(&self) -> String {
-        let FieldSource::RoundedBox { centre, .. } = self.source();
+        let Some(FieldSource::RoundedBox { centre, .. }) = self.source() else {
+            panic!("this operator needs a shape source; the program has none")
+        };
         centre.wgsl()
     }
 
@@ -252,10 +274,15 @@ impl FieldProgram {
         if uses(&|n| matches!(n, FieldOp::Band { .. })) {
             out.push_str(FIELD_BAND);
         }
+        if uses(&|n| matches!(n, FieldOp::Noise { .. })) {
+            out.push_str(FIELD_NOISE);
+        }
         if uses(&|n| matches!(n, FieldOp::Gradient)) {
             // The gradient differentiates the source, so it needs the source as a function — which
             // is also the seam a baked provider would swap.
-            let FieldSource::RoundedBox { centre, half, corner } = self.source();
+            let Some(FieldSource::RoundedBox { centre, half, corner }) = self.source() else {
+                panic!("the gradient differentiates a source; the program has none")
+            };
             out.push_str(&format!(
                 "\nfn fieldDistanceAt(gi: u32, fc: vec2<f32>) -> f32 {{\n    return sdfRoundedBox(fc - {c}, {h}, min({r}, min({h}.x, {h}.y)));\n}}\n",
                 c = centre.wgsl(),
@@ -340,6 +367,42 @@ fn fieldGradient(gi: u32, fc: vec2<f32>) -> vec2<f32> {
     let l = length(g);
     if (l < 1e-6) { return vec2<f32>(0.0); }
     return g / l;
+}
+"#;
+
+
+/// Fractal value noise: four decorrelated four-octave channels. Procedural like the distance
+/// itself — no texture read, so it always fuses. The single implementation behind both the field
+/// programs below and the standalone effect shaders in [`crate::vello::effects`], so the grain a
+/// texture effect warps by and the grain a field program samples are the same noise.
+pub const FIELD_NOISE: &str = r#"
+fn _hash(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
+}
+fn _vnoise(p: vec2<f32>, seed: f32) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let w = f * f * (3.0 - 2.0 * f);
+    let s = vec2<f32>(seed, 0.0);
+    let a = _hash(i + vec2<f32>(0.0, 0.0) + s);
+    let b = _hash(i + vec2<f32>(1.0, 0.0) + s);
+    let c = _hash(i + vec2<f32>(0.0, 1.0) + s);
+    let d = _hash(i + vec2<f32>(1.0, 1.0) + s);
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+fn _fbm(p: vec2<f32>, seed: f32) -> f32 {
+    var v = 0.0;
+    var amp = 0.5;
+    var freq = 1.0;
+    for (var o = 0; o < 4; o = o + 1) {
+        v = v + amp * _vnoise(p * freq, seed);
+        freq = freq * 2.0;
+        amp = amp * 0.5;
+    }
+    return v;
+}
+fn fractalNoise(p: vec2<f32>) -> vec4<f32> {
+    return vec4<f32>(_fbm(p, 0.0), _fbm(p, 37.0), _fbm(p, 71.0), _fbm(p, 113.0));
 }
 "#;
 
@@ -545,6 +608,33 @@ mod reuse_tests {
         let lens = crate::vello::glass::glass_field_program().helpers();
         assert!(lens.contains("fn fieldRefract") && lens.contains("fn fieldRamp"));
         assert!(!lens.contains("fn fieldGradient"), "the lens still uses the radial estimate");
+    }
+
+    /// The texture effect's displacement — noise, centred and scaled — is a two-node field program.
+    /// It is the same chain `TEXTURE_WGSL` fuses by hand, which is what would let that effect stop
+    /// being an opaque custom shader and start fusing and batching with its neighbours.
+    #[test]
+    fn a_procedural_displacement_is_two_nodes() {
+        let p = FieldProgram {
+            nodes: vec![
+                FieldOp::Noise { div: Slot::new(0, 3) },
+                FieldOp::Displacement { source: FieldRef::Node(0), gain: Slot::new(0, 2) },
+            ],
+            outputs: vec![("disp", FieldRef::Node(1))],
+        };
+        let src = p.wgsl();
+        assert!(src.contains("fractalNoise(fc / max(fieldU(gi, 0u).w, 1.0))"));
+        assert!(src.contains("- vec2<f32>(0.5, 0.5)"));
+        let h = p.helpers();
+        assert!(h.contains("fn _fbm") && h.contains("fn fractalNoise"));
+        // Noise is procedural: it must not drag in any shape machinery.
+        assert!(!h.contains("fn fieldRefract") && !h.contains("fn fieldRamp"));
+    }
+
+    /// One noise implementation, shared: the effect shaders and the field programs must not drift.
+    #[test]
+    fn the_effect_shaders_and_field_programs_share_one_noise() {
+        assert_eq!(crate::vello::effects::fractal_noise_wgsl(), FIELD_NOISE);
     }
 
     /// The gradient differentiates whatever source the program declares, so swapping the source is
