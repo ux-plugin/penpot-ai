@@ -282,6 +282,71 @@ fn composite_px(in: VSOut) -> vec4<f32> {
 
 
 
+/// Where a stage reads or writes: the frame's accumulator as it stands in the current window, or a
+/// slot in the scratch atlas set the plan allocated.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Surface {
+    Acc,
+    Atlas(usize),
+}
+
+/// One batched stage — **every instance in it is drawn by a single pass**.
+///
+/// This is the whole pass-minimisation rule, as data: work is bucketed by *stage*, and a bucket
+/// costs one pass no matter how many shapes contributed to it. A planner's only job is to emit these
+/// in dependency order; it never issues a pass itself, so no effect can accidentally reintroduce a
+/// per-shape chain. Blur cells, glass lenses and (next) distance-field bakes all reduce to this.
+///
+/// `round` is `None` for work hoisted out of the round loop — anything whose inputs do not touch the
+/// backdrop — and `Some(r)` for work pinned to a round because it reads what that round painted.
+pub(crate) struct Stage {
+    pub round: Option<u32>,
+    pub tag: f32,
+    pub target: Surface,
+    pub src: Surface,
+    pub src2: Surface,
+    pub insts: Vec<Inst>,
+    /// Per-cell field parameters for the stages that evaluate a field; empty otherwise.
+    pub fields: Vec<GlassField>,
+    /// Premultiplied `SrcOver` (a composite) rather than replace (a materialisation).
+    pub blend: bool,
+    /// Clear the target first — for a stage that owns its whole surface, where the packing's gaps
+    /// must be transparent because the next stage's sampler grazes half a texel past each cell.
+    pub clear: bool,
+}
+
+impl Stage {
+    /// A materialising stage: replace, no clear, reading one surface.
+    pub fn new(tag: f32, target: Surface, src: Surface, insts: Vec<Inst>) -> Self {
+        Self { round: None, tag, target, src, src2: src, insts, fields: Vec::new(), blend: false, clear: false }
+    }
+
+    pub fn with_round(mut self, round: u32) -> Self {
+        self.round = Some(round);
+        self
+    }
+
+    pub fn with_fields(mut self, fields: Vec<GlassField>) -> Self {
+        self.fields = fields;
+        self
+    }
+
+    pub fn with_src2(mut self, src2: Surface) -> Self {
+        self.src2 = src2;
+        self
+    }
+
+    pub fn composited(mut self) -> Self {
+        self.blend = true;
+        self
+    }
+
+    pub fn cleared(mut self) -> Self {
+        self.clear = true;
+        self
+    }
+}
+
 /// The two instanced pipelines (blur = replace, composite = premultiplied `SrcOver`, both the format
 /// the sink renders in) plus their shared bind layout. Built once per sink.
 pub(crate) struct BatchPipelines {
@@ -507,111 +572,8 @@ impl BatchPipelines {
         })
     }
 
-    /// Upload `insts` and run ONE blur pass drawing them all into `target`. The target is cleared
-    /// first: the packing's gaps must be transparent, because the next stage's linear sampler grazes
-    /// half a texel past each cell rect.
-    pub fn blur_pass(
-        &self,
-        device: &wgpu::Device,
-        enc: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        src: &wgpu::TextureView,
-        sampler: &wgpu::Sampler,
-        insts: &[Inst],
-    ) {
-        if insts.is_empty() {
-            return;
-        }
-        use wgpu::util::DeviceExt as _;
-        let stamped: Vec<Inst> = insts
-            .iter()
-            .map(|i| {
-                let mut i = *i;
-                i._pad[0] = stage::BLUR;
-                i
-            })
-            .collect();
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wv batch blur insts"),
-            contents: bytemuck::cast_slice(&stamped),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let bind = self.bind(device, &buffer, src, src, sampler);
-        crate::vello::sink::note_passes(1);
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wv batch blur"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.replace);
-        pass.set_bind_group(0, &bind, &[]);
-        pass.draw(0..4, 0..insts.len() as u32);
-    }
-
-    /// Run ONE erase-combine pass: every instance materialises its band — `flood × (1 − punch.a)`,
-    /// both rects read from `src` (the blurred atlas) — into its flood rect of `target` (atlas A,
-    /// idle after blur-V). Replace, no clear: only band rects are written and only band rects are
-    /// later sampled, clamped to their texel centres.
-    pub fn combine_pass(
-        &self,
-        device: &wgpu::Device,
-        enc: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        src: &wgpu::TextureView,
-        sampler: &wgpu::Sampler,
-        insts: &[Inst],
-    ) {
-        if insts.is_empty() {
-            return;
-        }
-        use wgpu::util::DeviceExt as _;
-        let stamped: Vec<Inst> = insts
-            .iter()
-            .map(|i| {
-                let mut i = *i;
-                i._pad[0] = stage::COMBINE;
-                i
-            })
-            .collect();
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wv batch combine insts"),
-            contents: bytemuck::cast_slice(&stamped),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let bind = self.bind(device, &buffer, src, src, sampler);
-        crate::vello::sink::note_passes(1);
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wv batch combine"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.replace);
-        pass.set_bind_group(0, &bind, &[]);
-        pass.draw(0..4, 0..insts.len() as u32);
-    }
-
-    /// Upload `insts` stamped with `tag` as a storage buffer for a later pass — the split
-    /// [`Self::composite_pass`] needs, which draws sub-ranges of one shared buffer.
-    pub fn upload(&self, device: &wgpu::Device, insts: &[Inst], tag: f32) -> wgpu::Buffer {
+    /// Upload `insts` stamped with `tag` as a storage buffer.
+    fn upload(&self, device: &wgpu::Device, insts: &[Inst], tag: f32) -> wgpu::Buffer {
         use wgpu::util::DeviceExt as _;
         let stamped: Vec<Inst> = insts
             .iter()
@@ -628,54 +590,59 @@ impl BatchPipelines {
         })
     }
 
-    /// Run ONE glass stage: every instance is a lens cell, drawn with the arm `tag` selects, reading
-    /// its own field parameters out of `fields` (indexed by `Inst::mode`). `src` is the atlas the
-    /// unit body samples, `orig` the one a mask-mix reads its backdrop from (the same view when the
-    /// composition has no distinct original). Replace target, loaded: only the instances' own cell
-    /// rects are written, and only those rects are ever sampled back.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context travels with the pass")]
-    pub fn glass_pass(
+    /// Run ONE [`Stage`]: upload its instances and its field parameters, then draw every one of
+    /// them in a single render pass. This is the only place the batch issues a pass — planners emit
+    /// stages and never touch the encoder, which is what keeps pass count a function of the distinct
+    /// stages in a frame rather than of the shapes in it.
+    pub fn run_stage(
         &self,
         device: &wgpu::Device,
         enc: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        src: &wgpu::TextureView,
-        orig: &wgpu::TextureView,
+        stage: &Stage,
+        acc: &wgpu::TextureView,
+        atlas: &[&wgpu::TextureView],
         sampler: &wgpu::Sampler,
-        insts: &[Inst],
-        fields: &[GlassField],
-        tag: f32,
     ) {
-        if insts.is_empty() {
+        if stage.insts.is_empty() {
             return;
         }
-        use wgpu::util::DeviceExt as _;
-        let stamped: Vec<Inst> = insts
-            .iter()
-            .map(|i| {
-                let mut i = *i;
-                i._pad[0] = tag;
-                i
-            })
-            .collect();
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wv glass insts"),
-            contents: bytemuck::cast_slice(&stamped),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let fields_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wv glass fields"),
-            contents: bytemuck::cast_slice(fields),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let bind = self.bind_fields(device, &buffer, src, orig, sampler, &fields_buf);
+        let resolve = |s: Surface| match s {
+            Surface::Acc => acc,
+            Surface::Atlas(i) => atlas[i],
+        };
+        let buffer = self.upload(device, &stage.insts, stage.tag);
+        let fields = if stage.fields.is_empty() {
+            None
+        } else {
+            use wgpu::util::DeviceExt as _;
+            Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("wv stage fields"),
+                contents: bytemuck::cast_slice(&stage.fields),
+                usage: wgpu::BufferUsages::STORAGE,
+            }))
+        };
+        let bind = self.bind_fields(
+            device,
+            &buffer,
+            resolve(stage.src),
+            resolve(stage.src2),
+            sampler,
+            fields.as_ref().unwrap_or(&self.no_fields),
+        );
         crate::vello::sink::note_passes(1);
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wv glass stage"),
+            label: Some("wv batch stage"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view: resolve(stage.target),
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: if stage.clear {
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
+                    store: wgpu::StoreOp::Store,
+                },
                 depth_slice: None,
             })],
             depth_stencil_attachment: None,
@@ -683,46 +650,24 @@ impl BatchPipelines {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.replace);
+        pass.set_pipeline(if stage.blend { &self.composite } else { &self.replace });
         pass.set_bind_group(0, &bind, &[]);
-        pass.draw(0..4, 0..insts.len() as u32);
+        pass.draw(0..4, 0..stage.insts.len() as u32);
     }
 
-    /// Run ONE composite pass drawing the instance range `range` of the pre-uploaded `buffer` over
-    /// `target` (loaded, `SrcOver`). Instances blend in API order, so a shape's shadow instances
-    /// placed before its body instance land under it exactly like the sequential blits did.
-    #[expect(clippy::too_many_arguments, reason = "the GPU context travels with the pass")]
-    pub fn composite_pass(
+    /// Run every stage belonging to `round` (or every hoisted stage when `round` is `None`).
+    pub fn run_stages(
         &self,
         device: &wgpu::Device,
         enc: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        src: &wgpu::TextureView,
-        src2: &wgpu::TextureView,
+        stages: &[Stage],
+        round: Option<u32>,
+        acc: &wgpu::TextureView,
+        atlas: &[&wgpu::TextureView],
         sampler: &wgpu::Sampler,
-        buffer: &wgpu::Buffer,
-        range: Range<u32>,
     ) {
-        if range.is_empty() {
-            return;
+        for stage in stages.iter().filter(|s| s.round == round) {
+            self.run_stage(device, enc, stage, acc, atlas, sampler);
         }
-        let bind = self.bind(device, buffer, src, src2, sampler);
-        crate::vello::sink::note_passes(1);
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wv batch composite"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.composite);
-        pass.set_bind_group(0, &bind, &[]);
-        pass.draw(0..4, range);
     }
 }

@@ -84,8 +84,10 @@ struct WvBatchPlan {
     v: Vec<crate::vello::batch::Inst>,
     /// EraseBy band materialisations, one per inner shadow, drawn in ONE combine pass.
     combine: Vec<crate::vello::batch::Inst>,
-    c: Vec<crate::vello::batch::Inst>,
-    c_ranges: Vec<(u32, u32, u32)>,
+    /// The frame's stages in dependency order — the blur pair and the combine hoisted out of the
+    /// round loop, one composite pinned to each round that has work. Atlas slot 0 is the first
+    /// surface of the pooled pair, slot 1 the second.
+    stages: Vec<crate::vello::batch::Stage>,
     gids: HashSet<u128>,
 }
 
@@ -147,8 +149,7 @@ fn wv_batch_plan(
         h: Vec::new(),
         v: Vec::new(),
         combine: Vec::new(),
-        c: Vec::new(),
-        c_ranges: Vec::new(),
+        stages: Vec::new(),
         gids: HashSet::new(),
     };
     let mut by_round: std::collections::BTreeMap<u32, Vec<crate::vello::batch::Inst>> =
@@ -293,20 +294,38 @@ fn wv_batch_plan(
     if plan.gids.is_empty() {
         return None;
     }
-    for (r, insts) in by_round {
-        let lo = plan.c.len() as u32;
-        plan.c.extend(insts);
-        plan.c_ranges.push((r, lo, plan.c.len() as u32));
+    {
+        use crate::vello::batch::{stage, Stage, Surface};
+        let rounds_used = by_round.len();
+        plan.stages.push(
+            Stage::new(stage::BLUR, Surface::Atlas(0), Surface::Acc, std::mem::take(&mut plan.h)).cleared(),
+        );
+        plan.stages.push(
+            Stage::new(stage::BLUR, Surface::Atlas(1), Surface::Atlas(0), std::mem::take(&mut plan.v)).cleared(),
+        );
+        plan.stages.push(Stage::new(
+            stage::COMBINE,
+            Surface::Atlas(0),
+            Surface::Atlas(1),
+            std::mem::take(&mut plan.combine),
+        ));
+        for (r, insts) in by_round {
+            plan.stages.push(
+                Stage::new(stage::COMPOSITE, Surface::Acc, Surface::Atlas(1), insts)
+                    .with_src2(Surface::Atlas(0))
+                    .composited()
+                    .with_round(r),
+            );
+        }
+        let _ = rounds_used;
     }
     #[cfg(not(target_arch = "wasm32"))]
     if std::env::var("WV_BATCH_STATS").is_ok() {
         eprintln!(
-            "wv batch: shapes={} blur_cells={} bands={} composites={} rounds={}",
+            "wv batch: shapes={} stages={} instances={}",
             plan.gids.len(),
-            plan.h.len(),
-            plan.combine.len(),
-            plan.c.len(),
-            plan.c_ranges.len(),
+            plan.stages.len(),
+            plan.stages.iter().map(|s| s.insts.len()).sum::<usize>(),
         );
     }
     Some(plan)
@@ -1208,7 +1227,7 @@ impl Sink {
         let batch_plan = strip.as_ref().and_then(|(packing, cells)| {
             wv_batch_plan(&gathers, &rounds, packing, cells, strip_y, (width as f32, acc_h as f32))
         });
-        let mut batch_rt: Option<(wgpu::Texture, wgpu::Texture, wgpu::TextureView, wgpu::TextureView, wgpu::Buffer)> = None;
+        let mut batch_rt: Option<(wgpu::Texture, wgpu::Texture, wgpu::TextureView, wgpu::TextureView)> = None;
         let glass_plan = self
             .wv_glass_plan(&gathers, &rounds, full_view, width, height, device.limits().max_texture_dimension_2d)
             .filter(|_| wv_glass_batch());
@@ -1388,27 +1407,17 @@ impl Sink {
                     let b = self.pool.acquire_target(device, aw, ah, format, wgpu::TextureUsages::empty(), "wv batch blur b");
                     let av = a.create_view(&wgpu::TextureViewDescriptor::default());
                     let bv = b.create_view(&wgpu::TextureViewDescriptor::default());
-                    pipes.blur_pass(device, &mut enc, &av, &views[ci], self.compositor.sampler(), &plan.h);
-                    pipes.blur_pass(device, &mut enc, &bv, &av, self.compositor.sampler(), &plan.v);
-                    pipes.combine_pass(device, &mut enc, &av, &bv, self.compositor.sampler(), &plan.combine);
-                    use wgpu::util::DeviceExt as _;
-                    let cbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("wv batch composite insts"),
-                        contents: bytemuck::cast_slice(&plan.c),
-                        usage: wgpu::BufferUsages::STORAGE,
-                    });
+                    pipes.run_stages(device, &mut enc, &plan.stages, None, &views[ci], &[&av, &bv], self.compositor.sampler());
                     // Held OUTSIDE `frame_transient` on purpose: the per-node recycle point
                     // truncates that list back to its pre-loop checkpoint, and the blurred atlas
                     // must survive every round. It returns to the pool after the final window.
-                    batch_rt = Some((a, b, av, bv, cbuf));
+                    batch_rt = Some((a, b, av, bv));
                 }
                 strip_filled = true;
             }
-            if let (Some(plan), Some((_, _, av, bv, cbuf))) = (batch_plan.as_ref(), batch_rt.as_ref()) {
-                if let Some(&(_, lo, hi)) = plan.c_ranges.iter().find(|&&(rr, _, _)| rr == r) {
-                    let pipes = self.batch_pipes.as_ref().expect("batch pipelines built with the plan");
-                    pipes.composite_pass(device, &mut enc, &views[ci], bv, av, self.compositor.sampler(), cbuf, lo..hi);
-                }
+            if let (Some(plan), Some((_, _, av, bv))) = (batch_plan.as_ref(), batch_rt.as_ref()) {
+                let pipes = self.batch_pipes.as_ref().expect("batch pipelines built with the plan");
+                pipes.run_stages(device, &mut enc, &plan.stages, Some(r), &views[ci], &[av, bv], self.compositor.sampler());
             }
             // Every batched lens of this round, in one pass per stage. Lenses in a round are
             // disjoint by construction, so they can all read the accumulator and write their own
@@ -1457,7 +1466,7 @@ impl Sink {
             seed_clear(&mut enc, &views[0]);
             0
         };
-        if let Some((a, b, av, bv, _cbuf)) = batch_rt.take() {
+        if let Some((a, b, av, bv)) = batch_rt.take() {
             self.frame_transient.push(a);
             self.frame_transient.push(b);
             self.frame_transient_views.push(av);
@@ -1842,14 +1851,28 @@ impl Sink {
             stamp.push(Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false));
         }
 
-        pipes.blur_pass(device, enc, &atlas.a_view, acc_view, sampler, &crops);
-        pipes.glass_pass(device, enc, &atlas.c_view, &atlas.a_view, &atlas.a_view, sampler, &sharp, &sharp_f, stage::GLASS_SHARP);
-        pipes.glass_pass(device, enc, &atlas.b_view, &atlas.a_view, &atlas.a_view, sampler, &warp, &warp_f, stage::GLASS_WARP);
-        pipes.blur_pass(device, enc, &atlas.d_view, &atlas.b_view, sampler, &blur_h);
-        pipes.blur_pass(device, enc, &atlas.b_view, &atlas.d_view, sampler, &blur_v);
-        pipes.glass_pass(device, enc, &atlas.c_view, &atlas.b_view, &atlas.a_view, sampler, &frost, &frost_f, stage::GLASS_FROST);
-        let buf = pipes.upload(device, &stamp, stage::COMPOSITE);
-        pipes.composite_pass(device, enc, acc_view, &atlas.c_view, &atlas.c_view, sampler, &buf, 0..stamp.len() as u32);
+        // The round's whole schedule, in dependency order — the crop lifts every lens's backdrop
+        // into slot A, the unit stages run over all of them, and the stamp puts them back. Emitting
+        // stages rather than issuing passes is what makes this a plan the executor runs, identical
+        // in kind to the blur-cell plan above.
+        use crate::vello::batch::{Stage, Surface};
+        const A: Surface = Surface::Atlas(0);
+        const B: Surface = Surface::Atlas(1);
+        const C: Surface = Surface::Atlas(2);
+        const D: Surface = Surface::Atlas(3);
+        let stages = [
+            Stage::new(stage::BLUR, A, Surface::Acc, crops).cleared(),
+            Stage::new(stage::GLASS_SHARP, C, A, sharp).with_fields(sharp_f),
+            Stage::new(stage::GLASS_WARP, B, A, warp).with_fields(warp_f),
+            Stage::new(stage::BLUR, D, B, blur_h).cleared(),
+            Stage::new(stage::BLUR, B, D, blur_v).cleared(),
+            Stage::new(stage::GLASS_FROST, C, B, frost).with_src2(A).with_fields(frost_f),
+            Stage::new(stage::COMPOSITE, Surface::Acc, C, stamp).composited(),
+        ];
+        let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view];
+        for st in &stages {
+            pipes.run_stage(device, enc, st, acc_view, &views, sampler);
+        }
         let _ = format;
     }
 
