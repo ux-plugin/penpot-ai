@@ -892,6 +892,14 @@ thread_local! {
     /// Whole-viewport atlas prepass gate — see [`set_wv_atlas`]. Default on.
     static WV_ATLAS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 
+    /// Source-strip gate — see [`set_wv_strip`]. Encodes the effect sources into the MAIN scene below
+    /// the viewport so the frame keeps one tile grid and runs the front-end once instead of twice.
+    ///
+    /// Default OFF: the path renders correctly to the eye but is not yet pixel-identical to the
+    /// prepass it replaces — a residual differs around the shapes that own a source surface, so it
+    /// stays behind the flag until that is closed. `set_wv_strip(1)` opts in.
+    static WV_STRIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
     /// Per-pass GPU profiling: stamp a timestamp boundary between each effect-graph pass (glass
     /// displacement / refraction / blur / composite) so the host can read the GPU ms of each
     /// individual dispatch out of the DBG buckets. Default off — it adds empty boundary passes and
@@ -963,6 +971,19 @@ pub extern "C" fn set_wv_atlas(on: u32) {
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn wv_atlas() -> bool {
     WV_ATLAS.with(std::cell::Cell::get)
+}
+
+/// Encode stack-effect source surfaces into the main scene (one front-end per frame) instead of
+/// rendering them in a separate prepass (two). `set_wv_strip(0)` restores the prepass — the A/B lever
+/// and the automatic fallback when a strip would not fit the device's texture limit.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_wv_strip(on: u32) {
+    WV_STRIP.with(|c| c.set(on != 0));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn wv_strip() -> bool {
+    WV_STRIP.with(std::cell::Cell::get)
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
