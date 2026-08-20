@@ -542,7 +542,7 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
         fs.push_str(
             r#"
     let punch = glassSampleOrig(gi, uvpix);
-    value = value * (1.0 - punch.a);
+    value = value * (1.0 - punch.a * fieldU(gi, 3u).w);
 "#,
         );
     }

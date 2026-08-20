@@ -91,6 +91,18 @@ struct WvBatchPlan {
     gids: HashSet<u128>,
 }
 
+/// The straight RGBA of one of a shape's shadows, `None` when the index no longer resolves. The
+/// silhouette is rasterised as bare coverage, so this colour is what the Tint applies — the whole
+/// reason a shape's shadows can share one rasterisation.
+fn shadow_colour(id: u128, inset: bool, idx: usize) -> Option<[f32; 4]> {
+    crate::vello::abi::with_scene(|model, _, _| {
+        model
+            .get(id)
+            .and_then(|n| n.shadows.iter().filter(|s| s.inset == inset).nth(idx))
+            .map(|s| s.color.components)
+    })
+}
+
 /// Lower one batched cell to its effect graph — THE SAME builder call the per-shape path executes
 /// ([`Sink::wv_paint_path_shadow`] / [`Sink::wv_composite_body`] both run
 /// `background_blur_graph(sigma * k)` when the cell blurs, and nothing when it does not). The batch
@@ -263,9 +275,14 @@ fn wv_batch_plan(
                 Emit::Cell(c) => {
                     blur(&mut plan, c);
                     let (_, atlas_rect, frame_rect) = rects(c);
-                    by_round.entry(rounds[j]).or_default().push(crate::vello::batch::Inst::new(
+                    let mut inst = crate::vello::batch::Inst::new(
                         frame_rect, acc_size, atlas_rect, atlas_size, (0.0, 0.0), 0.0, false,
-                    ));
+                    );
+                    if c.key.1 == 0 {
+                        let Some(colour) = shadow_colour(c.key.0, false, c.key.2) else { continue };
+                        inst = inst.tinted(colour);
+                    }
+                    by_round.entry(rounds[j]).or_default().push(inst);
                 }
                 Emit::Inner { flood, punch } => {
                     blur(&mut plan, flood);
@@ -274,17 +291,21 @@ fn wv_batch_plan(
                     let (_, punch_rect, _) = rects(punch);
                     // Materialise the band in atlas A at the flood's own rect (both reads from B),
                     // then composite it from A — `mode` 1 selects the second texture.
+                    let Some(pc) = shadow_colour(flood.key.0, true, flood.key.2) else { continue };
                     plan.combine.push(
                         crate::vello::batch::Inst::new(
                             flood_rect, atlas_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
                         )
-                        .with_src2(punch_rect, atlas_size, 0.0),
+                        .with_src2(punch_rect, atlas_size, 0.0)
+                        .with_alpha(pc[3]),
                     );
+                    let Some(colour) = shadow_colour(flood.key.0, true, flood.key.2) else { continue };
                     by_round.entry(rounds[j]).or_default().push(
                         crate::vello::batch::Inst::new(
                             frame_rect, acc_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
                         )
-                        .with_src2(punch_rect, atlas_size, 1.0),
+                        .with_src2(punch_rect, atlas_size, 1.0)
+                        .tinted(colour),
                     );
                 }
             }
@@ -2316,9 +2337,9 @@ impl Sink {
             scene.set_transform(Affine::IDENTITY);
             scene.push_layer(Some(&rect.to_path(0.1)), Some(replace), None, None, None);
             match c.key.1 {
-                0 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, false, true, true),
-                2 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, false, true),
-                3 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, true, true),
+                0 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, false, true, false),
+                2 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, false, false),
+                3 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, true, false),
                 _ => backend.draw_scene_range(scene, m, *root_index, *root_index + 1),
             }
             scene.pop_layer();
@@ -2358,30 +2379,26 @@ impl Sink {
                 let sil = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv path shadow silhouette");
                 let v = sil.create_view(&wgpu::TextureViewDescriptor::default());
                 let mut sscene = backend.new_scene(kw as u16, kh as u16);
-                backend.build_shadow_silhouette(&mut sscene, Affine::scale(f64::from(k)) * crop, id, key.2, false, true, true);
+                backend.build_shadow_silhouette(&mut sscene, Affine::scale(f64::from(k)) * crop, id, key.2, false, true, false);
                 backend.rasterize(&sscene, device, queue, enc, &v, kw, kh, TRANSPARENT);
                 self.frame_transient.push(sil);
                 self.frame_transient_views.push(v.clone());
                 v
             };
             let (kwf, khf) = (kw as f32, kh as f32);
-            if sigma >= 0.5 {
-                let passes = lower_graph(&effect_graph::background_blur_graph(sigma * k), None);
-                let blurred = run_graph_into(
-                    &self.compositor, &self.glass, device, enc, &[&sil_view], &passes, kw, kh, format,
-                    &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
-                );
-                let Some((tex, view)) = blurred else { return };
-                self.compositor.blit(device, enc, acc_view, sz, &Blit {
-                    src: &view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kwf, khf), src_size: (kwf, khf), alpha: 1.0,
-                });
-                self.frame_transient.push(tex);
-                self.frame_transient_views.push(view);
-            } else {
-                self.compositor.blit(device, enc, acc_view, sz, &Blit {
-                    src: &sil_view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kwf, khf), src_size: (kwf, khf), alpha: 1.0,
-                });
-            }
+            let Some(colour) = shadow_colour(id, false, key.2) else { return };
+            let graph = effect_graph::drop_shadow_graph(kwf, khf, colour, sigma * k);
+            let out = run_graph_into(
+                &self.compositor, &self.glass, device, enc, &[&sil_view], &lower_graph(&graph, None),
+                kw, kh, format, &mut self.pool, &mut self.frame_transient,
+                &mut self.frame_transient_views, self.pass_prof.as_mut(),
+            );
+            let Some((tex, view)) = out else { return };
+            self.compositor.blit(device, enc, acc_view, sz, &Blit {
+                src: &view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kwf, khf), src_size: (kwf, khf), alpha: 1.0,
+            });
+            self.frame_transient.push(tex);
+            self.frame_transient_views.push(view);
         }
     }
 
@@ -2425,7 +2442,7 @@ impl Sink {
                 let tex = sink.pool.acquire_target(device, kw, kh, format, sink.raster_usage, label);
                 let v = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 let mut scene = backend.new_scene(kw as u16, kh as u16);
-                backend.build_shadow_silhouette(&mut scene, scaled_root, id, i, true, apply_offset, true);
+                backend.build_shadow_silhouette(&mut scene, scaled_root, id, i, true, apply_offset, false);
                 backend.rasterize(&scene, device, queue, enc, &v, kw, kh, TRANSPARENT);
                 sink.frame_transient.push(tex);
                 sink.frame_transient_views.push(v.clone());
@@ -2433,26 +2450,19 @@ impl Sink {
             };
             let band_view = fetch(self, 2, false, backend, enc);
             let punch_view = fetch(self, 3, true, backend, enc);
-            if sigma >= 0.5 {
-                let passes = lower_graph(&effect_graph::background_blur_graph(sigma * k), None);
-                let blur_out = run_graph_into(
-                    &self.compositor, &self.glass, device, enc, &[&punch_view], &passes, kw, kh, format,
-                    &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
-                );
-                let Some((ptex, pview)) = blur_out else { return };
-                self.compositor.blit_dstout(device, enc, &band_view, ksz, &Blit {
-                    src: &pview, dst: (0.0, 0.0, ksz.0, ksz.1), src_rect: full_src, src_size: ksz, alpha: 1.0,
-                });
-                self.frame_transient.push(ptex);
-                self.frame_transient_views.push(pview);
-            } else {
-                self.compositor.blit_dstout(device, enc, &band_view, ksz, &Blit {
-                    src: &punch_view, dst: (0.0, 0.0, ksz.0, ksz.1), src_rect: full_src, src_size: ksz, alpha: 1.0,
-                });
-            }
+            let Some(colour) = shadow_colour(id, true, i) else { return };
+            let graph = effect_graph::inner_shadow_graph(ksz.0, ksz.1, colour, sigma * k);
+            let out = run_graph_into(
+                &self.compositor, &self.glass, device, enc, &[&band_view, &punch_view],
+                &lower_graph(&graph, None), kw, kh, format, &mut self.pool,
+                &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
+            );
+            let Some((tex, view)) = out else { return };
             self.compositor.blit(device, enc, acc_view, sz, &Blit {
-                src: &band_view, dst: (bx as f32, by as f32, bw as f32, bh as f32), src_rect: full_src, src_size: ksz, alpha: 1.0,
+                src: &view, dst: (bx as f32, by as f32, bw as f32, bh as f32), src_rect: full_src, src_size: ksz, alpha: 1.0,
             });
+            self.frame_transient.push(tex);
+            self.frame_transient_views.push(view);
         }
     }
 

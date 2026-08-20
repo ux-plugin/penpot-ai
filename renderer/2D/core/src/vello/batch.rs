@@ -122,6 +122,13 @@ impl Inst {
         }
     }
 
+    /// The instance with an explicit alpha factor. The erase stage reads it as the shadow colour's
+    /// alpha; the composite stages scale their sample by it.
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
     /// The instance with a straight RGBA tint applied to its coverage at composite time. What lets
     /// one rasterised silhouette serve shadows of different colours.
     pub fn tinted(mut self, colour: [f32; 4]) -> Self {
@@ -283,7 +290,10 @@ fn combine_px(in: VSOut) -> vec4<f32> {
     let it = insts[in.inst];
     let flood = textureSampleLevel(tex, samp, clamp(in.uv, it.clamp_min, it.clamp_max), 0.0);
     let punch = textureSampleLevel(tex2, samp, clamp(in.uv2, it.clamp2_min, it.clamp2_max), 0.0);
-    return flood * (1.0 - punch.a);
+    // `alpha` is the shadow colour's own alpha. The punch is bare coverage now, but it used to be
+    // rasterised in the shadow's colour, so its alpha carried that factor into the erase — scaling
+    // here is what keeps a translucent inner shadow identical.
+    return flood * (1.0 - punch.a * it.alpha);
 }
 
 fn composite_px(in: VSOut) -> vec4<f32> {
