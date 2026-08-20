@@ -35,6 +35,7 @@ fn install(scene: &str) -> u32 {
             u32::from(!std::env::var("GLASS_SHARP").is_ok()),
         ),
         "scope" => render_core::vello::abi::load_scope_scene(),
+        "texture" => render_core::vello::abi::load_texture_scene(),
         "showcase" => render_core::vello::abi::load_showcase_scene(),
         _ => render_core::vello::abi::load_layer_blur_scene(),
     }

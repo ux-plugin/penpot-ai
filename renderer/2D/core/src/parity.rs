@@ -1573,6 +1573,52 @@ pub fn build_glass_grid_scene(n: usize, frost: bool) -> (Scene, Vec<(usize, &'st
     b.finish()
 }
 
+/// Every shape the **texture** (noise displacement) effect can produce, plus the **noise** overlay
+/// and the two chained. The fill is a sweep gradient on purpose: a displacement over a solid colour
+/// only shows at the silhouette, so a solid fill would hide a regression across the entire interior.
+///
+/// `clip-off` is the one cell where the warp is allowed to bleed past the original coverage, which
+/// is the difference the `clip_to_shape` flag exists to express.
+#[must_use]
+pub fn build_texture_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    use crate::model::EffectSlot;
+    use crate::vello::effects::{noise_shader, texture_shader, NoiseSlot};
+
+    let mut b = Build::new();
+    let cell = |b: &mut Build, tex: Option<(f32, f32, bool)>, noise: bool, label: &'static str| {
+        let r = b.rect();
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        node.bounds = r;
+        node.corners = Some(RoundedRectRadii::from_single_radius(10.0));
+        node.fills = vec![Paint::plain(angular())];
+        if let Some((grain, radius, clip)) = tex {
+            if let Some(s) = texture_shader(grain, radius, clip, false) {
+                node.upsert_effect(EffectSlot::Texture, s);
+            }
+        }
+        if noise {
+            let slots = vec![
+                NoiseSlot { kind: 0, rgba: [0.05, 0.05, 0.08, 0.85] },
+                NoiseSlot { kind: 1, rgba: [1.0, 0.98, 0.9, 0.6] },
+            ];
+            if let Some(s) = noise_shader(&slots, 14.0, 0.52, 0.28, true, false) {
+                node.upsert_effect(EffectSlot::Noise, s);
+            }
+        }
+        b.root(node);
+        b.advance(label);
+    };
+
+    cell(&mut b, None, false, "no effect");
+    cell(&mut b, Some((20.0, 6.0, true)), false, "texture r6");
+    cell(&mut b, Some((20.0, 14.0, true)), false, "texture r14");
+    cell(&mut b, Some((8.0, 14.0, true)), false, "texture fine grain");
+    cell(&mut b, Some((20.0, 14.0, false)), false, "texture clip-off");
+    cell(&mut b, None, true, "noise");
+    cell(&mut b, Some((20.0, 10.0, true)), true, "texture + noise");
+    b.finish()
+}
+
 /// Effect-ablation bits for [`build_stress_scene_mask`]: turn one effect kind off at a time and the
 /// frame-time delta attributes that effect's GPU cost.
 pub const FX_DROP: u32 = 1;

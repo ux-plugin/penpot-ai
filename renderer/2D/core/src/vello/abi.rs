@@ -2358,6 +2358,14 @@ pub extern "C" fn load_scope_scene_clamp() -> u32 {
     install_fixture(crate::parity::build_scope_test_scene_clamp())
 }
 
+/// Install the **texture/noise effect** fixture ([`crate::parity::build_texture_scene`]) — the
+/// noise-displacement effect at several magnitudes and grains, with and without clipping to the
+/// original coverage, plus the noise overlay and the two chained. Returns the shape count.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_texture_scene() -> u32 {
+    install_fixture(crate::parity::build_texture_scene())
+}
+
 /// Swap a prebuilt fixture in as the live scene and mark everything dirty so the next frame rebuilds.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn install_fixture((scene, legend): (Scene, Vec<(usize, &'static str)>)) -> u32 {
