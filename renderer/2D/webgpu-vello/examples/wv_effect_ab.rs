@@ -55,12 +55,16 @@ fn make_target(device: &wgpu::Device, w: u32, h: u32, label: &str) -> wgpu::Text
     })
 }
 
+/// Zoom for the whole frame: the canvas grows with the view, so framing is unchanged and the extra
+/// pixels are real resolution rather than an upscale. `ZOOM=2` is what the effect review sheet uses
+/// — effects have to be judged by eye at a size where their artifacts are actually visible.
 fn frame_setup(cells: u32) -> (u32, u32) {
+    let z = std::env::var("ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).clamp(0.25, 4.0);
     let (w, h) = render_core::parity::canvas_size(cells as usize);
     render_core::vello::abi::set_render_options(0, 1.0);
-    render_core::vello::abi::set_view(1.0, 0.0, 0.0);
+    render_core::vello::abi::set_view(z, 0.0, 0.0);
     render_core::vello::abi::set_canvas_background(0xffff_ffff);
-    (w, h)
+    (((w as f32) * z) as u32, ((h as f32) * z) as u32)
 }
 
 fn main() {
