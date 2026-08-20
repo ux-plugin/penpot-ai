@@ -772,7 +772,7 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         });
     }
 
-    fn build_shadow_silhouette(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, shadow: usize, inset: bool, apply_offset: bool) {
+    fn build_shadow_silhouette(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, shadow: usize, inset: bool, apply_offset: bool, tinted: bool) {
         let text = &mut self.text;
         render_core::vello::abi::with_scene(|model, viewport, modifiers| {
             let Some(node) = model.get(id) else { return };
@@ -787,12 +787,15 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             if node.kind == render_core::model::ShapeKind::Text {
                 let mut resources = ();
                 render_core::vello::text::draw_text_block(
-                    scene, &mut resources, &mut text.font_cx, &mut text.layout_cx, &ClassicEnv, node, matrix, Some(s.color),
+                    scene, &mut resources, &mut text.font_cx, &mut text.layout_cx, &ClassicEnv, node, matrix,
+                    Some(if tinted { s.color } else { peniko::Color::WHITE }),
                 );
                 return;
             }
             scene.set_transform(matrix);
-            scene.set_paint(s.color);
+            // Untinted, the silhouette is pure coverage — a Tint unit colours it later, so shadows
+            // that differ only in colour can share one rasterisation.
+            scene.set_paint(if tinted { s.color } else { peniko::Color::WHITE });
             let path = if s.spread > 0.0 {
                 render_core::geometry::spread_outline(node, f64::from(s.spread))
             } else {

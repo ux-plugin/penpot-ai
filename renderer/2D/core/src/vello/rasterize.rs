@@ -107,7 +107,7 @@ pub trait RasterBackend {
     /// `inset` selects which subset `shadow` indexes — the drop shadows (`false`) or the inner shadows
     /// (`true`). `apply_offset` shifts the silhouette by the shadow's offset: a drop shadow and an inner
     /// shadow's *punch* pass `true`; the inner shadow's un-shifted flood passes `false`.
-    fn build_shadow_silhouette(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _shadow: usize, _inset: bool, _apply_offset: bool) {}
+    fn build_shadow_silhouette(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _shadow: usize, _inset: bool, _apply_offset: bool, _tinted: bool) {}
 
     /// Emit a native `CMD_EFFECT` boundary marker for effect node `id` into the z-ordered stream.
     /// `seg_after` (= boundary index + 1) rides in the marker payload: `fine` SETS its running

@@ -2316,9 +2316,9 @@ impl Sink {
             scene.set_transform(Affine::IDENTITY);
             scene.push_layer(Some(&rect.to_path(0.1)), Some(replace), None, None, None);
             match c.key.1 {
-                0 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, false, true),
-                2 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, false),
-                3 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, true),
+                0 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, false, true, false),
+                2 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, false, true),
+                3 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, true, true),
                 _ => backend.draw_scene_range(scene, m, *root_index, *root_index + 1),
             }
             scene.pop_layer();
@@ -2358,30 +2358,32 @@ impl Sink {
                 let sil = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv path shadow silhouette");
                 let v = sil.create_view(&wgpu::TextureViewDescriptor::default());
                 let mut sscene = backend.new_scene(kw as u16, kh as u16);
-                backend.build_shadow_silhouette(&mut sscene, Affine::scale(f64::from(k)) * crop, id, key.2, false, true);
+                backend.build_shadow_silhouette(&mut sscene, Affine::scale(f64::from(k)) * crop, id, key.2, false, true, false);
                 backend.rasterize(&sscene, device, queue, enc, &v, kw, kh, TRANSPARENT);
                 self.frame_transient.push(sil);
                 self.frame_transient_views.push(v.clone());
                 v
             };
             let (kwf, khf) = (kw as f32, kh as f32);
-            if sigma >= 0.5 {
-                let passes = lower_graph(&effect_graph::background_blur_graph(sigma * k), None);
-                let blurred = run_graph_into(
-                    &self.compositor, &self.glass, device, enc, &[&sil_view], &passes, kw, kh, format,
-                    &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
-                );
-                let Some((tex, view)) = blurred else { return };
-                self.compositor.blit(device, enc, acc_view, sz, &Blit {
-                    src: &view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kwf, khf), src_size: (kwf, khf), alpha: 1.0,
-                });
-                self.frame_transient.push(tex);
-                self.frame_transient_views.push(view);
-            } else {
-                self.compositor.blit(device, enc, acc_view, sz, &Blit {
-                    src: &sil_view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kwf, khf), src_size: (kwf, khf), alpha: 1.0,
-                });
-            }
+            let Some(colour) = crate::vello::abi::with_scene(|model, _, _| {
+                model
+                    .get(id)
+                    .and_then(|n| n.shadows.iter().filter(|s| !s.inset).nth(key.2))
+                    .map(|s| s.color.components)
+            }) else {
+                return;
+            };
+            let graph = effect_graph::drop_shadow_graph(kwf, khf, colour, sigma * k);
+            let out = run_graph_into(
+                &self.compositor, &self.glass, device, enc, &[&sil_view], &lower_graph(&graph, None), kw, kh, format,
+                &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
+            );
+            let Some((tex, view)) = out else { return };
+            self.compositor.blit(device, enc, acc_view, sz, &Blit {
+                src: &view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kwf, khf), src_size: (kwf, khf), alpha: 1.0,
+            });
+            self.frame_transient.push(tex);
+            self.frame_transient_views.push(view);
         }
     }
 
@@ -2425,7 +2427,7 @@ impl Sink {
                 let tex = sink.pool.acquire_target(device, kw, kh, format, sink.raster_usage, label);
                 let v = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 let mut scene = backend.new_scene(kw as u16, kh as u16);
-                backend.build_shadow_silhouette(&mut scene, scaled_root, id, i, true, apply_offset);
+                backend.build_shadow_silhouette(&mut scene, scaled_root, id, i, true, apply_offset, true);
                 backend.rasterize(&scene, device, queue, enc, &v, kw, kh, TRANSPARENT);
                 sink.frame_transient.push(tex);
                 sink.frame_transient_views.push(v.clone());
@@ -4100,7 +4102,7 @@ impl Sink {
         let sil_view = sil.create_view(&wgpu::TextureViewDescriptor::default());
         let root_for_sil = Affine::translate((-edx, -edy)) * root;
         let mut sscene = backend.new_scene(w as u16, h as u16);
-        backend.build_shadow_silhouette(&mut sscene, root_for_sil, shape, shadow, false, true);
+        backend.build_shadow_silhouette(&mut sscene, root_for_sil, shape, shadow, false, true, true);
         backend.rasterize(&sscene, device, queue, enc, &sil_view, w, h, TRANSPARENT);
 
         let c = full_view.as_coeffs();
@@ -4179,13 +4181,13 @@ impl Sink {
         let flood = self.pool.acquire_target(device, w, h, format, self.raster_usage, "inner shadow flood");
         let flood_view = flood.create_view(&wgpu::TextureViewDescriptor::default());
         let mut fscene = backend.new_scene(w as u16, h as u16);
-        backend.build_shadow_silhouette(&mut fscene, root_for_sil, shape, shadow, true, false);
+        backend.build_shadow_silhouette(&mut fscene, root_for_sil, shape, shadow, true, false, true);
         backend.rasterize(&fscene, device, queue, enc, &flood_view, w, h, TRANSPARENT);
 
         let punch = self.pool.acquire_target(device, w, h, format, self.raster_usage, "inner shadow punch");
         let punch_view = punch.create_view(&wgpu::TextureViewDescriptor::default());
         let mut pscene = backend.new_scene(w as u16, h as u16);
-        backend.build_shadow_silhouette(&mut pscene, root_for_sil, shape, shadow, true, true);
+        backend.build_shadow_silhouette(&mut pscene, root_for_sil, shape, shadow, true, true, true);
         backend.rasterize(&pscene, device, queue, enc, &punch_view, w, h, TRANSPARENT);
 
         let c = full_view.as_coeffs();

@@ -37,11 +37,29 @@ pub enum UnitOp {
     /// Pointwise multiply by the input's alpha at the undisplaced pixel — confines a displaced
     /// result to the coverage it started from.
     ClipToSource(Vec<f32>),
+    /// Pointwise erase by a second input's alpha (`DestOut`) — what is left of this input where the
+    /// other one is not. The inner-shadow band is this applied to a silhouette and its blurred punch.
+    EraseBy(Vec<f32>),
+    /// Pointwise multiply by a straight colour, premultiplied on the way out — turns a coverage
+    /// silhouette into a coloured one without re-rasterising the geometry.
+    Tint(Vec<f32>),
 }
 
-/// A composed pass's pipeline cache key: (sampling head: 0 plain / 1 warp / 2 scatter,
-/// has shade, has mask-mix, has clip-to-source, binds a distinct original texture).
-type UnitKey = (u8, bool, bool, bool, bool);
+/// A composed pass's pipeline cache key. Named fields rather than a tuple: the composition grew
+/// past the point where a positional index is readable, and one stale `key.3` silently selected the
+/// wrong bind-group layout.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) struct UnitKey {
+    /// Sampling head: 0 plain, 1 warp, 2 scatter.
+    pub head: u8,
+    pub shade: bool,
+    pub maskmix: bool,
+    pub clip: bool,
+    pub erase: bool,
+    pub tint: bool,
+    /// Binds a second texture — the mask-mix backdrop or the erase punch.
+    pub two_tex: bool,
+}
 
 pub struct GlassPipeline {
     format: wgpu::TextureFormat,
@@ -232,14 +250,21 @@ impl GlassPipeline {
         };
         let shade = ops.iter().any(|o| matches!(o, UnitOp::Shade(_)));
         let maskmix = ops.iter().any(|o| matches!(o, UnitOp::MaskMix(_)));
-        let clip = ops.iter().any(|o| matches!(o, UnitOp::ClipToSource(_)));
-        let key: UnitKey = (head, shade, maskmix, clip, original.is_some());
+        let key = UnitKey {
+            head,
+            shade,
+            maskmix,
+            clip: ops.iter().any(|o| matches!(o, UnitOp::ClipToSource(_))),
+            erase: ops.iter().any(|o| matches!(o, UnitOp::EraseBy(_))),
+            tint: ops.iter().any(|o| matches!(o, UnitOp::Tint(_))),
+            two_tex: original.is_some(),
+        };
         if !self.units.borrow().contains_key(&key) {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("glass units (composed)"),
                 source: wgpu::ShaderSource::Wgsl(units_shader(key, field).into()),
             });
-            let layout = if key.4 { &self.two_tex_layout } else { &self.one_tex_layout };
+            let layout = if key.two_tex { &self.two_tex_layout } else { &self.one_tex_layout };
             let pipeline = make_pipeline(device, "glass units", &module, layout, self.format);
             self.units.borrow_mut().insert(key, pipeline);
         }
@@ -254,7 +279,7 @@ impl GlassPipeline {
         }
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glass units bind"),
-            layout: if key.4 { &self.two_tex_layout } else { &self.one_tex_layout },
+            layout: if key.two_tex { &self.two_tex_layout } else { &self.one_tex_layout },
             entries: &entries,
         });
         let cache = self.units.borrow();
@@ -270,7 +295,7 @@ pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
     let mut out = [0.0_f32; 24];
     for op in ops {
         let (UnitOp::Warp(u) | UnitOp::Scatter(u) | UnitOp::Shade(u) | UnitOp::MaskMix(u)
-        | UnitOp::ClipToSource(u)) = op;
+        | UnitOp::ClipToSource(u) | UnitOp::EraseBy(u) | UnitOp::Tint(u)) = op;
         // Every unit of a run carries the same field geometry; each contributes only the trailing
         // slots its own kind uses, so merging them is a per-slot max of what was actually set.
         for (i, v) in u.iter().enumerate().take(24) {
@@ -426,7 +451,8 @@ fn hash2(p: vec2<f32>) -> vec2<f32> {
 /// - `uvpix: vec2<f32>` — the same position in the cell's normalised space,
 /// - `fieldU(gi, i)`, `glassSample(gi, uv)`, `glassSampleOrig(gi, uv)` — the accessors,
 /// and it leaves the result in `value`.
-pub(crate) fn units_body((head, shade, maskmix, clip, _two_tex): UnitKey, p: &crate::field::FieldProgram) -> String {
+pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String {
+    let UnitKey { head, shade, maskmix, clip, erase, tint, .. } = key;
     let mut fs = String::from(
         r#"
     let resolution = fieldU(gi, 0u).xy;
@@ -504,6 +530,22 @@ pub(crate) fn units_body((head, shade, maskmix, clip, _two_tex): UnitKey, p: &cr
 "#,
         );
     }
+    if tint {
+        fs.push_str(
+            r#"
+    let tintColor = fieldU(gi, 3u);
+    value = vec4<f32>(tintColor.rgb * tintColor.a, tintColor.a) * value.a;
+"#,
+        );
+    }
+    if erase {
+        fs.push_str(
+            r#"
+    let punch = glassSampleOrig(gi, uvpix);
+    value = value * (1.0 - punch.a);
+"#,
+        );
+    }
     if maskmix {
         fs.push_str(
             r#"
@@ -517,14 +559,14 @@ pub(crate) fn units_body((head, shade, maskmix, clip, _two_tex): UnitKey, p: &cr
 
 /// Whether a composition's head samples with a noise jitter — the one unit needing [`HASH_PRELUDE`].
 pub(crate) fn needs_hash(key: UnitKey) -> bool {
-    key.0 == 2
+    key.head == 2
 }
 
 /// Compose the per-shape fragment shader for one unit run: the shared [`units_body`] wired to a
 /// dedicated source texture (and an `original` texture when a mask-mix reads a distinct backdrop),
 /// with the field in a uniform (so `gi` is always `0u`).
 fn units_shader(key: UnitKey, program: &crate::field::FieldProgram) -> String {
-    let (_, _, _, _, two_tex) = key;
+    let two_tex = key.two_tex;
     let mut bindings = String::from(
         r#"
 @group(0) @binding(0) var<uniform> u: array<vec4<f32>, 6>;

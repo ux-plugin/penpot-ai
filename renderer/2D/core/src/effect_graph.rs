@@ -76,6 +76,11 @@ pub enum UnitKind {
     /// to the silhouette it started from. The counterpart to [`UnitKind::Warp`]: any displacement
     /// that must not bleed past its original coverage ends with this.
     ClipToSource,
+    /// Erase by a second input's alpha (`DestOut`) — what survives where the other input is not.
+    EraseBy,
+    /// Multiply a coverage silhouette by a straight colour. Colouring in a shader rather than at
+    /// raster time is what lets one rasterised silhouette serve shadows of different colours.
+    Tint,
 }
 
 /// A pass plus the texture reads it binds, in the order the pipeline expects.
@@ -157,6 +162,65 @@ pub fn background_blur_graph(sigma: f32) -> Vec<GraphPass> {
 #[must_use]
 pub fn background_blur_sigma(radius: f32, scale: f32) -> f32 {
     radius_to_sigma(radius) * scale
+}
+
+/// A **drop shadow** from an already-rasterised coverage silhouette: tint it, then blur it. The
+/// tint is pointwise so it fuses into the blur's own pass rather than costing one.
+///
+/// `colour` is straight (non-premultiplied) RGBA. `sigma` of zero means a hard shadow and emits no
+/// blur at all.
+#[must_use]
+pub fn drop_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<GraphPass> {
+    let mut passes = vec![GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)])];
+    if sigma > 0.5 {
+        passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Pass(0)]));
+    }
+    passes
+}
+
+/// An **inner shadow** band: the shape's own silhouette (input 0) with its offset, blurred copy
+/// (input 1) cut out of it, leaving colour only on the offset side.
+///
+/// Both inputs arrive as coverage; the tint colours the band before the punch is removed, so the
+/// erase sees the same alpha either way.
+#[must_use]
+pub fn inner_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<GraphPass> {
+    let mut passes = Vec::new();
+    let punch = if sigma > 0.5 {
+        passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Input(1)]));
+        Src::Pass(0)
+    } else {
+        Src::Input(1)
+    };
+    let band = passes.len();
+    passes.push(GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)]));
+    passes.push(GraphPass::new(
+        unit_pass(UnitKind::EraseBy, w, h, colour),
+        vec![Src::Pass(band), punch],
+    ));
+    passes
+}
+
+fn tint_unit(w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
+    unit_pass(UnitKind::Tint, w, h, colour)
+}
+
+/// A shadow unit's uniform: resolution in slot 0, the straight colour in vec4 slot 3
+/// (`fieldU(gi, 3u)` = u[12..16] — none of which the scale solver multiplies, because a colour is
+/// not a length). Shadows measure no field, so the program is empty and `computeField` degenerates to
+/// full coverage.
+fn unit_pass(op: UnitKind, w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
+    let mut u = vec![0.0_f32; 24];
+    u[0] = w;
+    u[1] = h;
+    u[12..16].copy_from_slice(&colour);
+    u[16] = 1.0;
+    EffectPass::Unit {
+        op,
+        field: std::rc::Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() }),
+        u,
+        reach: 0.0,
+    }
 }
 
 /// The **texture** effect's field: fractal noise, read as a centred displacement. It measures no

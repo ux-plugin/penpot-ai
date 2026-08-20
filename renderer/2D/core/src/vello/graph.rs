@@ -113,6 +113,16 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                                 }
                                 UnitKind::Shade => ops.push(UnitOp::Shade(u.clone())),
                                 UnitKind::ClipToSource => ops.push(UnitOp::ClipToSource(u.clone())),
+                                UnitKind::Tint => ops.push(UnitOp::Tint(u.clone())),
+                                // The punch is a second texture, exactly like a mask-mix backdrop.
+                                UnitKind::EraseBy => {
+                                    ops.push(UnitOp::EraseBy(u.clone()));
+                                    if let Some(other) = graph[i].inputs.get(1) {
+                                        if Some(*other) != head_src {
+                                            inputs.push(*other);
+                                        }
+                                    }
+                                }
                                 UnitKind::MaskMix => {
                                     ops.push(UnitOp::MaskMix(u.clone()));
                                     if let Some(orig) = graph[i].inputs.get(1) {
