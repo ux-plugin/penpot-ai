@@ -8,7 +8,7 @@
 //! (`scatter+shade+mask-mix`) are *derived* fusions — there is no hand-written fused shader left.
 //!
 //! The rounded-box SDF + surface-profile bezel → field `(dx, dy, specular, mask)` is pure arithmetic
-//! on the uniform, recomputed inline by every composed pass via [`FIELD_PRELUDE`]'s `computeField` —
+//! on the uniform, recomputed inline by every composed pass via the generated [`field_prelude`]'s `computeField` —
 //! a procedural generator is register-fused, never stored.
 //!
 //! Every composed pass reads one 24-float (`6×vec4`) uniform: indices 0..16 the field geometry,
@@ -282,98 +282,93 @@ pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
     out
 }
 
-/// Shared field computation: the rounded-box SDF + surface-profile bezel → Snell refraction vector,
-/// specular, and anti-aliased mask, as pure arithmetic on the 20-float uniform (indices 0..16). Both
-/// fused passes concatenate this after their `@binding(0) var<uniform> u` and call `computeField`.
-pub(crate) const FIELD_PRELUDE: &str = r#"
-fn roundedRectSDF(p: vec2<f32>, halfSize: vec2<f32>, r: f32) -> f32 {
-    let d = abs(p) - halfSize + vec2<f32>(r);
-    return min(max(d.x, d.y), 0.0) + length(max(d, vec2<f32>(0.0))) - r;
+/// The lens's field, as a [`crate::field::FieldProgram`]: a rounded-box distance, the inward edge
+/// ramp, the surface direction, the Snell refraction of the bevel, and the coverage mask. Everything
+/// here is a generic field operator — only the assembly in [`field_prelude`] (edge boost, zoom,
+/// specular tint) is particular to glass, and the source is the single place a different geometry
+/// would plug in.
+///
+/// Slots address the shared 24-float uniform: centre `0.zw`, half-extents `1.xy`, corner `1.z`,
+/// profile kind `1.w`, bezel `2.x`, thickness `2.y`, index of refraction `2.z`, light angle `2.w`,
+/// splay `3.x`, tilt `3.y`, edge boost `3.z`, zoom `3.w`, device scale `4.x`.
+pub(crate) fn glass_field_program() -> crate::field::FieldProgram {
+    use crate::field::{FieldOp, FieldProgram, FieldRef, FieldSource, Slot, Slot2};
+    FieldProgram {
+        nodes: vec![
+            FieldOp::Distance(FieldSource::RoundedBox {
+                centre: Slot2::new(0, 2),
+                half: Slot2::new(1, 0),
+                corner: Slot::new(1, 2),
+            }),
+            FieldOp::Ramp { d: FieldRef::Node(0), edge: Slot::new(2, 0), clamp_edge_to_extent: true },
+            FieldOp::RadialDirection {
+                half: Slot2::new(1, 0),
+                splay: Slot::new(3, 0),
+                tilt: Slot::new(3, 1),
+            },
+            FieldOp::Refract {
+                t: FieldRef::Node(1),
+                thickness: Slot::new(2, 1),
+                ior: Slot::new(2, 2),
+                kind: Slot::new(1, 3),
+            },
+            FieldOp::Coverage { d: FieldRef::Node(0), softness: Slot::new(4, 0), softness_gain: 1.5 },
+        ],
+        outputs: vec![
+            ("dist", FieldRef::Node(0)),
+            ("edgeT", FieldRef::Node(1)),
+            ("dir", FieldRef::Node(2)),
+            ("refracted", FieldRef::Node(3)),
+            ("mask", FieldRef::Node(4)),
+        ],
+    }
 }
-fn surfaceHeight(x: f32, st: i32) -> f32 {
-    let t = 1.0 - x;
-    if (st == 0) { return sqrt(max(0.0, 1.0 - t * t)); }
-    let t4 = t * t * t * t;
-    if (st == 1) { return pow(max(0.0, 1.0 - t4), 0.25); }
-    if (st == 2) { return 1.0 - pow(max(0.0, 1.0 - t4), 0.25); }
-    let c = pow(max(0.0, 1.0 - t4), 0.25);
-    let sx = clamp(x, 0.0, 1.0);
-    let ss = sx * sx * sx * (sx * (sx * 6.0 - 15.0) + 10.0);
-    return mix(c, 1.0 - c, ss);
-}
-fn surfaceDerivative(x: f32, st: i32) -> f32 {
-    let delta = 0.001;
-    return (surfaceHeight(min(1.0, x + delta), st) - surfaceHeight(max(0.0, x - delta), st)) / (2.0 * delta);
-}
-fn snellRefract(theta1: f32, n1: f32, n2: f32) -> f32 {
-    let s = (n1 / n2) * sin(theta1);
-    if (abs(s) > 1.0) { return -1.0; }
-    return asin(s);
-}
-fn calculateDisplacement(d: f32, thick: f32, n2: f32, st: i32) -> f32 {
-    if (d <= 0.0 || d >= 1.0) { return 0.0; }
-    let h = surfaceHeight(d, st) * thick;
-    let dh = surfaceDerivative(d, st) * thick;
-    let sA = atan(dh);
-    let tI = abs(sA);
-    let tR = snellRefract(tI, 1.0, n2);
-    if (tR < 0.0) { return 0.0; }
-    return (h * tan(tR) - h * tan(tI)) * sign(dh);
-}
-fn calculateSpecular(d: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32) -> f32 {
-    if (d <= 0.0 || d >= 1.0) { return 0.0; }
-    let px = d * bezel;
-    let band = exp(-0.5 * pow((px - 2.0 * scale) / max(scale, 1e-4), 2.0));
+
+/// The lens's specular streak: a Gaussian band across the bevel, modulated by how squarely the
+/// surface faces the light. The band is [`crate::field::FIELD_BAND`] — the same operator a stroke or
+/// an outline uses — and only the lighting term below is particular to glass.
+const GLASS_SPECULAR: &str = r#"
+fn glassSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32) -> f32 {
+    if (t <= 0.0 || t >= 1.0) { return 0.0; }
+    let band = fieldBand(t * bezel, 2.0 * scale, scale);
     let ld = vec2<f32>(cos(lightAngle), sin(lightAngle));
     var f = abs(dot(dir, ld));
     f = pow(f, 2.0);
     return band * f;
 }
-// The refraction field at device pixel `fc`: (dpx.x, dpx.y, specular, mask). Reads the field geometry
-// from the shared uniform `u` indices 0..16 (identical layout to the old displacement uniform).
-fn computeField(gi: u32, fc: vec2<f32>) -> vec4<f32> {
-    let glassCenter = fieldU(gi, 0u).zw;
-    let glassSize = fieldU(gi, 1u).xy;
-    let cornerRadius = fieldU(gi, 1u).z;
-    let surfaceType = i32(fieldU(gi, 1u).w);
-    let bezelWidth = fieldU(gi, 2u).x;
-    let glassThickness = fieldU(gi, 2u).y;
-    let refractiveIndex = fieldU(gi, 2u).z;
-    let specularAngle = fieldU(gi, 2u).w;
-    let splay = fieldU(gi, 3u).x;
-    let tiltAngle = fieldU(gi, 3u).y;
-    let edgeBoost = fieldU(gi, 3u).z;
-    let zoom = fieldU(gi, 3u).w;
-    let scale = fieldU(gi, 4u).x;
-
-    let cR = min(cornerRadius, min(glassSize.x, glassSize.y));
-    let localPos = fc - glassCenter;
-    let dist = roundedRectSDF(localPos, glassSize, cR);
-    if (dist > 0.0) { return vec4<f32>(0.0, 0.0, 0.0, 0.0); }
-
-    let bezel = min(bezelWidth, min(glassSize.x, glassSize.y));
-    let distFromBorder = clamp(-dist / bezel, 0.0, 1.0);
-
-    let radialDir = normalize(localPos / max(vec2<f32>(1.0), glassSize));
-    let flatDir = vec2<f32>(cos(tiltAngle), sin(tiltAngle));
-    let blendedDir = mix(flatDir, radialDir, splay);
-    let bLen = length(blendedDir);
-    var dir = vec2<f32>(0.0);
-    if (bLen > 0.001) { dir = blendedDir / bLen; }
-
-    var disp = calculateDisplacement(distFromBorder, glassThickness, refractiveIndex, surfaceType) * scale;
-    let edgeFade = pow(1.0 - distFromBorder, 1.5);
-    disp = disp * (1.0 + edgeBoost * edgeFade);
-    var dpx = dir * disp;
-
-    let zoomFactor = 1.0 / max(zoom, 0.1) - 1.0;
-    dpx = dpx + localPos * zoomFactor;
-
-    let specular = calculateSpecular(distFromBorder, bezel, specularAngle, dir, scale);
-    let mask = smoothstep(0.0, 1.5 * scale, -dist);
-    return vec4<f32>(dpx.x, dpx.y, specular, mask);
-}
 "#;
+
+/// `computeField`, generated from [`glass_field_program`] plus the lens-specific assembly. The
+/// early-out sits immediately after the distance so nothing beyond the shape is evaluated, which is
+/// why the program is emitted in two runs rather than one.
+pub(crate) fn field_prelude() -> String {
+    let p = glass_field_program();
+    format!(
+        "{helpers}{band}{spec}
+// The refraction field at device pixel `fc`: (dpx.x, dpx.y, specular, mask).
+fn computeField(gi: u32, fc: vec2<f32>) -> vec4<f32> {{
+    let scale = fieldU(gi, 4u).x;
+{prologue}{distance}    if (n0 > 0.0) {{ return vec4<f32>(0.0, 0.0, 0.0, 0.0); }}
+{rest}{outputs}    let bezel = min(fieldU(gi, 2u).x, min(fieldU(gi, 1u).x, fieldU(gi, 1u).y));
+    var disp = refracted * scale;
+    let edgeFade = pow(1.0 - edgeT, 1.5);
+    disp = disp * (1.0 + fieldU(gi, 3u).z * edgeFade);
+    var dpx = dir * disp;
+    let zoomFactor = 1.0 / max(fieldU(gi, 3u).w, 0.1) - 1.0;
+    dpx = dpx + localPos * zoomFactor;
+    let specular = glassSpecular(edgeT, bezel, fieldU(gi, 2u).w, dir, scale);
+    return vec4<f32>(dpx.x, dpx.y, specular, mask);
+}}
+",
+        helpers = p.helpers(),
+        band = crate::field::FIELD_BAND,
+        spec = GLASS_SPECULAR,
+        prologue = p.wgsl_prologue(),
+        distance = p.wgsl_nodes(0..1),
+        rest = p.wgsl_nodes(1..p.nodes.len()),
+        outputs = p.wgsl_outputs(),
+    )
+}
 
 const VERTEX_SHADER: &str = r#"
 @vertex
@@ -535,7 +530,7 @@ fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {{
 "#,
         body = units_body(key)
     );
-    format!("{bindings}{field}{vs}{fs}", field = FIELD_PRELUDE, vs = VERTEX_SHADER)
+    format!("{bindings}{field}{vs}{fs}", field = field_prelude(), vs = VERTEX_SHADER)
 }
 
 /// `TileMode::Clamp` fill. The composed scoped backdrop is the scope's content over a transparent

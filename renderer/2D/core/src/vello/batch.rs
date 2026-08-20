@@ -319,7 +319,7 @@ fn {name}(in: VSOut) -> vec4<f32> {{
 /// the single `fs_uber` entry every stage dispatches through.
 fn batch_shader() -> String {
     let mut s = String::from(BATCH_PRELUDE);
-    s.push_str(crate::vello::glass::FIELD_PRELUDE);
+    s.push_str(&crate::vello::glass::field_prelude());
     if crate::vello::glass::needs_hash((2, false, false, false)) {
         s.push_str(crate::vello::glass::HASH_PRELUDE);
     }

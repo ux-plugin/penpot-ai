@@ -7,6 +7,7 @@ pub mod blend;
 pub mod blur;
 pub mod effect;
 pub mod effect_graph;
+pub mod field;
 pub mod footprint;
 pub mod geometry;
 pub mod gradient;
