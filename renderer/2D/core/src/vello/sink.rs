@@ -170,6 +170,10 @@ impl PoolKey {
 const FX_GATHER: u8 = 0;
 const FX_STACK: u8 = 1;
 
+/// Vello's fine-rasterization tile, in device pixels. Regions that must not influence one another
+/// have to be tile-disjoint, because `fine` resolves a whole tile at a time.
+const TILE_PX: u32 = 16;
+
 /// One whole-viewport effect surface, resolved to geometry: which node/kind it belongs to, the device
 /// crop box it covers, the render scale `k`, the surface size at that scale, and its device sigma.
 #[derive(Clone, Copy)]
@@ -843,12 +847,12 @@ impl Sink {
         // excludes them from all later ones. `None` = the strip did not fit or is disabled, and the
         // separate prepass render below fills the sources instead.
         let strip = self.wv_strip_plan(&gathers, device, full_view, width, height);
-        // One GUARD row sits between the viewport and the strip, holding a copy of the viewport's
-        // last row. A viewport-sized accumulator gives the present blit clamp-to-edge at the bottom;
-        // a taller one silently replaces that clamp with whatever lies below, so a bilinear tap on
-        // the final row pulled strip pixels into the frame as a one-pixel band. Duplicating the edge
-        // row reproduces clamping exactly, and keeps the present's linear sampling untouched.
-        let strip_y = height + u32::from(strip.is_some());
+        // The strip starts on a TILE boundary, not directly under the viewport. `fine` works a tile
+        // at a time, so a viewport whose height is not a multiple of the tile size leaves its last
+        // tile row straddling the boundary — the first strip cell would then share tiles with the
+        // frame's bottom rows, and a cell drawn with `Copy` reaches them. Rounding up costs at most
+        // one tile row of texture and makes the two regions tile-disjoint by construction.
+        let strip_y = strip.as_ref().map_or(height, |_| height.next_multiple_of(TILE_PX));
         let strip_h = strip.as_ref().map_or(0, |(p, _)| p.height);
         let acc_h = strip_y + strip_h;
         let acc_sz = (width as f32, acc_h as f32);
@@ -1032,24 +1036,42 @@ impl Sink {
         if let Some(p) = self.pass_prof.as_mut() {
             p.stamp(&mut enc, &views[final_slot], crate::vello::graph::prof_bucket::OTHER);
         }
-        if strip.is_some() && height > 0 {
+        // With a strip below it the accumulator is taller than the frame, and presenting from it
+        // would sample across the boundary: a viewport-sized target gives the present blit
+        // clamp-to-edge on its last row, and a taller one silently replaces that clamp with the
+        // strip. Lift the viewport into a target of exactly its own size first — a copy, not a
+        // sample, so the pixels are untouched and the present sees precisely what it always saw.
+        let present_tex = strip.is_some().then(|| {
+            let t = self.pool.acquire_target(
+                device, width, height, format,
+                self.raster_usage | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                "wv present",
+            );
             enc.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texs[final_slot],
                     mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: height - 1, z: 0 },
+                    origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::TexelCopyTextureInfo {
-                    texture: &texs[final_slot],
+                    texture: &t,
                     mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: height, z: 0 },
+                    origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::Extent3d { width, height: 1, depth_or_array_layers: 1 },
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             );
+            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+            (t, v)
+        });
+        let (present_view, present_sz) =
+            present_tex.as_ref().map_or((&views[final_slot], acc_sz), |(_, v)| (v, sz));
+        self.present_final(&mut enc, device, &sw_view, present_view, width, height, format, sz, present_sz, full_view);
+        if let Some((t, v)) = present_tex {
+            self.frame_transient.push(t);
+            self.frame_transient_views.push(v);
         }
-        self.present_final(&mut enc, device, &sw_view, &views[final_slot], width, height, format, sz, acc_sz, full_view);
         if let Some(p) = self.pass_prof.as_mut() {
             p.stamp(&mut enc, &sw_view, crate::vello::graph::prof_bucket::SWAP_BLIT);
         }
@@ -1158,10 +1180,17 @@ impl Sink {
         acc_sz: (f32, f32),
         full_view: Affine,
     ) {
+        // DEBUG (native): present the WHOLE accumulator, source strip included, squeezed into the
+        // viewport — the only way to actually look at the surfaces the effects consume rather than
+        // infer their contents from the frame they produce.
+        #[cfg(not(target_arch = "wasm32"))]
+        let show_all = std::env::var("WV_DEBUG_STRIP").is_ok();
+        #[cfg(target_arch = "wasm32")]
+        let show_all = false;
         let viewport = Blit {
             src: final_view,
             dst: (0.0, 0.0, sz.0, sz.1),
-            src_rect: (0.0, 0.0, sz.0, sz.1),
+            src_rect: if show_all { (0.0, 0.0, acc_sz.0, acc_sz.1) } else { (0.0, 0.0, sz.0, sz.1) },
             src_size: acc_sz,
             alpha: 1.0,
         };
@@ -1570,11 +1599,18 @@ impl Sink {
         width: u32,
         height: u32,
     ) -> Option<(crate::atlas::Packing, Vec<(WvCell, usize)>)> {
-        if !crate::vello::abi::wv_atlas() || !crate::vello::abi::wv_strip() {
-            return None;
-        }
+        // Native `WV_STRIP` overrides the flag in BOTH directions, so a harness can opt the path in
+        // while its default is off.
         #[cfg(not(target_arch = "wasm32"))]
-        if std::env::var("WV_STRIP").as_deref() == Ok("0") {
+        let forced = std::env::var("WV_STRIP").ok();
+        #[cfg(target_arch = "wasm32")]
+        let forced: Option<String> = None;
+        let on = match forced.as_deref() {
+            Some("0") => false,
+            Some(_) => true,
+            None => crate::vello::abi::wv_strip(),
+        };
+        if !crate::vello::abi::wv_atlas() || !on {
             return None;
         }
         let max_dim = device.limits().max_texture_dimension_2d;
@@ -1610,13 +1646,15 @@ impl Sink {
         for place in &packing.cells {
             let (c, root_index) = &cells[place.index];
             let m = Self::wv_cell_transform(c, place, 0, strip_y, root);
-            // Inflated by one pixel into the packer's gap: a clip edge that falls exactly on the
-            // copied rectangle contributes partial coverage there, and under `Copy` that partial
-            // coverage writes a semi-transparent seam into the surface the effect then blurs. The
-            // gap is 4px, so widening by 1 keeps neighbouring cells 2px apart.
+            // Inflated by one pixel into the packer's gap: a clip edge falling exactly on the copied
+            // rectangle contributes partial coverage there, and under `Copy` that partial coverage
+            // writes a semi-transparent seam into the surface the effect then blurs. The gap is 4px,
+            // so widening by 1 keeps neighbours 2px apart — but it is CLAMPED to the strip, because
+            // a cell on the top row would otherwise inflate across `strip_y` and `Copy` would erase
+            // the viewport's last rows.
             let rect = Rect::new(
-                f64::from(place.x) - 1.0,
-                f64::from(strip_y + place.y) - 1.0,
+                f64::from(place.x.saturating_sub(1)),
+                f64::from((strip_y + place.y).max(strip_y + 1) - 1),
                 f64::from(place.x + c.kw) + 1.0,
                 f64::from(strip_y + place.y + c.kh) + 1.0,
             );
