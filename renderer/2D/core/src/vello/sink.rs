@@ -82,6 +82,8 @@ fn wv_device_box(page: crate::kurbo::Rect, full_view: Affine, width: u32, height
 struct WvBatchPlan {
     h: Vec<crate::vello::batch::Inst>,
     v: Vec<crate::vello::batch::Inst>,
+    /// EraseBy band materialisations, one per inner shadow, drawn in ONE combine pass.
+    combine: Vec<crate::vello::batch::Inst>,
     c: Vec<crate::vello::batch::Inst>,
     c_ranges: Vec<(u32, u32, u32)>,
     gids: HashSet<u128>,
@@ -93,6 +95,11 @@ struct WvBatchPlan {
 /// derives its instances from this graph instead of re-deriving sigma by hand, so the two paths
 /// cannot drift: a change to the builder changes both.
 fn wv_batch_cell_graph(c: &WvCell) -> Vec<crate::effect_graph::GraphPass> {
+    // The inner shadow's FLOOD (kind 2) is never blurred — only its punch (kind 3) is, exactly as
+    // [`Sink::wv_paint_inner_shadow`] blurs the punch and leaves the band silhouette sharp.
+    if c.key.1 == 2 {
+        return Vec::new();
+    }
     if c.sigma >= 0.5 {
         effect_graph::background_blur_graph(c.sigma * c.k)
     } else {
@@ -151,6 +158,7 @@ fn wv_batch_plan(
     let mut plan = WvBatchPlan {
         h: Vec::new(),
         v: Vec::new(),
+        combine: Vec::new(),
         c: Vec::new(),
         c_ranges: Vec::new(),
         gids: HashSet::new(),
@@ -168,72 +176,129 @@ fn wv_batch_plan(
             cells.iter().map(|(c, _)| c).filter(|c| c.key.0 == gid).collect();
         let expressible = !stack.iter().any(|e| {
             matches!(e.source, Source::Backdrop)
-                || matches!((&e.source, e.compose), (Source::Coverage { .. }, Compose::Over))
                 || (matches!(e.source, Source::Body)
                     && e.ops.iter().any(|op| matches!(op, crate::effect::Op::Shader(_))))
-        }) && !shape_cells.iter().any(|c| c.key.1 == 2 || c.key.1 == 3)
-            && shape_cells.iter().all(|c| wv_batch_supported(&wv_batch_cell_graph(c)));
+        }) && shape_cells.iter().all(|c| wv_batch_supported(&wv_batch_cell_graph(c)));
         if !expressible || shape_cells.is_empty() {
             continue;
         }
         let find = |kind: u8, idx: usize| {
             shape_cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).copied()
         };
-        let mut emit: Vec<&WvCell> = Vec::new();
-        let (mut drop_i, mut body_done) = (0usize, false);
+        enum Emit<'a> {
+            Cell(&'a WvCell),
+            Inner { flood: &'a WvCell, punch: &'a WvCell },
+        }
+        let mut emit: Vec<Emit> = Vec::new();
+        let (mut drop_i, mut inner_i, mut body_done, mut bail) = (0usize, 0usize, false, false);
         for e in &stack {
             match (&e.source, e.compose) {
                 (Source::Coverage { .. }, Compose::Under) => {
                     if let Some(c) = find(0, drop_i) {
-                        emit.push(c);
+                        emit.push(Emit::Cell(c));
                     }
                     drop_i += 1;
                 }
                 (Source::Body, _) => {
                     if !body_done {
                         if let Some(c) = find(1, 0) {
-                            emit.push(c);
+                            emit.push(Emit::Cell(c));
                         }
                         body_done = true;
                     }
+                }
+                (Source::Coverage { .. }, Compose::Over) => {
+                    // The per-shape path paints the body before its first inner shadow; the batch
+                    // preserves that by emitting it here in the same position.
+                    if !body_done {
+                        if let Some(c) = find(1, 0) {
+                            emit.push(Emit::Cell(c));
+                        }
+                        body_done = true;
+                    }
+                    match (find(2, inner_i), find(3, inner_i)) {
+                        (Some(flood), Some(punch)) => emit.push(Emit::Inner { flood, punch }),
+                        // A planned inner shadow whose cells are missing cannot be expressed —
+                        // dropping it silently would change pixels, so the whole shape stays legacy.
+                        _ => bail = true,
+                    }
+                    inner_i += 1;
                 }
                 _ => {}
             }
         }
         if !body_done {
             if let Some(c) = find(1, 0) {
-                emit.push(c);
+                emit.push(Emit::Cell(c));
             }
         }
-        if emit.is_empty() {
+        if bail || emit.is_empty() {
             continue;
         }
-        if emit.iter().any(|c| !place.contains_key(&c.key)) {
+        let placed = |c: &WvCell| place.contains_key(&c.key);
+        if emit.iter().any(|e| match e {
+            Emit::Cell(c) => !placed(c),
+            Emit::Inner { flood, punch } => !placed(flood) || !placed(punch),
+        }) {
             continue;
         }
-        for c in emit {
+        let rects = |c: &WvCell| {
             let (px, py) = place[&c.key];
             let (kwf, khf) = (c.kw as f32, c.kh as f32);
-            let strip_rect = (px as f32, (strip_y + py) as f32, kwf, khf);
-            let atlas_rect = (px as f32, py as f32, kwf, khf);
-            let frame_rect = (c.bx as f32, c.by as f32, c.bw as f32, c.bh as f32);
-            // The cell's parameters come from its lowered graph, not from the cell fields — the
-            // builder owns the sigma/linear semantics for BOTH paths. An empty graph is the
-            // identity: the cell rides the blur stages as a sigma-0 copy so every batched cell
-            // lands in the one surface the composite pass samples.
-            let (sigma_dev, linear) = match wv_batch_cell_graph(c).first().map(|gp| gp.pass.clone()) {
-                Some(crate::effect_graph::EffectPass::Blur { sigma, linear }) => (sigma, linear),
-                _ => (0.0, false),
-            };
+            (
+                (px as f32, (strip_y + py) as f32, kwf, khf),
+                (px as f32, py as f32, kwf, khf),
+                (c.bx as f32, c.by as f32, c.bw as f32, c.bh as f32),
+            )
+        };
+        // The cell's parameters come from its lowered graph, not from the cell fields — the builder
+        // owns the sigma/linear semantics for BOTH paths. An empty graph is the identity: the cell
+        // rides the blur stages as a sigma-0 copy so every batched cell lands in the surface the
+        // later stages sample.
+        let params = |c: &WvCell| match wv_batch_cell_graph(c).first().map(|gp| gp.pass.clone()) {
+            Some(crate::effect_graph::EffectPass::Blur { sigma, linear }) => (sigma, linear),
+            _ => (0.0, false),
+        };
+        let mut blur = |plan: &mut WvBatchPlan, c: &WvCell| {
+            let (strip_rect, atlas_rect, _) = rects(c);
+            let (sigma_dev, linear) = params(c);
             plan.h.push(crate::vello::batch::Inst::new(
                 atlas_rect, atlas_size, strip_rect, acc_size, (1.0, 0.0), sigma_dev, linear,
             ));
             plan.v.push(crate::vello::batch::Inst::new(
                 atlas_rect, atlas_size, atlas_rect, atlas_size, (0.0, 1.0), sigma_dev, linear,
             ));
-            by_round.entry(rounds[j]).or_default().push(crate::vello::batch::Inst::new(
-                frame_rect, acc_size, atlas_rect, atlas_size, (0.0, 0.0), 0.0, false,
-            ));
+        };
+        for e in emit {
+            match e {
+                Emit::Cell(c) => {
+                    blur(&mut plan, c);
+                    let (_, atlas_rect, frame_rect) = rects(c);
+                    by_round.entry(rounds[j]).or_default().push(crate::vello::batch::Inst::new(
+                        frame_rect, acc_size, atlas_rect, atlas_size, (0.0, 0.0), 0.0, false,
+                    ));
+                }
+                Emit::Inner { flood, punch } => {
+                    blur(&mut plan, flood);
+                    blur(&mut plan, punch);
+                    let (_, flood_rect, frame_rect) = rects(flood);
+                    let (_, punch_rect, _) = rects(punch);
+                    // Materialise the band in atlas A at the flood's own rect (both reads from B),
+                    // then composite it from A — `mode` 1 selects the second texture.
+                    plan.combine.push(
+                        crate::vello::batch::Inst::new(
+                            flood_rect, atlas_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
+                        )
+                        .with_src2(punch_rect, atlas_size, 0.0),
+                    );
+                    by_round.entry(rounds[j]).or_default().push(
+                        crate::vello::batch::Inst::new(
+                            frame_rect, acc_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
+                        )
+                        .with_src2(punch_rect, atlas_size, 1.0),
+                    );
+                }
+            }
         }
         plan.gids.insert(gid);
     }
@@ -244,6 +309,17 @@ fn wv_batch_plan(
         let lo = plan.c.len() as u32;
         plan.c.extend(insts);
         plan.c_ranges.push((r, lo, plan.c.len() as u32));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if std::env::var("WV_BATCH_STATS").is_ok() {
+        eprintln!(
+            "wv batch: shapes={} blur_cells={} bands={} composites={} rounds={}",
+            plan.gids.len(),
+            plan.h.len(),
+            plan.combine.len(),
+            plan.c.len(),
+            plan.c_ranges.len(),
+        );
     }
     Some(plan)
 }
@@ -1056,7 +1132,7 @@ impl Sink {
         let batch_plan = strip.as_ref().and_then(|(packing, cells)| {
             wv_batch_plan(&gathers, &rounds, packing, cells, strip_y, (width as f32, acc_h as f32))
         });
-        let mut batch_rt: Option<(wgpu::Texture, wgpu::Texture, wgpu::TextureView, wgpu::Buffer)> = None;
+        let mut batch_rt: Option<(wgpu::Texture, wgpu::Texture, wgpu::TextureView, wgpu::TextureView, wgpu::Buffer)> = None;
 
         let boundaries: Vec<u32> = {
             let mut b = Vec::with_capacity(gathers.len());
@@ -1207,6 +1283,7 @@ impl Sink {
                     let bv = b.create_view(&wgpu::TextureViewDescriptor::default());
                     pipes.blur_pass(device, &mut enc, &av, &views[ci], self.compositor.sampler(), &plan.h);
                     pipes.blur_pass(device, &mut enc, &bv, &av, self.compositor.sampler(), &plan.v);
+                    pipes.combine_pass(device, &mut enc, &av, &bv, self.compositor.sampler(), &plan.combine);
                     use wgpu::util::DeviceExt as _;
                     let cbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("wv batch composite insts"),
@@ -1216,15 +1293,14 @@ impl Sink {
                     // Held OUTSIDE `frame_transient` on purpose: the per-node recycle point
                     // truncates that list back to its pre-loop checkpoint, and the blurred atlas
                     // must survive every round. It returns to the pool after the final window.
-                    drop(av);
-                    batch_rt = Some((a, b, bv, cbuf));
+                    batch_rt = Some((a, b, av, bv, cbuf));
                 }
                 strip_filled = true;
             }
-            if let (Some(plan), Some((_, _, bv, cbuf))) = (batch_plan.as_ref(), batch_rt.as_ref()) {
+            if let (Some(plan), Some((_, _, av, bv, cbuf))) = (batch_plan.as_ref(), batch_rt.as_ref()) {
                 if let Some(&(_, lo, hi)) = plan.c_ranges.iter().find(|&&(rr, _, _)| rr == r) {
                     let pipes = self.batch_pipes.as_ref().expect("batch pipelines built with the plan");
-                    pipes.composite_pass(device, &mut enc, &views[ci], bv, self.compositor.sampler(), cbuf, lo..hi);
+                    pipes.composite_pass(device, &mut enc, &views[ci], bv, av, self.compositor.sampler(), cbuf, lo..hi);
                 }
             }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
@@ -1267,9 +1343,10 @@ impl Sink {
             seed_clear(&mut enc, &views[0]);
             0
         };
-        if let Some((a, b, bv, _cbuf)) = batch_rt.take() {
+        if let Some((a, b, av, bv, _cbuf)) = batch_rt.take() {
             self.frame_transient.push(a);
             self.frame_transient.push(b);
+            self.frame_transient_views.push(av);
             self.frame_transient_views.push(bv);
         }
         backend.phased_finish(device, queue, &mut enc);

@@ -16,8 +16,9 @@ use std::ops::Range;
 
 /// Per-quad instance: destination rect in the target's NDC, source rect in the source's UV, the tap
 /// clamp rect, and the blur parameters. `step` is the blur direction pre-divided by the source size
-/// (a copy/composite instance leaves it unused). Layout matches the WGSL `Inst` struct: seven
-/// `vec2<f32>` then four `f32`, 72 bytes, align 8.
+/// (a copy/composite instance leaves it unused); `src2`/`clamp2` are the second read the erase
+/// stage takes (the punch). Layout matches the WGSL `Inst` struct: eleven `vec2<f32>` then eight
+/// `f32`, 120 bytes, align 8.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Inst {
@@ -27,11 +28,19 @@ pub(crate) struct Inst {
     pub src_max: [f32; 2],
     pub clamp_min: [f32; 2],
     pub clamp_max: [f32; 2],
+    pub src2_min: [f32; 2],
+    pub src2_max: [f32; 2],
+    pub clamp2_min: [f32; 2],
+    pub clamp2_max: [f32; 2],
     pub step: [f32; 2],
     pub sigma: f32,
     pub radius: f32,
     pub linearize: f32,
     pub alpha: f32,
+    /// Composite source select: 0 = the blurred atlas (`tex0`), 1 = the combined atlas (`tex1`,
+    /// where the erase stage materialised inner-shadow bands).
+    pub mode: f32,
+    pub _pad: [f32; 3],
 }
 
 impl Inst {
@@ -62,12 +71,31 @@ impl Inst {
             src_max: [(sx + sw) * iw, (sy + sh) * ih],
             clamp_min: [(sx + 0.5) * iw, (sy + 0.5) * ih],
             clamp_max: [(sx + sw - 0.5) * iw, (sy + sh - 0.5) * ih],
+            src2_min: [0.0; 2],
+            src2_max: [0.0; 2],
+            clamp2_min: [0.0; 2],
+            clamp2_max: [0.0; 2],
             step: [dir.0 * iw, dir.1 * ih],
             sigma: s,
             radius: (3.0 * s).ceil().clamp(1.0, 160.0),
             linearize: if blurred && linear { 1.0 } else { 0.0 },
             alpha: 1.0,
+            mode: 0.0,
+            _pad: [0.0; 3],
         }
+    }
+
+    /// The instance with a second source rect (pixels in the same `src_size` texture): the erase
+    /// stage reads the punch through it, the band composite selects `tex1` through `mode`.
+    pub fn with_src2(mut self, src2_rect: (f32, f32, f32, f32), src_size: (f32, f32), mode: f32) -> Self {
+        let (sx, sy, sw, sh) = src2_rect;
+        let (iw, ih) = (1.0 / src_size.0, 1.0 / src_size.1);
+        self.src2_min = [sx * iw, sy * ih];
+        self.src2_max = [(sx + sw) * iw, (sy + sh) * ih];
+        self.clamp2_min = [(sx + 0.5) * iw, (sy + 0.5) * ih];
+        self.clamp2_max = [(sx + sw - 0.5) * iw, (sy + sh - 0.5) * ih];
+        self.mode = mode;
+        self
     }
 }
 
@@ -79,15 +107,24 @@ struct Inst {
     src_max: vec2<f32>,
     clamp_min: vec2<f32>,
     clamp_max: vec2<f32>,
+    src2_min: vec2<f32>,
+    src2_max: vec2<f32>,
+    clamp2_min: vec2<f32>,
+    clamp2_max: vec2<f32>,
     step: vec2<f32>,
     sigma: f32,
     radius: f32,
     linearize: f32,
     alpha: f32,
+    mode: f32,
+    _p0: f32,
+    _p1: f32,
+    _p2: f32,
 };
 @group(0) @binding(0) var<storage, read> insts: array<Inst>;
 @group(0) @binding(1) var tex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var tex2: texture_2d<f32>;
 
 fn srgb_to_lin(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
@@ -111,7 +148,8 @@ fn premul_lin_to_srgb(s: vec4<f32>) -> vec4<f32> {
 struct VSOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) @interpolate(flat) inst: u32,
+    @location(1) uv2: vec2<f32>,
+    @location(2) @interpolate(flat) inst: u32,
 };
 
 @vertex
@@ -121,6 +159,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VSOut
     var out: VSOut;
     out.pos = vec4<f32>(mix(it.dst_min, it.dst_max, corner), 0.0, 1.0);
     out.uv = mix(it.src_min, it.src_max, corner);
+    out.uv2 = mix(it.src2_min, it.src2_max, corner);
     out.inst = ii;
     return out;
 }
@@ -150,10 +189,25 @@ fn fs_blur(in: VSOut) -> @location(0) vec4<f32> {
     return outc;
 }
 
+// The EraseBy combine: `flood * (1 - punch.a)` — DestOut in one read pair, both rects living in the
+// SAME blurred atlas (`tex` and `tex2` bind the same view here). Runs at cell resolution with a
+// replace target, so the band is materialised before any filtering — the same order the per-shape
+// `blit_dstout` produced.
+@fragment
+fn fs_combine(in: VSOut) -> @location(0) vec4<f32> {
+    let it = insts[in.inst];
+    let flood = textureSampleLevel(tex, samp, clamp(in.uv, it.clamp_min, it.clamp_max), 0.0);
+    let punch = textureSampleLevel(tex2, samp, clamp(in.uv2, it.clamp2_min, it.clamp2_max), 0.0);
+    return flood * (1.0 - punch.a);
+}
+
 @fragment
 fn fs_composite(in: VSOut) -> @location(0) vec4<f32> {
     let it = insts[in.inst];
     let uv = clamp(in.uv, it.clamp_min, it.clamp_max);
+    if (it.mode > 0.5) {
+        return textureSampleLevel(tex2, samp, uv, 0.0) * it.alpha;
+    }
     return textureSampleLevel(tex, samp, uv, 0.0) * it.alpha;
 }
 "#;
@@ -162,6 +216,7 @@ fn fs_composite(in: VSOut) -> @location(0) vec4<f32> {
 /// the sink renders in) plus their shared bind layout. Built once per sink.
 pub(crate) struct BatchPipelines {
     blur: wgpu::RenderPipeline,
+    combine: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
 }
@@ -199,6 +254,16 @@ impl BatchPipelines {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -248,6 +313,7 @@ impl BatchPipelines {
         };
         Self {
             blur: make("fs_blur", None, "wv batch blur"),
+            combine: make("fs_combine", None, "wv batch combine"),
             composite: make("fs_composite", Some(srcover), "wv batch composite"),
             layout,
         }
@@ -258,6 +324,7 @@ impl BatchPipelines {
         device: &wgpu::Device,
         buffer: &wgpu::Buffer,
         src: &wgpu::TextureView,
+        src2: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -267,6 +334,7 @@ impl BatchPipelines {
                 wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(src2) },
             ],
         })
     }
@@ -292,7 +360,7 @@ impl BatchPipelines {
             contents: bytemuck::cast_slice(insts),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let bind = self.bind(device, &buffer, src, sampler);
+        let bind = self.bind(device, &buffer, src, src, sampler);
         crate::vello::sink::note_passes(1);
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("wv batch blur"),
@@ -315,6 +383,48 @@ impl BatchPipelines {
         pass.draw(0..4, 0..insts.len() as u32);
     }
 
+    /// Run ONE erase-combine pass: every instance materialises its band — `flood × (1 − punch.a)`,
+    /// both rects read from `src` (the blurred atlas) — into its flood rect of `target` (atlas A,
+    /// idle after blur-V). Replace, no clear: only band rects are written and only band rects are
+    /// later sampled, clamped to their texel centres.
+    pub fn combine_pass(
+        &self,
+        device: &wgpu::Device,
+        enc: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        src: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        insts: &[Inst],
+    ) {
+        if insts.is_empty() {
+            return;
+        }
+        use wgpu::util::DeviceExt as _;
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wv batch combine insts"),
+            contents: bytemuck::cast_slice(insts),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let bind = self.bind(device, &buffer, src, src, sampler);
+        crate::vello::sink::note_passes(1);
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wv batch combine"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.combine);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..4, 0..insts.len() as u32);
+    }
+
     /// Run ONE composite pass drawing the instance range `range` of the pre-uploaded `buffer` over
     /// `target` (loaded, `SrcOver`). Instances blend in API order, so a shape's shadow instances
     /// placed before its body instance land under it exactly like the sequential blits did.
@@ -325,6 +435,7 @@ impl BatchPipelines {
         enc: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         src: &wgpu::TextureView,
+        src2: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
         buffer: &wgpu::Buffer,
         range: Range<u32>,
@@ -332,7 +443,7 @@ impl BatchPipelines {
         if range.is_empty() {
             return;
         }
-        let bind = self.bind(device, buffer, src, sampler);
+        let bind = self.bind(device, buffer, src, src2, sampler);
         crate::vello::sink::note_passes(1);
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("wv batch composite"),
