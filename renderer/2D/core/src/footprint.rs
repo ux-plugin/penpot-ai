@@ -52,16 +52,9 @@ pub struct FootprintDescriptor {
 pub fn pass_reach(pass: &EffectPass) -> Reach {
     match pass {
         EffectPass::Blur { sigma, .. } => Reach::Neighborhood(3.0 * sigma),
-        // A unit's reach follows its kind, not the effect it serves: only the jittered sample
-        // reads off its own pixel, and only when the jitter is actually on.
-        EffectPass::Unit { op: crate::effect_graph::UnitKind::Scatter, u, .. } => {
-            let frost = u.get(18).copied().unwrap_or(0.0);
-            if frost > 0.01 {
-                Reach::Neighborhood(frost * 6.0 * u.get(16).copied().unwrap_or(1.0))
-            } else {
-                Reach::SamePixel
-            }
-        }
+        // A unit's reach is declared by whoever built it. Reading it back out of the uniform would
+        // mean guessing which slot holds a magnitude, and that answer is per-program.
+        EffectPass::Unit { reach, .. } if *reach > 0.0 => Reach::Neighborhood(*reach),
         EffectPass::Unit { .. } => Reach::SamePixel,
         EffectPass::Custom { .. } => Reach::Global,
     }

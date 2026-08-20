@@ -100,18 +100,19 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                 let mut field = None;
                 for &i in &group {
                     match &graph[i].pass {
-                        EffectPass::Unit { op, field: f, u } => {
+                        EffectPass::Unit { op, field: f, u, reach } => {
                             field.get_or_insert_with(|| f.clone());
                             match op {
                                 UnitKind::Warp => ops.push(UnitOp::Warp(u.clone())),
-                                // A same-pixel scatter (frost ≤ 0.01) is the identity: the run's
-                                // head sample already reads its input, so it lowers to nothing.
+                                // A scatter that reaches nowhere is the identity: the run's head
+                                // sample already reads its input, so it lowers to nothing.
                                 UnitKind::Scatter => {
-                                    if u.get(18).copied().unwrap_or(0.0) > 0.01 {
+                                    if *reach > 0.0 {
                                         ops.push(UnitOp::Scatter(u.clone()));
                                     }
                                 }
                                 UnitKind::Shade => ops.push(UnitOp::Shade(u.clone())),
+                                UnitKind::ClipToSource => ops.push(UnitOp::ClipToSource(u.clone())),
                                 UnitKind::MaskMix => {
                                     ops.push(UnitOp::MaskMix(u.clone()));
                                     if let Some(orig) = graph[i].inputs.get(1) {

@@ -363,7 +363,7 @@ pub(crate) struct BatchPipelines {
 /// coordinate from the destination origin the instance carries, then run the SHARED unit body for
 /// this composition ([`super::glass::units_body`]) — the same text the per-shape pipeline compiles,
 /// so a batched cell and a dedicated-texture cell execute identical math.
-fn glass_arm(name: &str, key: (u8, bool, bool, bool)) -> String {
+fn glass_arm(name: &str, key: (u8, bool, bool, bool, bool)) -> String {
     format!(
         r#"
 fn {name}(in: VSOut) -> vec4<f32> {{
@@ -385,12 +385,12 @@ fn {name}(in: VSOut) -> vec4<f32> {{
 fn batch_shader() -> String {
     let mut s = String::from(BATCH_PRELUDE);
     s.push_str(&crate::vello::glass::field_prelude(&crate::vello::glass::glass_field_program()));
-    if crate::vello::glass::needs_hash((2, false, false, false)) {
+    if crate::vello::glass::needs_hash((2, false, false, false, false)) {
         s.push_str(crate::vello::glass::HASH_PRELUDE);
     }
-    s.push_str(&glass_arm("glass_warp_px", (1, false, false, false)));
-    s.push_str(&glass_arm("glass_sharp_px", (1, true, true, false)));
-    s.push_str(&glass_arm("glass_frost_px", (2, true, true, true)));
+    s.push_str(&glass_arm("glass_warp_px", (1, false, false, false, false)));
+    s.push_str(&glass_arm("glass_sharp_px", (1, true, true, false, false)));
+    s.push_str(&glass_arm("glass_frost_px", (2, true, true, false, true)));
     s.push_str(
         r#"
 // Every kernel in ONE function behind a per-instance switch (`_p0` = the stage tag). Measured free

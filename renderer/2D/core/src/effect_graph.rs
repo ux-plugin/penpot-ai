@@ -43,7 +43,16 @@ pub enum EffectPass {
     ///
     /// The uniform is per-pass rather than shared because [`apply_chain_scales`] rewrites it into
     /// each pass's own texel space; the *program* is shared, because structure is scale-free.
-    Unit { op: UnitKind, field: std::rc::Rc<crate::field::FieldProgram>, u: Vec<f32> },
+    Unit {
+        op: UnitKind,
+        field: std::rc::Rc<crate::field::FieldProgram>,
+        u: Vec<f32>,
+        /// How far this unit reads off its own pixel, in the pass's own device pixels. Carried here
+        /// rather than re-derived from `u`, because only the effect that built the uniform knows
+        /// which slot holds a displacement magnitude — the same index means something different in
+        /// every program.
+        reach: f32,
+    },
     /// A hand-written WGSL pass — the escape hatch. The IR carries `u` (surface resolution + the
     /// shader's declared params) and `param_vec4s`, the exact `array<vec4<f32>, N>` size the shader
     /// declares; the backend sizes the uniform to exactly that (zero-fill/truncate `u`) and supplies
@@ -63,6 +72,10 @@ pub enum UnitKind {
     Shade,
     /// Lerp against a second input by the field's `mask` output.
     MaskMix,
+    /// Multiply by the input's own alpha at the **undisplaced** pixel, confining a displaced result
+    /// to the silhouette it started from. The counterpart to [`UnitKind::Warp`]: any displacement
+    /// that must not bleed past its original coverage ends with this.
+    ClipToSource,
 }
 
 /// A pass plus the texture reads it binds, in the order the pipeline expects.
@@ -116,12 +129,14 @@ fn apply_chain_scales(passes: &mut [GraphPass], w: u32, h: u32) {
         }
         match &mut gp.pass {
             EffectPass::Blur { sigma, .. } => *sigma *= sc,
-            EffectPass::Unit { u, .. } => {
+            EffectPass::Unit { u, reach, .. } => {
                 u[0] = pass_dim(w, sc) as f32;
                 u[1] = pass_dim(h, sc) as f32;
                 for i in [2, 3, 4, 5, 6, 8, 16] {
                     u[i] *= sc;
                 }
+                // The reach is in this pass's own pixels, so it shrinks with the pass.
+                *reach *= sc;
             }
             EffectPass::Custom { .. } => {}
         }
@@ -214,7 +229,12 @@ pub fn glass_graph(
     // One field program, shared by every unit of this lens; only the numbers differ per pass,
     // because the chain solver rewrites each pass into its own texel space.
     let program = std::rc::Rc::new(crate::vello::glass::glass_field_program());
-    let unit = |op: UnitKind, u: Vec<f32>| EffectPass::Unit { op, field: program.clone(), u };
+    let unit = |op: UnitKind, u: Vec<f32>, reach: f32| EffectPass::Unit {
+        op,
+        field: program.clone(),
+        u,
+        reach,
+    };
     let mut base = field.to_vec();
     base.resize(24, 0.0);
     let mut warp_u = base.clone();
@@ -225,7 +245,7 @@ pub fn glass_graph(
     shade_u[19] = g.specular_opacity;
     shade_u[20] = g.specular_saturation;
 
-    let mut passes = vec![GraphPass::new(unit(UnitKind::Warp, warp_u), vec![Src::Input(0)])];
+    let mut passes = vec![GraphPass::new(unit(UnitKind::Warp, warp_u, 0.0), vec![Src::Input(0)])];
     let sigma = g.total_blur_sigma() * s;
     let blurred = if sigma > 0.5 {
         passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: false }, vec![Src::Pass(0)]));
@@ -233,11 +253,11 @@ pub fn glass_graph(
     } else {
         Src::Pass(0)
     };
-    passes.push(GraphPass::new(unit(UnitKind::Scatter, scatter_u), vec![blurred]));
+    passes.push(GraphPass::new(unit(UnitKind::Scatter, scatter_u, if g.frost > 0.01 { g.frost * 6.0 * s } else { 0.0 }), vec![blurred]));
     let prev = passes.len() - 1;
-    passes.push(GraphPass::new(unit(UnitKind::Shade, shade_u), vec![Src::Pass(prev)]));
+    passes.push(GraphPass::new(unit(UnitKind::Shade, shade_u, 0.0), vec![Src::Pass(prev)]));
     passes.push(GraphPass::new(
-        unit(UnitKind::MaskMix, base),
+        unit(UnitKind::MaskMix, base, 0.0),
         vec![Src::Pass(prev + 1), Src::Input(0)],
     ));
     passes
