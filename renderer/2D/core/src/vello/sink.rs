@@ -3613,13 +3613,15 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         format: wgpu::TextureFormat,
     ) {
-        let chain: Vec<(String, Vec<f32>, u32)> = crate::vello::abi::with_scene(|live, _, _| {
-            live.get(id)
-                .map(|n| {
-                    n.spread_shaders().map(|c| (c.wgsl.clone(), c.params.clone(), c.param_vec4s)).collect()
+        let chain: Vec<(crate::model::EffectSlot, String, Vec<f32>, u32)> =
+            crate::vello::abi::with_scene(|live, _, _| {
+                live.get(id).map(|n| {
+                    n.spread_effects()
+                        .map(|(slot, c)| (slot, c.wgsl.clone(), c.params.clone(), c.param_vec4s))
+                        .collect()
                 })
-        })
-        .unwrap_or_default();
+            })
+            .unwrap_or_default();
         if chain.is_empty() {
             return;
         }
@@ -3628,22 +3630,27 @@ impl Sink {
 
         let mut input_view = surf.view.clone();
         let mut result: Option<(wgpu::Texture, wgpu::TextureView)> = None;
-        for (wgsl, params, param_vec4s) in chain {
-            let n_inputs = 1;
-            let mut hasher = DefaultHasher::new();
-            wgsl.hash(&mut hasher);
-            n_inputs.hash(&mut hasher);
-            let key = hasher.finish();
-            self.cap_custom_pipelines(key);
-            let pipeline = self
-                .custom_pipelines
-                .entry(key)
-                .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
-                .clone();
-
-            let mut u = vec![w as f32, h as f32];
-            u.extend_from_slice(&params);
-            let passes = lower_graph(&effect_graph::custom_graph(u, param_vec4s), Some(&pipeline));
+        for (slot, wgsl, params, param_vec4s) in chain {
+            // An effect with a native lowering runs as units; the rest still run their WGSL. The
+            // shader stays the definition for backends that have no unit pipeline.
+            let passes = if slot == crate::model::EffectSlot::Texture {
+                lower_graph(&crate::vello::effects::texture_units(&params, w as f32, h as f32), None)
+            } else {
+                let n_inputs = 1;
+                let mut hasher = DefaultHasher::new();
+                wgsl.hash(&mut hasher);
+                n_inputs.hash(&mut hasher);
+                let key = hasher.finish();
+                self.cap_custom_pipelines(key);
+                let pipeline = self
+                    .custom_pipelines
+                    .entry(key)
+                    .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
+                    .clone();
+                let mut u = vec![w as f32, h as f32];
+                u.extend_from_slice(&params);
+                lower_graph(&effect_graph::custom_graph(u, param_vec4s), Some(&pipeline))
+            };
             let out = run_graph_into(
                 &self.compositor, &self.glass, device, enc, &[&input_view], &passes, w, h, format,
                 &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,

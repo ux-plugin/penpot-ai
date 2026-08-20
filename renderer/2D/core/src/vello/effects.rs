@@ -236,6 +236,18 @@ pub fn texture_shader(noise_size: f32, radius: f32, clip_to_shape: bool, hidden:
     })
 }
 
+/// The texture effect as **units**, from the same `params` [`texture_shader`] packs — the param
+/// order lives here, next to the packing, rather than being re-derived at the call site.
+///
+/// `w`/`h` are the surface the effect runs over.
+#[must_use]
+pub fn texture_units(params: &[f32], w: f32, h: f32) -> Vec<crate::effect_graph::GraphPass> {
+    let magnitude = params.first().copied().unwrap_or(0.0);
+    let grain_div = params.get(1).copied().unwrap_or(1.0);
+    let clip = params.get(2).copied().unwrap_or(0.0) != 0.0;
+    crate::effect_graph::texture_graph(w, h, magnitude, grain_div, clip)
+}
+
 /// One noise slot decoded off the wire: `kind` (0 solid, 1 prism) and straight RGBA in `[0, 1]`.
 pub struct NoiseSlot {
     pub kind: u8,

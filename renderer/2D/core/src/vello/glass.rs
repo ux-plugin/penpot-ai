@@ -254,7 +254,7 @@ impl GlassPipeline {
         }
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glass units bind"),
-            layout: if key.3 { &self.two_tex_layout } else { &self.one_tex_layout },
+            layout: if key.4 { &self.two_tex_layout } else { &self.one_tex_layout },
             entries: &entries,
         });
         let cache = self.units.borrow();

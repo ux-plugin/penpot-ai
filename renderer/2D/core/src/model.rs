@@ -566,6 +566,12 @@ impl Node {
         self.effects.iter().map(|e| &e.shader).filter(|c| !c.reads_backdrop)
     }
 
+    /// The same body-only spread effects, each with the slot that produced it — the backend needs the
+    /// slot to tell an effect it can lower natively from one it can only run as WGSL.
+    pub fn spread_effects(&self) -> impl Iterator<Item = (EffectSlot, &CustomShader)> {
+        self.effects.iter().filter(|e| !e.shader.reads_backdrop).map(|e| (e.slot, &e.shader))
+    }
+
     /// The (first) backdrop-reading effect — the custom *gather* shader, if any. A shape carries at
     /// most one gather custom shader alongside the typed glass/background-blur gathers.
     pub fn gather_shader(&self) -> Option<&CustomShader> {
