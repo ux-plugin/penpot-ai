@@ -788,14 +788,14 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
                 let mut resources = ();
                 render_core::vello::text::draw_text_block(
                     scene, &mut resources, &mut text.font_cx, &mut text.layout_cx, &ClassicEnv, node, matrix,
-                    Some(if tinted { s.color } else { peniko::Color::WHITE }),
+                    Some(if tinted { s.color } else { vello_common::color::palette::css::WHITE }),
                 );
                 return;
             }
             scene.set_transform(matrix);
             // Untinted, the silhouette is pure coverage — a Tint unit colours it later, so shadows
             // that differ only in colour can share one rasterisation.
-            scene.set_paint(if tinted { s.color } else { peniko::Color::WHITE });
+            scene.set_paint(if tinted { s.color } else { vello_common::color::palette::css::WHITE });
             let path = if s.spread > 0.0 {
                 render_core::geometry::spread_outline(node, f64::from(s.spread))
             } else {
