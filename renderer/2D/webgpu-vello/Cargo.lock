@@ -1518,6 +1518,7 @@ dependencies = [
  "vello_encoding",
  "vello_shaders",
  "wgpu",
+ "wgpu-profiler",
 ]
 
 [[package]]
@@ -1546,6 +1547,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+ "wgpu-profiler",
 ]
 
 [[package]]
@@ -1856,6 +1858,17 @@ checksum = "95226013f547544b223281cd16a4fb549aa9dcb562adbda0faae4c73ffbbc161"
 dependencies = [
  "naga",
  "wgpu-types",
+]
+
+[[package]]
+name = "wgpu-profiler"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "948e23cc220c021611e4de4072b20365192e861cde1f2d17437c1cdd7651bbc0"
+dependencies = [
+ "parking_lot",
+ "thiserror",
+ "wgpu",
 ]
 
 [[package]]

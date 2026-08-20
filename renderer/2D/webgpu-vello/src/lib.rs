@@ -660,6 +660,19 @@ impl ClassicBackend {
         }
     }
 
+    /// Close the current wgpu-profiler frame and return the resolved per-dispatch GPU timings of the
+    /// oldest finished frame, if one is ready. Diagnostics only (the `gpu-profiler` feature); call
+    /// once per frame, after the frame's submit.
+    #[cfg(feature = "gpu-profiler")]
+    pub fn profiler_frame(
+        &mut self,
+        queue: &wgpu::Queue,
+    ) -> Option<Vec<wgpu_profiler::GpuTimerQueryResult>> {
+        let r = &mut self.renderer.inner;
+        r.profiler.end_frame().ok()?;
+        r.profiler.process_finished_frame(queue.get_timestamp_period())
+    }
+
     /// Register every image the host staged since the last frame (plus any freshly baked diamonds)
     /// into the shared map, and record the content-id → [`vello_common::paint::ImageId`] mapping the
     /// sink's `resolve_image` reads. Classic keeps the pixels (peniko `ImageData`) rather than
