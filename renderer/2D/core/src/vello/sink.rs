@@ -138,18 +138,6 @@ fn wv_batch_plan(
     strip_y: u32,
     acc_size: (f32, f32),
 ) -> Option<WvBatchPlan> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let forced = std::env::var("WV_BATCH").ok();
-    #[cfg(target_arch = "wasm32")]
-    let forced: Option<String> = None;
-    let on = match forced.as_deref() {
-        Some("0") => false,
-        Some(_) => true,
-        None => crate::vello::abi::wv_batch(),
-    };
-    if !on {
-        return None;
-    }
     let atlas_size = (packing.width as f32, packing.height as f32);
     let mut place: HashMap<(u128, u8, usize), (u32, u32)> = HashMap::new();
     for pl in &packing.cells {
@@ -620,7 +608,8 @@ pub struct Sink {
     /// records into the frame encoder instead of self-submitting. Dropped (cleared) each frame.
     frame_transient_views: Vec<wgpu::TextureView>,
 
-    /// Whole-viewport effect surfaces materialised by [`Self::wv_atlas_prepass`], keyed by
+    /// Whole-viewport effect surfaces materialised from the strip by [`Self::wv_atlas_copy_out`]
+    /// (only for shapes the batch cannot express), keyed by
     /// `(node, kind, index)` — kind `0` a drop-shadow silhouette, `1` the node's isolated body.
     ///
     /// Every one of these used to be its own `backend.rasterize`, i.e. its own full vello front-end
@@ -1185,12 +1174,8 @@ impl Sink {
         let views: Vec<wgpu::TextureView> =
             texs.iter().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default())).collect();
 
-        if strip.is_none() {
-            self.wv_atlas_prepass(&gathers, backend, device, queue, &mut enc, root, full_view, width, height, format);
-        } else {
-            for (_, (tex, _)) in std::mem::take(&mut self.wv_atlas) {
-                self.pool.release(tex);
-            }
+        for (_, (tex, _)) in std::mem::take(&mut self.wv_atlas) {
+            self.pool.release(tex);
         }
         if passes_recorded().wrapping_sub(flush_mark) >= WV_PASS_FLUSH_BUDGET {
             Self::submit_batch(&mut enc, device, queue, backend);
@@ -1399,10 +1384,18 @@ impl Sink {
             p.stamp(&mut enc, &sw_view, crate::vello::graph::prof_bucket::SWAP_BLIT);
         }
         if let Some((view, aw, ah)) = self.dbg_atlas.take() {
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var("WV_DBG_CLEAR").is_ok() {
+                Compositor::clear(&mut enc, &sw_view, [0.0, 0.0, 0.0, 0.0], None);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let dbg_y: f32 = std::env::var("WV_DBG_ATLAS_Y").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            #[cfg(target_arch = "wasm32")]
+            let dbg_y = 0.0f32;
             self.compositor.blit(device, &mut enc, &sw_view, sz, &Blit {
                 src: &view,
                 dst: (0.0, 0.0, aw as f32, ah as f32),
-                src_rect: (0.0, 0.0, aw as f32, ah as f32),
+                src_rect: (0.0, dbg_y, aw as f32, ah as f32),
                 src_size: (aw as f32, ah as f32),
                 alpha: 1.0,
             });
@@ -1776,7 +1769,7 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     /// Plan every stack-effect source surface this frame needs and shelf-pack them into one atlas
     /// rectangle: the shared half of the two fill strategies — the separate prepass render
-    /// ([`Self::wv_atlas_prepass`]) and the in-scene strip ([`Self::wv_strip_encode`]). Pure apart
+    /// and the in-scene strip ([`Self::wv_strip_encode`]). Pure apart
     /// from reading the live model, so the caller may run it before the main scene is built (the
     /// strip needs each cell's packed origin at encode time).
     ///
@@ -1826,59 +1819,6 @@ impl Sink {
             * root
     }
 
-    fn wv_atlas_prepass<B: RasterBackend>(
-        &mut self,
-        gathers: &[(usize, u128, u8)],
-        backend: &mut B,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        root: Affine,
-        full_view: Affine,
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-    ) {
-        if !crate::vello::abi::wv_atlas() {
-            return;
-        }
-        for (_, (tex, _)) in std::mem::take(&mut self.wv_atlas) {
-            self.pool.release(tex);
-        }
-        let max_dim = device.limits().max_texture_dimension_2d;
-        let Some((packing, cells)) = self.wv_atlas_plan(gathers, full_view, width, height, 2048, 1, max_dim)
-        else {
-            return;
-        };
-        let (aw, ah) = (packing.width, packing.height);
-
-        let mut scene = backend.new_scene(aw as u16, ah as u16);
-        for cell in &packing.cells {
-            let (c, root_index) = &cells[cell.index];
-            let m = Self::wv_cell_transform(c, cell, 0, 0, root);
-            match c.key.1 {
-                0 => backend.build_shadow_silhouette(&mut scene, m, c.key.0, c.key.2, false, true),
-                2 => backend.build_shadow_silhouette(&mut scene, m, c.key.0, c.key.2, true, false),
-                3 => backend.build_shadow_silhouette(&mut scene, m, c.key.0, c.key.2, true, true),
-                _ => backend.draw_scene_range(&mut scene, m, *root_index, *root_index + 1),
-            }
-        }
-        let atlas_usage = self.raster_usage | wgpu::TextureUsages::COPY_SRC;
-        let atlas = self.pool.acquire(
-            device,
-            PoolKey { w: aw, h: ah, format, usage: atlas_usage.bits() },
-            "wv effect atlas",
-        );
-        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
-        backend.rasterize(&scene, device, queue, enc, &atlas_view, aw, ah, TRANSPARENT);
-        if crate::vello::abi::debug_atlas() == 4 {
-            self.dbg_atlas = Some((atlas_view.clone(), aw, ah));
-        }
-
-        self.wv_atlas_copy_out(device, enc, &atlas, &packing, &cells, 0, 0, format, None);
-        self.frame_transient.push(atlas);
-    }
-
     /// Split a packed source atlas at `(ox, oy)` in `src` into the standalone per-cell textures the
     /// effect stages look up by key.
     #[expect(clippy::too_many_arguments, reason = "GPU context plus the packing travel together")]
@@ -1924,11 +1864,11 @@ impl Sink {
         }
     }
 
-    /// Plan the in-scene source **strip**: the same packing as the prepass, but constrained to sit
-    /// below the viewport inside one enlarged accumulator (so the frame keeps a single tile grid and
-    /// therefore a single front-end run). `None` — falling the caller back to the separate prepass
-    /// render — when the strip is disabled, nothing needs a source, the packing is wider than the
-    /// viewport, or the combined height would exceed the device's max texture dimension.
+    /// Plan the in-scene source **strip**: pack every stack-effect source below the viewport inside
+    /// one enlarged accumulator, so the frame keeps a single tile grid and one front-end run. `None`
+    /// when nothing needs a source, a cell is wider than the viewport, or the combined height would
+    /// exceed the device's max texture dimension — those shapes then rasterize their sources on
+    /// demand through the per-shape consumers' atlas-miss fallbacks.
     fn wv_strip_plan(
         &self,
         gathers: &[(usize, u128, u8)],
@@ -1937,18 +1877,7 @@ impl Sink {
         width: u32,
         height: u32,
     ) -> Option<(crate::atlas::Packing, Vec<(WvCell, usize)>)> {
-        // Native `WV_STRIP` overrides the flag in BOTH directions, so a harness can opt the path in
-        // while its default is off.
-        #[cfg(not(target_arch = "wasm32"))]
-        let forced = std::env::var("WV_STRIP").ok();
-        #[cfg(target_arch = "wasm32")]
-        let forced: Option<String> = None;
-        let on = match forced.as_deref() {
-            Some("0") => false,
-            Some(_) => true,
-            None => crate::vello::abi::wv_strip(),
-        };
-        if !crate::vello::abi::wv_atlas() || !on {
+        if !crate::vello::abi::wv_atlas() {
             return None;
         }
         let max_dim = device.limits().max_texture_dimension_2d;
@@ -1991,6 +1920,11 @@ impl Sink {
         for place in &packing.cells {
             let (c, root_index) = &cells[place.index];
             let m = Self::wv_cell_transform(c, place, 0, strip_y, root);
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var("WV_TRACE_CELLS").is_ok() {
+                eprintln!("strip key={:?} place=({},{}) k={}x{} b=({},{},{},{}) scale={} sigma={}",
+                    c.key, place.x, strip_y + place.y, c.kw, c.kh, c.bx, c.by, c.bw, c.bh, c.k, c.sigma);
+            }
             let rect = Rect::new(
                 f64::from(place.x),
                 f64::from(strip_y + place.y),

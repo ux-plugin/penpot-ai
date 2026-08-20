@@ -892,21 +892,7 @@ thread_local! {
     /// Whole-viewport atlas prepass gate — see [`set_wv_atlas`]. Default on.
     static WV_ATLAS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 
-    /// Source-strip gate — see [`set_wv_strip`]. Encodes the effect sources into the MAIN scene below
-    /// the viewport so the frame keeps one tile grid and runs the front-end once instead of twice.
-    ///
-    /// Default ON: parity sits at the rgba8 quantization floor (max channel delta 1 vs the prepass)
-    /// and the batched effect stages depend on it. `set_wv_strip(0)` restores the prepass; scenes
-    /// whose packing exceeds the device limit fall back automatically either way.
-    static WV_STRIP: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 
-    /// Batched-effect gate: run stack-effect blurs and composites as INSTANCED per-stage passes
-    /// (one blur-H, one blur-V, one composite per round) over the strip, instead of a private pass
-    /// chain per shape. Requires the strip; shapes the batch cannot express (inner shadows, custom
-    /// shader chains, glass in the stack, device sigma past the separable cap) keep the per-shape
-    /// path. Default ON: pixel-identical to the per-shape path (0 differing px on the fixtures) and
-    /// 26–33% faster at 4K.
-    static WV_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 
     /// Per-pass GPU profiling: stamp a timestamp boundary between each effect-graph pass (glass
     /// displacement / refraction / blur / composite) so the host can read the GPU ms of each
@@ -981,30 +967,7 @@ pub fn wv_atlas() -> bool {
     WV_ATLAS.with(std::cell::Cell::get)
 }
 
-/// Encode stack-effect source surfaces into the main scene (one front-end per frame) instead of
-/// rendering them in a separate prepass (two). `set_wv_strip(0)` restores the prepass — the A/B lever
-/// and the automatic fallback when a strip would not fit the device's texture limit.
-#[unsafe(no_mangle)]
-pub extern "C" fn set_wv_strip(on: u32) {
-    WV_STRIP.with(|c| c.set(on != 0));
-}
 
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub fn wv_strip() -> bool {
-    WV_STRIP.with(std::cell::Cell::get)
-}
-
-/// Batch stack-effect blurs/composites into instanced per-stage passes (`set_wv_batch(1)`) instead of
-/// a pass chain per shape. Only takes effect while the strip is active.
-#[unsafe(no_mangle)]
-pub extern "C" fn set_wv_batch(on: u32) {
-    WV_BATCH.with(|c| c.set(on != 0));
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub fn wv_batch() -> bool {
-    WV_BATCH.with(std::cell::Cell::get)
-}
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn wv_scope() -> bool {

@@ -3,10 +3,10 @@
 //! actually produced — the presented frame, and the whole accumulator including the strip, so the
 //! source surfaces the effects consume can be looked at rather than inferred.
 //!
-//! Env: `SHAPES`, `EVERY`, `STEP`, `SIZE` shape the fixture; `W`/`H` the viewport; `WV_STRIP=1`
-//! selects the strip, `WV_STRIP=0` the prepass, so the two can be diffed with `png_diff`.
+//! Env: `SHAPES`, `EVERY`, `STEP`, `SIZE` shape the fixture; `W`/`H` the viewport; `WV_TILED=1`
+//! renders through the tiled scheduler instead (the ground-truth reference for `png_diff`).
 //!
-//! Run: `WV_STRIP=1 cargo run --release --example wv_strip_debug`.
+//! Run: `cargo run --release --example wv_strip_debug`.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -73,7 +73,7 @@ fn main() {
     let every = env_u32("EVERY", 7);
     let (step, size) = (env_f32("STEP", 26.0), env_f32("SIZE", 1.9));
     let tag = std::env::var("TAG").unwrap_or_else(|_| {
-        if std::env::var("WV_STRIP").as_deref() == Ok("1") { "strip".into() } else { "prepass".into() }
+        if std::env::var("WV_TILED").is_ok() { "tiled".into() } else { "wv".into() }
     });
 
     let instance = wgpu::Instance::default();
@@ -92,6 +92,9 @@ fn main() {
     render_core::vello::abi::set_canvas_background(0xffff_ffff);
     render_core::vello::abi::set_scheduler(1);
     render_core::vello::abi::set_tile_effects(1);
+    if let Ok(v) = std::env::var("WV_DBG_ATLAS") {
+        render_core::vello::abi::set_debug_atlas(v.parse().unwrap_or(0));
+    }
     println!("scene: {shapes} shapes ({cells} cells), effect every {every}, step {step} size {size}, {w}x{h} [{tag}]");
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -113,10 +116,23 @@ fn main() {
     backend.sync_fonts();
     backend.upload_pending_images();
 
-    for _ in 0..2 {
-        render_core::vello::abi::set_view(1.0, 0.0, 0.0);
-        sink.render_whole_viewport(&mut backend, &device, &queue, &target, Affine::IDENTITY, w, h, true);
+    if std::env::var("WV_TILED").is_ok() {
+        use std::collections::HashSet;
+        use render_core::tiling::TileKey;
+        let root = Affine::IDENTITY;
+        let full_view = render_core::vello::abi::effective_view(root);
+        let (dirty_all, dirty_rects) = render_core::vello::abi::take_dirty();
+        let dirty = sink.plan_frame(full_view, w, h, dirty_all, &dirty_rects);
+        let dirty_set: HashSet<TileKey> = dirty.iter().copied().collect();
+        let schedule = render_core::vello::abi::build_schedule(root, &dirty_set, dirty_all);
+        sink.execute(&schedule, &dirty, &mut backend, &device, &queue, &target, root, w, h);
         device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).expect("poll");
+    } else {
+        for _ in 0..2 {
+            render_core::vello::abi::set_view(1.0, 0.0, 0.0);
+            sink.render_whole_viewport(&mut backend, &device, &queue, &target, Affine::IDENTITY, w, h, true);
+            device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).expect("poll");
+        }
     }
 
     let rgba = read_back(&device, &queue, &target, w, h);
