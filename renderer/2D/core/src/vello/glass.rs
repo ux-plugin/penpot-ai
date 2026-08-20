@@ -500,7 +500,7 @@ pub(crate) fn units_body((head, shade, maskmix, clip, _two_tex): UnitKey, p: &cr
         fs.push_str(
             r#"
     let srcCoverage = glassSample(gi, uvpix).a;
-    value = mix(value, value * srcCoverage, fieldU(gi, 1u).x);
+    value = mix(value, value * srcCoverage, fieldU(gi, 5u).y);
 "#,
         );
     }

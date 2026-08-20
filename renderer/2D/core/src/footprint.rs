@@ -116,7 +116,13 @@ pub fn barrier_count(stages: &[Stage]) -> usize {
 /// false for a blur (its own multi-pass separable/pyramid machinery) and for opaque custom code.
 #[must_use]
 pub fn heads_a_run(pass: &EffectPass) -> bool {
-    matches!(pass, EffectPass::Unit { op: crate::effect_graph::UnitKind::Scatter, .. })
+    matches!(
+        pass,
+        EffectPass::Unit {
+            op: crate::effect_graph::UnitKind::Scatter | crate::effect_graph::UnitKind::Warp,
+            ..
+        }
+    )
 }
 
 /// Group the graph's passes into **execution groups** — the sets that lower into ONE materialised

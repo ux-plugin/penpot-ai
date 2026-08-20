@@ -159,6 +159,50 @@ pub fn background_blur_sigma(radius: f32, scale: f32) -> f32 {
     radius_to_sigma(radius) * scale
 }
 
+/// The **texture** effect's field: fractal noise, read as a centred displacement. It measures no
+/// distance and so declares no source — the operators are the whole program.
+#[must_use]
+pub fn texture_field_program() -> crate::field::FieldProgram {
+    use crate::field::{FieldOp, FieldRef, Slot};
+    crate::field::FieldProgram {
+        nodes: vec![
+            FieldOp::Noise { div: Slot::new(0, 3) },
+            FieldOp::Displacement { source: FieldRef::Node(0), gain: Slot::new(0, 2) },
+        ],
+        outputs: vec![("displacement", FieldRef::Node(1))],
+    }
+}
+
+/// The **texture** effect as units: warp the body by a noise displacement, then optionally confine
+/// the result to the coverage it started from. The two fuse into one materialised pass — the warp is
+/// a sampling head and the clip is pointwise — so this costs exactly what the hand-written shader it
+/// replaces did.
+///
+/// `magnitude` is the maximum per-axis shift in device pixels and doubles as the pass's reach;
+/// `grain_div` divides the sample position, so a larger value is a coarser grain.
+#[must_use]
+pub fn texture_graph(w: f32, h: f32, magnitude: f32, grain_div: f32, clip_to_shape: bool) -> Vec<GraphPass> {
+    let program = std::rc::Rc::new(texture_field_program());
+    let mut u = vec![0.0_f32; 24];
+    u[0] = w;
+    u[1] = h;
+    u[2] = magnitude;
+    u[3] = grain_div;
+    // Slot 21, not one of the slots the scale solver multiplies — a flag is not a length.
+    u[21] = f32::from(u8::from(clip_to_shape));
+    u[16] = 1.0;
+    let unit = |op: UnitKind, reach: f32| EffectPass::Unit {
+        op,
+        field: program.clone(),
+        u: u.clone(),
+        reach,
+    };
+    vec![
+        GraphPass::new(unit(UnitKind::Warp, magnitude), vec![Src::Input(0)]),
+        GraphPass::new(unit(UnitKind::ClipToSource, 0.0), vec![Src::Pass(0)]),
+    ]
+}
+
 /// A single custom pass over the assembled backdrop (input 0). `u` is the backdrop resolution
 /// followed by the shader's declared params; `param_vec4s` is the exact `array<vec4<f32>, N>` size the
 /// shader declares. The backend pairs it with the shape's compiled pipeline.
@@ -356,5 +400,39 @@ mod tests {
         let g = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let EffectPass::Unit { ref u, op: UnitKind::Warp, .. } = g[0].pass else { panic!("expected warp") };
         assert!((u[6] - 30.0).abs() < 1e-4);
+    }
+
+    /// The whole point of making the clip a unit rather than a flag on the warp: it is pointwise, so
+    /// it rides in the warp's own pass. Two units, one draw — the same cost as the shader it replaces.
+    #[test]
+    fn the_texture_effect_is_one_execution_group() {
+        let g = texture_graph(256.0, 256.0, 30.0, 20.0, true);
+        assert_eq!(g.len(), 2);
+        let groups = crate::footprint::execution_groups(&g);
+        assert_eq!(groups, vec![vec![0, 1]]);
+    }
+
+    /// A displacement magnitude is a length and must shrink with the pass; the clip flag is a boolean
+    /// and must not. They are deliberately in different halves of the uniform for exactly this reason.
+    #[test]
+    fn the_scale_solver_moves_the_magnitude_and_leaves_the_flag() {
+        let mut g = texture_graph(256.0, 256.0, 30.0, 20.0, true);
+        apply_chain_scales(&mut g, 256, 256);
+        for gp in &g {
+            let EffectPass::Unit { u, .. } = &gp.pass else { panic!("units") };
+            assert!((u[21] - 1.0).abs() < 1e-6, "the clip flag was scaled");
+            assert!((u[2] / u[16] - 30.0).abs() < 1e-3, "magnitude and scale disagree");
+        }
+    }
+
+    /// The texture field measures no distance, so it declares no source — and still compiles.
+    #[test]
+    fn the_texture_field_is_shapeless_and_declares_a_displacement() {
+        let p = texture_field_program();
+        // No source: a shapeless program emits no localPos prologue.
+        assert!(!p.wgsl_prologue().contains("localPos"));
+        assert!(p.declares("displacement"));
+        assert!(!p.declares("refracted"), "a texture warp is not a lens");
+        assert!(p.wgsl().contains("fractalNoise"));
     }
 }
