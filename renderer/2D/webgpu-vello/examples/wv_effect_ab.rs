@@ -1,8 +1,8 @@
-//! Headless A/B: render an effect fixture through BOTH classic paths — the tiled scheduler
-//! (`build_schedule` + `sink.execute`, the proven reference) and the native whole-viewport path
-//! (`sink.render_whole_viewport`) — read both textures back, and count differing pixels. This is the
-//! definitive per-pixel proof that a whole-viewport effect matches its tiled reference, with no
-//! browser/screenshot resampling in the loop.
+//! Headless A/B: render an effect fixture through BOTH classic paths — the whole-viewport strip +
+//! batch path (`sink.render_whole_viewport`, THE production scheduler and the reference) and the
+//! legacy tiled scheduler (`build_schedule` + `sink.execute`, kept as a cross-implementation
+//! comparator) — read both textures back, and count differing pixels. Differences are attributed to
+//! the tiled path's older effect implementations unless proven otherwise.
 //!
 //! Scenes (SCENE env, default `layer-blur`): `layer-blur`, `path-shadow`, `inner-shadow`,
 //! `combined`, `boolean`, and `matrix` — every effect combination, one per cell.

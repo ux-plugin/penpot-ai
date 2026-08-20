@@ -4,7 +4,8 @@
 //! source surfaces the effects consume can be looked at rather than inferred.
 //!
 //! Env: `SHAPES`, `EVERY`, `STEP`, `SIZE` shape the fixture; `W`/`H` the viewport; `WV_TILED=1`
-//! renders through the tiled scheduler instead (the ground-truth reference for `png_diff`).
+//! renders through the LEGACY tiled scheduler instead — a cross-implementation comparator for
+//! `png_diff`, not the reference; the whole-viewport output is the ground truth.
 //!
 //! Run: `cargo run --release --example wv_strip_debug`.
 

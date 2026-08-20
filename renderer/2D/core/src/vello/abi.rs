@@ -696,7 +696,7 @@ thread_local! {
     /// adjacent tile buffers is shifted by exactly 512 px (an integer at every decimation level a
     /// capped σ reaches), which *should* make the fork's pyramid blur agree at the seam — this
     /// toggle is how that hypothesis gets a pixel test before any per-shape-surface machinery.
-    static TILE_EFFECTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TILE_EFFECTS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 #[unsafe(no_mangle)]
@@ -711,9 +711,9 @@ pub fn tile_effects() -> bool {
 
 thread_local! {
     /// Route rendering through the render-core schedule + GPU production sink (the "one pipeline"
-    /// scheduler) instead of the whole-scene-per-tile path. Default off while it is brought up;
-    /// the harness flips it on to verify the sink's pixels against the bypass.
-    static SCHEDULER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// scheduler) instead of the whole-scene-per-tile bypass. Default ON — this is the production
+    /// path; `set_scheduler(0)` remains only for bring-up style bypass comparisons.
+    static SCHEDULER: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 #[unsafe(no_mangle)]
