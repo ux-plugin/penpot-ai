@@ -33,6 +33,15 @@ pub enum FieldSource {
     /// (clamped to the smaller half-extent, so an over-large radius degenerates to a stadium rather
     /// than inverting). Costs no memory and stays exact at any zoom, so it is re-derived per pixel.
     RoundedBox { centre: Slot2, half: Slot2, corner: Slot },
+    /// Distance read from a **baked** field — the source for geometry with no closed form: paths,
+    /// text, boolean results, anything a designer draws by hand. `centre` and `half` still describe
+    /// the bake's box, so the operators that clamp to the shape work unchanged; `decode` maps the
+    /// stored value back to pixels.
+    ///
+    /// The consumer binds the texture as `fieldTex` alongside its sampler. Unlike the analytic
+    /// source this one cannot be re-derived per pixel — the path *is* the parameter — so it is baked
+    /// once per shape and cached across frames.
+    Sampled { centre: Slot2, half: Slot2, decode: Slot },
 }
 
 /// A reference to one scalar in the consumer's uniform: `vec4` index and component.
@@ -186,11 +195,7 @@ impl FieldProgram {
 
     fn node_wgsl(&self, node: &FieldOp) -> String {
         match node {
-            FieldOp::Distance(FieldSource::RoundedBox { half, corner, .. }) => format!(
-                "sdfRoundedBox(localPos, {h}, min({r}, min({h}.x, {h}.y)))",
-                h = half.wgsl(),
-                r = corner.wgsl()
-            ),
+            FieldOp::Distance(_) => "fieldDistance(gi, localPos)".to_string(),
             FieldOp::Ramp { d, edge, clamp_edge_to_extent } => {
                 let e = if *clamp_edge_to_extent {
                     format!("min({e}, min({s}.x, {s}.y))", e = edge.wgsl(), s = self.extent_wgsl())
@@ -250,24 +255,27 @@ impl FieldProgram {
     /// The source's half-extents. Only the operators that clamp to the shape ask for this, and they
     /// are meaningless without a shape.
     fn extent_wgsl(&self) -> String {
-        let Some(FieldSource::RoundedBox { half, .. }) = self.source() else {
+        let Some(src) = self.source() else {
             panic!("this operator needs a shape source; the program has none")
         };
-        half.wgsl()
+        source_half(src).wgsl()
     }
 
     fn centre_wgsl(&self) -> String {
-        let Some(FieldSource::RoundedBox { centre, .. }) = self.source() else {
+        let Some(src) = self.source() else {
             panic!("this operator needs a shape source; the program has none")
         };
-        centre.wgsl()
+        source_centre(src).wgsl()
     }
 
     /// The operator implementations this program needs, as WGSL. Emitting only what is used keeps a
     /// simple program (a mask, a stroke) from dragging in the bevel and refraction machinery.
     #[must_use]
     pub fn helpers(&self) -> String {
-        let mut out = String::from(SDF_ROUNDED_BOX);
+        let mut out = String::new();
+        if let Some(src) = self.source() {
+            out.push_str(&source_wgsl(src));
+        }
         let uses = |f: &dyn Fn(&FieldOp) -> bool| self.nodes.iter().any(|n| f(n));
         if uses(&|n| matches!(n, FieldOp::Ramp { .. })) {
             out.push_str(FIELD_RAMP);
@@ -287,14 +295,12 @@ impl FieldProgram {
         if uses(&|n| matches!(n, FieldOp::Gradient)) {
             // The gradient differentiates the source, so it needs the source as a function — which
             // is also the seam a baked provider would swap.
-            let Some(FieldSource::RoundedBox { centre, half, corner }) = self.source() else {
+            let Some(src) = self.source() else {
                 panic!("the gradient differentiates a source; the program has none")
             };
             out.push_str(&format!(
-                "\nfn fieldDistanceAt(gi: u32, fc: vec2<f32>) -> f32 {{\n    return sdfRoundedBox(fc - {c}, {h}, min({r}, min({h}.x, {h}.y)));\n}}\n",
-                c = centre.wgsl(),
-                h = half.wgsl(),
-                r = corner.wgsl()
+                "\nfn fieldDistanceAt(gi: u32, fc: vec2<f32>) -> f32 {{\n    return fieldDistance(gi, fc - {c});\n}}\n",
+                c = source_centre(src).wgsl()
             ));
             out.push_str(FIELD_GRADIENT);
         }
@@ -305,6 +311,39 @@ impl FieldProgram {
             out.push_str(FIELD_REFRACT);
         }
         out
+    }
+}
+
+/// The centre slot of any source — every source describes where its field is anchored, whatever it
+/// measures distance to.
+fn source_centre(src: FieldSource) -> Slot2 {
+    match src {
+        FieldSource::RoundedBox { centre, .. } | FieldSource::Sampled { centre, .. } => centre,
+    }
+}
+
+/// The half-extent slot of any source.
+fn source_half(src: FieldSource) -> Slot2 {
+    match src {
+        FieldSource::RoundedBox { half, .. } | FieldSource::Sampled { half, .. } => half,
+    }
+}
+
+/// `fieldDistance`, the one accessor every distance operator goes through. Defining it per source is
+/// the whole substitution: an analytic shape evaluates a formula, an arbitrary one reads its bake,
+/// and no operator above this line knows which happened.
+fn source_wgsl(src: FieldSource) -> String {
+    match src {
+        FieldSource::RoundedBox { half, corner, .. } => format!(
+            "{SDF_ROUNDED_BOX}\nfn fieldDistance(gi: u32, p: vec2<f32>) -> f32 {{\n    return sdfRoundedBox(p, {h}, min({r}, min({h}.x, {h}.y)));\n}}\n",
+            h = half.wgsl(),
+            r = corner.wgsl()
+        ),
+        FieldSource::Sampled { half, decode, .. } => format!(
+            "\nfn fieldDistance(gi: u32, p: vec2<f32>) -> f32 {{\n    let uv = p / (2.0 * {h}) + vec2<f32>(0.5, 0.5);\n    return (textureSampleLevel(fieldTex, samp, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).r - 0.5) * {d};\n}}\n",
+            h = half.wgsl(),
+            d = decode.wgsl()
+        ),
     }
 }
 
@@ -466,11 +505,12 @@ mod tests {
             outputs: vec![("mask", FieldRef::Node(1))],
         };
         let src = p.wgsl();
-        assert!(src.contains("sdfRoundedBox"));
+        assert!(src.contains("fieldDistance(gi, localPos)"));
         assert!(src.contains("fieldCoverage"));
         assert!(src.contains("let mask = n1;"));
         // A mask must not drag in the bevel or refraction machinery.
         let h = p.helpers();
+        assert!(h.contains("sdfRoundedBox"));
         assert!(h.contains("fn fieldCoverage"));
         assert!(!h.contains("fn fieldRefract"));
         assert!(!h.contains("fn fieldProfile"));
@@ -680,6 +720,62 @@ mod reuse_tests {
     fn the_gradient_follows_the_declared_source() {
         let h = bevel_program().helpers();
         assert!(h.contains("fn fieldDistanceAt"));
-        assert!(h.contains("sdfRoundedBox(fc - fieldU(gi, 0u).zw"));
+        assert!(h.contains("return fieldDistance(gi, fc - fieldU(gi, 0u).zw"));
+        assert!(h.contains("sdfRoundedBox(p,"));
+    }
+
+    fn box_source() -> FieldSource {
+        let FieldOp::Distance(s) = bevel_program().nodes[0] else {
+            panic!("the bevel starts from a distance")
+        };
+        s
+    }
+
+    fn sampled_source() -> FieldSource {
+        FieldSource::Sampled {
+            centre: Slot2::new(0, 2),
+            half: Slot2::new(1, 0),
+            decode: Slot::new(1, 2),
+        }
+    }
+
+    /// The two sources stay two code paths, and each pays only its own cost: an analytic shape
+    /// evaluates a formula and never touches a texture, an arbitrary one reads its bake and never
+    /// carries the box algebra. Everything above `fieldDistance` is written once for both.
+    #[test]
+    fn the_analytic_and_sampled_sources_are_separate_paths() {
+        let mask = |src| FieldProgram {
+            nodes: vec![
+                FieldOp::Distance(src),
+                FieldOp::Coverage { d: FieldRef::Node(0), softness: Slot::new(4, 0), softness_gain: 1.5 },
+            ],
+            outputs: vec![("mask", FieldRef::Node(1))],
+        };
+
+        let analytic = mask(box_source()).helpers();
+        assert!(analytic.contains("sdfRoundedBox(p,"));
+        assert!(!analytic.contains("textureSampleLevel"));
+
+        let sampled = mask(sampled_source()).helpers();
+        assert!(sampled.contains("textureSampleLevel(fieldTex"));
+        assert!(!sampled.contains("sdfRoundedBox"));
+
+        // ...and the operators above them are the same text either way.
+        assert_eq!(mask(box_source()).wgsl(), mask(sampled_source()).wgsl());
+    }
+
+    /// The whole point of the substitution: an effect written for analytic shapes compiles for an
+    /// arbitrary one with no change to the effect. Bevel is the hardest case — it differentiates the
+    /// field, so it reaches the source twice.
+    #[test]
+    fn a_bevel_compiles_on_a_sampled_source() {
+        let mut p = bevel_program();
+        let FieldOp::Distance(_) = p.nodes[0] else { panic!("bevel starts from a distance") };
+        p.nodes[0] = FieldOp::Distance(sampled_source());
+        let h = p.helpers();
+        assert!(h.contains("fn fieldDistanceAt"));
+        assert!(h.contains("textureSampleLevel(fieldTex"));
+        assert!(!h.contains("sdfRoundedBox"));
+        assert!(h.contains("fn fieldGradient"));
     }
 }
