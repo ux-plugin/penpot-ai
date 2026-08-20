@@ -130,22 +130,93 @@ fn wv_batch_cell_graph(c: &WvCell) -> Vec<crate::effect_graph::GraphPass> {
 /// `{Blur}` at native scale, one node deep, inside the separable cap — everything else keeps the
 /// per-shape path. Growing the batch vocabulary means widening THIS match (plus one stage
 /// implementation), not touching the planner.
-fn wv_batch_supported(graph: &[crate::effect_graph::GraphPass]) -> bool {
-    use crate::effect_graph::{EffectPass, UnitKind};
-    let blurs = graph
-        .iter()
-        .filter(|gp| matches!(gp.pass, EffectPass::Blur { .. }))
-        .count();
-    blurs <= 1
-        && graph.iter().all(|gp| {
-            gp.scale >= 0.999
-                && match &gp.pass {
-                    EffectPass::Blur { sigma, .. } => *sigma <= crate::vello::graph::BLUR_MAX_SIGMA,
-                    // Tint is the composite instance's colour; EraseBy is the combine stage.
-                    EffectPass::Unit { op: UnitKind::Tint | UnitKind::EraseBy, .. } => true,
-                    _ => false,
+/// What the instanced stage set can express for one **lowered** chain, plus the parameters those
+/// stages need. `None` keeps the shape on its own pass chain.
+///
+/// One predicate for both stage families, because the question is the same one: can the instanced
+/// stages run this chain? What separates the two answers is the chain's head — a sampling unit needs
+/// the glass stages, a pointwise-only chain is a stamp. Splitting that decision across two functions
+/// is what let a chain belong to neither.
+#[derive(Debug, Clone, PartialEq)]
+enum BatchShape {
+    /// Coverage through an optional blur, stamped by the composite and optionally tinted: drop
+    /// shadows, inner-shadow floods and punches, plain bodies.
+    Stamp { sigma: f32, linear: bool, tint: Option<[f32; 4]> },
+    /// A sampling head, an optional blur, and a pointwise tail — the glass stages.
+    Lens { head: crate::vello::glass::UnitOp, tail: Vec<crate::vello::glass::UnitOp>, sigma: f32 },
+}
+
+/// Whether a `Units` pass leads with a sampling head, which is what sends a chain to the glass
+/// stages rather than the stamp stages.
+fn units_head(p: &Pass) -> Option<&crate::vello::glass::UnitOp> {
+    use crate::vello::glass::UnitOp;
+    match &p.kind {
+        crate::vello::graph::PassKind::Units { ops, .. } => match ops.first() {
+            Some(op @ (UnitOp::Warp(_) | UnitOp::Scatter(_))) => Some(op),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
+    use crate::vello::glass::UnitOp;
+    use crate::vello::graph::{PassKind, BLUR_MAX_SIGMA};
+
+    // A lens: sampling head, optionally a blur, then the pointwise tail. The head's and the blur's
+    // scales must agree — the batch packs one cell that serves both resolutions.
+    if let Some(head) = passes.first().and_then(units_head) {
+        return match passes {
+            [one] => (one.scale >= 0.999).then(|| {
+                let PassKind::Units { ops, .. } = &one.kind else { unreachable!() };
+                BatchShape::Lens { head: head.clone(), tail: ops[1..].to_vec(), sigma: 0.0 }
+            }),
+            [w, b, t] => {
+                let PassKind::Blur { sigma, linear: false } = b.kind else { return None };
+                let PassKind::Units { ops: tail, .. } = &t.kind else { return None };
+                if sigma > BLUR_MAX_SIGMA || t.scale < 0.999 || (w.scale - b.scale).abs() > 1e-6 {
+                    return None;
                 }
-        })
+                Some(BatchShape::Lens { head: head.clone(), tail: tail.clone(), sigma })
+            }
+            _ => None,
+        };
+    }
+
+    // Otherwise a stamp: at most one blur, and any units must be pointwise ones the stamp stages
+    // already implement — Tint is the composite instance's colour, EraseBy is the combine stage.
+    let (mut sigma, mut linear, mut tint, mut blurs) = (0.0_f32, false, None, 0usize);
+    for p in passes {
+        if p.scale < 0.999 {
+            return None;
+        }
+        match &p.kind {
+            PassKind::Blur { sigma: s, linear: l } => {
+                blurs += 1;
+                if blurs > 1 || *s > BLUR_MAX_SIGMA {
+                    return None;
+                }
+                sigma = *s;
+                linear = *l;
+            }
+            PassKind::Units { ops, .. } => {
+                for op in ops {
+                    match op {
+                        UnitOp::Tint(u) => tint = Some([u[12], u[13], u[14], u[15]]),
+                        UnitOp::EraseBy(_) => {}
+                        _ => return None,
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(BatchShape::Stamp { sigma, linear, tint })
+}
+
+/// [`batch_admit`] for one cell, lowering its graph the way the executor will.
+fn wv_batch_cell_shape(c: &WvCell) -> Option<BatchShape> {
+    batch_admit(&crate::vello::graph::lower_graph(&wv_batch_cell_graph(c), None))
 }
 
 /// Build the batch plan for this frame, or `None` when batching is off or nothing qualifies.
@@ -190,7 +261,9 @@ fn wv_batch_plan(
             matches!(e.source, Source::Backdrop)
                 || (matches!(e.source, Source::Body)
                     && e.ops.iter().any(|op| matches!(op, crate::effect::Op::Shader(_))))
-        }) && shape_cells.iter().all(|c| wv_batch_supported(&wv_batch_cell_graph(c)));
+        }) && shape_cells
+            .iter()
+            .all(|c| matches!(wv_batch_cell_shape(c), Some(BatchShape::Stamp { .. })));
         if !expressible || shape_cells.is_empty() {
             continue;
         }
@@ -267,14 +340,13 @@ fn wv_batch_plan(
         // owns the sigma/linear semantics for BOTH paths. An empty graph is the identity: the cell
         // rides the blur stages as a sigma-0 copy so every batched cell lands in the surface the
         // later stages sample.
-        let params = |c: &WvCell| {
-            wv_batch_cell_graph(c)
-                .iter()
-                .find_map(|gp| match gp.pass {
-                    crate::effect_graph::EffectPass::Blur { sigma, linear } => Some((sigma, linear)),
-                    _ => None,
-                })
-                .unwrap_or((0.0, false))
+        let params = |c: &WvCell| match wv_batch_cell_shape(c) {
+            Some(BatchShape::Stamp { sigma, linear, .. }) => (sigma, linear),
+            _ => (0.0, false),
+        };
+        let cell_tint = |c: &WvCell| match wv_batch_cell_shape(c) {
+            Some(BatchShape::Stamp { tint, .. }) => tint,
+            _ => None,
         };
         let mut blur = |plan: &mut WvBatchPlan, c: &WvCell| {
             let (strip_rect, atlas_rect, _) = rects(c);
@@ -294,7 +366,7 @@ fn wv_batch_plan(
                     let mut inst = crate::vello::batch::Inst::new(
                         frame_rect, acc_size, atlas_rect, atlas_size, (0.0, 0.0), 0.0, false,
                     );
-                    if let Some(colour) = effect_graph::graph_tint(&wv_batch_cell_graph(c)) {
+                    if let Some(colour) = cell_tint(c) {
                         inst = inst.tinted(colour);
                     }
                     by_round.entry(rounds[j]).or_default().push(inst);
@@ -306,7 +378,7 @@ fn wv_batch_plan(
                     let (_, punch_rect, _) = rects(punch);
                     // Materialise the band in atlas A at the flood's own rect (both reads from B),
                     // then composite it from A — `mode` 1 selects the second texture.
-                    let Some(pc) = effect_graph::graph_tint(&wv_batch_cell_graph(flood)) else { continue };
+                    let Some(pc) = cell_tint(flood) else { continue };
                     plan.combine.push(
                         crate::vello::batch::Inst::new(
                             flood_rect, atlas_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
@@ -314,7 +386,7 @@ fn wv_batch_plan(
                         .with_src2(punch_rect, atlas_size, 0.0)
                         .with_alpha(pc[3]),
                     );
-                    let Some(colour) = effect_graph::graph_tint(&wv_batch_cell_graph(flood)) else { continue };
+                    let Some(colour) = cell_tint(flood) else { continue };
                     by_round.entry(rounds[j]).or_default().push(
                         crate::vello::batch::Inst::new(
                             frame_rect, acc_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
@@ -484,41 +556,6 @@ struct GlassCell {
     warp: crate::vello::glass::UnitOp,
     tail: Vec<crate::vello::glass::UnitOp>,
     sigma: f32,
-}
-
-/// Whether the whole-viewport driver may run this gather through the batched glass stages: it is
-/// a scoped, native-resolution lens whose graph lowers to the implemented shapes — either sharp
-/// (one fused unit pass) or frosted (warp, one separable blur, then the scatter tail). Anything
-/// else (custom shaders, an unscoped stamp, a reduced final scale that would need the sharpening
-/// upscale, a blur past the separable cap) keeps the per-shape path.
-fn wv_glass_admit(passes: &[Pass]) -> Option<(crate::vello::glass::UnitOp, Vec<crate::vello::glass::UnitOp>, f32)> {
-    use crate::vello::glass::UnitOp;
-    let head = |p: &Pass| match &p.kind {
-        crate::vello::graph::PassKind::Units { ops, .. } => ops.first().cloned(),
-        _ => None,
-    };
-    match passes {
-        [one] => match (&one.kind, one.scale >= 0.999) {
-            (crate::vello::graph::PassKind::Units { ops, .. }, true) => match ops.split_first() {
-                Some((UnitOp::Warp(u), rest)) => Some((UnitOp::Warp(u.clone()), rest.to_vec(), 0.0)),
-                _ => None,
-            },
-            _ => None,
-        },
-        [w, b, t] => {
-            let crate::vello::graph::PassKind::Blur { sigma, linear: false } = b.kind else {
-                return None;
-            };
-            if sigma > crate::vello::graph::BLUR_MAX_SIGMA || t.scale < 0.999 {
-                return None;
-            }
-            let (Some(UnitOp::Warp(wu)), crate::vello::graph::PassKind::Units { ops: tail, .. }) = (head(w), &t.kind) else {
-                return None;
-            };
-            (w.scale - b.scale).abs().le(&1e-6).then(|| (UnitOp::Warp(wu), tail.clone(), sigma))
-        }
-        _ => None,
-    }
 }
 
 
@@ -1760,7 +1797,7 @@ impl Sink {
             let Some(passes) = self.glass_graph(gid, bw, bh, f64::from(bx), f64::from(by), full_view, 1.0) else {
                 continue;
             };
-            let Some((warp, tail, sigma)) = wv_glass_admit(&passes) else {
+            let Some(BatchShape::Lens { head: warp, tail, sigma }) = batch_admit(&passes) else {
                 continue;
             };
             let red_scale = if sigma > 0.0 { passes[0].scale } else { 1.0 };
@@ -4332,37 +4369,104 @@ impl Sink {
 
 #[cfg(test)]
 mod batch_admission_tests {
-    use super::wv_batch_supported;
-    use crate::effect_graph::{drop_shadow_graph, inner_shadow_graph, tint_graph};
+    use super::{batch_admit, BatchShape};
+    use crate::effect_graph::{drop_shadow_graph, inner_shadow_graph, tint_graph, GraphPass};
+    use crate::vello::graph::lower_graph;
 
     const C: [f32; 4] = [0.1, 0.2, 0.3, 0.8];
 
-    /// The batch's vocabulary is the thing that decides whether shadows batch at all. Pixels cannot
-    /// prove this: a rejected graph falls back to the per-shape path, which now renders the same
-    /// image. So the predicate is asserted directly.
-    #[test]
-    fn the_batch_admits_the_shadow_graphs() {
-        assert!(wv_batch_supported(&drop_shadow_graph(64.0, 64.0, C, 4.0)));
-        assert!(wv_batch_supported(&drop_shadow_graph(64.0, 64.0, C, 0.0)));
-        assert!(wv_batch_supported(&tint_graph(64.0, 64.0, C)));
-        assert!(wv_batch_supported(&inner_shadow_graph(64.0, 64.0, C, 4.0)));
+    fn admit(g: &[GraphPass]) -> Option<BatchShape> {
+        batch_admit(&lower_graph(g, None))
     }
 
-    /// One blur per cell is what the H/V stage pair expresses; two would need a second round trip
-    /// the plan does not allocate.
+    /// Admission is what decides whether shadows batch at all, and pixels cannot prove it: a
+    /// rejected chain falls back to the per-shape path, which renders the same image.
+    #[test]
+    fn the_shadow_chains_admit_as_stamps() {
+        for g in [
+            drop_shadow_graph(64.0, 64.0, C, 4.0),
+            drop_shadow_graph(64.0, 64.0, C, 0.0),
+            tint_graph(64.0, 64.0, C),
+            inner_shadow_graph(64.0, 64.0, C, 4.0),
+        ] {
+            assert!(matches!(admit(&g), Some(BatchShape::Stamp { .. })), "expected a stamp");
+        }
+    }
+
+    /// The tint reaches the composite through admission, so the colour cannot be looked up one way
+    /// by the batch and another way by the fallback.
+    #[test]
+    fn a_stamp_carries_its_tint_out_of_admission() {
+        let Some(BatchShape::Stamp { tint, sigma, .. }) = admit(&drop_shadow_graph(64.0, 64.0, C, 4.0))
+        else {
+            panic!("a drop shadow is a stamp")
+        };
+        assert_eq!(tint, Some(C));
+        assert!(sigma > 0.0, "a blurred drop shadow keeps its sigma");
+    }
+
+    /// An empty chain is still a stamp — the cell rides the blur stages as a sigma-0 copy so every
+    /// batched cell lands in the surface the later stages sample.
+    #[test]
+    fn an_empty_chain_is_an_untinted_stamp() {
+        assert_eq!(
+            admit(&[]),
+            Some(BatchShape::Stamp { sigma: 0.0, linear: false, tint: None })
+        );
+    }
+
+    /// One blur per cell is what the H/V stage pair expresses; a second would need a round trip the
+    /// plan does not allocate.
     #[test]
     fn two_blurs_in_one_cell_are_refused() {
         let mut g = drop_shadow_graph(64.0, 64.0, C, 4.0);
-        let blur = g.iter().find(|p| matches!(p.pass, crate::effect_graph::EffectPass::Blur { .. }));
-        let blur = blur.expect("a blurred drop shadow has a blur").clone();
+        let blur = g
+            .iter()
+            .find(|p| matches!(p.pass, crate::effect_graph::EffectPass::Blur { .. }))
+            .expect("a blurred drop shadow has a blur")
+            .clone();
         g.push(blur);
-        assert!(!wv_batch_supported(&g));
+        assert_eq!(admit(&g), None);
     }
 
     /// A sigma past the separable cap still belongs on the per-shape path.
     #[test]
     fn a_blur_past_the_cap_is_refused() {
         let big = crate::vello::graph::BLUR_MAX_SIGMA + 1.0;
-        assert!(!wv_batch_supported(&drop_shadow_graph(64.0, 64.0, C, big)));
+        assert_eq!(admit(&drop_shadow_graph(64.0, 64.0, C, big)), None);
+    }
+
+    /// The head is what separates the two stage families: a sampling unit is a lens, everything
+    /// pointwise is a stamp. This is the distinction the two old predicates encoded separately, and
+    /// the reason a chain could previously belong to neither.
+    #[test]
+    fn a_sampling_head_admits_as_a_lens_not_a_stamp() {
+        use crate::vello::glass::UnitOp;
+        use crate::vello::graph::{Pass, PassKind};
+        let units = |ops: Vec<UnitOp>| Pass {
+            kind: PassKind::Units {
+                ops,
+                field: std::rc::Rc::new(crate::field::FieldProgram {
+                    nodes: Vec::new(),
+                    outputs: Vec::new(),
+                }),
+            },
+            inputs: Vec::new(),
+            scale: 1.0,
+        };
+        let u = || vec![0.0_f32; 24];
+
+        let lens = units(vec![UnitOp::Warp(u()), UnitOp::MaskMix(u())]);
+        match batch_admit(&[lens]) {
+            Some(BatchShape::Lens { tail, sigma, .. }) => {
+                assert_eq!(tail.len(), 1, "the tail is everything after the head");
+                assert_eq!(sigma, 0.0, "a sharp lens has no blur");
+            }
+            other => panic!("a sampling head is a lens, got {other:?}"),
+        }
+
+        // Pointwise units the stamp stages do not implement are refused outright rather than
+        // silently falling into the wrong family.
+        assert_eq!(batch_admit(&[units(vec![UnitOp::MaskMix(u())])]), None);
     }
 }
