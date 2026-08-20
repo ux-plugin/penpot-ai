@@ -421,7 +421,7 @@ fn hash2(p: vec2<f32>) -> vec2<f32> {
 /// - `uvpix: vec2<f32>` — the same position in the cell's normalised space,
 /// - `fieldU(gi, i)`, `glassSample(gi, uv)`, `glassSampleOrig(gi, uv)` — the accessors,
 /// and it leaves the result in `value`.
-pub(crate) fn units_body((head, shade, maskmix, _two_tex): UnitKey) -> String {
+pub(crate) fn units_body((head, shade, maskmix, _two_tex): UnitKey, p: &crate::field::FieldProgram) -> String {
     let mut fs = String::from(
         r#"
     let resolution = fieldU(gi, 0u).xy;
@@ -432,7 +432,12 @@ pub(crate) fn units_body((head, shade, maskmix, _two_tex): UnitKey) -> String {
     let mask = field.a;
 "#,
     );
+    let lens = p.declares("refracted");
     fs.push_str(match head {
+        1 if !lens => r#"
+    let dispUV = dpx / resolution;
+    var value = glassSample(gi, uvpix + dispUV);
+"#,
         1 => r#"
     let chromaticAberration = fieldU(gi, 4u).y;
     let dispUV = dpx / resolution;
@@ -543,7 +548,7 @@ fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {{
     return value;
 }}
 "#,
-        body = units_body(key)
+        body = units_body(key, program)
     );
     format!("{bindings}{field}{vs}{fs}", field = field_prelude(program), vs = VERTEX_SHADER)
 }

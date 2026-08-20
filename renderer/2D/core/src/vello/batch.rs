@@ -376,7 +376,7 @@ fn {name}(in: VSOut) -> vec4<f32> {{
     return value;
 }}
 "#,
-        body = crate::vello::glass::units_body(key)
+        body = crate::vello::glass::units_body(key, &crate::vello::glass::glass_field_program())
     )
 }
 
