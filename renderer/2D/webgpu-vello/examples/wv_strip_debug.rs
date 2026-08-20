@@ -4,8 +4,8 @@
 //! source surfaces the effects consume can be looked at rather than inferred.
 //!
 //! Env: `SHAPES`, `EVERY`, `STEP`, `SIZE` shape the fixture; `W`/`H` the viewport; `WV_TILED=1`
-//! renders through the LEGACY tiled scheduler instead — a cross-implementation comparator for
-//! `png_diff`, not the reference; the whole-viewport output is the ground truth.
+//! renders through the tiled scheduler instead — the independent reference implementation that
+//! arbitrates when whole-viewport variants disagree (it is what caught the prepass phantom ink).
 //!
 //! Run: `cargo run --release --example wv_strip_debug`.
 
