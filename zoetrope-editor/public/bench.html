@@ -54,6 +54,14 @@ const CELL = 40
 function main() {
   const url = URLS[BACKEND]
   if (!url) { log('unknown backend ' + BACKEND); return }
+  if (!navigator.gpu) {
+    log('ERROR: WebGPU unavailable — navigator.gpu is undefined.\n' +
+        'Most likely cause: this page is served over plain http from a non-localhost host,\n' +
+        'and browsers only expose WebGPU in secure contexts (https or localhost).\n' +
+        'Fix: open via an https tunnel, or on this machine set\n' +
+        'chrome://flags/#unsafely-treat-insecure-origin-as-secure to ' + location.origin + ' and relaunch.')
+    return
+  }
 
   import( url).then(async (mod) => {
     const X = await mod.default()
@@ -77,6 +85,8 @@ function main() {
     if (X.set_flat_walk && q.get('flatWalk') !== null) X.set_flat_walk(Number(q.get('flatWalk')))
     if (X.set_wv_scope && q.get('wvScope') !== null) X.set_wv_scope(Number(q.get('wvScope')))
     if (X.set_wv_atlas && q.get('wvAtlas') !== null) X.set_wv_atlas(Number(q.get('wvAtlas')))
+    if (X.set_wv_strip && q.get('strip') !== null) X.set_wv_strip(Number(q.get('strip')))
+    if (X.set_wv_batch && q.get('wvBatch') !== null) X.set_wv_batch(Number(q.get('wvBatch')))
     if (X.set_cmd_effect && q.get('cmdEffect') !== null) X.set_cmd_effect(Number(q.get('cmdEffect')))
     if (X.set_prof_passes && q.get('profPasses') !== null) X.set_prof_passes(Number(q.get('profPasses')))
     if (X.set_canvas_background && q.get('canvasBg')) X.set_canvas_background(parseInt(q.get('canvasBg'), 16) >>> 0)

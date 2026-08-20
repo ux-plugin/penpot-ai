@@ -164,8 +164,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VSOut
     return out;
 }
 
-@fragment
-fn fs_blur(in: VSOut) -> @location(0) vec4<f32> {
+fn blur_px(in: VSOut) -> vec4<f32> {
     let it = insts[in.inst];
     let r = i32(it.radius);
     let inv2s2 = 1.0 / (2.0 * it.sigma * it.sigma);
@@ -189,20 +188,19 @@ fn fs_blur(in: VSOut) -> @location(0) vec4<f32> {
     return outc;
 }
 
+
 // The EraseBy combine: `flood * (1 - punch.a)` — DestOut in one read pair, both rects living in the
 // SAME blurred atlas (`tex` and `tex2` bind the same view here). Runs at cell resolution with a
 // replace target, so the band is materialised before any filtering — the same order the per-shape
 // `blit_dstout` produced.
-@fragment
-fn fs_combine(in: VSOut) -> @location(0) vec4<f32> {
+fn combine_px(in: VSOut) -> vec4<f32> {
     let it = insts[in.inst];
     let flood = textureSampleLevel(tex, samp, clamp(in.uv, it.clamp_min, it.clamp_max), 0.0);
     let punch = textureSampleLevel(tex2, samp, clamp(in.uv2, it.clamp2_min, it.clamp2_max), 0.0);
     return flood * (1.0 - punch.a);
 }
 
-@fragment
-fn fs_composite(in: VSOut) -> @location(0) vec4<f32> {
+fn composite_px(in: VSOut) -> vec4<f32> {
     let it = insts[in.inst];
     let uv = clamp(in.uv, it.clamp_min, it.clamp_max);
     if (it.mode > 0.5) {
@@ -210,13 +208,30 @@ fn fs_composite(in: VSOut) -> @location(0) vec4<f32> {
     }
     return textureSampleLevel(tex, samp, uv, 0.0) * it.alpha;
 }
+
+// Every kernel in ONE function behind a per-instance switch (`_p0` = stage: 2 = blur, 3 = combine,
+// else composite). Measured free on Apple (timing A/B vs specialised entries) and AMD (LLPC: 32
+// VGPRs = max of the arms, full occupancy, no spills) — and one function means a future wave pass
+// draws mixed node kinds in a single instanced draw with no per-kind sorting.
+@fragment
+fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
+    let stage = insts[in.inst]._p0;
+    if (stage > 2.5) {
+        return combine_px(in);
+    }
+    if (stage > 1.5) {
+        return blur_px(in);
+    }
+    return composite_px(in);
+}
 "#;
 
 /// The two instanced pipelines (blur = replace, composite = premultiplied `SrcOver`, both the format
 /// the sink renders in) plus their shared bind layout. Built once per sink.
 pub(crate) struct BatchPipelines {
-    blur: wgpu::RenderPipeline,
-    combine: wgpu::RenderPipeline,
+    /// `fs_uber` with a replace target — the blur and combine passes.
+    replace: wgpu::RenderPipeline,
+    /// `fs_uber` blending premultiplied `SrcOver` — the per-round composite passes.
     composite: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
 }
@@ -312,9 +327,8 @@ impl BatchPipelines {
             },
         };
         Self {
-            blur: make("fs_blur", None, "wv batch blur"),
-            combine: make("fs_combine", None, "wv batch combine"),
-            composite: make("fs_composite", Some(srcover), "wv batch composite"),
+            replace: make("fs_uber", None, "wv batch replace"),
+            composite: make("fs_uber", Some(srcover), "wv batch composite"),
             layout,
         }
     }
@@ -355,9 +369,17 @@ impl BatchPipelines {
             return;
         }
         use wgpu::util::DeviceExt as _;
+        let stamped: Vec<Inst> = insts
+            .iter()
+            .map(|i| {
+                let mut i = *i;
+                i._pad[0] = 2.0;
+                i
+            })
+            .collect();
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wv batch blur insts"),
-            contents: bytemuck::cast_slice(insts),
+            contents: bytemuck::cast_slice(&stamped),
             usage: wgpu::BufferUsages::STORAGE,
         });
         let bind = self.bind(device, &buffer, src, src, sampler);
@@ -378,7 +400,7 @@ impl BatchPipelines {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.blur);
+        pass.set_pipeline(&self.replace);
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..4, 0..insts.len() as u32);
     }
@@ -400,9 +422,17 @@ impl BatchPipelines {
             return;
         }
         use wgpu::util::DeviceExt as _;
+        let stamped: Vec<Inst> = insts
+            .iter()
+            .map(|i| {
+                let mut i = *i;
+                i._pad[0] = 3.0;
+                i
+            })
+            .collect();
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wv batch combine insts"),
-            contents: bytemuck::cast_slice(insts),
+            contents: bytemuck::cast_slice(&stamped),
             usage: wgpu::BufferUsages::STORAGE,
         });
         let bind = self.bind(device, &buffer, src, src, sampler);
@@ -420,7 +450,7 @@ impl BatchPipelines {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.combine);
+        pass.set_pipeline(&self.replace);
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..4, 0..insts.len() as u32);
     }
