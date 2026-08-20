@@ -170,8 +170,26 @@ pub fn background_blur_sigma(radius: f32, scale: f32) -> f32 {
 /// `colour` is straight (non-premultiplied) RGBA. `sigma` of zero means a hard shadow and emits no
 /// blur at all.
 #[must_use]
+pub fn tint_graph(w: f32, h: f32, colour: [f32; 4]) -> Vec<GraphPass> {
+    vec![GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)])]
+}
+
+/// The straight colour a graph's [`UnitKind::Tint`] applies, if it has one. Reading it back out of
+/// the IR is what keeps the batched and per-shape paths from drifting: both take the colour from the
+/// same builder rather than looking it up twice.
+#[must_use]
+pub fn graph_tint(graph: &[GraphPass]) -> Option<[f32; 4]> {
+    graph.iter().find_map(|gp| match &gp.pass {
+        EffectPass::Unit { op: UnitKind::Tint, u, .. } => {
+            Some([u[12], u[13], u[14], u[15]])
+        }
+        _ => None,
+    })
+}
+
+#[must_use]
 pub fn drop_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<GraphPass> {
-    let mut passes = vec![GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)])];
+    let mut passes = tint_graph(w, h, colour);
     if sigma > 0.5 {
         passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Pass(0)]));
     }

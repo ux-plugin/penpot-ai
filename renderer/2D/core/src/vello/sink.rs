@@ -109,15 +109,20 @@ fn shadow_colour(id: u128, inset: bool, idx: usize) -> Option<[f32; 4]> {
 /// derives its instances from this graph instead of re-deriving sigma by hand, so the two paths
 /// cannot drift: a change to the builder changes both.
 fn wv_batch_cell_graph(c: &WvCell) -> Vec<crate::effect_graph::GraphPass> {
-    // The inner shadow's FLOOD (kind 2) is never blurred — only its punch (kind 3) is, exactly as
-    // [`Sink::wv_paint_inner_shadow`] blurs the punch and leaves the band silhouette sharp.
-    if c.key.1 == 2 {
-        return Vec::new();
-    }
-    if c.sigma >= 0.5 {
-        effect_graph::background_blur_graph(c.sigma * c.k)
-    } else {
-        Vec::new()
+    let (kwf, khf) = (c.kw as f32, c.kh as f32);
+    let sigma = if c.sigma >= 0.5 { c.sigma * c.k } else { 0.0 };
+    match c.key.1 {
+        // A drop shadow is its colour over its coverage, blurred.
+        0 => shadow_colour(c.key.0, false, c.key.2)
+            .map(|col| effect_graph::drop_shadow_graph(kwf, khf, col, sigma))
+            .unwrap_or_default(),
+        // The inner shadow's FLOOD is never blurred — only its punch (kind 3) is — so the flood
+        // carries the colour and nothing else. The erase that pairs them is the combine stage.
+        2 => shadow_colour(c.key.0, true, c.key.2)
+            .map(|col| effect_graph::tint_graph(kwf, khf, col))
+            .unwrap_or_default(),
+        _ if sigma > 0.0 => effect_graph::background_blur_graph(sigma),
+        _ => Vec::new(),
     }
 }
 
@@ -126,14 +131,20 @@ fn wv_batch_cell_graph(c: &WvCell) -> Vec<crate::effect_graph::GraphPass> {
 /// per-shape path. Growing the batch vocabulary means widening THIS match (plus one stage
 /// implementation), not touching the planner.
 fn wv_batch_supported(graph: &[crate::effect_graph::GraphPass]) -> bool {
-    graph.len() <= 1
+    use crate::effect_graph::{EffectPass, UnitKind};
+    let blurs = graph
+        .iter()
+        .filter(|gp| matches!(gp.pass, EffectPass::Blur { .. }))
+        .count();
+    blurs <= 1
         && graph.iter().all(|gp| {
             gp.scale >= 0.999
-                && matches!(
-                    gp.pass,
-                    crate::effect_graph::EffectPass::Blur { sigma, .. }
-                        if sigma <= crate::vello::graph::BLUR_MAX_SIGMA
-                )
+                && match &gp.pass {
+                    EffectPass::Blur { sigma, .. } => *sigma <= crate::vello::graph::BLUR_MAX_SIGMA,
+                    // Tint is the composite instance's colour; EraseBy is the combine stage.
+                    EffectPass::Unit { op: UnitKind::Tint | UnitKind::EraseBy, .. } => true,
+                    _ => false,
+                }
         })
 }
 
@@ -256,9 +267,14 @@ fn wv_batch_plan(
         // owns the sigma/linear semantics for BOTH paths. An empty graph is the identity: the cell
         // rides the blur stages as a sigma-0 copy so every batched cell lands in the surface the
         // later stages sample.
-        let params = |c: &WvCell| match wv_batch_cell_graph(c).first().map(|gp| gp.pass.clone()) {
-            Some(crate::effect_graph::EffectPass::Blur { sigma, linear }) => (sigma, linear),
-            _ => (0.0, false),
+        let params = |c: &WvCell| {
+            wv_batch_cell_graph(c)
+                .iter()
+                .find_map(|gp| match gp.pass {
+                    crate::effect_graph::EffectPass::Blur { sigma, linear } => Some((sigma, linear)),
+                    _ => None,
+                })
+                .unwrap_or((0.0, false))
         };
         let mut blur = |plan: &mut WvBatchPlan, c: &WvCell| {
             let (strip_rect, atlas_rect, _) = rects(c);
@@ -278,8 +294,7 @@ fn wv_batch_plan(
                     let mut inst = crate::vello::batch::Inst::new(
                         frame_rect, acc_size, atlas_rect, atlas_size, (0.0, 0.0), 0.0, false,
                     );
-                    if c.key.1 == 0 {
-                        let Some(colour) = shadow_colour(c.key.0, false, c.key.2) else { continue };
+                    if let Some(colour) = effect_graph::graph_tint(&wv_batch_cell_graph(c)) {
                         inst = inst.tinted(colour);
                     }
                     by_round.entry(rounds[j]).or_default().push(inst);
@@ -291,7 +306,7 @@ fn wv_batch_plan(
                     let (_, punch_rect, _) = rects(punch);
                     // Materialise the band in atlas A at the flood's own rect (both reads from B),
                     // then composite it from A — `mode` 1 selects the second texture.
-                    let Some(pc) = shadow_colour(flood.key.0, true, flood.key.2) else { continue };
+                    let Some(pc) = effect_graph::graph_tint(&wv_batch_cell_graph(flood)) else { continue };
                     plan.combine.push(
                         crate::vello::batch::Inst::new(
                             flood_rect, atlas_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
@@ -299,7 +314,7 @@ fn wv_batch_plan(
                         .with_src2(punch_rect, atlas_size, 0.0)
                         .with_alpha(pc[3]),
                     );
-                    let Some(colour) = shadow_colour(flood.key.0, true, flood.key.2) else { continue };
+                    let Some(colour) = effect_graph::graph_tint(&wv_batch_cell_graph(flood)) else { continue };
                     by_round.entry(rounds[j]).or_default().push(
                         crate::vello::batch::Inst::new(
                             frame_rect, acc_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
@@ -4312,5 +4327,42 @@ impl Sink {
         let mut u = vec![bw as f32, bh as f32];
         u.extend_from_slice(&params);
         Some(lower_graph(&effect_graph::custom_graph(u, param_vec4s), Some(&pipeline)))
+    }
+}
+
+#[cfg(test)]
+mod batch_admission_tests {
+    use super::wv_batch_supported;
+    use crate::effect_graph::{drop_shadow_graph, inner_shadow_graph, tint_graph};
+
+    const C: [f32; 4] = [0.1, 0.2, 0.3, 0.8];
+
+    /// The batch's vocabulary is the thing that decides whether shadows batch at all. Pixels cannot
+    /// prove this: a rejected graph falls back to the per-shape path, which now renders the same
+    /// image. So the predicate is asserted directly.
+    #[test]
+    fn the_batch_admits_the_shadow_graphs() {
+        assert!(wv_batch_supported(&drop_shadow_graph(64.0, 64.0, C, 4.0)));
+        assert!(wv_batch_supported(&drop_shadow_graph(64.0, 64.0, C, 0.0)));
+        assert!(wv_batch_supported(&tint_graph(64.0, 64.0, C)));
+        assert!(wv_batch_supported(&inner_shadow_graph(64.0, 64.0, C, 4.0)));
+    }
+
+    /// One blur per cell is what the H/V stage pair expresses; two would need a second round trip
+    /// the plan does not allocate.
+    #[test]
+    fn two_blurs_in_one_cell_are_refused() {
+        let mut g = drop_shadow_graph(64.0, 64.0, C, 4.0);
+        let blur = g.iter().find(|p| matches!(p.pass, crate::effect_graph::EffectPass::Blur { .. }));
+        let blur = blur.expect("a blurred drop shadow has a blur").clone();
+        g.push(blur);
+        assert!(!wv_batch_supported(&g));
+    }
+
+    /// A sigma past the separable cap still belongs on the per-shape path.
+    #[test]
+    fn a_blur_past_the_cap_is_refused() {
+        let big = crate::vello::graph::BLUR_MAX_SIGMA + 1.0;
+        assert!(!wv_batch_supported(&drop_shadow_graph(64.0, 64.0, C, big)));
     }
 }
