@@ -1527,6 +1527,52 @@ pub fn build_scale_scene_sized(
     b.finish()
 }
 
+/// A grid of `n` **glass lenses** over a patterned ground, spread across the whole canvas so their
+/// blur reaches stay disjoint — which is what puts them all in ONE round ([`crate::vello::sink`]'s
+/// round assignment separates lenses whose reaches overlap). That is the case the batched glass
+/// stages exist for: N lenses cost one pass per stage instead of a private pass chain each. `frost`
+/// picks the frosted variant (warp → blur → scatter tail) over the sharp one (a single fused unit
+/// pass), the two shapes the stages implement.
+#[must_use]
+pub fn build_glass_grid_scene(n: usize, frost: bool) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    for _ in 0..(cols * rows) {
+        b.advance("glass grid");
+    }
+    let (cw, ch) = canvas_size(cols * rows);
+    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
+    // The lens occupies the middle third of its pitch, so neighbours stay a full lens-width apart
+    // and no reach can bridge the gap.
+    let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
+    for i in 0..(n * 4) {
+        let (gx, gy) = ((i % (cols * 2)) as f64, (i / (cols * 2)) as f64);
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        let (x, y) = (gx * pitch_x * 0.5, gy * pitch_y * 0.5);
+        node.bounds = Rect::new(x, y, x + pitch_x * 0.5, y + pitch_y * 0.5);
+        let hue = (i * 37 % 255) as u8;
+        node.fills = vec![Paint::plain(Brush::Solid(col(40 + hue / 2, 200 - hue / 3, 120 + hue / 4)))];
+        b.root(node);
+    }
+    for i in 0..n {
+        let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);
+        let x = (gx + 0.5) * pitch_x - lw * 0.5;
+        let y = (gy + 0.5) * pitch_y - lh * 0.5;
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        node.bounds = Rect::new(x, y, x + lw, y + lh);
+        node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+        let mut g = glass_lens(TileMode::Decal);
+        if !frost {
+            g.blur = 0.0;
+            g.frost = 0.0;
+        }
+        node.glass = Some(g);
+        b.root(node);
+    }
+    b.finish()
+}
+
 /// Effect-ablation bits for [`build_stress_scene_mask`]: turn one effect kind off at a time and the
 /// frame-time delta attributes that effect's GPU cost.
 pub const FX_DROP: u32 = 1;

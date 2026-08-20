@@ -30,6 +30,10 @@ fn install(scene: &str) -> u32 {
         "boolean" => render_core::vello::abi::load_boolean_scene(),
         "matrix" => render_core::vello::abi::load_matrix_scene(),
         "parity" => render_core::vello::abi::load_parity_scene(),
+        "glass-grid" => render_core::vello::abi::load_glass_grid_scene(
+            std::env::var("GLASS_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+            u32::from(!std::env::var("GLASS_SHARP").is_ok()),
+        ),
         "scope" => render_core::vello::abi::load_scope_scene(),
         "showcase" => render_core::vello::abi::load_showcase_scene(),
         _ => render_core::vello::abi::load_layer_blur_scene(),
@@ -115,10 +119,51 @@ fn main() {
     let mut wv_sink = Sink::new(&device, FORMAT);
     let wv_target = make_target(&device, w, h, "wv ab whole-viewport");
     let _ = render_core::vello::abi::take_dirty();
+    let passes_before_wv = render_core::vello::sink::wv_passes_recorded();
     wv_sink.render_whole_viewport(&mut backend, &device, &queue, &wv_target, root, w, h, true);
     let wv_rgba = read_back(&device, &queue, &wv_target, w, h);
     write_png(&format!("{PROOFS}/{scene}-wv.png"), &wv_rgba, w, h);
 
+    let wv_passes = render_core::vello::sink::wv_passes_recorded() - passes_before_wv;
+    if std::env::var("WV_GLASS_AB").is_ok() {
+        unsafe { std::env::set_var("WV_GLASS", "0") };
+        let cells = install(&scene);
+        let _ = frame_setup(cells);
+        backend.sync_fonts();
+        backend.upload_pending_images();
+        let mut per_sink = Sink::new(&device, FORMAT);
+        let per_target = make_target(&device, w, h, "wv ab per-shape glass");
+        let _ = render_core::vello::abi::take_dirty();
+        let before_per = render_core::vello::sink::wv_passes_recorded();
+        per_sink.render_whole_viewport(&mut backend, &device, &queue, &per_target, root, w, h, true);
+        let per_rgba = read_back(&device, &queue, &per_target, w, h);
+        write_png(&format!("{PROOFS}/{scene}-wv-pershape.png"), &per_rgba, w, h);
+        let per_passes = render_core::vello::sink::wv_passes_recorded() - before_per;
+        let (d, m) = diff(&per_rgba, &wv_rgba);
+        println!("  batched glass vs per-shape glass: {d} px differ, max channel delta {m}");
+        println!("  render passes: batched {wv_passes}, per-shape {per_passes}");
+        if let Ok(reps) = std::env::var("WV_GLASS_TIME").map(|v| v.parse::<u32>().unwrap_or(10)) {
+            let mut time_it = |on: &str| {
+                unsafe { std::env::set_var("WV_GLASS", on) };
+                let mut sink = Sink::new(&device, FORMAT);
+                let t = make_target(&device, w, h, "wv ab timing");
+                let start = std::time::Instant::now();
+                for _ in 0..reps {
+                    let cells = install(&scene);
+                    let _ = frame_setup(cells);
+                    let _ = render_core::vello::abi::take_dirty();
+                    sink.render_whole_viewport(&mut backend, &device, &queue, &t, root, w, h, true);
+                    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                }
+                start.elapsed().as_secs_f64() * 1000.0 / f64::from(reps)
+            };
+            let batched = time_it("1");
+            let per = time_it("0");
+            unsafe { std::env::remove_var("WV_GLASS") };
+            println!("  frame time over {reps} frames: batched {batched:.2} ms, per-shape {per:.2} ms");
+        }
+        unsafe { std::env::remove_var("WV_GLASS") };
+    }
     let (diff_px, max_delta) = diff(&tiled_rgba, &wv_rgba);
     let total = (w * h) as usize;
     let pct = 100.0 * diff_px as f64 / total as f64;

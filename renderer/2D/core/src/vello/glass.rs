@@ -262,7 +262,7 @@ impl GlassPipeline {
 /// from the head (every unit in a run carries the identically-scaled field), and each unit
 /// contributes its own trailing params to the composed slots — `chromaticAberration` 17, `frost` 18,
 /// `specularOpacity` 19, `specularSaturation` 20.
-fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
+pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
     let mut out = [0.0_f32; 24];
     if let Some(op) = ops.first() {
         let (UnitOp::Warp(u) | UnitOp::Scatter(u) | UnitOp::Shade(u) | UnitOp::MaskMix(u)) = op;
@@ -285,7 +285,7 @@ fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
 /// Shared field computation: the rounded-box SDF + surface-profile bezel → Snell refraction vector,
 /// specular, and anti-aliased mask, as pure arithmetic on the 20-float uniform (indices 0..16). Both
 /// fused passes concatenate this after their `@binding(0) var<uniform> u` and call `computeField`.
-const FIELD_PRELUDE: &str = r#"
+pub(crate) const FIELD_PRELUDE: &str = r#"
 fn roundedRectSDF(p: vec2<f32>, halfSize: vec2<f32>, r: f32) -> f32 {
     let d = abs(p) - halfSize + vec2<f32>(r);
     return min(max(d.x, d.y), 0.0) + length(max(d, vec2<f32>(0.0))) - r;
@@ -331,20 +331,20 @@ fn calculateSpecular(d: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale:
 }
 // The refraction field at device pixel `fc`: (dpx.x, dpx.y, specular, mask). Reads the field geometry
 // from the shared uniform `u` indices 0..16 (identical layout to the old displacement uniform).
-fn computeField(fc: vec2<f32>) -> vec4<f32> {
-    let glassCenter = u[0].zw;
-    let glassSize = u[1].xy;
-    let cornerRadius = u[1].z;
-    let surfaceType = i32(u[1].w);
-    let bezelWidth = u[2].x;
-    let glassThickness = u[2].y;
-    let refractiveIndex = u[2].z;
-    let specularAngle = u[2].w;
-    let splay = u[3].x;
-    let tiltAngle = u[3].y;
-    let edgeBoost = u[3].z;
-    let zoom = u[3].w;
-    let scale = u[4].x;
+fn computeField(gi: u32, fc: vec2<f32>) -> vec4<f32> {
+    let glassCenter = fieldU(gi, 0u).zw;
+    let glassSize = fieldU(gi, 1u).xy;
+    let cornerRadius = fieldU(gi, 1u).z;
+    let surfaceType = i32(fieldU(gi, 1u).w);
+    let bezelWidth = fieldU(gi, 2u).x;
+    let glassThickness = fieldU(gi, 2u).y;
+    let refractiveIndex = fieldU(gi, 2u).z;
+    let specularAngle = fieldU(gi, 2u).w;
+    let splay = fieldU(gi, 3u).x;
+    let tiltAngle = fieldU(gi, 3u).y;
+    let edgeBoost = fieldU(gi, 3u).z;
+    let zoom = fieldU(gi, 3u).w;
+    let scale = fieldU(gi, 4u).x;
 
     let cR = min(cornerRadius, min(glassSize.x, glassSize.y));
     let localPos = fc - glassCenter;
@@ -384,7 +384,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 "#;
 
 /// Noise helpers for the frost scatter — included only when a composed pass has a scatter head.
-const HASH_PRELUDE: &str = r#"
+pub(crate) const HASH_PRELUDE: &str = r#"
 fn hash(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
@@ -393,15 +393,110 @@ fn hash2(p: vec2<f32>) -> vec2<f32> {
 }
 "#;
 
-/// Compose the fragment shader for one unit run. The body is a straight-line chain over a running
-/// `value`: a sampling head (plain same-pixel sample, the warp's masked displaced sample, or the
-/// frost scatter), then the pointwise tails in unit order. Every sample sits in uniform control flow
-/// (the frost branch tests a uniform; WGSL forbids `textureSample` under per-pixel branches, and the
-/// warp's passthrough is covered by `mask == 0 → refUV == uvpix` instead of a branch). The mask-mix
-/// carries the backdrop's premultiplied alpha through so a transparent scoped backdrop stays
-/// transparent instead of compositing as opaque black, and the shade gates its shine by the running
-/// alpha so a scoped lens is fully NIL where its scope has no content.
-fn units_shader((head, shade, maskmix, two_tex): UnitKey) -> String {
+/// The **unit chain body** for one composition — the shared math, emitted identically by every
+/// backend that runs these units (the per-shape pipelines below and the instanced batch stages in
+/// [`super::batch`]). It is a straight-line chain over a running `value`: a sampling head (plain
+/// same-pixel sample, the warp's masked displaced sample, or the frost scatter), then the pointwise
+/// tails in unit order. Every sample sits in uniform control flow (the frost branch tests a uniform;
+/// WGSL forbids `textureSample` under per-pixel branches, and the warp's passthrough is covered by
+/// `mask == 0 → refUV == uvpix` instead of a branch). The mask-mix carries the backdrop's
+/// premultiplied alpha through so a transparent scoped backdrop stays transparent instead of
+/// compositing as opaque black, and the shade gates its shine by the running alpha so a scoped lens
+/// is fully NIL where its scope has no content.
+///
+/// The body is written against a small contract the caller must have in scope, which is what lets
+/// one text serve a dedicated texture and an atlas cell alike:
+/// - `gi: u32` — the field index (`0u` when the field lives in a uniform),
+/// - `fc: vec2<f32>` — the fragment's position in the *cell's* pixel space,
+/// - `uvpix: vec2<f32>` — the same position in the cell's normalised space,
+/// - `fieldU(gi, i)`, `glassSample(gi, uv)`, `glassSampleOrig(gi, uv)` — the accessors,
+/// and it leaves the result in `value`.
+pub(crate) fn units_body((head, shade, maskmix, _two_tex): UnitKey) -> String {
+    let mut fs = String::from(
+        r#"
+    let resolution = fieldU(gi, 0u).xy;
+    let scale = fieldU(gi, 4u).x;
+    let field = computeField(gi, fc);
+    let dpx = field.xy;
+    let specular = field.b;
+    let mask = field.a;
+"#,
+    );
+    fs.push_str(match head {
+        1 => r#"
+    let chromaticAberration = fieldU(gi, 4u).y;
+    let dispUV = dpx / resolution;
+    let dLen = length(dpx);
+    let caStr = smoothstep(0.0, 5.0 * scale, dLen);
+    var caDir = vec2<f32>(0.0);
+    if (dLen > 0.01 * scale) { caDir = dpx / dLen; }
+    let caShift = caDir * chromaticAberration * caStr / resolution;
+    let refUV = uvpix + dispUV;
+    let refracted = vec4<f32>(
+        glassSample(gi, refUV - caShift).r,
+        glassSample(gi, refUV).g,
+        glassSample(gi, refUV + caShift).b,
+        glassSample(gi, refUV).a
+    );
+    let srcbg = glassSample(gi, uvpix);
+    var value = mix(srcbg, refracted, mask);
+"#,
+        2 => r#"
+    let frost = fieldU(gi, 4u).z;
+    let texel = vec2<f32>(1.0) / resolution;
+    var value = vec4<f32>(0.0);
+    if (frost > 0.01) {
+        var frostSum = vec4<f32>(0.0);
+        var totalW = 0.0;
+        for (var i = 0.0; i < 12.0; i = i + 1.0) {
+            let noise = hash2(fc + vec2<f32>(i * 7.3, i * 13.1));
+            let off = noise * frost * 6.0 * scale * texel;
+            frostSum = frostSum + glassSample(gi, uvpix + off);
+            totalW = totalW + 1.0;
+        }
+        value = frostSum / totalW;
+    } else {
+        value = glassSample(gi, uvpix);
+    }
+"#,
+        _ => r#"
+    var value = glassSample(gi, uvpix);
+"#,
+    });
+    if shade {
+        fs.push_str(
+            r#"
+    let specularOpacity = fieldU(gi, 4u).w;
+    let specularSaturation = fieldU(gi, 5u).x;
+    let specLuma = dot(value.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    var saturated = mix(vec3<f32>(specLuma), value.rgb, 1.0 + specularSaturation);
+    saturated = max(saturated, vec3<f32>(0.0));
+    let highlightColor = mix(vec3<f32>(1.0, 0.98, 0.95), saturated, min(specularSaturation / 9.0, 1.0));
+    value = vec4<f32>(value.rgb + specular * specularOpacity * highlightColor * value.a, value.a);
+"#,
+        );
+    }
+    if maskmix {
+        fs.push_str(
+            r#"
+    let bg = glassSampleOrig(gi, uvpix);
+    value = vec4<f32>(mix(bg.rgb, value.rgb, mask), mix(bg.a, value.a, mask));
+"#,
+        );
+    }
+    fs
+}
+
+/// Whether a composition's head samples with a noise jitter — the one unit needing [`HASH_PRELUDE`].
+pub(crate) fn needs_hash(key: UnitKey) -> bool {
+    key.0 == 2
+}
+
+/// Compose the per-shape fragment shader for one unit run: the shared [`units_body`] wired to a
+/// dedicated source texture (and an `original` texture when a mask-mix reads a distinct backdrop),
+/// with the field in a uniform (so `gi` is always `0u`).
+fn units_shader(key: UnitKey) -> String {
+    let (_, _, _, two_tex) = key;
     let mut bindings = String::from(
         r#"
 @group(0) @binding(0) var<uniform> u: array<vec4<f32>, 6>;
@@ -412,95 +507,34 @@ fn units_shader((head, shade, maskmix, two_tex): UnitKey) -> String {
     if two_tex {
         bindings.push_str("@group(0) @binding(3) var original: texture_2d<f32>;\n");
     }
-    if head == 2 {
+    if needs_hash(key) {
         bindings.push_str(HASH_PRELUDE);
     }
+    bindings.push_str(
+        r#"
+fn fieldU(gi: u32, i: u32) -> vec4<f32> { return u[i]; }
+fn glassSample(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(src, samp, uv); }
+"#,
+    );
+    bindings.push_str(if two_tex {
+        "fn glassSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(original, samp, uv); }\n"
+    } else {
+        "fn glassSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(src, samp, uv); }\n"
+    });
 
-    let mut fs = String::from(
+    let fs = format!(
         r#"
 @fragment
-fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
-    let resolution = u[0].xy;
-    let scale = u[4].x;
+fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {{
+    let gi = 0u;
     let fc = fragCoord.xy;
-    let uvpix = fc / resolution;
-    let field = computeField(fc);
-    let dpx = field.xy;
-    let specular = field.b;
-    let mask = field.a;
-"#,
-    );
-    fs.push_str(match head {
-        1 => r#"
-    let chromaticAberration = u[4].y;
-    let dispUV = dpx / resolution;
-    let dLen = length(dpx);
-    let caStr = smoothstep(0.0, 5.0 * scale, dLen);
-    var caDir = vec2<f32>(0.0);
-    if (dLen > 0.01 * scale) { caDir = dpx / dLen; }
-    let caShift = caDir * chromaticAberration * caStr / resolution;
-    let refUV = uvpix + dispUV;
-    let refracted = vec4<f32>(
-        textureSample(src, samp, refUV - caShift).r,
-        textureSample(src, samp, refUV).g,
-        textureSample(src, samp, refUV + caShift).b,
-        textureSample(src, samp, refUV).a
-    );
-    let srcbg = textureSample(src, samp, uvpix);
-    var value = mix(srcbg, refracted, mask);
-"#,
-        2 => r#"
-    let frost = u[4].z;
-    let texel = vec2<f32>(1.0) / resolution;
-    var value = vec4<f32>(0.0);
-    if (frost > 0.01) {
-        var frostSum = vec4<f32>(0.0);
-        var totalW = 0.0;
-        for (var i = 0.0; i < 12.0; i = i + 1.0) {
-            let noise = hash2(fc + vec2<f32>(i * 7.3, i * 13.1));
-            let off = noise * frost * 6.0 * scale * texel;
-            frostSum = frostSum + textureSample(src, samp, uvpix + off);
-            totalW = totalW + 1.0;
-        }
-        value = frostSum / totalW;
-    } else {
-        value = textureSample(src, samp, uvpix);
-    }
-"#,
-        _ => r#"
-    var value = textureSample(src, samp, uvpix);
-"#,
-    });
-    if shade {
-        fs.push_str(
-            r#"
-    let specularOpacity = u[4].w;
-    let specularSaturation = u[5].x;
-    let specLuma = dot(value.rgb, vec3<f32>(0.299, 0.587, 0.114));
-    var saturated = mix(vec3<f32>(specLuma), value.rgb, 1.0 + specularSaturation);
-    saturated = max(saturated, vec3<f32>(0.0));
-    let highlightColor = mix(vec3<f32>(1.0, 0.98, 0.95), saturated, min(specularSaturation / 9.0, 1.0));
-    value = vec4<f32>(value.rgb + specular * specularOpacity * highlightColor * value.a, value.a);
-"#,
-        );
-    }
-    if maskmix {
-        fs.push_str(if two_tex {
-            r#"
-    let bg = textureSample(original, samp, uvpix);
-    value = vec4<f32>(mix(bg.rgb, value.rgb, mask), mix(bg.a, value.a, mask));
-"#
-        } else {
-            r#"
-    let bg = textureSample(src, samp, uvpix);
-    value = vec4<f32>(mix(bg.rgb, value.rgb, mask), mix(bg.a, value.a, mask));
-"#
-        });
-    }
-    fs.push_str("
+    let uvpix = fc / fieldU(gi, 0u).xy;
+{body}
     return value;
-}
-");
+}}
+"#,
+        body = units_body(key)
+    );
     format!("{bindings}{field}{vs}{fs}", field = FIELD_PRELUDE, vs = VERTEX_SHADER)
 }
 

@@ -2258,6 +2258,14 @@ pub extern "C" fn load_scale_scene_sized(n: u32, effect_every: u32, step: f32, s
     ))
 }
 
+/// Install the **glass grid** ([`crate::parity::build_glass_grid_scene`]) — `n` disjoint lenses that
+/// all land in one round, the case the batched glass stages exist for. `frost != 0` uses the frosted
+/// lens (warp → blur → scatter tail); `0` the sharp one (one fused unit pass). Returns the cell count.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_glass_grid_scene(n: u32, frost: u32) -> u32 {
+    install_fixture(crate::parity::build_glass_grid_scene(n as usize, frost != 0))
+}
+
 /// Install the **matrix** fixture (every effect combination). Returns the cell count.
 #[unsafe(no_mangle)]
 pub extern "C" fn load_matrix_scene() -> u32 {

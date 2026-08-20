@@ -38,9 +38,38 @@ pub(crate) struct Inst {
     pub linearize: f32,
     pub alpha: f32,
     /// Composite source select: 0 = the blurred atlas (`tex0`), 1 = the combined atlas (`tex1`,
-    /// where the erase stage materialised inner-shadow bands).
+    /// where the erase stage materialised inner-shadow bands). The glass stages reuse it as the
+    /// instance's index into the field buffer.
     pub mode: f32,
+    /// `[0]` = stage tag (see `fs_uber`); `[1]`/`[2]` = this instance's destination origin in target
+    /// pixels, which the glass stages subtract from `@builtin(position)` to recover the cell-local
+    /// fragment coordinate the field math is expressed in.
     pub _pad: [f32; 3],
+}
+
+/// One glass cell's field parameters — the same 24-float composed uniform the per-shape pipeline
+/// binds ([`super::glass`]), here indexed out of a storage array so every cell in a batched stage
+/// carries its own. `align(16)` matches the WGSL `array<vec4<f32>, 6>` it maps to.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct GlassField {
+    pub u: [f32; 24],
+}
+
+/// Stage tags stamped into `Inst::_pad[0]`, selecting the arm `fs_uber` runs.
+pub(crate) mod stage {
+    /// Plain copy / composite of one source rect (the default arm).
+    pub const COMPOSITE: f32 = 0.0;
+    /// Separable Gaussian tap loop along the instance's `step`.
+    pub const BLUR: f32 = 2.0;
+    /// EraseBy combine: `flood × (1 − punch.a)`.
+    pub const COMBINE: f32 = 3.0;
+    /// Glass warp alone — the head of a frosted chain, whose result a blur then consumes.
+    pub const GLASS_WARP: f32 = 4.0;
+    /// Sharp glass: warp + shade + mask-mix fused, the whole lens in one draw.
+    pub const GLASS_SHARP: f32 = 5.0;
+    /// Frosted glass tail: scatter + shade + mask-mix over the blurred warp.
+    pub const GLASS_FROST: f32 = 6.0;
 }
 
 impl Inst {
@@ -85,6 +114,16 @@ impl Inst {
         }
     }
 
+    /// The instance tagged with its destination origin in target pixels — what the glass arms
+    /// subtract from the fragment position to get the cell-local coordinate the field is expressed
+    /// in. Integers on both sides, so the recovered coordinate is exactly the dedicated-texture
+    /// `fragCoord` the per-shape pipeline sees.
+    pub fn at(mut self, dst_rect: (f32, f32, f32, f32)) -> Self {
+        self._pad[1] = dst_rect.0;
+        self._pad[2] = dst_rect.1;
+        self
+    }
+
     /// The instance with a second source rect (pixels in the same `src_size` texture): the erase
     /// stage reads the punch through it, the band composite selects `tex1` through `mode`.
     pub fn with_src2(mut self, src2_rect: (f32, f32, f32, f32), src_size: (f32, f32), mode: f32) -> Self {
@@ -99,7 +138,7 @@ impl Inst {
     }
 }
 
-const BATCH_SHADER: &str = r#"
+const BATCH_PRELUDE: &str = r#"
 struct Inst {
     dst_min: vec2<f32>,
     dst_max: vec2<f32>,
@@ -125,6 +164,36 @@ struct Inst {
 @group(0) @binding(1) var tex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var tex2: texture_2d<f32>;
+
+struct GlassField { u: array<vec4<f32>, 6> };
+@group(0) @binding(4) var<storage, read> fields: array<GlassField>;
+
+// The running instance's cell rects, published before a glass arm runs its shared unit body: the
+// body samples in the CELL's normalised space, and these map that onto the atlas rect the cell
+// actually occupies. The clamps reproduce a dedicated texture's ClampToEdge at the rect's own edge
+// texels, so a sample can never bleed in from a neighbouring cell.
+var<private> g_src_min: vec2<f32>;
+var<private> g_src_max: vec2<f32>;
+var<private> g_src_cmin: vec2<f32>;
+var<private> g_src_cmax: vec2<f32>;
+var<private> g_orig_min: vec2<f32>;
+var<private> g_orig_max: vec2<f32>;
+var<private> g_orig_cmin: vec2<f32>;
+var<private> g_orig_cmax: vec2<f32>;
+
+fn fieldU(gi: u32, i: u32) -> vec4<f32> { return fields[gi].u[i]; }
+fn glassSample(gi: u32, uv: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(tex, samp, clamp(mix(g_src_min, g_src_max, uv), g_src_cmin, g_src_cmax), 0.0);
+}
+fn glassSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(tex2, samp, clamp(mix(g_orig_min, g_orig_max, uv), g_orig_cmin, g_orig_cmax), 0.0);
+}
+fn glassBegin(it: Inst) {
+    g_src_min = it.src_min; g_src_max = it.src_max;
+    g_src_cmin = it.clamp_min; g_src_cmax = it.clamp_max;
+    g_orig_min = it.src2_min; g_orig_max = it.src2_max;
+    g_orig_cmin = it.clamp2_min; g_orig_cmax = it.clamp2_max;
+}
 
 fn srgb_to_lin(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
@@ -209,22 +278,9 @@ fn composite_px(in: VSOut) -> vec4<f32> {
     return textureSampleLevel(tex, samp, uv, 0.0) * it.alpha;
 }
 
-// Every kernel in ONE function behind a per-instance switch (`_p0` = stage: 2 = blur, 3 = combine,
-// else composite). Measured free on Apple (timing A/B vs specialised entries) and AMD (LLPC: 32
-// VGPRs = max of the arms, full occupancy, no spills) — and one function means a future wave pass
-// draws mixed node kinds in a single instanced draw with no per-kind sorting.
-@fragment
-fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
-    let stage = insts[in.inst]._p0;
-    if (stage > 2.5) {
-        return combine_px(in);
-    }
-    if (stage > 1.5) {
-        return blur_px(in);
-    }
-    return composite_px(in);
-}
 "#;
+
+
 
 /// The two instanced pipelines (blur = replace, composite = premultiplied `SrcOver`, both the format
 /// the sink renders in) plus their shared bind layout. Built once per sink.
@@ -234,13 +290,78 @@ pub(crate) struct BatchPipelines {
     /// `fs_uber` blending premultiplied `SrcOver` — the per-round composite passes.
     composite: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    /// One-element placeholder bound at binding 4 by every non-glass stage.
+    no_fields: wgpu::Buffer,
+}
+
+/// Emit one glass arm: publish the instance's cell rects, recover the cell-local fragment
+/// coordinate from the destination origin the instance carries, then run the SHARED unit body for
+/// this composition ([`super::glass::units_body`]) — the same text the per-shape pipeline compiles,
+/// so a batched cell and a dedicated-texture cell execute identical math.
+fn glass_arm(name: &str, key: (u8, bool, bool, bool)) -> String {
+    format!(
+        r#"
+fn {name}(in: VSOut) -> vec4<f32> {{
+    let it = insts[in.inst];
+    glassBegin(it);
+    let gi = u32(it.mode);
+    let fc = in.pos.xy - vec2<f32>(it._p1, it._p2);
+    let uvpix = fc / fieldU(gi, 0u).xy;
+{body}
+    return value;
+}}
+"#,
+        body = crate::vello::glass::units_body(key)
+    )
+}
+
+/// The whole batch module: the prelude, the glass arms generated from the shared unit bodies, and
+/// the single `fs_uber` entry every stage dispatches through.
+fn batch_shader() -> String {
+    let mut s = String::from(BATCH_PRELUDE);
+    s.push_str(crate::vello::glass::FIELD_PRELUDE);
+    if crate::vello::glass::needs_hash((2, false, false, false)) {
+        s.push_str(crate::vello::glass::HASH_PRELUDE);
+    }
+    s.push_str(&glass_arm("glass_warp_px", (1, false, false, false)));
+    s.push_str(&glass_arm("glass_sharp_px", (1, true, true, false)));
+    s.push_str(&glass_arm("glass_frost_px", (2, true, true, true)));
+    s.push_str(
+        r#"
+// Every kernel in ONE function behind a per-instance switch (`_p0` = the stage tag). Measured free
+// on Apple (timing A/B vs specialised entries) and AMD (LLPC: 32 VGPRs = max of the arms, full
+// occupancy, no spills) — and one function means a future wave pass draws mixed node kinds in a
+// single instanced draw with no per-kind sorting.
+@fragment
+fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
+    let stage = insts[in.inst]._p0;
+    if (stage > 5.5) {
+        return glass_frost_px(in);
+    }
+    if (stage > 4.5) {
+        return glass_sharp_px(in);
+    }
+    if (stage > 3.5) {
+        return glass_warp_px(in);
+    }
+    if (stage > 2.5) {
+        return combine_px(in);
+    }
+    if (stage > 1.5) {
+        return blur_px(in);
+    }
+    return composite_px(in);
+}
+"#,
+    );
+    s
 }
 
 impl BatchPipelines {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wv batch"),
-            source: wgpu::ShaderSource::Wgsl(BATCH_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(batch_shader().into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wv batch layout"),
@@ -278,6 +399,16 @@ impl BatchPipelines {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -326,10 +457,17 @@ impl BatchPipelines {
                 operation: wgpu::BlendOperation::Add,
             },
         };
+        use wgpu::util::DeviceExt as _;
+        let no_fields = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wv batch no fields"),
+            contents: bytemuck::cast_slice(&[GlassField { u: [0.0; 24] }]),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
         Self {
             replace: make("fs_uber", None, "wv batch replace"),
             composite: make("fs_uber", Some(srcover), "wv batch composite"),
             layout,
+            no_fields,
         }
     }
 
@@ -341,6 +479,21 @@ impl BatchPipelines {
         src2: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
+        self.bind_fields(device, buffer, src, src2, sampler, &self.no_fields)
+    }
+
+    /// [`Self::bind`] with an explicit field buffer — the glass stages' per-cell parameters. Every
+    /// other stage binds the one-element placeholder, since the layout always declares binding 4.
+    #[expect(clippy::too_many_arguments, reason = "one bind group, one argument per binding")]
+    fn bind_fields(
+        &self,
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
+        src: &wgpu::TextureView,
+        src2: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        fields: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wv batch bind"),
             layout: &self.layout,
@@ -349,6 +502,7 @@ impl BatchPipelines {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(src2) },
+                wgpu::BindGroupEntry { binding: 4, resource: fields.as_entire_binding() },
             ],
         })
     }
@@ -373,7 +527,7 @@ impl BatchPipelines {
             .iter()
             .map(|i| {
                 let mut i = *i;
-                i._pad[0] = 2.0;
+                i._pad[0] = stage::BLUR;
                 i
             })
             .collect();
@@ -426,7 +580,7 @@ impl BatchPipelines {
             .iter()
             .map(|i| {
                 let mut i = *i;
-                i._pad[0] = 3.0;
+                i._pad[0] = stage::COMBINE;
                 i
             })
             .collect();
@@ -439,6 +593,85 @@ impl BatchPipelines {
         crate::vello::sink::note_passes(1);
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("wv batch combine"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.replace);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..4, 0..insts.len() as u32);
+    }
+
+    /// Upload `insts` stamped with `tag` as a storage buffer for a later pass — the split
+    /// [`Self::composite_pass`] needs, which draws sub-ranges of one shared buffer.
+    pub fn upload(&self, device: &wgpu::Device, insts: &[Inst], tag: f32) -> wgpu::Buffer {
+        use wgpu::util::DeviceExt as _;
+        let stamped: Vec<Inst> = insts
+            .iter()
+            .map(|i| {
+                let mut i = *i;
+                i._pad[0] = tag;
+                i
+            })
+            .collect();
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wv batch insts"),
+            contents: bytemuck::cast_slice(&stamped),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+    }
+
+    /// Run ONE glass stage: every instance is a lens cell, drawn with the arm `tag` selects, reading
+    /// its own field parameters out of `fields` (indexed by `Inst::mode`). `src` is the atlas the
+    /// unit body samples, `orig` the one a mask-mix reads its backdrop from (the same view when the
+    /// composition has no distinct original). Replace target, loaded: only the instances' own cell
+    /// rects are written, and only those rects are ever sampled back.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context travels with the pass")]
+    pub fn glass_pass(
+        &self,
+        device: &wgpu::Device,
+        enc: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        src: &wgpu::TextureView,
+        orig: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        insts: &[Inst],
+        fields: &[GlassField],
+        tag: f32,
+    ) {
+        if insts.is_empty() {
+            return;
+        }
+        use wgpu::util::DeviceExt as _;
+        let stamped: Vec<Inst> = insts
+            .iter()
+            .map(|i| {
+                let mut i = *i;
+                i._pad[0] = tag;
+                i
+            })
+            .collect();
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wv glass insts"),
+            contents: bytemuck::cast_slice(&stamped),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let fields_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wv glass fields"),
+            contents: bytemuck::cast_slice(fields),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let bind = self.bind_fields(device, &buffer, src, orig, sampler, &fields_buf);
+        crate::vello::sink::note_passes(1);
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wv glass stage"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
