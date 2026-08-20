@@ -189,8 +189,9 @@ pub enum FilterNode {
     Offset { dx: f32, dy: f32 },
     /// An inner (inset) shadow: a blurred, offset shadow drawn *inside* the shape.
     InnerShadow { dx: f32, dy: f32, sigma: f32, color: peniko::Color },
-    /// A raw custom-effect branch: `effect` index + flat uniform params.
-    Custom { effect: u32, params: Vec<f32> },
+    /// A hand-written shader branch: `effect` indexes the host's shader table, `params` are its flat
+    /// uniforms. Named to match [`crate::effect::Op::Shader`], the op it runs as.
+    Shader { effect: u32, params: Vec<f32> },
 }
 
 /// A linear chain of filter passes wrapping a shape and its children. `nodes` is in **application
@@ -923,7 +924,7 @@ impl Scene {
                                 fnv_f64(hash, f64::from(c));
                             }
                         }
-                        FilterNode::Custom { effect, params } => {
+                        FilterNode::Shader { effect, params } => {
                             fnv_u64(hash, 2);
                             fnv_u64(hash, u64::from(*effect));
                             fnv_u64(hash, params.len() as u64);
@@ -1466,7 +1467,7 @@ mod tests {
         };
         let blur = FilterNode::Blur { sigma: 4.0 };
         let offset = FilterNode::Offset { dx: 10.0, dy: 0.0 };
-        let tint = FilterNode::Custom { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] };
+        let tint = FilterNode::Shader { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] };
         let inner = FilterNode::InnerShadow {
             dx: 6.0,
             dy: 6.0,

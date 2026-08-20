@@ -9,6 +9,20 @@
 /// Skia's `kBLUR_SIGMA_SCALE` (1/√3 ≈ 0.577350). Mirrors `render-wasm/src/shapes/blurs.rs`.
 const BLUR_SIGMA_SCALE: f32 = 0.577_350_27;
 
+/// The inverse of [`radius_to_sigma`]. Needed because the two authoring routes disagree about which
+/// quantity they carry: a shadow or a layer blur is authored as a *radius*, a filter-graph node as a
+/// *sigma*. The pipeline speaks radii, so a sigma is mapped back rather than plugged in — plugging it
+/// in directly would render a filter blur `1/0.577` too wide.
+#[inline]
+#[must_use]
+pub fn sigma_to_radius(sigma: f32) -> f32 {
+    if sigma > 0.5 {
+        (sigma - 0.5) / BLUR_SIGMA_SCALE
+    } else {
+        0.0
+    }
+}
+
 /// Convert a blur radius to a Gaussian sigma. Zero (and negative) radii mean no blur.
 #[inline]
 pub fn radius_to_sigma(radius: f32) -> f32 {

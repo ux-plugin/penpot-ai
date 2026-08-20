@@ -73,6 +73,23 @@ pub enum Op {
     Lens(Box<Glass>),
 }
 
+/// Lower one authored filter node to the op it runs as.
+///
+/// A filter graph is the one authoring route where the chain is written directly rather than implied
+/// by a named effect, so it lowers into the *same* body ops a layer blur already uses — no path of
+/// its own. `None` for the two that are not body transforms: an inner shadow composites over the
+/// shape rather than replacing it, and a `Shader` node names its code by index in a table the
+/// neutral model does not carry (the host supplies WGSL through [`crate::model::CustomShader`]
+/// instead). Both are dropped here rather than mis-rendered.
+fn filter_op(n: &crate::model::FilterNode) -> Option<Op> {
+    use crate::model::FilterNode;
+    match n {
+        FilterNode::Blur { sigma } => Some(Op::Blur { radius: crate::blur::sigma_to_radius(*sigma) }),
+        FilterNode::Offset { dx, dy } => Some(Op::Offset(Vec2::new(f64::from(*dx), f64::from(*dy)))),
+        FilterNode::InnerShadow { .. } | FilterNode::Shader { .. } => None,
+    }
+}
+
 /// One effect, in the only three terms a renderer needs.
 #[derive(Clone, Debug)]
 pub struct Effect {
@@ -215,6 +232,7 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
         .spread_shaders()
         .map(|s| Op::Shader(Box::new(s.clone())))
         .chain(node.blur.map(|radius| Op::Blur { radius }))
+        .chain(node.filter_graph.iter().flat_map(|g| g.nodes.iter()).filter_map(filter_op))
         .collect();
     if !body_ops.is_empty() {
         out.push(Effect { source: Source::Body, ops: body_ops, compose: Compose::Replace });

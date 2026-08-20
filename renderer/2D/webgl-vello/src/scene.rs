@@ -611,7 +611,7 @@ fn lower_node(filter_node: &m::FilterNode) -> Filter {
                 edge_mode: EdgeMode::None,
             })
         }
-        m::FilterNode::Custom { effect, params } => Filter::from_primitive(FilterPrimitive::Custom {
+        m::FilterNode::Shader { effect, params } => Filter::from_primitive(FilterPrimitive::Custom {
             effect: *effect,
             params: params.iter().copied().collect(),
             expansion: [0.0, 0.0, 0.0, 0.0],

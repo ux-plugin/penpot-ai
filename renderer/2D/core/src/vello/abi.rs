@@ -1444,7 +1444,7 @@ fn parse_filter_graph(bytes: &[u8]) -> Option<crate::model::FilterGraph> {
                 for _ in 0..param_count {
                     params.push(f32_at(&mut cur)?);
                 }
-                FilterNode::Custom { effect, params }
+                FilterNode::Shader { effect, params }
             }
             _ => return None,
         };
@@ -2567,7 +2567,7 @@ mod tests {
                 FilterNode::Blur { sigma: 4.0 },
                 FilterNode::Offset { dx: 10.0, dy: 0.0 },
                 FilterNode::InnerShadow { dx: 6.0, dy: 6.0, sigma: 4.0, color: argb_to_color(0x80ff_0000) },
-                FilterNode::Custom { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] },
+                FilterNode::Shader { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] },
             ]
         );
 

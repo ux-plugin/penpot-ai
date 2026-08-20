@@ -536,6 +536,10 @@ struct WvCell {
     kh: u32,
     k: f32,
     sigma: f32,
+    /// Device-space translation this cell's chain applies to its result (a filter graph's `Offset`).
+    /// Derived from the effect's ops the same way `sigma` is, because the consumers are handed a
+    /// cell rather than the ops — a value carried on the cell reaches every one of them.
+    dev_offset: (f32, f32),
 }
 
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
@@ -1148,7 +1152,14 @@ impl Sink {
                             let non_box = matches!(n.kind, crate::model::ShapeKind::Path | crate::model::ShapeKind::Text);
                             let has_gather = n.background_blur.is_some() || n.glass.is_some() || n.gather_shader().is_some();
                             let has_silhouette_shadow = non_box && !n.shadows.is_empty();
-                            let needs_stack = has_silhouette_shadow || n.blur.is_some() || n.has_spread_shader();
+                            // Ask what the node LOWERS TO, not which authoring fields it happens to
+                            // set: any effect that replaces the body runs through the stack path, so
+                            // a filter graph gets there the same way a layer blur does. Re-listing
+                            // the fields here is what kept filter graphs from rendering at all.
+                            let replaces_body = crate::effect::effect_stack(n)
+                                .iter()
+                                .any(|e| e.compose == crate::effect::Compose::Replace);
+                            let needs_stack = has_silhouette_shadow || replaces_body;
                             if needs_stack {
                                 Some((i, id, FX_STACK))
                             } else if has_gather {
@@ -2000,6 +2011,21 @@ impl Sink {
             let Some((bx, by, bw, bh)) = wv_device_box(effect.footprint(base), full_view, width, height) else {
                 continue;
             };
+            // ONLY the body carries its chain's translation here. A shadow's silhouette is
+            // rasterized already offset (`build_shadow_silhouette` takes `apply_offset`), so adding
+            // it again would move every drop shadow twice — measured as a 10% frame diff before this
+            // guard existed.
+            let dev_offset = if !matches!(effect.source, Source::Body) {
+                (0.0, 0.0)
+            } else {
+                effect.ops.iter().fold((0.0_f32, 0.0_f32), |(x, y), op| match op {
+                    crate::effect::Op::Offset(o) => {
+                        let c = full_view.as_coeffs();
+                        (x + (c[0] * o.x + c[2] * o.y) as f32, y + (c[1] * o.x + c[3] * o.y) as f32)
+                    }
+                    _ => (x, y),
+                })
+            };
             let device_sigma = effect
                 .governing_blur()
                 .map(|r| crate::blur::radius_to_sigma(r) * view_scale)
@@ -2017,7 +2043,7 @@ impl Sink {
                 _ => 0,
             };
             for &kind in kinds {
-                out.push(WvCell { key: (id, kind, index), bx, by, bw, bh, kw, kh, k, sigma: device_sigma.unwrap_or(0.0) });
+                out.push(WvCell { key: (id, kind, index), bx, by, bw, bh, kw, kh, k, sigma: device_sigma.unwrap_or(0.0), dev_offset });
             }
             match kinds[0] {
                 0 => drop_i += 1,
@@ -2029,7 +2055,7 @@ impl Sink {
             if let Some((bx, by, bw, bh)) = wv_device_box(base, full_view, width, height) {
                 let k = tiling::resolution_cap(full_view, 0.0) as f32;
                 let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
-                out.push(WvCell { key: (id, 1, 0), bx, by, bw, bh, kw, kh, k, sigma: 0.0 });
+                out.push(WvCell { key: (id, 1, 0), bx, by, bw, bh, kw, kh, k, sigma: 0.0, dev_offset: (0.0, 0.0) });
             }
         }
         out
@@ -2159,10 +2185,19 @@ impl Sink {
     /// The page→cell transform for one packed source surface: place the cell's device-space box at
     /// `(ox + cell.x, oy + cell.y)`, at the surface's render scale `k`. Shared by both fill
     /// strategies so a cell lands on the same texels whichever one runs.
+    ///
+    /// The cell's own translation ([`WvCell::dev_offset`], a filter graph's `Offset`) is applied
+    /// here rather than at the stamp, because the cell's box already moved with it — its footprint
+    /// walks the same ops — so rendering at the unmoved position and stamping at the moved box would
+    /// cancel exactly, which is what made a filter offset a silent no-op. Zero for every chain
+    /// without one, so every other cell is byte-identical.
     fn wv_cell_transform(c: &WvCell, place: &crate::atlas::Placement, ox: u32, oy: u32, root: Affine) -> Affine {
         Affine::translate((f64::from(ox + place.x), f64::from(oy + place.y)))
             * Affine::scale(f64::from(c.k))
-            * Affine::translate((-f64::from(c.bx), -f64::from(c.by)))
+            * Affine::translate((
+                f64::from(c.dev_offset.0) - f64::from(c.bx),
+                f64::from(c.dev_offset.1) - f64::from(c.by),
+            ))
             * root
     }
 
@@ -2314,7 +2349,7 @@ impl Sink {
         sz: (f32, f32),
     ) {
         {
-            let WvCell { bx, by, bw, bh, kw, kh, k, sigma, key } = cell;
+            let WvCell { bx, by, bw, bh, kw, kh, k, sigma, key, .. } = cell;
             let (bxf, byf, bwf, bhf) = (bx as f32, by as f32, bw as f32, bh as f32);
             let sil_view = if let Some(v) = self.wv_atlas.get(&key).map(|(_, v)| v.clone()) {
                 v
@@ -2376,7 +2411,7 @@ impl Sink {
         sz: (f32, f32),
     ) {
         {
-            let WvCell { bx, by, bw, bh, kw, kh, k, sigma, key } = cell;
+            let WvCell { bx, by, bw, bh, kw, kh, k, sigma, key, .. } = cell;
             let i = key.2;
             let ksz = (kw as f32, kh as f32);
             let full_src = (0.0, 0.0, ksz.0, ksz.1);
@@ -2526,7 +2561,13 @@ impl Sink {
     ) {
         let WvCell { bx, by, bw, bh, kw, kh, k, sigma, .. } = cell;
         let blur_sigma = (sigma >= 0.5).then_some(sigma);
-        let crop = Affine::translate((-f64::from(bx), -f64::from(by))) * root;
+        // A body chain may translate its result (a filter graph's `Offset`). The cell's own box
+        // already moved with it — `Effect::footprint` walks the same ops — so rendering into the
+        // moved cell and stamping it back would cancel out exactly. Shift the render by the same
+        // device vector to make the move real. Zero for every chain without an offset, so the
+        // layer-blur path is untouched.
+        let (odx, ody) = (f64::from(cell.dev_offset.0), f64::from(cell.dev_offset.1));
+        let crop = Affine::translate((odx - f64::from(bx), ody - f64::from(by))) * root;
         let (bxf, byf, bwf, bhf) = (bx as f32, by as f32, bw as f32, bh as f32);
         let ksz = (kw as f32, kh as f32);
 
