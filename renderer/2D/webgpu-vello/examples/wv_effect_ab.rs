@@ -29,6 +29,9 @@ fn install(scene: &str) -> u32 {
         "combined" => render_core::vello::abi::load_combined_scene(),
         "boolean" => render_core::vello::abi::load_boolean_scene(),
         "matrix" => render_core::vello::abi::load_matrix_scene(),
+        "parity" => render_core::vello::abi::load_parity_scene(),
+        "scope" => render_core::vello::abi::load_scope_scene(),
+        "showcase" => render_core::vello::abi::load_showcase_scene(),
         _ => render_core::vello::abi::load_layer_blur_scene(),
     }
 }

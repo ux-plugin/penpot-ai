@@ -10,7 +10,9 @@
 //! writes: every pixel writes only itself, and a scatter's outward "spread" is just its read reach seen
 //! from the output pixel (a shadow that reaches `r` out is an output pixel that reads `r` in). So the
 //! classifier below carries reads, not writes, and [`partition`] turns a graph into `[Fused | Barrier |
-//! …]` — glass falls out as `[Fused | Barrier | Fused]` when frosted, a single `[Fused]` when sharp.
+//! …]` — the glass unit chain falls out as `[Fused(warp) | Barrier(blur) | Barrier(scatter) |
+//! Fused(shade, mask-mix)]` when frosted, a single all-fused segment when sharp; [`execution_groups`]
+//! then folds each gather-headed barrier together with its pointwise tail into one materialised pass.
 
 use crate::effect_graph::{EffectPass, GraphPass, Src};
 
@@ -50,8 +52,8 @@ pub struct FootprintDescriptor {
 pub fn pass_reach(pass: &EffectPass) -> Reach {
     match pass {
         EffectPass::Blur { sigma, .. } => Reach::Neighborhood(3.0 * sigma),
-        EffectPass::GlassRefraction { .. } => Reach::SamePixel,
-        EffectPass::GlassComposite { u } => {
+        EffectPass::Warp { .. } => Reach::SamePixel,
+        EffectPass::Scatter { u } => {
             let frost = u[17];
             if frost > 0.01 {
                 Reach::Neighborhood(frost * 6.0 * u[16])
@@ -59,6 +61,7 @@ pub fn pass_reach(pass: &EffectPass) -> Reach {
                 Reach::SamePixel
             }
         }
+        EffectPass::Shade { .. } | EffectPass::MaskMix { .. } => Reach::SamePixel,
         EffectPass::Custom { .. } => Reach::Global,
     }
 }
@@ -111,6 +114,48 @@ pub fn partition(graph: &[GraphPass]) -> Vec<Stage> {
 #[must_use]
 pub fn barrier_count(stages: &[Stage]) -> usize {
     stages.iter().filter(|s| matches!(s, Stage::Barrier(_))).count()
+}
+
+/// Whether a barrier pass can *head* a fused run: it samples its input in a neighbourhood but its
+/// output is a plain per-pixel value, so any same-pixel passes that follow can execute in its own
+/// fragment — a gather head with a pointwise tail. True for the unit gathers ([`EffectPass::Scatter`]);
+/// false for a blur (its own multi-pass separable/pyramid machinery) and for opaque custom code.
+#[must_use]
+pub fn heads_a_run(pass: &EffectPass) -> bool {
+    matches!(pass, EffectPass::Scatter { .. })
+}
+
+/// Group the graph's passes into **execution groups** — the sets that lower into ONE materialised
+/// pass each. A [`Stage::Fused`] run is one group; a [`Stage::Barrier`] that [`heads_a_run`] absorbs
+/// the immediately following fused run into its group (gather head + pointwise tail, one fragment);
+/// every other barrier stands alone. This is the single grouping rule shared by the scale assigner
+/// ([`crate::effect_graph`]) and the backend lowerer, so a pass's assigned scale is always the scale
+/// of the target it actually renders into.
+#[must_use]
+pub fn execution_groups(graph: &[GraphPass]) -> Vec<Vec<usize>> {
+    let stages = partition(graph);
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut i = 0;
+    while i < stages.len() {
+        match &stages[i] {
+            Stage::Fused(idxs) => {
+                groups.push(idxs.clone());
+                i += 1;
+            }
+            Stage::Barrier(bi) => {
+                let mut group = vec![*bi];
+                if heads_a_run(&graph[*bi].pass) {
+                    if let Some(Stage::Fused(tail)) = stages.get(i + 1) {
+                        group.extend(tail.iter().copied());
+                        i += 1;
+                    }
+                }
+                groups.push(group);
+                i += 1;
+            }
+        }
+    }
+    groups
 }
 
 /// Smallest render scale a pass may drop to before the upscale artifacts show — a floor under the
@@ -252,8 +297,9 @@ mod tests {
     fn sharp_glass_fuses_to_one_segment() {
         let g = glass_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let stages = partition(&g);
-        assert_eq!(stages, vec![Stage::Fused(vec![0, 1])]);
+        assert_eq!(stages, vec![Stage::Fused(vec![0, 1, 2, 3])]);
         assert_eq!(barrier_count(&stages), 0);
+        assert_eq!(execution_groups(&g), vec![vec![0, 1, 2, 3]]);
     }
 
     #[test]
@@ -262,8 +308,12 @@ mod tests {
         frosted.frost = 1.0;
         let g = glass_graph(&frosted, geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let stages = partition(&g);
-        assert_eq!(stages, vec![Stage::Fused(vec![0]), Stage::Barrier(1), Stage::Barrier(2)]);
+        assert_eq!(
+            stages,
+            vec![Stage::Fused(vec![0]), Stage::Barrier(1), Stage::Barrier(2), Stage::Fused(vec![3, 4])]
+        );
         assert_eq!(barrier_count(&stages), 2);
+        assert_eq!(execution_groups(&g), vec![vec![0], vec![1], vec![2, 3, 4]]);
     }
 
     #[test]
@@ -272,7 +322,8 @@ mod tests {
         frosted.frost = 0.03;
         let g = glass_graph(&frosted, geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let stages = partition(&g);
-        assert_eq!(stages, vec![Stage::Fused(vec![0]), Stage::Barrier(1)]);
+        assert_eq!(stages, vec![Stage::Fused(vec![0]), Stage::Barrier(1), Stage::Fused(vec![2, 3])]);
+        assert_eq!(execution_groups(&g), vec![vec![0], vec![1, 2, 3]]);
     }
 
     #[test]
@@ -291,7 +342,7 @@ mod tests {
     fn sharp_chain_is_uniform_surface_scale() {
         let g = glass_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let s = chain_scales(&g, 0.6, 0.8);
-        assert_eq!(s.len(), 2);
+        assert_eq!(s.len(), 4);
         for k in &s {
             assert!((k - 0.6).abs() < 1e-6, "sharp chain must be uniform min(0.6,0.8)=0.6, got {k}");
         }
@@ -311,8 +362,8 @@ mod tests {
         frosted.frost = 1.0;
         let g = glass_graph(&frosted, geom(), (400, 400), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let s = chain_scales(&g, 1.0, 1.0);
-        assert_eq!(s.len(), 3);
-        assert!(s[0] < 1.0, "refraction feeding a wide blur should ride cheap, got {}", s[0]);
+        assert_eq!(s.len(), 5);
+        assert!(s[0] < 1.0, "the warp feeding a wide blur should ride cheap, got {}", s[0]);
         assert!(s[1] < 1.0, "the blur itself should render at its band-limit, got {}", s[1]);
         assert!(s[0] >= SCALE_FLOOR && s[1] >= SCALE_FLOOR);
     }

@@ -128,8 +128,8 @@ fn wv_batch_supported(graph: &[crate::effect_graph::GraphPass]) -> bool {
 /// Each candidate cell is lowered to its effect graph by [`wv_batch_cell_graph`] and admitted iff
 /// [`wv_batch_supported`] — so the batch executes the same IR the per-shape path executes, through
 /// instanced stages instead of private pass chains. Shapes stay per-shape when their stack composes
-/// mid-backdrop (glass), uses inner shadows (the `EraseBy` stage is not implemented yet), carries
-/// custom `Shader` ops, or blurs past what the instanced stage expresses.
+/// mid-backdrop (glass), carries custom `Shader` ops, or blurs past what the instanced stage
+/// expresses; inner shadows batch through the combine (`EraseBy`) stage.
 fn wv_batch_plan(
     gathers: &[(usize, u128, u8)],
     rounds: &[u32],

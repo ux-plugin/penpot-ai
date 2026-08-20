@@ -1,35 +1,51 @@
-//! The frosted-glass gather pipeline — a faithful port of render-wasm's SkSL passes to WGSL.
+//! Glass **unit** shaders — the fragment snippet library the effect executor composes into passes.
 //!
-//! **Fused** to two passes (the displacement pass is gone): the rounded-box SDF + surface-profile
-//! bezel → refraction field `(dx, dy, specular, mask)` is *pure arithmetic on the uniform*, so instead
-//! of materialising it to an `Rgba16Float` texture and reading it back twice, both passes recompute it
-//! inline via the shared [`FIELD_PRELUDE`]'s `computeField`. See the fusion rule: a pure-uniform pass
-//! is inlined (register-fused), never stored.
+//! Glass is not a shader here; it is a *graph of generic units* (see [`crate::effect_graph`]):
+//! `warp → blur → scatter → shade → mask-mix`. The footprint partition decides which units share a
+//! fragment (a gather head plus its pointwise tail), and [`GlassPipeline::units`] compiles ONE
+//! pipeline per distinct composition from the snippet bodies below, cached by composition key. Sharp
+//! glass (`warp+shade+mask-mix`, one draw, no intermediates) and the frosted composite
+//! (`scatter+shade+mask-mix`) are *derived* fusions — there is no hand-written fused shader left.
 //!
-//! 1. **Refraction** (`REFRACTION_SHADER`): computes the field, samples the (unblurred) backdrop offset
-//!    by the displacement with chromatic aberration, blended to the plain backdrop by the mask.
-//! 2. **Blur** happens between 1 and 2 via the compositor's separable Gaussian (`total_blur_sigma`).
-//! 3. **Composite** (`COMPOSITE_SHADER`): recomputes the field for its specular + mask, then frost
-//!    scatter, prismatic specular, and the final mask composite against the original backdrop.
+//! The rounded-box SDF + surface-profile bezel → field `(dx, dy, specular, mask)` is pure arithmetic
+//! on the uniform, recomputed inline by every composed pass via [`FIELD_PRELUDE`]'s `computeField` —
+//! a procedural generator is register-fused, never stored.
 //!
-//! Both passes share one 20-float (`5×vec4`) uniform: indices 0..16 are the field geometry (identical
-//! to the old displacement uniform), and the three spare slots [17][18][19] carry each pass's own
-//! params — refraction packs `chromaticAberration`, composite packs `frost/specularOpacity/
-//! specularSaturation`. Uniforms are packed as `array<vec4<f32>, N>` to sidestep std140 scalar
-//! alignment. Colours are premultiplied but the backdrop is opaque (alpha == 1), so the `.rgb` math
-//! carries over unchanged.
+//! Every composed pass reads one 24-float (`6×vec4`) uniform: indices 0..16 the field geometry,
+//! then `chromaticAberration` at 17, `frost` at 18, `specularOpacity` at 19, `specularSaturation`
+//! at 20 (packed as `array<vec4<f32>, N>` to sidestep std140 scalar alignment). Colours are
+//! premultiplied; the mask-mix carries the backdrop's alpha through so a transparent scoped
+//! backdrop stays transparent.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
+/// One unit in a composed pass, lowered: the discriminant selects its snippet, the payload is the
+/// 20-float IR uniform it was declared with ([`crate::effect_graph::EffectPass`] unit kinds).
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnitOp {
+    /// Masked displaced sample + chromatic aberration (a composed pass's sampling head).
+    Warp([f32; 20]),
+    /// Frosted jitter sample (a composed pass's sampling head); `u[17]` = frost.
+    Scatter([f32; 20]),
+    /// Pointwise prismatic specular add; `u[18]`/`u[19]` = opacity/saturation.
+    Shade([f32; 20]),
+    /// Pointwise final lerp against the original backdrop by the field mask.
+    MaskMix([f32; 20]),
+}
+
+/// A composed pass's pipeline cache key: (sampling head: 0 plain / 1 warp / 2 scatter,
+/// has shade, has mask-mix, binds a distinct original texture).
+type UnitKey = (u8, bool, bool, bool);
+
 pub struct GlassPipeline {
-    refraction: wgpu::RenderPipeline,
-    refraction_layout: wgpu::BindGroupLayout,
-    composite: wgpu::RenderPipeline,
-    composite_layout: wgpu::BindGroupLayout,
-    /// The **fused** sharp-glass pipeline: refraction and composite in one draw over the backdrop, no
-    /// intermediate texture. Selected by the footprint partition only when frost ≤ 0.01 (no scatter,
-    /// no blur), where the composite reads the refraction at its own pixel — see [`Self::fused`].
-    fused: wgpu::RenderPipeline,
+    format: wgpu::TextureFormat,
+    one_tex_layout: wgpu::BindGroupLayout,
+    two_tex_layout: wgpu::BindGroupLayout,
+    /// Composed unit pipelines, built lazily per distinct composition — a handful of keys total.
+    units: RefCell<HashMap<UnitKey, wgpu::RenderPipeline>>,
     /// `TileMode::Clamp` fill: extend the scope's content over the transparent surround so a lens that
     /// overhangs its scope reads the clamped edge instead of nil — see [`Self::clamp_fill`].
     clamp_fill: wgpu::RenderPipeline,
@@ -115,36 +131,20 @@ fn make_pipeline(
 
 impl GlassPipeline {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let refr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("glass refraction (fused)"),
-            source: wgpu::ShaderSource::Wgsl(refraction_shader().into()),
-        });
-        let comp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("glass composite (fused)"),
-            source: wgpu::ShaderSource::Wgsl(composite_shader().into()),
-        });
-        let fused_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("glass refraction+composite (single-draw)"),
-            source: wgpu::ShaderSource::Wgsl(fused_shader().into()),
-        });
-
-        let refraction_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("glass refraction layout"),
+        let one_tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("glass units layout"),
             entries: &[uniform_entry(0), texture_entry(1), sampler_entry(2)],
         });
-        let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("glass composite layout"),
+        let two_tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("glass units layout (original)"),
             entries: &[uniform_entry(0), texture_entry(1), sampler_entry(2), texture_entry(3)],
         });
 
-        let refraction = make_pipeline(device, "glass refraction", &refr_shader, &refraction_layout, format);
-        let composite = make_pipeline(device, "glass composite", &comp_shader, &composite_layout, format);
-        let fused = make_pipeline(device, "glass fused", &fused_shader, &refraction_layout, format);
         let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("glass clamp-fill"),
             source: wgpu::ShaderSource::Wgsl(clamp_fill_shader().into()),
         });
-        let clamp_fill = make_pipeline(device, "glass clamp fill", &clamp_shader, &refraction_layout, format);
+        let clamp_fill = make_pipeline(device, "glass clamp fill", &clamp_shader, &one_tex_layout, format);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("glass sampler"),
@@ -156,11 +156,10 @@ impl GlassPipeline {
         });
 
         Self {
-            refraction,
-            refraction_layout,
-            composite,
-            composite_layout,
-            fused,
+            format,
+            one_tex_layout,
+            two_tex_layout,
+            units: RefCell::new(HashMap::new()),
             clamp_fill,
             sampler,
         }
@@ -177,7 +176,7 @@ impl GlassPipeline {
         ]);
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glass clamp bind"),
-            layout: &self.refraction_layout,
+            layout: &self.one_tex_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
@@ -215,67 +214,72 @@ impl GlassPipeline {
         pass.draw(0..4, 0..1);
     }
 
-    /// Refraction + chromatic aberration of `backdrop` into `target`. The displacement field is
-    /// recomputed inline from `u` (the 20-float `5×vec4` uniform: field geometry in 0..16, with the
-    /// chromatic-aberration strength packed at index 17).
-    pub fn refraction(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, backdrop: &wgpu::TextureView, u: &[f32; 20]) {
-        let uniform = Self::uniform(device, u);
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("glass refr bind"),
-            layout: &self.refraction_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(backdrop) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-            ],
-        });
-        Self::full_pass(encoder, target, &self.refraction, &bind);
-    }
-
-    /// Frost / specular / mask composite of the `blurred` refracted image against the `original`
-    /// backdrop into `target`. The displacement field (for specular + mask) is recomputed inline from
-    /// `u` (field geometry in 0..16, with `frost/specularOpacity/specularSaturation` packed at 17/18/19).
-    pub fn composite(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, blurred: &wgpu::TextureView, original: &wgpu::TextureView, u: &[f32; 20]) {
-        let uniform = Self::uniform(device, u);
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("glass comp bind"),
-            layout: &self.composite_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(blurred) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(original) },
-            ],
-        });
-        Self::full_pass(encoder, target, &self.composite, &bind);
-    }
-
-    /// **Fused** refraction + composite in a single draw over `backdrop` into `target` — no
-    /// intermediate texture. Valid only for sharp glass (frost ≤ 0.01, no blur), where the composite
-    /// reads the refraction at its own pixel, so the two same-pixel passes collapse into one shader.
+    /// Run one **composed pass** — the fused run of `ops` (a sampling head plus pointwise tail) —
+    /// over `src` into `target`, binding `original` only when a mask-mix reads a backdrop distinct
+    /// from `src`. The pipeline for this composition is compiled on first use and cached; the
+    /// composed uniform is assembled from the units' IR uniforms by [`units_uniform`].
     ///
-    /// `refr_u` and `comp_u` are the two passes' 20-float uniforms; they share the field geometry
-    /// (0..16) and differ only in the trailing params. The combined uniform keeps refraction's
-    /// chromatic aberration at 17 and grafts composite's specular opacity/saturation into 18/19 (frost
-    /// at 17 is unused here — the fused shader hardwires the no-scatter path). The result is *more*
-    /// accurate than the two-pass path, which quantises the refraction to 8-bit before the composite
-    /// reads it; here it stays float, so the diff is within 8-bit rounding, never worse.
-    pub fn fused(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, backdrop: &wgpu::TextureView, refr_u: &[f32; 20], comp_u: &[f32; 20]) {
-        let mut u = *refr_u;
-        u[18] = comp_u[18];
-        u[19] = comp_u[19];
-        let uniform = Self::uniform(device, &u);
+    /// When a run fuses what used to be separate materialised passes, the result is *more* accurate,
+    /// never worse: the intermediate stays in registers as float instead of quantising to 8-bit.
+    pub fn units(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, src: &wgpu::TextureView, original: Option<&wgpu::TextureView>, ops: &[UnitOp]) {
+        let head = match ops.first() {
+            Some(UnitOp::Warp(_)) => 1u8,
+            Some(UnitOp::Scatter(_)) => 2,
+            _ => 0,
+        };
+        let shade = ops.iter().any(|o| matches!(o, UnitOp::Shade(_)));
+        let maskmix = ops.iter().any(|o| matches!(o, UnitOp::MaskMix(_)));
+        let key: UnitKey = (head, shade, maskmix, original.is_some());
+        if !self.units.borrow().contains_key(&key) {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("glass units (composed)"),
+                source: wgpu::ShaderSource::Wgsl(units_shader(key).into()),
+            });
+            let layout = if key.3 { &self.two_tex_layout } else { &self.one_tex_layout };
+            let pipeline = make_pipeline(device, "glass units", &module, layout, self.format);
+            self.units.borrow_mut().insert(key, pipeline);
+        }
+        let uniform = Self::uniform(device, &units_uniform(ops));
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+        ];
+        if let Some(orig) = original {
+            entries.push(wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(orig) });
+        }
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("glass fused bind"),
-            layout: &self.refraction_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(backdrop) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-            ],
+            label: Some("glass units bind"),
+            layout: if key.3 { &self.two_tex_layout } else { &self.one_tex_layout },
+            entries: &entries,
         });
-        Self::full_pass(encoder, target, &self.fused, &bind);
+        let cache = self.units.borrow();
+        Self::full_pass(encoder, target, &cache[&key], &bind);
     }
+}
+
+/// Assemble the composed 24-float uniform from the run's units: the field geometry (0..16) comes
+/// from the head (every unit in a run carries the identically-scaled field), and each unit
+/// contributes its own trailing params to the composed slots — `chromaticAberration` 17, `frost` 18,
+/// `specularOpacity` 19, `specularSaturation` 20.
+fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
+    let mut out = [0.0_f32; 24];
+    if let Some(op) = ops.first() {
+        let (UnitOp::Warp(u) | UnitOp::Scatter(u) | UnitOp::Shade(u) | UnitOp::MaskMix(u)) = op;
+        out[..17].copy_from_slice(&u[..17]);
+    }
+    for op in ops {
+        match op {
+            UnitOp::Warp(u) => out[17] = u[17],
+            UnitOp::Scatter(u) => out[18] = u[17],
+            UnitOp::Shade(u) => {
+                out[19] = u[18];
+                out[20] = u[19];
+            }
+            UnitOp::MaskMix(_) => {}
+        }
+    }
+    out
 }
 
 /// Shared field computation: the rounded-box SDF + surface-profile bezel → Snell refraction vector,
@@ -379,88 +383,56 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 }
 "#;
 
-fn refraction_shader() -> String {
-    format!(
-        "{bindings}{field}{vs}{fs}",
-        bindings = r#"
-@group(0) @binding(0) var<uniform> u: array<vec4<f32>, 5>;
-@group(0) @binding(1) var backdrop: texture_2d<f32>;
+/// Noise helpers for the frost scatter — included only when a composed pass has a scatter head.
+const HASH_PRELUDE: &str = r#"
+fn hash(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+fn hash2(p: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(hash(p), hash(p + vec2<f32>(73.7, 157.3))) * 2.0 - 1.0;
+}
+"#;
+
+/// Compose the fragment shader for one unit run. The body is a straight-line chain over a running
+/// `value`: a sampling head (plain same-pixel sample, the warp's masked displaced sample, or the
+/// frost scatter), then the pointwise tails in unit order. Every sample sits in uniform control flow
+/// (the frost branch tests a uniform; WGSL forbids `textureSample` under per-pixel branches, and the
+/// warp's passthrough is covered by `mask == 0 → refUV == uvpix` instead of a branch). The mask-mix
+/// carries the backdrop's premultiplied alpha through so a transparent scoped backdrop stays
+/// transparent instead of compositing as opaque black, and the shade gates its shine by the running
+/// alpha so a scoped lens is fully NIL where its scope has no content.
+fn units_shader((head, shade, maskmix, two_tex): UnitKey) -> String {
+    let mut bindings = String::from(
+        r#"
+@group(0) @binding(0) var<uniform> u: array<vec4<f32>, 6>;
+@group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 "#,
-        field = FIELD_PRELUDE,
-        vs = VERTEX_SHADER,
-        fs = r#"
-@fragment
-fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
-    let resolution = u[0].xy;
-    let scale = u[4].x;
-    let chromaticAberration = u[4].y;
-
-    let field = computeField(fragCoord.xy);
-    let dpx = field.xy;
-    let mask = field.a;
-
-    let uvpix = fragCoord.xy / resolution;
-    let dispUV = dpx / resolution;
-    let dLen = length(dpx);
-    let caStr = smoothstep(0.0, 5.0 * scale, dLen);
-    var caDir = vec2<f32>(0.0);
-    if (dLen > 0.01 * scale) { caDir = dpx / dLen; }
-    let caShift = caDir * chromaticAberration * caStr / resolution;
-
-    let refUV = uvpix + dispUV;
-    // Passthrough is mask==0 → refUV==uvpix → refracted==bg, so the mix below covers it without a
-    // non-uniform branch (WGSL forbids textureSample under per-pixel control flow).
-    // Carry the backdrop's premultiplied alpha through (the 4th channel): a *scoped* backdrop is
-    // transparent outside its scope's content, and a lens over that emptiness must stay transparent so
-    // the canvas shows through — not composite as opaque black. Over an opaque backdrop (a full-page
-    // effect) alpha is 1 everywhere, so this is identical to the former hardcoded `1.0`.
-    let refracted = vec4<f32>(
-        textureSample(backdrop, samp, refUV - caShift).r,
-        textureSample(backdrop, samp, refUV).g,
-        textureSample(backdrop, samp, refUV + caShift).b,
-        textureSample(backdrop, samp, refUV).a
     );
-    let bg = textureSample(backdrop, samp, uvpix);
-    return mix(bg, refracted, mask);
-}
-"#
-    )
-}
+    if two_tex {
+        bindings.push_str("@group(0) @binding(3) var original: texture_2d<f32>;\n");
+    }
+    if head == 2 {
+        bindings.push_str(HASH_PRELUDE);
+    }
 
-/// The sharp-glass fusion: refraction then composite in one fragment shader, sampling only the
-/// backdrop (no intermediate texture). Faithful to `refraction_shader` → `composite_shader` chained
-/// with frost off — the refraction result feeds the composite in registers instead of a texture
-/// round-trip. Reads one combined uniform: field geometry 0..16, chromatic aberration at 17, specular
-/// opacity at 18, specular saturation at 19 (frost is absent by construction — this pipeline is only
-/// selected when frost ≤ 0.01).
-fn fused_shader() -> String {
-    format!(
-        "{bindings}{field}{vs}{fs}",
-        bindings = r#"
-@group(0) @binding(0) var<uniform> u: array<vec4<f32>, 5>;
-@group(0) @binding(1) var backdrop: texture_2d<f32>;
-@group(0) @binding(2) var samp: sampler;
-"#,
-        field = FIELD_PRELUDE,
-        vs = VERTEX_SHADER,
-        fs = r#"
+    let mut fs = String::from(
+        r#"
 @fragment
 fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
     let resolution = u[0].xy;
     let scale = u[4].x;
-    let chromaticAberration = u[4].y;
-    let specularOpacity = u[4].z;
-    let specularSaturation = u[4].w;
-
     let fc = fragCoord.xy;
+    let uvpix = fc / resolution;
     let field = computeField(fc);
     let dpx = field.xy;
     let specular = field.b;
     let mask = field.a;
-
-    let uvpix = fc / resolution;
-    // Refraction (inline): the plain backdrop, and the chromatic-split displaced sample, mixed by mask.
+"#,
+    );
+    fs.push_str(match head {
+        1 => r#"
+    let chromaticAberration = u[4].y;
     let dispUV = dpx / resolution;
     let dLen = length(dpx);
     let caStr = smoothstep(0.0, 5.0 * scale, dLen);
@@ -468,36 +440,68 @@ fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
     if (dLen > 0.01 * scale) { caDir = dpx / dLen; }
     let caShift = caDir * chromaticAberration * caStr / resolution;
     let refUV = uvpix + dispUV;
-    // Carry the backdrop's premultiplied alpha (see refraction_shader) so a transparent scoped backdrop
-    // stays transparent instead of compositing as opaque black; over an opaque backdrop alpha is 1 and
-    // this matches the former hardcoded `1.0`.
     let refracted = vec4<f32>(
-        textureSample(backdrop, samp, refUV - caShift).r,
-        textureSample(backdrop, samp, refUV).g,
-        textureSample(backdrop, samp, refUV + caShift).b,
-        textureSample(backdrop, samp, refUV).a
+        textureSample(src, samp, refUV - caShift).r,
+        textureSample(src, samp, refUV).g,
+        textureSample(src, samp, refUV + caShift).b,
+        textureSample(src, samp, refUV).a
     );
-    let bg = textureSample(backdrop, samp, uvpix);
-    // This is exactly what the refraction pass wrote (and the composite would sample at its own pixel).
-    var blurred4 = mix(bg, refracted, mask);
-    var blurredColor = blurred4.rgb;
-
-    // Composite (inline, frost off): prismatic specular highlight, then the final mask composite.
-    let specLuma = dot(blurredColor, vec3<f32>(0.299, 0.587, 0.114));
-    var saturated = mix(vec3<f32>(specLuma), blurredColor, 1.0 + specularSaturation);
+    let srcbg = textureSample(src, samp, uvpix);
+    var value = mix(srcbg, refracted, mask);
+"#,
+        2 => r#"
+    let frost = u[4].z;
+    let texel = vec2<f32>(1.0) / resolution;
+    var value = vec4<f32>(0.0);
+    if (frost > 0.01) {
+        var frostSum = vec4<f32>(0.0);
+        var totalW = 0.0;
+        for (var i = 0.0; i < 12.0; i = i + 1.0) {
+            let noise = hash2(fc + vec2<f32>(i * 7.3, i * 13.1));
+            let off = noise * frost * 6.0 * scale * texel;
+            frostSum = frostSum + textureSample(src, samp, uvpix + off);
+            totalW = totalW + 1.0;
+        }
+        value = frostSum / totalW;
+    } else {
+        value = textureSample(src, samp, uvpix);
+    }
+"#,
+        _ => r#"
+    var value = textureSample(src, samp, uvpix);
+"#,
+    });
+    if shade {
+        fs.push_str(
+            r#"
+    let specularOpacity = u[4].w;
+    let specularSaturation = u[5].x;
+    let specLuma = dot(value.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    var saturated = mix(vec3<f32>(specLuma), value.rgb, 1.0 + specularSaturation);
     saturated = max(saturated, vec3<f32>(0.0));
     let highlightColor = mix(vec3<f32>(1.0, 0.98, 0.95), saturated, min(specularSaturation / 9.0, 1.0));
-    // Gate the specular shine by the backdrop's presence (`blurred4.a`) so a scoped lens is fully NIL
-    // where its scope has no content — no phantom bezel/shine floats past the scope's border. Over an
-    // opaque backdrop alpha is 1, so in-scope glass is unchanged.
-    blurredColor = blurredColor + specular * specularOpacity * highlightColor * blurred4.a;
-
-    let outRgb = mix(bg.rgb, blurredColor, mask);
-    let outA = mix(bg.a, blurred4.a, mask);
-    return vec4<f32>(outRgb, outA);
-}
+    value = vec4<f32>(value.rgb + specular * specularOpacity * highlightColor * value.a, value.a);
+"#,
+        );
+    }
+    if maskmix {
+        fs.push_str(if two_tex {
+            r#"
+    let bg = textureSample(original, samp, uvpix);
+    value = vec4<f32>(mix(bg.rgb, value.rgb, mask), mix(bg.a, value.a, mask));
 "#
-    )
+        } else {
+            r#"
+    let bg = textureSample(src, samp, uvpix);
+    value = vec4<f32>(mix(bg.rgb, value.rgb, mask), mix(bg.a, value.a, mask));
+"#
+        });
+    }
+    fs.push_str("
+    return value;
+}
+");
+    format!("{bindings}{field}{vs}{fs}", field = FIELD_PRELUDE, vs = VERTEX_SHADER)
 }
 
 /// `TileMode::Clamp` fill. The composed scoped backdrop is the scope's content over a transparent
@@ -520,92 +524,14 @@ fn clamp_fill_shader() -> String {
 @fragment
 fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     let resolution = u[0].xy;
-    let rect = u[1]; // scope content rect (minU, minV, maxU, maxV) in this texture's UV space
+    let rect = u[1];
     let uv = fc.xy / resolution;
     let here = textureSampleLevel(src, samp, uv, 0.0);
-    // Already content (any non-trivial premultiplied alpha) → keep it.
     if (here.a > 0.0039) { return here; }
-    // Outside the content: clamp to the content rect's edge and sample there.
     let cuv = clamp(uv, rect.xy, rect.zw);
     let edge = textureSampleLevel(src, samp, cuv, 0.0);
-    // Composite the (premultiplied) edge over black and force opaque — a translucent edge darkens
-    // toward black instead of showing the canvas. No content at the edge → stay transparent.
     if (edge.a > 0.0039) { return vec4<f32>(edge.rgb, 1.0); }
     return here;
-}
-"#
-    )
-}
-
-fn composite_shader() -> String {
-    format!(
-        "{bindings}{field}{vs}{fs}",
-        bindings = r#"
-@group(0) @binding(0) var<uniform> u: array<vec4<f32>, 5>;
-@group(0) @binding(1) var blurred: texture_2d<f32>;
-@group(0) @binding(2) var samp: sampler;
-@group(0) @binding(3) var original: texture_2d<f32>;
-
-fn hash(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
-}
-fn hash2(p: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>(hash(p), hash(p + vec2<f32>(73.7, 157.3))) * 2.0 - 1.0;
-}
-"#,
-        field = FIELD_PRELUDE,
-        vs = VERTEX_SHADER,
-        fs = r#"
-@fragment
-fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
-    let resolution = u[0].xy;
-    let scale = u[4].x;
-    let frost = u[4].y;
-    let specularOpacity = u[4].z;
-    let specularSaturation = u[4].w;
-
-    let fc = fragCoord.xy;
-    let uvpix = fc / resolution;
-    let field = computeField(fc);
-    let specular = field.b;
-    let mask = field.a;
-    let bg = textureSample(original, samp, uvpix);
-
-    var blurred4 = vec4<f32>(0.0);
-    let texel = vec2<f32>(1.0) / resolution;
-    // `frost` is uniform, so this branch is uniform control flow — textureSample is legal inside it.
-    if (frost > 0.01) {
-        var frostSum = vec4<f32>(0.0);
-        var totalW = 0.0;
-        for (var i = 0.0; i < 12.0; i = i + 1.0) {
-            let noise = hash2(fc + vec2<f32>(i * 7.3, i * 13.1));
-            let off = noise * frost * 6.0 * scale * texel;
-            frostSum = frostSum + textureSample(blurred, samp, uvpix + off);
-            totalW = totalW + 1.0;
-        }
-        // Frost only *scatters* (softens) the refracted image; the milky tint + desaturation that
-        // used to follow were removed at the designer's request, so glass stays clear, not grayish.
-        blurred4 = frostSum / totalW;
-    } else {
-        blurred4 = textureSample(blurred, samp, uvpix);
-    }
-    var blurredColor = blurred4.rgb;
-
-    let specLuma = dot(blurredColor, vec3<f32>(0.299, 0.587, 0.114));
-    var saturated = mix(vec3<f32>(specLuma), blurredColor, 1.0 + specularSaturation);
-    saturated = max(saturated, vec3<f32>(0.0));
-    let highlightColor = mix(vec3<f32>(1.0, 0.98, 0.95), saturated, min(specularSaturation / 9.0, 1.0));
-    // Gate the specular shine by the backdrop's presence (`blurred4.a`) so a scoped lens is fully NIL
-    // where its scope has no content — no phantom bezel/shine floats past the scope's border. Over an
-    // opaque backdrop alpha is 1, so in-scope glass is unchanged.
-    blurredColor = blurredColor + specular * specularOpacity * highlightColor * blurred4.a;
-
-    // Preserve the premultiplied backdrop alpha so an empty (transparent) scoped backdrop stays
-    // transparent instead of compositing as opaque black. Over an opaque backdrop alpha is 1 and this
-    // matches the former hardcoded `1.0`.
-    let outRgb = mix(bg.rgb, blurredColor, mask);
-    let outA = mix(bg.a, blurred4.a, mask);
-    return vec4<f32>(outRgb, outA);
 }
 "#
     )

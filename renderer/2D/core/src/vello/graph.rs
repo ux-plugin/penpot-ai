@@ -19,11 +19,7 @@ use crate::effect_graph::{EffectPass, GraphPass, Src};
 use wgpu::util::DeviceExt;
 
 use crate::vello::blend::{Blit, BlurPass, Compositor};
-use crate::vello::glass::GlassPipeline;
-
-/// Feature gate for the sharp-glass fusion (refraction+composite → one draw). On by default; flip to
-/// `false` to force the two-pass path for an A/B (pixel-diff + cost) against the fused path.
-const FUSE_SHARP_GLASS: bool = true;
+use crate::vello::glass::{GlassPipeline, UnitOp};
 
 /// Above this device-σ a single separable pass would exceed [`Compositor::blur1d`]'s 160-tap cap
 /// and truncate the Gaussian; the pyramid path kicks in instead. Chosen so the coarse blur samples
@@ -53,16 +49,12 @@ pub enum PassKind {
     /// kernel, a downsample pyramid for a large one (see [`gaussian_blur`]). `linear` blurs in linear
     /// light (sRGB-decode taps, re-encode the result).
     Blur { sigma: f32, linear: bool },
-    /// Glass refraction + chromatic aberration. Input `[backdrop]`; the SDF field is recomputed inline
-    /// from the 20-float uniform (chromatic-aberration at index 17).
-    GlassRefraction { u: [f32; 20] },
-    /// Glass frost / specular composite. Inputs `[blurred, original]`; field recomputed inline from the
-    /// 20-float uniform (`frost/specularOpacity/specularSaturation` at 17/18/19).
-    GlassComposite { u: [f32; 20] },
-    /// **Fused** sharp-glass refraction + composite in one draw over `[backdrop]` — the collapse the
-    /// footprint partition picks when frost ≤ 0.01 (no scatter, no blur). Carries both passes' uniforms;
-    /// [`GlassPipeline::fused`] combines them. No intermediate texture is allocated.
-    GlassFused { refr_u: [f32; 20], comp_u: [f32; 20] },
+    /// One **composed unit run** — an execution group's units (a sampling head plus its pointwise
+    /// tail) fused into a single draw by [`GlassPipeline::units`]. Inputs `[src]`, or
+    /// `[src, original]` when a mask-mix reads a backdrop distinct from the head's source. Sharp
+    /// glass is `[Warp, Shade, MaskMix]` in one pass; the frosted composite is
+    /// `[Scatter, Shade, MaskMix]`; a same-pixel scatter is the identity and lowers to nothing.
+    Units(Vec<UnitOp>),
     /// A hand-written WGSL pass — the escape hatch. Runs the (already-compiled, cached) `pipeline`
     /// over its inputs with `u` (surface resolution + params), sized to exactly `param_vec4s` vec4s
     /// (the shader's declared `array<vec4<f32>, N>`). The pipeline's own `@group(0)` layout is
@@ -70,64 +62,74 @@ pub enum PassKind {
     Custom { pipeline: Rc<wgpu::RenderPipeline>, u: Vec<f32>, param_vec4s: u32 },
 }
 
-/// Lower a render-core effect graph to runnable [`Pass`]es. Every kind maps one-to-one except
-/// [`EffectPass::Custom`], whose pipeline the IR does not carry: `custom` supplies the shape's
-/// compiled pipeline (the caller resolved + cached it from the shader source). A `Custom` pass with
-/// no pipeline provided is dropped with a warning rather than panicking mid-frame.
+/// Lower a render-core effect graph to runnable [`Pass`]es, one per **execution group**
+/// ([`crate::footprint::execution_groups`]): a fused run of unit passes (a sampling head plus its
+/// pointwise tail) becomes ONE [`PassKind::Units`] draw; a blur or custom barrier stands alone. The
+/// grouping is the same rule the scale assigner used, so every group's members already share the
+/// group's render scale. [`EffectPass::Custom`]'s pipeline the IR does not carry: `custom` supplies
+/// the shape's compiled pipeline (the caller resolved + cached it from the shader source); a
+/// `Custom` pass with no pipeline provided is dropped with a warning rather than panicking mid-frame.
 pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>>) -> Vec<Pass> {
-    let stages = crate::footprint::partition(graph);
     let mut out = Vec::with_capacity(graph.len());
-    for stage in &stages {
-        match stage {
-            crate::footprint::Stage::Fused(idxs) => {
-                if FUSE_SHARP_GLASS {
-                if let [i, j] = idxs.as_slice() {
-                    if let (
-                        EffectPass::GlassRefraction { u: refr_u },
-                        EffectPass::GlassComposite { u: comp_u },
-                    ) = (&graph[*i].pass, &graph[*j].pass)
-                    {
-                        out.push(Pass {
-                            kind: PassKind::GlassFused { refr_u: *refr_u, comp_u: *comp_u },
-                            inputs: graph[*i].inputs.clone(),
-                            scale: graph[*j].scale,
-                        });
-                        continue;
-                    }
-                }
-                }
-                for &i in idxs {
-                    if let Some(p) = lower_pass(&graph[i], custom) {
-                        out.push(p);
-                    }
-                }
+    for group in crate::footprint::execution_groups(graph) {
+        let Some(&head) = group.first() else { continue };
+        match &graph[head].pass {
+            EffectPass::Blur { sigma, linear } => {
+                out.push(Pass {
+                    kind: PassKind::Blur { sigma: *sigma, linear: *linear },
+                    inputs: graph[head].inputs.clone(),
+                    scale: graph[head].scale,
+                });
             }
-            crate::footprint::Stage::Barrier(i) => {
-                if let Some(p) = lower_pass(&graph[*i], custom) {
-                    out.push(p);
+            EffectPass::Custom { u, param_vec4s } => match custom {
+                Some(pipeline) => out.push(Pass {
+                    kind: PassKind::Custom {
+                        pipeline: pipeline.clone(),
+                        u: u.clone(),
+                        param_vec4s: *param_vec4s,
+                    },
+                    inputs: graph[head].inputs.clone(),
+                    scale: graph[head].scale,
+                }),
+                None => log::warn!("custom effect pass with no pipeline resolved; skipping"),
+            },
+            _ => {
+                let head_src = graph[head].inputs.first().copied();
+                let mut inputs: Vec<Src> = head_src.into_iter().collect();
+                let mut ops = Vec::with_capacity(group.len());
+                for &i in &group {
+                    match &graph[i].pass {
+                        EffectPass::Warp { u } => ops.push(UnitOp::Warp(*u)),
+                        // A same-pixel scatter (frost ≤ 0.01) is the identity: the run's head
+                        // sample already reads its input, so it lowers to nothing.
+                        EffectPass::Scatter { u } => {
+                            if u[17] > 0.01 {
+                                ops.push(UnitOp::Scatter(*u));
+                            }
+                        }
+                        EffectPass::Shade { u } => ops.push(UnitOp::Shade(*u)),
+                        EffectPass::MaskMix { u } => {
+                            ops.push(UnitOp::MaskMix(*u));
+                            if let Some(orig) = graph[i].inputs.get(1) {
+                                if Some(*orig) != head_src {
+                                    inputs.push(*orig);
+                                }
+                            }
+                        }
+                        EffectPass::Blur { .. } | EffectPass::Custom { .. } => {
+                            debug_assert!(false, "blur/custom can never share an execution group");
+                        }
+                    }
                 }
+                out.push(Pass {
+                    kind: PassKind::Units(ops),
+                    inputs,
+                    scale: graph[*group.last().unwrap_or(&head)].scale,
+                });
             }
         }
     }
     out
-}
-
-/// Lower one neutral [`GraphPass`] to a runnable [`Pass`]. `None` only for a `Custom` pass whose
-/// pipeline the caller did not resolve (dropped with a warning rather than panicking mid-frame).
-fn lower_pass(gp: &GraphPass, custom: Option<&Rc<wgpu::RenderPipeline>>) -> Option<Pass> {
-    let kind = match &gp.pass {
-        EffectPass::Blur { sigma, linear } => PassKind::Blur { sigma: *sigma, linear: *linear },
-        EffectPass::GlassRefraction { u } => PassKind::GlassRefraction { u: *u },
-        EffectPass::GlassComposite { u } => PassKind::GlassComposite { u: *u },
-        EffectPass::Custom { u, param_vec4s } => match custom {
-            Some(pipeline) => PassKind::Custom { pipeline: pipeline.clone(), u: u.clone(), param_vec4s: *param_vec4s },
-            None => {
-                log::warn!("custom effect pass with no pipeline resolved; skipping");
-                return None;
-            }
-        },
-    };
-    Some(Pass { kind, inputs: gp.inputs.clone(), scale: gp.scale })
 }
 
 /// DBG buckets the [`crate::vello::gputime::PassProfiler`] accumulates each whole-viewport region into, by
@@ -147,10 +149,14 @@ impl PassKind {
     /// The profiler bucket for this pass's own interval (the delta ending just after it runs).
     fn prof_bucket(&self) -> usize {
         match self {
-            PassKind::GlassRefraction { .. } => prof_bucket::REFRACTION,
             PassKind::Blur { .. } => prof_bucket::BLUR,
-            PassKind::GlassComposite { .. } => prof_bucket::COMPOSITE,
-            PassKind::GlassFused { .. } => prof_bucket::COMPOSITE,
+            PassKind::Units(ops) => {
+                if ops.iter().any(|o| matches!(o, UnitOp::Warp(_))) {
+                    prof_bucket::REFRACTION
+                } else {
+                    prof_bucket::COMPOSITE
+                }
+            }
             PassKind::Custom { .. } => prof_bucket::COMPOSITE,
         }
     }
@@ -226,14 +232,8 @@ pub fn run_graph_into(
             PassKind::Blur { sigma, linear } => {
                 gaussian_blur(compositor, device, enc, &view, &bound[0], pw, ph, *sigma, *linear, format, pool, keep_tex, keep_views);
             }
-            PassKind::GlassRefraction { u } => {
-                glass.refraction(device, enc, &view, &bound[0], u);
-            }
-            PassKind::GlassComposite { u } => {
-                glass.composite(device, enc, &view, &bound[0], &bound[1], u);
-            }
-            PassKind::GlassFused { refr_u, comp_u } => {
-                glass.fused(device, enc, &view, &bound[0], refr_u, comp_u);
+            PassKind::Units(ops) => {
+                glass.units(device, enc, &view, &bound[0], bound.get(1), ops);
             }
             PassKind::Custom { pipeline, u, param_vec4s } => {
                 custom_pass(device, enc, &view, pipeline, sampler, &bound, u, *param_vec4s);

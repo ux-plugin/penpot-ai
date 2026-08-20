@@ -35,14 +35,24 @@ pub enum EffectPass {
     /// (sRGB-decode taps, re-encode the result) for a faithful, brighter mix — used by the background
     /// blur; glass keeps `false` so its frost matches the gamma-space convention.
     Blur { sigma: f32, linear: bool },
-    /// Glass refraction + chromatic aberration. Input `[backdrop]`. The rounded-box SDF refraction
-    /// field is recomputed inline (a pure-uniform pass fused in, not materialised), so `u` is the full
-    /// 20-float field uniform with the chromatic-aberration strength packed at index 17.
-    GlassRefraction { u: [f32; 20] },
-    /// Glass frost / specular composite. Inputs `[blurred, original]`. The field (specular + mask) is
-    /// recomputed inline; `u` is the 20-float field uniform with `frost/specularOpacity/
-    /// specularSaturation` packed at indices 17/18/19.
-    GlassComposite { u: [f32; 20] },
+    /// Masked displaced sample: read the input offset by a field's displacement vector, with a
+    /// 3-tap chromatic channel split, mixed to the plain sample by the field mask. Input `[src]`.
+    /// The field (a rounded-box SDF bezel) is pure uniform arithmetic recomputed inline; `u` is the
+    /// 20-float field uniform with the chromatic-aberration strength at index 17. Reads within the
+    /// bounded displacement of its own pixel, so it fuses as same-pixel.
+    Warp { u: [f32; 20] },
+    /// Stochastic jitter sample (frost): average N noise-offset taps of the input. Input `[src]`.
+    /// `u` is the field uniform with `frost` at index 17; frost ≤ 0.01 degenerates to a plain
+    /// same-pixel sample (and then fuses instead of materialising).
+    Scatter { u: [f32; 20] },
+    /// Pointwise specular shading: add the field's specular band as a prismatic highlight to the
+    /// running value. `u` is the field uniform with `specularOpacity`/`specularSaturation` at
+    /// indices 18/19. Always same-pixel.
+    Shade { u: [f32; 20] },
+    /// Pointwise final composite: lerp the running value against the original backdrop (input 1)
+    /// by the field mask, carrying premultiplied alpha through. `u` is the bare field uniform.
+    /// Always same-pixel.
+    MaskMix { u: [f32; 20] },
     /// A hand-written WGSL pass — the escape hatch. The IR carries `u` (surface resolution + the
     /// shader's declared params) and `param_vec4s`, the exact `array<vec4<f32>, N>` size the shader
     /// declares; the backend sizes the uniform to exactly that (zero-fill/truncate `u`) and supplies
@@ -82,8 +92,18 @@ pub fn pass_dim(d: u32, scale: f32) -> u32 {
 /// centre, half-extents, corner, bezel, scale factor) multiply by the pass scale, and a blur's sigma
 /// shrinks with its target. Scales are relative to the surface the graph was built for, so a graph
 /// whose passes all stay at `1.0` is bit-for-bit the uniform render.
+///
+/// Passes that lower into ONE materialised pass ([`crate::footprint::execution_groups`]) share the
+/// group's output scale — a fused run has a single render target, so its members cannot render at
+/// different resolutions; the group takes its last pass's solved scale (its actual output).
 fn apply_chain_scales(passes: &mut [GraphPass], w: u32, h: u32) {
-    let scales = crate::footprint::chain_scales(passes, 1.0, 1.0);
+    let mut scales = crate::footprint::chain_scales(passes, 1.0, 1.0);
+    for group in crate::footprint::execution_groups(passes) {
+        let Some(&last) = group.last() else { continue };
+        for &i in &group {
+            scales[i] = scales[last];
+        }
+    }
     for (gp, sc) in passes.iter_mut().zip(scales) {
         gp.scale = sc;
         if sc >= 0.999 {
@@ -91,7 +111,10 @@ fn apply_chain_scales(passes: &mut [GraphPass], w: u32, h: u32) {
         }
         match &mut gp.pass {
             EffectPass::Blur { sigma, .. } => *sigma *= sc,
-            EffectPass::GlassRefraction { u } | EffectPass::GlassComposite { u } => {
+            EffectPass::Warp { u }
+            | EffectPass::Scatter { u }
+            | EffectPass::Shade { u }
+            | EffectPass::MaskMix { u } => {
                 u[0] = pass_dim(w, sc) as f32;
                 u[1] = pass_dim(h, sc) as f32;
                 for i in [2, 3, 4, 5, 6, 8, 16] {
@@ -142,8 +165,10 @@ pub struct GlassGeometry {
     pub is_circle: bool,
 }
 
-/// Build the glass pass-graph over the assembled backdrop (input 0): displacement (pass 0) →
-/// refraction (pass 1) → optional blur (pass 2) → composite (last).
+/// Build the glass pass-graph over the assembled backdrop (input 0) as a chain of generic units:
+/// warp → optional blur → scatter → shade → mask-mix. The footprint partition decides what
+/// materialises: sharp glass fuses the whole chain into one pass, frost bars the scatter (which then
+/// absorbs its pointwise tail), a blur always stands alone.
 ///
 /// All glass geometry (centre, half-extents, corner, device thresholds, blur sigma) is expressed in
 /// the **reduced backdrop's** texel space — effective device scale `eff = zoom · k`, origin shifted
@@ -184,15 +209,16 @@ pub fn glass_graph(
         g.splay, g.tilt_angle, g.edge_boost, g.zoom,
         s, 0.0, 0.0, 0.0,
     ];
-    let mut refr_u = field;
-    refr_u[17] = g.chromatic_aberration;
-    let mut comp_u = field;
-    comp_u[17] = g.frost;
-    comp_u[18] = g.specular_opacity;
-    comp_u[19] = g.specular_saturation;
+    let mut warp_u = field;
+    warp_u[17] = g.chromatic_aberration;
+    let mut scatter_u = field;
+    scatter_u[17] = g.frost;
+    let mut shade_u = field;
+    shade_u[18] = g.specular_opacity;
+    shade_u[19] = g.specular_saturation;
 
     let mut passes = vec![
-        GraphPass::new(EffectPass::GlassRefraction { u: refr_u }, vec![Src::Input(0)]),
+        GraphPass::new(EffectPass::Warp { u: warp_u }, vec![Src::Input(0)]),
     ];
     let sigma = g.total_blur_sigma() * s;
     let blurred = if sigma > 0.5 {
@@ -201,9 +227,12 @@ pub fn glass_graph(
     } else {
         Src::Pass(0)
     };
+    passes.push(GraphPass::new(EffectPass::Scatter { u: scatter_u }, vec![blurred]));
+    let prev = passes.len() - 1;
+    passes.push(GraphPass::new(EffectPass::Shade { u: shade_u }, vec![Src::Pass(prev)]));
     passes.push(GraphPass::new(
-        EffectPass::GlassComposite { u: comp_u },
-        vec![blurred, Src::Input(0)],
+        EffectPass::MaskMix { u: field },
+        vec![Src::Pass(prev + 1), Src::Input(0)],
     ));
     passes
 }
@@ -264,16 +293,19 @@ mod tests {
     }
 
     #[test]
-    fn glass_without_blur_is_two_passes_and_with_blur_is_three() {
+    fn glass_is_a_unit_chain_with_an_optional_blur() {
         let geom = GlassGeometry { center: Point::new(50.0, 50.0), width: 80.0, height: 60.0, corner_radius: 10.0, is_circle: false };
         let sharp = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
-        assert_eq!(sharp.len(), 2);
-        assert!(matches!(sharp[0].pass, EffectPass::GlassRefraction { .. }));
-        assert!(matches!(sharp[1].pass, EffectPass::GlassComposite { .. }));
+        assert_eq!(sharp.len(), 4);
+        assert!(matches!(sharp[0].pass, EffectPass::Warp { .. }));
+        assert!(matches!(sharp[1].pass, EffectPass::Scatter { .. }));
+        assert!(matches!(sharp[2].pass, EffectPass::Shade { .. }));
+        assert!(matches!(sharp[3].pass, EffectPass::MaskMix { .. }));
+        assert_eq!(sharp[3].inputs, vec![Src::Pass(2), Src::Input(0)]);
         let mut frosted = glass();
         frosted.frost = 1.0;
         let g = glass_graph(&frosted, geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
-        assert_eq!(g.len(), 3);
+        assert_eq!(g.len(), 5);
         assert!(matches!(g[1].pass, EffectPass::Blur { .. }));
         assert_eq!(g[2].inputs[0], Src::Pass(1));
     }
@@ -282,7 +314,7 @@ mod tests {
     fn a_circle_clamps_the_corner_to_the_min_half_extent() {
         let geom = GlassGeometry { center: Point::new(0.0, 0.0), width: 80.0, height: 60.0, corner_radius: 999.0, is_circle: true };
         let g = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
-        let EffectPass::GlassRefraction { u } = g[0].pass else { panic!("expected refraction") };
+        let EffectPass::Warp { u } = g[0].pass else { panic!("expected warp") };
         assert!((u[6] - 30.0).abs() < 1e-4);
     }
 }
