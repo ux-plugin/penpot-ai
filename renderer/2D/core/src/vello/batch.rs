@@ -45,6 +45,13 @@ pub(crate) struct Inst {
     /// pixels, which the glass stages subtract from `@builtin(position)` to recover the cell-local
     /// fragment coordinate the field math is expressed in.
     pub _pad: [f32; 3],
+    /// Straight RGBA the composite multiplies this instance's coverage by, or **alpha below zero**
+    /// for no tint at all — the body and the glass stamps take that path and are untouched.
+    ///
+    /// Four `f32`s and not a `vec4`: at byte offset 120 a `vec4<f32>` would be 16-byte aligned on
+    /// the WGSL side and pad to 128, while `repr(C)` `[f32; 4]` sits at 120. The struct is declared
+    /// as two `vec2`s so both sides keep the same 8-byte alignment and the same 136-byte stride.
+    pub tint: [f32; 4],
 }
 
 /// One glass cell's field parameters — the same 24-float composed uniform the per-shape pipeline
@@ -111,7 +118,15 @@ impl Inst {
             alpha: 1.0,
             mode: 0.0,
             _pad: [0.0; 3],
+            tint: [0.0, 0.0, 0.0, -1.0],
         }
+    }
+
+    /// The instance with a straight RGBA tint applied to its coverage at composite time. What lets
+    /// one rasterised silhouette serve shadows of different colours.
+    pub fn tinted(mut self, colour: [f32; 4]) -> Self {
+        self.tint = colour;
+        self
     }
 
     /// The instance tagged with its destination origin in target pixels — what the glass arms
@@ -159,6 +174,8 @@ struct Inst {
     _p0: f32,
     _p1: f32,
     _p2: f32,
+    tint_lo: vec2<f32>,
+    tint_hi: vec2<f32>,
 };
 @group(0) @binding(0) var<storage, read> insts: array<Inst>;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -272,10 +289,17 @@ fn combine_px(in: VSOut) -> vec4<f32> {
 fn composite_px(in: VSOut) -> vec4<f32> {
     let it = insts[in.inst];
     let uv = clamp(in.uv, it.clamp_min, it.clamp_max);
+    var value = textureSampleLevel(tex, samp, uv, 0.0);
     if (it.mode > 0.5) {
-        return textureSampleLevel(tex2, samp, uv, 0.0) * it.alpha;
+        value = textureSampleLevel(tex2, samp, uv, 0.0);
     }
-    return textureSampleLevel(tex, samp, uv, 0.0) * it.alpha;
+    value = value * it.alpha;
+    // A negative tint alpha means this instance carries no colour of its own.
+    if (it.tint_hi.y < 0.0) {
+        return value;
+    }
+    let c = vec4<f32>(it.tint_lo.x, it.tint_lo.y, it.tint_hi.x, it.tint_hi.y);
+    return vec4<f32>(c.rgb * c.a, c.a) * value.a;
 }
 
 "#;
