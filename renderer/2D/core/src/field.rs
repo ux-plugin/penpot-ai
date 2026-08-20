@@ -167,6 +167,13 @@ impl FieldProgram {
         out
     }
 
+    /// Whether the program declares an output by this name — how a consumer asks what a field
+    /// actually produces instead of assuming a fixed tuple.
+    #[must_use]
+    pub fn declares(&self, name: &str) -> bool {
+        self.outputs.iter().any(|(n, _)| *n == name)
+    }
+
     /// The named output bindings.
     #[must_use]
     pub fn wgsl_outputs(&self) -> String {
@@ -629,6 +636,36 @@ mod reuse_tests {
         assert!(h.contains("fn _fbm") && h.contains("fn fractalNoise"));
         // Noise is procedural: it must not drag in any shape machinery.
         assert!(!h.contains("fn fieldRefract") && !h.contains("fn fieldRamp"));
+    }
+
+    /// A procedural displacement must be able to produce a `computeField` of its own — no shape, no
+    /// bezel, no specular. Until the tail followed the program's declared outputs this was
+    /// impossible: every generated field ended in the lens's assembly, so the texture effect had
+    /// nowhere to lower to and stayed an opaque shader.
+    #[test]
+    fn a_shapeless_field_still_generates_a_compute_field() {
+        let p = FieldProgram {
+            nodes: vec![
+                FieldOp::Noise { div: Slot::new(0, 3) },
+                FieldOp::Displacement { source: FieldRef::Node(0), gain: Slot::new(0, 2) },
+            ],
+            outputs: vec![("displacement", FieldRef::Node(1))],
+        };
+        let src = format!(
+            "@group(0) @binding(0) var<uniform> u: array<vec4<f32>, 6>;\n\
+             fn fieldU(gi: u32, i: u32) -> vec4<f32> {{ return u[i]; }}\n\
+             {prelude}\n\
+             @fragment\n\
+             fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{\n\
+             \x20   return computeField(0u, pos.xy);\n\
+             }}\n",
+            prelude = crate::vello::glass::field_prelude(&p),
+        );
+        validate(&src);
+        // No shape, so none of the lens machinery may appear.
+        assert!(!src.contains("glassSpecular(edgeT"), "no lens assembly");
+        assert!(!src.contains("let localPos"), "no centre to be relative to");
+        assert!(src.contains("return vec4<f32>(displacement.x, displacement.y, 0.0, 1.0);"));
     }
 
     /// One noise implementation, shared: the effect shaders and the field programs must not drift.

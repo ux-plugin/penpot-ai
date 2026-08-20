@@ -337,13 +337,12 @@ fn glassSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32
 /// early-out sits immediately after the distance so nothing beyond the shape is evaluated, which is
 /// why the program is emitted in two runs rather than one.
 pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {
-    format!(
-        "{helpers}{band}{spec}
-// The refraction field at device pixel `fc`: (dpx.x, dpx.y, specular, mask).
-fn computeField(gi: u32, fc: vec2<f32>) -> vec4<f32> {{
-    let scale = fieldU(gi, 4u).x;
-{prologue}{distance}    if (n0 > 0.0) {{ return vec4<f32>(0.0, 0.0, 0.0, 0.0); }}
-{rest}{outputs}    let bezel = min(fieldU(gi, 2u).x, min(fieldU(gi, 1u).x, fieldU(gi, 1u).y));
+    // A lens declares `refracted`, and only a lens wants the bezel/zoom/specular assembly below.
+    // Any other program — a procedural displacement, a stroke, a bevel — is packed straight from
+    // whatever it says it produces, defaulting to no displacement and full coverage. This is the
+    // seam that lets `computeField` serve a field with no shape at all.
+    let tail = if p.declares("refracted") {
+        r#"    let bezel = min(fieldU(gi, 2u).x, min(fieldU(gi, 1u).x, fieldU(gi, 1u).y));
     var disp = refracted * scale;
     let edgeFade = pow(1.0 - edgeT, 1.5);
     disp = disp * (1.0 + fieldU(gi, 3u).z * edgeFade);
@@ -352,14 +351,36 @@ fn computeField(gi: u32, fc: vec2<f32>) -> vec4<f32> {{
     dpx = dpx + localPos * zoomFactor;
     let specular = glassSpecular(edgeT, bezel, fieldU(gi, 2u).w, dir, scale);
     return vec4<f32>(dpx.x, dpx.y, specular, mask);
-}}
-",
+"#
+        .to_string()
+    } else {
+        format!(
+            "    return vec4<f32>({d}.x, {d}.y, {s}, {m});\n",
+            d = if p.declares("displacement") { "displacement" } else { "vec2<f32>(0.0)" },
+            s = if p.declares("specular") { "specular" } else { "0.0" },
+            m = if p.declares("mask") { "mask" } else { "1.0" },
+        )
+    };
+    // The outside-the-shape early-out only exists for a program measuring distance from a shape.
+    let (guard, distance, rest) = if p.declares("dist") {
+        (
+            "    if (n0 > 0.0) { return vec4<f32>(0.0, 0.0, 0.0, 0.0); }\n".to_string(),
+            p.wgsl_nodes(0..1),
+            p.wgsl_nodes(1..p.nodes.len()),
+        )
+    } else {
+        (String::new(), String::new(), p.wgsl_nodes(0..p.nodes.len()))
+    };
+    format!(
+        "{helpers}{band}{spec}\n\
+// The field at device pixel `fc`, packed as (displacement.x, displacement.y, specular, mask).\n\
+fn computeField(gi: u32, fc: vec2<f32>) -> vec4<f32> {{\n\
+    let scale = fieldU(gi, 4u).x;\n\
+{prologue}{distance}{guard}{rest}{outputs}{tail}}}\n",
         helpers = p.helpers(),
         band = crate::field::FIELD_BAND,
         spec = GLASS_SPECULAR,
         prologue = p.wgsl_prologue(),
-        distance = p.wgsl_nodes(0..1),
-        rest = p.wgsl_nodes(1..p.nodes.len()),
         outputs = p.wgsl_outputs(),
     )
 }
