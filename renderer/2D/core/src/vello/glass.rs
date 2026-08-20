@@ -27,13 +27,13 @@ use wgpu::util::DeviceExt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnitOp {
     /// Masked displaced sample + chromatic aberration (a composed pass's sampling head).
-    Warp([f32; 20]),
-    /// Frosted jitter sample (a composed pass's sampling head); `u[17]` = frost.
-    Scatter([f32; 20]),
-    /// Pointwise prismatic specular add; `u[18]`/`u[19]` = opacity/saturation.
-    Shade([f32; 20]),
-    /// Pointwise final lerp against the original backdrop by the field mask.
-    MaskMix([f32; 20]),
+    Warp(Vec<f32>),
+    /// Jittered sample (a composed pass's sampling head).
+    Scatter(Vec<f32>),
+    /// Pointwise lit term, weighted by the field's specular output.
+    Shade(Vec<f32>),
+    /// Pointwise final lerp against a second input by the field's mask output.
+    MaskMix(Vec<f32>),
 }
 
 /// A composed pass's pipeline cache key: (sampling head: 0 plain / 1 warp / 2 scatter,
@@ -221,7 +221,7 @@ impl GlassPipeline {
     ///
     /// When a run fuses what used to be separate materialised passes, the result is *more* accurate,
     /// never worse: the intermediate stays in registers as float instead of quantising to 8-bit.
-    pub fn units(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, src: &wgpu::TextureView, original: Option<&wgpu::TextureView>, ops: &[UnitOp]) {
+    pub fn units(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, src: &wgpu::TextureView, original: Option<&wgpu::TextureView>, ops: &[UnitOp], field: &std::rc::Rc<crate::field::FieldProgram>) {
         let head = match ops.first() {
             Some(UnitOp::Warp(_)) => 1u8,
             Some(UnitOp::Scatter(_)) => 2,
@@ -233,7 +233,7 @@ impl GlassPipeline {
         if !self.units.borrow().contains_key(&key) {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("glass units (composed)"),
-                source: wgpu::ShaderSource::Wgsl(units_shader(key).into()),
+                source: wgpu::ShaderSource::Wgsl(units_shader(key, field).into()),
             });
             let layout = if key.3 { &self.two_tex_layout } else { &self.one_tex_layout };
             let pipeline = make_pipeline(device, "glass units", &module, layout, self.format);
@@ -264,19 +264,14 @@ impl GlassPipeline {
 /// `specularOpacity` 19, `specularSaturation` 20.
 pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
     let mut out = [0.0_f32; 24];
-    if let Some(op) = ops.first() {
-        let (UnitOp::Warp(u) | UnitOp::Scatter(u) | UnitOp::Shade(u) | UnitOp::MaskMix(u)) = op;
-        out[..17].copy_from_slice(&u[..17]);
-    }
     for op in ops {
-        match op {
-            UnitOp::Warp(u) => out[17] = u[17],
-            UnitOp::Scatter(u) => out[18] = u[17],
-            UnitOp::Shade(u) => {
-                out[19] = u[18];
-                out[20] = u[19];
+        let (UnitOp::Warp(u) | UnitOp::Scatter(u) | UnitOp::Shade(u) | UnitOp::MaskMix(u)) = op;
+        // Every unit of a run carries the same field geometry; each contributes only the trailing
+        // slots its own kind uses, so merging them is a per-slot max of what was actually set.
+        for (i, v) in u.iter().enumerate().take(24) {
+            if out[i] == 0.0 {
+                out[i] = *v;
             }
-            UnitOp::MaskMix(_) => {}
         }
     }
     out
@@ -341,8 +336,7 @@ fn glassSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32
 /// `computeField`, generated from [`glass_field_program`] plus the lens-specific assembly. The
 /// early-out sits immediately after the distance so nothing beyond the shape is evaluated, which is
 /// why the program is emitted in two runs rather than one.
-pub(crate) fn field_prelude() -> String {
-    let p = glass_field_program();
+pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {
     format!(
         "{helpers}{band}{spec}
 // The refraction field at device pixel `fc`: (dpx.x, dpx.y, specular, mask).
@@ -490,7 +484,7 @@ pub(crate) fn needs_hash(key: UnitKey) -> bool {
 /// Compose the per-shape fragment shader for one unit run: the shared [`units_body`] wired to a
 /// dedicated source texture (and an `original` texture when a mask-mix reads a distinct backdrop),
 /// with the field in a uniform (so `gi` is always `0u`).
-fn units_shader(key: UnitKey) -> String {
+fn units_shader(key: UnitKey, program: &crate::field::FieldProgram) -> String {
     let (_, _, _, two_tex) = key;
     let mut bindings = String::from(
         r#"
@@ -530,7 +524,7 @@ fn fs(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {{
 "#,
         body = units_body(key)
     );
-    format!("{bindings}{field}{vs}{fs}", field = field_prelude(), vs = VERTEX_SHADER)
+    format!("{bindings}{field}{vs}{fs}", field = field_prelude(program), vs = VERTEX_SHADER)
 }
 
 /// `TileMode::Clamp` fill. The composed scoped backdrop is the scope's content over a transparent

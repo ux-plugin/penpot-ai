@@ -52,16 +52,17 @@ pub struct FootprintDescriptor {
 pub fn pass_reach(pass: &EffectPass) -> Reach {
     match pass {
         EffectPass::Blur { sigma, .. } => Reach::Neighborhood(3.0 * sigma),
-        EffectPass::Warp { .. } => Reach::SamePixel,
-        EffectPass::Scatter { u } => {
-            let frost = u[17];
+        // A unit's reach follows its kind, not the effect it serves: only the jittered sample
+        // reads off its own pixel, and only when the jitter is actually on.
+        EffectPass::Unit { op: crate::effect_graph::UnitKind::Scatter, u, .. } => {
+            let frost = u.get(18).copied().unwrap_or(0.0);
             if frost > 0.01 {
-                Reach::Neighborhood(frost * 6.0 * u[16])
+                Reach::Neighborhood(frost * 6.0 * u.get(16).copied().unwrap_or(1.0))
             } else {
                 Reach::SamePixel
             }
         }
-        EffectPass::Shade { .. } | EffectPass::MaskMix { .. } => Reach::SamePixel,
+        EffectPass::Unit { .. } => Reach::SamePixel,
         EffectPass::Custom { .. } => Reach::Global,
     }
 }
@@ -122,7 +123,7 @@ pub fn barrier_count(stages: &[Stage]) -> usize {
 /// false for a blur (its own multi-pass separable/pyramid machinery) and for opaque custom code.
 #[must_use]
 pub fn heads_a_run(pass: &EffectPass) -> bool {
-    matches!(pass, EffectPass::Scatter { .. })
+    matches!(pass, EffectPass::Unit { op: crate::effect_graph::UnitKind::Scatter, .. })
 }
 
 /// Group the graph's passes into **execution groups** — the sets that lower into ONE materialised

@@ -458,13 +458,13 @@ struct GlassCell {
 fn wv_glass_admit(passes: &[Pass]) -> Option<(crate::vello::glass::UnitOp, Vec<crate::vello::glass::UnitOp>, f32)> {
     use crate::vello::glass::UnitOp;
     let head = |p: &Pass| match &p.kind {
-        crate::vello::graph::PassKind::Units(ops) => ops.first().cloned(),
+        crate::vello::graph::PassKind::Units { ops, .. } => ops.first().cloned(),
         _ => None,
     };
     match passes {
         [one] => match (&one.kind, one.scale >= 0.999) {
-            (crate::vello::graph::PassKind::Units(ops), true) => match ops.split_first() {
-                Some((UnitOp::Warp(u), rest)) => Some((UnitOp::Warp(*u), rest.to_vec(), 0.0)),
+            (crate::vello::graph::PassKind::Units { ops, .. }, true) => match ops.split_first() {
+                Some((UnitOp::Warp(u), rest)) => Some((UnitOp::Warp(u.clone()), rest.to_vec(), 0.0)),
                 _ => None,
             },
             _ => None,
@@ -476,7 +476,7 @@ fn wv_glass_admit(passes: &[Pass]) -> Option<(crate::vello::glass::UnitOp, Vec<c
             if sigma > crate::vello::graph::BLUR_MAX_SIGMA || t.scale < 0.999 {
                 return None;
             }
-            let (Some(UnitOp::Warp(wu)), crate::vello::graph::PassKind::Units(tail)) = (head(w), &t.kind) else {
+            let (Some(UnitOp::Warp(wu)), crate::vello::graph::PassKind::Units { ops: tail, .. }) = (head(w), &t.kind) else {
                 return None;
             };
             (w.scale - b.scale).abs().le(&1e-6).then(|| (UnitOp::Warp(wu), tail.clone(), sigma))

@@ -15,7 +15,7 @@
 
 use std::rc::Rc;
 
-use crate::effect_graph::{EffectPass, GraphPass, Src};
+use crate::effect_graph::{EffectPass, GraphPass, Src, UnitKind};
 use wgpu::util::DeviceExt;
 
 use crate::vello::blend::{Blit, BlurPass, Compositor};
@@ -54,7 +54,7 @@ pub enum PassKind {
     /// `[src, original]` when a mask-mix reads a backdrop distinct from the head's source. Sharp
     /// glass is `[Warp, Shade, MaskMix]` in one pass; the frosted composite is
     /// `[Scatter, Shade, MaskMix]`; a same-pixel scatter is the identity and lowers to nothing.
-    Units(Vec<UnitOp>),
+    Units { ops: Vec<UnitOp>, field: std::rc::Rc<crate::field::FieldProgram> },
     /// A hand-written WGSL pass — the escape hatch. Runs the (already-compiled, cached) `pipeline`
     /// over its inputs with `u` (surface resolution + params), sized to exactly `param_vec4s` vec4s
     /// (the shader's declared `array<vec4<f32>, N>`). The pipeline's own `@group(0)` layout is
@@ -97,22 +97,28 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                 let head_src = graph[head].inputs.first().copied();
                 let mut inputs: Vec<Src> = head_src.into_iter().collect();
                 let mut ops = Vec::with_capacity(group.len());
+                let mut field = None;
                 for &i in &group {
                     match &graph[i].pass {
-                        EffectPass::Warp { u } => ops.push(UnitOp::Warp(*u)),
-                        // A same-pixel scatter (frost ≤ 0.01) is the identity: the run's head
-                        // sample already reads its input, so it lowers to nothing.
-                        EffectPass::Scatter { u } => {
-                            if u[17] > 0.01 {
-                                ops.push(UnitOp::Scatter(*u));
-                            }
-                        }
-                        EffectPass::Shade { u } => ops.push(UnitOp::Shade(*u)),
-                        EffectPass::MaskMix { u } => {
-                            ops.push(UnitOp::MaskMix(*u));
-                            if let Some(orig) = graph[i].inputs.get(1) {
-                                if Some(*orig) != head_src {
-                                    inputs.push(*orig);
+                        EffectPass::Unit { op, field: f, u } => {
+                            field.get_or_insert_with(|| f.clone());
+                            match op {
+                                UnitKind::Warp => ops.push(UnitOp::Warp(u.clone())),
+                                // A same-pixel scatter (frost ≤ 0.01) is the identity: the run's
+                                // head sample already reads its input, so it lowers to nothing.
+                                UnitKind::Scatter => {
+                                    if u.get(18).copied().unwrap_or(0.0) > 0.01 {
+                                        ops.push(UnitOp::Scatter(u.clone()));
+                                    }
+                                }
+                                UnitKind::Shade => ops.push(UnitOp::Shade(u.clone())),
+                                UnitKind::MaskMix => {
+                                    ops.push(UnitOp::MaskMix(u.clone()));
+                                    if let Some(orig) = graph[i].inputs.get(1) {
+                                        if Some(*orig) != head_src {
+                                            inputs.push(*orig);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -121,8 +127,9 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                         }
                     }
                 }
+                let field = field.expect("a unit run carries the field its units read");
                 out.push(Pass {
-                    kind: PassKind::Units(ops),
+                    kind: PassKind::Units { ops, field },
                     inputs,
                     scale: graph[*group.last().unwrap_or(&head)].scale,
                 });
@@ -150,7 +157,7 @@ impl PassKind {
     fn prof_bucket(&self) -> usize {
         match self {
             PassKind::Blur { .. } => prof_bucket::BLUR,
-            PassKind::Units(ops) => {
+            PassKind::Units { ops, .. } => {
                 if ops.iter().any(|o| matches!(o, UnitOp::Warp(_))) {
                     prof_bucket::REFRACTION
                 } else {
@@ -232,8 +239,8 @@ pub fn run_graph_into(
             PassKind::Blur { sigma, linear } => {
                 gaussian_blur(compositor, device, enc, &view, &bound[0], pw, ph, *sigma, *linear, format, pool, keep_tex, keep_views);
             }
-            PassKind::Units(ops) => {
-                glass.units(device, enc, &view, &bound[0], bound.get(1), ops);
+            PassKind::Units { ops, field } => {
+                glass.units(device, enc, &view, &bound[0], bound.get(1), ops, field);
             }
             PassKind::Custom { pipeline, u, param_vec4s } => {
                 custom_pass(device, enc, &view, pipeline, sampler, &bound, u, *param_vec4s);

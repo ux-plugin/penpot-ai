@@ -35,29 +35,34 @@ pub enum EffectPass {
     /// (sRGB-decode taps, re-encode the result) for a faithful, brighter mix — used by the background
     /// blur; glass keeps `false` so its frost matches the gamma-space convention.
     Blur { sigma: f32, linear: bool },
-    /// Masked displaced sample: read the input offset by a field's displacement vector, with a
-    /// 3-tap chromatic channel split, mixed to the plain sample by the field mask. Input `[src]`.
-    /// The field (a rounded-box SDF bezel) is pure uniform arithmetic recomputed inline; `u` is the
-    /// 20-float field uniform with the chromatic-aberration strength at index 17. Reads within the
-    /// bounded displacement of its own pixel, so it fuses as same-pixel.
-    Warp { u: [f32; 20] },
-    /// Stochastic jitter sample (frost): average N noise-offset taps of the input. Input `[src]`.
-    /// `u` is the field uniform with `frost` at index 17; frost ≤ 0.01 degenerates to a plain
-    /// same-pixel sample (and then fuses instead of materialising).
-    Scatter { u: [f32; 20] },
-    /// Pointwise specular shading: add the field's specular band as a prismatic highlight to the
-    /// running value. `u` is the field uniform with `specularOpacity`/`specularSaturation` at
-    /// indices 18/19. Always same-pixel.
-    Shade { u: [f32; 20] },
-    /// Pointwise final composite: lerp the running value against the original backdrop (input 1)
-    /// by the field mask, carrying premultiplied alpha through. `u` is the bare field uniform.
-    /// Always same-pixel.
-    MaskMix { u: [f32; 20] },
+    /// One **unit** over the running value, parameterised by a field rather than by any particular
+    /// effect. `field` is the [`crate::field::FieldProgram`] whose named outputs the unit reads
+    /// (`displacement`, `mask`, `specular`, …) and `u` is the uniform its [`crate::field::Slot`]s
+    /// index into. Two units of the same kind differ only in those two, which is what lets a lens,
+    /// a bevel and a noise warp all lower to the same pass kind.
+    ///
+    /// The uniform is per-pass rather than shared because [`apply_chain_scales`] rewrites it into
+    /// each pass's own texel space; the *program* is shared, because structure is scale-free.
+    Unit { op: UnitKind, field: std::rc::Rc<crate::field::FieldProgram>, u: Vec<f32> },
     /// A hand-written WGSL pass — the escape hatch. The IR carries `u` (surface resolution + the
     /// shader's declared params) and `param_vec4s`, the exact `array<vec4<f32>, N>` size the shader
     /// declares; the backend sizes the uniform to exactly that (zero-fill/truncate `u`) and supplies
     /// the compiled pipeline when it runs this.
     Custom { u: Vec<f32>, param_vec4s: u32 },
+}
+
+/// What a [`EffectPass::Unit`] does with the value it is given. Each is a generic operation on a
+/// colour and a field — none of them knows what effect it is serving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitKind {
+    /// Sample the input displaced by the field's `displacement` output, with a chromatic split.
+    Warp,
+    /// Sample the input jittered by noise, scaled by the field's scatter amount.
+    Scatter,
+    /// Add a lit term, weighted by the field's `specular` output.
+    Shade,
+    /// Lerp against a second input by the field's `mask` output.
+    MaskMix,
 }
 
 /// A pass plus the texture reads it binds, in the order the pipeline expects.
@@ -111,10 +116,7 @@ fn apply_chain_scales(passes: &mut [GraphPass], w: u32, h: u32) {
         }
         match &mut gp.pass {
             EffectPass::Blur { sigma, .. } => *sigma *= sc,
-            EffectPass::Warp { u }
-            | EffectPass::Scatter { u }
-            | EffectPass::Shade { u }
-            | EffectPass::MaskMix { u } => {
+            EffectPass::Unit { u, .. } => {
                 u[0] = pass_dim(w, sc) as f32;
                 u[1] = pass_dim(h, sc) as f32;
                 for i in [2, 3, 4, 5, 6, 8, 16] {
@@ -209,17 +211,21 @@ pub fn glass_graph(
         g.splay, g.tilt_angle, g.edge_boost, g.zoom,
         s, 0.0, 0.0, 0.0,
     ];
-    let mut warp_u = field;
+    // One field program, shared by every unit of this lens; only the numbers differ per pass,
+    // because the chain solver rewrites each pass into its own texel space.
+    let program = std::rc::Rc::new(crate::vello::glass::glass_field_program());
+    let unit = |op: UnitKind, u: Vec<f32>| EffectPass::Unit { op, field: program.clone(), u };
+    let mut base = field.to_vec();
+    base.resize(24, 0.0);
+    let mut warp_u = base.clone();
     warp_u[17] = g.chromatic_aberration;
-    let mut scatter_u = field;
-    scatter_u[17] = g.frost;
-    let mut shade_u = field;
-    shade_u[18] = g.specular_opacity;
-    shade_u[19] = g.specular_saturation;
+    let mut scatter_u = base.clone();
+    scatter_u[18] = g.frost;
+    let mut shade_u = base.clone();
+    shade_u[19] = g.specular_opacity;
+    shade_u[20] = g.specular_saturation;
 
-    let mut passes = vec![
-        GraphPass::new(EffectPass::Warp { u: warp_u }, vec![Src::Input(0)]),
-    ];
+    let mut passes = vec![GraphPass::new(unit(UnitKind::Warp, warp_u), vec![Src::Input(0)])];
     let sigma = g.total_blur_sigma() * s;
     let blurred = if sigma > 0.5 {
         passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: false }, vec![Src::Pass(0)]));
@@ -227,11 +233,11 @@ pub fn glass_graph(
     } else {
         Src::Pass(0)
     };
-    passes.push(GraphPass::new(EffectPass::Scatter { u: scatter_u }, vec![blurred]));
+    passes.push(GraphPass::new(unit(UnitKind::Scatter, scatter_u), vec![blurred]));
     let prev = passes.len() - 1;
-    passes.push(GraphPass::new(EffectPass::Shade { u: shade_u }, vec![Src::Pass(prev)]));
+    passes.push(GraphPass::new(unit(UnitKind::Shade, shade_u), vec![Src::Pass(prev)]));
     passes.push(GraphPass::new(
-        EffectPass::MaskMix { u: field },
+        unit(UnitKind::MaskMix, base),
         vec![Src::Pass(prev + 1), Src::Input(0)],
     ));
     passes
@@ -297,10 +303,24 @@ mod tests {
         let geom = GlassGeometry { center: Point::new(50.0, 50.0), width: 80.0, height: 60.0, corner_radius: 10.0, is_circle: false };
         let sharp = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         assert_eq!(sharp.len(), 4);
-        assert!(matches!(sharp[0].pass, EffectPass::Warp { .. }));
-        assert!(matches!(sharp[1].pass, EffectPass::Scatter { .. }));
-        assert!(matches!(sharp[2].pass, EffectPass::Shade { .. }));
-        assert!(matches!(sharp[3].pass, EffectPass::MaskMix { .. }));
+        let kinds: Vec<UnitKind> = sharp
+            .iter()
+            .filter_map(|p| match p.pass {
+                EffectPass::Unit { op, .. } => Some(op),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, vec![UnitKind::Warp, UnitKind::Scatter, UnitKind::Shade, UnitKind::MaskMix]);
+        // Every unit of the lens shares ONE field program — the structure is scale-free, so only
+        // the numbers differ per pass.
+        let progs: Vec<*const crate::field::FieldProgram> = sharp
+            .iter()
+            .filter_map(|p| match &p.pass {
+                EffectPass::Unit { field, .. } => Some(std::rc::Rc::as_ptr(field)),
+                _ => None,
+            })
+            .collect();
+        assert!(progs.windows(2).all(|w| w[0] == w[1]), "one field program per lens");
         assert_eq!(sharp[3].inputs, vec![Src::Pass(2), Src::Input(0)]);
         let mut frosted = glass();
         frosted.frost = 1.0;
@@ -314,7 +334,7 @@ mod tests {
     fn a_circle_clamps_the_corner_to_the_min_half_extent() {
         let geom = GlassGeometry { center: Point::new(0.0, 0.0), width: 80.0, height: 60.0, corner_radius: 999.0, is_circle: true };
         let g = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
-        let EffectPass::Warp { u } = g[0].pass else { panic!("expected warp") };
+        let EffectPass::Unit { ref u, op: UnitKind::Warp, .. } = g[0].pass else { panic!("expected warp") };
         assert!((u[6] - 30.0).abs() < 1e-4);
     }
 }
