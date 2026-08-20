@@ -71,7 +71,14 @@ fn main() {
         feats.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
     );
 
-    let cells = render_core::vello::abi::load_scale_scene(n, every);
+    let step = std::env::var("WV_STEP").ok().and_then(|v| v.parse::<f32>().ok());
+    let cells = match step {
+        Some(st) => {
+            let size = std::env::var("WV_SIZE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.9);
+            render_core::vello::abi::load_scale_scene_sized(n, every, st, size, 0)
+        }
+        None => render_core::vello::abi::load_scale_scene(n, every),
+    };
     render_core::vello::abi::set_render_options(0, 1.0);
     render_core::vello::abi::set_view(1.0, 0.0, 0.0);
     render_core::vello::abi::set_canvas_background(0xffff_ffff);
@@ -162,7 +169,7 @@ fn main() {
     }
 
     let read = |b: u32| render_core::vello::abi::prof_read(b);
-    let cpu_base: Vec<f64> = [126u32, 130, 131, 127, 3, 118, 119, 120, 121, 116, 117, 122, 123, 128, 18, 19]
+    let cpu_base: Vec<f64> = [126u32, 130, 131, 127, 3, 118, 119, 120, 121, 116, 117, 122, 123, 128, 18, 19, 6, 8, 9, 20, 21]
         .iter()
         .map(|&b| read(b))
         .collect();
@@ -176,7 +183,7 @@ fn main() {
     }
 
     let idx = |b: u32| -> usize {
-        [126u32, 130, 131, 127, 3, 118, 119, 120, 121, 116, 117, 122, 123, 128, 18, 19]
+        [126u32, 130, 131, 127, 3, 118, 119, 120, 121, 116, 117, 122, 123, 128, 18, 19, 6, 8, 9, 20, 21]
             .iter()
             .position(|&x| x == b)
             .unwrap()
@@ -189,6 +196,12 @@ fn main() {
     println!("wall/frame              {:8.3} ms", wall_ms / k);
     println!("  cpu (record+submit)   {:8.3} ms", cpu_ms / k);
     println!("  poll wait (GPU drain) {:8.3} ms", poll_ms / k);
+
+    println!("\n== surfaces ==");
+    println!("textures created        {:8.1} /frame", per_frame(6));
+    println!("pool hit / miss         {:8.1} / {:.1} per frame", per_frame(8), per_frame(9));
+    println!("node scratch peak       {:8.0} surfaces  (residency WITH recycling)", delta(20));
+    println!("node scratch sum        {:8.1} surfaces/frame  (residency WITHOUT it)", per_frame(21));
 
     println!("\n== CPU lane (sink buckets) ==");
     println!("gather detect           {:8.3} ms", per_frame(126));

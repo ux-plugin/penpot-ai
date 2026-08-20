@@ -28,7 +28,10 @@ const FUSE_SHARP_GLASS: bool = true;
 /// Above this device-σ a single separable pass would exceed [`Compositor::blur1d`]'s 160-tap cap
 /// and truncate the Gaussian; the pyramid path kicks in instead. Chosen so the coarse blur samples
 /// fully (`3·32 = 96` taps ≤ 160) with margin.
-const BLUR_MAX_SIGMA: f32 = 32.0;
+/// The largest device sigma one separable `blur1d` pair renders faithfully (the 160-tap cap at
+/// `3σ`); past it [`gaussian_blur`] power-lowers through a downsample pyramid. Shared with the
+/// batched planner, whose instanced blur has no pyramid and must reject what it cannot express.
+pub(crate) const BLUR_MAX_SIGMA: f32 = 32.0;
 
 /// One full-screen pass, **lowered** for execution: render-core describes the effect as a neutral
 /// [`GraphPass`]; [`lower_graph`] turns each into this by resolving `Custom` to its compiled wgpu
