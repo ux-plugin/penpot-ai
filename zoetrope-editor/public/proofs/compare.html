@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>4K strip parity — verdict</title>
+<style>
+body{background:#111;color:#eee;font:14px ui-monospace,monospace;margin:0;padding:16px}
+h2{font-size:14px;margin:20px 0 6px;color:#8bc}
+.good{color:#7c6} .bad{color:#e66}
+img{max-width:100%;display:block;border:1px solid #333;image-rendering:pixelated}
+.note{color:#999;margin:4px 0 0}
+</style>
+<h2>VERDICT: the bottom-row difference is a PREPASS bug — the strip matches ground truth</h2>
+<p class="note">Bottom tile row (y 2130–2160) vs the TILED reference: prepass <span class="bad">1,485 px wrong by &gt;16 (max 105)</span> · strip <span class="good">219 px (max 44, inside the known WV-vs-tiled blur class)</span>. The yellow band is phantom inner-shadow ink the prepass paints above bottom-clipped shapes.</p>
+<h2>bottom 64 rows, 4× vertical zoom — TILED (ground truth)</h2>
+<img src="band-tiled.png">
+<h2 class="bad">bottom 64 rows — PREPASS (phantom ink: yellow band, dark blobs)</h2>
+<img src="band-base.png">
+<h2 class="good">bottom 64 rows — STRIP (the shipping default)</h2>
+<img src="band-strip.png">
+<h2>where prepass and strip disagree (white = differing px)</h2>
+<img src="band-mask.png">
+<h2>full frames</h2>
+<p class="note"><a style="color:#8bc" href="full-base.jpg">prepass</a> · <a style="color:#8bc" href="full-strip.jpg">strip</a> · <a style="color:#8bc" href="full-batch.jpg">strip+batch</a> — batch vs strip: 68 px, ±1</p>

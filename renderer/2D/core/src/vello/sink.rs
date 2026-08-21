@@ -2244,19 +2244,13 @@ impl Sink {
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        let is_glass = crate::vello::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.glass.is_some()));
+        let self_clips = Self::wv_gather_self_clips(id);
         let is_custom = crate::vello::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.gather_shader().is_some()));
         if crate::vello::abi::wv_scope() && !is_custom {
-            self.wv_stamp_gather_scoped(backend, device, queue, enc, acc_view, root, full_view, id, is_glass, width, height, format, sz);
+            self.wv_stamp_gather_scoped(backend, device, queue, enc, acc_view, root, full_view, id, self_clips, width, height, format, sz);
             return;
         }
-        let passes = if is_glass {
-            self.lens_graph(id, width, height, 0.0, 0.0, full_view, 1.0)
-        } else if is_custom {
-            self.custom_graph(id, width, height, device, format)
-        } else {
-            Some(lower_graph(&effect_graph::background_blur_graph(self.gather_sigma(id, full_view, 1.0)), None))
-        };
+        let passes = self.wv_gather_graph(id, width, height, 0.0, 0.0, full_view, 1.0, device, format);
         let Some(passes) = passes else { return };
         // This path runs the graph over VIEWPORT-sized surfaces, so its backdrop input must be the
         // viewport alone. When a source strip rides below it the accumulator is taller, and handing
@@ -2284,7 +2278,7 @@ impl Sink {
         let Some((rtex, rview)) = graph else {
             return;
         };
-        if is_glass {
+        if self_clips {
             self.compositor.blit(device, enc, acc_view, sz, &Blit {
                 src: &rview, dst: (0.0, 0.0, vp.0, vp.1), src_rect: (0.0, 0.0, vp.0, vp.1), src_size: vp, alpha: 1.0,
             });
@@ -3014,7 +3008,7 @@ impl Sink {
         root: Affine,
         full_view: Affine,
         id: u128,
-        is_glass: bool,
+        self_clips: bool,
         width: u32,
         height: u32,
         format: wgpu::TextureFormat,
@@ -3030,7 +3024,7 @@ impl Sink {
         };
         let cs = full_view.as_coeffs();
         let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
-        let reach = if is_glass {
+        let reach = if self_clips {
             let sigma = crate::vello::abi::with_scene(|live, _, _| {
                 live.get(id).and_then(|n| n.glass).map_or(0.0, |g| g.total_blur_sigma() * scale)
             });
@@ -3086,17 +3080,13 @@ impl Sink {
             alpha: 1.0,
         });
 
-        let passes = if is_glass {
-            self.lens_graph(id, kw, kh, f64::from(bx), f64::from(by), full_view, k)
-        } else {
-            Some(lower_graph(&effect_graph::background_blur_graph(self.gather_sigma(id, full_view, k)), None))
-        };
+        let passes = self.wv_gather_graph(id, kw, kh, f64::from(bx), f64::from(by), full_view, k, device, format);
         let Some(passes) = passes else { return };
         let Some((rtex, rview)) = self.wv_run_chain(device, enc, &[&bd_view], &passes, kw, kh, format) else {
             return;
         };
 
-        if is_glass {
+        if self_clips {
             let b = Blit {
                 src: &rview,
                 dst: (bx as f32, by as f32, bw as f32, bh as f32),
@@ -4347,20 +4337,12 @@ impl Sink {
         let Some(&(bdx, bdy)) = self.backdrop_origin.get(&backdrop) else { return };
         let k = self.backdrop_scale.get(&backdrop).copied().unwrap_or(1.0);
 
-        let is_glass = crate::vello::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.glass.is_some()));
-        let is_custom = crate::vello::abi::with_scene(|live, _, _| live.get(id).is_some_and(|n| n.gather_shader().is_some()));
+        let self_clips = Self::wv_gather_self_clips(id);
 
         let result_ref = backdrop.bump();
         let mask_ref = backdrop.bump().bump();
         if !self.surfaces.contains_key(&result_ref) {
-            let passes = if is_glass {
-                self.lens_graph(id, bw, bh, bdx, bdy, full_view, k)
-            } else if is_custom {
-                self.custom_graph(id, bw, bh, device, format)
-            } else {
-                let graph = effect_graph::background_blur_graph(self.gather_sigma(id, full_view, k));
-                Some(lower_graph(&graph, None))
-            };
+            let passes = self.wv_gather_graph(id, bw, bh, bdx, bdy, full_view, k, device, format);
             let Some(passes) = passes else { return };
             Self::submit_batch(enc, device, queue, backend);
             let backdrop_view = self.surfaces[&backdrop].view.clone();
@@ -4374,7 +4356,7 @@ impl Sink {
                 let Some((tex, view)) = out else { return };
             self.surfaces.insert(result_ref, Surface { texture: tex, view, width: bw, height: bh });
 
-            if !is_glass {
+            if !self_clips {
                 let mask = new_target_with_usage(device, bw, bh, format, self.raster_usage);
                 let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
                 let root_for_mask = Affine::scale(k) * Affine::translate((-bdx, -bdy)) * root;
@@ -4407,7 +4389,7 @@ impl Sink {
         let dst = ((ix0 - ox + m) as f32, (iy0 - oy + m) as f32, (ix1 - ix0) as f32, (iy1 - iy0) as f32);
         let src_rect = (((ix0 - bdx) * k) as f32, ((iy0 - bdy) * k) as f32, ((ix1 - ix0) * k) as f32, ((iy1 - iy0) * k) as f32);
         let src_size = (bw as f32, bh as f32);
-        if is_glass {
+        if self_clips {
             let b = Blit { src: &result_view, dst, src_rect, src_size, alpha: 1.0 };
             if k < 0.999 {
                 self.compositor.blit_sharp(device, enc, &to_view, buf, &b);
@@ -4607,6 +4589,48 @@ impl Sink {
         let c = full_view.as_coeffs();
         let scale = ((c[0] * c[0] + c[1] * c[1]).sqrt() * k) as f32;
         effect_graph::background_blur_sigma(radius.unwrap_or(0.0), scale)
+    }
+
+    /// The node's single backdrop-reading effect, if any — the one a gather runs. The stack holds at
+    /// most one ([`crate::effect::effect_stack`]'s `else if` chain), so `find` is the whole answer.
+    fn wv_backdrop_effect(id: u128) -> Option<crate::effect::Effect> {
+        crate::vello::abi::with_scene(|live, _, _| {
+            live.get(id)
+                .and_then(|n| crate::effect::effect_stack(n).into_iter().find(crate::effect::Effect::reads_backdrop))
+        })
+    }
+
+    /// Lower a gather's chain by asking the effect what its head op is, not by asking whether the node
+    /// is a lens. `Lens` carries its own SDF clip (composite blits whole); `Blur`/`Shader` are clipped
+    /// by an external silhouette mask — [`Self::wv_gather_self_clips`] states which.
+    fn wv_gather_graph(
+        &mut self,
+        id: u128,
+        bw: u32,
+        bh: u32,
+        bdx: f64,
+        bdy: f64,
+        full_view: Affine,
+        k: f64,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) -> Option<Vec<Pass>> {
+        use crate::effect::Op;
+        match Self::wv_backdrop_effect(id)?.ops.first()? {
+            Op::Lens(_) => self.lens_graph(id, bw, bh, bdx, bdy, full_view, k),
+            Op::Shader(_) => self.custom_graph(id, bw, bh, device, format),
+            Op::Blur { .. } => {
+                Some(lower_graph(&effect_graph::background_blur_graph(self.gather_sigma(id, full_view, k)), None))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a gather's chain clips itself — true only for a `Lens` head, whose composite carries an
+    /// SDF mask. Everything else needs the shape silhouette masked in after the chain runs.
+    fn wv_gather_self_clips(id: u128) -> bool {
+        Self::wv_backdrop_effect(id)
+            .is_some_and(|e| matches!(e.ops.first(), Some(crate::effect::Op::Lens(_))))
     }
 
     /// Build the glass pass-graph over the assembled backdrop (input 0). The geometry→uniform math is
