@@ -64,10 +64,13 @@ pub struct OpTable {
 }
 
 /// Interpret one lowered chain into ops. `size` is the chain's full-resolution surface; a pass at
-/// reduced scale takes a proportionally smaller target, matching what the executor allocates.
+/// reduced scale takes a proportionally smaller target.
+///
+/// Sizing goes through [`crate::effect_graph::pass_dim`] — the same call the executor makes — rather
+/// than reimplementing the arithmetic. An oracle that rounds differently from the thing it predicts
+/// is worse than no oracle, and f32-vs-f64 rounding is exactly how that happens.
 #[must_use]
 pub fn interpret(passes: &[Pass], size: (u32, u32)) -> OpTable {
-    let dim = |v: u32, s: f32| ((v as f32 * s).round().max(1.0)) as u32;
     let ops = passes
         .iter()
         .enumerate()
@@ -82,7 +85,10 @@ pub fn interpret(passes: &[Pass], size: (u32, u32)) -> OpTable {
                 })
                 .collect(),
             output: ValueId(i),
-            size: (dim(size.0, p.scale), dim(size.1, p.scale)),
+            size: (
+                crate::effect_graph::pass_dim(size.0, p.scale),
+                crate::effect_graph::pass_dim(size.1, p.scale),
+            ),
             scale: p.scale,
         })
         .collect();
