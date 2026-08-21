@@ -242,65 +242,11 @@ pub fn run_graph_into(
     pool: &mut crate::vello::sink::TexturePool,
     keep_tex: &mut Vec<wgpu::Texture>,
     keep_views: &mut Vec<wgpu::TextureView>,
-    mut prof: Option<&mut crate::vello::gputime::PassProfiler>,
+    prof: Option<&mut crate::vello::gputime::PassProfiler>,
 ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
     crate::vello::prof::inc_graph();
-    let sampler = compositor.sampler();
-    let mut outputs: Vec<(wgpu::Texture, wgpu::TextureView)> = Vec::with_capacity(passes.len());
-
-    if let (Some(p), Some(v)) = (prof.as_deref_mut(), inputs.first()) {
-        p.stamp(enc, v, prof_bucket::CROP);
-    }
-
-    let last = passes.len().saturating_sub(1);
-    for (idx, pass) in passes.iter().enumerate() {
-        let bound: Vec<wgpu::TextureView> = pass
-            .inputs
-            .iter()
-            .map(|s| match *s {
-                Src::Input(i) => inputs[i].clone(),
-                Src::Pass(i) => outputs[i].1.clone(),
-            })
-            .collect();
-
-        let extra = if idx == last {
-            wgpu::TextureUsages::COPY_SRC
-        } else {
-            wgpu::TextureUsages::empty()
-        };
-        let (pw, ph) = (
-            crate::effect_graph::pass_dim(w, pass.scale),
-            crate::effect_graph::pass_dim(h, pass.scale),
-        );
-        let tex = pool.acquire_target(device, pw, ph, pass.kind.output_format(format), extra, "effect target");
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-        match &pass.kind {
-            PassKind::Blur { sigma, linear } => {
-                gaussian_blur(compositor, device, enc, &view, &bound[0], pw, ph, *sigma, *linear, format, pool, keep_tex, keep_views);
-            }
-            PassKind::Units { ops, field } => {
-                unit_pipeline.units(device, enc, &view, &bound[0], bound.get(1), ops, field);
-            }
-            PassKind::Custom { pipeline, u, param_vec4s } => {
-                // A chain lowered for inspection must never reach the executor. Loud, because the
-                // alternative is a user's shader quietly not running.
-                let pipeline = pipeline.as_ref().expect("a custom pass reached the executor unresolved");
-                custom_pass(device, enc, &view, pipeline, sampler, &bound, u, *param_vec4s);
-            }
-        }
-        if let Some(p) = prof.as_deref_mut() {
-            p.stamp(enc, &view, pass.kind.prof_bucket());
-        }
-        outputs.push((tex, view));
-    }
-
-    let final_out = outputs.pop();
-    for (tex, view) in outputs {
-        keep_tex.push(tex);
-        keep_views.push(view);
-    }
-    final_out
+    let _ = prof; // per-pass profiler stamps are not threaded on the unit path
+    run_unit_chain(compositor, unit_pipeline, device, enc, inputs, passes, w, h, format, pool, keep_tex, keep_views)
 }
 
 /// Execute ONE unit-based [`crate::vello::fx::Op`] into a fresh target — the single-instance core of
