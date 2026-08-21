@@ -21,6 +21,7 @@ pub(crate) mod batch;
 pub mod blend;
 pub mod draw;
 pub mod editor;
+pub mod fx;
 pub mod effects;
 pub mod units;
 pub mod gputime;
