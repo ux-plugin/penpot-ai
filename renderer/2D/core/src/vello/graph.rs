@@ -2,7 +2,7 @@
 //!
 //! An effect is a *sequence of full-screen passes over textures*: each reads some input views
 //! plus a uniform and writes one texture, later passes chaining off earlier ones. Background blur
-//! and glass differ only in *which* passes and *what* uniforms — the data, not the control flow.
+//! and lens differ only in *which* passes and *what* uniforms — the data, not the control flow.
 //! [`run_graph`] executes that data, so the sink no longer carries a bespoke method per effect.
 //!
 //! What is *not* here: the scene render that produces an effect's inputs (a `Scene`→texture draw
@@ -52,7 +52,7 @@ pub enum PassKind {
     /// One **composed unit run** — an execution group's units (a sampling head plus its pointwise
     /// tail) fused into a single draw by [`UnitPipeline::units`]. Inputs `[src]`, or
     /// `[src, original]` when a mask-mix reads a backdrop distinct from the head's source. Sharp
-    /// glass is `[Warp, Shade, MaskMix]` in one pass; the frosted composite is
+    /// lens is `[Warp, Shade, MaskMix]` in one pass; the frosted composite is
     /// `[Scatter, Shade, MaskMix]`; a same-pixel scatter is the identity and lowers to nothing.
     Units { ops: Vec<UnitOp>, field: std::rc::Rc<crate::field::FieldProgram> },
     /// A hand-written WGSL pass — the escape hatch. Runs the (already-compiled, cached) `pipeline`

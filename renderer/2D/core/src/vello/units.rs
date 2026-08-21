@@ -1,10 +1,10 @@
-//! Glass **unit** shaders — the fragment snippet library the effect executor composes into passes.
+//! Lens **unit** shaders — the fragment snippet library the effect executor composes into passes.
 //!
-//! Glass is not a shader here; it is a *graph of generic units* (see [`crate::effect_graph`]):
+//! Lens is not a shader here; it is a *graph of generic units* (see [`crate::effect_graph`]):
 //! `warp → blur → scatter → shade → mask-mix`. The footprint partition decides which units share a
 //! fragment (a gather head plus its pointwise tail), and [`UnitPipeline::units`] compiles ONE
 //! pipeline per distinct composition from the snippet bodies below, cached by composition key. Sharp
-//! glass (`warp+shade+mask-mix`, one draw, no intermediates) and the frosted composite
+//! lens (`warp+shade+mask-mix`, one draw, no intermediates) and the frosted composite
 //! (`scatter+shade+mask-mix`) are *derived* fusions — there is no hand-written fused shader left.
 //!
 //! The rounded-box SDF + surface-profile bezel → field `(dx, dy, specular, mask)` is pure arithmetic
@@ -310,7 +310,7 @@ pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
 /// The lens's field, as a [`crate::field::FieldProgram`]: a rounded-box distance, the inward edge
 /// ramp, the surface direction, the Snell refraction of the bevel, and the coverage mask. Everything
 /// here is a generic field operator — only the assembly in [`field_prelude`] (edge boost, zoom,
-/// specular tint) is particular to glass, and the source is the single place a different geometry
+/// specular tint) is particular to lens, and the source is the single place a different geometry
 /// would plug in.
 ///
 /// Slots address the shared 24-float uniform: centre `0.zw`, half-extents `1.xy`, corner `1.z`,
@@ -351,7 +351,7 @@ pub(crate) fn lens_field_program() -> crate::field::FieldProgram {
 
 /// The lens's specular streak: a Gaussian band across the bevel, modulated by how squarely the
 /// surface faces the light. The band is [`crate::field::FIELD_BAND`] — the same operator a stroke or
-/// an outline uses — and only the lighting term below is particular to glass.
+/// an outline uses — and only the lighting term below is particular to lens.
 const UNIT_SPECULAR: &str = r#"
 fn unitSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32) -> f32 {
     if (t <= 0.0 || t >= 1.0) { return 0.0; }

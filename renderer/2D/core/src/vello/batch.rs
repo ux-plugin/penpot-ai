@@ -45,7 +45,7 @@ pub(crate) struct Inst {
     pub radius: f32,
     pub linearize: f32,
     /// Composite source select: 0 = the blurred atlas (`tex0`), 1 = the combined atlas (`tex1`,
-    /// where the erase stage materialised inner-shadow bands). The glass stages reuse it as the
+    /// where the erase stage materialised inner-shadow bands). The lens stages reuse it as the
     /// instance's index into the field buffer.
     pub mode: f32,
     /// `[0]` = arm tag (see `fs_uber`); `[1]`/`[2]` = this instance's destination origin in target
@@ -59,7 +59,7 @@ pub(crate) struct Inst {
     pub _pad: [f32; 4],
 }
 
-/// One glass cell's field parameters — the same 24-float composed uniform the per-shape pipeline
+/// One lens cell's field parameters — the same 24-float composed uniform the per-shape pipeline
 /// binds ([`super::units`]), here indexed out of a storage array so every cell in a batched stage
 /// carries its own. `align(16)` matches the WGSL `array<vec4<f32>, 6>` it maps to.
 #[repr(C, align(16))]
@@ -101,7 +101,7 @@ pub(crate) fn pw_key(bits: u32) -> crate::vello::units::UnitKey {
 
 /// The über-shader's arm table: one `UnitKey` per composition it can run, in tag order. There is no
 /// entry for any NAMED effect — the pointwise combinations, then the sampling-head compositions a
-/// lens uses. `fs_uber` dispatches by a composition's index here, so nothing is glass, warp or
+/// lens uses. `fs_uber` dispatches by a composition's index here, so nothing is lens, warp or
 /// frost to the executor; it is a composition-key and a tag.
 pub(crate) fn arm_keys() -> Vec<crate::vello::units::UnitKey> {
     use crate::vello::units::UnitKey;
@@ -169,7 +169,7 @@ impl Inst {
         self
     }
 
-    /// The instance tagged with its destination origin in target pixels — what the glass arms
+    /// The instance tagged with its destination origin in target pixels — what the lens arms
     /// subtract from the fragment position to get the cell-local coordinate the field is expressed
     /// in. Integers on both sides, so the recovered coordinate is exactly the dedicated-texture
     /// `fragCoord` the per-shape pipeline sees.
@@ -223,7 +223,7 @@ struct Inst {
 struct FieldUniform { u: array<vec4<f32>, 6> };
 @group(0) @binding(4) var<storage, read> fields: array<FieldUniform>;
 
-// The running instance's cell rects, published before a glass arm runs its shared unit body: the
+// The running instance's cell rects, published before a lens arm runs its shared unit body: the
 // body samples in the CELL's normalised space, and these map that onto the atlas rect the cell
 // actually occupies. The clamps reproduce a dedicated texture's ClampToEdge at the rect's own edge
 // texels, so a sample can never bleed in from a neighbouring cell.
@@ -357,7 +357,7 @@ pub(crate) enum Surface {
 /// This is the whole pass-minimisation rule, as data: work is bucketed by *stage*, and a bucket
 /// costs one pass no matter how many shapes contributed to it. A planner's only job is to emit these
 /// in dependency order; it never issues a pass itself, so no effect can accidentally reintroduce a
-/// per-shape chain. Blur cells, glass lenses and (next) distance-field bakes all reduce to this.
+/// per-shape chain. Blur cells, lens lenses and (next) distance-field bakes all reduce to this.
 ///
 /// `round` is `None` for work hoisted out of the round loop — anything whose inputs do not touch the
 /// backdrop — and `Some(r)` for work pinned to a round because it reads what that round painted.
@@ -370,8 +370,8 @@ pub(crate) struct Stage {
     pub insts: Vec<Inst>,
     /// Per-cell field parameters for the stages that evaluate a field; empty otherwise.
     pub fields: Vec<FieldUniform>,
-    /// The field program whose pipeline this stage runs under. `None` is the glass program — what
-    /// every stamp and lens stage uses today. A field-measuring non-glass effect sets its own, and
+    /// The field program whose pipeline this stage runs under. `None` is the lens program — what
+    /// every stamp and lens stage uses today. A field-measuring non-lens effect sets its own, and
     /// the executor compiles a pipeline for it on demand. This is the per-cell field program the
     /// batch was missing: the uniform already travelled per cell, now the PROGRAM can too.
     pub program: Option<std::rc::Rc<crate::field::FieldProgram>>,
@@ -424,10 +424,10 @@ pub(crate) struct BatchPipelines {
     /// One compiled `(replace, composite)` pair PER FIELD PROGRAM, built on demand and keyed by the
     /// program's structure. The über-shader bakes a program's `computeField`, so an effect measuring
     /// a different field is a different pipeline — the same way [`super::units::UnitPipeline`] keeps
-    /// one pipeline per `UnitKey`. Glass is merely the first entry, not a hardwired baseline: adding
+    /// one pipeline per `UnitKey`. Lens is merely the first entry, not a hardwired baseline: adding
     /// a field-measuring effect to the batch is a new key here, not an edit to [`batch_shader`].
     variants: std::cell::RefCell<std::collections::HashMap<u64, Variant>>,
-    /// The glass program's key, so the stamp and lens stages — which is everything today — resolve
+    /// The lens program's key, so the stamp and lens stages — which is everything today — resolve
     /// without rebuilding the program to hash it every frame.
     lens_key: u64,
     /// One-element placeholder bound at binding 4 by every stage that evaluates no per-cell field.
@@ -458,14 +458,14 @@ fn program_key(program: &crate::field::FieldProgram) -> u64 {
 /// so a batched cell and a dedicated-texture cell execute identical math.
 ///
 /// `alt` selects the second binding for the head's reads — how a pointwise arm picks up the band the
-/// erase stage materialised in the other atlas. The glass arms pass `false`: their head reads the
+/// erase stage materialised in the other atlas. The lens arms pass `false`: their head reads the
 /// backdrop crop and never the alternate.
 ///
 /// `uvpix` is where the two conventions still meet. A stamp takes the interpolated cell coordinate
-/// straight from the vertex stage — the single convention this arm set is built on. A glass arm
+/// straight from the vertex stage — the single convention this arm set is built on. A lens arm
 /// instead divides its recovered `fc` by the field's own resolution, because its sampling has to
 /// land on exactly the pixel its field was evaluated at; routing it through the interpolator instead
-/// moves 16 pixels of the `combined` and `matrix` fixtures by one last bit. Glass joins the shared
+/// moves 16 pixels of the `combined` and `matrix` fixtures by one last bit. Lens joins the shared
 /// convention in phase 5, where the field evaluation moves with it.
 fn unit_arm(name: &str, key: crate::vello::units::UnitKey, alt: &str, uvpix: &str, program: &crate::field::FieldProgram) -> String {
     format!(
@@ -484,7 +484,7 @@ fn {name}(in: VSOut) -> vec4<f32> {{
     )
 }
 
-/// The whole batch module: the prelude, the glass arms generated from the shared unit bodies, and
+/// The whole batch module: the prelude, the lens arms generated from the shared unit bodies, and
 /// the single `fs_uber` entry every stage dispatches through.
 fn batch_shader(program: &crate::field::FieldProgram) -> String {
     let mut s = String::from(BATCH_PRELUDE);
@@ -619,8 +619,8 @@ impl BatchPipelines {
             lens_key: program_key(&crate::vello::units::lens_field_program()),
             no_fields,
         };
-        // Compile the glass variant up front — it is what every stage uses today, so building it now
-        // keeps the first glass frame off the compile path and the behaviour identical to the single
+        // Compile the lens variant up front — it is what every stage uses today, so building it now
+        // keeps the first lens frame off the compile path and the behaviour identical to the single
         // pipeline this replaced.
         this.ensure_variant(device, &crate::vello::units::lens_field_program());
         this
@@ -682,7 +682,7 @@ impl BatchPipelines {
         self.bind_fields(device, buffer, src, src2, sampler, &self.no_fields)
     }
 
-    /// [`Self::bind`] with an explicit field buffer — the glass stages' per-cell parameters. Every
+    /// [`Self::bind`] with an explicit field buffer — the lens stages' per-cell parameters. Every
     /// other stage binds the one-element placeholder, since the layout always declares binding 4.
     #[expect(clippy::too_many_arguments, reason = "one bind group, one argument per binding")]
     fn bind_fields(
@@ -843,19 +843,19 @@ mod sampling_convention_tests {
     #[test]
     /// The batch is generic over the field program: a different program keys to a different
     /// pipeline and bakes a different `computeField`, which is what lets a field-measuring effect
-    /// other than glass batch at all. Glass is one entry, not the baseline.
+    /// other than lens batch at all. Lens is one entry, not the baseline.
     #[test]
     fn a_second_field_program_is_a_distinct_variant() {
         use super::program_key;
-        let glass = lens_field_program();
+        let lens = lens_field_program();
         let texture = crate::effect_graph::texture_field_program();
-        assert_ne!(program_key(&glass), program_key(&texture), "two programs must not share a key");
+        assert_ne!(program_key(&lens), program_key(&texture), "two programs must not share a key");
         assert_ne!(
-            batch_shader(&glass),
+            batch_shader(&lens),
             batch_shader(&texture),
             "the über-shader must differ — each bakes its own computeField"
         );
-        assert_eq!(program_key(&glass), program_key(&lens_field_program()), "the key is stable");
+        assert_eq!(program_key(&lens), program_key(&lens_field_program()), "the key is stable");
     }
 
     fn the_erase_math_appears_once_per_arm_that_declares_it() {
@@ -876,7 +876,7 @@ mod sampling_convention_tests {
         assert!(body.contains("unitParam(gi, 3u)"), "a stamp's tint did not come from its instance:\n{body}");
     }
 
-    /// The glass compositions still evaluate their field — the gate above must not have turned the
+    /// The lens compositions still evaluate their field — the gate above must not have turned the
     /// preamble off for everyone.
     #[test]
     fn a_lens_still_evaluates_its_field() {

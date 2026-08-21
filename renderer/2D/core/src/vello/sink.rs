@@ -188,7 +188,7 @@ fn wv_cell_graph(e: &crate::effect::Effect, kind: u8, kw: u32, kh: u32, sigma: f
 ///
 /// One predicate for both stage families, because the question is the same one: can the instanced
 /// stages run this chain? What separates the two answers is the chain's head — a sampling unit needs
-/// the glass stages, a pointwise-only chain is a stamp. Splitting that decision across two functions
+/// the lens stages, a pointwise-only chain is a stamp. Splitting that decision across two functions
 /// is what let a chain belong to neither.
 #[derive(Debug, Clone, PartialEq)]
 enum BatchShape {
@@ -196,11 +196,11 @@ enum BatchShape {
     /// floods and punches, plain bodies. `ops` is that tail verbatim — the batch binds its uniform
     /// per cell, so the tail is not restricted to units this enum knows the names of.
     Stamp { sigma: f32, linear: bool, ops: Vec<crate::vello::units::UnitOp> },
-    /// A sampling head, an optional blur, and a pointwise tail — the glass stages.
+    /// A sampling head, an optional blur, and a pointwise tail — the lens stages.
     Lens { head: crate::vello::units::UnitOp, tail: Vec<crate::vello::units::UnitOp>, sigma: f32 },
 }
 
-/// Whether a `Units` pass leads with a sampling head, which is what sends a chain to the glass
+/// Whether a `Units` pass leads with a sampling head, which is what sends a chain to the lens
 /// stages rather than the stamp stages.
 fn units_head(p: &Pass) -> Option<&crate::vello::units::UnitOp> {
     use crate::vello::units::UnitOp;
@@ -315,7 +315,7 @@ fn wv_composite_bits(ops: &[crate::vello::units::UnitOp]) -> u32 {
 /// Each candidate cell carries its own lowered chain ([`WvCell::graph`]) and is admitted iff
 /// [`wv_batch_supported`] — so the batch executes the same IR the per-shape path executes, through
 /// instanced stages instead of private pass chains. Shapes stay per-shape when their stack composes
-/// mid-backdrop (glass), carries custom `Shader` ops, or blurs past what the instanced stage
+/// mid-backdrop (lens), carries custom `Shader` ops, or blurs past what the instanced stage
 /// expresses; inner shadows batch through the combine (`EraseBy`) stage.
 fn wv_batch_plan(
     gathers: &[(usize, u128, u8)],
@@ -715,7 +715,7 @@ impl PoolKey {
     }
 }
 
-/// One glass lens admitted to the batched stages: where it reads and writes on the accumulator,
+/// One lens lens admitted to the batched stages: where it reads and writes on the accumulator,
 /// which atlas cell it owns, and the lowered unit passes it runs.
 ///
 /// `red` is the cell's *reduced* rect — the sub-rect of its own cell the warp and blur render
@@ -735,7 +735,7 @@ struct LensCell {
 }
 
 
-/// Native A/B hook for the batched glass stages (default on): `WV_LENS=0` forces every lens back
+/// Native A/B hook for the batched lens stages (default on): `WV_LENS=0` forces every lens back
 /// through its own pass chain, which is how the batched output is pixel-compared against the
 /// per-shape one. No browser gate — the batch is the production path.
 fn wv_lens_batch() -> bool {
@@ -747,7 +747,7 @@ fn wv_lens_batch() -> bool {
     true
 }
 
-/// The four surfaces the batched glass stages ping-pong through, all packed with the same cell
+/// The four surfaces the batched lens stages ping-pong through, all packed with the same cell
 /// layout: `a` the cropped backdrops (kept — the mask-mix reads it as the original), `b` the warp
 /// then the blurred warp, `d` the horizontal-blur scratch, `c` the finished lenses awaiting the
 /// stamp. Held for the whole frame so every round reuses them.
@@ -919,7 +919,7 @@ pub(crate) mod pass_kind {
     pub const BATCH: usize = 1;
     /// One step of a per-shape effect chain. This is the population coalescing exists to collapse.
     pub const GRAPH: usize = 2;
-    /// A glass stage or a per-shape lens pass.
+    /// A lens stage or a per-shape lens pass.
     pub const UNITS: usize = 3;
     /// A separable blur half issued outside a chain — the per-shape body's layer blur.
     pub const BLUR: usize = 4;
@@ -980,7 +980,7 @@ pub struct Sink {
     /// Resolution-cap factor `k ∈ (0, 1]` each `Backdrop` was rendered at (device-px per full-zoom
     /// device-px). `1.0` = drawn at native zoom; `< 1.0` = the effect's reach would have exceeded the
     /// one-tile ring, so it was drawn smaller and is upscaled by `1/k` at the stamp. `PaintGather`
-    /// reads it to scale the sigma / glass geometry and the stamp's source rect to match.
+    /// reads it to scale the sigma / lens geometry and the stamp's source rect to match.
     backdrop_scale: HashMap<SurfaceRef, f64>,
     /// Custom-shader render pipelines, cached by WGSL-source hash so an unchanged shader compiles
     /// once, not per frame. Persists across frames (unlike the per-frame surface maps).
@@ -1031,7 +1031,7 @@ pub struct Sink {
     gpu_timer: Option<crate::vello::gputime::GpuTimer>,
     gpu_timer_tried: bool,
 
-    /// Per-pass GPU timing for the effect graph (glass displacement/refraction/blur/composite), when
+    /// Per-pass GPU timing for the effect graph (lens displacement/refraction/blur/composite), when
     /// `abi::prof_passes()` is set. Shares the lazy build with `gpu_timer`. Threaded into
     /// `run_graph_into` so each gather's passes are bracketed individually.
     pass_prof: Option<crate::vello::gputime::PassProfiler>,
@@ -2010,7 +2010,7 @@ impl Sink {
         }
     }
 
-    /// Plan the frame's batched glass: every scoped lens whose graph the instanced stages can express
+    /// Plan the frame's batched lens: every scoped lens whose graph the instanced stages can express
     /// ([`wv_lens_admit`]), packed into one atlas whose cells are grouped by round. Lenses sharing a
     /// round never overlap (that is what [`wv_rounds`] guarantees), so a round's cells can all run in
     /// one pass per stage. `None` when fewer than two lenses qualify — one lens costs the same either
@@ -2394,7 +2394,7 @@ impl Sink {
     /// The device-space box an effect node's whole-viewport stamp (and its blur neighbourhood) can
     /// touch — the region whose tiles need this node's `CMD_EFFECT` boundary marker. A stack node's
     /// stamps composite at its effect cells' boxes; a gather stamps inside its lens bbox expanded by
-    /// the blur reach (glass adds refraction slack — same margins as `wv_stamp_gather_scoped`); a
+    /// the blur reach (lens adds refraction slack — same margins as `wv_stamp_gather_scoped`); a
     /// custom backdrop shader may sample and stamp anywhere, so it keeps the full viewport, as do all
     /// gathers when `wvScope` is off (the unscoped stamp blits the whole viewport). Padded a tile so
     /// partially-covered edge tiles are included.
@@ -2988,7 +2988,7 @@ impl Sink {
     /// Bbox-scoped gather stamp (the default gather path): crop the backdrop to the lens's device
     /// bounding box (expanded by the effect's blur reach, clamped to the viewport), run the effect
     /// graph at that size/origin, and stamp the small result back THROUGH the shape silhouette. Effect
-    /// GPU work then scales with the lens area instead of the viewport area. Glass bakes its SDF mask,
+    /// GPU work then scales with the lens area instead of the viewport area. Lens bakes its SDF mask,
     /// so an opaque bbox blit re-lays backdrop+lens; background blur clips with a bbox-local coverage
     /// mask. The effect passes stay rectangular (a blur must read a neighbourhood) — the silhouette is
     /// honoured at the composite, and the tight bbox is near-optimal for a convex lens.
@@ -4310,7 +4310,7 @@ impl Sink {
 
     /// Assemble a gather effect's result once (cached under the bumped ref) via [`run_graph`], then
     /// stamp it into `write_to`'s tile — through the shape's silhouette mask for background blur, or
-    /// its device rect for glass (whose SDF mask is baked into the composite). The shape's own body
+    /// its device rect for lens (whose SDF mask is baked into the composite). The shape's own body
     /// paints on top afterward.
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
     fn paint_gather<B: RasterBackend>(
@@ -4628,9 +4628,9 @@ impl Sink {
             .is_some_and(|e| matches!(e.ops.first(), Some(crate::effect::Op::Lens(_))))
     }
 
-    /// Build the glass pass-graph over the assembled backdrop (input 0). The geometry→uniform math is
-    /// render-core's [`effect_graph::lens_graph`]; this only reads the shape's glass params/box off
-    /// the live scene and lowers the neutral graph (no custom pass, so no pipeline to resolve). Glass
+    /// Build the lens pass-graph over the assembled backdrop (input 0). The geometry→uniform math is
+    /// render-core's [`effect_graph::lens_graph`]; this only reads the shape's lens params/box off
+    /// the live scene and lowers the neutral graph (no custom pass, so no pipeline to resolve). Lens
     /// geometry is the shape's rounded box (axis-aligned; rotation is a gap); the composite's own SDF
     /// mask does the clip, so no silhouette mask is needed.
     fn lens_graph(&self, id: u128, bw: u32, bh: u32, bdx: f64, bdy: f64, full_view: Affine, k: f64) -> Option<Vec<Pass>> {
