@@ -251,22 +251,7 @@ impl UnitPipeline {
     /// When a run fuses what used to be separate materialised passes, the result is *more* accurate,
     /// never worse: the intermediate stays in registers as float instead of quantising to 8-bit.
     pub fn units(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, src: &wgpu::TextureView, original: Option<&wgpu::TextureView>, ops: &[UnitOp], field: &std::rc::Rc<crate::field::FieldProgram>) {
-        let head = match ops.first() {
-            Some(UnitOp::Warp(_)) => 1u8,
-            Some(UnitOp::Scatter(_)) => 2,
-            _ => 0,
-        };
-        let shade = ops.iter().any(|o| matches!(o, UnitOp::Shade(_)));
-        let maskmix = ops.iter().any(|o| matches!(o, UnitOp::MaskMix(_)));
-        let key = UnitKey {
-            head,
-            shade,
-            maskmix,
-            clip: ops.iter().any(|o| matches!(o, UnitOp::ClipToSource(_))),
-            erase: ops.iter().any(|o| matches!(o, UnitOp::EraseBy(_))),
-            tint: ops.iter().any(|o| matches!(o, UnitOp::Tint(_))),
-            two_tex: original.is_some(),
-        };
+        let key = UnitKey::from_ops(ops, original.is_some());
         if !self.units.borrow().contains_key(&key) {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("unit pass (composed)"),
@@ -292,6 +277,30 @@ impl UnitPipeline {
         });
         let cache = self.units.borrow();
         Self::full_pass(encoder, target, &cache[&key], &bind);
+    }
+}
+
+impl UnitKey {
+    /// Derive the pipeline key from a fused run's units: head from the first unit (warp/scatter/plain),
+    /// one bit per pointwise unit present, and `two_tex` when a second texture is bound (a mask-mix
+    /// backdrop or an erase punch). The ONE derivation the per-shape `units()` draw and the batched
+    /// `arm_tag` both use, so a composition can never key one way for one path and another for the
+    /// other.
+    #[must_use]
+    pub(crate) fn from_ops(ops: &[UnitOp], two_tex: bool) -> Self {
+        UnitKey {
+            head: match ops.first() {
+                Some(UnitOp::Warp(_)) => 1,
+                Some(UnitOp::Scatter(_)) => 2,
+                _ => 0,
+            },
+            shade: ops.iter().any(|o| matches!(o, UnitOp::Shade(_))),
+            maskmix: ops.iter().any(|o| matches!(o, UnitOp::MaskMix(_))),
+            clip: ops.iter().any(|o| matches!(o, UnitOp::ClipToSource(_))),
+            erase: ops.iter().any(|o| matches!(o, UnitOp::EraseBy(_))),
+            tint: ops.iter().any(|o| matches!(o, UnitOp::Tint(_))),
+            two_tex,
+        }
     }
 }
 
@@ -764,5 +773,18 @@ mod fuse_tests {
         assert_eq!(runs.len(), 2);
         assert!(!runs[0][0].is_barrier());
         assert!(runs[1][0].is_barrier());
+    }
+
+    /// from_ops matches the batched arm derivation: sharp glass = warp head + shade + maskmix.
+    #[test]
+    fn from_ops_derives_the_composition_key() {
+        use super::UnitKey;
+        let k = UnitKey::from_ops(&[warp(), shade(), maskmix()], false);
+        assert_eq!(k.head, 1);
+        assert!(k.shade && k.maskmix);
+        assert!(!k.tint && !k.clip && !k.erase);
+        let stamp = UnitKey::from_ops(&[tint()], false);
+        assert_eq!(stamp.head, 0);
+        assert!(stamp.tint);
     }
 }
