@@ -639,7 +639,7 @@ mod reuse_tests {
 
     #[test]
     fn the_lens_field_compiles_and_is_one_program_among_them() {
-        let lens = crate::vello::glass::lens_field_program();
+        let lens = crate::vello::units::lens_field_program();
         validate(&standalone(&lens, "vec4<f32>(dir, refracted, mask)"));
         assert!(matches!(lens.nodes[0], FieldOp::Distance(FieldSource::RoundedBox { .. })));
     }
@@ -652,7 +652,7 @@ mod reuse_tests {
         assert!(mask.contains("fn fieldCoverage") && !mask.contains("fn fieldRefract") && !mask.contains("fn fieldProfile"));
         let stroke = stroke_program().helpers();
         assert!(stroke.contains("fn fieldBand") && !stroke.contains("fn fieldRefract"));
-        let lens = crate::vello::glass::lens_field_program().helpers();
+        let lens = crate::vello::units::lens_field_program().helpers();
         assert!(lens.contains("fn fieldRefract") && lens.contains("fn fieldRamp"));
         assert!(!lens.contains("fn fieldGradient"), "the lens still uses the radial estimate");
     }
@@ -699,7 +699,7 @@ mod reuse_tests {
              fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{\n\
              \x20   return computeField(0u, pos.xy);\n\
              }}\n",
-            prelude = crate::vello::glass::field_prelude(&p),
+            prelude = crate::vello::units::field_prelude(&p),
         );
         validate(&src);
         // No shape, so none of the lens machinery may appear.

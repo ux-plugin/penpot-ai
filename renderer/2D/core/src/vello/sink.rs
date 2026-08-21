@@ -36,7 +36,7 @@ use vello_common::kurbo::{Affine, Rect, Shape};
 use vello_example_scenes::RenderingContext;
 
 use crate::vello::blend::{BlendComposite, Blit, Compositor, MaskedBlit};
-use crate::vello::glass::UnitPipeline;
+use crate::vello::units::UnitPipeline;
 use crate::effect_graph::{self, LensGeometry};
 
 use crate::vello::graph::{build_custom_pipeline, lower_graph, new_target_with_usage, run_graph, run_graph_into, Pass};
@@ -195,15 +195,15 @@ enum BatchShape {
     /// Coverage through an optional blur and then a pointwise tail: drop shadows, inner-shadow
     /// floods and punches, plain bodies. `ops` is that tail verbatim — the batch binds its uniform
     /// per cell, so the tail is not restricted to units this enum knows the names of.
-    Stamp { sigma: f32, linear: bool, ops: Vec<crate::vello::glass::UnitOp> },
+    Stamp { sigma: f32, linear: bool, ops: Vec<crate::vello::units::UnitOp> },
     /// A sampling head, an optional blur, and a pointwise tail — the glass stages.
-    Lens { head: crate::vello::glass::UnitOp, tail: Vec<crate::vello::glass::UnitOp>, sigma: f32 },
+    Lens { head: crate::vello::units::UnitOp, tail: Vec<crate::vello::units::UnitOp>, sigma: f32 },
 }
 
 /// Whether a `Units` pass leads with a sampling head, which is what sends a chain to the glass
 /// stages rather than the stamp stages.
-fn units_head(p: &Pass) -> Option<&crate::vello::glass::UnitOp> {
-    use crate::vello::glass::UnitOp;
+fn units_head(p: &Pass) -> Option<&crate::vello::units::UnitOp> {
+    use crate::vello::units::UnitOp;
     match &p.kind {
         crate::vello::graph::PassKind::Units { ops, .. } => match ops.first() {
             Some(op @ (UnitOp::Warp(_) | UnitOp::Scatter(_))) => Some(op),
@@ -214,7 +214,7 @@ fn units_head(p: &Pass) -> Option<&crate::vello::glass::UnitOp> {
 }
 
 fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
-    use crate::vello::glass::UnitOp;
+    use crate::vello::units::UnitOp;
     use crate::vello::graph::{PassKind, BLUR_MAX_SIGMA};
 
     // A lens: sampling head, optionally a blur, then the pointwise tail. The head's and the blur's
@@ -287,9 +287,9 @@ fn wv_batch_cell_shape(c: &WvCell) -> Option<BatchShape> {
 /// A chain with no `Tint` gets the disabling sentinel (alpha below zero) rather than a zero colour,
 /// because the pointwise arms carry `Tint` unconditionally so that a coloured silhouette and an
 /// uncoloured body can ride the same draw. Zero would multiply the body away.
-fn wv_stamp_uniform(ops: &[crate::vello::glass::UnitOp]) -> crate::vello::batch::FieldUniform {
-    let mut u = crate::vello::glass::units_uniform(ops);
-    if !ops.iter().any(|o| matches!(o, crate::vello::glass::UnitOp::Tint(_))) {
+fn wv_stamp_uniform(ops: &[crate::vello::units::UnitOp]) -> crate::vello::batch::FieldUniform {
+    let mut u = crate::vello::units::units_uniform(ops);
+    if !ops.iter().any(|o| matches!(o, crate::vello::units::UnitOp::Tint(_))) {
         u[12..16].copy_from_slice(&[0.0, 0.0, 0.0, -1.0]);
     }
     crate::vello::batch::FieldUniform { u }
@@ -298,9 +298,9 @@ fn wv_stamp_uniform(ops: &[crate::vello::glass::UnitOp]) -> crate::vello::batch:
 /// Which pointwise arm a composite draw of `ops` runs. `Tint` is always in it (self-disabling), and
 /// every other pointwise unit the tail carries adds its bit — so a unit the admission accepted is
 /// automatically reachable in the shader, with no second list to keep in step.
-fn wv_composite_bits(ops: &[crate::vello::glass::UnitOp]) -> u32 {
+fn wv_composite_bits(ops: &[crate::vello::units::UnitOp]) -> u32 {
     use crate::vello::batch::pointwise;
-    use crate::vello::glass::UnitOp;
+    use crate::vello::units::UnitOp;
     let mut bits = pointwise::TINT;
     for op in ops {
         if matches!(op, UnitOp::ClipToSource(_)) {
@@ -723,25 +723,25 @@ impl PoolKey {
 /// gives a frosted lens ~0.1–0.5). It nests inside the full cell rect, so one packing serves both
 /// and the frost stage upsamples by sampling the reduced rect across the full one — the same
 /// bilinear stretch `run_graph_into` gets from binding a smaller texture.
-struct GlassCell {
+struct LensCell {
     gid: u128,
     round: u32,
     dev: (f32, f32, f32, f32),
     cell: (f32, f32, f32, f32),
     red: (f32, f32, f32, f32),
-    warp: crate::vello::glass::UnitOp,
-    tail: Vec<crate::vello::glass::UnitOp>,
+    warp: crate::vello::units::UnitOp,
+    tail: Vec<crate::vello::units::UnitOp>,
     sigma: f32,
 }
 
 
-/// Native A/B hook for the batched glass stages (default on): `WV_GLASS=0` forces every lens back
+/// Native A/B hook for the batched glass stages (default on): `WV_LENS=0` forces every lens back
 /// through its own pass chain, which is how the batched output is pixel-compared against the
 /// per-shape one. No browser gate — the batch is the production path.
-fn wv_glass_batch() -> bool {
+fn wv_lens_batch() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_GLASS").is_ok_and(|v| v != "0") || std::env::var("WV_GLASS").is_err();
+        return std::env::var("WV_LENS").is_ok_and(|v| v != "0") || std::env::var("WV_LENS").is_err();
     }
     #[cfg(target_arch = "wasm32")]
     true
@@ -751,7 +751,7 @@ fn wv_glass_batch() -> bool {
 /// layout: `a` the cropped backdrops (kept — the mask-mix reads it as the original), `b` the warp
 /// then the blurred warp, `d` the horizontal-blur scratch, `c` the finished lenses awaiting the
 /// stamp. Held for the whole frame so every round reuses them.
-struct WvGlassAtlas {
+struct WvLensAtlas {
     w: u32,
     h: u32,
     a_view: wgpu::TextureView,
@@ -920,7 +920,7 @@ pub(crate) mod pass_kind {
     /// One step of a per-shape effect chain. This is the population coalescing exists to collapse.
     pub const GRAPH: usize = 2;
     /// A glass stage or a per-shape lens pass.
-    pub const GLASS: usize = 3;
+    pub const UNITS: usize = 3;
     /// A separable blur half issued outside a chain — the per-shape body's layer blur.
     pub const BLUR: usize = 4;
     /// A composite of a finished per-shape result onto the accumulator.
@@ -966,7 +966,7 @@ const WV_PASS_FLUSH_BUDGET: u32 = 768;
 /// The scheduler's GPU production sink. Owns the per-frame surface map and the SrcOver compositor.
 pub struct Sink {
     compositor: Compositor,
-    glass: UnitPipeline,
+    unit_pipeline: UnitPipeline,
     /// Instanced batch pipelines (blur H/V + per-round composite), built on first batched frame.
     batch_pipes: Option<crate::vello::batch::BatchPipelines>,
     /// Physical surface per logical ref, this frame. Slice-1 allocates fresh each frame (no
@@ -1066,7 +1066,7 @@ impl Sink {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
             compositor: Compositor::new(device, format),
-            glass: UnitPipeline::new(device, format),
+            unit_pipeline: UnitPipeline::new(device, format),
             batch_pipes: None,
             surfaces: HashMap::new(),
             written: HashSet::new(),
@@ -1545,19 +1545,19 @@ impl Sink {
         // pair this function decided on. Textures and their views are kept apart so the views can be
         // borrowed as a slice for the executor.
         let mut batch_rt: Option<(Vec<wgpu::Texture>, Vec<wgpu::TextureView>)> = None;
-        let glass_plan = self
-            .wv_glass_plan(&gathers, &rounds, full_view, width, height, device.limits().max_texture_dimension_2d)
-            .filter(|_| wv_glass_batch());
-        let (glass_cells, glass_atlas) = match glass_plan {
+        let lens_plan = self
+            .wv_lens_plan(&gathers, &rounds, full_view, width, height, device.limits().max_texture_dimension_2d)
+            .filter(|_| wv_lens_batch());
+        let (lens_cells, lens_atlas) = match lens_plan {
             Some((packing, cells)) => {
                 let _ = self
                     .batch_pipes
                     .get_or_insert_with(|| crate::vello::batch::BatchPipelines::new(device, format));
                 let (aw, ah) = (packing.width, packing.height);
                 let mut mk = |label| self.pool.acquire_target(device, aw, ah, format, wgpu::TextureUsages::empty(), label);
-                let (a, b, c, d) = (mk("wv glass a"), mk("wv glass b"), mk("wv glass c"), mk("wv glass d"));
+                let (a, b, c, d) = (mk("wv lens a"), mk("wv lens b"), mk("wv lens c"), mk("wv lens d"));
                 let vd = wgpu::TextureViewDescriptor::default();
-                let atlas = WvGlassAtlas {
+                let atlas = WvLensAtlas {
                     w: aw,
                     h: ah,
                     a_view: a.create_view(&vd),
@@ -1567,10 +1567,10 @@ impl Sink {
                     keep: vec![a, b, c, d],
                 };
                 #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_GLASS_STATS").is_ok() {
+                if std::env::var("WV_LENS_STATS").is_ok() {
                     let sharp = cells.iter().filter(|c| c.sigma <= 0.0).count();
                     eprintln!(
-                        "wv glass batch: {} lenses ({sharp} sharp, {} frosted) in {} rounds, atlas {aw}x{ah}",
+                        "wv lens batch: {} lenses ({sharp} sharp, {} frosted) in {} rounds, atlas {aw}x{ah}",
                         cells.len(),
                         cells.len() - sharp,
                         cells.iter().map(|c| c.round).collect::<std::collections::BTreeSet<_>>().len()
@@ -1755,8 +1755,8 @@ impl Sink {
             // Every batched lens of this round, in one pass per stage. Lenses in a round are
             // disjoint by construction, so they can all read the accumulator and write their own
             // crops concurrently — the per-shape chain is what forced them apart before.
-            if let (Some(cells), Some(atlas)) = (glass_cells.as_ref(), glass_atlas.as_ref()) {
-                self.wv_glass_round(device, &mut enc, &views[ci], atlas, cells, r, format, acc_sz);
+            if let (Some(cells), Some(atlas)) = (lens_cells.as_ref(), lens_atlas.as_ref()) {
+                self.wv_lens_round(device, &mut enc, &views[ci], atlas, cells, r, format, acc_sz);
             }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
                 let extra = batch_plan.as_ref().and_then(|p| p.extra.get(&gid).copied()).unwrap_or(0);
@@ -1776,7 +1776,7 @@ impl Sink {
                 match kind {
                     FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, claim, sub),
                     _ if sub > 0 => {}
-                    _ if glass_cells.as_ref().is_some_and(|cs| cs.iter().any(|c| c.gid == gid)) => {}
+                    _ if lens_cells.as_ref().is_some_and(|cs| cs.iter().any(|c| c.gid == gid)) => {}
                     _ => self.wv_stamp_gather(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, width, height, format, acc_sz),
                 }
                 self.recycle_node_transient(tex_cp, view_cp);
@@ -1808,7 +1808,7 @@ impl Sink {
         }
         // Same rule as the batch atlases: held outside `frame_transient` for the whole round loop
         // (the per-node recycle point truncates that list), returned to the pool once it ends.
-        if let Some(atlas) = glass_atlas {
+        if let Some(atlas) = lens_atlas {
             self.frame_transient.extend(atlas.keep);
             self.frame_transient_views.push(atlas.a_view);
             self.frame_transient_views.push(atlas.b_view);
@@ -2011,11 +2011,11 @@ impl Sink {
     }
 
     /// Plan the frame's batched glass: every scoped lens whose graph the instanced stages can express
-    /// ([`wv_glass_admit`]), packed into one atlas whose cells are grouped by round. Lenses sharing a
+    /// ([`wv_lens_admit`]), packed into one atlas whose cells are grouped by round. Lenses sharing a
     /// round never overlap (that is what [`wv_rounds`] guarantees), so a round's cells can all run in
     /// one pass per stage. `None` when fewer than two lenses qualify — one lens costs the same either
     /// way and only adds a pack.
-    fn wv_glass_plan(
+    fn wv_lens_plan(
         &self,
         gathers: &[(usize, u128, u8)],
         rounds: &[u32],
@@ -2023,22 +2023,19 @@ impl Sink {
         width: u32,
         height: u32,
         max_dim: u32,
-    ) -> Option<(crate::atlas::Packing, Vec<GlassCell>)> {
+    ) -> Option<(crate::atlas::Packing, Vec<LensCell>)> {
         if !crate::vello::abi::wv_scope() {
             return None;
         }
-        let mut cells: Vec<GlassCell> = Vec::new();
+        let mut cells: Vec<LensCell> = Vec::new();
         for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
             if kind == FX_STACK {
                 continue;
             }
-            let (is_glass, is_custom) = crate::vello::abi::with_scene(|live, _, _| {
-                live.get(gid).map_or((false, false), |n| (n.glass.is_some(), n.gather_shader().is_some()))
-            });
-            if !is_glass || is_custom {
+            if !Self::wv_gather_self_clips(gid) {
                 continue;
             }
-            let Some((bx, by, bw, bh, k)) = self.wv_glass_box(gid, full_view, width, height) else {
+            let Some((bx, by, bw, bh, k)) = self.wv_lens_box(gid, full_view, width, height) else {
                 continue;
             };
             if k < 0.999 || bw > max_dim || bh > max_dim {
@@ -2055,7 +2052,7 @@ impl Sink {
                 crate::effect_graph::pass_dim(bw, red_scale),
                 crate::effect_graph::pass_dim(bh, red_scale),
             );
-            cells.push(GlassCell {
+            cells.push(LensCell {
                 gid,
                 round: rounds[j],
                 dev: (bx as f32, by as f32, bw as f32, bh as f32),
@@ -2083,7 +2080,7 @@ impl Sink {
     /// The device box and render scale one scoped lens reads and writes — the same derivation
     /// [`Self::wv_stamp_gather_scoped`] does, factored out so the batch planner and the per-shape
     /// path can never disagree about a lens's geometry.
-    fn wv_glass_box(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Option<(u32, u32, u32, u32, f64)> {
+    fn wv_lens_box(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Option<(u32, u32, u32, u32, f64)> {
         use crate::kurbo::Point;
         let page = crate::vello::abi::with_scene(|live, _, modifiers| {
             let n = live.get(id)?;
@@ -2129,20 +2126,20 @@ impl Sink {
     /// results back. A round's lenses are disjoint, so the whole round is at most six passes
     /// regardless of how many lenses it holds (crop, sharp, warp, blur H, blur V, frost, stamp).
     #[expect(clippy::too_many_arguments, reason = "the GPU context + atlas set travel together")]
-    fn wv_glass_round(
+    fn wv_lens_round(
         &mut self,
         device: &wgpu::Device,
         enc: &mut wgpu::CommandEncoder,
         acc_view: &wgpu::TextureView,
-        atlas: &WvGlassAtlas,
-        cells: &[GlassCell],
+        atlas: &WvLensAtlas,
+        cells: &[LensCell],
         round: u32,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
         use crate::vello::batch::{stage, FieldUniform, Inst};
         let Some(pipes) = self.batch_pipes.as_ref() else { return };
-        let here: Vec<&GlassCell> = cells.iter().filter(|c| c.round == round).collect();
+        let here: Vec<&LensCell> = cells.iter().filter(|c| c.round == round).collect();
         if here.is_empty() {
             return;
         }
@@ -2171,7 +2168,7 @@ impl Sink {
                         .with_units(sharp_f.len())
                         .at(c.cell),
                 );
-                sharp_f.push(FieldUniform { u: crate::vello::glass::units_uniform(&ops) });
+                sharp_f.push(FieldUniform { u: crate::vello::units::units_uniform(&ops) });
             } else {
                 warp.push(
                     Inst::new(c.red, asz, c.cell, asz, (0.0, 0.0), 0.0, false)
@@ -2179,7 +2176,7 @@ impl Sink {
                         .with_units(warp_f.len())
                         .at(c.red),
                 );
-                warp_f.push(FieldUniform { u: crate::vello::glass::units_uniform(&ops) });
+                warp_f.push(FieldUniform { u: crate::vello::units::units_uniform(&ops) });
                 blur_h.push(Inst::new(c.red, asz, c.red, asz, (1.0, 0.0), c.sigma, false));
                 blur_v.push(Inst::new(c.red, asz, c.red, asz, (0.0, 1.0), c.sigma, false));
                 frost.push(
@@ -2188,7 +2185,7 @@ impl Sink {
                         .with_units(frost_f.len())
                         .at(c.cell),
                 );
-                frost_f.push(FieldUniform { u: crate::vello::glass::units_uniform(&c.tail) });
+                frost_f.push(FieldUniform { u: crate::vello::units::units_uniform(&c.tail) });
             }
             stamp.push(Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false));
         }
@@ -2204,11 +2201,11 @@ impl Sink {
         const D: Surface = Surface::Atlas(3);
         let stages = [
             Stage::new(stage::BLUR, A, Surface::Acc, crops).cleared(),
-            Stage::new(crate::vello::batch::arm_tag(crate::vello::glass::UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() }), C, A, sharp).with_fields(sharp_f),
-            Stage::new(crate::vello::batch::arm_tag(crate::vello::glass::UnitKey { head: 1, ..Default::default() }), B, A, warp).with_fields(warp_f),
+            Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() }), C, A, sharp).with_fields(sharp_f),
+            Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 1, ..Default::default() }), B, A, warp).with_fields(warp_f),
             Stage::new(stage::BLUR, D, B, blur_h).cleared(),
             Stage::new(stage::BLUR, B, D, blur_v).cleared(),
-            Stage::new(crate::vello::batch::arm_tag(crate::vello::glass::UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() }), C, B, frost).with_src2(A).with_fields(frost_f),
+            Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() }), C, B, frost).with_src2(A).with_fields(frost_f),
             Stage::new(
                 crate::vello::batch::arm_tag(crate::vello::batch::pw_key(crate::vello::batch::pointwise::TINT)),
                 Surface::Acc,
@@ -2726,7 +2723,7 @@ impl Sink {
         format: wgpu::TextureFormat,
     ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
         run_graph_into(
-            &self.compositor, &self.glass, device, enc, inputs, passes, w, h, format,
+            &self.compositor, &self.unit_pipeline, device, enc, inputs, passes, w, h, format,
             &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
             self.pass_prof.as_mut(),
         )
@@ -3653,7 +3650,7 @@ impl Sink {
             let sigma = self.gather_sigma(plan.gathers[cells[0].gi].shape, full_view, cells[0].k);
             let passes = if stages & 2 == 0 { Vec::new() } else { lower_graph(&effect_graph::background_blur_graph(sigma), None) };
             let Some((blur_atlas, blur_view)) =
-                run_graph(&self.compositor, &self.glass, device, queue, &[&bd_view], &passes, aw, ah, format)
+                run_graph(&self.compositor, &self.unit_pipeline, device, queue, &[&bd_view], &passes, aw, ah, format)
             else {
                 self.frame_transient.push(bd_atlas);
                 continue;
@@ -3998,7 +3995,7 @@ impl Sink {
                 lower_graph(&effect_graph::custom_graph(u, param_vec4s), Some(&pipeline))
             };
             let out = run_graph_into(
-                &self.compositor, &self.glass, device, enc, &[&input_view], &passes, w, h, format,
+                &self.compositor, &self.unit_pipeline, device, enc, &[&input_view], &passes, w, h, format,
                 &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
             );
             let Some((tex, view)) = out else { return };
@@ -4045,7 +4042,7 @@ impl Sink {
         }
         let passes = lower_graph(&effect_graph::background_blur_graph(sigma), None);
         let out = run_graph_into(
-            &self.compositor, &self.glass, device, enc, &[&input_view], &passes, w, h, format,
+            &self.compositor, &self.unit_pipeline, device, enc, &[&input_view], &passes, w, h, format,
             &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
         );
         let Some((tex, view)) = out else { return };
@@ -4302,7 +4299,7 @@ impl Sink {
                         | self.raster_usage;
                     let filled = self.pool.acquire(device, PoolKey { w, h, format, usage: usage.bits() }, "clamp fill");
                     let filled_view = filled.create_view(&wgpu::TextureViewDescriptor::default());
-                    self.glass.clamp_fill(device, enc, &filled_view, &bd_view, (w as f32, h as f32), rect);
+                    self.unit_pipeline.clamp_fill(device, enc, &filled_view, &bd_view, (w as f32, h as f32), rect);
                     if let Some(old) = self.surfaces.insert(write_to, Surface { texture: filled, view: filled_view, width: w, height: h }) {
                         self.frame_transient.push(old.texture);
                     }
@@ -4347,7 +4344,7 @@ impl Sink {
             let mut genc = device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("inline gather graph") });
             let out = run_graph_into(
-                &self.compositor, &self.glass, device, &mut genc, &[&backdrop_view], &passes, bw, bh, format,
+                &self.compositor, &self.unit_pipeline, device, &mut genc, &[&backdrop_view], &passes, bw, bh, format,
                 &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
             );
             queue.submit([genc.finish()]);
@@ -4447,7 +4444,7 @@ impl Sink {
         let blurred_view = if device_sigma >= 0.5 {
             let passes = lower_graph(&effect_graph::background_blur_graph(device_sigma), None);
             let Some((_tex, view)) = run_graph_into(
-                &self.compositor, &self.glass, device, enc, &[&sil_view], &passes, w, h, format,
+                &self.compositor, &self.unit_pipeline, device, enc, &[&sil_view], &passes, w, h, format,
                 &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
             ) else {
                 self.frame_transient.push(sil);
@@ -4532,7 +4529,7 @@ impl Sink {
         if device_sigma >= 0.5 {
             let passes = lower_graph(&effect_graph::background_blur_graph(device_sigma), None);
             let Some((ptex, pview)) = run_graph_into(
-                &self.compositor, &self.glass, device, enc, &[&punch_view], &passes, w, h, format,
+                &self.compositor, &self.unit_pipeline, device, enc, &[&punch_view], &passes, w, h, format,
                 &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
             ) else {
                 self.frame_transient.push(flood);
@@ -4738,7 +4735,7 @@ mod batch_admission_tests {
     /// the admission rule from drifting apart.
     #[test]
     fn a_pointwise_unit_no_builder_emits_still_admits() {
-        use crate::vello::glass::UnitOp;
+        use crate::vello::units::UnitOp;
         let clip = crate::vello::graph::Pass {
             kind: crate::vello::graph::PassKind::Units {
                 ops: vec![UnitOp::ClipToSource(vec![0.0; 24])],
@@ -4781,7 +4778,7 @@ mod batch_admission_tests {
     /// the reason a chain could previously belong to neither.
     #[test]
     fn a_sampling_head_admits_as_a_lens_not_a_stamp() {
-        use crate::vello::glass::UnitOp;
+        use crate::vello::units::UnitOp;
         use crate::vello::graph::{Pass, PassKind};
         let units = |ops: Vec<UnitOp>| Pass {
             kind: PassKind::Units {

@@ -345,7 +345,7 @@ pub fn lens_graph(
     ];
     // One field program, shared by every unit of this lens; only the numbers differ per pass,
     // because the chain solver rewrites each pass into its own texel space.
-    let program = std::rc::Rc::new(crate::vello::glass::lens_field_program());
+    let program = std::rc::Rc::new(crate::vello::units::lens_field_program());
     let unit = |op: UnitKind, u: Vec<f32>, reach: f32| EffectPass::Unit {
         op,
         field: program.clone(),

@@ -16,7 +16,7 @@
 //! CELL's normalised space, and nothing else — the atlas rect the cell happens to occupy is a
 //! mapping the arm applies (`atlasUV`, and the samplers built on it), not a second meaning the same
 //! varying carries in some arms. That is what lets the stamp and the inner-shadow band drop their
-//! hand-written fragments and run [`super::glass::units_body`] instead, the same text the per-shape
+//! hand-written fragments and run [`super::units::units_body`] instead, the same text the per-shape
 //! pipeline compiles: one `Tint`, one `EraseBy`, one place either can be wrong. Every batched cell
 //! carries the same 24-float unit uniform the per-shape pipeline binds, indexed per instance, so a
 //! unit is never expressible in one path and not the other.
@@ -60,7 +60,7 @@ pub(crate) struct Inst {
 }
 
 /// One glass cell's field parameters — the same 24-float composed uniform the per-shape pipeline
-/// binds ([`super::glass`]), here indexed out of a storage array so every cell in a batched stage
+/// binds ([`super::units`]), here indexed out of a storage array so every cell in a batched stage
 /// carries its own. `align(16)` matches the WGSL `array<vec4<f32>, 6>` it maps to.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -89,8 +89,8 @@ pub(crate) mod pointwise {
 const ARM_BASE: f32 = 8.0;
 
 /// A pointwise `UnitKey` from its bits.
-pub(crate) fn pw_key(bits: u32) -> crate::vello::glass::UnitKey {
-    crate::vello::glass::UnitKey {
+pub(crate) fn pw_key(bits: u32) -> crate::vello::units::UnitKey {
+    crate::vello::units::UnitKey {
         clip: bits & pointwise::CLIP != 0,
         erase: bits & pointwise::ERASE != 0,
         tint: bits & pointwise::TINT != 0,
@@ -103,8 +103,8 @@ pub(crate) fn pw_key(bits: u32) -> crate::vello::glass::UnitKey {
 /// entry for any NAMED effect — the pointwise combinations, then the sampling-head compositions a
 /// lens uses. `fs_uber` dispatches by a composition's index here, so nothing is glass, warp or
 /// frost to the executor; it is a composition-key and a tag.
-pub(crate) fn arm_keys() -> Vec<crate::vello::glass::UnitKey> {
-    use crate::vello::glass::UnitKey;
+pub(crate) fn arm_keys() -> Vec<crate::vello::units::UnitKey> {
+    use crate::vello::units::UnitKey;
     let mut v: Vec<UnitKey> = (0..pointwise::COUNT).map(pw_key).collect();
     // Sampling-head compositions: a plain warp, a warp with shade+mask-mix, and a scatter tail with
     // shade+mask-mix over a second texture. These are the lens's, but the table does not say so.
@@ -115,7 +115,7 @@ pub(crate) fn arm_keys() -> Vec<crate::vello::glass::UnitKey> {
 }
 
 /// The tag that selects `key`'s arm — its index in [`arm_keys`], offset past the blur tag.
-pub(crate) fn arm_tag(key: crate::vello::glass::UnitKey) -> f32 {
+pub(crate) fn arm_tag(key: crate::vello::units::UnitKey) -> f32 {
     let i = arm_keys().iter().position(|k| *k == key).expect("every emitted key has an arm");
     ARM_BASE + i as f32
 }
@@ -254,15 +254,15 @@ fn unitParam(gi: u32, i: u32) -> vec4<f32> { return fields[gi].u[i]; }
 fn atlasUV(uv: vec2<f32>) -> vec2<f32> {
     return mix(g_src_min, g_src_max, uv);
 }
-fn glassSample(gi: u32, uv: vec2<f32>) -> vec4<f32> {
+fn unitSample(gi: u32, uv: vec2<f32>) -> vec4<f32> {
     let a = clamp(atlasUV(uv), g_src_cmin, g_src_cmax);
     if (g_alt) { return textureSampleLevel(tex2, samp, a, 0.0); }
     return textureSampleLevel(tex, samp, a, 0.0);
 }
-fn glassSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> {
+fn unitSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(tex2, samp, clamp(mix(g_orig_min, g_orig_max, uv), g_orig_cmin, g_orig_cmax), 0.0);
 }
-fn glassBegin(ii: u32, alt: bool) {
+fn unitBegin(ii: u32, alt: bool) {
     let it = insts[ii];
     g_inst = ii;
     g_alt = alt;
@@ -314,7 +314,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VSOut
 
 fn blur_px(in: VSOut) -> vec4<f32> {
     let it = insts[in.inst];
-    glassBegin(in.inst, false);
+    unitBegin(in.inst, false);
     let base = atlasUV(in.uv);
     let r = i32(it.radius);
     let inv2s2 = 1.0 / (2.0 * it.sigma * it.sigma);
@@ -423,7 +423,7 @@ pub(crate) struct BatchPipelines {
     srcover: wgpu::BlendState,
     /// One compiled `(replace, composite)` pair PER FIELD PROGRAM, built on demand and keyed by the
     /// program's structure. The über-shader bakes a program's `computeField`, so an effect measuring
-    /// a different field is a different pipeline — the same way [`super::glass::UnitPipeline`] keeps
+    /// a different field is a different pipeline — the same way [`super::units::UnitPipeline`] keeps
     /// one pipeline per `UnitKey`. Glass is merely the first entry, not a hardwired baseline: adding
     /// a field-measuring effect to the batch is a new key here, not an edit to [`batch_shader`].
     variants: std::cell::RefCell<std::collections::HashMap<u64, Variant>>,
@@ -454,7 +454,7 @@ fn program_key(program: &crate::field::FieldProgram) -> u64 {
 
 /// Emit one arm: publish the instance's rects and parameters, recover the cell-local fragment
 /// coordinate from the destination origin the instance carries, then run the SHARED unit body for
-/// this composition ([`super::glass::units_body`]) — the same text the per-shape pipeline compiles,
+/// this composition ([`super::units::units_body`]) — the same text the per-shape pipeline compiles,
 /// so a batched cell and a dedicated-texture cell execute identical math.
 ///
 /// `alt` selects the second binding for the head's reads — how a pointwise arm picks up the band the
@@ -467,12 +467,12 @@ fn program_key(program: &crate::field::FieldProgram) -> u64 {
 /// land on exactly the pixel its field was evaluated at; routing it through the interpolator instead
 /// moves 16 pixels of the `combined` and `matrix` fixtures by one last bit. Glass joins the shared
 /// convention in phase 5, where the field evaluation moves with it.
-fn unit_arm(name: &str, key: crate::vello::glass::UnitKey, alt: &str, uvpix: &str, program: &crate::field::FieldProgram) -> String {
+fn unit_arm(name: &str, key: crate::vello::units::UnitKey, alt: &str, uvpix: &str, program: &crate::field::FieldProgram) -> String {
     format!(
         r#"
 fn {name}(in: VSOut) -> vec4<f32> {{
     let it = insts[in.inst];
-    glassBegin(in.inst, {alt});
+    unitBegin(in.inst, {alt});
     let gi = u32(it._p3);
     let fc = in.pos.xy - vec2<f32>(it._p1, it._p2);
     let uvpix = {uvpix};
@@ -480,7 +480,7 @@ fn {name}(in: VSOut) -> vec4<f32> {{
     return value;
 }}
 "#,
-        body = crate::vello::glass::units_body(key, program)
+        body = crate::vello::units::units_body(key, program)
     )
 }
 
@@ -488,9 +488,9 @@ fn {name}(in: VSOut) -> vec4<f32> {{
 /// the single `fs_uber` entry every stage dispatches through.
 fn batch_shader(program: &crate::field::FieldProgram) -> String {
     let mut s = String::from(BATCH_PRELUDE);
-    s.push_str(&crate::vello::glass::field_prelude(program));
-    if crate::vello::glass::needs_hash(crate::vello::glass::UnitKey { head: 2, ..Default::default() }) {
-        s.push_str(crate::vello::glass::HASH_PRELUDE);
+    s.push_str(&crate::vello::units::field_prelude(program));
+    if crate::vello::units::needs_hash(crate::vello::units::UnitKey { head: 2, ..Default::default() }) {
+        s.push_str(crate::vello::units::HASH_PRELUDE);
     }
     // One arm per composition in the table — nothing hand-named. A key's head decides its two
     // conventions: a sampling head reads at the field's own resolution and never the alternate
@@ -616,13 +616,13 @@ impl BatchPipelines {
             format,
             srcover,
             variants: std::cell::RefCell::new(std::collections::HashMap::new()),
-            lens_key: program_key(&crate::vello::glass::lens_field_program()),
+            lens_key: program_key(&crate::vello::units::lens_field_program()),
             no_fields,
         };
         // Compile the glass variant up front — it is what every stage uses today, so building it now
         // keeps the first glass frame off the compile path and the behaviour identical to the single
         // pipeline this replaced.
-        this.ensure_variant(device, &crate::vello::glass::lens_field_program());
+        this.ensure_variant(device, &crate::vello::units::lens_field_program());
         this
     }
 
@@ -817,7 +817,7 @@ impl BatchPipelines {
 #[cfg(test)]
 mod sampling_convention_tests {
     use super::batch_shader;
-    use crate::vello::glass::{lens_field_program, units_body, UnitKey};
+    use crate::vello::units::{lens_field_program, units_body, UnitKey};
 
     /// The stamp is not hand-written any more. Both of its lines have to be the ones `units_body`
     /// emits, because the moment they are typed out separately they start drifting from the unit the

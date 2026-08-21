@@ -153,22 +153,22 @@ fn make_pipeline(
 impl UnitPipeline {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let one_tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("glass units layout"),
+            label: Some("unit layout"),
             entries: &[uniform_entry(0), texture_entry(1), sampler_entry(2)],
         });
         let two_tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("glass units layout (original)"),
+            label: Some("unit layout (original)"),
             entries: &[uniform_entry(0), texture_entry(1), sampler_entry(2), texture_entry(3)],
         });
 
         let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("glass clamp-fill"),
+            label: Some("unit clamp-fill"),
             source: wgpu::ShaderSource::Wgsl(clamp_fill_shader().into()),
         });
-        let clamp_fill = make_pipeline(device, "glass clamp fill", &clamp_shader, &one_tex_layout, format);
+        let clamp_fill = make_pipeline(device, "unit clamp fill", &clamp_shader, &one_tex_layout, format);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("glass sampler"),
+            label: Some("unit sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
@@ -196,7 +196,7 @@ impl UnitPipeline {
             content_rect[0], content_rect[1], content_rect[2], content_rect[3],
         ]);
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("glass clamp bind"),
+            label: Some("unit clamp bind"),
             layout: &self.one_tex_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
@@ -209,16 +209,16 @@ impl UnitPipeline {
 
     fn uniform(device: &wgpu::Device, data: &[f32]) -> wgpu::Buffer {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("glass uniform"),
+            label: Some("unit uniform"),
             contents: bytemuck::cast_slice(data),
             usage: wgpu::BufferUsages::UNIFORM,
         })
     }
 
     fn full_pass(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pipeline: &wgpu::RenderPipeline, bind: &wgpu::BindGroup) {
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::GLASS, 1);
+        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::UNITS, 1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("glass pass"),
+            label: Some("unit pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
@@ -261,11 +261,11 @@ impl UnitPipeline {
         };
         if !self.units.borrow().contains_key(&key) {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("glass units (composed)"),
+                label: Some("unit pass (composed)"),
                 source: wgpu::ShaderSource::Wgsl(units_shader(key, field).into()),
             });
             let layout = if key.two_tex { &self.two_tex_layout } else { &self.one_tex_layout };
-            let pipeline = make_pipeline(device, "glass units", &module, layout, self.format);
+            let pipeline = make_pipeline(device, "unit pipeline", &module, layout, self.format);
             self.units.borrow_mut().insert(key, pipeline);
         }
         let uniform = Self::uniform(device, &units_uniform(ops));
@@ -278,7 +278,7 @@ impl UnitPipeline {
             entries.push(wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(orig) });
         }
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("glass units bind"),
+            label: Some("unit bind"),
             layout: if key.two_tex { &self.two_tex_layout } else { &self.one_tex_layout },
             entries: &entries,
         });
@@ -352,8 +352,8 @@ pub(crate) fn lens_field_program() -> crate::field::FieldProgram {
 /// The lens's specular streak: a Gaussian band across the bevel, modulated by how squarely the
 /// surface faces the light. The band is [`crate::field::FIELD_BAND`] — the same operator a stroke or
 /// an outline uses — and only the lighting term below is particular to glass.
-const GLASS_SPECULAR: &str = r#"
-fn glassSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32) -> f32 {
+const UNIT_SPECULAR: &str = r#"
+fn unitSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32) -> f32 {
     if (t <= 0.0 || t >= 1.0) { return 0.0; }
     let band = fieldBand(t * bezel, 2.0 * scale, scale);
     let ld = vec2<f32>(cos(lightAngle), sin(lightAngle));
@@ -379,7 +379,7 @@ pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {
     var dpx = dir * disp;
     let zoomFactor = 1.0 / max(fieldU(gi, 3u).w, 0.1) - 1.0;
     dpx = dpx + localPos * zoomFactor;
-    let specular = glassSpecular(edgeT, bezel, fieldU(gi, 2u).w, dir, scale);
+    let specular = unitSpecular(edgeT, bezel, fieldU(gi, 2u).w, dir, scale);
     return vec4<f32>(dpx.x, dpx.y, specular, mask);
 "#
         .to_string()
@@ -409,7 +409,7 @@ fn computeField(gi: u32, fc: vec2<f32>) -> vec4<f32> {{\n\
 {prologue}{distance}{guard}{rest}{outputs}{tail}}}\n",
         helpers = p.helpers(),
         band = crate::field::FIELD_BAND,
-        spec = GLASS_SPECULAR,
+        spec = UNIT_SPECULAR,
         prologue = p.wgsl_prologue(),
         outputs = p.wgsl_outputs(),
     )
@@ -449,7 +449,7 @@ fn hash2(p: vec2<f32>) -> vec2<f32> {
 /// - `gi: u32` — the field index (`0u` when the field lives in a uniform),
 /// - `fc: vec2<f32>` — the fragment's position in the *cell's* pixel space,
 /// - `uvpix: vec2<f32>` — the same position in the cell's normalised space,
-/// - `fieldU(gi, i)`, `glassSample(gi, uv)`, `glassSampleOrig(gi, uv)` — the geometry accessors,
+/// - `fieldU(gi, i)`, `unitSample(gi, uv)`, `unitSampleOrig(gi, uv)` — the geometry accessors,
 /// - `unitParam(gi, i)` — the *unit's own* parameters (a tint colour, an enable flag), which live in
 ///   the field uniform for a per-shape run but in the INSTANCE for a batched one, so a stamp can
 ///   carry its colour in 16 bytes instead of a 96-byte field entry it has no other use for,
@@ -481,7 +481,7 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
     fs.push_str(match head {
         1 if !lens => r#"
     let dispUV = dpx / resolution;
-    var value = glassSample(gi, uvpix + dispUV);
+    var value = unitSample(gi, uvpix + dispUV);
 "#,
         1 => r#"
     let chromaticAberration = fieldU(gi, 4u).y;
@@ -493,12 +493,12 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
     let caShift = caDir * chromaticAberration * caStr / resolution;
     let refUV = uvpix + dispUV;
     let refracted = vec4<f32>(
-        glassSample(gi, refUV - caShift).r,
-        glassSample(gi, refUV).g,
-        glassSample(gi, refUV + caShift).b,
-        glassSample(gi, refUV).a
+        unitSample(gi, refUV - caShift).r,
+        unitSample(gi, refUV).g,
+        unitSample(gi, refUV + caShift).b,
+        unitSample(gi, refUV).a
     );
-    let srcbg = glassSample(gi, uvpix);
+    let srcbg = unitSample(gi, uvpix);
     var value = mix(srcbg, refracted, mask);
 "#,
         2 => r#"
@@ -511,16 +511,16 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
         for (var i = 0.0; i < 12.0; i = i + 1.0) {
             let noise = hash2(fc + vec2<f32>(i * 7.3, i * 13.1));
             let off = noise * frost * 6.0 * scale * texel;
-            frostSum = frostSum + glassSample(gi, uvpix + off);
+            frostSum = frostSum + unitSample(gi, uvpix + off);
             totalW = totalW + 1.0;
         }
         value = frostSum / totalW;
     } else {
-        value = glassSample(gi, uvpix);
+        value = unitSample(gi, uvpix);
     }
 "#,
         _ => r#"
-    var value = glassSample(gi, uvpix);
+    var value = unitSample(gi, uvpix);
 "#,
     });
     if shade {
@@ -539,7 +539,7 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
     if clip {
         fs.push_str(
             r#"
-    let srcCoverage = glassSample(gi, uvpix).a;
+    let srcCoverage = unitSample(gi, uvpix).a;
     value = mix(value, value * srcCoverage, unitParam(gi, 5u).y);
 "#,
         );
@@ -556,7 +556,7 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
     if erase {
         fs.push_str(
             r#"
-    let punch = glassSampleOrig(gi, uvpix);
+    let punch = unitSampleOrig(gi, uvpix);
     value = value * (1.0 - punch.a * unitParam(gi, 3u).w);
 "#,
         );
@@ -564,7 +564,7 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
     if maskmix {
         fs.push_str(
             r#"
-    let bg = glassSampleOrig(gi, uvpix);
+    let bg = unitSampleOrig(gi, uvpix);
     value = vec4<f32>(mix(bg.rgb, value.rgb, mask), mix(bg.a, value.a, mask));
 "#,
         );
@@ -599,13 +599,13 @@ fn units_shader(key: UnitKey, program: &crate::field::FieldProgram) -> String {
         r#"
 fn fieldU(gi: u32, i: u32) -> vec4<f32> { return u[i]; }
 fn unitParam(gi: u32, i: u32) -> vec4<f32> { return u[i]; }
-fn glassSample(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(src, samp, uv); }
+fn unitSample(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(src, samp, uv); }
 "#,
     );
     bindings.push_str(if two_tex {
-        "fn glassSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(original, samp, uv); }\n"
+        "fn unitSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(original, samp, uv); }\n"
     } else {
-        "fn glassSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(src, samp, uv); }\n"
+        "fn unitSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(src, samp, uv); }\n"
     });
 
     let fs = format!(

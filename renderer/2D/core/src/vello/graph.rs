@@ -19,7 +19,7 @@ use crate::effect_graph::{EffectPass, GraphPass, Src, UnitKind};
 use wgpu::util::DeviceExt;
 
 use crate::vello::blend::{Blit, BlurPass, Compositor};
-use crate::vello::glass::{UnitPipeline, UnitOp};
+use crate::vello::units::{UnitPipeline, UnitOp};
 
 /// Above this device-σ a single separable pass would exceed [`Compositor::blur1d`]'s 160-tap cap
 /// and truncate the Gaussian; the pyramid path kicks in instead. Chosen so the coarse blur samples
@@ -205,7 +205,7 @@ impl PassKind {
 #[expect(clippy::too_many_arguments, reason = "the GPU context + keepalive travel together")]
 pub fn run_graph_into(
     compositor: &Compositor,
-    glass: &UnitPipeline,
+    unit_pipeline: &UnitPipeline,
     device: &wgpu::Device,
     enc: &mut wgpu::CommandEncoder,
     inputs: &[&wgpu::TextureView],
@@ -254,7 +254,7 @@ pub fn run_graph_into(
                 gaussian_blur(compositor, device, enc, &view, &bound[0], pw, ph, *sigma, *linear, format, pool, keep_tex, keep_views);
             }
             PassKind::Units { ops, field } => {
-                glass.units(device, enc, &view, &bound[0], bound.get(1), ops, field);
+                unit_pipeline.units(device, enc, &view, &bound[0], bound.get(1), ops, field);
             }
             PassKind::Custom { pipeline, u, param_vec4s } => {
                 // A chain lowered for inspection must never reach the executor. Loud, because the
@@ -282,7 +282,7 @@ pub fn run_graph_into(
 /// scratch right after the submit is safe — the submit retains every resource until the GPU is done.
 pub fn run_graph(
     compositor: &Compositor,
-    glass: &UnitPipeline,
+    unit_pipeline: &UnitPipeline,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     inputs: &[&wgpu::TextureView],
@@ -296,7 +296,7 @@ pub fn run_graph(
     let mut pool = crate::vello::sink::TexturePool::default();
     let mut keep_tex: Vec<wgpu::Texture> = Vec::new();
     let mut keep_views: Vec<wgpu::TextureView> = Vec::new();
-    let out = run_graph_into(compositor, glass, device, &mut enc, inputs, passes, w, h, format, &mut pool, &mut keep_tex, &mut keep_views, None);
+    let out = run_graph_into(compositor, unit_pipeline, device, &mut enc, inputs, passes, w, h, format, &mut pool, &mut keep_tex, &mut keep_views, None);
     queue.submit([enc.finish()]);
     out
 }
