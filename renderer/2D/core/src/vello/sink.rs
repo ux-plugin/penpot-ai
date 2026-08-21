@@ -85,9 +85,13 @@ struct WvBatchPlan {
     /// EraseBy band materialisations, one per inner shadow, drawn in ONE combine pass.
     combine: Vec<crate::vello::batch::Inst>,
     /// The frame's stages in dependency order — the blur pair and the combine hoisted out of the
-    /// round loop, one composite pinned to each round that has work. Atlas slot 0 is the first
-    /// surface of the pooled pair, slot 1 the second.
+    /// round loop, one composite pinned to each round that has work. Which atlas each one writes is
+    /// the planner's answer, not a constant here ([`crate::vello::plan::colour_stages`]).
     stages: Vec<crate::vello::batch::Stage>,
+    /// How many scratch atlases the colouring needs — A4's chromatic number, which is what the
+    /// executor has to pool. Two for today's chains; a stage reading two live atlases would raise it
+    /// without anything else changing.
+    atlases: usize,
     gids: HashSet<u128>,
 }
 
@@ -244,6 +248,7 @@ fn wv_batch_plan(
         v: Vec::new(),
         combine: Vec::new(),
         stages: Vec::new(),
+        atlases: 0,
         gids: HashSet::new(),
     };
     let mut by_round: std::collections::BTreeMap<u32, Vec<crate::vello::batch::Inst>> =
@@ -404,28 +409,39 @@ fn wv_batch_plan(
     }
     {
         use crate::vello::batch::{stage, Stage, Surface};
-        let rounds_used = by_round.len();
-        plan.stages.push(
-            Stage::new(stage::BLUR, Surface::Atlas(0), Surface::Acc, std::mem::take(&mut plan.h)).cleared(),
-        );
-        plan.stages.push(
-            Stage::new(stage::BLUR, Surface::Atlas(1), Surface::Atlas(0), std::mem::take(&mut plan.v)).cleared(),
-        );
-        plan.stages.push(Stage::new(
-            stage::COMBINE,
-            Surface::Atlas(0),
-            Surface::Atlas(1),
-            std::mem::take(&mut plan.combine),
-        ));
+        use crate::vello::plan::{atlases_needed, colour_stages, Input, StageSpec, Target, ValueId};
+        // The surfaces are not chosen here. Each stage declares what it READS, and A3 — never write
+        // an atlas you read in the same draw — decides where it writes. The ping-pong, and the fact
+        // that the erase can land back in the first atlas, are consequences of that rule rather than
+        // constants this function has to keep consistent with the executor.
+        let spec = [
+            StageSpec { reads: vec![Input::External(0)], target: Target::Atlas },
+            StageSpec { reads: vec![Input::Value(ValueId(0))], target: Target::Atlas },
+            StageSpec {
+                reads: vec![Input::Value(ValueId(1)), Input::Value(ValueId(1))],
+                target: Target::Atlas,
+            },
+            StageSpec {
+                reads: vec![Input::Value(ValueId(1)), Input::Value(ValueId(2))],
+                target: Target::Accumulator,
+            },
+        ];
+        let colour = colour_stages(&spec);
+        let at = |i: usize| Surface::Atlas(colour[i].expect("an atlas stage was coloured"));
+        plan.atlases = atlases_needed(&colour);
+        plan.stages
+            .push(Stage::new(stage::BLUR, at(0), Surface::Acc, std::mem::take(&mut plan.h)).cleared());
+        plan.stages
+            .push(Stage::new(stage::BLUR, at(1), at(0), std::mem::take(&mut plan.v)).cleared());
+        plan.stages.push(Stage::new(stage::COMBINE, at(2), at(1), std::mem::take(&mut plan.combine)));
         for (r, insts) in by_round {
             plan.stages.push(
-                Stage::new(stage::COMPOSITE, Surface::Acc, Surface::Atlas(1), insts)
-                    .with_src2(Surface::Atlas(0))
+                Stage::new(stage::COMPOSITE, Surface::Acc, at(1), insts)
+                    .with_src2(at(2))
                     .composited()
                     .with_round(r),
             );
         }
-        let _ = rounds_used;
     }
     #[cfg(not(target_arch = "wasm32"))]
     if std::env::var("WV_BATCH_STATS").is_ok() {
@@ -1311,7 +1327,10 @@ impl Sink {
         let batch_plan = strip.as_ref().and_then(|(packing, cells)| {
             wv_batch_plan(&gathers, &rounds, packing, cells, strip_y, (width as f32, acc_h as f32))
         });
-        let mut batch_rt: Option<(wgpu::Texture, wgpu::Texture, wgpu::TextureView, wgpu::TextureView)> = None;
+        // As many scratch atlases as the stage colouring asked for — A4's chromatic number, not a
+        // pair this function decided on. Textures and their views are kept apart so the views can be
+        // borrowed as a slice for the executor.
+        let mut batch_rt: Option<(Vec<wgpu::Texture>, Vec<wgpu::TextureView>)> = None;
         let glass_plan = self
             .wv_glass_plan(&gathers, &rounds, full_view, width, height, device.limits().max_texture_dimension_2d)
             .filter(|_| wv_glass_batch());
@@ -1487,21 +1506,33 @@ impl Sink {
                     let pipes = self
                         .batch_pipes
                         .get_or_insert_with(|| crate::vello::batch::BatchPipelines::new(device, format));
-                    let a = self.pool.acquire_target(device, aw, ah, format, wgpu::TextureUsages::empty(), "wv batch blur a");
-                    let b = self.pool.acquire_target(device, aw, ah, format, wgpu::TextureUsages::empty(), "wv batch blur b");
-                    let av = a.create_view(&wgpu::TextureViewDescriptor::default());
-                    let bv = b.create_view(&wgpu::TextureViewDescriptor::default());
-                    pipes.run_stages(device, &mut enc, &plan.stages, None, &views[ci], &[&av, &bv], self.compositor.sampler());
+                    let texs: Vec<wgpu::Texture> = (0..plan.atlases)
+                        .map(|_| {
+                            self.pool.acquire_target(
+                                device,
+                                aw,
+                                ah,
+                                format,
+                                wgpu::TextureUsages::empty(),
+                                "wv batch atlas",
+                            )
+                        })
+                        .collect();
+                    let atlas_views: Vec<wgpu::TextureView> =
+                        texs.iter().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default())).collect();
+                    let refs: Vec<&wgpu::TextureView> = atlas_views.iter().collect();
+                    pipes.run_stages(device, &mut enc, &plan.stages, None, &views[ci], &refs, self.compositor.sampler());
                     // Held OUTSIDE `frame_transient` on purpose: the per-node recycle point
                     // truncates that list back to its pre-loop checkpoint, and the blurred atlas
                     // must survive every round. It returns to the pool after the final window.
-                    batch_rt = Some((a, b, av, bv));
+                    batch_rt = Some((texs, atlas_views));
                 }
                 strip_filled = true;
             }
-            if let (Some(plan), Some((_, _, av, bv))) = (batch_plan.as_ref(), batch_rt.as_ref()) {
+            if let (Some(plan), Some((_, atlas_views))) = (batch_plan.as_ref(), batch_rt.as_ref()) {
                 let pipes = self.batch_pipes.as_ref().expect("batch pipelines built with the plan");
-                pipes.run_stages(device, &mut enc, &plan.stages, Some(r), &views[ci], &[av, bv], self.compositor.sampler());
+                let refs: Vec<&wgpu::TextureView> = atlas_views.iter().collect();
+                pipes.run_stages(device, &mut enc, &plan.stages, Some(r), &views[ci], &refs, self.compositor.sampler());
             }
             // Every batched lens of this round, in one pass per stage. Lenses in a round are
             // disjoint by construction, so they can all read the accumulator and write their own
@@ -1550,11 +1581,9 @@ impl Sink {
             seed_clear(&mut enc, &views[0]);
             0
         };
-        if let Some((a, b, av, bv)) = batch_rt.take() {
-            self.frame_transient.push(a);
-            self.frame_transient.push(b);
-            self.frame_transient_views.push(av);
-            self.frame_transient_views.push(bv);
+        if let Some((texs, atlas_views)) = batch_rt.take() {
+            self.frame_transient.extend(texs);
+            self.frame_transient_views.extend(atlas_views);
         }
         // Same rule as the batch atlases: held outside `frame_transient` for the whole round loop
         // (the per-node recycle point truncates that list), returned to the pool once it ends.
@@ -2250,8 +2279,12 @@ impl Sink {
             .iter()
             .map(|(c, _)| (c.kw.next_multiple_of(align), c.kh.next_multiple_of(align)))
             .collect();
+        // A5: the batch's blur clamps every tap to the instance's own rect, so no gap at all is
+        // required for correctness. `GAP` is the slack that keeps a sampler grazing half a texel past
+        // a cell in transparent black rather than in its neighbour's ink — and an aligned packing
+        // already has that slack inside the alignment.
         let gap = if align > 1 { 0 } else { GAP };
-        let packing = shelf_pack(&sizes, gap, target_w, max_dim)?;
+        let packing = crate::vello::plan::pack_groups(&sizes, gap, target_w, max_dim)?;
         Some((packing, cells))
     }
 
