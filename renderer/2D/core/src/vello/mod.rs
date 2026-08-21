@@ -25,6 +25,7 @@ pub mod effects;
 pub mod glass;
 pub mod gputime;
 pub mod graph;
+pub mod plan;
 pub mod prof;
 pub mod rasterize;
 pub mod rich_editor;
