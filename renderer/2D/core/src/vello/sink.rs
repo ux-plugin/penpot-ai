@@ -2420,27 +2420,25 @@ impl Sink {
             }
             return [x0 - PAD, y0 - PAD, x1 + PAD, y1 + PAD];
         }
+        use crate::effect::Op;
         use crate::kurbo::Point;
-        let Some((page, is_glass, is_custom, glass_sigma)) =
-            crate::vello::abi::with_scene(|live, _, modifiers| {
-                let n = live.get(id)?;
-                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                Some((
-                    crate::schedule::page_bounds(n, m),
-                    n.glass.is_some(),
-                    n.gather_shader().is_some(),
-                    n.glass.map_or(0.0, |g| g.total_blur_sigma()),
-                ))
-            })
-        else {
+        let Some(page) = crate::vello::abi::with_scene(|live, _, modifiers| {
+            let n = live.get(id)?;
+            let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+            Some(crate::schedule::page_bounds(n, m))
+        }) else {
             return full;
         };
+        let eff = Self::wv_backdrop_effect(id);
+        let head = eff.as_ref().and_then(|e| e.ops.first());
+        let is_custom = matches!(head, Some(Op::Shader(_)));
         let cs = full_view.as_coeffs();
         let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
-        let reach = if is_glass {
-            3.0 * f64::from(glass_sigma * scale) + 20.0
-        } else {
-            3.0 * f64::from(self.gather_sigma(id, full_view, 1.0)) + 6.0
+        // A sampling head (Lens) displaces past its blur, so it pads wider (refraction slack); a plain
+        // gather blur pads to its own reach. Both numerators are `3·sigma`, from the head op itself.
+        let reach = match head {
+            Some(Op::Lens(g)) => 3.0 * f64::from(g.total_blur_sigma() * scale) + 20.0,
+            _ => 3.0 * f64::from(self.gather_sigma(id, full_view, 1.0)) + 6.0,
         };
         let pts = [
             full_view * Point::new(page.x0, page.y0),
