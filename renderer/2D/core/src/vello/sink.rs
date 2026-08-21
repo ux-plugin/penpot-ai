@@ -2894,14 +2894,14 @@ impl Sink {
                 }
                 (Source::Body, _) => {
                     if let Some(c) = find(1, 0) {
-                        self.wv_composite_body(c, &effect.ops, backend, device, queue, enc, acc_view, root, id, root_index, format, sz);
+                        self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
                     }
                     body_done = true;
                 }
                 (Source::Coverage { .. }, Compose::Over) => {
                     if !body_done {
                         if let Some(c) = find(1, 0) {
-                            self.wv_composite_body(c, &[], backend, device, queue, enc, acc_view, root, id, root_index, format, sz);
+                            self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
                         }
                         body_done = true;
                     }
@@ -2915,7 +2915,7 @@ impl Sink {
         }
         if !body_done {
             if let Some(c) = find(1, 0) {
-                self.wv_composite_body(c, &[], backend, device, queue, enc, acc_view, root, id, root_index, format, sz);
+                self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
             }
         }
     }
@@ -2929,91 +2929,53 @@ impl Sink {
     fn wv_composite_body<B: RasterBackend>(
         &mut self,
         cell: WvCell,
-        ops: &[crate::effect::Op],
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         enc: &mut wgpu::CommandEncoder,
         acc_view: &wgpu::TextureView,
         root: Affine,
-        id: u128,
         root_index: usize,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        let WvCell { bx, by, bw, bh, kw, kh, k, sigma, .. } = cell;
-        let blur_sigma = (sigma >= 0.5).then_some(sigma);
-        // A body chain may translate its result (a filter graph's `Offset`). The cell's own box
-        // already moved with it — `Effect::footprint` walks the same ops — so rendering into the
-        // moved cell and stamping it back would cancel out exactly. Shift the render by the same
-        // device vector to make the move real. Zero for every chain without an offset, so the
-        // layer-blur path is untouched.
-        let (odx, ody) = (f64::from(cell.dev_offset.0), f64::from(cell.dev_offset.1));
-        let crop = Affine::translate((odx - f64::from(bx), ody - f64::from(by))) * root;
-        let (bxf, byf, bwf, bhf) = (bx as f32, by as f32, bw as f32, bh as f32);
-        let ksz = (kw as f32, kh as f32);
+        let src = self.wv_cell_source(&cell, backend, device, queue, enc, root, root_index, format);
+        let passes = self.wv_resolve_pipelines(&cell, device, format);
+        self.wv_effect_blit(&cell, &[&src], &passes, device, enc, acc_view, format, sz);
+    }
 
-        let mut cur_view = if let Some(v) = self.wv_atlas.get(&(id, 1, 0)).map(|(_, v)| v.clone()) {
-            v
-        } else {
-            let sub = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv stack body");
-            let v = sub.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut scene = backend.new_scene(kw as u16, kh as u16);
-            backend.draw_scene_range(&mut scene, Affine::scale(f64::from(k)) * crop, root_index, root_index + 1);
-            backend.rasterize(&scene, device, queue, enc, &v, kw, kh, TRANSPARENT);
-            self.frame_transient.push(sub);
-            self.frame_transient_views.push(v.clone());
-            v
-        };
-
-        let chain: Vec<(String, Vec<f32>, u32)> = ops
-            .iter()
-            .filter_map(|op| match op {
-                crate::effect::Op::Shader(c) => Some((c.wgsl.clone(), c.params.clone(), c.param_vec4s)),
-                _ => None,
-            })
-            .collect();
-        for (wgsl, params, param_vec4s) in chain {
+    /// The cell's chain, lowered with every `Custom` pass paired with its compiled pipeline.
+    ///
+    /// This used to be a loop that ran ONE shader per `run_graph_into` call, threading the result
+    /// texture into the next iteration by hand, because a chain could not be lowered at all without
+    /// a pipeline in hand — `lower_graph` dropped the pass. Now that the shape of a chain survives
+    /// lowering, the whole body is one chain and the executor threads it.
+    fn wv_resolve_pipelines(&mut self, cell: &WvCell, device: &wgpu::Device, format: wgpu::TextureFormat) -> Vec<Pass> {
+        use crate::vello::graph::PassKind;
+        let mut passes = lower_graph(&cell.graph, None);
+        let mut shaders = crate::vello::abi::with_scene(|live, _, _| {
+            live.get(cell.key.0)
+                .map(|n| n.spread_shaders().map(|s| s.wgsl.clone()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .into_iter();
+        for pass in &mut passes {
+            let PassKind::Custom { pipeline, .. } = &mut pass.kind else { continue };
+            let Some(wgsl) = shaders.next() else { continue };
             let n_inputs = 1;
             let mut hasher = DefaultHasher::new();
             wgsl.hash(&mut hasher);
             n_inputs.hash(&mut hasher);
             let key = hasher.finish();
             self.cap_custom_pipelines(key);
-            let pipeline = self
-                .custom_pipelines
-                .entry(key)
-                .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
-                .clone();
-            let mut u = vec![ksz.0, ksz.1];
-            u.extend_from_slice(&params);
-            let passes = lower_graph(&effect_graph::custom_graph(u, param_vec4s), Some(&pipeline));
-            let out = run_graph_into(
-                &self.compositor, &self.glass, device, enc, &[&cur_view], &passes, kw, kh, format,
-                &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, None,
+            *pipeline = Some(
+                self.custom_pipelines
+                    .entry(key)
+                    .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
+                    .clone(),
             );
-            let Some((tex, view)) = out else { break };
-            self.frame_transient.push(tex);
-            self.frame_transient_views.push(cur_view);
-            cur_view = view;
         }
-
-        if let Some(sigma) = blur_sigma {
-            let passes = lower_graph(&effect_graph::background_blur_graph(sigma * k), None);
-            if let Some((tex, view)) = run_graph_into(
-                &self.compositor, &self.glass, device, enc, &[&cur_view], &passes, kw, kh, format,
-                &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
-            ) {
-                self.frame_transient.push(tex);
-                self.frame_transient_views.push(cur_view);
-                cur_view = view;
-            }
-        }
-
-        self.compositor.blit(device, enc, acc_view, sz, &Blit {
-            src: &cur_view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, ksz.0, ksz.1), src_size: ksz, alpha: 1.0,
-        });
-        self.frame_transient_views.push(cur_view);
+        passes
     }
 
     /// Bbox-scoped gather stamp (the default gather path): crop the backdrop to the lens's device
