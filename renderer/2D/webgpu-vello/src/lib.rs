@@ -1250,7 +1250,7 @@ mod tests {
     fn classic_device_runs_the_shared_effect_executor() {
         use render_core::effect_graph::background_blur_graph;
         use render_core::vello::blend::{Blit, Compositor};
-        use render_core::vello::glass::GlassPipeline;
+        use render_core::vello::glass::UnitPipeline;
         use render_core::vello::graph::{lower_graph, run_graph};
 
         let instance = wgpu::Instance::default();
@@ -1303,7 +1303,7 @@ mod tests {
         renderer.release_pending();
 
         let compositor = Compositor::new(&device, format);
-        let glass = GlassPipeline::new(&device, format);
+        let glass = UnitPipeline::new(&device, format);
         let passes = lower_graph(&background_blur_graph(6.0), None);
         let (_blurred, blurred_view) =
             run_graph(&compositor, &glass, &device, &queue, &[&src_view], &passes, w, h, format)

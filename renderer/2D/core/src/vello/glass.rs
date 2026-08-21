@@ -2,7 +2,7 @@
 //!
 //! Glass is not a shader here; it is a *graph of generic units* (see [`crate::effect_graph`]):
 //! `warp → blur → scatter → shade → mask-mix`. The footprint partition decides which units share a
-//! fragment (a gather head plus its pointwise tail), and [`GlassPipeline::units`] compiles ONE
+//! fragment (a gather head plus its pointwise tail), and [`UnitPipeline::units`] compiles ONE
 //! pipeline per distinct composition from the snippet bodies below, cached by composition key. Sharp
 //! glass (`warp+shade+mask-mix`, one draw, no intermediates) and the frosted composite
 //! (`scatter+shade+mask-mix`) are *derived* fusions — there is no hand-written fused shader left.
@@ -61,7 +61,7 @@ pub(crate) struct UnitKey {
     pub two_tex: bool,
 }
 
-pub struct GlassPipeline {
+pub struct UnitPipeline {
     format: wgpu::TextureFormat,
     one_tex_layout: wgpu::BindGroupLayout,
     two_tex_layout: wgpu::BindGroupLayout,
@@ -150,7 +150,7 @@ fn make_pipeline(
     })
 }
 
-impl GlassPipeline {
+impl UnitPipeline {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let one_tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("glass units layout"),
@@ -316,7 +316,7 @@ pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
 /// Slots address the shared 24-float uniform: centre `0.zw`, half-extents `1.xy`, corner `1.z`,
 /// profile kind `1.w`, bezel `2.x`, thickness `2.y`, index of refraction `2.z`, light angle `2.w`,
 /// splay `3.x`, tilt `3.y`, edge boost `3.z`, zoom `3.w`, device scale `4.x`.
-pub(crate) fn glass_field_program() -> crate::field::FieldProgram {
+pub(crate) fn lens_field_program() -> crate::field::FieldProgram {
     use crate::field::{FieldOp, FieldProgram, FieldRef, FieldSource, Slot, Slot2};
     FieldProgram {
         nodes: vec![
@@ -363,7 +363,7 @@ fn glassSpecular(t: f32, bezel: f32, lightAngle: f32, dir: vec2<f32>, scale: f32
 }
 "#;
 
-/// `computeField`, generated from [`glass_field_program`] plus the lens-specific assembly. The
+/// `computeField`, generated from [`lens_field_program`] plus the lens-specific assembly. The
 /// early-out sits immediately after the distance so nothing beyond the shape is evaluated, which is
 /// why the program is emitted in two runs rather than one.
 pub(crate) fn field_prelude(p: &crate::field::FieldProgram) -> String {

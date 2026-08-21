@@ -233,7 +233,7 @@ pub fn chain_scales(graph: &[GraphPass], acceptable_downscale: f32, cap: f32) ->
 mod tests {
     use super::*;
     use crate::effect_graph::{
-        background_blur_graph, custom_graph, glass_graph, GlassGeometry,
+        background_blur_graph, custom_graph, lens_graph, LensGeometry,
     };
     use crate::model::Glass;
     use kurbo::{Affine, Point};
@@ -259,8 +259,8 @@ mod tests {
         }
     }
 
-    fn geom() -> GlassGeometry {
-        GlassGeometry {
+    fn geom() -> LensGeometry {
+        LensGeometry {
             center: Point::new(50.0, 50.0),
             width: 80.0,
             height: 60.0,
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn sharp_glass_fuses_to_one_segment() {
-        let g = glass_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let g = lens_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let stages = partition(&g);
         assert_eq!(stages, vec![Stage::Fused(vec![0, 1, 2, 3])]);
         assert_eq!(barrier_count(&stages), 0);
@@ -306,7 +306,7 @@ mod tests {
     fn frosted_glass_materialises_refraction_and_the_scatter() {
         let mut frosted = glass();
         frosted.frost = 1.0;
-        let g = glass_graph(&frosted, geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let g = lens_graph(&frosted, geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let stages = partition(&g);
         assert_eq!(
             stages,
@@ -320,7 +320,7 @@ mod tests {
     fn light_frost_without_a_blur_pass_still_bars_the_scatter() {
         let mut frosted = glass();
         frosted.frost = 0.03;
-        let g = glass_graph(&frosted, geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let g = lens_graph(&frosted, geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let stages = partition(&g);
         assert_eq!(stages, vec![Stage::Fused(vec![0]), Stage::Barrier(1), Stage::Fused(vec![2, 3])]);
         assert_eq!(execution_groups(&g), vec![vec![0], vec![1, 2, 3]]);
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn sharp_chain_is_uniform_surface_scale() {
-        let g = glass_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let g = lens_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let s = chain_scales(&g, 0.6, 0.8);
         assert_eq!(s.len(), 4);
         for k in &s {
@@ -360,7 +360,7 @@ mod tests {
     fn passes_feeding_a_blur_ride_the_blur_band_limit() {
         let mut frosted = glass();
         frosted.frost = 1.0;
-        let g = glass_graph(&frosted, geom(), (400, 400), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let g = lens_graph(&frosted, geom(), (400, 400), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let s = chain_scales(&g, 1.0, 1.0);
         assert_eq!(s.len(), 5);
         assert!(s[0] < 1.0, "the warp feeding a wide blur should ride cheap, got {}", s[0]);
@@ -372,7 +372,7 @@ mod tests {
     fn acceptable_downscale_floor_clamps_every_pass() {
         let mut frosted = glass();
         frosted.frost = 1.0;
-        let g = glass_graph(&frosted, geom(), (400, 400), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let g = lens_graph(&frosted, geom(), (400, 400), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let s = chain_scales(&g, 0.5, 1.0);
         for k in &s {
             assert!(*k <= 0.5 + 1e-6, "acceptable_downscale=0.5 must cap every pass, got {k}");

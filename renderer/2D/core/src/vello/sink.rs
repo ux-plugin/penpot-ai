@@ -36,8 +36,8 @@ use vello_common::kurbo::{Affine, Rect, Shape};
 use vello_example_scenes::RenderingContext;
 
 use crate::vello::blend::{BlendComposite, Blit, Compositor, MaskedBlit};
-use crate::vello::glass::GlassPipeline;
-use crate::effect_graph::{self, GlassGeometry};
+use crate::vello::glass::UnitPipeline;
+use crate::effect_graph::{self, LensGeometry};
 
 use crate::vello::graph::{build_custom_pipeline, lower_graph, new_target_with_usage, run_graph, run_graph_into, Pass};
 
@@ -85,7 +85,7 @@ struct WvBatchPlan {
     /// EraseBy band materialisations, one per inner shadow, drawn in ONE combine pass.
     combine: Vec<crate::vello::batch::Inst>,
     /// The erase draw's unit uniforms, one per instance — where `EraseBy` reads its strength.
-    combine_f: Vec<crate::vello::batch::GlassField>,
+    combine_f: Vec<crate::vello::batch::FieldUniform>,
     /// The frame's stages in dependency order — the blur pair and the combine hoisted out of the
     /// round loop, one composite pinned to each round that has work. Which atlas each one writes is
     /// the planner's answer, not a constant here ([`crate::vello::plan::colour_stages`]).
@@ -287,12 +287,12 @@ fn wv_batch_cell_shape(c: &WvCell) -> Option<BatchShape> {
 /// A chain with no `Tint` gets the disabling sentinel (alpha below zero) rather than a zero colour,
 /// because the pointwise arms carry `Tint` unconditionally so that a coloured silhouette and an
 /// uncoloured body can ride the same draw. Zero would multiply the body away.
-fn wv_stamp_uniform(ops: &[crate::vello::glass::UnitOp]) -> crate::vello::batch::GlassField {
+fn wv_stamp_uniform(ops: &[crate::vello::glass::UnitOp]) -> crate::vello::batch::FieldUniform {
     let mut u = crate::vello::glass::units_uniform(ops);
     if !ops.iter().any(|o| matches!(o, crate::vello::glass::UnitOp::Tint(_))) {
         u[12..16].copy_from_slice(&[0.0, 0.0, 0.0, -1.0]);
     }
-    crate::vello::batch::GlassField { u }
+    crate::vello::batch::FieldUniform { u }
 }
 
 /// Which pointwise arm a composite draw of `ops` runs. `Tint` is always in it (self-disabling), and
@@ -344,7 +344,7 @@ fn wv_batch_plan(
     // Keyed by round AND by the arm the draw runs: instances of one round that compose differently
     // are different draws, because an arm is per-pipeline-invocation and not per-instance. Today
     // every stamp composes the same way and this is one group per round, exactly as before.
-    type Group = (Vec<crate::vello::batch::Inst>, Vec<crate::vello::batch::GlassField>);
+    type Group = (Vec<crate::vello::batch::Inst>, Vec<crate::vello::batch::FieldUniform>);
     let mut by_round: std::collections::BTreeMap<(u32, u32), Group> =
         std::collections::BTreeMap::new();
     for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
@@ -966,7 +966,7 @@ const WV_PASS_FLUSH_BUDGET: u32 = 768;
 /// The scheduler's GPU production sink. Owns the per-frame surface map and the SrcOver compositor.
 pub struct Sink {
     compositor: Compositor,
-    glass: GlassPipeline,
+    glass: UnitPipeline,
     /// Instanced batch pipelines (blur H/V + per-round composite), built on first batched frame.
     batch_pipes: Option<crate::vello::batch::BatchPipelines>,
     /// Physical surface per logical ref, this frame. Slice-1 allocates fresh each frame (no
@@ -1066,7 +1066,7 @@ impl Sink {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
             compositor: Compositor::new(device, format),
-            glass: GlassPipeline::new(device, format),
+            glass: UnitPipeline::new(device, format),
             batch_pipes: None,
             surfaces: HashMap::new(),
             written: HashSet::new(),
@@ -2044,7 +2044,7 @@ impl Sink {
             if k < 0.999 || bw > max_dim || bh > max_dim {
                 continue;
             }
-            let Some(passes) = self.glass_graph(gid, bw, bh, f64::from(bx), f64::from(by), full_view, 1.0) else {
+            let Some(passes) = self.lens_graph(gid, bw, bh, f64::from(bx), f64::from(by), full_view, 1.0) else {
                 continue;
             };
             let Some(BatchShape::Lens { head: warp, tail, sigma }) = batch_admit(&passes) else {
@@ -2140,7 +2140,7 @@ impl Sink {
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        use crate::vello::batch::{stage, GlassField, Inst};
+        use crate::vello::batch::{stage, FieldUniform, Inst};
         let Some(pipes) = self.batch_pipes.as_ref() else { return };
         let here: Vec<&GlassCell> = cells.iter().filter(|c| c.round == round).collect();
         if here.is_empty() {
@@ -2171,7 +2171,7 @@ impl Sink {
                         .with_units(sharp_f.len())
                         .at(c.cell),
                 );
-                sharp_f.push(GlassField { u: crate::vello::glass::units_uniform(&ops) });
+                sharp_f.push(FieldUniform { u: crate::vello::glass::units_uniform(&ops) });
             } else {
                 warp.push(
                     Inst::new(c.red, asz, c.cell, asz, (0.0, 0.0), 0.0, false)
@@ -2179,7 +2179,7 @@ impl Sink {
                         .with_units(warp_f.len())
                         .at(c.red),
                 );
-                warp_f.push(GlassField { u: crate::vello::glass::units_uniform(&ops) });
+                warp_f.push(FieldUniform { u: crate::vello::glass::units_uniform(&ops) });
                 blur_h.push(Inst::new(c.red, asz, c.red, asz, (1.0, 0.0), c.sigma, false));
                 blur_v.push(Inst::new(c.red, asz, c.red, asz, (0.0, 1.0), c.sigma, false));
                 frost.push(
@@ -2188,7 +2188,7 @@ impl Sink {
                         .with_units(frost_f.len())
                         .at(c.cell),
                 );
-                frost_f.push(GlassField { u: crate::vello::glass::units_uniform(&c.tail) });
+                frost_f.push(FieldUniform { u: crate::vello::glass::units_uniform(&c.tail) });
             }
             stamp.push(Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false));
         }
@@ -2215,7 +2215,7 @@ impl Sink {
                 C,
                 stamp,
             )
-            .with_fields(vec![GlassField { u: no_tint }])
+            .with_fields(vec![FieldUniform { u: no_tint }])
             .composited(),
         ];
         let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view];
@@ -2251,7 +2251,7 @@ impl Sink {
             return;
         }
         let passes = if is_glass {
-            self.glass_graph(id, width, height, 0.0, 0.0, full_view, 1.0)
+            self.lens_graph(id, width, height, 0.0, 0.0, full_view, 1.0)
         } else if is_custom {
             self.custom_graph(id, width, height, device, format)
         } else {
@@ -3087,7 +3087,7 @@ impl Sink {
         });
 
         let passes = if is_glass {
-            self.glass_graph(id, kw, kh, f64::from(bx), f64::from(by), full_view, k)
+            self.lens_graph(id, kw, kh, f64::from(bx), f64::from(by), full_view, k)
         } else {
             Some(lower_graph(&effect_graph::background_blur_graph(self.gather_sigma(id, full_view, k)), None))
         };
@@ -4354,7 +4354,7 @@ impl Sink {
         let mask_ref = backdrop.bump().bump();
         if !self.surfaces.contains_key(&result_ref) {
             let passes = if is_glass {
-                self.glass_graph(id, bw, bh, bdx, bdy, full_view, k)
+                self.lens_graph(id, bw, bh, bdx, bdy, full_view, k)
             } else if is_custom {
                 self.custom_graph(id, bw, bh, device, format)
             } else {
@@ -4610,11 +4610,11 @@ impl Sink {
     }
 
     /// Build the glass pass-graph over the assembled backdrop (input 0). The geometry→uniform math is
-    /// render-core's [`effect_graph::glass_graph`]; this only reads the shape's glass params/box off
+    /// render-core's [`effect_graph::lens_graph`]; this only reads the shape's glass params/box off
     /// the live scene and lowers the neutral graph (no custom pass, so no pipeline to resolve). Glass
     /// geometry is the shape's rounded box (axis-aligned; rotation is a gap); the composite's own SDF
     /// mask does the clip, so no silhouette mask is needed.
-    fn glass_graph(&self, id: u128, bw: u32, bh: u32, bdx: f64, bdy: f64, full_view: Affine, k: f64) -> Option<Vec<Pass>> {
+    fn lens_graph(&self, id: u128, bw: u32, bh: u32, bdx: f64, bdy: f64, full_view: Affine, k: f64) -> Option<Vec<Pass>> {
         let (g, geom) = crate::vello::abi::with_scene(|live, _, modifiers| {
             live.get(id).and_then(|n| {
                 n.glass.map(|g| {
@@ -4622,7 +4622,7 @@ impl Sink {
                     let page = crate::schedule::page_bounds(n, m);
                     let [a, b, c, d, _, _] = (m * n.effective_transform()).as_coeffs();
                     let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
-                    let geom = GlassGeometry {
+                    let geom = LensGeometry {
                         center: page.center(),
                         width: page.width(),
                         height: page.height(),
@@ -4633,7 +4633,7 @@ impl Sink {
                 })
             })
         })?;
-        let graph = effect_graph::glass_graph_scaled(&g, geom, (bw, bh), (bdx, bdy), full_view, k);
+        let graph = effect_graph::lens_graph_scaled(&g, geom, (bw, bh), (bdx, bdy), full_view, k);
         Some(lower_graph(&graph, None))
     }
 

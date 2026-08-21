@@ -287,7 +287,7 @@ pub fn custom_graph(u: Vec<f32>, param_vec4s: u32) -> Vec<GraphPass> {
 /// Geometry of the glass shape, in **page space**, the way the backend reads it off the node. The
 /// builder maps it into the reduced backdrop's device space itself.
 #[derive(Debug, Clone, Copy)]
-pub struct GlassGeometry {
+pub struct LensGeometry {
     /// Shape centre in page space.
     pub center: Point,
     /// Shape width/height in page space.
@@ -312,9 +312,9 @@ pub struct GlassGeometry {
 /// and `k ∈ (0, 1]` the resolution-cap factor. The composite's own SDF mask does the clip, so no
 /// silhouette mask is needed. Ported verbatim from the sink so pixels are unchanged.
 #[must_use]
-pub fn glass_graph(
+pub fn lens_graph(
     g: &Glass,
-    geom: GlassGeometry,
+    geom: LensGeometry,
     backdrop_size: (u32, u32),
     backdrop_origin: (f64, f64),
     view: Affine,
@@ -345,7 +345,7 @@ pub fn glass_graph(
     ];
     // One field program, shared by every unit of this lens; only the numbers differ per pass,
     // because the chain solver rewrites each pass into its own texel space.
-    let program = std::rc::Rc::new(crate::vello::glass::glass_field_program());
+    let program = std::rc::Rc::new(crate::vello::glass::lens_field_program());
     let unit = |op: UnitKind, u: Vec<f32>, reach: f32| EffectPass::Unit {
         op,
         field: program.clone(),
@@ -380,18 +380,18 @@ pub fn glass_graph(
     passes
 }
 
-/// [`glass_graph`] with the optimal-chain render scales applied — the variant the sinks execute.
+/// [`lens_graph`] with the optimal-chain render scales applied — the variant the sinks execute.
 /// The pure builder stays scale-free so footprint analysis and tests see the un-mutated pipeline.
 #[must_use]
-pub fn glass_graph_scaled(
+pub fn lens_graph_scaled(
     g: &Glass,
-    geom: GlassGeometry,
+    geom: LensGeometry,
     backdrop_size: (u32, u32),
     backdrop_origin: (f64, f64),
     view: Affine,
     k: f64,
 ) -> Vec<GraphPass> {
-    let mut passes = glass_graph(g, geom, backdrop_size, backdrop_origin, view, k);
+    let mut passes = lens_graph(g, geom, backdrop_size, backdrop_origin, view, k);
     apply_chain_scales(&mut passes, backdrop_size.0, backdrop_size.1);
     passes
 }
@@ -437,8 +437,8 @@ mod tests {
 
     #[test]
     fn glass_is_a_unit_chain_with_an_optional_blur() {
-        let geom = GlassGeometry { center: Point::new(50.0, 50.0), width: 80.0, height: 60.0, corner_radius: 10.0, is_circle: false };
-        let sharp = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let geom = LensGeometry { center: Point::new(50.0, 50.0), width: 80.0, height: 60.0, corner_radius: 10.0, is_circle: false };
+        let sharp = lens_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         assert_eq!(sharp.len(), 4);
         let kinds: Vec<UnitKind> = sharp
             .iter()
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(sharp[3].inputs, vec![Src::Pass(2), Src::Input(0)]);
         let mut frosted = glass();
         frosted.frost = 1.0;
-        let g = glass_graph(&frosted, geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let g = lens_graph(&frosted, geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         assert_eq!(g.len(), 5);
         assert!(matches!(g[1].pass, EffectPass::Blur { .. }));
         assert_eq!(g[2].inputs[0], Src::Pass(1));
@@ -469,8 +469,8 @@ mod tests {
 
     #[test]
     fn a_circle_clamps_the_corner_to_the_min_half_extent() {
-        let geom = GlassGeometry { center: Point::new(0.0, 0.0), width: 80.0, height: 60.0, corner_radius: 999.0, is_circle: true };
-        let g = glass_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let geom = LensGeometry { center: Point::new(0.0, 0.0), width: 80.0, height: 60.0, corner_radius: 999.0, is_circle: true };
+        let g = lens_graph(&glass(), geom, (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let EffectPass::Unit { ref u, op: UnitKind::Warp, .. } = g[0].pass else { panic!("expected warp") };
         assert!((u[6] - 30.0).abs() < 1e-4);
     }

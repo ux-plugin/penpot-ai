@@ -64,7 +64,7 @@ pub(crate) struct Inst {
 /// carries its own. `align(16)` matches the WGSL `array<vec4<f32>, 6>` it maps to.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct GlassField {
+pub(crate) struct FieldUniform {
     pub u: [f32; 24],
 }
 
@@ -220,8 +220,8 @@ struct Inst {
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var tex2: texture_2d<f32>;
 
-struct GlassField { u: array<vec4<f32>, 6> };
-@group(0) @binding(4) var<storage, read> fields: array<GlassField>;
+struct FieldUniform { u: array<vec4<f32>, 6> };
+@group(0) @binding(4) var<storage, read> fields: array<FieldUniform>;
 
 // The running instance's cell rects, published before a glass arm runs its shared unit body: the
 // body samples in the CELL's normalised space, and these map that onto the atlas rect the cell
@@ -369,7 +369,7 @@ pub(crate) struct Stage {
     pub src2: Surface,
     pub insts: Vec<Inst>,
     /// Per-cell field parameters for the stages that evaluate a field; empty otherwise.
-    pub fields: Vec<GlassField>,
+    pub fields: Vec<FieldUniform>,
     /// The field program whose pipeline this stage runs under. `None` is the glass program — what
     /// every stamp and lens stage uses today. A field-measuring non-glass effect sets its own, and
     /// the executor compiles a pipeline for it on demand. This is the per-cell field program the
@@ -393,7 +393,7 @@ impl Stage {
         self
     }
 
-    pub fn with_fields(mut self, fields: Vec<GlassField>) -> Self {
+    pub fn with_fields(mut self, fields: Vec<FieldUniform>) -> Self {
         self.fields = fields;
         self
     }
@@ -423,13 +423,13 @@ pub(crate) struct BatchPipelines {
     srcover: wgpu::BlendState,
     /// One compiled `(replace, composite)` pair PER FIELD PROGRAM, built on demand and keyed by the
     /// program's structure. The über-shader bakes a program's `computeField`, so an effect measuring
-    /// a different field is a different pipeline — the same way [`super::glass::GlassPipeline`] keeps
+    /// a different field is a different pipeline — the same way [`super::glass::UnitPipeline`] keeps
     /// one pipeline per `UnitKey`. Glass is merely the first entry, not a hardwired baseline: adding
     /// a field-measuring effect to the batch is a new key here, not an edit to [`batch_shader`].
     variants: std::cell::RefCell<std::collections::HashMap<u64, Variant>>,
     /// The glass program's key, so the stamp and lens stages — which is everything today — resolve
     /// without rebuilding the program to hash it every frame.
-    glass_key: u64,
+    lens_key: u64,
     /// One-element placeholder bound at binding 4 by every stage that evaluates no per-cell field.
     no_fields: wgpu::Buffer,
 }
@@ -607,7 +607,7 @@ impl BatchPipelines {
         use wgpu::util::DeviceExt as _;
         let no_fields = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wv batch no fields"),
-            contents: bytemuck::cast_slice(&[GlassField { u: [0.0; 24] }]),
+            contents: bytemuck::cast_slice(&[FieldUniform { u: [0.0; 24] }]),
             usage: wgpu::BufferUsages::STORAGE,
         });
         let this = Self {
@@ -616,13 +616,13 @@ impl BatchPipelines {
             format,
             srcover,
             variants: std::cell::RefCell::new(std::collections::HashMap::new()),
-            glass_key: program_key(&crate::vello::glass::glass_field_program()),
+            lens_key: program_key(&crate::vello::glass::lens_field_program()),
             no_fields,
         };
         // Compile the glass variant up front — it is what every stage uses today, so building it now
         // keeps the first glass frame off the compile path and the behaviour identical to the single
         // pipeline this replaced.
-        this.ensure_variant(device, &crate::vello::glass::glass_field_program());
+        this.ensure_variant(device, &crate::vello::glass::lens_field_program());
         this
     }
 
@@ -767,7 +767,7 @@ impl BatchPipelines {
         let key = stage
             .program
             .as_ref()
-            .map_or(self.glass_key, |p| self.ensure_variant(device, p));
+            .map_or(self.lens_key, |p| self.ensure_variant(device, p));
         let variants = self.variants.borrow();
         let variant = variants.get(&key).expect("a variant was ensured before this borrow");
         let pipeline = if stage.blend { &variant.composite } else { &variant.replace };
@@ -817,19 +817,19 @@ impl BatchPipelines {
 #[cfg(test)]
 mod sampling_convention_tests {
     use super::batch_shader;
-    use crate::vello::glass::{glass_field_program, units_body, UnitKey};
+    use crate::vello::glass::{lens_field_program, units_body, UnitKey};
 
     /// The stamp is not hand-written any more. Both of its lines have to be the ones `units_body`
     /// emits, because the moment they are typed out separately they start drifting from the unit the
     /// planner thinks it scheduled — which is exactly how the batch grew an `EraseBy` of its own.
     #[test]
     fn the_stamp_and_the_band_are_generated_from_the_shared_unit_bodies() {
-        let s = batch_shader(&glass_field_program());
+        let s = batch_shader(&lens_field_program());
         for key in [
             UnitKey { tint: true, ..Default::default() },
             UnitKey { erase: true, two_tex: true, ..Default::default() },
         ] {
-            let body = units_body(key, &glass_field_program());
+            let body = units_body(key, &lens_field_program());
             assert!(s.contains(body.trim_end()), "the batch module does not carry this unit body verbatim:\n{body}");
         }
     }
@@ -847,7 +847,7 @@ mod sampling_convention_tests {
     #[test]
     fn a_second_field_program_is_a_distinct_variant() {
         use super::program_key;
-        let glass = glass_field_program();
+        let glass = lens_field_program();
         let texture = crate::effect_graph::texture_field_program();
         assert_ne!(program_key(&glass), program_key(&texture), "two programs must not share a key");
         assert_ne!(
@@ -855,11 +855,11 @@ mod sampling_convention_tests {
             batch_shader(&texture),
             "the über-shader must differ — each bakes its own computeField"
         );
-        assert_eq!(program_key(&glass), program_key(&glass_field_program()), "the key is stable");
+        assert_eq!(program_key(&glass), program_key(&lens_field_program()), "the key is stable");
     }
 
     fn the_erase_math_appears_once_per_arm_that_declares_it() {
-        let s = batch_shader(&glass_field_program());
+        let s = batch_shader(&lens_field_program());
         let arms = (0..super::pointwise::COUNT).filter(|b| b & super::pointwise::ERASE != 0).count();
         assert_eq!(s.matches("1.0 - punch.a").count(), arms, "the batch has an EraseBy of its own");
     }
@@ -870,7 +870,7 @@ mod sampling_convention_tests {
     /// uniform array, which is why the assertion is about `computeField`, not about the buffer.
     #[test]
     fn a_stamp_reads_no_field() {
-        let body = units_body(UnitKey { tint: true, ..Default::default() }, &glass_field_program());
+        let body = units_body(UnitKey { tint: true, ..Default::default() }, &lens_field_program());
         assert!(!body.contains("computeField"), "a stamp evaluated the field:\n{body}");
         assert!(!body.contains("fieldU("), "a stamp read the field uniform:\n{body}");
         assert!(body.contains("unitParam(gi, 3u)"), "a stamp's tint did not come from its instance:\n{body}");
@@ -882,7 +882,7 @@ mod sampling_convention_tests {
     fn a_lens_still_evaluates_its_field() {
         let body = units_body(
             UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() },
-            &glass_field_program(),
+            &lens_field_program(),
         );
         assert!(body.contains("computeField(gi, fc)"), "the lens lost its field:\n{body}");
     }
@@ -892,7 +892,7 @@ mod sampling_convention_tests {
     /// no two arms can disagree about what `in.uv` is.
     #[test]
     fn the_vertex_stage_emits_the_cell_coordinate() {
-        let s = batch_shader(&glass_field_program());
+        let s = batch_shader(&lens_field_program());
         assert!(s.contains("out.uv = corner;"), "the vertex stage no longer emits the cell coordinate");
         assert!(
             !s.contains("out.uv = mix(it.src_min, it.src_max, corner)"),
@@ -904,7 +904,7 @@ mod sampling_convention_tests {
     /// inside would put an edge tap half a texel past where a dedicated texture's clamp-to-edge does.
     #[test]
     fn the_atlas_mapping_does_not_clamp() {
-        let s = batch_shader(&glass_field_program());
+        let s = batch_shader(&lens_field_program());
         let f = s.split("fn atlasUV").nth(1).expect("atlasUV").split('}').next().expect("body");
         assert!(!f.contains("clamp("), "atlasUV clamps, which double-clamps every blur tap:\n{f}");
     }

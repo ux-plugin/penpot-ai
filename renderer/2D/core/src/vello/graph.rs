@@ -19,7 +19,7 @@ use crate::effect_graph::{EffectPass, GraphPass, Src, UnitKind};
 use wgpu::util::DeviceExt;
 
 use crate::vello::blend::{Blit, BlurPass, Compositor};
-use crate::vello::glass::{GlassPipeline, UnitOp};
+use crate::vello::glass::{UnitPipeline, UnitOp};
 
 /// Above this device-σ a single separable pass would exceed [`Compositor::blur1d`]'s 160-tap cap
 /// and truncate the Gaussian; the pyramid path kicks in instead. Chosen so the coarse blur samples
@@ -50,7 +50,7 @@ pub enum PassKind {
     /// light (sRGB-decode taps, re-encode the result).
     Blur { sigma: f32, linear: bool },
     /// One **composed unit run** — an execution group's units (a sampling head plus its pointwise
-    /// tail) fused into a single draw by [`GlassPipeline::units`]. Inputs `[src]`, or
+    /// tail) fused into a single draw by [`UnitPipeline::units`]. Inputs `[src]`, or
     /// `[src, original]` when a mask-mix reads a backdrop distinct from the head's source. Sharp
     /// glass is `[Warp, Shade, MaskMix]` in one pass; the frosted composite is
     /// `[Scatter, Shade, MaskMix]`; a same-pixel scatter is the identity and lowers to nothing.
@@ -205,7 +205,7 @@ impl PassKind {
 #[expect(clippy::too_many_arguments, reason = "the GPU context + keepalive travel together")]
 pub fn run_graph_into(
     compositor: &Compositor,
-    glass: &GlassPipeline,
+    glass: &UnitPipeline,
     device: &wgpu::Device,
     enc: &mut wgpu::CommandEncoder,
     inputs: &[&wgpu::TextureView],
@@ -282,7 +282,7 @@ pub fn run_graph_into(
 /// scratch right after the submit is safe — the submit retains every resource until the GPU is done.
 pub fn run_graph(
     compositor: &Compositor,
-    glass: &GlassPipeline,
+    glass: &UnitPipeline,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     inputs: &[&wgpu::TextureView],
