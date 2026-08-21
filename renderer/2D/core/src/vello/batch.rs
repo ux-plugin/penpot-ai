@@ -355,6 +355,11 @@ pub(crate) struct Stage {
     pub insts: Vec<Inst>,
     /// Per-cell field parameters for the stages that evaluate a field; empty otherwise.
     pub fields: Vec<GlassField>,
+    /// The field program whose pipeline this stage runs under. `None` is the glass program — what
+    /// every stamp and lens stage uses today. A field-measuring non-glass effect sets its own, and
+    /// the executor compiles a pipeline for it on demand. This is the per-cell field program the
+    /// batch was missing: the uniform already travelled per cell, now the PROGRAM can too.
+    pub program: Option<std::rc::Rc<crate::field::FieldProgram>>,
     /// Premultiplied `SrcOver` (a composite) rather than replace (a materialisation).
     pub blend: bool,
     /// Clear the target first — for a stage that owns its whole surface, where the packing's gaps
@@ -365,7 +370,7 @@ pub(crate) struct Stage {
 impl Stage {
     /// A materialising stage: replace, no clear, reading one surface.
     pub fn new(tag: f32, target: Surface, src: Surface, insts: Vec<Inst>) -> Self {
-        Self { round: None, tag, target, src, src2: src, insts, fields: Vec::new(), blend: false, clear: false }
+        Self { round: None, tag, target, src, src2: src, insts, fields: Vec::new(), program: None, blend: false, clear: false }
     }
 
     pub fn with_round(mut self, round: u32) -> Self {
@@ -397,13 +402,39 @@ impl Stage {
 /// The two instanced pipelines (blur = replace, composite = premultiplied `SrcOver`, both the format
 /// the sink renders in) plus their shared bind layout. Built once per sink.
 pub(crate) struct BatchPipelines {
-    /// `fs_uber` with a replace target — the blur and combine passes.
-    replace: wgpu::RenderPipeline,
-    /// `fs_uber` blending premultiplied `SrcOver` — the per-round composite passes.
-    composite: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
-    /// One-element placeholder bound at binding 4 by every non-glass stage.
+    pl: wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    srcover: wgpu::BlendState,
+    /// One compiled `(replace, composite)` pair PER FIELD PROGRAM, built on demand and keyed by the
+    /// program's structure. The über-shader bakes a program's `computeField`, so an effect measuring
+    /// a different field is a different pipeline — the same way [`super::glass::GlassPipeline`] keeps
+    /// one pipeline per `UnitKey`. Glass is merely the first entry, not a hardwired baseline: adding
+    /// a field-measuring effect to the batch is a new key here, not an edit to [`batch_shader`].
+    variants: std::cell::RefCell<std::collections::HashMap<u64, Variant>>,
+    /// The glass program's key, so the stamp and lens stages — which is everything today — resolve
+    /// without rebuilding the program to hash it every frame.
+    glass_key: u64,
+    /// One-element placeholder bound at binding 4 by every stage that evaluates no per-cell field.
     no_fields: wgpu::Buffer,
+}
+
+/// The two pipelines one field program compiles to: a replace target (blur/combine/materialise) and
+/// a premultiplied `SrcOver` composite. Both run `fs_uber` over the same über-shader.
+struct Variant {
+    replace: wgpu::RenderPipeline,
+    composite: wgpu::RenderPipeline,
+}
+
+/// A stable key for a field program: its structure determines the generated shader, so two programs
+/// that debug-print the same compile to the same pipeline. Cheap enough to hash per stage (the
+/// program is a handful of nodes), and correct without a `Hash` impl the float-carrying ops cannot
+/// derive.
+fn program_key(program: &crate::field::FieldProgram) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{program:?}").hash(&mut h);
+    h.finish()
 }
 
 /// Emit one arm: publish the instance's rects and parameters, recover the cell-local fragment
@@ -421,7 +452,7 @@ pub(crate) struct BatchPipelines {
 /// land on exactly the pixel its field was evaluated at; routing it through the interpolator instead
 /// moves 16 pixels of the `combined` and `matrix` fixtures by one last bit. Glass joins the shared
 /// convention in phase 5, where the field evaluation moves with it.
-fn unit_arm(name: &str, key: crate::vello::glass::UnitKey, alt: &str, uvpix: &str) -> String {
+fn unit_arm(name: &str, key: crate::vello::glass::UnitKey, alt: &str, uvpix: &str, program: &crate::field::FieldProgram) -> String {
     format!(
         r#"
 fn {name}(in: VSOut) -> vec4<f32> {{
@@ -434,33 +465,35 @@ fn {name}(in: VSOut) -> vec4<f32> {{
     return value;
 }}
 "#,
-        body = crate::vello::glass::units_body(key, &crate::vello::glass::glass_field_program())
+        body = crate::vello::glass::units_body(key, program)
     )
 }
 
 /// The whole batch module: the prelude, the glass arms generated from the shared unit bodies, and
 /// the single `fs_uber` entry every stage dispatches through.
-fn batch_shader() -> String {
+fn batch_shader(program: &crate::field::FieldProgram) -> String {
     let mut s = String::from(BATCH_PRELUDE);
-    s.push_str(&crate::vello::glass::field_prelude(&crate::vello::glass::glass_field_program()));
+    s.push_str(&crate::vello::glass::field_prelude(program));
     if crate::vello::glass::needs_hash(crate::vello::glass::UnitKey { head: 2, ..Default::default() }) {
         s.push_str(crate::vello::glass::HASH_PRELUDE);
     }
     use crate::vello::glass::UnitKey;
     const FIELD_UV: &str = "fc / fieldU(gi, 0u).xy";
     const CELL_UV: &str = "in.uv";
-    s.push_str(&unit_arm("glass_warp_px", UnitKey { head: 1, ..Default::default() }, "false", FIELD_UV));
+    s.push_str(&unit_arm("glass_warp_px", UnitKey { head: 1, ..Default::default() }, "false", FIELD_UV, program));
     s.push_str(&unit_arm(
         "glass_sharp_px",
         UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() },
         "false",
         FIELD_UV,
+        program,
     ));
     s.push_str(&unit_arm(
         "glass_frost_px",
         UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() },
         "false",
         FIELD_UV,
+        program,
     ));
     // The pointwise arms, one per composition rather than one per named effect. The stamp is
     // `TINT`, the inner-shadow band is `ERASE`, and the six that no chain reaches today cost
@@ -481,6 +514,7 @@ fn batch_shader() -> String {
             },
             "it.mode > 0.5",
             CELL_UV,
+            program,
         ));
     }
     s.push_str(
@@ -523,10 +557,6 @@ fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
 
 impl BatchPipelines {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("wv batch"),
-            source: wgpu::ShaderSource::Wgsl(batch_shader().into()),
-        });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wv batch layout"),
             entries: &[
@@ -583,32 +613,6 @@ impl BatchPipelines {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let make = |entry: &str, blend: Option<wgpu::BlendState>, label: &str| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pl),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(entry),
-                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
         let srcover = wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -627,12 +631,65 @@ impl BatchPipelines {
             contents: bytemuck::cast_slice(&[GlassField { u: [0.0; 24] }]),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        Self {
-            replace: make("fs_uber", None, "wv batch replace"),
-            composite: make("fs_uber", Some(srcover), "wv batch composite"),
+        let this = Self {
             layout,
+            pl,
+            format,
+            srcover,
+            variants: std::cell::RefCell::new(std::collections::HashMap::new()),
+            glass_key: program_key(&crate::vello::glass::glass_field_program()),
             no_fields,
+        };
+        // Compile the glass variant up front — it is what every stage uses today, so building it now
+        // keeps the first glass frame off the compile path and the behaviour identical to the single
+        // pipeline this replaced.
+        this.ensure_variant(device, &crate::vello::glass::glass_field_program());
+        this
+    }
+
+    /// The pipelines for `program`, compiled and cached on first use. Returns the program's key so a
+    /// caller can look the pair back up without rehashing.
+    fn ensure_variant(&self, device: &wgpu::Device, program: &crate::field::FieldProgram) -> u64 {
+        let key = program_key(program);
+        if self.variants.borrow().contains_key(&key) {
+            return key;
         }
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wv batch"),
+            source: wgpu::ShaderSource::Wgsl(batch_shader(program).into()),
+        });
+        let make = |blend: Option<wgpu::BlendState>, label: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&self.pl),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_uber"),
+                    targets: &[Some(wgpu::ColorTargetState { format: self.format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let variant = Variant {
+            replace: make(None, "wv batch replace"),
+            composite: make(Some(self.srcover), "wv batch composite"),
+        };
+        self.variants.borrow_mut().insert(key, variant);
+        key
     }
 
     fn bind(
@@ -728,6 +785,13 @@ impl BatchPipelines {
             sampler,
             fields.as_ref().unwrap_or(&self.no_fields),
         );
+        let key = stage
+            .program
+            .as_ref()
+            .map_or(self.glass_key, |p| self.ensure_variant(device, p));
+        let variants = self.variants.borrow();
+        let variant = variants.get(&key).expect("a variant was ensured before this borrow");
+        let pipeline = if stage.blend { &variant.composite } else { &variant.replace };
         crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BATCH, 1);
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("wv batch stage"),
@@ -749,7 +813,7 @@ impl BatchPipelines {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(if stage.blend { &self.composite } else { &self.replace });
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..4, 0..stage.insts.len() as u32);
     }
@@ -781,7 +845,7 @@ mod sampling_convention_tests {
     /// planner thinks it scheduled — which is exactly how the batch grew an `EraseBy` of its own.
     #[test]
     fn the_stamp_and_the_band_are_generated_from_the_shared_unit_bodies() {
-        let s = batch_shader();
+        let s = batch_shader(&glass_field_program());
         for key in [
             UnitKey { tint: true, ..Default::default() },
             UnitKey { erase: true, two_tex: true, ..Default::default() },
@@ -798,8 +862,25 @@ mod sampling_convention_tests {
     /// The arm set is generated, so the math appears once per arm that declares the unit — never
     /// once more than that, which is what a hand-written copy would add.
     #[test]
+    /// The batch is generic over the field program: a different program keys to a different
+    /// pipeline and bakes a different `computeField`, which is what lets a field-measuring effect
+    /// other than glass batch at all. Glass is one entry, not the baseline.
+    #[test]
+    fn a_second_field_program_is_a_distinct_variant() {
+        use super::program_key;
+        let glass = glass_field_program();
+        let texture = crate::effect_graph::texture_field_program();
+        assert_ne!(program_key(&glass), program_key(&texture), "two programs must not share a key");
+        assert_ne!(
+            batch_shader(&glass),
+            batch_shader(&texture),
+            "the über-shader must differ — each bakes its own computeField"
+        );
+        assert_eq!(program_key(&glass), program_key(&glass_field_program()), "the key is stable");
+    }
+
     fn the_erase_math_appears_once_per_arm_that_declares_it() {
-        let s = batch_shader();
+        let s = batch_shader(&glass_field_program());
         let arms = (0..super::pointwise::COUNT).filter(|b| b & super::pointwise::ERASE != 0).count();
         assert_eq!(s.matches("1.0 - punch.a").count(), arms, "the batch has an EraseBy of its own");
     }
@@ -832,7 +913,7 @@ mod sampling_convention_tests {
     /// no two arms can disagree about what `in.uv` is.
     #[test]
     fn the_vertex_stage_emits_the_cell_coordinate() {
-        let s = batch_shader();
+        let s = batch_shader(&glass_field_program());
         assert!(s.contains("out.uv = corner;"), "the vertex stage no longer emits the cell coordinate");
         assert!(
             !s.contains("out.uv = mix(it.src_min, it.src_max, corner)"),
@@ -844,7 +925,7 @@ mod sampling_convention_tests {
     /// inside would put an edge tap half a texel past where a dedicated texture's clamp-to-edge does.
     #[test]
     fn the_atlas_mapping_does_not_clamp() {
-        let s = batch_shader();
+        let s = batch_shader(&glass_field_program());
         let f = s.split("fn atlasUV").nth(1).expect("atlasUV").split('}').next().expect("body");
         assert!(!f.contains("clamp("), "atlasUV clamps, which double-clamps every blur tap:\n{f}");
     }
