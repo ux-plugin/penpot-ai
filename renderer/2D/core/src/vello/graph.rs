@@ -166,6 +166,32 @@ pub mod prof_bucket {
     pub const OTHER: usize = 23;
 }
 
+impl Pass {
+    /// This lowered pass as a unit chain — the bridge from the old `Pass` to the unit-based
+    /// [`crate::vello::fx::Op`]. A fused `Units` pass is its ops verbatim; a `Blur`/`Custom` barrier
+    /// pass is a one-unit chain of the matching [`UnitOp`], which is exactly what makes Blur and
+    /// Custom first-class units rather than sibling pass kinds.
+    #[must_use]
+    pub fn units(&self) -> Vec<UnitOp> {
+        match &self.kind {
+            PassKind::Units { ops, .. } => ops.clone(),
+            PassKind::Blur { sigma, linear } => vec![UnitOp::Blur { sigma: *sigma, linear: *linear }],
+            PassKind::Custom { u, param_vec4s, .. } => {
+                vec![UnitOp::Custom { u: u.clone(), param_vec4s: *param_vec4s }]
+            }
+        }
+    }
+
+    /// The field program the pass's units read, if any — barrier passes measure none.
+    #[must_use]
+    pub fn field_program(&self) -> Option<Rc<crate::field::FieldProgram>> {
+        match &self.kind {
+            PassKind::Units { field, .. } => Some(field.clone()),
+            _ => None,
+        }
+    }
+}
+
 impl PassKind {
     /// The profiler bucket for this pass's own interval (the delta ending just after it runs).
     fn prof_bucket(&self) -> usize {
@@ -559,4 +585,39 @@ pub fn new_target_with_usage(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | extra,
         view_formats: &[],
     })
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::{lower_graph, PassKind};
+    use crate::effect_graph::{background_blur_graph, custom_graph, drop_shadow_graph};
+    use crate::vello::units::{fuse, UnitOp};
+
+    /// A background blur lowers to one barrier pass whose unit chain is a single `Blur` — the new
+    /// vocabulary reached from the existing, proven builder.
+    #[test]
+    fn a_blur_pass_is_a_blur_unit() {
+        let passes = lower_graph(&background_blur_graph(4.0), None);
+        assert_eq!(passes.len(), 1);
+        assert!(matches!(passes[0].kind, PassKind::Blur { .. }));
+        assert!(matches!(passes[0].units().as_slice(), [UnitOp::Blur { .. }]));
+    }
+
+    /// A custom pass is a single `Custom` unit.
+    #[test]
+    fn a_custom_pass_is_a_custom_unit() {
+        let passes = lower_graph(&custom_graph(vec![256.0, 256.0], 1), None);
+        assert!(matches!(passes[0].units().as_slice(), [UnitOp::Custom { .. }]));
+    }
+
+    /// A blurred drop shadow lowers to a fused tint pass then a blur pass. Flattening the passes to
+    /// their units and re-fusing recovers the two-op split — the pipeline is consistent end to end.
+    #[test]
+    fn a_drop_shadow_flattens_and_refuses_to_two_ops() {
+        let passes = lower_graph(&drop_shadow_graph(64.0, 64.0, [0.1, 0.2, 0.3, 0.8], 4.0), None);
+        let flat: Vec<UnitOp> = passes.iter().flat_map(|p| p.units()).collect();
+        let runs = fuse(flat);
+        assert_eq!(runs.len(), 2, "tint stamp | blur barrier");
+        assert!(runs[1][0].is_barrier());
+    }
 }
