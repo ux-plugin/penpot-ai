@@ -97,7 +97,10 @@ pub struct GraphPass {
 }
 
 impl GraphPass {
-    fn new(pass: EffectPass, inputs: Vec<Src>) -> Self {
+    /// A pass at native scale. Public because a chain is also built OUTSIDE this module — a body's
+    /// custom-shader chain is assembled where the shape's ops are in hand.
+    #[must_use]
+    pub fn new(pass: EffectPass, inputs: Vec<Src>) -> Self {
         Self { pass, inputs, scale: 1.0 }
     }
 }

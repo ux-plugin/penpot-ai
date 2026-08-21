@@ -116,26 +116,62 @@ fn shadow_colour(id: u128, inset: bool, idx: usize) -> Option<[f32; 4]> {
     })
 }
 
-/// Lower one batched cell to its effect graph — THE SAME builder call the per-shape path executes
-/// ([`Sink::wv_paint_path_shadow`] / [`Sink::wv_composite_body`] both run
-/// `background_blur_graph(sigma * k)` when the cell blurs, and nothing when it does not). The batch
-/// derives its instances from this graph instead of re-deriving sigma by hand, so the two paths
-/// cannot drift: a change to the builder changes both.
-fn wv_batch_cell_graph(c: &WvCell) -> Vec<crate::effect_graph::GraphPass> {
-    let (kwf, khf) = (c.kw as f32, c.kh as f32);
-    let sigma = if c.sigma >= 0.5 { c.sigma * c.k } else { 0.0 };
-    match c.key.1 {
+/// Lower ONE effect to the chain a cell of `kind` runs — the whole reason a cell can carry its
+/// effect at all.
+///
+/// This asks the effect what its ops are. The version this replaces asked the CELL KIND
+/// (`0 → drop_shadow_graph`, `2 → tint_graph`, else `background_blur_graph`), which meant the chain
+/// was a reconstruction: faithful for the three shapes it enumerated and structurally blind to
+/// everything else, so a body carrying a custom shader lowered to a bare blur and the batch admitted
+/// it — stamping the shape with the user's shader silently missing.
+///
+/// `sigma` is the device sigma already scaled by the cell's `k`. Order is the builders' order, not
+/// the ops' order: a shadow tints before it blurs (the two commute — a blur is linear and a tint is a
+/// constant multiply — and the builders' order is the one the per-shape path renders).
+fn wv_cell_graph(e: &crate::effect::Effect, kind: u8, kw: u32, kh: u32, sigma: f32) -> Vec<crate::effect_graph::GraphPass> {
+    use crate::effect::Op;
+    use crate::effect_graph::{EffectPass, GraphPass, Src};
+    let (kwf, khf) = (kw as f32, kh as f32);
+    let tint = e.ops.iter().find_map(|op| match op {
+        Op::Tint(c) => Some(c.components),
+        _ => None,
+    });
+    match kind {
         // A drop shadow is its colour over its coverage, blurred.
-        0 => shadow_colour(c.key.0, false, c.key.2)
-            .map(|col| effect_graph::drop_shadow_graph(kwf, khf, col, sigma))
-            .unwrap_or_default(),
+        0 => tint.map(|col| effect_graph::drop_shadow_graph(kwf, khf, col, sigma)).unwrap_or_default(),
         // The inner shadow's FLOOD is never blurred — only its punch (kind 3) is — so the flood
         // carries the colour and nothing else. The erase that pairs them is the combine stage.
-        2 => shadow_colour(c.key.0, true, c.key.2)
-            .map(|col| effect_graph::tint_graph(kwf, khf, col))
-            .unwrap_or_default(),
-        _ if sigma > 0.0 => effect_graph::background_blur_graph(sigma),
-        _ => Vec::new(),
+        2 => tint.map(|col| effect_graph::tint_graph(kwf, khf, col)).unwrap_or_default(),
+        // The punch: the same silhouette, blurred by the erase's own radius.
+        3 => {
+            if sigma > 0.0 {
+                effect_graph::background_blur_graph(sigma)
+            } else {
+                Vec::new()
+            }
+        }
+        // A body runs its shaders in authored order and then its blur — the chain
+        // `wv_composite_body` executes, now visible before it executes. The pipeline is resolved at
+        // execution; lowering carries `None` and the pass survives it.
+        _ => {
+            let mut passes: Vec<GraphPass> = Vec::new();
+            for op in &e.ops {
+                if let Op::Shader(c) = op {
+                    let mut u = vec![kwf, khf];
+                    u.extend_from_slice(&c.params);
+                    let src = passes.len().checked_sub(1).map_or(Src::Input(0), Src::Pass);
+                    passes.push(GraphPass::new(
+                        EffectPass::Custom { u, param_vec4s: c.param_vec4s },
+                        vec![src],
+                    ));
+                }
+            }
+            if sigma > 0.0 {
+                let src = passes.len().checked_sub(1).map_or(Src::Input(0), Src::Pass);
+                passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![src]));
+            }
+            passes
+        }
     }
 }
 
@@ -227,14 +263,15 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
     Some(BatchShape::Stamp { sigma, linear, tint })
 }
 
-/// [`batch_admit`] for one cell, lowering its graph the way the executor will.
+/// [`batch_admit`] for one cell, lowering the cell's OWN chain the way the executor will. Nothing
+/// is reconstructed here: a chain the stages cannot run declines because of what it is.
 fn wv_batch_cell_shape(c: &WvCell) -> Option<BatchShape> {
-    batch_admit(&crate::vello::graph::lower_graph(&wv_batch_cell_graph(c), None))
+    batch_admit(&crate::vello::graph::lower_graph(&c.graph, None))
 }
 
 /// Build the batch plan for this frame, or `None` when batching is off or nothing qualifies.
 ///
-/// Each candidate cell is lowered to its effect graph by [`wv_batch_cell_graph`] and admitted iff
+/// Each candidate cell carries its own lowered chain ([`WvCell::graph`]) and is admitted iff
 /// [`wv_batch_supported`] — so the batch executes the same IR the per-shape path executes, through
 /// instanced stages instead of private pass chains. Shapes stay per-shape when their stack composes
 /// mid-backdrop (glass), carries custom `Shader` ops, or blurs past what the instanced stage
@@ -297,14 +334,10 @@ fn wv_batch_plan(
         let mut emit: Vec<Emit> = Vec::new();
         let (mut drop_i, mut inner_i, mut body_done) = (0usize, 0usize, false);
         // The body appears at most once, so its verdict is a value rather than something recomputed
-        // at each of the three places the stack can reach it. The cell graph is built from the
-        // cell's KIND and so cannot see a custom shader that lives on the stack ENTRY — which is
-        // why the shader test has to happen here and not in `wv_batch_cell_shape`.
-        let body_shaded = stack.iter().any(|e| {
-            matches!(e.source, Source::Body) && e.ops.iter().any(|op| matches!(op, crate::effect::Op::Shader(_)))
-        });
+        // at each of the three places the stack can reach it. A shaded body declines inside
+        // `stampable` now: its chain carries the `Custom` pass, and no stamp stage runs one.
         let body = match find(1, 0) {
-            Some(c) if !body_shaded && stampable(c) => Emit::Cell(c),
+            Some(c) if stampable(c) => Emit::Cell(c),
             Some(c) => Emit::Legacy(Some(c.key)),
             None => Emit::Legacy(None),
         };
@@ -679,7 +712,7 @@ const TILE_PX: u32 = 16;
 
 /// One whole-viewport effect surface, resolved to geometry: which node/kind it belongs to, the device
 /// crop box it covers, the render scale `k`, the surface size at that scale, and its device sigma.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct WvCell {
     key: (u128, u8, usize),
     bx: u32,
@@ -694,6 +727,15 @@ struct WvCell {
     /// Derived from the effect's ops the same way `sigma` is, because the consumers are handed a
     /// cell rather than the ops — a value carried on the cell reaches every one of them.
     dev_offset: (f32, f32),
+    /// What this cell's effect actually is, lowered from its [`crate::effect::Effect`] at the one
+    /// place that has it in hand ([`Sink::wv_effect_cells`]). Shared rather than owned because a
+    /// cell is cloned per consumer and a chain is immutable once built.
+    ///
+    /// Carried on the cell for the same reason `dev_offset` is: consumers are handed a cell, not the
+    /// ops. It used to be RECONSTRUCTED from `key.1` — a drop shadow was whatever
+    /// `drop_shadow_graph` said a drop shadow is — which meant a custom shader on a body could not
+    /// appear in the chain at all, and the batch admitted the reconstruction instead of the effect.
+    graph: std::rc::Rc<Vec<crate::effect_graph::GraphPass>>,
 }
 
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
@@ -2261,8 +2303,10 @@ impl Sink {
                 2 => inner_i,
                 _ => 0,
             };
+            let sigma = device_sigma.unwrap_or(0.0);
             for &kind in kinds {
-                out.push(WvCell { key: (id, kind, index), bx, by, bw, bh, kw, kh, k, sigma: device_sigma.unwrap_or(0.0), dev_offset });
+                let graph = std::rc::Rc::new(wv_cell_graph(effect, kind, kw, kh, sigma * k));
+                out.push(WvCell { key: (id, kind, index), bx, by, bw, bh, kw, kh, k, sigma, dev_offset, graph });
             }
             match kinds[0] {
                 0 => drop_i += 1,
@@ -2274,7 +2318,10 @@ impl Sink {
             if let Some((bx, by, bw, bh)) = wv_device_box(base, full_view, width, height) {
                 let k = tiling::resolution_cap(full_view, 0.0) as f32;
                 let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
-                out.push(WvCell { key: (id, 1, 0), bx, by, bw, bh, kw, kh, k, sigma: 0.0, dev_offset: (0.0, 0.0) });
+                out.push(WvCell {
+                    key: (id, 1, 0), bx, by, bw, bh, kw, kh, k, sigma: 0.0, dev_offset: (0.0, 0.0),
+                    graph: std::rc::Rc::new(Vec::new()),
+                });
             }
         }
         out
@@ -2719,7 +2766,7 @@ impl Sink {
             None => sub == 0,
         };
         let find = |kind: u8, idx: usize| {
-            cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).copied().filter(|c| mine(&c.key))
+            cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).cloned().filter(|c| mine(&c.key))
         };
 
         let (mut drop_i, mut inner_i) = (0usize, 0usize);
