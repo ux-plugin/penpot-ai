@@ -295,6 +295,53 @@ impl UnitPipeline {
     }
 }
 
+impl UnitOp {
+    /// A NEIGHBORHOOD/GLOBAL unit — it reads past its own pixel of the *previous* result, so it
+    /// cannot share a fragment with the units after it and forces a materialised pass. `Blur` (reads
+    /// a neighborhood) and `Custom` (unknown sampling) are the barriers; every other unit fuses.
+    #[must_use]
+    pub fn is_barrier(&self) -> bool {
+        matches!(self, UnitOp::Blur { .. } | UnitOp::Custom { .. })
+    }
+
+    /// A sampling head — it reads an *input texture* at an offset (its own pixel of the input, not the
+    /// previous unit's output), so it can START a fused run and absorb a pointwise tail, but two heads
+    /// cannot share one fragment.
+    #[must_use]
+    pub fn is_head(&self) -> bool {
+        matches!(self, UnitOp::Warp(_) | UnitOp::Scatter(_))
+    }
+}
+
+/// Cut an ordered unit chain into fused runs — the whole of "fusion", as a linear scan, no search.
+/// A barrier ([`UnitOp::is_barrier`]) is its own run and materialises. A head ([`UnitOp::is_head`])
+/// starts a run and absorbs the pointwise units after it into one fragment. Each returned run is one
+/// [`crate::vello::fx::Op`]; a headless run is a plain pointwise stamp.
+#[must_use]
+pub fn fuse(units: Vec<UnitOp>) -> Vec<Vec<UnitOp>> {
+    let mut runs: Vec<Vec<UnitOp>> = Vec::new();
+    let mut cur: Vec<UnitOp> = Vec::new();
+    for u in units {
+        if u.is_barrier() {
+            if !cur.is_empty() {
+                runs.push(std::mem::take(&mut cur));
+            }
+            runs.push(vec![u]);
+        } else if u.is_head() {
+            if !cur.is_empty() {
+                runs.push(std::mem::take(&mut cur));
+            }
+            cur.push(u);
+        } else {
+            cur.push(u);
+        }
+    }
+    if !cur.is_empty() {
+        runs.push(cur);
+    }
+    runs
+}
+
 /// Assemble the composed 24-float uniform from the run's units: the field geometry (0..16) comes
 /// from the head (every unit in a run carries the identically-scaled field), and each unit
 /// contributes its own trailing params to the composed slots — `chromaticAberration` 17, `frost` 18,
@@ -668,4 +715,54 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#
     )
+}
+
+#[cfg(test)]
+mod fuse_tests {
+    use super::{fuse, UnitOp};
+
+    fn warp() -> UnitOp { UnitOp::Warp(vec![]) }
+    fn scatter() -> UnitOp { UnitOp::Scatter(vec![]) }
+    fn shade() -> UnitOp { UnitOp::Shade(vec![]) }
+    fn maskmix() -> UnitOp { UnitOp::MaskMix(vec![]) }
+    fn tint() -> UnitOp { UnitOp::Tint(vec![]) }
+    fn blur() -> UnitOp { UnitOp::Blur { sigma: 4.0, linear: false } }
+
+    /// Sharp glass — the scatter is dropped as identity at lower time, so `[Warp, Shade, MaskMix]`
+    /// is one sampling head plus a pointwise tail: ONE fused op, no intermediate.
+    #[test]
+    fn sharp_glass_fuses_to_one_op() {
+        let runs = fuse(vec![warp(), shade(), maskmix()]);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len(), 3);
+    }
+
+    /// Frosted glass — the blur is a barrier, so the chain splits into three ops: `[Warp]`, `[Blur]`,
+    /// `[Scatter, Shade, MaskMix]`. Exactly today's per-round lens stages, derived from reach alone.
+    #[test]
+    fn frosted_glass_splits_into_three_ops_at_the_blur() {
+        let runs = fuse(vec![warp(), blur(), scatter(), shade(), maskmix()]);
+        assert_eq!(runs.len(), 3, "warp | blur | scatter+shade+maskmix");
+        assert_eq!(runs[0].len(), 1, "the warp alone");
+        assert!(runs[1][0].is_barrier(), "the blur is its own run");
+        assert_eq!(runs[2].len(), 3, "scatter head + pointwise tail");
+    }
+
+    /// A headless pointwise chain — a plain tint stamp (a drop shadow with no blur) — is one op.
+    #[test]
+    fn a_pointwise_only_chain_is_one_stamp() {
+        let runs = fuse(vec![tint()]);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len(), 1);
+    }
+
+    /// A drop shadow: tint then blur. The tint fuses into its own run, the blur is a barrier after —
+    /// two ops. (The blur-less case is the stamp above.)
+    #[test]
+    fn a_blurred_drop_shadow_is_stamp_then_blur() {
+        let runs = fuse(vec![tint(), blur()]);
+        assert_eq!(runs.len(), 2);
+        assert!(!runs[0][0].is_barrier());
+        assert!(runs[1][0].is_barrier());
+    }
 }
