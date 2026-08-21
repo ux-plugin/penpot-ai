@@ -2722,34 +2722,13 @@ impl Sink {
         h: u32,
         format: wgpu::TextureFormat,
     ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
-        // A full-resolution single-op chain runs through the unit-based `run_op` (`draw_units`) — the
-        // executor-swap slice, verified byte-identical against `pre-unit-collapse` on the fixtures.
-        // Reduced-scale or multi-pass chains still take the old executor until `run_op` carries
-        // per-instance scale and chaining.
-        if passes.len() == 1
-            && passes[0].scale >= 0.999
-            && !matches!(passes[0].kind, crate::vello::graph::PassKind::Custom { .. })
-        {
-            let p = &passes[0];
-            let op = crate::vello::fx::Op {
-                units: p.units(),
-                field: p.field_program().unwrap_or_else(|| {
-                    std::rc::Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() })
-                }),
-                inputs: p.inputs.clone(),
-                target: crate::vello::fx::Target::Transient,
-                instances: Vec::new(),
-                blend: false,
-            };
-            return crate::vello::graph::run_op(
-                &op, &self.compositor, &self.unit_pipeline, device, enc, inputs, None, w, h, format,
-                &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
-            );
-        }
-        run_graph_into(
+        // The WV path runs entirely on the unit-based executor now: every chain — multi-op, reduced
+        // scale, custom — goes through `run_unit_chain`, which dispatches on each pass's UNITS. Verified
+        // byte-identical against `pre-unit-collapse` on the fixtures. `run_graph_into` remains only for
+        // the tiled/WebGL callers until they move too.
+        crate::vello::graph::run_unit_chain(
             &self.compositor, &self.unit_pipeline, device, enc, inputs, passes, w, h, format,
             &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
-            self.pass_prof.as_mut(),
         )
     }
 

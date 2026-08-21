@@ -347,6 +347,70 @@ pub fn run_op(
     Some((tex, view))
 }
 
+/// Run a whole chain of passes through the unit-based [`run_op`] — the unit executor's multi-op form,
+/// threading each pass's output to later passes exactly as [`run_graph_into`] does, but dispatching on
+/// each pass's UNITS (via [`Pass::units`]) rather than its `PassKind`. Per-pass render scale is applied
+/// by sizing the target at `pass_dim(_, scale)` before the op runs. This is the seam that lets the WV
+/// path stop calling `run_graph_into`; the two are byte-identical because the dispatch is the same.
+#[expect(clippy::too_many_arguments, reason = "the GPU context + keepalive travel together")]
+pub fn run_unit_chain(
+    compositor: &Compositor,
+    unit_pipeline: &UnitPipeline,
+    device: &wgpu::Device,
+    enc: &mut wgpu::CommandEncoder,
+    inputs: &[&wgpu::TextureView],
+    passes: &[Pass],
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    pool: &mut crate::vello::sink::TexturePool,
+    keep_tex: &mut Vec<wgpu::Texture>,
+    keep_views: &mut Vec<wgpu::TextureView>,
+) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+    let mut outputs: Vec<(wgpu::Texture, wgpu::TextureView)> = Vec::with_capacity(passes.len());
+    for pass in passes {
+        let (pw, ph) = (
+            crate::effect_graph::pass_dim(w, pass.scale),
+            crate::effect_graph::pass_dim(h, pass.scale),
+        );
+        let custom_pl = match &pass.kind {
+            PassKind::Custom { pipeline, .. } => pipeline.clone(),
+            _ => None,
+        };
+        let op = crate::vello::fx::Op {
+            units: pass.units(),
+            field: pass.field_program().unwrap_or_else(|| {
+                Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() })
+            }),
+            inputs: pass.inputs.clone(),
+            target: crate::vello::fx::Target::Transient,
+            instances: Vec::new(),
+            blend: false,
+        };
+        let out = {
+            let bound: Vec<&wgpu::TextureView> = pass
+                .inputs
+                .iter()
+                .map(|s| match *s {
+                    Src::Input(i) => inputs[i],
+                    Src::Pass(i) => &outputs[i].1,
+                })
+                .collect();
+            run_op(
+                &op, compositor, unit_pipeline, device, enc, &bound, custom_pl.as_ref(), pw, ph, format,
+                pool, keep_tex, keep_views,
+            )?
+        };
+        outputs.push(out);
+    }
+    let final_out = outputs.pop();
+    for (tex, view) in outputs {
+        keep_tex.push(tex);
+        keep_views.push(view);
+    }
+    final_out
+}
+
 /// Standalone effect graph: make an encoder, [`run_graph_into`] it, and submit. For callers not
 /// folding the graph into a larger frame encoder (the tiled gather path, focus mode). Dropping the
 /// scratch right after the submit is safe — the submit retains every resource until the GPU is done.
