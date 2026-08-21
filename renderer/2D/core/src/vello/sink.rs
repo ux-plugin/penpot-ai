@@ -204,34 +204,33 @@ enum BatchShape {
 /// stages rather than the stamp stages.
 fn units_head(p: &Pass) -> Option<&crate::vello::units::UnitOp> {
     use crate::vello::units::UnitOp;
-    match &p.kind {
-        crate::vello::graph::PassKind::Units { ops, .. } => match ops.first() {
-            Some(op @ (UnitOp::Warp(_) | UnitOp::Scatter(_))) => Some(op),
-            _ => None,
-        },
+    match p.units.first() {
+        Some(op @ (UnitOp::Warp(_) | UnitOp::Scatter(_))) => Some(op),
         _ => None,
     }
 }
 
 fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
     use crate::vello::units::UnitOp;
-    use crate::vello::graph::{PassKind, BLUR_MAX_SIGMA};
+    use crate::vello::graph::BLUR_MAX_SIGMA;
 
     // A lens: sampling head, optionally a blur, then the pointwise tail. The head's and the blur's
     // scales must agree — the batch packs one cell that serves both resolutions.
     if let Some(head) = passes.first().and_then(units_head) {
         return match passes {
-            [one] => (one.scale >= 0.999).then(|| {
-                let PassKind::Units { ops, .. } = &one.kind else { unreachable!() };
-                BatchShape::Lens { head: head.clone(), tail: ops[1..].to_vec(), sigma: 0.0 }
-            }),
+            [one] => (one.scale >= 0.999)
+                .then(|| BatchShape::Lens { head: head.clone(), tail: one.units[1..].to_vec(), sigma: 0.0 }),
             [w, b, t] => {
-                let PassKind::Blur { sigma, linear: false } = b.kind else { return None };
-                let PassKind::Units { ops: tail, .. } = &t.kind else { return None };
-                if sigma > BLUR_MAX_SIGMA || t.scale < 0.999 || (w.scale - b.scale).abs() > 1e-6 {
+                // The middle pass must be a single unblurred-in-gamma-space `Blur` barrier, and the
+                // tail a fused units run (not a lone barrier).
+                let [UnitOp::Blur { sigma, linear: false }] = b.units.as_slice() else { return None };
+                if t.units.len() == 1 && t.units[0].is_barrier() {
                     return None;
                 }
-                Some(BatchShape::Lens { head: head.clone(), tail: tail.clone(), sigma })
+                if *sigma > BLUR_MAX_SIGMA || t.scale < 0.999 || (w.scale - b.scale).abs() > 1e-6 {
+                    return None;
+                }
+                Some(BatchShape::Lens { head: head.clone(), tail: t.units.clone(), sigma: *sigma })
             }
             _ => None,
         };
@@ -246,8 +245,8 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
         if p.scale < 0.999 {
             return None;
         }
-        match &p.kind {
-            PassKind::Blur { sigma: s, linear: l } => {
+        match p.units.as_slice() {
+            [UnitOp::Blur { sigma: s, linear: l }] => {
                 blurs += 1;
                 if blurs > 1 || *s > BLUR_MAX_SIGMA {
                     return None;
@@ -255,7 +254,9 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
                 sigma = *s;
                 linear = *l;
             }
-            PassKind::Units { ops, .. } => {
+            // A custom barrier is not a stamp arm.
+            [UnitOp::Custom { .. }] => return None,
+            ops => {
                 for op in ops {
                     match op {
                         // A sampling head this far into the chain is a lens that did not lead with
@@ -265,11 +266,13 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
                         // measuring its own cannot be evaluated by these arms until the program
                         // travels per cell the way the uniform does.
                         UnitOp::Shade(_) | UnitOp::MaskMix(_) => return None,
+                        // A barrier inside a fused run cannot occur (fuse cuts at one), but a stamp
+                        // arm could not run it regardless.
+                        UnitOp::Blur { .. } | UnitOp::Custom { .. } => return None,
                         _ => tail.push(op.clone()),
                     }
                 }
             }
-            _ => return None,
         }
     }
     Some(BatchShape::Stamp { sigma, linear, ops: tail })
@@ -2961,7 +2964,6 @@ impl Sink {
     /// a pipeline in hand — `lower_graph` dropped the pass. Now that the shape of a chain survives
     /// lowering, the whole body is one chain and the executor threads it.
     fn wv_resolve_pipelines(&mut self, cell: &WvCell, device: &wgpu::Device, format: wgpu::TextureFormat) -> Vec<Pass> {
-        use crate::vello::graph::PassKind;
         let mut passes = lower_graph(&cell.graph, None);
         let mut shaders = crate::vello::abi::with_scene(|live, _, _| {
             live.get(cell.key.0)
@@ -2970,7 +2972,9 @@ impl Sink {
         })
         .into_iter();
         for pass in &mut passes {
-            let PassKind::Custom { pipeline, .. } = &mut pass.kind else { continue };
+            if !matches!(pass.units.as_slice(), [crate::vello::units::UnitOp::Custom { .. }]) {
+                continue;
+            }
             let Some(wgsl) = shaders.next() else { continue };
             let n_inputs = 1;
             let mut hasher = DefaultHasher::new();
@@ -2978,7 +2982,7 @@ impl Sink {
             n_inputs.hash(&mut hasher);
             let key = hasher.finish();
             self.cap_custom_pipelines(key);
-            *pipeline = Some(
+            pass.custom = Some(
                 self.custom_pipelines
                     .entry(key)
                     .or_insert_with(|| build_custom_pipeline(device, &wgsl, n_inputs, format))
@@ -4740,10 +4744,9 @@ mod batch_admission_tests {
     fn a_pointwise_unit_no_builder_emits_still_admits() {
         use crate::vello::units::UnitOp;
         let clip = crate::vello::graph::Pass {
-            kind: crate::vello::graph::PassKind::Units {
-                ops: vec![UnitOp::ClipToSource(vec![0.0; 24])],
-                field: std::rc::Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() }),
-            },
+            units: vec![UnitOp::ClipToSource(vec![0.0; 24])],
+            field: Some(std::rc::Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() })),
+            custom: None,
             inputs: vec![crate::effect_graph::Src::Input(0)],
             scale: 1.0,
         };
@@ -4782,15 +4785,14 @@ mod batch_admission_tests {
     #[test]
     fn a_sampling_head_admits_as_a_lens_not_a_stamp() {
         use crate::vello::units::UnitOp;
-        use crate::vello::graph::{Pass, PassKind};
+        use crate::vello::graph::Pass;
         let units = |ops: Vec<UnitOp>| Pass {
-            kind: PassKind::Units {
-                ops,
-                field: std::rc::Rc::new(crate::field::FieldProgram {
-                    nodes: Vec::new(),
-                    outputs: Vec::new(),
-                }),
-            },
+            units: ops,
+            field: Some(std::rc::Rc::new(crate::field::FieldProgram {
+                nodes: Vec::new(),
+                outputs: Vec::new(),
+            })),
+            custom: None,
             inputs: Vec::new(),
             scale: 1.0,
         };

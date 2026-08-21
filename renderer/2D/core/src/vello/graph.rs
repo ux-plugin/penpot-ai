@@ -34,38 +34,21 @@ pub(crate) const BLUR_MAX_SIGMA: f32 = 32.0;
 /// pipeline. The kind selects the pipeline and carries its uniform; `inputs` (render-core's [`Src`])
 /// binds the texture reads in the order that pipeline expects.
 pub struct Pass {
-    pub kind: PassKind,
+    /// The fused unit run this pass draws: a sampling head plus its pointwise tail, or a single
+    /// barrier unit (`Blur`/`Custom`). This is the whole pass — the old `PassKind` triplication
+    /// (Blur / Units / Custom) collapsed, since every one of them is just a run of [`UnitOp`]s.
+    pub units: Vec<UnitOp>,
+    /// The field the units read; `None` for a barrier pass (a blur or custom measures no field).
+    pub field: Option<Rc<crate::field::FieldProgram>>,
+    /// The resolved wgpu pipeline for a `[Custom]` pass. `None` for a non-custom pass, and also `None`
+    /// while a chain is lowered only to be INSPECTED (admission needs the shape, not a compiled
+    /// shader) — a custom pass reaching the executor with `None` here is a loud bug, not a silent drop.
+    pub custom: Option<Rc<wgpu::RenderPipeline>>,
     pub inputs: Vec<Src>,
     /// Render-scale fraction of the graph's surface this pass's target is allocated at (`1.0` =
     /// surface size); carried from [`crate::effect_graph::GraphPass::scale`]. Readers sample
     /// normalized, so a reduced pass upscales transparently at its consumer.
     pub scale: f32,
-}
-
-/// The pipeline a lowered pass dispatches to — the backend twin of render-core's [`EffectPass`],
-/// differing only in that `Custom` carries the resolved wgpu pipeline rather than just its uniform.
-pub enum PassKind {
-    /// A full 2D Gaussian of `sigma` device pixels over its 1 input — separable H+V for a small
-    /// kernel, a downsample pyramid for a large one (see [`gaussian_blur`]). `linear` blurs in linear
-    /// light (sRGB-decode taps, re-encode the result).
-    Blur { sigma: f32, linear: bool },
-    /// One **composed unit run** — an execution group's units (a sampling head plus its pointwise
-    /// tail) fused into a single draw by [`UnitPipeline::units`]. Inputs `[src]`, or
-    /// `[src, original]` when a mask-mix reads a backdrop distinct from the head's source. Sharp
-    /// lens is `[Warp, Shade, MaskMix]` in one pass; the frosted composite is
-    /// `[Scatter, Shade, MaskMix]`; a same-pixel scatter is the identity and lowers to nothing.
-    Units { ops: Vec<UnitOp>, field: std::rc::Rc<crate::field::FieldProgram> },
-    /// A hand-written WGSL pass — the escape hatch. Runs the (already-compiled, cached) `pipeline`
-    /// over its inputs with `u` (surface resolution + params), sized to exactly `param_vec4s` vec4s
-    /// (the shader's declared `array<vec4<f32>, N>`). The pipeline's own `@group(0)` layout is
-    /// honoured: binding 0 uniform, 1 sampler, 2.. the input textures in order.
-    ///
-    /// `pipeline` is `None` when the chain was lowered to be INSPECTED rather than run — admission
-    /// asks what shape a chain has, and that question does not need a compiled shader. It used to be
-    /// non-optional, so lowering without one dropped the pass with a `log::warn!`: a chain carrying a
-    /// user shader silently lowered to whatever was left, which would have admitted a shaded body as
-    /// a plain stamp and rendered it with the shader missing and no error anywhere.
-    Custom { pipeline: Option<Rc<wgpu::RenderPipeline>>, u: Vec<f32>, param_vec4s: u32 },
 }
 
 /// Lower a render-core effect graph to runnable [`Pass`]es, one per **execution group**
@@ -82,17 +65,17 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
         match &graph[head].pass {
             EffectPass::Blur { sigma, linear } => {
                 out.push(Pass {
-                    kind: PassKind::Blur { sigma: *sigma, linear: *linear },
+                    units: vec![UnitOp::Blur { sigma: *sigma, linear: *linear }],
+                    field: None,
+                    custom: None,
                     inputs: graph[head].inputs.clone(),
                     scale: graph[head].scale,
                 });
             }
             EffectPass::Custom { u, param_vec4s } => out.push(Pass {
-                kind: PassKind::Custom {
-                    pipeline: custom.cloned(),
-                    u: u.clone(),
-                    param_vec4s: *param_vec4s,
-                },
+                units: vec![UnitOp::Custom { u: u.clone(), param_vec4s: *param_vec4s }],
+                field: None,
+                custom: custom.cloned(),
                 inputs: graph[head].inputs.clone(),
                 scale: graph[head].scale,
             }),
@@ -143,7 +126,9 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                 }
                 let field = field.expect("a unit run carries the field its units read");
                 out.push(Pass {
-                    kind: PassKind::Units { ops, field },
+                    units: ops,
+                    field: Some(field),
+                    custom: None,
                     inputs,
                     scale: graph[*group.last().unwrap_or(&head)].scale,
                 });
@@ -164,32 +149,6 @@ pub mod prof_bucket {
     pub const STAMP: usize = 21;
     pub const SWAP_BLIT: usize = 22;
     pub const OTHER: usize = 23;
-}
-
-impl Pass {
-    /// This lowered pass as a unit chain — the bridge from the old `Pass` to the unit-based
-    /// [`crate::vello::fx::Op`]. A fused `Units` pass is its ops verbatim; a `Blur`/`Custom` barrier
-    /// pass is a one-unit chain of the matching [`UnitOp`], which is exactly what makes Blur and
-    /// Custom first-class units rather than sibling pass kinds.
-    #[must_use]
-    pub fn units(&self) -> Vec<UnitOp> {
-        match &self.kind {
-            PassKind::Units { ops, .. } => ops.clone(),
-            PassKind::Blur { sigma, linear } => vec![UnitOp::Blur { sigma: *sigma, linear: *linear }],
-            PassKind::Custom { u, param_vec4s, .. } => {
-                vec![UnitOp::Custom { u: u.clone(), param_vec4s: *param_vec4s }]
-            }
-        }
-    }
-
-    /// The field program the pass's units read, if any — barrier passes measure none.
-    #[must_use]
-    pub fn field_program(&self) -> Option<Rc<crate::field::FieldProgram>> {
-        match &self.kind {
-            PassKind::Units { field, .. } => Some(field.clone()),
-            _ => None,
-        }
-    }
 }
 
 /// Run an effect's pass-graph and return the final pass's `(texture, view)`, or `None` for an empty
@@ -296,13 +255,10 @@ pub fn run_unit_chain(
             crate::effect_graph::pass_dim(w, pass.scale),
             crate::effect_graph::pass_dim(h, pass.scale),
         );
-        let custom_pl = match &pass.kind {
-            PassKind::Custom { pipeline, .. } => pipeline.clone(),
-            _ => None,
-        };
+        let custom_pl = pass.custom.clone();
         let op = crate::vello::fx::Op {
-            units: pass.units(),
-            field: pass.field_program().unwrap_or_else(|| {
+            units: pass.units.clone(),
+            field: pass.field.clone().unwrap_or_else(|| {
                 Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() })
             }),
             inputs: pass.inputs.clone(),
@@ -620,7 +576,7 @@ pub fn new_target_with_usage(
 
 #[cfg(test)]
 mod bridge_tests {
-    use super::{lower_graph, PassKind};
+    use super::lower_graph;
     use crate::effect_graph::{background_blur_graph, custom_graph, drop_shadow_graph};
     use crate::vello::units::{fuse, UnitOp};
 
@@ -630,15 +586,14 @@ mod bridge_tests {
     fn a_blur_pass_is_a_blur_unit() {
         let passes = lower_graph(&background_blur_graph(4.0), None);
         assert_eq!(passes.len(), 1);
-        assert!(matches!(passes[0].kind, PassKind::Blur { .. }));
-        assert!(matches!(passes[0].units().as_slice(), [UnitOp::Blur { .. }]));
+        assert!(matches!(passes[0].units.as_slice(), [UnitOp::Blur { .. }]));
     }
 
     /// A custom pass is a single `Custom` unit.
     #[test]
     fn a_custom_pass_is_a_custom_unit() {
         let passes = lower_graph(&custom_graph(vec![256.0, 256.0], 1), None);
-        assert!(matches!(passes[0].units().as_slice(), [UnitOp::Custom { .. }]));
+        assert!(matches!(passes[0].units.as_slice(), [UnitOp::Custom { .. }]));
     }
 
     /// A blurred drop shadow lowers to a fused tint pass then a blur pass. Flattening the passes to
@@ -646,7 +601,7 @@ mod bridge_tests {
     #[test]
     fn a_drop_shadow_flattens_and_refuses_to_two_ops() {
         let passes = lower_graph(&drop_shadow_graph(64.0, 64.0, [0.1, 0.2, 0.3, 0.8], 4.0), None);
-        let flat: Vec<UnitOp> = passes.iter().flat_map(|p| p.units()).collect();
+        let flat: Vec<UnitOp> = passes.iter().flat_map(|p| p.units.clone()).collect();
         let runs = fuse(flat);
         assert_eq!(runs.len(), 2, "tint stamp | blur barrier");
         assert!(runs[1][0].is_barrier());
