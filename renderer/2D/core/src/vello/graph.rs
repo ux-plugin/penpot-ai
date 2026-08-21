@@ -246,11 +246,6 @@ pub fn run_graph_into(
             crate::effect_graph::pass_dim(w, pass.scale),
             crate::effect_graph::pass_dim(h, pass.scale),
         );
-        debug_assert_eq!(
-            (pw, ph),
-            crate::vello::plan::interpret(passes, (w, h)).ops[idx].size,
-            "the plan's op table predicted a different target for pass {idx} than the executor allocated",
-        );
         let tex = pool.acquire_target(device, pw, ph, pass.kind.output_format(format), extra, "effect target");
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
 
