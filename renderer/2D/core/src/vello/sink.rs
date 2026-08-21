@@ -84,6 +84,8 @@ struct WvBatchPlan {
     v: Vec<crate::vello::batch::Inst>,
     /// EraseBy band materialisations, one per inner shadow, drawn in ONE combine pass.
     combine: Vec<crate::vello::batch::Inst>,
+    /// The erase draw's unit uniforms, one per instance — where `EraseBy` reads its strength.
+    combine_f: Vec<crate::vello::batch::GlassField>,
     /// The frame's stages in dependency order — the blur pair and the combine hoisted out of the
     /// round loop, one composite pinned to each round that has work. Which atlas each one writes is
     /// the planner's answer, not a constant here ([`crate::vello::plan::colour_stages`]).
@@ -188,9 +190,10 @@ fn wv_cell_graph(e: &crate::effect::Effect, kind: u8, kw: u32, kh: u32, sigma: f
 /// is what let a chain belong to neither.
 #[derive(Debug, Clone, PartialEq)]
 enum BatchShape {
-    /// Coverage through an optional blur, stamped by the composite and optionally tinted: drop
-    /// shadows, inner-shadow floods and punches, plain bodies.
-    Stamp { sigma: f32, linear: bool, tint: Option<[f32; 4]> },
+    /// Coverage through an optional blur and then a pointwise tail: drop shadows, inner-shadow
+    /// floods and punches, plain bodies. `ops` is that tail verbatim — the batch binds its uniform
+    /// per cell, so the tail is not restricted to units this enum knows the names of.
+    Stamp { sigma: f32, linear: bool, ops: Vec<crate::vello::glass::UnitOp> },
     /// A sampling head, an optional blur, and a pointwise tail — the glass stages.
     Lens { head: crate::vello::glass::UnitOp, tail: Vec<crate::vello::glass::UnitOp>, sigma: f32 },
 }
@@ -232,9 +235,11 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
         };
     }
 
-    // Otherwise a stamp: at most one blur, and any units must be pointwise ones the stamp stages
-    // already implement — Tint is the composite instance's colour, EraseBy is the combine stage.
-    let (mut sigma, mut linear, mut tint, mut blurs) = (0.0_f32, false, None, 0usize);
+    // Otherwise a stamp: at most one blur, and a pointwise tail. The tail is not filtered by NAME.
+    // A unit declines for one of two structural reasons only — it samples (a head belongs to a lens,
+    // not a stamp), or it reads a field the batch module did not compile.
+    let (mut sigma, mut linear, mut blurs) = (0.0_f32, false, 0usize);
+    let mut tail: Vec<UnitOp> = Vec::new();
     for p in passes {
         if p.scale < 0.999 {
             return None;
@@ -251,22 +256,56 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
             PassKind::Units { ops, .. } => {
                 for op in ops {
                     match op {
-                        UnitOp::Tint(u) => tint = Some([u[12], u[13], u[14], u[15]]),
-                        UnitOp::EraseBy(_) => {}
-                        _ => return None,
+                        // A sampling head this far into the chain is a lens that did not lead with
+                        // one; the stamp arms have no head to run it as.
+                        UnitOp::Warp(_) | UnitOp::Scatter(_) => return None,
+                        // Both measure a field. The batch compiles ONE field program, so a chain
+                        // measuring its own cannot be evaluated by these arms until the program
+                        // travels per cell the way the uniform does.
+                        UnitOp::Shade(_) | UnitOp::MaskMix(_) => return None,
+                        _ => tail.push(op.clone()),
                     }
                 }
             }
             _ => return None,
         }
     }
-    Some(BatchShape::Stamp { sigma, linear, tint })
+    Some(BatchShape::Stamp { sigma, linear, ops: tail })
 }
 
 /// [`batch_admit`] for one cell, lowering the cell's OWN chain the way the executor will. Nothing
 /// is reconstructed here: a chain the stages cannot run declines because of what it is.
 fn wv_batch_cell_shape(c: &WvCell) -> Option<BatchShape> {
     batch_admit(&crate::vello::graph::lower_graph(&c.graph, None))
+}
+
+/// One cell's unit uniform — the same 24 floats the per-shape pipeline binds, which is now what the
+/// batch binds too.
+///
+/// A chain with no `Tint` gets the disabling sentinel (alpha below zero) rather than a zero colour,
+/// because the pointwise arms carry `Tint` unconditionally so that a coloured silhouette and an
+/// uncoloured body can ride the same draw. Zero would multiply the body away.
+fn wv_stamp_uniform(ops: &[crate::vello::glass::UnitOp]) -> crate::vello::batch::GlassField {
+    let mut u = crate::vello::glass::units_uniform(ops);
+    if !ops.iter().any(|o| matches!(o, crate::vello::glass::UnitOp::Tint(_))) {
+        u[12..16].copy_from_slice(&[0.0, 0.0, 0.0, -1.0]);
+    }
+    crate::vello::batch::GlassField { u }
+}
+
+/// Which pointwise arm a composite draw of `ops` runs. `Tint` is always in it (self-disabling), and
+/// every other pointwise unit the tail carries adds its bit — so a unit the admission accepted is
+/// automatically reachable in the shader, with no second list to keep in step.
+fn wv_composite_bits(ops: &[crate::vello::glass::UnitOp]) -> u32 {
+    use crate::vello::batch::pointwise;
+    use crate::vello::glass::UnitOp;
+    let mut bits = pointwise::TINT;
+    for op in ops {
+        if matches!(op, UnitOp::ClipToSource(_)) {
+            bits |= pointwise::CLIP;
+        }
+    }
+    bits
 }
 
 /// Build the batch plan for this frame, or `None` when batching is off or nothing qualifies.
@@ -293,13 +332,18 @@ fn wv_batch_plan(
         h: Vec::new(),
         v: Vec::new(),
         combine: Vec::new(),
+        combine_f: Vec::new(),
         stages: Vec::new(),
         atlases: 0,
         taken: HashSet::new(),
         legacy_sub: HashMap::new(),
         extra: HashMap::new(),
     };
-    let mut by_round: std::collections::BTreeMap<u32, Vec<crate::vello::batch::Inst>> =
+    // Keyed by round AND by the arm the draw runs: instances of one round that compose differently
+    // are different draws, because an arm is per-pipeline-invocation and not per-instance. Today
+    // every stamp composes the same way and this is one group per round, exactly as before.
+    type Group = (Vec<crate::vello::batch::Inst>, Vec<crate::vello::batch::GlassField>);
+    let mut by_round: std::collections::BTreeMap<(u32, u32), Group> =
         std::collections::BTreeMap::new();
     for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
         if kind != FX_STACK {
@@ -401,9 +445,9 @@ fn wv_batch_plan(
             Some(BatchShape::Stamp { sigma, linear, .. }) => (sigma, linear),
             _ => (0.0, false),
         };
-        let cell_tint = |c: &WvCell| match wv_batch_cell_shape(c) {
-            Some(BatchShape::Stamp { tint, .. }) => tint,
-            _ => None,
+        let cell_units = |c: &WvCell| match wv_batch_cell_shape(c) {
+            Some(BatchShape::Stamp { ops, .. }) => ops,
+            _ => Vec::new(),
         };
         let mut blur = |plan: &mut WvBatchPlan, c: &WvCell| {
             let (strip_rect, atlas_rect, _) = rects(c);
@@ -460,13 +504,15 @@ fn wv_batch_plan(
                     plan.taken.insert(c.key);
                     blur(&mut plan, c);
                     let (_, atlas_rect, frame_rect) = rects(c);
-                    let mut inst = crate::vello::batch::Inst::new(
-                        frame_rect, acc_size, atlas_rect, atlas_size, (0.0, 0.0), 0.0, false,
+                    let ops = cell_units(c);
+                    let g = by_round.entry((round, wv_composite_bits(&ops))).or_default();
+                    g.0.push(
+                        crate::vello::batch::Inst::new(
+                            frame_rect, acc_size, atlas_rect, atlas_size, (0.0, 0.0), 0.0, false,
+                        )
+                        .with_units(g.1.len()),
                     );
-                    if let Some(colour) = cell_tint(c) {
-                        inst = inst.tinted(colour);
-                    }
-                    by_round.entry(round).or_default().push(inst);
+                    g.1.push(wv_stamp_uniform(&ops));
                 }
                 Emit::Inner { flood, punch } => {
                     blur(&mut plan, flood);
@@ -474,25 +520,30 @@ fn wv_batch_plan(
                     let (_, flood_rect, frame_rect) = rects(flood);
                     let (_, punch_rect, _) = rects(punch);
                     // Materialise the band in atlas A at the flood's own rect (both reads from B),
-                    // then composite it from A — `mode` 1 selects the second texture.
-                    let Some(pc) = cell_tint(flood) else { continue };
+                    // then composite it from A — `mode` 1 selects the second texture. The two draws
+                    // run different halves of the same chain: the erase materialises the band, the
+                    // composite colours it, and each reads its parameters out of the flood's own
+                    // uniform.
+                    let ops = cell_units(flood);
                     plan.combine.push(
                         crate::vello::batch::Inst::new(
                             flood_rect, atlas_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
                         )
                         .with_src2(punch_rect, atlas_size, 0.0)
-                        .tinted(pc),
+                        .with_units(plan.combine_f.len()),
                     );
-                    let Some(colour) = cell_tint(flood) else { continue };
+                    plan.combine_f.push(wv_stamp_uniform(&ops));
                     plan.taken.insert(flood.key);
                     plan.taken.insert(punch.key);
-                    by_round.entry(round).or_default().push(
+                    let g = by_round.entry((round, wv_composite_bits(&ops))).or_default();
+                    g.0.push(
                         crate::vello::batch::Inst::new(
                             frame_rect, acc_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
                         )
                         .with_src2(punch_rect, atlas_size, 1.0)
-                        .tinted(colour),
+                        .with_units(g.1.len()),
                     );
+                    g.1.push(wv_stamp_uniform(&ops));
                 }
             }
         }
@@ -529,11 +580,20 @@ fn wv_batch_plan(
             .push(Stage::new(stage::BLUR, at(0), Surface::Acc, std::mem::take(&mut plan.h)).cleared());
         plan.stages
             .push(Stage::new(stage::BLUR, at(1), at(0), std::mem::take(&mut plan.v)).cleared());
-        plan.stages.push(Stage::new(stage::COMBINE, at(2), at(1), std::mem::take(&mut plan.combine)));
-        for (r, insts) in by_round {
+        plan.stages.push(
+            Stage::new(
+                crate::vello::batch::pointwise_tag(crate::vello::batch::pointwise::ERASE),
+                at(2),
+                at(1),
+                std::mem::take(&mut plan.combine),
+            )
+            .with_fields(std::mem::take(&mut plan.combine_f)),
+        );
+        for ((r, bits), (insts, fields)) in by_round {
             plan.stages.push(
-                Stage::new(stage::COMPOSITE, Surface::Acc, at(1), insts)
+                Stage::new(crate::vello::batch::pointwise_tag(bits), Surface::Acc, at(1), insts)
                     .with_src2(at(2))
+                    .with_fields(fields)
                     .composited()
                     .with_round(r),
             );
@@ -2093,6 +2153,11 @@ impl Sink {
         let (mut blur_h, mut blur_v) = (Vec::new(), Vec::new());
         let (mut frost, mut frost_f) = (Vec::new(), Vec::new());
         let mut stamp: Vec<Inst> = Vec::with_capacity(here.len());
+        // A lens result is already coloured, so its stamp runs the `Tint` arm with the disabling
+        // sentinel. Every stamp shares the one entry, which is the index an instance carries by
+        // default.
+        let mut no_tint = [0.0_f32; 24];
+        no_tint[15] = -1.0;
         for c in &here {
             crops.push(Inst::new(c.cell, asz, c.dev, sz, (0.0, 0.0), 0.0, false));
             let mut ops = vec![c.warp.clone()];
@@ -2100,14 +2165,16 @@ impl Sink {
                 ops.extend(c.tail.iter().cloned());
                 sharp.push(
                     Inst::new(c.cell, asz, c.cell, asz, (0.0, 0.0), 0.0, false)
-                        .with_src2(c.cell, asz, sharp_f.len() as f32)
+                        .with_src2(c.cell, asz, 0.0)
+                        .with_units(sharp_f.len())
                         .at(c.cell),
                 );
                 sharp_f.push(GlassField { u: crate::vello::glass::units_uniform(&ops) });
             } else {
                 warp.push(
                     Inst::new(c.red, asz, c.cell, asz, (0.0, 0.0), 0.0, false)
-                        .with_src2(c.cell, asz, warp_f.len() as f32)
+                        .with_src2(c.cell, asz, 0.0)
+                        .with_units(warp_f.len())
                         .at(c.red),
                 );
                 warp_f.push(GlassField { u: crate::vello::glass::units_uniform(&ops) });
@@ -2115,7 +2182,8 @@ impl Sink {
                 blur_v.push(Inst::new(c.red, asz, c.red, asz, (0.0, 1.0), c.sigma, false));
                 frost.push(
                     Inst::new(c.cell, asz, c.red, asz, (0.0, 0.0), 0.0, false)
-                        .with_src2(c.cell, asz, frost_f.len() as f32)
+                        .with_src2(c.cell, asz, 0.0)
+                        .with_units(frost_f.len())
                         .at(c.cell),
                 );
                 frost_f.push(GlassField { u: crate::vello::glass::units_uniform(&c.tail) });
@@ -2139,7 +2207,14 @@ impl Sink {
             Stage::new(stage::BLUR, D, B, blur_h).cleared(),
             Stage::new(stage::BLUR, B, D, blur_v).cleared(),
             Stage::new(stage::GLASS_FROST, C, B, frost).with_src2(A).with_fields(frost_f),
-            Stage::new(stage::COMPOSITE, Surface::Acc, C, stamp).composited(),
+            Stage::new(
+                crate::vello::batch::pointwise_tag(crate::vello::batch::pointwise::TINT),
+                Surface::Acc,
+                C,
+                stamp,
+            )
+            .with_fields(vec![GlassField { u: no_tint }])
+            .composited(),
         ];
         let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view];
         for st in &stages {
@@ -4605,26 +4680,48 @@ mod batch_admission_tests {
         }
     }
 
-    /// The tint reaches the composite through admission, so the colour cannot be looked up one way
-    /// by the batch and another way by the fallback.
+    /// The tail reaches the composite through admission, so a unit's parameters cannot be read one
+    /// way by the batch and another way by the fallback.
     #[test]
-    fn a_stamp_carries_its_tint_out_of_admission() {
-        let Some(BatchShape::Stamp { tint, sigma, .. }) = admit(&drop_shadow_graph(64.0, 64.0, C, 4.0))
+    fn a_stamp_carries_its_units_out_of_admission() {
+        let Some(BatchShape::Stamp { ops, sigma, .. }) = admit(&drop_shadow_graph(64.0, 64.0, C, 4.0))
         else {
             panic!("a drop shadow is a stamp")
         };
-        assert_eq!(tint, Some(C));
+        let u = super::wv_stamp_uniform(&ops);
+        assert_eq!(&u.u[12..16], &C, "the tint's colour survives into the uniform the batch binds");
         assert!(sigma > 0.0, "a blurred drop shadow keeps its sigma");
     }
 
     /// An empty chain is still a stamp — the cell rides the blur stages as a sigma-0 copy so every
-    /// batched cell lands in the surface the later stages sample.
+    /// batched cell lands in the surface the later stages sample — and its uniform disables the
+    /// tint rather than zeroing it, or the body would be multiplied away.
     #[test]
     fn an_empty_chain_is_an_untinted_stamp() {
-        assert_eq!(
-            admit(&[]),
-            Some(BatchShape::Stamp { sigma: 0.0, linear: false, tint: None })
-        );
+        assert_eq!(admit(&[]), Some(BatchShape::Stamp { sigma: 0.0, linear: false, ops: Vec::new() }));
+        assert!(super::wv_stamp_uniform(&[]).u[15] < 0.0);
+    }
+
+    /// The tail is not a list of names. A pointwise unit no chain builds today still admits, and
+    /// its composition selects an arm that exists — which is what stops the shader's arm set and
+    /// the admission rule from drifting apart.
+    #[test]
+    fn a_pointwise_unit_no_builder_emits_still_admits() {
+        use crate::vello::glass::UnitOp;
+        let clip = crate::vello::graph::Pass {
+            kind: crate::vello::graph::PassKind::Units {
+                ops: vec![UnitOp::ClipToSource(vec![0.0; 24])],
+                field: std::rc::Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() }),
+            },
+            inputs: vec![crate::effect_graph::Src::Input(0)],
+            scale: 1.0,
+        };
+        let Some(BatchShape::Stamp { ops, .. }) = batch_admit(&[clip]) else {
+            panic!("a pointwise unit is a stamp")
+        };
+        let bits = super::wv_composite_bits(&ops);
+        assert!(bits & crate::vello::batch::pointwise::CLIP != 0);
+        assert!(bits < crate::vello::batch::pointwise::COUNT, "the arm the bits select is generated");
     }
 
     /// One blur per cell is what the H/V stage pair expresses; a second would need a round trip the

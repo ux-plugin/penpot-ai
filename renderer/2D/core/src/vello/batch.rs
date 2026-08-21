@@ -17,15 +17,16 @@
 //! mapping the arm applies (`atlasUV`, and the samplers built on it), not a second meaning the same
 //! varying carries in some arms. That is what lets the stamp and the inner-shadow band drop their
 //! hand-written fragments and run [`super::glass::units_body`] instead, the same text the per-shape
-//! pipeline compiles: one `Tint`, one `EraseBy`, one place either can be wrong. A stamp evaluates no
-//! field, so it reads its colour out of its own instance through the `unitParam` seam rather than
-//! out of a 96-byte field entry it would otherwise have to be given.
+//! pipeline compiles: one `Tint`, one `EraseBy`, one place either can be wrong. Every batched cell
+//! carries the same 24-float unit uniform the per-shape pipeline binds, indexed per instance, so a
+//! unit is never expressible in one path and not the other.
 
 /// Per-quad instance: destination rect in the target's NDC, source rect in the source's UV, the tap
 /// clamp rect, and the blur parameters. `step` is the blur direction pre-divided by the source size
 /// (a copy/composite instance leaves it unused); `src2`/`clamp2` are the second read the erase
 /// stage takes (the punch). Layout matches the WGSL `Inst` struct: eleven `vec2<f32>`, then seven
-/// `f32`, then the `tint` pair — 136 bytes, align 8.
+/// `f32` — 120 bytes, align 8. Unit PARAMETERS are not here: they live in the stage's uniform array,
+/// which `_pad[3]` indexes.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Inst {
@@ -47,19 +48,15 @@ pub(crate) struct Inst {
     /// where the erase stage materialised inner-shadow bands). The glass stages reuse it as the
     /// instance's index into the field buffer.
     pub mode: f32,
-    /// `[0]` = stage tag (see `fs_uber`); `[1]`/`[2]` = this instance's destination origin in target
-    /// pixels, which the glass stages subtract from `@builtin(position)` to recover the cell-local
-    /// fragment coordinate the field math is expressed in; `[3]` keeps the 136-byte stride the
-    /// `tint` pair's 8-byte alignment already implies.
-    pub _pad: [f32; 4],
-    /// This instance's `unitParam(gi, 3u)`: a straight RGBA the `Tint` unit multiplies coverage by
-    /// and whose alpha the `EraseBy` unit scales its punch with, or **alpha below zero** for no
-    /// tint at all — the body and the glass stamps take that path and are untouched.
+    /// `[0]` = arm tag (see `fs_uber`); `[1]`/`[2]` = this instance's destination origin in target
+    /// pixels, which the arms subtract from `@builtin(position)` to recover the cell-local fragment
+    /// coordinate the unit bodies are expressed in; `[3]` = this instance's index into the stage's
+    /// uniform array — where ALL of its unit parameters live.
     ///
-    /// Four `f32`s and not a `vec4`: at byte offset 120 a `vec4<f32>` would be 16-byte aligned on
-    /// the WGSL side and pad to 128, while `repr(C)` `[f32; 4]` sits at 120. The struct is declared
-    /// as two `vec2`s so both sides keep the same 8-byte alignment and the same 136-byte stride.
-    pub tint: [f32; 4],
+    /// The parameters used to be a `tint` vec4 on the instance itself, which is why only the two
+    /// units that read uniform slot 3 could ever run in a batch. A unit reading any other slot had
+    /// nowhere to read it from, and that — not the two unit names — was the whitelist.
+    pub _pad: [f32; 4],
 }
 
 /// One glass cell's field parameters — the same 24-float composed uniform the per-shape pipeline
@@ -71,20 +68,41 @@ pub(crate) struct GlassField {
     pub u: [f32; 24],
 }
 
-/// Stage tags stamped into `Inst::_pad[0]`, selecting the arm `fs_uber` runs.
+/// Arm tags stamped into `Inst::_pad[0]`, selecting the arm `fs_uber` runs.
 pub(crate) mod stage {
-    /// The stamp: a plain read of one source rect, tinted when the instance carries a colour.
-    pub const COMPOSITE: f32 = 0.0;
     /// Separable Gaussian tap loop along the instance's `step`.
     pub const BLUR: f32 = 2.0;
-    /// The inner-shadow band: the same stamp read, erased by the punch (the `EraseBy` unit).
-    pub const COMBINE: f32 = 3.0;
     /// Glass warp alone — the head of a frosted chain, whose result a blur then consumes.
     pub const GLASS_WARP: f32 = 4.0;
     /// Sharp glass: warp + shade + mask-mix fused, the whole lens in one draw.
     pub const GLASS_SHARP: f32 = 5.0;
     /// Frosted glass tail: scatter + shade + mask-mix over the blurred warp.
     pub const GLASS_FROST: f32 = 6.0;
+    /// Where the pointwise arms begin. A pointwise chain's tag is this plus its composition bits —
+    /// there is no tag per NAMED effect, because the arm set is generated from the compositions
+    /// rather than enumerated by hand.
+    pub const POINTWISE: f32 = 8.0;
+}
+
+/// A pointwise composition, as the bits that pick its arm. One bit per unit that can appear in a
+/// stamp's tail; the arm set is every combination of them, so admitting a new pointwise unit is a
+/// bit here and nothing else.
+///
+/// `Shade` and `MaskMix` are absent on purpose and not by preference: both read a FIELD, and the
+/// batch module compiles exactly one field program (glass's). A chain measuring a different field
+/// cannot be evaluated by these arms until the field program travels per cell the way the uniform
+/// now does.
+pub(crate) mod pointwise {
+    pub const CLIP: u32 = 1;
+    pub const ERASE: u32 = 2;
+    pub const TINT: u32 = 4;
+    /// Every composition the generator emits an arm for.
+    pub const COUNT: u32 = 8;
+}
+
+/// The tag an instance carries to select the arm for `bits`.
+pub(crate) fn pointwise_tag(bits: u32) -> f32 {
+    stage::POINTWISE + bits as f32
 }
 
 impl Inst {
@@ -125,15 +143,14 @@ impl Inst {
             linearize: if blurred && linear { 1.0 } else { 0.0 },
             mode: 0.0,
             _pad: [0.0; 4],
-            tint: [0.0, 0.0, 0.0, -1.0],
         }
     }
 
-    /// The instance with a straight RGBA tint applied to its coverage at composite time. What lets
-    /// one rasterised silhouette serve shadows of different colours — and what the erase stage reads
-    /// the shadow colour's alpha out of.
-    pub fn tinted(mut self, colour: [f32; 4]) -> Self {
-        self.tint = colour;
+    /// The instance pointed at its entry in the stage's uniform array — where every unit in its
+    /// chain reads its parameters. What lets one rasterised silhouette serve shadows of different
+    /// colours, and what any future unit reads its own slots out of.
+    pub fn with_units(mut self, index: usize) -> Self {
+        self._pad[3] = index as f32;
         self
     }
 
@@ -182,8 +199,6 @@ struct Inst {
     _p1: f32,
     _p2: f32,
     _p3: f32,
-    tint_lo: vec2<f32>,
-    tint_hi: vec2<f32>,
 };
 @group(0) @binding(0) var<storage, read> insts: array<Inst>;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -205,7 +220,7 @@ var<private> g_orig_min: vec2<f32>;
 var<private> g_orig_max: vec2<f32>;
 var<private> g_orig_cmin: vec2<f32>;
 var<private> g_orig_cmax: vec2<f32>;
-/// The running instance, for the accessors that read its own parameters rather than the field.
+/// The running instance, for the accessors that read its own rects rather than the field.
 var<private> g_inst: u32;
 /// Head reads take the *second* binding instead of the first — how a stamp selects the atlas the
 /// erase stage materialised its band in, without the arm knowing which atlas that was. Per-instance
@@ -214,15 +229,10 @@ var<private> g_inst: u32;
 var<private> g_alt: bool;
 
 fn fieldU(gi: u32, i: u32) -> vec4<f32> { return fields[gi].u[i]; }
-/// A unit's own parameters. A stamp evaluates no field, so it has no field entry to read them out
-/// of — it carries them in its instance instead, and `unitParam` is the seam that hides which.
-fn unitParam(gi: u32, i: u32) -> vec4<f32> {
-    if (i == 3u) {
-        let it = insts[g_inst];
-        return vec4<f32>(it.tint_lo.x, it.tint_lo.y, it.tint_hi.x, it.tint_hi.y);
-    }
-    return fields[gi].u[i];
-}
+/// A unit's own parameters — the same 24-float uniform the per-shape pipeline binds, indexed per
+/// instance. One array for every arm: a stamp's parameters and a lens's live in the same place, so
+/// no unit is expressible in one path and not the other.
+fn unitParam(gi: u32, i: u32) -> vec4<f32> { return fields[gi].u[i]; }
 /// The cell coordinate mapped onto the instance's rect in the atlas. Deliberately UNCLAMPED — the
 /// blur adds its tap offset here and clamps once afterwards, and clamping twice would push a tap at
 /// the rect's edge half a texel further than a dedicated texture's clamp-to-edge puts it.
@@ -401,9 +411,9 @@ pub(crate) struct BatchPipelines {
 /// this composition ([`super::glass::units_body`]) — the same text the per-shape pipeline compiles,
 /// so a batched cell and a dedicated-texture cell execute identical math.
 ///
-/// `alt` selects the second binding for the head's reads. Only a stamp uses it (to pick up the band
-/// the erase stage materialised in the other atlas); the glass arms pass `false` because their
-/// `mode` is a field index, not a source select.
+/// `alt` selects the second binding for the head's reads — how a pointwise arm picks up the band the
+/// erase stage materialised in the other atlas. The glass arms pass `false`: their head reads the
+/// backdrop crop and never the alternate.
 ///
 /// `uvpix` is where the two conventions still meet. A stamp takes the interpolated cell coordinate
 /// straight from the vertex stage — the single convention this arm set is built on. A glass arm
@@ -417,7 +427,7 @@ fn unit_arm(name: &str, key: crate::vello::glass::UnitKey, alt: &str, uvpix: &st
 fn {name}(in: VSOut) -> vec4<f32> {{
     let it = insts[in.inst];
     glassBegin(in.inst, {alt});
-    let gi = u32(it.mode);
+    let gi = u32(it._p3);
     let fc = in.pos.xy - vec2<f32>(it._p1, it._p2);
     let uvpix = {uvpix};
 {body}
@@ -452,18 +462,27 @@ fn batch_shader() -> String {
         "false",
         FIELD_UV,
     ));
-    // The stamp: a plain read of the cell, optionally coloured. `Tint` is unconditional in the body
-    // and self-disabling on an instance whose tint alpha is below zero, so the untinted body, the
-    // shadow silhouettes and the glass results all ride ONE arm.
-    s.push_str(&unit_arm("stamp_px", UnitKey { tint: true, ..Default::default() }, "it.mode > 0.5", CELL_UV));
-    // The inner-shadow band: the same plain read, erased by the punch. What used to be a
-    // hand-written `flood * (1 - punch.a * alpha)` that duplicated the `EraseBy` unit.
-    s.push_str(&unit_arm(
-        "combine_px",
-        UnitKey { erase: true, two_tex: true, ..Default::default() },
-        "false",
-        CELL_UV,
-    ));
+    // The pointwise arms, one per composition rather than one per named effect. The stamp is
+    // `TINT`, the inner-shadow band is `ERASE`, and the six that no chain reaches today cost
+    // nothing: an arm is code, and `fs_uber`'s register count is the MAX over its arms, not the sum
+    // (measured on Apple, and on AMD via LLPC).
+    //
+    // `Tint` is self-disabling on a colour whose alpha is below zero, so the untinted body and the
+    // glass stamps ride the `TINT` arm too rather than needing a composition of their own.
+    for bits in 0..pointwise::COUNT {
+        s.push_str(&unit_arm(
+            &format!("pw{bits}_px"),
+            UnitKey {
+                clip: bits & pointwise::CLIP != 0,
+                erase: bits & pointwise::ERASE != 0,
+                tint: bits & pointwise::TINT != 0,
+                two_tex: bits & pointwise::ERASE != 0,
+                ..Default::default()
+            },
+            "it.mode > 0.5",
+            CELL_UV,
+        ));
+    }
     s.push_str(
         r#"
 // Every kernel in ONE function behind a per-instance switch (`_p0` = the stage tag). Measured free
@@ -473,22 +492,29 @@ fn batch_shader() -> String {
 @fragment
 fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
     let stage = insts[in.inst]._p0;
-    if (stage > 5.5) {
+    if (stage > 5.5 && stage < 7.5) {
         return glass_frost_px(in);
     }
-    if (stage > 4.5) {
+    if (stage > 4.5 && stage < 5.5) {
         return glass_sharp_px(in);
     }
-    if (stage > 3.5) {
+    if (stage > 3.5 && stage < 4.5) {
         return glass_warp_px(in);
     }
-    if (stage > 2.5) {
-        return combine_px(in);
-    }
-    if (stage > 1.5) {
+    if (stage > 1.5 && stage < 2.5) {
         return blur_px(in);
     }
-    return stamp_px(in);
+    switch (u32(stage) - 8u) {
+        case 0u: { return pw0_px(in); }
+        case 1u: { return pw1_px(in); }
+        case 2u: { return pw2_px(in); }
+        case 3u: { return pw3_px(in); }
+        case 4u: { return pw4_px(in); }
+        case 5u: { return pw5_px(in); }
+        case 6u: { return pw6_px(in); }
+        case 7u: { return pw7_px(in); }
+        default: { return vec4<f32>(0.0); }
+    }
 }
 "#,
     );
@@ -768,15 +794,20 @@ mod sampling_convention_tests {
     /// One `EraseBy`, one implementation. The batch used to spell the same `flood × (1 − punch.a)`
     /// out in its own fragment, and the two drifted by 38 levels when the punch stopped being
     /// rasterised in the shadow's colour.
+    ///
+    /// The arm set is generated, so the math appears once per arm that declares the unit — never
+    /// once more than that, which is what a hand-written copy would add.
     #[test]
-    fn the_erase_math_appears_exactly_once() {
+    fn the_erase_math_appears_once_per_arm_that_declares_it() {
         let s = batch_shader();
-        assert_eq!(s.matches("1.0 - punch.a").count(), 1, "the batch has more than one EraseBy");
+        let arms = (0..super::pointwise::COUNT).filter(|b| b & super::pointwise::ERASE != 0).count();
+        assert_eq!(s.matches("1.0 - punch.a").count(), arms, "the batch has an EraseBy of its own");
     }
 
-    /// A stamp evaluates no field, so it must not read the field buffer — the batch binds a
-    /// one-element placeholder there, and a stamp whose `mode` selects the second texture would
-    /// index past it.
+    /// A stamp measures no field, so its body must not evaluate one — the batch compiles a single
+    /// field program, and a chain that needs a different one declines in `batch_admit` rather than
+    /// reading the wrong geometry here. Unit PARAMETERS are a separate thing and do come from the
+    /// uniform array, which is why the assertion is about `computeField`, not about the buffer.
     #[test]
     fn a_stamp_reads_no_field() {
         let body = units_body(UnitKey { tint: true, ..Default::default() }, &glass_field_program());
