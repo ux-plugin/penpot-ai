@@ -43,6 +43,14 @@ pub enum UnitOp {
     /// Pointwise multiply by a straight colour, premultiplied on the way out — turns a coverage
     /// silhouette into a coloured one without re-rasterising the geometry.
     Tint(Vec<f32>),
+    /// A separable Gaussian of `sigma` device pixels — a NEIGHBORHOOD unit, so it is a fusion
+    /// barrier: it reads the whole prior result and cannot share a fragment with the units after it.
+    /// Runs as its own pass(es), never through `fs_uber`. `linear` blurs in linear light.
+    Blur { sigma: f32, linear: bool },
+    /// A hand-written WGSL pass — the escape hatch, a GLOBAL-reach barrier unit. `u` is the surface
+    /// resolution plus the shader's declared params, sized to exactly `param_vec4s` vec4s; the
+    /// backend supplies the compiled pipeline. Never enters `fs_uber`.
+    Custom { u: Vec<f32>, param_vec4s: u32 },
 }
 
 /// A composed pass's pipeline cache key. Named fields rather than a tuple: the composition grew
@@ -294,8 +302,13 @@ impl UnitPipeline {
 pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
     let mut out = [0.0_f32; 24];
     for op in ops {
+        // Blur/Custom are barrier units — they never appear inside a fused run, so they carry no
+        // field uniform to merge here.
         let (UnitOp::Warp(u) | UnitOp::Scatter(u) | UnitOp::Shade(u) | UnitOp::MaskMix(u)
-        | UnitOp::ClipToSource(u) | UnitOp::EraseBy(u) | UnitOp::Tint(u)) = op;
+        | UnitOp::ClipToSource(u) | UnitOp::EraseBy(u) | UnitOp::Tint(u)) = op
+        else {
+            continue;
+        };
         // Every unit of a run carries the same field geometry; each contributes only the trailing
         // slots its own kind uses, so merging them is a per-slot max of what was actually set.
         for (i, v) in u.iter().enumerate().take(24) {
