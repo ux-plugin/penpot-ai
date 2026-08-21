@@ -59,7 +59,13 @@ pub enum PassKind {
     /// over its inputs with `u` (surface resolution + params), sized to exactly `param_vec4s` vec4s
     /// (the shader's declared `array<vec4<f32>, N>`). The pipeline's own `@group(0)` layout is
     /// honoured: binding 0 uniform, 1 sampler, 2.. the input textures in order.
-    Custom { pipeline: Rc<wgpu::RenderPipeline>, u: Vec<f32>, param_vec4s: u32 },
+    ///
+    /// `pipeline` is `None` when the chain was lowered to be INSPECTED rather than run — admission
+    /// asks what shape a chain has, and that question does not need a compiled shader. It used to be
+    /// non-optional, so lowering without one dropped the pass with a `log::warn!`: a chain carrying a
+    /// user shader silently lowered to whatever was left, which would have admitted a shaded body as
+    /// a plain stamp and rendered it with the shader missing and no error anywhere.
+    Custom { pipeline: Option<Rc<wgpu::RenderPipeline>>, u: Vec<f32>, param_vec4s: u32 },
 }
 
 /// Lower a render-core effect graph to runnable [`Pass`]es, one per **execution group**
@@ -81,18 +87,15 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                     scale: graph[head].scale,
                 });
             }
-            EffectPass::Custom { u, param_vec4s } => match custom {
-                Some(pipeline) => out.push(Pass {
-                    kind: PassKind::Custom {
-                        pipeline: pipeline.clone(),
-                        u: u.clone(),
-                        param_vec4s: *param_vec4s,
-                    },
-                    inputs: graph[head].inputs.clone(),
-                    scale: graph[head].scale,
-                }),
-                None => log::warn!("custom effect pass with no pipeline resolved; skipping"),
-            },
+            EffectPass::Custom { u, param_vec4s } => out.push(Pass {
+                kind: PassKind::Custom {
+                    pipeline: custom.cloned(),
+                    u: u.clone(),
+                    param_vec4s: *param_vec4s,
+                },
+                inputs: graph[head].inputs.clone(),
+                scale: graph[head].scale,
+            }),
             _ => {
                 let head_src = graph[head].inputs.first().copied();
                 let mut inputs: Vec<Src> = head_src.into_iter().collect();
@@ -259,6 +262,9 @@ pub fn run_graph_into(
                 glass.units(device, enc, &view, &bound[0], bound.get(1), ops, field);
             }
             PassKind::Custom { pipeline, u, param_vec4s } => {
+                // A chain lowered for inspection must never reach the executor. Loud, because the
+                // alternative is a user's shader quietly not running.
+                let pipeline = pipeline.as_ref().expect("a custom pass reached the executor unresolved");
                 custom_pass(device, enc, &view, pipeline, sampler, &bound, u, *param_vec4s);
             }
         }
