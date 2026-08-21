@@ -449,12 +449,25 @@ fn hash2(p: vec2<f32>) -> vec2<f32> {
 /// - `gi: u32` — the field index (`0u` when the field lives in a uniform),
 /// - `fc: vec2<f32>` — the fragment's position in the *cell's* pixel space,
 /// - `uvpix: vec2<f32>` — the same position in the cell's normalised space,
-/// - `fieldU(gi, i)`, `glassSample(gi, uv)`, `glassSampleOrig(gi, uv)` — the accessors,
+/// - `fieldU(gi, i)`, `glassSample(gi, uv)`, `glassSampleOrig(gi, uv)` — the geometry accessors,
+/// - `unitParam(gi, i)` — the *unit's own* parameters (a tint colour, an enable flag), which live in
+///   the field uniform for a per-shape run but in the INSTANCE for a batched one, so a stamp can
+///   carry its colour in 16 bytes instead of a 96-byte field entry it has no other use for,
 /// and it leaves the result in `value`.
+///
+/// A composition that evaluates no field (a plain head with no shade and no mask-mix — every stamp)
+/// omits the field preamble entirely, so it never touches the field buffer and a batched stamp can
+/// bind the one-element placeholder.
+///
+/// `Tint` is self-disabling: a colour whose alpha is below zero leaves `value` where it was. One arm
+/// therefore serves a coloured silhouette and an uncoloured body, which is what keeps the batch from
+/// needing a second stamp pipeline for the shapes that carry no colour of their own.
 pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String {
     let UnitKey { head, shade, maskmix, clip, erase, tint, .. } = key;
-    let mut fs = String::from(
-        r#"
+    let mut fs = String::new();
+    if head != 0 || shade || maskmix {
+        fs.push_str(
+            r#"
     let resolution = fieldU(gi, 0u).xy;
     let scale = fieldU(gi, 4u).x;
     let field = computeField(gi, fc);
@@ -462,7 +475,8 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
     let specular = field.b;
     let mask = field.a;
 "#,
-    );
+        );
+    }
     let lens = p.declares("refracted");
     fs.push_str(match head {
         1 if !lens => r#"
@@ -526,15 +540,16 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
         fs.push_str(
             r#"
     let srcCoverage = glassSample(gi, uvpix).a;
-    value = mix(value, value * srcCoverage, fieldU(gi, 5u).y);
+    value = mix(value, value * srcCoverage, unitParam(gi, 5u).y);
 "#,
         );
     }
     if tint {
         fs.push_str(
             r#"
-    let tintColor = fieldU(gi, 3u);
-    value = vec4<f32>(tintColor.rgb * tintColor.a, tintColor.a) * value.a;
+    let tintColor = unitParam(gi, 3u);
+    let tinted = vec4<f32>(tintColor.rgb * tintColor.a, tintColor.a) * value.a;
+    value = mix(value, tinted, select(0.0, 1.0, tintColor.a >= 0.0));
 "#,
         );
     }
@@ -542,7 +557,7 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
         fs.push_str(
             r#"
     let punch = glassSampleOrig(gi, uvpix);
-    value = value * (1.0 - punch.a * fieldU(gi, 3u).w);
+    value = value * (1.0 - punch.a * unitParam(gi, 3u).w);
 "#,
         );
     }
@@ -583,6 +598,7 @@ fn units_shader(key: UnitKey, program: &crate::field::FieldProgram) -> String {
     bindings.push_str(
         r#"
 fn fieldU(gi: u32, i: u32) -> vec4<f32> { return u[i]; }
+fn unitParam(gi: u32, i: u32) -> vec4<f32> { return u[i]; }
 fn glassSample(gi: u32, uv: vec2<f32>) -> vec4<f32> { return textureSample(src, samp, uv); }
 "#,
     );

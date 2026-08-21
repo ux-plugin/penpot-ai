@@ -11,14 +11,21 @@
 //! normalised weighted sum, same linear-light decode). Cells sit side by side in one surface, so the
 //! private texture's clamp-to-edge becomes an explicit UV clamp to the instance's own cell rect —
 //! same replicated edge texels, and a tap can never cross into the neighbouring cell.
-
-use std::ops::Range;
+//!
+//! **One sampling convention.** The vertex stage hands every arm the fragment's position in the
+//! CELL's normalised space, and nothing else — the atlas rect the cell happens to occupy is a
+//! mapping the arm applies (`atlasUV`, and the samplers built on it), not a second meaning the same
+//! varying carries in some arms. That is what lets the stamp and the inner-shadow band drop their
+//! hand-written fragments and run [`super::glass::units_body`] instead, the same text the per-shape
+//! pipeline compiles: one `Tint`, one `EraseBy`, one place either can be wrong. A stamp evaluates no
+//! field, so it reads its colour out of its own instance through the `unitParam` seam rather than
+//! out of a 96-byte field entry it would otherwise have to be given.
 
 /// Per-quad instance: destination rect in the target's NDC, source rect in the source's UV, the tap
 /// clamp rect, and the blur parameters. `step` is the blur direction pre-divided by the source size
 /// (a copy/composite instance leaves it unused); `src2`/`clamp2` are the second read the erase
-/// stage takes (the punch). Layout matches the WGSL `Inst` struct: eleven `vec2<f32>` then eight
-/// `f32`, 120 bytes, align 8.
+/// stage takes (the punch). Layout matches the WGSL `Inst` struct: eleven `vec2<f32>`, then seven
+/// `f32`, then the `tint` pair — 136 bytes, align 8.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Inst {
@@ -36,17 +43,18 @@ pub(crate) struct Inst {
     pub sigma: f32,
     pub radius: f32,
     pub linearize: f32,
-    pub alpha: f32,
     /// Composite source select: 0 = the blurred atlas (`tex0`), 1 = the combined atlas (`tex1`,
     /// where the erase stage materialised inner-shadow bands). The glass stages reuse it as the
     /// instance's index into the field buffer.
     pub mode: f32,
     /// `[0]` = stage tag (see `fs_uber`); `[1]`/`[2]` = this instance's destination origin in target
     /// pixels, which the glass stages subtract from `@builtin(position)` to recover the cell-local
-    /// fragment coordinate the field math is expressed in.
-    pub _pad: [f32; 3],
-    /// Straight RGBA the composite multiplies this instance's coverage by, or **alpha below zero**
-    /// for no tint at all — the body and the glass stamps take that path and are untouched.
+    /// fragment coordinate the field math is expressed in; `[3]` keeps the 136-byte stride the
+    /// `tint` pair's 8-byte alignment already implies.
+    pub _pad: [f32; 4],
+    /// This instance's `unitParam(gi, 3u)`: a straight RGBA the `Tint` unit multiplies coverage by
+    /// and whose alpha the `EraseBy` unit scales its punch with, or **alpha below zero** for no
+    /// tint at all — the body and the glass stamps take that path and are untouched.
     ///
     /// Four `f32`s and not a `vec4`: at byte offset 120 a `vec4<f32>` would be 16-byte aligned on
     /// the WGSL side and pad to 128, while `repr(C)` `[f32; 4]` sits at 120. The struct is declared
@@ -65,11 +73,11 @@ pub(crate) struct GlassField {
 
 /// Stage tags stamped into `Inst::_pad[0]`, selecting the arm `fs_uber` runs.
 pub(crate) mod stage {
-    /// Plain copy / composite of one source rect (the default arm).
+    /// The stamp: a plain read of one source rect, tinted when the instance carries a colour.
     pub const COMPOSITE: f32 = 0.0;
     /// Separable Gaussian tap loop along the instance's `step`.
     pub const BLUR: f32 = 2.0;
-    /// EraseBy combine: `flood × (1 − punch.a)`.
+    /// The inner-shadow band: the same stamp read, erased by the punch (the `EraseBy` unit).
     pub const COMBINE: f32 = 3.0;
     /// Glass warp alone — the head of a frosted chain, whose result a blur then consumes.
     pub const GLASS_WARP: f32 = 4.0;
@@ -115,22 +123,15 @@ impl Inst {
             sigma: s,
             radius: (3.0 * s).ceil().clamp(1.0, 160.0),
             linearize: if blurred && linear { 1.0 } else { 0.0 },
-            alpha: 1.0,
             mode: 0.0,
-            _pad: [0.0; 3],
+            _pad: [0.0; 4],
             tint: [0.0, 0.0, 0.0, -1.0],
         }
     }
 
-    /// The instance with an explicit alpha factor. The erase stage reads it as the shadow colour's
-    /// alpha; the composite stages scale their sample by it.
-    pub fn with_alpha(mut self, alpha: f32) -> Self {
-        self.alpha = alpha;
-        self
-    }
-
     /// The instance with a straight RGBA tint applied to its coverage at composite time. What lets
-    /// one rasterised silhouette serve shadows of different colours.
+    /// one rasterised silhouette serve shadows of different colours — and what the erase stage reads
+    /// the shadow colour's alpha out of.
     pub fn tinted(mut self, colour: [f32; 4]) -> Self {
         self.tint = colour;
         self
@@ -176,11 +177,11 @@ struct Inst {
     sigma: f32,
     radius: f32,
     linearize: f32,
-    alpha: f32,
     mode: f32,
     _p0: f32,
     _p1: f32,
     _p2: f32,
+    _p3: f32,
     tint_lo: vec2<f32>,
     tint_hi: vec2<f32>,
 };
@@ -204,15 +205,42 @@ var<private> g_orig_min: vec2<f32>;
 var<private> g_orig_max: vec2<f32>;
 var<private> g_orig_cmin: vec2<f32>;
 var<private> g_orig_cmax: vec2<f32>;
+/// The running instance, for the accessors that read its own parameters rather than the field.
+var<private> g_inst: u32;
+/// Head reads take the *second* binding instead of the first — how a stamp selects the atlas the
+/// erase stage materialised its band in, without the arm knowing which atlas that was. Per-instance
+/// and therefore non-uniform, which is why every sample here is `textureSampleLevel`: an explicit
+/// LOD is legal under non-uniform control flow where an implicit-derivative sample is not.
+var<private> g_alt: bool;
 
 fn fieldU(gi: u32, i: u32) -> vec4<f32> { return fields[gi].u[i]; }
+/// A unit's own parameters. A stamp evaluates no field, so it has no field entry to read them out
+/// of — it carries them in its instance instead, and `unitParam` is the seam that hides which.
+fn unitParam(gi: u32, i: u32) -> vec4<f32> {
+    if (i == 3u) {
+        let it = insts[g_inst];
+        return vec4<f32>(it.tint_lo.x, it.tint_lo.y, it.tint_hi.x, it.tint_hi.y);
+    }
+    return fields[gi].u[i];
+}
+/// The cell coordinate mapped onto the instance's rect in the atlas. Deliberately UNCLAMPED — the
+/// blur adds its tap offset here and clamps once afterwards, and clamping twice would push a tap at
+/// the rect's edge half a texel further than a dedicated texture's clamp-to-edge puts it.
+fn atlasUV(uv: vec2<f32>) -> vec2<f32> {
+    return mix(g_src_min, g_src_max, uv);
+}
 fn glassSample(gi: u32, uv: vec2<f32>) -> vec4<f32> {
-    return textureSampleLevel(tex, samp, clamp(mix(g_src_min, g_src_max, uv), g_src_cmin, g_src_cmax), 0.0);
+    let a = clamp(atlasUV(uv), g_src_cmin, g_src_cmax);
+    if (g_alt) { return textureSampleLevel(tex2, samp, a, 0.0); }
+    return textureSampleLevel(tex, samp, a, 0.0);
 }
 fn glassSampleOrig(gi: u32, uv: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(tex2, samp, clamp(mix(g_orig_min, g_orig_max, uv), g_orig_cmin, g_orig_cmax), 0.0);
 }
-fn glassBegin(it: Inst) {
+fn glassBegin(ii: u32, alt: bool) {
+    let it = insts[ii];
+    g_inst = ii;
+    g_alt = alt;
     g_src_min = it.src_min; g_src_max = it.src_max;
     g_src_cmin = it.clamp_min; g_src_cmax = it.clamp_max;
     g_orig_min = it.src2_min; g_orig_max = it.src2_max;
@@ -238,11 +266,14 @@ fn premul_lin_to_srgb(s: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(vec3<f32>(lin_to_srgb(straight.r), lin_to_srgb(straight.g), lin_to_srgb(straight.b)) * a, s.a);
 }
 
+/// `uv` is the fragment's position in the **cell's own normalised space** — 0..1 across the quad,
+/// the one coordinate every unit body is written against. An arm that needs an atlas coordinate
+/// derives it (`atlasUV`, or the samplers that call it); an arm that needs the cell's pixel
+/// coordinate derives that too. One varying, one meaning.
 struct VSOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) uv2: vec2<f32>,
-    @location(2) @interpolate(flat) inst: u32,
+    @location(1) @interpolate(flat) inst: u32,
 };
 
 @vertex
@@ -251,14 +282,15 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VSOut
     let it = insts[ii];
     var out: VSOut;
     out.pos = vec4<f32>(mix(it.dst_min, it.dst_max, corner), 0.0, 1.0);
-    out.uv = mix(it.src_min, it.src_max, corner);
-    out.uv2 = mix(it.src2_min, it.src2_max, corner);
+    out.uv = corner;
     out.inst = ii;
     return out;
 }
 
 fn blur_px(in: VSOut) -> vec4<f32> {
     let it = insts[in.inst];
+    glassBegin(in.inst, false);
+    let base = atlasUV(in.uv);
     let r = i32(it.radius);
     let inv2s2 = 1.0 / (2.0 * it.sigma * it.sigma);
     let lin = it.linearize > 0.5;
@@ -270,7 +302,7 @@ fn blur_px(in: VSOut) -> vec4<f32> {
         // Taps clamp to the instance's own cell rect — the exact clamp-to-edge the legacy private
         // texture gave (edge texels replicate, which matters where the viewport clipped a shape
         // mid-ink), expressed as a UV clamp so a tap can never cross into the neighbouring cell.
-        let uv = clamp(in.uv + it.step * fi, it.clamp_min, it.clamp_max);
+        let uv = clamp(base + it.step * fi, it.clamp_min, it.clamp_max);
         wsum = wsum + w;
         var s = textureSampleLevel(tex, samp, uv, 0.0);
         if (lin) { s = premul_srgb_to_lin(s); }
@@ -282,35 +314,6 @@ fn blur_px(in: VSOut) -> vec4<f32> {
 }
 
 
-// The EraseBy combine: `flood * (1 - punch.a)` — DestOut in one read pair, both rects living in the
-// SAME blurred atlas (`tex` and `tex2` bind the same view here). Runs at cell resolution with a
-// replace target, so the band is materialised before any filtering — the same order the per-shape
-// `blit_dstout` produced.
-fn combine_px(in: VSOut) -> vec4<f32> {
-    let it = insts[in.inst];
-    let flood = textureSampleLevel(tex, samp, clamp(in.uv, it.clamp_min, it.clamp_max), 0.0);
-    let punch = textureSampleLevel(tex2, samp, clamp(in.uv2, it.clamp2_min, it.clamp2_max), 0.0);
-    // `alpha` is the shadow colour's own alpha. The punch is bare coverage now, but it used to be
-    // rasterised in the shadow's colour, so its alpha carried that factor into the erase — scaling
-    // here is what keeps a translucent inner shadow identical.
-    return flood * (1.0 - punch.a * it.alpha);
-}
-
-fn composite_px(in: VSOut) -> vec4<f32> {
-    let it = insts[in.inst];
-    let uv = clamp(in.uv, it.clamp_min, it.clamp_max);
-    var value = textureSampleLevel(tex, samp, uv, 0.0);
-    if (it.mode > 0.5) {
-        value = textureSampleLevel(tex2, samp, uv, 0.0);
-    }
-    value = value * it.alpha;
-    // A negative tint alpha means this instance carries no colour of its own.
-    if (it.tint_hi.y < 0.0) {
-        return value;
-    }
-    let c = vec4<f32>(it.tint_lo.x, it.tint_lo.y, it.tint_hi.x, it.tint_hi.y);
-    return vec4<f32>(c.rgb * c.a, c.a) * value.a;
-}
 
 "#;
 
@@ -393,19 +396,30 @@ pub(crate) struct BatchPipelines {
     no_fields: wgpu::Buffer,
 }
 
-/// Emit one glass arm: publish the instance's cell rects, recover the cell-local fragment
+/// Emit one arm: publish the instance's rects and parameters, recover the cell-local fragment
 /// coordinate from the destination origin the instance carries, then run the SHARED unit body for
 /// this composition ([`super::glass::units_body`]) — the same text the per-shape pipeline compiles,
 /// so a batched cell and a dedicated-texture cell execute identical math.
-fn glass_arm(name: &str, key: crate::vello::glass::UnitKey) -> String {
+///
+/// `alt` selects the second binding for the head's reads. Only a stamp uses it (to pick up the band
+/// the erase stage materialised in the other atlas); the glass arms pass `false` because their
+/// `mode` is a field index, not a source select.
+///
+/// `uvpix` is where the two conventions still meet. A stamp takes the interpolated cell coordinate
+/// straight from the vertex stage — the single convention this arm set is built on. A glass arm
+/// instead divides its recovered `fc` by the field's own resolution, because its sampling has to
+/// land on exactly the pixel its field was evaluated at; routing it through the interpolator instead
+/// moves 16 pixels of the `combined` and `matrix` fixtures by one last bit. Glass joins the shared
+/// convention in phase 5, where the field evaluation moves with it.
+fn unit_arm(name: &str, key: crate::vello::glass::UnitKey, alt: &str, uvpix: &str) -> String {
     format!(
         r#"
 fn {name}(in: VSOut) -> vec4<f32> {{
     let it = insts[in.inst];
-    glassBegin(it);
+    glassBegin(in.inst, {alt});
     let gi = u32(it.mode);
     let fc = in.pos.xy - vec2<f32>(it._p1, it._p2);
-    let uvpix = fc / fieldU(gi, 0u).xy;
+    let uvpix = {uvpix};
 {body}
     return value;
 }}
@@ -422,9 +436,34 @@ fn batch_shader() -> String {
     if crate::vello::glass::needs_hash(crate::vello::glass::UnitKey { head: 2, ..Default::default() }) {
         s.push_str(crate::vello::glass::HASH_PRELUDE);
     }
-    s.push_str(&glass_arm("glass_warp_px", crate::vello::glass::UnitKey { head: 1, ..Default::default() }));
-    s.push_str(&glass_arm("glass_sharp_px", crate::vello::glass::UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() }));
-    s.push_str(&glass_arm("glass_frost_px", crate::vello::glass::UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() }));
+    use crate::vello::glass::UnitKey;
+    const FIELD_UV: &str = "fc / fieldU(gi, 0u).xy";
+    const CELL_UV: &str = "in.uv";
+    s.push_str(&unit_arm("glass_warp_px", UnitKey { head: 1, ..Default::default() }, "false", FIELD_UV));
+    s.push_str(&unit_arm(
+        "glass_sharp_px",
+        UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() },
+        "false",
+        FIELD_UV,
+    ));
+    s.push_str(&unit_arm(
+        "glass_frost_px",
+        UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() },
+        "false",
+        FIELD_UV,
+    ));
+    // The stamp: a plain read of the cell, optionally coloured. `Tint` is unconditional in the body
+    // and self-disabling on an instance whose tint alpha is below zero, so the untinted body, the
+    // shadow silhouettes and the glass results all ride ONE arm.
+    s.push_str(&unit_arm("stamp_px", UnitKey { tint: true, ..Default::default() }, "it.mode > 0.5", CELL_UV));
+    // The inner-shadow band: the same plain read, erased by the punch. What used to be a
+    // hand-written `flood * (1 - punch.a * alpha)` that duplicated the `EraseBy` unit.
+    s.push_str(&unit_arm(
+        "combine_px",
+        UnitKey { erase: true, two_tex: true, ..Default::default() },
+        "false",
+        CELL_UV,
+    ));
     s.push_str(
         r#"
 // Every kernel in ONE function behind a per-instance switch (`_p0` = the stage tag). Measured free
@@ -449,7 +488,7 @@ fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
     if (stage > 1.5) {
         return blur_px(in);
     }
-    return composite_px(in);
+    return stamp_px(in);
 }
 "#,
     );
@@ -703,5 +742,79 @@ impl BatchPipelines {
         for stage in stages.iter().filter(|s| s.round == round) {
             self.run_stage(device, enc, stage, acc, atlas, sampler);
         }
+    }
+}
+
+#[cfg(test)]
+mod sampling_convention_tests {
+    use super::batch_shader;
+    use crate::vello::glass::{glass_field_program, units_body, UnitKey};
+
+    /// The stamp is not hand-written any more. Both of its lines have to be the ones `units_body`
+    /// emits, because the moment they are typed out separately they start drifting from the unit the
+    /// planner thinks it scheduled — which is exactly how the batch grew an `EraseBy` of its own.
+    #[test]
+    fn the_stamp_and_the_band_are_generated_from_the_shared_unit_bodies() {
+        let s = batch_shader();
+        for key in [
+            UnitKey { tint: true, ..Default::default() },
+            UnitKey { erase: true, two_tex: true, ..Default::default() },
+        ] {
+            let body = units_body(key, &glass_field_program());
+            assert!(s.contains(body.trim_end()), "the batch module does not carry this unit body verbatim:\n{body}");
+        }
+    }
+
+    /// One `EraseBy`, one implementation. The batch used to spell the same `flood × (1 − punch.a)`
+    /// out in its own fragment, and the two drifted by 38 levels when the punch stopped being
+    /// rasterised in the shadow's colour.
+    #[test]
+    fn the_erase_math_appears_exactly_once() {
+        let s = batch_shader();
+        assert_eq!(s.matches("1.0 - punch.a").count(), 1, "the batch has more than one EraseBy");
+    }
+
+    /// A stamp evaluates no field, so it must not read the field buffer — the batch binds a
+    /// one-element placeholder there, and a stamp whose `mode` selects the second texture would
+    /// index past it.
+    #[test]
+    fn a_stamp_reads_no_field() {
+        let body = units_body(UnitKey { tint: true, ..Default::default() }, &glass_field_program());
+        assert!(!body.contains("computeField"), "a stamp evaluated the field:\n{body}");
+        assert!(!body.contains("fieldU("), "a stamp read the field uniform:\n{body}");
+        assert!(body.contains("unitParam(gi, 3u)"), "a stamp's tint did not come from its instance:\n{body}");
+    }
+
+    /// The glass compositions still evaluate their field — the gate above must not have turned the
+    /// preamble off for everyone.
+    #[test]
+    fn a_lens_still_evaluates_its_field() {
+        let body = units_body(
+            UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() },
+            &glass_field_program(),
+        );
+        assert!(body.contains("computeField(gi, fc)"), "the lens lost its field:\n{body}");
+    }
+
+    /// One meaning for the interpolated coordinate. The vertex stage hands every arm the CELL's
+    /// normalised position; an arm that wants an atlas coordinate derives it through `atlasUV`, so
+    /// no two arms can disagree about what `in.uv` is.
+    #[test]
+    fn the_vertex_stage_emits_the_cell_coordinate() {
+        let s = batch_shader();
+        assert!(s.contains("out.uv = corner;"), "the vertex stage no longer emits the cell coordinate");
+        assert!(
+            !s.contains("out.uv = mix(it.src_min, it.src_max, corner)"),
+            "the vertex stage went back to emitting an atlas coordinate"
+        );
+    }
+
+    /// `atlasUV` clamps nothing. The blur adds its tap offset to that base and clamps once; clamping
+    /// inside would put an edge tap half a texel past where a dedicated texture's clamp-to-edge does.
+    #[test]
+    fn the_atlas_mapping_does_not_clamp() {
+        let s = batch_shader();
+        let f = s.split("fn atlasUV").nth(1).expect("atlasUV").split('}').next().expect("body");
+        assert!(!f.contains("clamp("), "atlasUV clamps, which double-clamps every blur tap:\n{f}");
     }
 }

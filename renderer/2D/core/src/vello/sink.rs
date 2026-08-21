@@ -384,7 +384,7 @@ fn wv_batch_plan(
                             flood_rect, atlas_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
                         )
                         .with_src2(punch_rect, atlas_size, 0.0)
-                        .with_alpha(pc[3]),
+                        .tinted(pc),
                     );
                     let Some(colour) = cell_tint(flood) else { continue };
                     by_round.entry(rounds[j]).or_default().push(
