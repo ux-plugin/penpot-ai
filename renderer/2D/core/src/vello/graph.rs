@@ -303,6 +303,50 @@ pub fn run_graph_into(
     final_out
 }
 
+/// Execute ONE unit-based [`crate::vello::fx::Op`] into a fresh target — the single-instance core of
+/// the future per-backend executor (`draw_units`). Dispatches on the op's units exactly as
+/// [`run_graph_into`] dispatches on `PassKind`: a lone `Blur`/`Custom` barrier takes its dedicated
+/// path, any other run is one fused `unit_pipeline.units` draw. `custom_pipeline` resolves an
+/// `Op::Custom` (the backend's job in the full executor). Additive — not yet on the frame path; the
+/// executor-swap slice wires it in and heatmap-verifies it against `pre-unit-collapse`.
+#[expect(clippy::too_many_arguments, reason = "the GPU context travels together")]
+#[allow(dead_code, reason = "wired + heatmap-verified in the executor-swap slice")]
+pub fn run_op(
+    op: &crate::vello::fx::Op,
+    compositor: &Compositor,
+    unit_pipeline: &UnitPipeline,
+    device: &wgpu::Device,
+    enc: &mut wgpu::CommandEncoder,
+    inputs: &[&wgpu::TextureView],
+    custom_pipeline: Option<&Rc<wgpu::RenderPipeline>>,
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    pool: &mut crate::vello::sink::TexturePool,
+    keep_tex: &mut Vec<wgpu::Texture>,
+    keep_views: &mut Vec<wgpu::TextureView>,
+) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+    let sampler = compositor.sampler();
+    let tex = pool.acquire_target(device, w, h, format, wgpu::TextureUsages::COPY_SRC, "op target");
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    match op.units.as_slice() {
+        [UnitOp::Blur { sigma, linear }] => {
+            gaussian_blur(
+                compositor, device, enc, &view, inputs[0], w, h, *sigma, *linear, format, pool, keep_tex, keep_views,
+            );
+        }
+        [UnitOp::Custom { u, param_vec4s }] => {
+            let pipeline = custom_pipeline?;
+            let owned: Vec<wgpu::TextureView> = inputs.iter().map(|v| (*v).clone()).collect();
+            custom_pass(device, enc, &view, pipeline, sampler, &owned, u, *param_vec4s);
+        }
+        ops => {
+            unit_pipeline.units(device, enc, &view, inputs[0], inputs.get(1).copied(), ops, &op.field);
+        }
+    }
+    Some((tex, view))
+}
+
 /// Standalone effect graph: make an encoder, [`run_graph_into`] it, and submit. For callers not
 /// folding the graph into a larger frame encoder (the tiled gather path, focus mode). Dropping the
 /// scratch right after the submit is safe — the submit retains every resource until the GPU is done.
