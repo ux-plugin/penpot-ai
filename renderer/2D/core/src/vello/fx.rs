@@ -109,9 +109,102 @@ pub trait FxBackend {
 
 /// Backend capability limits the planner coalesces against.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code, reason = "consumed by coalesce() in step 3")]
 pub struct Caps {
     /// Maximum instances one draw can carry. `usize::MAX` for storage-buffer backends (WebGPU);
     /// the attribute/UBO array bound for WebGL2 — `coalesce` splits an over-cap op.
     pub max_instances: usize,
+}
+
+/// Merge ops that run the same pipeline into instanced draws — the "batch across shapes" step, as a
+/// `Vec<Op> → Vec<Op>` transform. Ops sharing a [`Op::key`] collapse into one op carrying all their
+/// instances (preserving first-seen order); a group over `caps.max_instances` splits into as many
+/// draws as it takes. `instances.len() == 1` survivors are single shapes — the same type, so nothing
+/// downstream distinguishes "batched" from "not".
+///
+/// The shared atlas the merged instances read is allocated at execute time, where each instance's
+/// `src`/`clamp` is rewritten to its cell; coalesce only decides the grouping.
+#[must_use]
+#[allow(dead_code, reason = "wired when the batched planner emits Ops")]
+pub fn coalesce(ops: Vec<Op>, caps: Caps) -> FxSchedule {
+    let mut order: Vec<u64> = Vec::new();
+    let mut groups: std::collections::HashMap<u64, Op> = std::collections::HashMap::new();
+    for op in ops {
+        let k = op.key();
+        if let Some(acc) = groups.get_mut(&k) {
+            acc.instances.extend(op.instances);
+        } else {
+            order.push(k);
+            groups.insert(k, op);
+        }
+    }
+    let cap = caps.max_instances.max(1);
+    let mut out = Vec::new();
+    for k in order {
+        let op = groups.remove(&k).expect("key was inserted with its op");
+        if op.instances.len() <= cap {
+            out.push(op);
+        } else {
+            for chunk in op.instances.chunks(cap) {
+                out.push(Op { instances: chunk.to_vec(), ..op.clone() });
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::{coalesce, Caps, Instance, Op, Target};
+    use crate::kurbo::Rect;
+    use crate::vello::batch::FieldUniform;
+    use crate::vello::units::UnitOp;
+
+    fn field() -> std::rc::Rc<crate::field::FieldProgram> {
+        std::rc::Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() })
+    }
+
+    fn inst(x: f64) -> Instance {
+        Instance {
+            dst: Rect::new(x, 0.0, x + 10.0, 10.0),
+            src: Rect::new(0.0, 0.0, 1.0, 1.0),
+            clamp: Rect::new(0.0, 0.0, 1.0, 1.0),
+            field: FieldUniform { u: [0.0; 24] },
+            scale: 1.0,
+        }
+    }
+
+    fn op(units: Vec<UnitOp>, x: f64) -> Op {
+        Op { units, field: field(), inputs: Vec::new(), target: Target::Transient, instances: vec![inst(x)], blend: false }
+    }
+
+    fn no_cap() -> Caps { Caps { max_instances: usize::MAX } }
+
+    /// Three shapes with the same unit chain collapse into ONE op carrying three instances — the whole
+    /// "batch across shapes" idea, as an outcome of matching keys.
+    #[test]
+    fn same_key_ops_merge_into_one_instanced_op() {
+        let ops = vec![op(vec![UnitOp::Tint(vec![])], 0.0), op(vec![UnitOp::Tint(vec![])], 20.0), op(vec![UnitOp::Tint(vec![])], 40.0)];
+        let out = coalesce(ops, no_cap());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].instances.len(), 3);
+    }
+
+    /// Different unit chains keep separate draws.
+    #[test]
+    fn different_keys_stay_separate() {
+        let ops = vec![op(vec![UnitOp::Tint(vec![])], 0.0), op(vec![UnitOp::Blur { sigma: 4.0, linear: true }], 20.0)];
+        let out = coalesce(ops, no_cap());
+        assert_eq!(out.len(), 2);
+    }
+
+    /// A group past the backend's instance cap splits into multiple draws — WebGL2's attribute limit
+    /// expressed as data, not a special case.
+    #[test]
+    fn an_over_cap_group_splits() {
+        let ops = vec![op(vec![UnitOp::Tint(vec![])], 0.0), op(vec![UnitOp::Tint(vec![])], 20.0), op(vec![UnitOp::Tint(vec![])], 40.0)];
+        let out = coalesce(ops, Caps { max_instances: 2 });
+        assert_eq!(out.len(), 2, "3 instances at cap 2 => 2+1");
+        assert_eq!(out[0].instances.len(), 2);
+        assert_eq!(out[1].instances.len(), 1);
+    }
 }
