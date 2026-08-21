@@ -192,29 +192,6 @@ impl Pass {
     }
 }
 
-impl PassKind {
-    /// The profiler bucket for this pass's own interval (the delta ending just after it runs).
-    fn prof_bucket(&self) -> usize {
-        match self {
-            PassKind::Blur { .. } => prof_bucket::BLUR,
-            PassKind::Units { ops, .. } => {
-                if ops.iter().any(|o| matches!(o, UnitOp::Warp(_))) {
-                    prof_bucket::REFRACTION
-                } else {
-                    prof_bucket::COMPOSITE
-                }
-            }
-            PassKind::Custom { .. } => prof_bucket::COMPOSITE,
-        }
-    }
-
-    /// The output format — every fused pass now writes the swapchain format (the old signed-float
-    /// displacement field is gone; its math is recomputed inline in the refraction/composite passes).
-    fn output_format(&self, swapchain: wgpu::TextureFormat) -> wgpu::TextureFormat {
-        swapchain
-    }
-}
-
 /// Run an effect's pass-graph and return the final pass's `(texture, view)`, or `None` for an empty
 /// graph. All passes share one encoder and one submit; the caller wraps the result in its surface
 /// map and stamps it into the destination tiles.
