@@ -106,15 +106,17 @@ struct WvBatchPlan {
     extra: HashMap<u128, u32>,
 }
 
-/// The straight RGBA of one of a shape's shadows, `None` when the index no longer resolves. The
-/// silhouette is rasterised as bare coverage, so this colour is what the Tint applies — the whole
-/// reason a shape's shadows can share one rasterisation.
-fn shadow_colour(id: u128, inset: bool, idx: usize) -> Option<[f32; 4]> {
-    crate::vello::abi::with_scene(|model, _, _| {
-        model
-            .get(id)
-            .and_then(|n| n.shadows.iter().filter(|s| s.inset == inset).nth(idx))
-            .map(|s| s.color.components)
+/// The straight RGBA this cell's chain tints with, read off the chain itself.
+///
+/// It used to be a second lookup on the node (`model.get(id).shadows.filter(inset).nth(idx)`), which
+/// is how the batch and the per-shape path could disagree about a colour: two routes to one value.
+/// The chain already carries it, because the chain is what applies it.
+fn wv_cell_tint(c: &WvCell) -> Option<[f32; 4]> {
+    c.graph.iter().find_map(|p| match &p.pass {
+        crate::effect_graph::EffectPass::Unit { op: crate::effect_graph::UnitKind::Tint, u, .. } => {
+            Some([u[12], u[13], u[14], u[15]])
+        }
+        _ => None,
     })
 }
 
@@ -2662,13 +2664,92 @@ impl Sink {
             );
             scene.set_transform(Affine::IDENTITY);
             scene.push_layer(Some(&rect.to_path(0.1)), Some(replace), None, None, None);
-            match c.key.1 {
-                0 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, false, true, false),
-                2 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, false, false),
-                3 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, true, false),
-                _ => backend.draw_scene_range(scene, m, *root_index, *root_index + 1),
-            }
+            Self::wv_cell_source_into(backend, scene, c, m, *root_index);
             scene.pop_layer();
+        }
+    }
+
+    /// Draw one cell's SOURCE into `scene` at `m` — the silhouette a shadow cell rasterises, or the
+    /// shape itself for a body cell. The one place that knows what a cell of each kind is made of.
+    ///
+    /// It was four places: the strip prepass and the three per-shape painters each spelled the same
+    /// match out, and each was a place `build_shadow_silhouette`'s three booleans could be flipped
+    /// independently of the others.
+    fn wv_cell_source_into<B: RasterBackend>(backend: &mut B, scene: &mut B::Scene, c: &WvCell, m: Affine, root_index: usize) {
+        match c.key.1 {
+            0 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, false, true, false),
+            2 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, false, false),
+            3 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, true, false),
+            _ => backend.draw_scene_range(scene, m, root_index, root_index + 1),
+        }
+    }
+
+    /// This cell's source as a texture: the one the strip prepass already packed if it is there, and
+    /// a freshly rasterised one otherwise. Both halves of the fallback lived three times over, once
+    /// per painter, each with its own label and its own copy of the crop.
+    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
+    fn wv_cell_source<B: RasterBackend>(
+        &mut self,
+        c: &WvCell,
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        root: Affine,
+        root_index: usize,
+        format: wgpu::TextureFormat,
+    ) -> wgpu::TextureView {
+        if let Some(v) = self.wv_atlas.get(&c.key).map(|(_, v)| v.clone()) {
+            return v;
+        }
+        // A body chain may translate its result; its cell box moved with it, so the render has to
+        // move by the same device vector or the two cancel out. Zero for every cell without one.
+        let (odx, ody) = (f64::from(c.dev_offset.0), f64::from(c.dev_offset.1));
+        let m = Affine::scale(f64::from(c.k))
+            * Affine::translate((odx - f64::from(c.bx), ody - f64::from(c.by)))
+            * root;
+        let tex = self.pool.acquire_target(device, c.kw, c.kh, format, self.raster_usage, "wv cell source");
+        let v = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut scene = backend.new_scene(c.kw as u16, c.kh as u16);
+        Self::wv_cell_source_into(backend, &mut scene, c, m, root_index);
+        backend.rasterize(&scene, device, queue, enc, &v, c.kw, c.kh, TRANSPARENT);
+        self.frame_transient.push(tex);
+        self.frame_transient_views.push(v.clone());
+        v
+    }
+
+    /// Run `passes` over `inputs` at the cell's own size and stamp the result at the cell's box —
+    /// the tail every per-shape painter ends with. An empty chain stamps the source unchanged, which
+    /// is what a cell whose effect is the identity means.
+    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
+    fn wv_effect_blit(
+        &mut self,
+        c: &WvCell,
+        inputs: &[&wgpu::TextureView],
+        passes: &[Pass],
+        device: &wgpu::Device,
+        enc: &mut wgpu::CommandEncoder,
+        acc_view: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        sz: (f32, f32),
+    ) {
+        let (kwf, khf) = (c.kw as f32, c.kh as f32);
+        let out = run_graph_into(
+            &self.compositor, &self.glass, device, enc, inputs, passes, c.kw, c.kh, format,
+            &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
+            self.pass_prof.as_mut(),
+        );
+        let src = out.as_ref().map_or(inputs[0], |(_, v)| v);
+        self.compositor.blit(device, enc, acc_view, sz, &Blit {
+            src,
+            dst: (c.bx as f32, c.by as f32, c.bw as f32, c.bh as f32),
+            src_rect: (0.0, 0.0, kwf, khf),
+            src_size: (kwf, khf),
+            alpha: 1.0,
+        });
+        if let Some((tex, view)) = out {
+            self.frame_transient.push(tex);
+            self.frame_transient_views.push(view);
         }
     }
 
@@ -2691,41 +2772,12 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         acc_view: &wgpu::TextureView,
         root: Affine,
-        id: u128,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        {
-            let WvCell { bx, by, bw, bh, kw, kh, k, sigma, key, .. } = cell;
-            let (bxf, byf, bwf, bhf) = (bx as f32, by as f32, bw as f32, bh as f32);
-            let sil_view = if let Some(v) = self.wv_atlas.get(&key).map(|(_, v)| v.clone()) {
-                v
-            } else {
-                let crop = Affine::translate((-f64::from(bx), -f64::from(by))) * root;
-                let sil = self.pool.acquire_target(device, kw, kh, format, self.raster_usage, "wv path shadow silhouette");
-                let v = sil.create_view(&wgpu::TextureViewDescriptor::default());
-                let mut sscene = backend.new_scene(kw as u16, kh as u16);
-                backend.build_shadow_silhouette(&mut sscene, Affine::scale(f64::from(k)) * crop, id, key.2, false, true, false);
-                backend.rasterize(&sscene, device, queue, enc, &v, kw, kh, TRANSPARENT);
-                self.frame_transient.push(sil);
-                self.frame_transient_views.push(v.clone());
-                v
-            };
-            let (kwf, khf) = (kw as f32, kh as f32);
-            let Some(colour) = shadow_colour(id, false, key.2) else { return };
-            let graph = effect_graph::drop_shadow_graph(kwf, khf, colour, sigma * k);
-            let out = run_graph_into(
-                &self.compositor, &self.glass, device, enc, &[&sil_view], &lower_graph(&graph, None),
-                kw, kh, format, &mut self.pool, &mut self.frame_transient,
-                &mut self.frame_transient_views, self.pass_prof.as_mut(),
-            );
-            let Some((tex, view)) = out else { return };
-            self.compositor.blit(device, enc, acc_view, sz, &Blit {
-                src: &view, dst: (bxf, byf, bwf, bhf), src_rect: (0.0, 0.0, kwf, khf), src_size: (kwf, khf), alpha: 1.0,
-            });
-            self.frame_transient.push(tex);
-            self.frame_transient_views.push(view);
-        }
+        let sil = self.wv_cell_source(&cell, backend, device, queue, enc, root, 0, format);
+        let passes = lower_graph(&cell.graph, None);
+        self.wv_effect_blit(&cell, &[&sil], &passes, device, enc, acc_view, format, sz);
     }
 
     /// Composite a node's inner (inset) shadows over the whole-viewport accumulator, on top of the
@@ -2736,60 +2788,35 @@ impl Sink {
     /// silhouette offset and blurred is the punch, and `DestOut` of the punch from the flood leaves
     /// colour only in the band on the offset side.
     ///
+    /// This is the one chain that is not any single cell's — it reads TWO of them — so it is built
+    /// here from the builder both paths share, with the colour taken off the flood's own chain
+    /// rather than looked up on the node a second time.
+    ///
     /// Geometry comes from [`Self::wv_effect_cells`], the same planner the atlas prepass used, so the
     /// flood and the punch are guaranteed to share one box — which they must, since the `DestOut`
     /// aligns them 1:1.
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_paint_inner_shadow<B: RasterBackend>(
         &mut self,
-        cell: WvCell,
+        flood: WvCell,
+        punch: WvCell,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         enc: &mut wgpu::CommandEncoder,
         acc_view: &wgpu::TextureView,
         root: Affine,
-        id: u128,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        {
-            let WvCell { bx, by, bw, bh, kw, kh, k, sigma, key, .. } = cell;
-            let i = key.2;
-            let ksz = (kw as f32, kh as f32);
-            let full_src = (0.0, 0.0, ksz.0, ksz.1);
-            let crop = Affine::translate((-f64::from(bx), -f64::from(by))) * root;
-            let scaled_root = Affine::scale(f64::from(k)) * crop;
-            let mut fetch = |sink: &mut Self, kind: u8, apply_offset: bool, backend: &mut B, enc: &mut wgpu::CommandEncoder| {
-                if let Some(v) = sink.wv_atlas.get(&(id, kind, i)).map(|(_, v)| v.clone()) {
-                    return v;
-                }
-                let label = if apply_offset { "wv inner shadow punch" } else { "wv inner shadow band" };
-                let tex = sink.pool.acquire_target(device, kw, kh, format, sink.raster_usage, label);
-                let v = tex.create_view(&wgpu::TextureViewDescriptor::default());
-                let mut scene = backend.new_scene(kw as u16, kh as u16);
-                backend.build_shadow_silhouette(&mut scene, scaled_root, id, i, true, apply_offset, false);
-                backend.rasterize(&scene, device, queue, enc, &v, kw, kh, TRANSPARENT);
-                sink.frame_transient.push(tex);
-                sink.frame_transient_views.push(v.clone());
-                v
-            };
-            let band_view = fetch(self, 2, false, backend, enc);
-            let punch_view = fetch(self, 3, true, backend, enc);
-            let Some(colour) = shadow_colour(id, true, i) else { return };
-            let graph = effect_graph::inner_shadow_graph(ksz.0, ksz.1, colour, sigma * k);
-            let out = run_graph_into(
-                &self.compositor, &self.glass, device, enc, &[&band_view, &punch_view],
-                &lower_graph(&graph, None), kw, kh, format, &mut self.pool,
-                &mut self.frame_transient, &mut self.frame_transient_views, self.pass_prof.as_mut(),
-            );
-            let Some((tex, view)) = out else { return };
-            self.compositor.blit(device, enc, acc_view, sz, &Blit {
-                src: &view, dst: (bx as f32, by as f32, bw as f32, bh as f32), src_rect: full_src, src_size: ksz, alpha: 1.0,
-            });
-            self.frame_transient.push(tex);
-            self.frame_transient_views.push(view);
-        }
+        let Some(colour) = wv_cell_tint(&flood) else { return };
+        let flood_view = self.wv_cell_source(&flood, backend, device, queue, enc, root, 0, format);
+        let punch_view = self.wv_cell_source(&punch, backend, device, queue, enc, root, 0, format);
+        let graph = effect_graph::inner_shadow_graph(
+            flood.kw as f32, flood.kh as f32, colour, flood.sigma * flood.k,
+        );
+        let passes = lower_graph(&graph, None);
+        self.wv_effect_blit(&flood, &[&flood_view, &punch_view], &passes, device, enc, acc_view, format, sz);
     }
 
     /// Run a stack node's WHOLE ordered effect stack over the whole-viewport accumulator, at the node's
@@ -2843,6 +2870,12 @@ impl Sink {
         let find = |kind: u8, idx: usize| {
             cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).cloned().filter(|c| mine(&c.key))
         };
+        // The inner shadow's punch is an INPUT to the flood's chain, never composited on its own, so
+        // it is not claimed and not assigned a round — the flood's verdict covers both. Filtering it
+        // like a composite would lose it whenever the flood moved to a later round.
+        let source = |kind: u8, idx: usize| {
+            cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).cloned()
+        };
 
         let (mut drop_i, mut inner_i) = (0usize, 0usize);
         let mut body_done = false;
@@ -2850,7 +2883,7 @@ impl Sink {
             match (&effect.source, effect.compose) {
                 (Source::Coverage { .. }, Compose::Under) => {
                     if let Some(c) = find(0, drop_i) {
-                        self.wv_paint_path_shadow(c, backend, device, queue, enc, acc_view, root, id, format, sz);
+                        self.wv_paint_path_shadow(c, backend, device, queue, enc, acc_view, root, format, sz);
                     }
                     drop_i += 1;
                 }
@@ -2872,8 +2905,8 @@ impl Sink {
                         }
                         body_done = true;
                     }
-                    if let Some(c) = find(2, inner_i) {
-                        self.wv_paint_inner_shadow(c, backend, device, queue, enc, acc_view, root, id, format, sz);
+                    if let (Some(flood), Some(punch)) = (find(2, inner_i), source(3, inner_i)) {
+                        self.wv_paint_inner_shadow(flood, punch, backend, device, queue, enc, acc_view, root, format, sz);
                     }
                     inner_i += 1;
                 }
