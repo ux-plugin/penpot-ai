@@ -32,8 +32,18 @@ fn load(path: &str) -> (Vec<u8>, u32, u32) {
 
 /// Black → blue → cyan → green → yellow → red as `d` goes 0 → 255, so a one-step difference is still
 /// visible against the background but reads clearly apart from a saturated one.
-fn heat(d: u8) -> [u8; 3] {
-    let t = f32::from(d) / 255.0;
+/// False colour for one pixel's delta, `t` being that delta as a fraction of the LARGEST delta in
+/// this comparison rather than of 255.
+///
+/// Both halves of that sentence were wrong before and made the map useless exactly where it matters
+/// most. Zero returned `(0, 0, 0.4)` — dark navy, not the black the legend promised — so an
+/// identical pixel and a one-step one were the same colour; and scaling against 255 spent 99% of the
+/// ramp on deltas a byte-level regression never produces. A comparison whose worst pixel is off by
+/// two now uses the whole ramp on it.
+fn heat(t: f32) -> [u8; 3] {
+    if t <= 0.0 {
+        return [0, 0, 0];
+    }
     let (r, g, b) = if t < 0.25 {
         (0.0, t * 4.0 * 0.6, 0.4 + t * 4.0 * 0.6)
     } else if t < 0.5 {
@@ -56,6 +66,7 @@ fn main() {
     assert!(w == bw && h == bh, "size mismatch: {w}x{h} vs {bw}x{bh}");
 
     let mut out = vec![0u8; (w * h * 3) as usize];
+    let mut deltas = vec![0u8; (w * h) as usize];
     let mut differing = 0u32;
     let mut max_delta = 0u8;
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
@@ -66,8 +77,7 @@ fn main() {
         for x in 0..w {
             let i = ((y * w + x) * 4) as usize;
             let d = (0..4).map(|c| a[i + c].abs_diff(b[i + c])).max().unwrap_or(0);
-            let o = ((y * w + x) * 3) as usize;
-            out[o..o + 3].copy_from_slice(&heat(d));
+            deltas[(y * w + x) as usize] = d;
             if d > 0 {
                 differing += 1;
                 max_delta = max_delta.max(d);
@@ -78,6 +88,14 @@ fn main() {
                 grid[((y * GRID / h) * GRID + (x * GRID / w)) as usize] += 1;
             }
         }
+    }
+
+    // Colouring waits for the maximum, so the ramp is relative to what this comparison actually
+    // contains. A floor keeps a delta of 1 off the black end rather than indistinguishable from it.
+    let span = f32::from(max_delta.max(1));
+    for (o, d) in deltas.iter().enumerate() {
+        let t = if *d == 0 { 0.0 } else { 0.15 + 0.85 * f32::from(*d) / span };
+        out[o * 3..o * 3 + 3].copy_from_slice(&heat(t));
     }
 
     let total = w * h;
