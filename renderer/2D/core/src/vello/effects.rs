@@ -242,10 +242,26 @@ pub fn texture_shader(noise_size: f32, radius: f32, clip_to_shape: bool, hidden:
 /// `w`/`h` are the surface the effect runs over.
 #[must_use]
 pub fn texture_units(params: &[f32], w: f32, h: f32) -> Vec<crate::effect_graph::GraphPass> {
+    use crate::effect_graph::{EffectPass, GraphPass, Src, UnitKind};
     let magnitude = params.first().copied().unwrap_or(0.0);
     let grain_div = params.get(1).copied().unwrap_or(1.0);
     let clip = params.get(2).copied().unwrap_or(0.0) != 0.0;
-    crate::effect_graph::texture_graph(w, h, magnitude, grain_div, clip)
+    // Warp the body by a noise displacement, then optionally confine to the coverage it started from
+    // (a sampling head + pointwise clip — one fused pass). The two share the noise field program.
+    let program = std::rc::Rc::new(crate::effect_graph::texture_field_program());
+    let mut u = vec![0.0_f32; 24];
+    u[0] = w;
+    u[1] = h;
+    u[2] = magnitude;
+    u[3] = grain_div;
+    // Slot 21 is a flag, not a length — the scale solver leaves it alone.
+    u[21] = f32::from(u8::from(clip));
+    u[16] = 1.0;
+    let unit = |op: UnitKind, reach: f32| EffectPass::Unit { op, field: program.clone(), u: u.clone(), reach };
+    vec![
+        GraphPass::new(unit(UnitKind::Warp, magnitude), vec![Src::Input(0)]),
+        GraphPass::new(unit(UnitKind::ClipToSource, 0.0), vec![Src::Pass(0)]),
+    ]
 }
 
 /// One noise slot decoded off the wire: `kind` (0 solid, 1 prism) and straight RGBA in `[0, 1]`.

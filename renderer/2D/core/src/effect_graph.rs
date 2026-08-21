@@ -173,12 +173,14 @@ pub fn background_blur_sigma(radius: f32, scale: f32) -> f32 {
 /// `colour` is straight (non-premultiplied) RGBA. `sigma` of zero means a hard shadow and emits no
 /// blur at all.
 #[must_use]
+#[cfg(test)]
 pub fn tint_graph(w: f32, h: f32, colour: [f32; 4]) -> Vec<GraphPass> {
     vec![GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)])]
 }
 
 
 #[must_use]
+#[cfg(test)]
 pub fn drop_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<GraphPass> {
     let mut passes = tint_graph(w, h, colour);
     if sigma > 0.5 {
@@ -193,6 +195,7 @@ pub fn drop_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<Gr
 /// Both inputs arrive as coverage; the tint colours the band before the punch is removed, so the
 /// erase sees the same alpha either way.
 #[must_use]
+#[cfg(test)]
 pub fn inner_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<GraphPass> {
     let mut passes = Vec::new();
     let punch = if sigma > 0.5 {
@@ -210,7 +213,7 @@ pub fn inner_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<G
     passes
 }
 
-fn tint_unit(w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
+pub(crate) fn tint_unit(w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
     unit_pass(UnitKind::Tint, w, h, colour)
 }
 
@@ -218,7 +221,7 @@ fn tint_unit(w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
 /// (`fieldU(gi, 3u)` = u[12..16] — none of which the scale solver multiplies, because a colour is
 /// not a length). Shadows measure no field, so the program is empty and `computeField` degenerates to
 /// full coverage.
-fn unit_pass(op: UnitKind, w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
+pub(crate) fn unit_pass(op: UnitKind, w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
     let mut u = vec![0.0_f32; 24];
     u[0] = w;
     u[1] = h;
@@ -254,6 +257,7 @@ pub fn texture_field_program() -> crate::field::FieldProgram {
 /// `magnitude` is the maximum per-axis shift in device pixels and doubles as the pass's reach;
 /// `grain_div` divides the sample position, so a larger value is a coarser grain.
 #[must_use]
+#[cfg(test)]
 pub fn texture_graph(w: f32, h: f32, magnitude: f32, grain_div: f32, clip_to_shape: bool) -> Vec<GraphPass> {
     let program = std::rc::Rc::new(texture_field_program());
     let mut u = vec![0.0_f32; 24];

@@ -134,22 +134,32 @@ fn wv_cell_tint(c: &WvCell) -> Option<[f32; 4]> {
 /// constant multiply — and the builders' order is the one the per-shape path renders).
 fn wv_cell_graph(e: &crate::effect::Effect, kind: u8, kw: u32, kh: u32, sigma: f32) -> Vec<crate::effect_graph::GraphPass> {
     use crate::effect::Op;
-    use crate::effect_graph::{EffectPass, GraphPass, Src};
+    use crate::effect_graph::{unit_pass, EffectPass, GraphPass, Src, UnitKind};
     let (kwf, khf) = (kw as f32, kh as f32);
     let tint = e.ops.iter().find_map(|op| match op {
         Op::Tint(c) => Some(c.components),
         _ => None,
     });
+    // A coverage silhouette coloured by a `Tint` unit — the shadow's colour over its own alpha.
+    let coloured = |col: [f32; 4]| GraphPass::new(unit_pass(UnitKind::Tint, kwf, khf, col), vec![Src::Input(0)]);
     match kind {
-        // A drop shadow is its colour over its coverage, blurred.
-        0 => tint.map(|col| effect_graph::drop_shadow_graph(kwf, khf, col, sigma)).unwrap_or_default(),
+        // A drop shadow is its colour over its coverage, then blurred.
+        0 => tint
+            .map(|col| {
+                let mut g = vec![coloured(col)];
+                if sigma > 0.5 {
+                    g.push(GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Pass(0)]));
+                }
+                g
+            })
+            .unwrap_or_default(),
         // The inner shadow's FLOOD is never blurred — only its punch (kind 3) is — so the flood
         // carries the colour and nothing else. The erase that pairs them is the combine stage.
-        2 => tint.map(|col| effect_graph::tint_graph(kwf, khf, col)).unwrap_or_default(),
+        2 => tint.map(|col| vec![coloured(col)]).unwrap_or_default(),
         // The punch: the same silhouette, blurred by the erase's own radius.
         3 => {
             if sigma > 0.0 {
-                effect_graph::background_blur_graph(sigma)
+                vec![GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Input(0)])]
             } else {
                 Vec::new()
             }
@@ -2825,9 +2835,20 @@ impl Sink {
         let Some(colour) = wv_cell_tint(&flood) else { return };
         let flood_view = self.wv_cell_source(&flood, backend, device, queue, enc, root, 0, format);
         let punch_view = self.wv_cell_source(&punch, backend, device, queue, enc, root, 0, format);
-        let graph = effect_graph::inner_shadow_graph(
-            flood.kw as f32, flood.kh as f32, colour, flood.sigma * flood.k,
-        );
+        // The band: the flood silhouette coloured, with its offset+blurred punch erased out. The
+        // punch is a second input, blurred only when the erase declares a radius.
+        let (w, h, sig) = (flood.kw as f32, flood.kh as f32, flood.sigma * flood.k);
+        use crate::effect_graph::{tint_unit, unit_pass, EffectPass, GraphPass, Src, UnitKind};
+        let mut graph = Vec::new();
+        let punch = if sig > 0.5 {
+            graph.push(GraphPass::new(EffectPass::Blur { sigma: sig, linear: true }, vec![Src::Input(1)]));
+            Src::Pass(0)
+        } else {
+            Src::Input(1)
+        };
+        let band = graph.len();
+        graph.push(GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)]));
+        graph.push(GraphPass::new(unit_pass(UnitKind::EraseBy, w, h, colour), vec![Src::Pass(band), punch]));
         let passes = lower_graph(&graph, None);
         self.wv_effect_blit(&flood, &[&flood_view, &punch_view], &passes, device, enc, acc_view, format, sz);
     }
