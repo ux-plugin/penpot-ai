@@ -509,7 +509,7 @@ fn custom_pass(
         entries.push(wgpu::BindGroupEntry { binding: 2 + i as u32, resource: wgpu::BindingResource::TextureView(v) });
     }
     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("custom bind"), layout: &layout, entries: &entries });
-    crate::vello::sink::note_passes(1);
+    crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::GRAPH, 1);
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("custom pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {

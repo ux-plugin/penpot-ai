@@ -805,6 +805,41 @@ static ENCODER_PASSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU
 /// outstanding buffers. A whole-viewport frame that folds thousands of effect passes into one
 /// encoder loses the device mid-encode, so the frame loop reads this counter and flushes the
 /// encoder (submit + fresh encoder) before the pile-up reaches the cap.
+/// Which part of the frame a render pass belongs to. "The pass count must drop" is the gate on the
+/// coalescing work, and a single total cannot say whether a drop came from the lever being pulled or
+/// from somewhere else moving underneath it.
+pub(crate) mod pass_kind {
+    /// A windowed `fine` segment plus its clear — the front-end's own passes.
+    pub const FINE: usize = 0;
+    /// One instanced batch stage.
+    pub const BATCH: usize = 1;
+    /// One step of a per-shape effect chain. This is the population coalescing exists to collapse.
+    pub const GRAPH: usize = 2;
+    /// A glass stage or a per-shape lens pass.
+    pub const GLASS: usize = 3;
+    /// A separable blur half issued outside a chain — the per-shape body's layer blur.
+    pub const BLUR: usize = 4;
+    /// A composite of a finished per-shape result onto the accumulator.
+    pub const COMPOSITE: usize = 5;
+    /// A blit or a clear.
+    pub const BLIT: usize = 6;
+    pub const N: usize = 7;
+}
+
+static PASS_BUCKETS: [std::sync::atomic::AtomicU32; pass_kind::N] =
+    [const { std::sync::atomic::AtomicU32::new(0) }; pass_kind::N];
+
+pub(crate) fn note_passes_of(kind: usize, n: u32) {
+    PASS_BUCKETS[kind].fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    ENCODER_PASSES.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The per-kind totals, for a harness to diff around a frame the way it diffs the grand total.
+#[must_use]
+pub fn wv_pass_buckets() -> [u32; pass_kind::N] {
+    std::array::from_fn(|i| PASS_BUCKETS[i].load(std::sync::atomic::Ordering::Relaxed))
+}
+
 pub(crate) fn note_passes(n: u32) {
     ENCODER_PASSES.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
 }
@@ -1532,8 +1567,12 @@ impl Sink {
                 [f64::from(bg[0]), f64::from(bg[1]), f64::from(bg[2]), f64::from(bg[3])], None);
         };
         for r in 1..=max_round {
-            note_passes(2);
+            // Counted where the segment actually runs. Charging every round two passes up front made
+            // a round that opens no window — every round the batch adds to step over a declined
+            // entry — look like it cost a fine pass and a clear, which is exactly the accounting the
+            // coalescing gate reads.
             if window_has_draws(window_lo, r) {
+                note_passes_of(pass_kind::FINE, 2);
                 if rw {
                     // The FIRST window keeps the plain clearing permutation (write-only, clears to
                     // the base color in-shader — no load, exactly the ping-pong phase 0); only the

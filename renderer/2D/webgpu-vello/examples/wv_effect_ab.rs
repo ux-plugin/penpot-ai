@@ -132,11 +132,18 @@ fn main() {
     let wv_target = make_target(&device, w, h, "wv ab whole-viewport");
     let _ = render_core::vello::abi::take_dirty();
     let passes_before_wv = render_core::vello::sink::wv_passes_recorded();
+    let buckets_before = render_core::vello::sink::wv_pass_buckets();
     wv_sink.render_whole_viewport(&mut backend, &device, &queue, &wv_target, root, w, h, true);
     let wv_rgba = read_back(&device, &queue, &wv_target, w, h);
     write_png(&format!("{PROOFS}/{scene}-wv.png"), &wv_rgba, w, h);
 
     let wv_passes = render_core::vello::sink::wv_passes_recorded() - passes_before_wv;
+    let b = render_core::vello::sink::wv_pass_buckets();
+    let d: Vec<u32> = (0..b.len()).map(|i| b[i] - buckets_before[i]).collect();
+    println!(
+        "  wv render passes: {wv_passes} (fine {} batch {} graph {} glass {} blur {} composite {} blit {})",
+        d[0], d[1], d[2], d[3], d[4], d[5], d[6]
+    );
     if std::env::var("WV_GLASS_AB").is_ok() {
         unsafe { std::env::set_var("WV_GLASS", "0") };
         let cells = install(&scene);

@@ -216,7 +216,7 @@ impl GlassPipeline {
     }
 
     fn full_pass(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pipeline: &wgpu::RenderPipeline, bind: &wgpu::BindGroup) {
-        crate::vello::sink::note_passes(1);
+        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::GLASS, 1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("glass pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

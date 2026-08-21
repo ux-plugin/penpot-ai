@@ -702,7 +702,7 @@ impl BatchPipelines {
             sampler,
             fields.as_ref().unwrap_or(&self.no_fields),
         );
-        crate::vello::sink::note_passes(1);
+        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BATCH, 1);
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("wv batch stage"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
