@@ -6,7 +6,7 @@
 //! pixels — comparing WV against itself would prove nothing.
 //!
 //! Scenes (SCENE env, default `layer-blur`): `layer-blur`, `path-shadow`, `inner-shadow`,
-//! `combined`, `boolean`, and `matrix` — every effect combination, one per cell.
+//! `combined`, `boolean`, `matrix`, and `stress` — every effect combination, one per cell.
 //! The whole-viewport path has ONE driver (front-end once, segmented fine over the shared PTCL), so
 //! one column diffs against the tiled reference.
 //!
@@ -36,6 +36,13 @@ fn install(scene: &str) -> u32 {
         ),
         "scope" => render_core::vello::abi::load_scope_scene(),
         "texture" => render_core::vello::abi::load_texture_scene(),
+        // The one fixture whose stacks SPLIT: a custom shader on the body sits between the drop
+        // shadows and the inner shadow, so the batch takes the drops, hands the body back, and has
+        // to move the inner shadow to a later round to stay on top of it.
+        "stress" => render_core::vello::abi::load_stress_scene_mask(
+            std::env::var("STRESS_N").ok().and_then(|v| v.parse().ok()).unwrap_or(6),
+            render_core::parity::FX_ALL,
+        ),
         "showcase" => render_core::vello::abi::load_showcase_scene(),
         _ => render_core::vello::abi::load_layer_blur_scene(),
     }

@@ -92,7 +92,16 @@ struct WvBatchPlan {
     /// executor has to pool. Two for today's chains; a stage reading two live atlases would raise it
     /// without anything else changing.
     atlases: usize,
-    gids: HashSet<u128>,
+    /// The CELLS the batch composites. Admission is per entry, not per shape: a stack with one
+    /// custom-shader body used to send its plain drop shadows down the per-shape path too, which is
+    /// why the 4K stress scene batched nothing at all.
+    taken: HashSet<(u128, u8, usize)>,
+    /// For a cell the batch declined, which of its shape's rounds the per-shape painter draws it in.
+    /// Absent means round offset zero, which is every shape the batch never looked at.
+    legacy_sub: HashMap<(u128, u8, usize), u32>,
+    /// Extra rounds a shape needs beyond its own, because the batch had to step over a declined
+    /// entry. Zero for a shape the batch took whole.
+    extra: HashMap<u128, u32>,
 }
 
 /// The straight RGBA of one of a shape's shadows, `None` when the index no longer resolves. The
@@ -249,7 +258,9 @@ fn wv_batch_plan(
         combine: Vec::new(),
         stages: Vec::new(),
         atlases: 0,
-        gids: HashSet::new(),
+        taken: HashSet::new(),
+        legacy_sub: HashMap::new(),
+        extra: HashMap::new(),
     };
     let mut by_round: std::collections::BTreeMap<u32, Vec<crate::vello::batch::Inst>> =
         std::collections::BTreeMap::new();
@@ -262,38 +273,54 @@ fn wv_batch_plan(
         });
         let shape_cells: Vec<&WvCell> =
             cells.iter().map(|(c, _)| c).filter(|c| c.key.0 == gid).collect();
-        let expressible = !stack.iter().any(|e| {
-            matches!(e.source, Source::Backdrop)
-                || (matches!(e.source, Source::Body)
-                    && e.ops.iter().any(|op| matches!(op, crate::effect::Op::Shader(_))))
-        }) && shape_cells
-            .iter()
-            .all(|c| matches!(wv_batch_cell_shape(c), Some(BatchShape::Stamp { .. })));
-        if !expressible || shape_cells.is_empty() {
+        // A scoped backdrop reads the accumulator mid-stack and is composed by `wv_stamp_gather`
+        // for the whole shape at once, so it is still all-or-nothing. Everything else is admitted
+        // ENTRY BY ENTRY below.
+        if stack.iter().any(|e| matches!(e.source, Source::Backdrop)) || shape_cells.is_empty() {
             continue;
         }
         let find = |kind: u8, idx: usize| {
             shape_cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).copied()
         };
+        #[derive(Clone, Copy)]
         enum Emit<'a> {
             Cell(&'a WvCell),
             Inner { flood: &'a WvCell, punch: &'a WvCell },
+            /// An entry the batch declined. It is not a hole: it holds the position the per-shape
+            /// painter has to composite in, which is what the round assignment below reads.
+            Legacy(Option<(u128, u8, usize)>),
         }
+        let placed = |c: &WvCell| place.contains_key(&c.key);
+        let stampable = |c: &WvCell| {
+            placed(c) && matches!(wv_batch_cell_shape(c), Some(BatchShape::Stamp { .. }))
+        };
         let mut emit: Vec<Emit> = Vec::new();
-        let (mut drop_i, mut inner_i, mut body_done, mut bail) = (0usize, 0usize, false, false);
+        let (mut drop_i, mut inner_i, mut body_done) = (0usize, 0usize, false);
+        // The body appears at most once, so its verdict is a value rather than something recomputed
+        // at each of the three places the stack can reach it. The cell graph is built from the
+        // cell's KIND and so cannot see a custom shader that lives on the stack ENTRY — which is
+        // why the shader test has to happen here and not in `wv_batch_cell_shape`.
+        let body_shaded = stack.iter().any(|e| {
+            matches!(e.source, Source::Body) && e.ops.iter().any(|op| matches!(op, crate::effect::Op::Shader(_)))
+        });
+        let body = match find(1, 0) {
+            Some(c) if !body_shaded && stampable(c) => Emit::Cell(c),
+            Some(c) => Emit::Legacy(Some(c.key)),
+            None => Emit::Legacy(None),
+        };
         for e in &stack {
             match (&e.source, e.compose) {
                 (Source::Coverage { .. }, Compose::Under) => {
-                    if let Some(c) = find(0, drop_i) {
-                        emit.push(Emit::Cell(c));
+                    match find(0, drop_i) {
+                        Some(c) if stampable(c) => emit.push(Emit::Cell(c)),
+                        Some(c) => emit.push(Emit::Legacy(Some(c.key))),
+                        None => {}
                     }
                     drop_i += 1;
                 }
                 (Source::Body, _) => {
                     if !body_done {
-                        if let Some(c) = find(1, 0) {
-                            emit.push(Emit::Cell(c));
-                        }
+                        emit.push(body);
                         body_done = true;
                     }
                 }
@@ -301,16 +328,17 @@ fn wv_batch_plan(
                     // The per-shape path paints the body before its first inner shadow; the batch
                     // preserves that by emitting it here in the same position.
                     if !body_done {
-                        if let Some(c) = find(1, 0) {
-                            emit.push(Emit::Cell(c));
-                        }
+                        emit.push(body);
                         body_done = true;
                     }
                     match (find(2, inner_i), find(3, inner_i)) {
-                        (Some(flood), Some(punch)) => emit.push(Emit::Inner { flood, punch }),
-                        // A planned inner shadow whose cells are missing cannot be expressed —
-                        // dropping it silently would change pixels, so the whole shape stays legacy.
-                        _ => bail = true,
+                        (Some(flood), Some(punch)) if stampable(flood) && stampable(punch) => {
+                            emit.push(Emit::Inner { flood, punch });
+                        }
+                        // A planned inner shadow the batch cannot express keeps its position and
+                        // goes back to the per-shape painter — dropping it would change pixels.
+                        (Some(flood), _) => emit.push(Emit::Legacy(Some(flood.key))),
+                        _ => emit.push(Emit::Legacy(None)),
                     }
                     inner_i += 1;
                 }
@@ -318,18 +346,9 @@ fn wv_batch_plan(
             }
         }
         if !body_done {
-            if let Some(c) = find(1, 0) {
-                emit.push(Emit::Cell(c));
-            }
+            emit.push(body);
         }
-        if bail || emit.is_empty() {
-            continue;
-        }
-        let placed = |c: &WvCell| place.contains_key(&c.key);
-        if emit.iter().any(|e| match e {
-            Emit::Cell(c) => !placed(c),
-            Emit::Inner { flood, punch } => !placed(flood) || !placed(punch),
-        }) {
+        if !emit.iter().any(|e| !matches!(e, Emit::Legacy(_))) {
             continue;
         }
         let rects = |c: &WvCell| {
@@ -363,9 +382,49 @@ fn wv_batch_plan(
                 atlas_rect, atlas_size, atlas_rect, atlas_size, (0.0, 1.0), sigma_dev, linear,
             ));
         };
-        for e in emit {
+        // Slot order inside a round is fixed by the executor: the batch stages run first, then the
+        // per-shape painters. So an entry the batch takes that FOLLOWS one it declined cannot sit in
+        // the same round — it would composite underneath what should be beneath it. Moving it to the
+        // next round is the whole of the fix, and it is the only reason the batch splits a shape.
+        //
+        // Stepping over a round is safe because of what [`wv_rounds`] guarantees. The extra round
+        // flushes the fine window that holds every marker at this shape's own round, and shapes that
+        // SHARE a round are reach-disjoint by construction — so nothing that window materialises can
+        // overlap the pixels this suffix writes. Markers below the shape were already beneath it,
+        // and markers above it flush a round later, exactly as before. Instances inside one round
+        // keep gather order, which is z order, so a suffix never overtakes a shape above it.
+        let mut sub = 0u32;
+        let mut after_legacy = false;
+        for e in &emit {
             match e {
+                Emit::Legacy(key) => {
+                    after_legacy = true;
+                    if let Some(k) = key {
+                        plan.legacy_sub.insert(*k, sub);
+                    }
+                }
+                _ if after_legacy => {
+                    sub += 1;
+                    after_legacy = false;
+                }
+                _ => {}
+            }
+        }
+        let extra = sub;
+        let mut sub = 0u32;
+        let mut after_legacy = false;
+        for e in emit {
+            if matches!(e, Emit::Legacy(_)) {
+                after_legacy = true;
+            } else if after_legacy {
+                sub += 1;
+                after_legacy = false;
+            }
+            let round = rounds[j] + sub;
+            match e {
+                Emit::Legacy(_) => {}
                 Emit::Cell(c) => {
+                    plan.taken.insert(c.key);
                     blur(&mut plan, c);
                     let (_, atlas_rect, frame_rect) = rects(c);
                     let mut inst = crate::vello::batch::Inst::new(
@@ -374,7 +433,7 @@ fn wv_batch_plan(
                     if let Some(colour) = cell_tint(c) {
                         inst = inst.tinted(colour);
                     }
-                    by_round.entry(rounds[j]).or_default().push(inst);
+                    by_round.entry(round).or_default().push(inst);
                 }
                 Emit::Inner { flood, punch } => {
                     blur(&mut plan, flood);
@@ -392,7 +451,9 @@ fn wv_batch_plan(
                         .tinted(pc),
                     );
                     let Some(colour) = cell_tint(flood) else { continue };
-                    by_round.entry(rounds[j]).or_default().push(
+                    plan.taken.insert(flood.key);
+                    plan.taken.insert(punch.key);
+                    by_round.entry(round).or_default().push(
                         crate::vello::batch::Inst::new(
                             frame_rect, acc_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
                         )
@@ -402,9 +463,11 @@ fn wv_batch_plan(
                 }
             }
         }
-        plan.gids.insert(gid);
+        if extra > 0 {
+            plan.extra.insert(gid, extra);
+        }
     }
-    if plan.gids.is_empty() {
+    if plan.taken.is_empty() {
         return None;
     }
     {
@@ -446,8 +509,10 @@ fn wv_batch_plan(
     #[cfg(not(target_arch = "wasm32"))]
     if std::env::var("WV_BATCH_STATS").is_ok() {
         eprintln!(
-            "wv batch: shapes={} stages={} instances={}",
-            plan.gids.len(),
+            "wv batch: cells={} declined={} split={} stages={} instances={}",
+            plan.taken.len(),
+            plan.legacy_sub.len(),
+            plan.extra.len(),
             plan.stages.len(),
             plan.stages.iter().map(|s| s.insts.len()).sum::<usize>(),
         );
@@ -1323,10 +1388,20 @@ impl Sink {
             })
             .collect();
         let rounds = wv_rounds(&reaches, width, height);
-        let max_round = rounds.iter().copied().max().unwrap_or(0);
+        let mut max_round = rounds.iter().copied().max().unwrap_or(0);
         let batch_plan = strip.as_ref().and_then(|(packing, cells)| {
             wv_batch_plan(&gathers, &rounds, packing, cells, strip_y, (width as f32, acc_h as f32))
         });
+        // A shape the batch had to split occupies rounds beyond its own, so the loop has to reach
+        // them. Rounds with no draws open no fine segment, so the only cost is the split shape's
+        // second composite.
+        if let Some(plan) = batch_plan.as_ref() {
+            for (j, (_, gid, _)) in gathers.iter().enumerate() {
+                if let Some(extra) = plan.extra.get(gid) {
+                    max_round = max_round.max(rounds[j] + extra);
+                }
+            }
+        }
         // As many scratch atlases as the stage colouring asked for — A4's chromatic number, not a
         // pair this function decided on. Textures and their views are kept apart so the views can be
         // borrowed as a slice for the executor.
@@ -1495,7 +1570,7 @@ impl Sink {
             if let Some((packing, cells)) = strip.as_ref().filter(|_| !strip_filled) {
                 self.wv_atlas_copy_out(
                     device, &mut enc, &texs[ci], packing, cells, 0, strip_y, format,
-                    batch_plan.as_ref().map(|p| &p.gids),
+                    batch_plan.as_ref().map(|p| &p.taken),
                 );
                 // Batched shapes never materialise per-cell textures at all: TWO instanced passes
                 // blur every batched cell in place in a packed pair of atlas surfaces, and the
@@ -1541,9 +1616,11 @@ impl Sink {
                 self.wv_glass_round(device, &mut enc, &views[ci], atlas, cells, r, format, acc_sz);
             }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
-                if rounds[j] != r {
+                let extra = batch_plan.as_ref().and_then(|p| p.extra.get(&gid).copied()).unwrap_or(0);
+                if r < rounds[j] || r > rounds[j] + extra {
                     continue;
                 }
+                let sub = r - rounds[j];
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_TRACE").is_ok() {
                     eprintln!("wv trace: round={r} j={j} gi={gi} kind={kind} transient={}", self.frame_transient.len());
@@ -1552,9 +1629,10 @@ impl Sink {
                     Self::submit_batch(&mut enc, device, queue, backend);
                     flush_mark = passes_recorded();
                 }
+                let claim = batch_plan.as_ref().map(|p| (&p.taken, &p.legacy_sub));
                 match kind {
-                    FX_STACK if batch_plan.as_ref().is_some_and(|p| p.gids.contains(&gid)) => {}
-                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz),
+                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, claim, sub),
+                    _ if sub > 0 => {}
                     _ if glass_cells.as_ref().is_some_and(|cs| cs.iter().any(|c| c.gid == gid)) => {}
                     _ => self.wv_stamp_gather(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, width, height, format, acc_sz),
                 }
@@ -2320,11 +2398,13 @@ impl Sink {
         ox: u32,
         oy: u32,
         format: wgpu::TextureFormat,
-        skip: Option<&HashSet<u128>>,
+        skip: Option<&HashSet<(u128, u8, usize)>>,
     ) {
         for place in &packing.cells {
             let (c, _) = &cells[place.index];
-            if skip.is_some_and(|set| set.contains(&c.key.0)) {
+            // Per CELL, not per shape: a partially batched stack still needs its declined cells
+            // materialised for the per-shape painter.
+            if skip.is_some_and(|set| set.contains(&c.key)) {
                 continue;
             }
             let tex = self.pool.acquire_target(
@@ -2572,6 +2652,8 @@ impl Sink {
         height: u32,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
+        claim: Option<(&HashSet<(u128, u8, usize)>, &HashMap<(u128, u8, usize), u32>)>,
+        sub: u32,
     ) {
         let stack = crate::vello::abi::with_scene(|live, _, _| {
             live.get(id).map(crate::effect::effect_stack).unwrap_or_default()
@@ -2590,7 +2672,16 @@ impl Sink {
                 crate::vello::prof::dbg_set(29, f64::from(c.k) * 1000.0);
             }
         }
-        let find = |kind: u8, idx: usize| cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).copied();
+        // An entry the batch composites is not this painter's to draw; one it declined is, but only
+        // in the round the plan put it in. A shape the batch never looked at has neither, so every
+        // entry is mine and they all sit in round offset zero.
+        let mine = |key: &(u128, u8, usize)| match claim {
+            Some((taken, legacy)) => !taken.contains(key) && legacy.get(key).copied().unwrap_or(0) == sub,
+            None => sub == 0,
+        };
+        let find = |kind: u8, idx: usize| {
+            cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).copied().filter(|c| mine(&c.key))
+        };
 
         let (mut drop_i, mut inner_i) = (0usize, 0usize);
         let mut body_done = false;
@@ -2603,7 +2694,9 @@ impl Sink {
                     drop_i += 1;
                 }
                 (Source::Backdrop, _) => {
-                    self.wv_stamp_gather(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+                    if sub == 0 {
+                        self.wv_stamp_gather(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
+                    }
                 }
                 (Source::Body, _) => {
                     if let Some(c) = find(1, 0) {
