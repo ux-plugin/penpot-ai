@@ -584,7 +584,7 @@ fn wv_batch_plan(
             .push(Stage::new(stage::BLUR, at(1), at(0), std::mem::take(&mut plan.v)).cleared());
         plan.stages.push(
             Stage::new(
-                crate::vello::batch::pointwise_tag(crate::vello::batch::pointwise::ERASE),
+                crate::vello::batch::arm_tag(crate::vello::batch::pw_key(crate::vello::batch::pointwise::ERASE)),
                 at(2),
                 at(1),
                 std::mem::take(&mut plan.combine),
@@ -593,7 +593,7 @@ fn wv_batch_plan(
         );
         for ((r, bits), (insts, fields)) in by_round {
             plan.stages.push(
-                Stage::new(crate::vello::batch::pointwise_tag(bits), Surface::Acc, at(1), insts)
+                Stage::new(crate::vello::batch::arm_tag(crate::vello::batch::pw_key(bits)), Surface::Acc, at(1), insts)
                     .with_src2(at(2))
                     .with_fields(fields)
                     .composited()
@@ -2204,13 +2204,13 @@ impl Sink {
         const D: Surface = Surface::Atlas(3);
         let stages = [
             Stage::new(stage::BLUR, A, Surface::Acc, crops).cleared(),
-            Stage::new(stage::GLASS_SHARP, C, A, sharp).with_fields(sharp_f),
-            Stage::new(stage::GLASS_WARP, B, A, warp).with_fields(warp_f),
+            Stage::new(crate::vello::batch::arm_tag(crate::vello::glass::UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() }), C, A, sharp).with_fields(sharp_f),
+            Stage::new(crate::vello::batch::arm_tag(crate::vello::glass::UnitKey { head: 1, ..Default::default() }), B, A, warp).with_fields(warp_f),
             Stage::new(stage::BLUR, D, B, blur_h).cleared(),
             Stage::new(stage::BLUR, B, D, blur_v).cleared(),
-            Stage::new(stage::GLASS_FROST, C, B, frost).with_src2(A).with_fields(frost_f),
+            Stage::new(crate::vello::batch::arm_tag(crate::vello::glass::UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() }), C, B, frost).with_src2(A).with_fields(frost_f),
             Stage::new(
-                crate::vello::batch::pointwise_tag(crate::vello::batch::pointwise::TINT),
+                crate::vello::batch::arm_tag(crate::vello::batch::pw_key(crate::vello::batch::pointwise::TINT)),
                 Surface::Acc,
                 C,
                 stamp,

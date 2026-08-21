@@ -70,39 +70,54 @@ pub(crate) struct GlassField {
 
 /// Arm tags stamped into `Inst::_pad[0]`, selecting the arm `fs_uber` runs.
 pub(crate) mod stage {
-    /// Separable Gaussian tap loop along the instance's `step`.
+    /// The separable Gaussian. Not a unit arm — its own tap loop — so it keeps a fixed tag apart
+    /// from the generated arm table.
     pub const BLUR: f32 = 2.0;
-    /// Glass warp alone — the head of a frosted chain, whose result a blur then consumes.
-    pub const GLASS_WARP: f32 = 4.0;
-    /// Sharp glass: warp + shade + mask-mix fused, the whole lens in one draw.
-    pub const GLASS_SHARP: f32 = 5.0;
-    /// Frosted glass tail: scatter + shade + mask-mix over the blurred warp.
-    pub const GLASS_FROST: f32 = 6.0;
-    /// Where the pointwise arms begin. A pointwise chain's tag is this plus its composition bits —
-    /// there is no tag per NAMED effect, because the arm set is generated from the compositions
-    /// rather than enumerated by hand.
-    pub const POINTWISE: f32 = 8.0;
 }
 
 /// A pointwise composition, as the bits that pick its arm. One bit per unit that can appear in a
-/// stamp's tail; the arm set is every combination of them, so admitting a new pointwise unit is a
-/// bit here and nothing else.
-///
-/// `Shade` and `MaskMix` are absent on purpose and not by preference: both read a FIELD, and the
-/// batch module compiles exactly one field program (glass's). A chain measuring a different field
-/// cannot be evaluated by these arms until the field program travels per cell the way the uniform
-/// now does.
+/// tail; the arm table is generated from these, so admitting a new pointwise unit is a bit here.
 pub(crate) mod pointwise {
     pub const CLIP: u32 = 1;
     pub const ERASE: u32 = 2;
     pub const TINT: u32 = 4;
-    /// Every composition the generator emits an arm for.
+    /// How many pointwise combinations exist.
     pub const COUNT: u32 = 8;
 }
 
-/// The tag an instance carries to select the arm for `bits`.
-pub(crate) fn pointwise_tag(bits: u32) -> f32 {
-    stage::POINTWISE + bits as f32
+/// Where the generated arm tags begin (past `stage::BLUR`).
+const ARM_BASE: f32 = 8.0;
+
+/// A pointwise `UnitKey` from its bits.
+pub(crate) fn pw_key(bits: u32) -> crate::vello::glass::UnitKey {
+    crate::vello::glass::UnitKey {
+        clip: bits & pointwise::CLIP != 0,
+        erase: bits & pointwise::ERASE != 0,
+        tint: bits & pointwise::TINT != 0,
+        two_tex: bits & pointwise::ERASE != 0,
+        ..Default::default()
+    }
+}
+
+/// The über-shader's arm table: one `UnitKey` per composition it can run, in tag order. There is no
+/// entry for any NAMED effect — the pointwise combinations, then the sampling-head compositions a
+/// lens uses. `fs_uber` dispatches by a composition's index here, so nothing is glass, warp or
+/// frost to the executor; it is a composition-key and a tag.
+pub(crate) fn arm_keys() -> Vec<crate::vello::glass::UnitKey> {
+    use crate::vello::glass::UnitKey;
+    let mut v: Vec<UnitKey> = (0..pointwise::COUNT).map(pw_key).collect();
+    // Sampling-head compositions: a plain warp, a warp with shade+mask-mix, and a scatter tail with
+    // shade+mask-mix over a second texture. These are the lens's, but the table does not say so.
+    v.push(UnitKey { head: 1, ..Default::default() });
+    v.push(UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() });
+    v.push(UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() });
+    v
+}
+
+/// The tag that selects `key`'s arm — its index in [`arm_keys`], offset past the blur tag.
+pub(crate) fn arm_tag(key: crate::vello::glass::UnitKey) -> f32 {
+    let i = arm_keys().iter().position(|k| *k == key).expect("every emitted key has an arm");
+    ARM_BASE + i as f32
 }
 
 impl Inst {
@@ -477,45 +492,15 @@ fn batch_shader(program: &crate::field::FieldProgram) -> String {
     if crate::vello::glass::needs_hash(crate::vello::glass::UnitKey { head: 2, ..Default::default() }) {
         s.push_str(crate::vello::glass::HASH_PRELUDE);
     }
-    use crate::vello::glass::UnitKey;
+    // One arm per composition in the table — nothing hand-named. A key's head decides its two
+    // conventions: a sampling head reads at the field's own resolution and never the alternate
+    // texture; a pointwise (head 0) arm reads the interpolated cell coordinate and selects the
+    // second texture by `mode`.
     const FIELD_UV: &str = "fc / fieldU(gi, 0u).xy";
     const CELL_UV: &str = "in.uv";
-    s.push_str(&unit_arm("glass_warp_px", UnitKey { head: 1, ..Default::default() }, "false", FIELD_UV, program));
-    s.push_str(&unit_arm(
-        "glass_sharp_px",
-        UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() },
-        "false",
-        FIELD_UV,
-        program,
-    ));
-    s.push_str(&unit_arm(
-        "glass_frost_px",
-        UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() },
-        "false",
-        FIELD_UV,
-        program,
-    ));
-    // The pointwise arms, one per composition rather than one per named effect. The stamp is
-    // `TINT`, the inner-shadow band is `ERASE`, and the six that no chain reaches today cost
-    // nothing: an arm is code, and `fs_uber`'s register count is the MAX over its arms, not the sum
-    // (measured on Apple, and on AMD via LLPC).
-    //
-    // `Tint` is self-disabling on a colour whose alpha is below zero, so the untinted body and the
-    // glass stamps ride the `TINT` arm too rather than needing a composition of their own.
-    for bits in 0..pointwise::COUNT {
-        s.push_str(&unit_arm(
-            &format!("pw{bits}_px"),
-            UnitKey {
-                clip: bits & pointwise::CLIP != 0,
-                erase: bits & pointwise::ERASE != 0,
-                tint: bits & pointwise::TINT != 0,
-                two_tex: bits & pointwise::ERASE != 0,
-                ..Default::default()
-            },
-            "it.mode > 0.5",
-            CELL_UV,
-            program,
-        ));
+    for (i, key) in arm_keys().iter().enumerate() {
+        let (alt, uv) = if key.head != 0 { ("false", FIELD_UV) } else { ("it.mode > 0.5", CELL_UV) };
+        s.push_str(&unit_arm(&format!("arm{i}_px"), *key, alt, uv, program));
     }
     s.push_str(
         r#"
@@ -526,27 +511,21 @@ fn batch_shader(program: &crate::field::FieldProgram) -> String {
 @fragment
 fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
     let stage = insts[in.inst]._p0;
-    if (stage > 5.5 && stage < 7.5) {
-        return glass_frost_px(in);
-    }
-    if (stage > 4.5 && stage < 5.5) {
-        return glass_sharp_px(in);
-    }
-    if (stage > 3.5 && stage < 4.5) {
-        return glass_warp_px(in);
-    }
     if (stage > 1.5 && stage < 2.5) {
         return blur_px(in);
     }
     switch (u32(stage) - 8u) {
-        case 0u: { return pw0_px(in); }
-        case 1u: { return pw1_px(in); }
-        case 2u: { return pw2_px(in); }
-        case 3u: { return pw3_px(in); }
-        case 4u: { return pw4_px(in); }
-        case 5u: { return pw5_px(in); }
-        case 6u: { return pw6_px(in); }
-        case 7u: { return pw7_px(in); }
+        case 0u: { return arm0_px(in); }
+        case 1u: { return arm1_px(in); }
+        case 2u: { return arm2_px(in); }
+        case 3u: { return arm3_px(in); }
+        case 4u: { return arm4_px(in); }
+        case 5u: { return arm5_px(in); }
+        case 6u: { return arm6_px(in); }
+        case 7u: { return arm7_px(in); }
+        case 8u: { return arm8_px(in); }
+        case 9u: { return arm9_px(in); }
+        case 10u: { return arm10_px(in); }
         default: { return vec4<f32>(0.0); }
     }
 }
