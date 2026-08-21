@@ -2276,11 +2276,7 @@ impl Sink {
             (t, v)
         });
         let graph_in = crop.as_ref().map_or(acc_view, |(_, v)| v);
-        let graph = run_graph_into(
-            &self.compositor, &self.glass, device, enc, &[graph_in], &passes, width, height, format,
-            &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
-            self.pass_prof.as_mut(),
-        );
+        let graph = self.wv_run_chain(device, enc, &[graph_in], &passes, width, height, format);
         if let Some((t, v)) = crop {
             self.frame_transient.push(t);
             self.frame_transient_views.push(v);
@@ -2718,6 +2714,32 @@ impl Sink {
         v
     }
 
+    /// Run one lowered chain over the whole-viewport accumulator's world: the sink's pool, its
+    /// frame-transient lists and its profiler, bound once here so the three WV callers do not each
+    /// thread twelve arguments through [`run_graph_into`] by hand.
+    ///
+    /// This is the WHOLE-VIEWPORT executor. It is deliberately a method beside `run_graph_into`
+    /// rather than a change to it: the tiled and WebGL paths call `run_graph_into` directly and must
+    /// not move, so the two share the per-op dispatch inside `run_graph_into` while the WV path owns
+    /// its own binding of the sink's state. A custom shader is just a unit whose pipeline is
+    /// user-authored — the dispatch does not special-case it, and neither does this.
+    fn wv_run_chain(
+        &mut self,
+        device: &wgpu::Device,
+        enc: &mut wgpu::CommandEncoder,
+        inputs: &[&wgpu::TextureView],
+        passes: &[Pass],
+        w: u32,
+        h: u32,
+        format: wgpu::TextureFormat,
+    ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+        run_graph_into(
+            &self.compositor, &self.glass, device, enc, inputs, passes, w, h, format,
+            &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
+            self.pass_prof.as_mut(),
+        )
+    }
+
     /// Run `passes` over `inputs` at the cell's own size and stamp the result at the cell's box —
     /// the tail every per-shape painter ends with. An empty chain stamps the source unchanged, which
     /// is what a cell whose effect is the identity means.
@@ -2734,11 +2756,7 @@ impl Sink {
         sz: (f32, f32),
     ) {
         let (kwf, khf) = (c.kw as f32, c.kh as f32);
-        let out = run_graph_into(
-            &self.compositor, &self.glass, device, enc, inputs, passes, c.kw, c.kh, format,
-            &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
-            self.pass_prof.as_mut(),
-        );
+        let out = self.wv_run_chain(device, enc, inputs, passes, c.kw, c.kh, format);
         let src = out.as_ref().map_or(inputs[0], |(_, v)| v);
         self.compositor.blit(device, enc, acc_view, sz, &Blit {
             src,
@@ -3074,11 +3092,7 @@ impl Sink {
             Some(lower_graph(&effect_graph::background_blur_graph(self.gather_sigma(id, full_view, k)), None))
         };
         let Some(passes) = passes else { return };
-        let Some((rtex, rview)) = run_graph_into(
-            &self.compositor, &self.glass, device, enc, &[&bd_view], &passes, kw, kh, format,
-            &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
-            self.pass_prof.as_mut(),
-        ) else {
+        let Some((rtex, rview)) = self.wv_run_chain(device, enc, &[&bd_view], &passes, kw, kh, format) else {
             return;
         };
 
