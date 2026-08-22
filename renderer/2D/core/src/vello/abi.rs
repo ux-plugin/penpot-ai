@@ -2263,7 +2263,15 @@ pub extern "C" fn load_scale_scene_sized(n: u32, effect_every: u32, step: f32, s
 /// lens (warp → blur → scatter tail); `0` the sharp one (one fused unit pass). Returns the cell count.
 #[unsafe(no_mangle)]
 pub extern "C" fn load_glass_grid_scene(n: u32, frost: u32) -> u32 {
-    install_fixture(crate::parity::build_glass_grid_scene(n as usize, frost != 0))
+    install_fixture(crate::parity::build_glass_grid_scene(n as usize, frost != 0, 1.0))
+}
+
+/// [`load_glass_grid_scene`] with each lens's `acceptable_downscale` forced to `downscale_milli/1000`
+/// — the k-triggering fixture for the batch's scaled-stamp (`stage::SHARP`) path. A value below 1000
+/// makes every lens render at a reduced `k` and be upscaled, which the un-scaled grid never exercises.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_glass_grid_scene_k(n: u32, frost: u32, downscale_milli: u32) -> u32 {
+    install_fixture(crate::parity::build_glass_grid_scene(n as usize, frost != 0, downscale_milli as f32 / 1000.0))
 }
 
 /// Install the **matrix** fixture (every effect combination). Returns the cell count.

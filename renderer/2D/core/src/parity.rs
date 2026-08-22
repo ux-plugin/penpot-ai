@@ -1532,9 +1532,11 @@ pub fn build_scale_scene_sized(
 /// round assignment separates lenses whose reaches overlap). That is the case the batched glass
 /// stages exist for: N lenses cost one pass per stage instead of a private pass chain each. `frost`
 /// picks the frosted variant (warp → blur → scatter tail) over the sharp one (a single fused unit
-/// pass), the two shapes the stages implement.
+/// pass), the two shapes the stages implement. `downscale` is each lens's `acceptable_downscale`
+/// (`1.0` = native); a value below `1.0` forces the lens to render at a reduced `k` and be upscaled,
+/// which is the case the batch's scaled-stamp (`stage::SHARP`) path exists for.
 #[must_use]
-pub fn build_glass_grid_scene(n: usize, frost: bool) -> (Scene, Vec<(usize, &'static str)>) {
+pub fn build_glass_grid_scene(n: usize, frost: bool, downscale: f32) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;
     let rows = n.div_ceil(cols);
@@ -1567,6 +1569,7 @@ pub fn build_glass_grid_scene(n: usize, frost: bool) -> (Scene, Vec<(usize, &'st
             g.blur = 0.0;
             g.frost = 0.0;
         }
+        g.acceptable_downscale = downscale;
         node.glass = Some(g);
         b.root(node);
     }

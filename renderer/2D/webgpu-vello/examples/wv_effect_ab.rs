@@ -34,6 +34,11 @@ fn install(scene: &str) -> u32 {
             std::env::var("GLASS_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
             u32::from(!std::env::var("GLASS_SHARP").is_ok()),
         ),
+        "glass-grid-k" => render_core::vello::abi::load_glass_grid_scene_k(
+            std::env::var("GLASS_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+            u32::from(!std::env::var("GLASS_SHARP").is_ok()),
+            std::env::var("GLASS_K_MILLI").ok().and_then(|v| v.parse().ok()).unwrap_or(500),
+        ),
         "scope" => render_core::vello::abi::load_scope_scene(),
         "texture" => render_core::vello::abi::load_texture_scene(),
         // The one fixture whose stacks SPLIT: a custom shader on the body sits between the drop
