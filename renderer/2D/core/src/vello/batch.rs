@@ -73,6 +73,9 @@ pub(crate) mod stage {
     /// The separable Gaussian. Not a unit arm — its own tap loop — so it keeps a fixed tag apart
     /// from the generated arm table.
     pub const BLUR: f32 = 2.0;
+    /// The detail-preserving (Catmull-Rom) upscale of a k<1 cell — the batched twin of `blit_sharp`.
+    /// Its own tap set, like the blur, so it too sits apart from the generated arm table.
+    pub const SHARP: f32 = 3.0;
 }
 
 /// A pointwise composition, as the bits that pick its arm. One bit per unit that can appear in a
@@ -338,6 +341,56 @@ fn blur_px(in: VSOut) -> vec4<f32> {
     return outc;
 }
 
+fn sharp_tap(x: f32, y: f32) -> vec4<f32> {
+    return textureSampleLevel(tex, samp, clamp(vec2<f32>(x, y), g_src_cmin, g_src_cmax), 0.0);
+}
+
+// The batched twin of blend.rs `sample_sharp`: Catmull-Rom (9 bilinear taps) + nearest-2x2 anti-ring
+// clamp + mild sharpen, upscaling a k<1 cell. Taps clamp to the cell rect (`g_src_c*`) exactly as
+// `unitSample` does, so the shared atlas reproduces a dedicated reduced texture's ClampToEdge; because
+// cells pack at INTEGER atlas offsets the fractional Catmull-Rom weights match the per-shape
+// `blit_sharp` bit-for-bit. Composited (SrcOver) by its stage, so no alpha multiply here.
+fn sharp_px(in: VSOut) -> vec4<f32> {
+    unitBegin(in.inst, false);
+    let dims = vec2<f32>(textureDimensions(tex));
+    let sp = atlasUV(in.uv) * dims;
+    let tc = floor(sp - 0.5) + 0.5;
+    let f = sp - tc;
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    let w3 = f * f * (-0.5 + 0.5 * f);
+    let w12 = w1 + w2;
+    let o12 = w2 / w12;
+    let p0 = (tc - 1.0) / dims;
+    let p3 = (tc + 2.0) / dims;
+    let p12 = (tc + o12) / dims;
+    var c = vec4<f32>(0.0);
+    c = c + sharp_tap(p0.x, p0.y) * w0.x * w0.y;
+    c = c + sharp_tap(p12.x, p0.y) * w12.x * w0.y;
+    c = c + sharp_tap(p3.x, p0.y) * w3.x * w0.y;
+    c = c + sharp_tap(p0.x, p12.y) * w0.x * w12.y;
+    c = c + sharp_tap(p12.x, p12.y) * w12.x * w12.y;
+    c = c + sharp_tap(p3.x, p12.y) * w3.x * w12.y;
+    c = c + sharp_tap(p0.x, p3.y) * w0.x * w3.y;
+    c = c + sharp_tap(p12.x, p3.y) * w12.x * w3.y;
+    c = c + sharp_tap(p3.x, p3.y) * w3.x * w3.y;
+    // Anti-ring bounds, in the cell's OWN atlas texel span (not the whole atlas).
+    let lo_tx = vec2<i32>(floor(g_src_min * dims));
+    let hi_tx = max(vec2<i32>(ceil(g_src_max * dims)) - vec2<i32>(1, 1), lo_tx);
+    let b0 = clamp(vec2<i32>(tc - 0.5), lo_tx, hi_tx);
+    let b1 = min(b0 + vec2<i32>(1, 1), hi_tx);
+    let t00 = textureLoad(tex, b0, 0);
+    let t10 = textureLoad(tex, vec2<i32>(b1.x, b0.y), 0);
+    let t01 = textureLoad(tex, vec2<i32>(b0.x, b1.y), 0);
+    let t11 = textureLoad(tex, b1, 0);
+    let lo = min(min(t00, t10), min(t01, t11));
+    let hi = max(max(t00, t10), max(t01, t11));
+    c = clamp(c, lo, hi);
+    let mean = (t00 + t10 + t01 + t11) * 0.25;
+    return clamp(c + (c - mean) * 0.35, lo, hi);
+}
+
 
 
 "#;
@@ -513,6 +566,9 @@ fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
     let stage = insts[in.inst]._p0;
     if (stage > 1.5 && stage < 2.5) {
         return blur_px(in);
+    }
+    if (stage > 2.5 && stage < 3.5) {
+        return sharp_px(in);
     }
     switch (u32(stage) - 8u) {
         case 0u: { return arm0_px(in); }
