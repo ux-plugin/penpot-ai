@@ -745,6 +745,10 @@ struct LensCell {
     warp: crate::vello::units::UnitOp,
     tail: Vec<crate::vello::units::UnitOp>,
     sigma: f32,
+    /// `k < 1`: the cell is rendered at reduced size and the stamp Catmull-Rom-upscales it
+    /// (`stage::SHARP`) — the batched twin of the per-shape `blit_sharp`. `false` = native, plain
+    /// (`Tint`) stamp.
+    sharp: bool,
 }
 
 
@@ -2051,10 +2055,19 @@ impl Sink {
             let Some((bx, by, bw, bh, k)) = self.wv_lens_box(gid, full_view, width, height) else {
                 continue;
             };
-            if k < 0.999 || bw > max_dim || bh > max_dim {
+            // Render the lens at its reduced size (kw×kh) and, for k<1, Catmull-Rom-upscale it at the
+            // stamp (stage::SHARP) — the batched twin of the per-shape reduced render + blit_sharp.
+            // k>=1 gives kw=bw, so the native path lowers and packs exactly as before. The whole-cell
+            // k is threaded into lens_graph the same way wv_gather_graph does per-shape, so the two
+            // routes build byte-identical geometry.
+            let (kw, kh) = (
+                crate::effect_graph::pass_dim(bw, k as f32),
+                crate::effect_graph::pass_dim(bh, k as f32),
+            );
+            if kw > max_dim || kh > max_dim {
                 continue;
             }
-            let Some(passes) = self.lens_graph(gid, bw, bh, f64::from(bx), f64::from(by), full_view, 1.0) else {
+            let Some(passes) = self.lens_graph(gid, kw, kh, f64::from(bx), f64::from(by), full_view, k) else {
                 continue;
             };
             let Some(BatchShape::Lens { head: warp, tail, sigma }) = batch_admit(&passes) else {
@@ -2062,18 +2075,19 @@ impl Sink {
             };
             let red_scale = if sigma > 0.0 { passes[0].scale } else { 1.0 };
             let (rw, rh) = (
-                crate::effect_graph::pass_dim(bw, red_scale),
-                crate::effect_graph::pass_dim(bh, red_scale),
+                crate::effect_graph::pass_dim(kw, red_scale),
+                crate::effect_graph::pass_dim(kh, red_scale),
             );
             cells.push(LensCell {
                 gid,
                 round: rounds[j],
                 dev: (bx as f32, by as f32, bw as f32, bh as f32),
-                cell: (0.0, 0.0, bw as f32, bh as f32),
+                cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, rw as f32, rh as f32),
                 warp,
                 tail,
                 sigma,
+                sharp: k < 0.999,
             });
         }
         if cells.len() < 2 {
@@ -2165,6 +2179,10 @@ impl Sink {
         let (mut blur_h, mut blur_v) = (Vec::new(), Vec::new());
         let (mut frost, mut frost_f) = (Vec::new(), Vec::new());
         let mut stamp: Vec<Inst> = Vec::with_capacity(here.len());
+        // The k<1 cells' stamps, which Catmull-Rom-upscale their reduced cell (stage::SHARP) instead
+        // of the plain `Tint` copy — a native cell must NOT take this path, as SHARP's sharpen term
+        // would alter an un-scaled cell.
+        let mut sharp_stamp: Vec<Inst> = Vec::new();
         // A lens result is already coloured, so its stamp runs the `Tint` arm with the disabling
         // sentinel. Every stamp shares the one entry, which is the index an instance carries by
         // default.
@@ -2200,7 +2218,12 @@ impl Sink {
                 );
                 frost_f.push(FieldUniform { u: crate::vello::units::units_uniform(&c.tail) });
             }
-            stamp.push(Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false));
+            let stamp_inst = Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false);
+            if c.sharp {
+                sharp_stamp.push(stamp_inst);
+            } else {
+                stamp.push(stamp_inst);
+            }
         }
 
         // The round's whole schedule, in dependency order — the crop lifts every lens's backdrop
@@ -2212,7 +2235,7 @@ impl Sink {
         const B: Surface = Surface::Atlas(1);
         const C: Surface = Surface::Atlas(2);
         const D: Surface = Surface::Atlas(3);
-        let stages = [
+        let mut stages = vec![
             Stage::new(stage::BLUR, A, Surface::Acc, crops).cleared(),
             Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() }), C, A, sharp).with_fields(sharp_f),
             Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 1, ..Default::default() }), B, A, warp).with_fields(warp_f),
@@ -2228,6 +2251,12 @@ impl Sink {
             .with_fields(vec![FieldUniform { u: no_tint }])
             .composited(),
         ];
+        // k<1 cells composite through the Catmull-Rom SHARP arm instead of the plain Tint copy — the
+        // batched twin of blit_sharp. A separate stage because it is a different arm; it reads the
+        // same finished-lens atlas (C) and upscales each reduced cell to its device box.
+        if !sharp_stamp.is_empty() {
+            stages.push(Stage::new(stage::SHARP, Surface::Acc, C, sharp_stamp).composited());
+        }
         let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view];
         for st in &stages {
             pipes.run_stage(device, enc, st, acc_view, &views, sampler);

@@ -375,9 +375,12 @@ fn sharp_px(in: VSOut) -> vec4<f32> {
     c = c + sharp_tap(p0.x, p3.y) * w0.x * w3.y;
     c = c + sharp_tap(p12.x, p3.y) * w12.x * w3.y;
     c = c + sharp_tap(p3.x, p3.y) * w3.x * w3.y;
-    // Anti-ring bounds, in the cell's OWN atlas texel span (not the whole atlas).
-    let lo_tx = vec2<i32>(floor(g_src_min * dims));
-    let hi_tx = max(vec2<i32>(ceil(g_src_max * dims)) - vec2<i32>(1, 1), lo_tx);
+    // Anti-ring bounds, in the cell's OWN atlas texel span. Derived from an integer offset + integer
+    // span (cells pack at integer offsets) so a float-rounded far edge can never spill a textureLoad
+    // one texel into the inter-cell gap.
+    let lo_tx = vec2<i32>(round(g_src_min * dims));
+    let span = vec2<i32>(round((g_src_max - g_src_min) * dims));
+    let hi_tx = max(lo_tx + span - vec2<i32>(1, 1), lo_tx);
     let b0 = clamp(vec2<i32>(tc - 0.5), lo_tx, hi_tx);
     let b1 = min(b0 + vec2<i32>(1, 1), hi_tx);
     let t00 = textureLoad(tex, b0, 0);
