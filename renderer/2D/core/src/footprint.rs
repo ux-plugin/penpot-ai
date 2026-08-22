@@ -56,18 +56,25 @@ pub fn pass_reach(pass: &EffectPass) -> Reach {
         // mean guessing which slot holds a magnitude, and that answer is per-program.
         EffectPass::Unit { reach, .. } if *reach > 0.0 => Reach::Neighborhood(*reach),
         EffectPass::Unit { .. } => Reach::SamePixel,
-        EffectPass::Custom { .. } => Reach::Global,
+        // A custom's reach is declared, never guessed: the author states how far it samples, so it is
+        // scheduled as tightly as a unit. Global is not a fallback — a shader that samples widely
+        // declares a large `reach`, which the resolution cap bounds like any other.
+        EffectPass::Custom { reach, .. } if *reach > 0.0 => Reach::Neighborhood(*reach),
+        EffectPass::Custom { .. } => Reach::SamePixel,
     }
 }
 
-/// The footprint of one graph pass: `reach` from the pass kind, `reads_dst` from whether it binds the
-/// assembled backdrop input.
+/// The footprint of one graph pass: `reach` from the pass kind, `reads_dst` from whether it reads the
+/// assembled backdrop. For a custom that is its *declared* class (`reads_backdrop`) — a spread reads
+/// its own body at input 0, not the backdrop, so it does not serialise on the backdrop the way a
+/// gather does. Every other pass reads the backdrop exactly when it binds an `Input`.
 #[must_use]
 pub fn footprint(gp: &GraphPass) -> FootprintDescriptor {
-    FootprintDescriptor {
-        reads_dst: gp.inputs.iter().any(|s| matches!(s, Src::Input(_))),
-        reach: pass_reach(&gp.pass),
-    }
+    let reads_dst = match &gp.pass {
+        EffectPass::Custom { reads_backdrop, .. } => *reads_backdrop,
+        _ => gp.inputs.iter().any(|s| matches!(s, Src::Input(_))),
+    };
+    FootprintDescriptor { reads_dst, reach: pass_reach(&gp.pass) }
 }
 
 /// One scheduled stage: either a run of same-pixel/procedural passes fused into a single invocation (no
@@ -283,8 +290,25 @@ mod tests {
     }
 
     #[test]
-    fn custom_is_conservatively_global() {
-        assert_eq!(pass_reach(&EffectPass::Custom { u: vec![1.0, 2.0], param_vec4s: 1 }), Reach::Global);
+    fn custom_reach_is_declared_not_global() {
+        // Pointwise → SamePixel; a declared extent → Neighborhood. Never Global, regardless of class.
+        assert_eq!(
+            pass_reach(&EffectPass::Custom { u: vec![1.0, 2.0], param_vec4s: 1, reach: 0.0, reads_backdrop: true }),
+            Reach::SamePixel
+        );
+        assert_eq!(
+            pass_reach(&EffectPass::Custom { u: vec![1.0, 2.0], param_vec4s: 1, reach: 12.0, reads_backdrop: false }),
+            Reach::Neighborhood(12.0)
+        );
+    }
+
+    #[test]
+    fn custom_reads_dst_follows_its_declared_class() {
+        // A gather reads the backdrop; a spread reads its own body, so it does not serialise on it.
+        let gather = &custom_graph(vec![1.0, 1.0], 1, 0.0, true)[0];
+        let spread = &custom_graph(vec![1.0, 1.0], 1, 0.0, false)[0];
+        assert!(footprint(gather).reads_dst);
+        assert!(!footprint(spread).reads_dst);
     }
 
     #[test]
@@ -333,9 +357,11 @@ mod tests {
     }
 
     #[test]
-    fn undeclared_custom_is_a_barrier() {
-        let stages = partition(&custom_graph(vec![256.0, 256.0], 1));
-        assert_eq!(stages, vec![Stage::Barrier(0)]);
+    fn custom_partitions_on_its_declared_reach() {
+        // A pointwise custom (reach 0) fuses like any same-pixel pass; only a declared extent makes it
+        // a barrier. Reach is the axis — reading the backdrop or not does not force materialisation.
+        assert_eq!(partition(&custom_graph(vec![256.0, 256.0], 1, 0.0, true)), vec![Stage::Fused(vec![0])]);
+        assert_eq!(partition(&custom_graph(vec![256.0, 256.0], 1, 8.0, true)), vec![Stage::Barrier(0)]);
     }
 
     #[test]
@@ -350,9 +376,9 @@ mod tests {
 
     #[test]
     fn single_custom_uses_its_declared_acceptable_downscale() {
-        let s = chain_scales(&custom_graph(vec![256.0, 256.0], 1), 0.3, 1.0);
+        let s = chain_scales(&custom_graph(vec![256.0, 256.0], 1, 0.0, true), 0.3, 1.0);
         assert_eq!(s, vec![0.3]);
-        let s2 = chain_scales(&custom_graph(vec![256.0, 256.0], 1), 0.8, 0.25);
+        let s2 = chain_scales(&custom_graph(vec![256.0, 256.0], 1, 0.0, true), 0.8, 0.25);
         assert_eq!(s2, vec![0.25]);
     }
 

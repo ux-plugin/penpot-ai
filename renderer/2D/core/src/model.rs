@@ -374,13 +374,15 @@ impl Glass {
 /// A **custom** gather effect: a hand-written WGSL fragment shader over the backdrop beneath the
 /// shape — the raw escape hatch that sits under the typed presets (blur, glass).
 ///
-/// Its scheduling class is *declared*, not guessed: `reads_backdrop` says whether `@binding(2)` is
-/// the composited backdrop beneath the shape (a **gather** — z-serial, needs a backdrop surface) or
-/// the shape's own body (a **spread**, like a layer blur — no backdrop, cheaper, batches around it).
-/// A shader with no declared info should default to `reads_backdrop: true` — the safe worst case, in
-/// which the scheduler also caps the backdrop resolution unconditionally so an opaque shader can
-/// never read/write past the one-tile ring or blow up cost. `reach` is the author-declared page-space
-/// extent it samples; `params` are the uniform floats the shader reads (packed after the resolution).
+/// Its footprint is **required to be declared**, never guessed: `reads_backdrop` says whether
+/// `@binding(2)` is the composited backdrop beneath the shape (a **gather** — z-serial, needs a
+/// backdrop surface) or the shape's own body (a **spread**, like a layer blur — no backdrop, cheaper,
+/// batches around it), and `reach` is the page-space extent it samples (0 = pointwise). There is no
+/// worst-case default: every custom must state what it reads and how far, and the scheduler sizes and
+/// batches it from that declaration exactly as it does a built-in unit. A shader that genuinely samples
+/// the backdrop widely says so with a large `reach`, which the resolution cap bounds like any other —
+/// "reads everything" is an explicit declaration a shader opts into, not a fallback the planner assumes.
+/// `params` are the uniform floats the shader reads (packed after the resolution).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CustomShader {
     /// A complete WGSL module: a `@vertex fn vs` + `@fragment fn fs`, reading `@binding(0)` uniform
@@ -399,7 +401,7 @@ pub struct CustomShader {
     /// `param_vec4s` vec4s exactly; the backend pads/truncates to the declared size.
     pub params: Vec<f32>,
     /// Whether the shader samples the backdrop beneath the shape (gather) or only its own body
-    /// (spread). Default to `true` for an opaque shader — the safe, worst-case classification.
+    /// (spread). Required — a custom must declare what it reads; there is no worst-case default.
     pub reads_backdrop: bool,
     /// Author-declared **quality floor** `k ∈ (0, 1]`: the smallest fraction of device resolution this
     /// effect can be rendered at (then upscaled ×1/k) with acceptable quality. This is distinct from the

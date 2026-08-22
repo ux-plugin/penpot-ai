@@ -175,7 +175,7 @@ fn wv_cell_graph(e: &crate::effect::Effect, kind: u8, kw: u32, kh: u32, sigma: f
                     u.extend_from_slice(&c.params);
                     let src = passes.len().checked_sub(1).map_or(Src::Input(0), Src::Pass);
                     passes.push(GraphPass::new(
-                        EffectPass::Custom { u, param_vec4s: c.param_vec4s },
+                        EffectPass::Custom { u, param_vec4s: c.param_vec4s, reach: c.reach, reads_backdrop: c.reads_backdrop },
                         vec![src],
                     ));
                 }
@@ -3984,11 +3984,11 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         format: wgpu::TextureFormat,
     ) {
-        let chain: Vec<(crate::model::EffectSlot, String, Vec<f32>, u32)> =
+        let chain: Vec<(crate::model::EffectSlot, String, Vec<f32>, u32, f32)> =
             crate::vello::abi::with_scene(|live, _, _| {
                 live.get(id).map(|n| {
                     n.spread_effects()
-                        .map(|(slot, c)| (slot, c.wgsl.clone(), c.params.clone(), c.param_vec4s))
+                        .map(|(slot, c)| (slot, c.wgsl.clone(), c.params.clone(), c.param_vec4s, c.reach))
                         .collect()
                 })
             })
@@ -4001,7 +4001,7 @@ impl Sink {
 
         let mut input_view = surf.view.clone();
         let mut result: Option<(wgpu::Texture, wgpu::TextureView)> = None;
-        for (slot, wgsl, params, param_vec4s) in chain {
+        for (slot, wgsl, params, param_vec4s, reach) in chain {
             // An effect with a native lowering runs as units; the rest still run their WGSL. The
             // shader stays the definition for backends that have no unit pipeline.
             let passes = if slot == crate::model::EffectSlot::Texture {
@@ -4020,7 +4020,9 @@ impl Sink {
                     .clone();
                 let mut u = vec![w as f32, h as f32];
                 u.extend_from_slice(&params);
-                lower_graph(&effect_graph::custom_graph(u, param_vec4s), Some(&pipeline))
+                // A spread by definition (`spread_effects` filters `!reads_backdrop`); its reach is
+                // declared, so the schedule sizes and batches it from that, not from a global guess.
+                lower_graph(&effect_graph::custom_graph(u, param_vec4s, reach, false), Some(&pipeline))
             };
             let out = run_graph_into(
                 &self.compositor, &self.unit_pipeline, device, enc, &[&input_view], &passes, w, h, format,
@@ -4689,9 +4691,9 @@ impl Sink {
     /// pipeline (compiled once per distinct WGSL source, cached by hash) and lowers with it. The
     /// uniform is the backdrop resolution followed by the shader's declared params.
     fn custom_graph(&mut self, id: u128, bw: u32, bh: u32, device: &wgpu::Device, format: wgpu::TextureFormat) -> Option<Vec<Pass>> {
-        let (wgsl, params, param_vec4s) = crate::vello::abi::with_scene(|live, _, _| {
+        let (wgsl, params, param_vec4s, reach) = crate::vello::abi::with_scene(|live, _, _| {
             live.get(id)
-                .and_then(|n| n.gather_shader().map(|c| (c.wgsl.clone(), c.params.clone(), c.param_vec4s)))
+                .and_then(|n| n.gather_shader().map(|c| (c.wgsl.clone(), c.params.clone(), c.param_vec4s, c.reach)))
         })?;
         let n_inputs = 1;
         let mut hasher = DefaultHasher::new();
@@ -4706,7 +4708,9 @@ impl Sink {
             .clone();
         let mut u = vec![bw as f32, bh as f32];
         u.extend_from_slice(&params);
-        Some(lower_graph(&effect_graph::custom_graph(u, param_vec4s), Some(&pipeline)))
+        // A gather by construction (`gather_shader` = the `reads_backdrop` custom); its declared reach
+        // sizes the backdrop surface it reads.
+        Some(lower_graph(&effect_graph::custom_graph(u, param_vec4s, reach, true), Some(&pipeline)))
     }
 }
 

@@ -72,8 +72,8 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                     scale: graph[head].scale,
                 });
             }
-            EffectPass::Custom { u, param_vec4s } => out.push(Pass {
-                units: vec![UnitOp::Custom { u: u.clone(), param_vec4s: *param_vec4s }],
+            EffectPass::Custom { u, param_vec4s, reach, reads_backdrop } => out.push(Pass {
+                units: vec![UnitOp::Custom { u: u.clone(), param_vec4s: *param_vec4s, reach: *reach, reads_backdrop: *reads_backdrop }],
                 field: None,
                 custom: custom.cloned(),
                 inputs: graph[head].inputs.clone(),
@@ -217,7 +217,7 @@ pub fn run_op(
                 compositor, device, enc, &view, inputs[0], w, h, *sigma, *linear, format, pool, keep_tex, keep_views,
             );
         }
-        [UnitOp::Custom { u, param_vec4s }] => {
+        [UnitOp::Custom { u, param_vec4s, .. }] => {
             let pipeline = custom_pipeline?;
             let owned: Vec<wgpu::TextureView> = inputs.iter().map(|v| (*v).clone()).collect();
             custom_pass(device, enc, &view, pipeline, sampler, &owned, u, *param_vec4s);
@@ -592,7 +592,7 @@ mod bridge_tests {
     /// A custom pass is a single `Custom` unit.
     #[test]
     fn a_custom_pass_is_a_custom_unit() {
-        let passes = lower_graph(&custom_graph(vec![256.0, 256.0], 1), None);
+        let passes = lower_graph(&custom_graph(vec![256.0, 256.0], 1, 0.0, true), None);
         assert!(matches!(passes[0].units.as_slice(), [UnitOp::Custom { .. }]));
     }
 

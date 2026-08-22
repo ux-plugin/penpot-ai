@@ -47,10 +47,12 @@ pub enum UnitOp {
     /// barrier: it reads the whole prior result and cannot share a fragment with the units after it.
     /// Runs as its own pass(es), never through `fs_uber`. `linear` blurs in linear light.
     Blur { sigma: f32, linear: bool },
-    /// A hand-written WGSL pass — the escape hatch, a GLOBAL-reach barrier unit. `u` is the surface
-    /// resolution plus the shader's declared params, sized to exactly `param_vec4s` vec4s; the
-    /// backend supplies the compiled pipeline. Never enters `fs_uber`.
-    Custom { u: Vec<f32>, param_vec4s: u32 },
+    /// A hand-written WGSL pass — the escape hatch, a barrier unit. `u` is the surface resolution plus
+    /// the shader's declared params, sized to exactly `param_vec4s` vec4s; the backend supplies the
+    /// compiled pipeline. `reach`/`reads_backdrop` are the shader's required footprint declaration (see
+    /// [`crate::effect_graph::EffectPass::Custom`]) — carried so the scheduler sizes and batches it from
+    /// the declaration rather than assuming global reach. Never enters `fs_uber`.
+    Custom { u: Vec<f32>, param_vec4s: u32, reach: f32, reads_backdrop: bool },
 }
 
 /// A composed pass's pipeline cache key. Named fields rather than a tuple: the composition grew

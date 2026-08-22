@@ -57,7 +57,14 @@ pub enum EffectPass {
     /// shader's declared params) and `param_vec4s`, the exact `array<vec4<f32>, N>` size the shader
     /// declares; the backend sizes the uniform to exactly that (zero-fill/truncate `u`) and supplies
     /// the compiled pipeline when it runs this.
-    Custom { u: Vec<f32>, param_vec4s: u32 },
+    ///
+    /// `reach` and `reads_backdrop` are the shader's **required** footprint declaration, carried down
+    /// from [`crate::model::CustomShader`] rather than guessed: `reach` is the page-space extent it
+    /// samples (0 = pointwise) and `reads_backdrop` whether its input is the composited backdrop (a
+    /// gather — z-serial) or the shape's own body (a spread). There is no worst-case default; the
+    /// scheduler reads these to size the surface and to batch the pass, so a custom is scheduled as
+    /// precisely as a unit rather than pessimistically as a global barrier.
+    Custom { u: Vec<f32>, param_vec4s: u32, reach: f32, reads_backdrop: bool },
 }
 
 /// What a [`EffectPass::Unit`] does with the value it is given. Each is a generic operation on a
@@ -280,12 +287,13 @@ pub fn texture_graph(w: f32, h: f32, magnitude: f32, grain_div: f32, clip_to_sha
     ]
 }
 
-/// A single custom pass over the assembled backdrop (input 0). `u` is the backdrop resolution
-/// followed by the shader's declared params; `param_vec4s` is the exact `array<vec4<f32>, N>` size the
-/// shader declares. The backend pairs it with the shape's compiled pipeline.
+/// A single custom pass over its declared input (input 0). `u` is the surface resolution followed by
+/// the shader's declared params; `param_vec4s` is the exact `array<vec4<f32>, N>` size the shader
+/// declares. `reach`/`reads_backdrop` are the shader's required footprint declaration (see
+/// [`EffectPass::Custom`]). The backend pairs it with the shape's compiled pipeline.
 #[must_use]
-pub fn custom_graph(u: Vec<f32>, param_vec4s: u32) -> Vec<GraphPass> {
-    vec![GraphPass::new(EffectPass::Custom { u, param_vec4s }, vec![Src::Input(0)])]
+pub fn custom_graph(u: Vec<f32>, param_vec4s: u32, reach: f32, reads_backdrop: bool) -> Vec<GraphPass> {
+    vec![GraphPass::new(EffectPass::Custom { u, param_vec4s, reach, reads_backdrop }, vec![Src::Input(0)])]
 }
 
 /// Geometry of the glass shape, in **page space**, the way the backend reads it off the node. The
