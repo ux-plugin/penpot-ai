@@ -112,7 +112,14 @@ struct WvBatchPlan {
 /// is how the batch and the per-shape path could disagree about a colour: two routes to one value.
 /// The chain already carries it, because the chain is what applies it.
 fn wv_cell_tint(c: &WvCell) -> Option<[f32; 4]> {
-    c.graph.iter().find_map(|p| match &p.pass {
+    c.tint
+}
+
+/// The straight RGBA a lowered chain tints with, read off the graph before it is dropped from the
+/// cell. Kept as its own function so [`Sink::wv_effect_cells`] extracts the value exactly as the
+/// on-demand `wv_cell_tint` used to, now that the cell carries the tint rather than the graph.
+fn graph_tint(graph: &[crate::effect_graph::GraphPass]) -> Option<[f32; 4]> {
+    graph.iter().find_map(|p| match &p.pass {
         crate::effect_graph::EffectPass::Unit { op: crate::effect_graph::UnitKind::Tint, u, .. } => {
             Some([u[12], u[13], u[14], u[15]])
         }
@@ -291,7 +298,7 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
 /// [`batch_admit`] for one cell, lowering the cell's OWN chain the way the executor will. Nothing
 /// is reconstructed here: a chain the stages cannot run declines because of what it is.
 fn wv_batch_cell_shape(c: &WvCell) -> Option<BatchShape> {
-    batch_admit(&crate::vello::graph::lower_graph(&c.graph, None))
+    batch_admit(&c.passes)
 }
 
 /// One cell's unit uniform — the same 24 floats the per-shape pipeline binds, which is now what the
@@ -871,15 +878,17 @@ struct WvCell {
     /// Derived from the effect's ops the same way `sigma` is, because the consumers are handed a
     /// cell rather than the ops — a value carried on the cell reaches every one of them.
     dev_offset: (f32, f32),
-    /// What this cell's effect actually is, lowered from its [`crate::effect::Effect`] at the one
-    /// place that has it in hand ([`Sink::wv_effect_cells`]). Shared rather than owned because a
-    /// cell is cloned per consumer and a chain is immutable once built.
-    ///
-    /// Carried on the cell for the same reason `dev_offset` is: consumers are handed a cell, not the
-    /// ops. It used to be RECONSTRUCTED from `key.1` — a drop shadow was whatever
-    /// `drop_shadow_graph` said a drop shadow is — which meant a custom shader on a body could not
-    /// appear in the chain at all, and the batch admitted the reconstruction instead of the effect.
-    graph: std::rc::Rc<Vec<crate::effect_graph::GraphPass>>,
+    /// This cell's effect, LOWERED once to runnable [`Pass`]es at the one place that has the effect
+    /// in hand ([`Sink::wv_effect_cells`]) — the shared units-IR chain both the batch (`batch_admit`)
+    /// and the per-shape executor (`wv_effect_blit`) consume, rather than re-lowering the graph at
+    /// each use as it did when the cell carried the raw `GraphPass`. Shared (`Rc`) because a cell is
+    /// cloned per consumer and the chain is immutable once built; the custom-shader body path clones
+    /// it to splice resolved pipelines into its `Custom` passes.
+    passes: std::rc::Rc<Vec<Pass>>,
+    /// The straight RGBA tint this chain applies, extracted from the chain when the cell is built.
+    /// Was read back out of the graph on demand; pre-extracting keeps it available once the graph
+    /// itself no longer rides the cell.
+    tint: Option<[f32; 4]>,
     /// How this cell's atlas slot is FILLED. `false` (a stamp): the source is a silhouette
     /// rasterized in the strip and copied into the slot. `true` (a gather): the source is a CROP of
     /// the live accumulator, lifted in by a `Stage(BLUR-copy, Atlas, Acc)` at the effect boundary —
@@ -2750,11 +2759,13 @@ impl Sink {
             };
             let sigma = device_sigma.unwrap_or(0.0);
             for &kind in kinds {
-                let graph = std::rc::Rc::new(wv_cell_graph(effect, kind, kw, kh, sigma * k));
+                let graph = wv_cell_graph(effect, kind, kw, kh, sigma * k);
                 out.push(WvCell {
                     key: (id, kind, index),
                     geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma, sharp: false },
-                    kw, kh, dev_offset, graph,
+                    kw, kh, dev_offset,
+                    tint: graph_tint(&graph),
+                    passes: std::rc::Rc::new(lower_graph(&graph, None)),
                     crop: false, masked: None,
                 });
             }
@@ -2772,7 +2783,8 @@ impl Sink {
                     key: (id, 1, 0),
                     geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma: 0.0, sharp: false },
                     kw, kh, dev_offset: (0.0, 0.0),
-                    graph: std::rc::Rc::new(Vec::new()),
+                    tint: None,
+                    passes: std::rc::Rc::new(Vec::new()),
                     crop: false, masked: None,
                 });
             }
@@ -3175,7 +3187,7 @@ impl Sink {
         sz: (f32, f32),
     ) {
         let sil = self.wv_cell_source(&cell, backend, device, queue, enc, root, 0, format);
-        let passes = lower_graph(&cell.graph, None);
+        let passes = cell.passes.clone();
         self.wv_effect_blit(&cell, &[&sil], &passes, device, enc, acc_view, format, sz);
     }
 
@@ -3361,7 +3373,7 @@ impl Sink {
     /// a pipeline in hand — `lower_graph` dropped the pass. Now that the shape of a chain survives
     /// lowering, the whole body is one chain and the executor threads it.
     fn wv_resolve_pipelines(&mut self, cell: &WvCell, device: &wgpu::Device, format: wgpu::TextureFormat) -> Vec<Pass> {
-        let mut passes = lower_graph(&cell.graph, None);
+        let mut passes = (*cell.passes).clone();
         let mut shaders = crate::vello::abi::with_scene(|live, _, _| {
             live.get(cell.key.0)
                 .map(|n| n.spread_shaders().map(|s| s.wgsl.clone()).collect::<Vec<_>>())

@@ -33,6 +33,7 @@ pub(crate) const BLUR_MAX_SIGMA: f32 = 32.0;
 /// [`GraphPass`]; [`lower_graph`] turns each into this by resolving `Custom` to its compiled wgpu
 /// pipeline. The kind selects the pipeline and carries its uniform; `inputs` (render-core's [`Src`])
 /// binds the texture reads in the order that pipeline expects.
+#[derive(Clone)]
 pub struct Pass {
     /// The fused unit run this pass draws: a sampling head plus its pointwise tail, or a single
     /// barrier unit (`Blur`/`Custom`). This is the whole pass — the old `PassKind` triplication
