@@ -2513,6 +2513,72 @@ impl Sink {
     /// onto `acc` through the shape's silhouette — the whole-viewport counterpart of the tiled
     /// `paint_gather`, at full res (no `k` cap, backdrop origin `(0,0)`).
     #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    /// Composite a gather's rendered result `(rtex, rview)` back into the accumulator over `region`
+    /// (device px). A self-clipping lens writes straight in; every other gather is silhouette-masked
+    /// so only the shape's own pixels land. `k < 1` selects the sharp (Catmull-Rom) upscale, matching
+    /// the batched `MASKED`/`SHARP_MASKED` arms. Shared by the scoped (box) and unscoped (viewport)
+    /// per-shape paths — the unscoped case is just `region = (0, 0, viewport)` with `k = 1` — so the
+    /// two oracle branches cannot drift in how a gather lands. Takes ownership of the result texture
+    /// (and any mask it builds) and parks them on the frame's transient list.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn wv_composite_gather<B: RasterBackend>(
+        &mut self,
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        acc_view: &wgpu::TextureView,
+        root: Affine,
+        id: u128,
+        self_clips: bool,
+        region: (f32, f32, f32, f32),
+        k: f32,
+        sz: (f32, f32),
+        format: wgpu::TextureFormat,
+        rtex: wgpu::Texture,
+        rview: wgpu::TextureView,
+    ) {
+        let (bx, by, bw, bh) = region;
+        if self_clips {
+            let b = Blit {
+                src: &rview,
+                dst: (bx, by, bw, bh),
+                src_rect: (0.0, 0.0, bw, bh),
+                src_size: (bw, bh),
+                alpha: 1.0,
+            };
+            if k < 0.999 {
+                self.compositor.blit_sharp(device, enc, acc_view, sz, &b);
+            } else {
+                self.compositor.blit(device, enc, acc_view, sz, &b);
+            }
+        } else {
+            let (mw, mh) = (bw.round() as u32, bh.round() as u32);
+            let mask = self.pool.acquire_target(device, mw, mh, format, self.raster_usage, "wv gather mask");
+            let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut mscene = backend.new_scene(mw as u16, mh as u16);
+            backend.build_mask(&mut mscene, Affine::translate((-(bx as f64), -(by as f64))) * root, id);
+            backend.rasterize(&mscene, device, queue, enc, &mask_view, mw, mh, TRANSPARENT);
+            let mb = MaskedBlit {
+                src: &rview,
+                mask: &mask_view,
+                dst: (bx, by, bw, bh),
+                src_rect: (0.0, 0.0, bw, bh),
+                src_size: (bw, bh),
+                alpha: 1.0,
+            };
+            if k < 0.999 {
+                self.compositor.blit_masked_sharp(device, enc, acc_view, sz, &mb);
+            } else {
+                self.compositor.blit_masked(device, enc, acc_view, sz, &mb);
+            }
+            self.frame_transient.push(mask);
+            self.frame_transient_views.push(mask_view);
+        }
+        self.frame_transient.push(rtex);
+        self.frame_transient_views.push(rview);
+    }
+
     fn wv_stamp_gather<B: RasterBackend>(
         &mut self,
         backend: &mut B,
@@ -2562,24 +2628,10 @@ impl Sink {
         let Some((rtex, rview)) = graph else {
             return;
         };
-        if self_clips {
-            self.compositor.blit(device, enc, acc_view, sz, &Blit {
-                src: &rview, dst: (0.0, 0.0, vp.0, vp.1), src_rect: (0.0, 0.0, vp.0, vp.1), src_size: vp, alpha: 1.0,
-            });
-        } else {
-            let mask = self.pool.acquire_target(device, width, height, format, self.raster_usage, "wv mask");
-            let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut mscene = backend.new_scene(width as u16, height as u16);
-            backend.build_mask(&mut mscene, root, id);
-            backend.rasterize(&mscene, device, queue, enc, &mask_view, width, height, TRANSPARENT);
-            self.compositor.blit_masked(device, enc, acc_view, sz, &MaskedBlit {
-                src: &rview, mask: &mask_view, dst: (0.0, 0.0, vp.0, vp.1), src_rect: (0.0, 0.0, vp.0, vp.1), src_size: vp, alpha: 1.0,
-            });
-            self.frame_transient.push(mask);
-            self.frame_transient_views.push(mask_view);
-        }
-        self.frame_transient.push(rtex);
-        self.frame_transient_views.push(rview);
+        self.wv_composite_gather(
+            backend, device, queue, enc, acc_view, root, id, self_clips,
+            (0.0, 0.0, vp.0, vp.1), 1.0, sz, format, rtex, rview,
+        );
     }
 
     /// Every effect surface a whole-viewport node needs, resolved to geometry, in ONE pass over the
@@ -3353,48 +3405,15 @@ impl Sink {
             return;
         };
 
-        if self_clips {
-            let b = Blit {
-                src: &rview,
-                dst: (bx as f32, by as f32, bw as f32, bh as f32),
-                src_rect: (0.0, 0.0, bw as f32, bh as f32),
-                src_size: (bw as f32, bh as f32),
-                alpha: 1.0,
-            };
-            if k < 0.999 {
-                self.compositor.blit_sharp(device, enc, acc_view, sz, &b);
-            } else {
-                self.compositor.blit(device, enc, acc_view, sz, &b);
-            }
-        } else {
-            let mask = self.pool.acquire_target(device, bw, bh, format, self.raster_usage, "wv scoped mask");
-            let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut mscene = backend.new_scene(bw as u16, bh as u16);
-            backend.build_mask(&mut mscene, Affine::translate((-(bx as f64), -(by as f64))) * root, id);
-            backend.rasterize(&mscene, device, queue, enc, &mask_view, bw, bh, TRANSPARENT);
-            let mb = MaskedBlit {
-                src: &rview,
-                mask: &mask_view,
-                dst: (bx as f32, by as f32, bw as f32, bh as f32),
-                src_rect: (0.0, 0.0, bw as f32, bh as f32),
-                src_size: (bw as f32, bh as f32),
-                alpha: 1.0,
-            };
-            if k < 0.999 {
-                self.compositor.blit_masked_sharp(device, enc, acc_view, sz, &mb);
-            } else {
-                self.compositor.blit_masked(device, enc, acc_view, sz, &mb);
-            }
-            self.frame_transient.push(mask);
-            self.frame_transient_views.push(mask_view);
-        }
+        self.wv_composite_gather(
+            backend, device, queue, enc, acc_view, root, id, self_clips,
+            (bx as f32, by as f32, bw as f32, bh as f32), k as f32, sz, format, rtex, rview,
+        );
         if let Some(p) = self.pass_prof.as_mut() {
             p.stamp(enc, acc_view, crate::vello::graph::prof_bucket::STAMP);
         }
         self.frame_transient.push(bd);
         self.frame_transient_views.push(bd_view);
-        self.frame_transient.push(rtex);
-        self.frame_transient_views.push(rview);
     }
 
     /// Render the level-0 plain bodies (tile + scope buffers) as one atlas instead of one
