@@ -857,8 +857,6 @@ struct Cell {
     passes: std::rc::Rc<Vec<Pass>>,
     /// The straight RGBA tint a spread chain applies, pre-extracted when the cell is built.
     tint: Option<[f32; 4]>,
-    /// Device-space translation a spread's chain applies to its result (a filter graph's `Offset`).
-    dev_offset: (f32, f32),
     /// Spread reduced surface size (its atlas slot is assigned by an external [`crate::atlas::Packing`]
     /// keyed on `key`). A gather leaves these `0` and carries its slot in `cell`/`red` instead.
     kw: u32,
@@ -867,12 +865,26 @@ struct Cell {
     /// (`red`, nested inside `cell`). Both `(0,0,0,0)` on a spread.
     cell: (f32, f32, f32, f32),
     red: (f32, f32, f32, f32),
-    /// A GATHER's silhouette rect in the mask atlas — `Some(rect)` composites through it
-    /// (`MASKED`/`SHARP_MASKED`); `None` is a self-clipping lens (its SDF mask is in its own composite).
-    mask: Option<(f32, f32, f32, f32)>,
-    /// A custom-shader gather (`warp: None`, a `Custom` head), run per-cell then joined to the shared
-    /// masked composite. `false` for spreads, glass and blur gathers.
+    /// How this cell's source pixels are obtained — the one spread/gather axis (see [`CellSource`]).
+    source: CellSource,
+    /// A custom-shader gather (a `Custom` head), run per-cell then joined to the shared masked
+    /// composite. `false` for spreads, glass and blur gathers.
     custom: bool,
+}
+
+/// The one irreducible spread/gather axis: how a cell's source pixels are obtained. This is NOT
+/// derivable from the effect chain, which is why it is a field. Everything else about a cell — glass
+/// vs blur vs custom, tint, self-clip vs mask-composite — is read off the chain.
+#[derive(Clone)]
+enum CellSource {
+    /// Spread: rasterise the shape's silhouette into the cell and run the chain over it. `offset` is
+    /// the device translation the chain applies (a filter graph's `Offset`); `(0, 0)` for most.
+    Silhouette { offset: (f32, f32) },
+    /// Gather: crop the backdrop region out of the accumulator and run the chain over it. A chain with
+    /// a sampling head (a lens) self-clips via its SDF (`mask: None`); a headless chain (blur/custom)
+    /// composites through a rasterised silhouette placed at `mask` (the packer writes the rect;
+    /// `None` until it does).
+    Crop { mask: Option<(f32, f32, f32, f32)> },
 }
 
 /// The `key.1` a gather cell carries — distinct from the spread kinds `0..=3`.
@@ -1643,13 +1655,16 @@ impl Sink {
                 let m_view = mask_tex.create_view(&vd);
                 if mw > 0 {
                     let masks = cells.iter().filter(|c| c.passes.first().and_then(units_head).is_none()).filter_map(|gc| {
-                        gc.mask.map(|(mx, my, _, _)| {
-                            let m = Affine::translate((
-                                f64::from(mx) - f64::from(gc.geom.dev.0),
-                                f64::from(my) - f64::from(gc.geom.dev.1),
-                            )) * root;
-                            (gc.key.0, m)
-                        })
+                        match &gc.source {
+                            CellSource::Crop { mask: Some((mx, my, _, _)) } => {
+                                let m = Affine::translate((
+                                    f64::from(*mx) - f64::from(gc.geom.dev.0),
+                                    f64::from(*my) - f64::from(gc.geom.dev.1),
+                                )) * root;
+                                Some((gc.key.0, m))
+                            }
+                            _ => None,
+                        }
                     });
                     rasterize_masks(backend, device, queue, &mut enc, &m_view, mtw, mth, TRANSPARENT, masks);
                 }
@@ -2172,12 +2187,11 @@ impl Sink {
                 },
                 passes: std::rc::Rc::new(passes),
                 tint: None,
-                dev_offset: (0.0, 0.0),
                 kw: 0,
                 kh: 0,
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, rw as f32, rh as f32),
-                mask: None,
+                source: CellSource::Crop { mask: None },
                 custom: false,
             });
         }
@@ -2222,12 +2236,11 @@ impl Sink {
                 },
                 passes: std::rc::Rc::new(Vec::new()),
                 tint: None,
-                dev_offset: (0.0, 0.0),
                 kw: 0,
                 kh: 0,
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, kw as f32, kh as f32),
-                mask: Some((0.0, 0.0, bw as f32, bh as f32)),
+                source: CellSource::Crop { mask: Some((0.0, 0.0, bw as f32, bh as f32)) },
                 custom,
             });
             mask_sizes.push((bw, bh));
@@ -2251,8 +2264,11 @@ impl Sink {
         } else {
             let mpack = crate::atlas::shelf_pack(&mask_sizes, 4, max_dim.min(4096), max_dim)?;
             for (&ci, pl) in gather_marks.iter().zip(&mpack.cells) {
-                let (_, _, mw2, mh2) = cells[ci].mask.expect("gather cell has a mask");
-                cells[ci].mask = Some((pl.x as f32, pl.y as f32, mw2, mh2));
+                let (mw2, mh2) = match &cells[ci].source {
+                    CellSource::Crop { mask: Some((_, _, w, h)) } => (*w, *h),
+                    _ => unreachable!("a gather mark points at a Crop cell with a mask"),
+                };
+                cells[ci].source = CellSource::Crop { mask: Some((pl.x as f32, pl.y as f32, mw2, mh2)) };
             }
             (mpack.width, mpack.height)
         };
@@ -2403,8 +2419,12 @@ impl Sink {
                     gblur_h.push(Inst::new(c.cell, asz, c.cell, asz, (1.0, 0.0), c.geom.sigma, true));
                     gblur_v.push(Inst::new(c.cell, asz, c.cell, asz, (0.0, 1.0), c.geom.sigma, true));
                 }
+                let mask_rect = match &c.source {
+                    CellSource::Crop { mask: Some(m) } => *m,
+                    _ => unreachable!("a masked gather cell carries a Crop mask rect"),
+                };
                 let stamp_inst = Inst::new(c.geom.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false)
-                    .with_src2(c.mask.expect("a gather cell carries a mask rect"), masz, 0.0);
+                    .with_src2(mask_rect, masz, 0.0);
                 if c.geom.sharp {
                     gsharp_masked.push(stamp_inst);
                 } else {
@@ -2752,11 +2772,10 @@ impl Sink {
                     geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma, sharp: false },
                     passes: std::rc::Rc::new(lower_graph(&graph, None)),
                     tint: graph_tint(&graph),
-                    dev_offset,
                     kw, kh,
                     cell: (0.0, 0.0, 0.0, 0.0),
                     red: (0.0, 0.0, 0.0, 0.0),
-                    mask: None,
+                    source: CellSource::Silhouette { offset: dev_offset },
                     custom: false,
                 });
             }
@@ -2776,11 +2795,10 @@ impl Sink {
                     geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma: 0.0, sharp: false },
                     passes: std::rc::Rc::new(Vec::new()),
                     tint: None,
-                    dev_offset: (0.0, 0.0),
                     kw, kh,
                     cell: (0.0, 0.0, 0.0, 0.0),
                     red: (0.0, 0.0, 0.0, 0.0),
-                    mask: None,
+                    source: CellSource::Silhouette { offset: (0.0, 0.0) },
                     custom: false,
                 });
             }
@@ -2915,17 +2933,22 @@ impl Sink {
     /// `(ox + cell.x, oy + cell.y)`, at the surface's render scale `k`. Shared by both fill
     /// strategies so a cell lands on the same texels whichever one runs.
     ///
-    /// The cell's own translation ([`Cell::dev_offset`], a filter graph's `Offset`) is applied
+    /// The cell's own translation (a spread's [`CellSource::Silhouette`] offset, a filter graph's
+    /// `Offset`) is applied
     /// here rather than at the stamp, because the cell's box already moved with it — its footprint
     /// walks the same ops — so rendering at the unmoved position and stamping at the moved box would
     /// cancel exactly, which is what made a filter offset a silent no-op. Zero for every chain
     /// without one, so every other cell is byte-identical.
     fn wv_cell_transform(c: &Cell, place: &crate::atlas::Placement, ox: u32, oy: u32, root: Affine) -> Affine {
+        let (dox, doy) = match &c.source {
+            CellSource::Silhouette { offset } => *offset,
+            CellSource::Crop { .. } => (0.0, 0.0),
+        };
         Affine::translate((f64::from(ox + place.x), f64::from(oy + place.y)))
             * Affine::scale(f64::from(c.geom.k))
             * Affine::translate((
-                f64::from(c.dev_offset.0) - f64::from(c.geom.bx()),
-                f64::from(c.dev_offset.1) - f64::from(c.geom.by()),
+                f64::from(dox) - f64::from(c.geom.bx()),
+                f64::from(doy) - f64::from(c.geom.by()),
             ))
             * root
     }
@@ -3086,7 +3109,10 @@ impl Sink {
         }
         // A body chain may translate its result; its cell box moved with it, so the render has to
         // move by the same device vector or the two cancel out. Zero for every cell without one.
-        let (odx, ody) = (f64::from(c.dev_offset.0), f64::from(c.dev_offset.1));
+        let (odx, ody) = match &c.source {
+            CellSource::Silhouette { offset } => (f64::from(offset.0), f64::from(offset.1)),
+            CellSource::Crop { .. } => (0.0, 0.0),
+        };
         let m = Affine::scale(f64::from(c.geom.k))
             * Affine::translate((odx - f64::from(c.geom.bx()), ody - f64::from(c.geom.by())))
             * root;
