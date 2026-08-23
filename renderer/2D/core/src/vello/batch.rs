@@ -76,6 +76,12 @@ pub(crate) mod stage {
     /// The detail-preserving (Catmull-Rom) upscale of a k<1 cell — the batched twin of `blit_sharp`.
     /// Its own tap set, like the blur, so it too sits apart from the generated arm table.
     pub const SHARP: f32 = 3.0;
+    /// A bilinear copy times a silhouette mask (read from `tex2`) — the batched twin of `blit_masked`,
+    /// how a non-self-clipping gather composites its result through the shape's coverage.
+    pub const MASKED: f32 = 4.0;
+    /// [`SHARP`] times a silhouette mask (`tex2`) — the batched twin of `blit_masked_sharp`, for a
+    /// k<1 gather that both upscales its reduced cell and clips it to the shape.
+    pub const SHARP_MASKED: f32 = 5.0;
 }
 
 /// A pointwise composition, as the bits that pick its arm. One bit per unit that can appear in a
@@ -394,7 +400,30 @@ fn sharp_px(in: VSOut) -> vec4<f32> {
     return clamp(c + (c - mean) * 0.35, lo, hi);
 }
 
+// The shape silhouette for a masked composite: the mask atlas (`tex2`, the cell's `src2` rect) sampled
+// at the fragment's cell coordinate, exactly as the per-shape `fs_masked` reads its dedicated mask.
+// Clamped to the cell's OWN rect (`g_orig_c*`) so a tap at the edge cannot bleed in from a neighbour —
+// the shared-atlas equivalent of the dedicated mask's ClampToEdge.
+fn mask_cover(in: VSOut) -> f32 {
+    return unitSampleOrig(g_inst, in.uv).a;
+}
 
+// The batched twin of `blit_masked`: a plain bilinear read of the cell times the silhouette mask —
+// a non-self-clipping gather at native scale, composited through its coverage. Premultiplied, so the
+// mask multiplies the whole colour.
+fn masked_px(in: VSOut) -> vec4<f32> {
+    unitBegin(in.inst, false);
+    let c = textureSampleLevel(tex, samp, clamp(atlasUV(in.uv), g_src_cmin, g_src_cmax), 0.0);
+    return c * mask_cover(in);
+}
+
+// The batched twin of `blit_masked_sharp`: the Catmull-Rom upscale of a k<1 cell times the silhouette
+// mask. `sharp_px` runs first (it sets `g_orig*` from `src2`), then the mask read uses those rects —
+// the same `sample_sharp(uv) * cover` the per-shape `fs_masked` computes.
+fn sharp_masked_px(in: VSOut) -> vec4<f32> {
+    let c = sharp_px(in);
+    return c * mask_cover(in);
+}
 
 "#;
 
@@ -572,6 +601,12 @@ fn fs_uber(in: VSOut) -> @location(0) vec4<f32> {
     }
     if (stage > 2.5 && stage < 3.5) {
         return sharp_px(in);
+    }
+    if (stage > 3.5 && stage < 4.5) {
+        return masked_px(in);
+    }
+    if (stage > 4.5 && stage < 5.5) {
+        return sharp_masked_px(in);
     }
     switch (u32(stage) - 8u) {
         case 0u: { return arm0_px(in); }

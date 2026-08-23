@@ -742,13 +742,20 @@ struct LensCell {
     dev: (f32, f32, f32, f32),
     cell: (f32, f32, f32, f32),
     red: (f32, f32, f32, f32),
-    warp: crate::vello::units::UnitOp,
+    /// The sampling head, for a self-clipping lens (glass). `None` for a plain **gather** — a
+    /// backdrop-reading chain with no head (a background blur), which crops, blurs and composites
+    /// THROUGH a silhouette mask instead of an SDF. `warp.is_none()` is what the round dispatches on.
+    warp: Option<crate::vello::units::UnitOp>,
     tail: Vec<crate::vello::units::UnitOp>,
     sigma: f32,
     /// `k < 1`: the cell is rendered at reduced size and the stamp Catmull-Rom-upscales it
     /// (`stage::SHARP`) — the batched twin of the per-shape `blit_sharp`. `false` = native, plain
     /// (`Tint`) stamp.
     sharp: bool,
+    /// A gather's silhouette in the MASK atlas, at device size — `Some(rect)` composites through it
+    /// (`MASKED`/`SHARP_MASKED`, the batched twin of `blit_masked`/`blit_masked_sharp`); `None` is a
+    /// self-clipping lens, whose SDF mask lives in its own composite. Rect is in mask-atlas pixels.
+    mask: Option<(f32, f32, f32, f32)>,
 }
 
 
@@ -775,6 +782,13 @@ struct WvLensAtlas {
     b_view: wgpu::TextureView,
     c_view: wgpu::TextureView,
     d_view: wgpu::TextureView,
+    /// The **mask** atlas: every gather's silhouette rasterised once at device size, bound as the
+    /// masked composite's second texture (`Surface::Atlas(4)`). `mw`/`mh` are its own dimensions
+    /// (device-size cells, packed separately from the reduced effect cells), `0` when no gather rides
+    /// this frame. Held with the rest for the whole round loop.
+    mw: u32,
+    mh: u32,
+    m_view: wgpu::TextureView,
     /// The atlas textures themselves, returned to the pool once the last round has run.
     keep: Vec<wgpu::Texture>,
 }
@@ -815,6 +829,20 @@ struct WvCell {
     /// `drop_shadow_graph` said a drop shadow is — which meant a custom shader on a body could not
     /// appear in the chain at all, and the batch admitted the reconstruction instead of the effect.
     graph: std::rc::Rc<Vec<crate::effect_graph::GraphPass>>,
+    /// How this cell's atlas slot is FILLED. `false` (a stamp): the source is a silhouette
+    /// rasterized in the strip and copied into the slot. `true` (a gather): the source is a CROP of
+    /// the live accumulator, lifted in by a `Stage(BLUR-copy, Atlas, Acc)` at the effect boundary —
+    /// the batched twin of the per-shape backdrop blit. A gather rides no strip, so the strip encode
+    /// and copy-out skip it.
+    crop: bool,
+    /// The silhouette this cell composites THROUGH, or `None` for an unmasked stamp (a self-clipping
+    /// lens carries its own SDF mask, so it too is `None`). `Some(key)` names another cell — a plain
+    /// coverage silhouette rasterized in the strip — bound as `tex2` at the masked composite, exactly
+    /// as the erase stage binds its punch. How a non-self-clipping gather is clipped to its shape.
+    masked: Option<(u128, u8, usize)>,
+    /// `k < 1`: the composite Catmull-Rom-upscales the reduced cell (`SHARP`/`SHARP_MASKED`) instead
+    /// of the plain bilinear copy (`TINT`/`MASKED`) — mirrors the per-shape `blit_sharp` branch.
+    sharp: bool,
 }
 
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
@@ -1566,7 +1594,7 @@ impl Sink {
             .wv_lens_plan(&gathers, &rounds, full_view, width, height, device.limits().max_texture_dimension_2d)
             .filter(|_| wv_lens_batch());
         let (lens_cells, lens_atlas) = match lens_plan {
-            Some((packing, cells)) => {
+            Some((packing, cells, (mw, mh))) => {
                 let _ = self
                     .batch_pipes
                     .get_or_insert_with(|| crate::vello::batch::BatchPipelines::new(device, format));
@@ -1574,6 +1602,25 @@ impl Sink {
                 let mut mk = |label| self.pool.acquire_target(device, aw, ah, format, wgpu::TextureUsages::empty(), label);
                 let (a, b, c, d) = (mk("wv lens a"), mk("wv lens b"), mk("wv lens c"), mk("wv lens d"));
                 let vd = wgpu::TextureViewDescriptor::default();
+                // The mask atlas: every gather silhouette rasterised once at device size into one
+                // texture, at each gather cell's packed mask rect. Bound as the masked composite's
+                // second texture. Allocated 1x1 when no gather rides this frame (still a valid bind).
+                let (mtw, mth) = (mw.max(1), mh.max(1));
+                let mask_tex = self.pool.acquire_target(device, mtw, mth, format, self.raster_usage, "wv lens mask");
+                let m_view = mask_tex.create_view(&vd);
+                if mw > 0 {
+                    let mut mscene = backend.new_scene(mtw as u16, mth as u16);
+                    for gc in cells.iter().filter(|c| c.warp.is_none()) {
+                        if let Some((mx, my, _, _)) = gc.mask {
+                            let m = Affine::translate((
+                                f64::from(mx) - f64::from(gc.dev.0),
+                                f64::from(my) - f64::from(gc.dev.1),
+                            )) * root;
+                            backend.build_mask(&mut mscene, m, gc.gid);
+                        }
+                    }
+                    backend.rasterize(&mscene, device, queue, &mut enc, &m_view, mtw, mth, TRANSPARENT);
+                }
                 let atlas = WvLensAtlas {
                     w: aw,
                     h: ah,
@@ -1581,7 +1628,10 @@ impl Sink {
                     b_view: b.create_view(&vd),
                     c_view: c.create_view(&vd),
                     d_view: d.create_view(&vd),
-                    keep: vec![a, b, c, d],
+                    mw: mtw,
+                    mh: mth,
+                    m_view,
+                    keep: vec![a, b, c, d, mask_tex],
                 };
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_LENS_STATS").is_ok() {
@@ -1831,6 +1881,7 @@ impl Sink {
             self.frame_transient_views.push(atlas.b_view);
             self.frame_transient_views.push(atlas.c_view);
             self.frame_transient_views.push(atlas.d_view);
+            self.frame_transient_views.push(atlas.m_view);
         }
         backend.phased_finish(device, queue, &mut enc);
         crate::vello::prof::dbg_add(27, crate::vello::prof::now() - _tpl);
@@ -2040,7 +2091,7 @@ impl Sink {
         width: u32,
         height: u32,
         max_dim: u32,
-    ) -> Option<(crate::atlas::Packing, Vec<LensCell>)> {
+    ) -> Option<(crate::atlas::Packing, Vec<LensCell>, (u32, u32))> {
         if !crate::vello::abi::wv_scope() {
             return None;
         }
@@ -2084,11 +2135,54 @@ impl Sink {
                 dev: (bx as f32, by as f32, bw as f32, bh as f32),
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, rw as f32, rh as f32),
-                warp,
+                warp: Some(warp),
                 tail,
                 sigma,
                 sharp: k < 0.999,
+                mask: None,
             });
+        }
+        // Non-self-clipping BACKDROP gathers — background blurs — batch through the same round: crop
+        // the accumulator, blur separably, composite THROUGH a silhouette mask (the batched twin of
+        // the per-shape `blit_masked`). Custom-shader gathers are S3; only blur heads admit here. Each
+        // gather cell rides two atlases — the effect atlas (reduced, its crop/blur) and the mask atlas
+        // (device size, its silhouette) — so its mask size is collected for a second packing.
+        let mut mask_sizes: Vec<(u32, u32)> = Vec::new();
+        let mut gather_marks: Vec<usize> = Vec::new();
+        for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
+            if kind == FX_STACK || Self::wv_gather_self_clips(gid) {
+                continue;
+            }
+            if !Self::wv_backdrop_effect(gid)
+                .is_some_and(|e| matches!(e.ops.first(), Some(crate::effect::Op::Blur { .. })))
+            {
+                continue;
+            }
+            let Some((bx, by, bw, bh, k)) = self.wv_gather_box(gid, full_view, width, height) else {
+                continue;
+            };
+            let (kw, kh) = (
+                crate::effect_graph::pass_dim(bw, k as f32),
+                crate::effect_graph::pass_dim(bh, k as f32),
+            );
+            if kw > max_dim || kh > max_dim || bw > max_dim || bh > max_dim {
+                continue;
+            }
+            let sigma = self.gather_sigma(gid, full_view, k);
+            cells.push(LensCell {
+                gid,
+                round: rounds[j],
+                dev: (bx as f32, by as f32, bw as f32, bh as f32),
+                cell: (0.0, 0.0, kw as f32, kh as f32),
+                red: (0.0, 0.0, kw as f32, kh as f32),
+                warp: None,
+                tail: Vec::new(),
+                sigma,
+                sharp: k < 0.999,
+                mask: Some((0.0, 0.0, bw as f32, bh as f32)),
+            });
+            mask_sizes.push((bw, bh));
+            gather_marks.push(cells.len() - 1);
         }
         if cells.len() < 2 {
             return None;
@@ -2101,7 +2195,19 @@ impl Sink {
             c.red.0 = pl.x as f32;
             c.red.1 = pl.y as f32;
         }
-        Some((packing, cells))
+        // Second packing: the gather silhouettes, at device size, into the mask atlas. Its rects are
+        // written back onto each gather cell so the round's masked composite reads `tex2` at them.
+        let (mw, mh) = if mask_sizes.is_empty() {
+            (0, 0)
+        } else {
+            let mpack = crate::atlas::shelf_pack(&mask_sizes, 4, max_dim.min(4096), max_dim)?;
+            for (&ci, pl) in gather_marks.iter().zip(&mpack.cells) {
+                let (_, _, mw2, mh2) = cells[ci].mask.expect("gather cell has a mask");
+                cells[ci].mask = Some((pl.x as f32, pl.y as f32, mw2, mh2));
+            }
+            (mpack.width, mpack.height)
+        };
+        Some((packing, cells, (mw, mh)))
     }
 
     /// The device box and render scale one scoped lens reads and writes — the same derivation
@@ -2148,6 +2254,42 @@ impl Sink {
         Some((bx, by, bw, bh, k))
     }
 
+    /// The device box and render scale a NON-self-clipping gather (a background blur) reads and writes
+    /// — the exact derivation [`Self::wv_stamp_gather_scoped`]'s non-`self_clips` branch does, factored
+    /// out so the batch planner and the per-shape path can never disagree about a gather's geometry
+    /// (the same guarantee [`Self::wv_lens_box`] gives for a lens).
+    fn wv_gather_box(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Option<(u32, u32, u32, u32, f64)> {
+        use crate::kurbo::Point;
+        let page = crate::vello::abi::with_scene(|live, _, modifiers| {
+            let n = live.get(id)?;
+            let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+            Some(crate::schedule::page_bounds(n, m))
+        })?;
+        let cs = full_view.as_coeffs();
+        let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
+        let reach = 3.0 * f64::from(self.gather_sigma(id, full_view, 1.0)) + 6.0;
+        let pts = [
+            full_view * Point::new(page.x0, page.y0),
+            full_view * Point::new(page.x1, page.y0),
+            full_view * Point::new(page.x0, page.y1),
+            full_view * Point::new(page.x1, page.y1),
+        ];
+        let minx = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min) - reach;
+        let miny = pts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min) - reach;
+        let maxx = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max) + reach;
+        let maxy = pts.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max) + reach;
+        let bx = minx.floor().clamp(0.0, f64::from(width)) as u32;
+        let by = miny.floor().clamp(0.0, f64::from(height)) as u32;
+        let ex = maxx.ceil().clamp(0.0, f64::from(width)) as u32;
+        let ey = maxy.ceil().clamp(0.0, f64::from(height)) as u32;
+        let (bw, bh) = (ex.saturating_sub(bx), ey.saturating_sub(by));
+        if bw == 0 || bh == 0 {
+            return None;
+        }
+        let k = tiling::resolution_cap(full_view, reach / f64::from(scale)).min(1.0);
+        Some((bx, by, bw, bh, k))
+    }
+
     /// Run every batched lens of ONE round: crop each lens's backdrop out of the accumulator, run the
     /// unit stages over all of them at once — one pass per stage, not per lens — and composite the
     /// results back. A round's lenses are disjoint, so the whole round is at most six passes
@@ -2188,9 +2330,27 @@ impl Sink {
         // default.
         let mut no_tint = [0.0_f32; 24];
         no_tint[15] = -1.0;
+        // A plain gather (no head): its crop is blurred separably and composited THROUGH its mask.
+        // Reuses slots C/D — free once every glass composite above has read them — so a round of
+        // gathers needs no surfaces of its own.
+        let masz = (atlas.mw as f32, atlas.mh as f32);
+        let (mut gblur_h, mut gblur_v): (Vec<Inst>, Vec<Inst>) = (Vec::new(), Vec::new());
+        let (mut gmasked, mut gsharp_masked): (Vec<Inst>, Vec<Inst>) = (Vec::new(), Vec::new());
         for c in &here {
             crops.push(Inst::new(c.cell, asz, c.dev, sz, (0.0, 0.0), 0.0, false));
-            let mut ops = vec![c.warp.clone()];
+            let Some(warp_op) = c.warp.clone() else {
+                gblur_h.push(Inst::new(c.cell, asz, c.cell, asz, (1.0, 0.0), c.sigma, true));
+                gblur_v.push(Inst::new(c.cell, asz, c.cell, asz, (0.0, 1.0), c.sigma, true));
+                let stamp_inst = Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false)
+                    .with_src2(c.mask.expect("a gather cell carries a mask rect"), masz, 0.0);
+                if c.sharp {
+                    gsharp_masked.push(stamp_inst);
+                } else {
+                    gmasked.push(stamp_inst);
+                }
+                continue;
+            };
+            let mut ops = vec![warp_op];
             if c.sigma <= 0.0 {
                 ops.extend(c.tail.iter().cloned());
                 sharp.push(
@@ -2257,7 +2417,22 @@ impl Sink {
         if !sharp_stamp.is_empty() {
             stages.push(Stage::new(stage::SHARP, Surface::Acc, C, sharp_stamp).composited());
         }
-        let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view];
+        // Plain gathers, appended last so C/D are free (every glass composite above has read them):
+        // crop (A) → blur H (C) → blur V (D) → composite through the mask atlas (Surface::Atlas(4)).
+        // `MASKED` at native scale, `SHARP_MASKED` for k<1 — the batched twins of `blit_masked` and
+        // `blit_masked_sharp`.
+        if !gblur_h.is_empty() {
+            const M: Surface = Surface::Atlas(4);
+            stages.push(Stage::new(stage::BLUR, C, A, gblur_h).cleared());
+            stages.push(Stage::new(stage::BLUR, D, C, gblur_v).cleared());
+            if !gmasked.is_empty() {
+                stages.push(Stage::new(stage::MASKED, Surface::Acc, D, gmasked).with_src2(M).composited());
+            }
+            if !gsharp_masked.is_empty() {
+                stages.push(Stage::new(stage::SHARP_MASKED, Surface::Acc, D, gsharp_masked).with_src2(M).composited());
+            }
+        }
+        let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view, &atlas.m_view];
         for st in &stages {
             pipes.run_stage(device, enc, st, acc_view, &views, sampler);
         }
@@ -2412,7 +2587,10 @@ impl Sink {
             let sigma = device_sigma.unwrap_or(0.0);
             for &kind in kinds {
                 let graph = std::rc::Rc::new(wv_cell_graph(effect, kind, kw, kh, sigma * k));
-                out.push(WvCell { key: (id, kind, index), bx, by, bw, bh, kw, kh, k, sigma, dev_offset, graph });
+                out.push(WvCell {
+                    key: (id, kind, index), bx, by, bw, bh, kw, kh, k, sigma, dev_offset, graph,
+                    crop: false, masked: None, sharp: false,
+                });
             }
             match kinds[0] {
                 0 => drop_i += 1,
@@ -2427,6 +2605,7 @@ impl Sink {
                 out.push(WvCell {
                     key: (id, 1, 0), bx, by, bw, bh, kw, kh, k, sigma: 0.0, dev_offset: (0.0, 0.0),
                     graph: std::rc::Rc::new(Vec::new()),
+                    crop: false, masked: None, sharp: false,
                 });
             }
         }

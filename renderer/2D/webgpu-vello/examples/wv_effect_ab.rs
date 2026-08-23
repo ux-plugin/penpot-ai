@@ -39,6 +39,10 @@ fn install(scene: &str) -> u32 {
             u32::from(!std::env::var("GLASS_SHARP").is_ok()),
             std::env::var("GLASS_K_MILLI").ok().and_then(|v| v.parse().ok()).unwrap_or(500),
         ),
+        "blur-grid" => render_core::vello::abi::load_blur_grid_scene(
+            std::env::var("BLUR_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+            std::env::var("BLUR_R").ok().and_then(|v| v.parse().ok()).unwrap_or(24),
+        ),
         "scope" => render_core::vello::abi::load_scope_scene(),
         "texture" => render_core::vello::abi::load_texture_scene(),
         // The one fixture whose stacks SPLIT: a custom shader on the body sits between the drop
@@ -150,7 +154,7 @@ fn main() {
         d[0], d[1], d[2], d[3], d[4], d[5], d[6]
     );
     if std::env::var("WV_GLASS_AB").is_ok() {
-        unsafe { std::env::set_var("WV_GLASS", "0") };
+        unsafe { std::env::set_var("WV_LENS", "0") };
         let cells = install(&scene);
         let _ = frame_setup(cells);
         backend.sync_fonts();
@@ -168,7 +172,7 @@ fn main() {
         println!("  render passes: batched {wv_passes}, per-shape {per_passes}");
         if let Ok(reps) = std::env::var("WV_GLASS_TIME").map(|v| v.parse::<u32>().unwrap_or(10)) {
             let mut time_it = |on: &str| {
-                unsafe { std::env::set_var("WV_GLASS", on) };
+                unsafe { std::env::set_var("WV_LENS", on) };
                 let mut sink = Sink::new(&device, FORMAT);
                 let t = make_target(&device, w, h, "wv ab timing");
                 let start = std::time::Instant::now();
@@ -183,10 +187,10 @@ fn main() {
             };
             let batched = time_it("1");
             let per = time_it("0");
-            unsafe { std::env::remove_var("WV_GLASS") };
+            unsafe { std::env::remove_var("WV_LENS") };
             println!("  frame time over {reps} frames: batched {batched:.2} ms, per-shape {per:.2} ms");
         }
-        unsafe { std::env::remove_var("WV_GLASS") };
+        unsafe { std::env::remove_var("WV_LENS") };
     }
     let (diff_px, max_delta) = diff(&tiled_rgba, &wv_rgba);
     let total = (w * h) as usize;
