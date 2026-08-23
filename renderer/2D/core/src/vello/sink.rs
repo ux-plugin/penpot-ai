@@ -871,12 +871,6 @@ struct Cell {
     warp: Option<crate::vello::units::UnitOp>,
     /// The gather chain tail after `warp`. Empty on a spread.
     tail: Vec<crate::vello::units::UnitOp>,
-    /// How a SPREAD cell's atlas slot is FILLED: `false` a silhouette rasterized in the strip and
-    /// copied in; `true` a crop of the live accumulator. Unused by the gather path.
-    crop: bool,
-    /// The silhouette a SPREAD composites THROUGH (`Some(key)` names a coverage cell bound as `tex2`),
-    /// or `None` for an unmasked stamp / self-clipping lens.
-    masked: Option<(u128, u8, usize)>,
     /// A GATHER's silhouette rect in the mask atlas — `Some(rect)` composites through it
     /// (`MASKED`/`SHARP_MASKED`); `None` is a self-clipping lens (its SDF mask is in its own composite).
     mask: Option<(f32, f32, f32, f32)>,
@@ -2189,8 +2183,6 @@ impl Sink {
                 red: (0.0, 0.0, rw as f32, rh as f32),
                 warp: Some(warp),
                 tail,
-                crop: false,
-                masked: None,
                 mask: None,
                 custom: false,
             });
@@ -2243,8 +2235,6 @@ impl Sink {
                 red: (0.0, 0.0, kw as f32, kh as f32),
                 warp: None,
                 tail: Vec::new(),
-                crop: false,
-                masked: None,
                 mask: Some((0.0, 0.0, bw as f32, bh as f32)),
                 custom,
             });
@@ -2772,8 +2762,6 @@ impl Sink {
                     red: (0.0, 0.0, 0.0, 0.0),
                     warp: None,
                     tail: Vec::new(),
-                    crop: false,
-                    masked: None,
                     mask: None,
                     custom: false,
                 });
@@ -2800,8 +2788,6 @@ impl Sink {
                     red: (0.0, 0.0, 0.0, 0.0),
                     warp: None,
                     tail: Vec::new(),
-                    crop: false,
-                    masked: None,
                     mask: None,
                     custom: false,
                 });
