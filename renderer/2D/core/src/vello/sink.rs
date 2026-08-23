@@ -834,8 +834,8 @@ const TILE_PX: u32 = 16;
 /// planner ([`Sink::wv_effect_cells`] → [`wv_batch_plan`]) and the gather planner
 /// ([`Sink::wv_lens_plan`]) emit, and both executors ([`Sink::wv_paint_stack`] and
 /// [`Sink::wv_lens_round`]) consume. It carries the union of what a spread stamp and a batched gather
-/// need; a given cell fills only its kind's fields (a spread leaves the gather rects/`warp`/`tail`
-/// empty and vice versa). The fields group as: identity + schedule, shared geometry + chain, then the
+/// need; a given cell fills only its kind's fields (a spread leaves the gather rects empty and vice
+/// versa). The fields group as: identity + schedule, shared geometry + chain, then the
 /// per-kind placement and compositing metadata.
 #[derive(Clone)]
 struct Cell {
@@ -850,8 +850,10 @@ struct Cell {
     /// (`geom.sharp` is always `false` for a spread: a stamp never Catmull-Rom-upscales.)
     geom: CellGeom,
     /// This cell's effect, LOWERED once to runnable [`Pass`]es — the shared units-IR chain both the
-    /// batch (`batch_admit`) and the per-shape executor (`wv_effect_blit`) consume. Empty for a
-    /// gather, which re-derives its chain from the node (`wv_gather_graph`) or rides `warp`/`tail`.
+    /// batch (`batch_admit`) and the per-shape executor (`wv_effect_blit`) consume. A self-clipping
+    /// lens carries its lowered chain here too; the round re-derives its head + tail via
+    /// [`batch_admit`] (no separate `warp`/`tail` fields). A plain blur/custom gather leaves this
+    /// empty and re-derives from the node (`wv_gather_graph`).
     passes: std::rc::Rc<Vec<Pass>>,
     /// The straight RGBA tint a spread chain applies, pre-extracted when the cell is built.
     tint: Option<[f32; 4]>,
@@ -865,12 +867,6 @@ struct Cell {
     /// (`red`, nested inside `cell`). Both `(0,0,0,0)` on a spread.
     cell: (f32, f32, f32, f32),
     red: (f32, f32, f32, f32),
-    /// The sampling head of a self-clipping lens (glass); `None` for a spread or a plain gather (a
-    /// backdrop-reading chain with no head — a background blur — which crops, blurs and composites
-    /// through a silhouette mask instead of an SDF). `warp.is_none()` is what the round dispatches on.
-    warp: Option<crate::vello::units::UnitOp>,
-    /// The gather chain tail after `warp`. Empty on a spread.
-    tail: Vec<crate::vello::units::UnitOp>,
     /// A GATHER's silhouette rect in the mask atlas — `Some(rect)` composites through it
     /// (`MASKED`/`SHARP_MASKED`); `None` is a self-clipping lens (its SDF mask is in its own composite).
     mask: Option<(f32, f32, f32, f32)>,
@@ -1646,7 +1642,7 @@ impl Sink {
                 let mask_tex = self.pool.acquire_target(device, mtw, mth, format, self.raster_usage, "wv lens mask");
                 let m_view = mask_tex.create_view(&vd);
                 if mw > 0 {
-                    let masks = cells.iter().filter(|c| c.warp.is_none()).filter_map(|gc| {
+                    let masks = cells.iter().filter(|c| c.passes.first().and_then(units_head).is_none()).filter_map(|gc| {
                         gc.mask.map(|(mx, my, _, _)| {
                             let m = Affine::translate((
                                 f64::from(mx) - f64::from(gc.geom.dev.0),
@@ -2157,7 +2153,7 @@ impl Sink {
             let Some(passes) = self.lens_graph(gid, kw, kh, f64::from(bx), f64::from(by), full_view, k) else {
                 continue;
             };
-            let Some(BatchShape::Lens { head: warp, tail, sigma }) = batch_admit(&passes) else {
+            let Some(BatchShape::Lens { sigma, .. }) = batch_admit(&passes) else {
                 continue;
             };
             let red_scale = if sigma > 0.0 { passes[0].scale } else { 1.0 };
@@ -2174,15 +2170,13 @@ impl Sink {
                     sigma,
                     sharp: k < 0.999,
                 },
-                passes: std::rc::Rc::new(Vec::new()),
+                passes: std::rc::Rc::new(passes),
                 tint: None,
                 dev_offset: (0.0, 0.0),
                 kw: 0,
                 kh: 0,
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, rw as f32, rh as f32),
-                warp: Some(warp),
-                tail,
                 mask: None,
                 custom: false,
             });
@@ -2233,8 +2227,6 @@ impl Sink {
                 kh: 0,
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, kw as f32, kh as f32),
-                warp: None,
-                tail: Vec::new(),
                 mask: Some((0.0, 0.0, bw as f32, bh as f32)),
                 custom,
             });
@@ -2400,7 +2392,11 @@ impl Sink {
         let mut customs: Vec<&Cell> = Vec::new();
         for c in &here {
             crops.push(Inst::new(c.cell, asz, c.geom.dev, sz, (0.0, 0.0), 0.0, false));
-            let Some(warp_op) = c.warp.clone() else {
+            let lens = match batch_admit(&c.passes) {
+                Some(BatchShape::Lens { head, tail, .. }) => Some((head, tail)),
+                _ => None,
+            };
+            let Some((warp_op, tail)) = lens else {
                 if c.custom {
                     customs.push(*c);
                 } else {
@@ -2418,7 +2414,7 @@ impl Sink {
             };
             let mut ops = vec![warp_op];
             if c.geom.sigma <= 0.0 {
-                ops.extend(c.tail.iter().cloned());
+                ops.extend(tail.iter().cloned());
                 sharp.push(
                     Inst::new(c.cell, asz, c.cell, asz, (0.0, 0.0), 0.0, false)
                         .with_src2(c.cell, asz, 0.0)
@@ -2442,7 +2438,7 @@ impl Sink {
                         .with_units(frost_f.len())
                         .at(c.cell),
                 );
-                frost_f.push(FieldUniform { u: crate::vello::units::units_uniform(&c.tail) });
+                frost_f.push(FieldUniform { u: crate::vello::units::units_uniform(&tail) });
             }
             let stamp_inst = Inst::new(c.geom.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false);
             if c.geom.sharp {
@@ -2760,8 +2756,6 @@ impl Sink {
                     kw, kh,
                     cell: (0.0, 0.0, 0.0, 0.0),
                     red: (0.0, 0.0, 0.0, 0.0),
-                    warp: None,
-                    tail: Vec::new(),
                     mask: None,
                     custom: false,
                 });
@@ -2786,8 +2780,6 @@ impl Sink {
                     kw, kh,
                     cell: (0.0, 0.0, 0.0, 0.0),
                     red: (0.0, 0.0, 0.0, 0.0),
-                    warp: None,
-                    tail: Vec::new(),
                     mask: None,
                     custom: false,
                 });
