@@ -111,7 +111,7 @@ struct WvBatchPlan {
 /// It used to be a second lookup on the node (`model.get(id).shadows.filter(inset).nth(idx)`), which
 /// is how the batch and the per-shape path could disagree about a colour: two routes to one value.
 /// The chain already carries it, because the chain is what applies it.
-fn wv_cell_tint(c: &WvCell) -> Option<[f32; 4]> {
+fn wv_cell_tint(c: &Cell) -> Option<[f32; 4]> {
     c.tint
 }
 
@@ -297,7 +297,7 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
 
 /// [`batch_admit`] for one cell, lowering the cell's OWN chain the way the executor will. Nothing
 /// is reconstructed here: a chain the stages cannot run declines because of what it is.
-fn wv_batch_cell_shape(c: &WvCell) -> Option<BatchShape> {
+fn wv_batch_cell_shape(c: &Cell) -> Option<BatchShape> {
     batch_admit(&c.passes)
 }
 
@@ -332,7 +332,7 @@ fn wv_composite_bits(ops: &[crate::vello::units::UnitOp]) -> u32 {
 
 /// Build the batch plan for this frame, or `None` when batching is off or nothing qualifies.
 ///
-/// Each candidate cell carries its own lowered chain ([`WvCell::graph`]) and is admitted iff
+/// Each candidate cell carries its own lowered chain ([`Cell::graph`]) and is admitted iff
 /// [`wv_batch_supported`] — so the batch executes the same IR the per-shape path executes, through
 /// instanced stages instead of private pass chains. Shapes stay per-shape when their stack composes
 /// mid-backdrop (lens), carries custom `Shader` ops, or blurs past what the instanced stage
@@ -341,7 +341,7 @@ fn wv_batch_plan(
     gathers: &[(usize, u128, u8)],
     rounds: &[u32],
     packing: &crate::atlas::Packing,
-    cells: &[(WvCell, usize)],
+    cells: &[(Cell, usize)],
     strip_y: u32,
     acc_size: (f32, f32),
 ) -> Option<WvBatchPlan> {
@@ -374,7 +374,7 @@ fn wv_batch_plan(
         let stack = crate::vello::abi::with_scene(|live, _, _| {
             live.get(gid).map(crate::effect::effect_stack).unwrap_or_default()
         });
-        let shape_cells: Vec<&WvCell> =
+        let shape_cells: Vec<&Cell> =
             cells.iter().map(|(c, _)| c).filter(|c| c.key.0 == gid).collect();
         // A scoped backdrop reads the accumulator mid-stack and is composed by `wv_stamp_gather`
         // for the whole shape at once, so it is still all-or-nothing. Everything else is admitted
@@ -387,14 +387,14 @@ fn wv_batch_plan(
         };
         #[derive(Clone, Copy)]
         enum Emit<'a> {
-            Cell(&'a WvCell),
-            Inner { flood: &'a WvCell, punch: &'a WvCell },
+            Cell(&'a Cell),
+            Inner { flood: &'a Cell, punch: &'a Cell },
             /// An entry the batch declined. It is not a hole: it holds the position the per-shape
             /// painter has to composite in, which is what the round assignment below reads.
             Legacy(Option<(u128, u8, usize)>),
         }
-        let placed = |c: &WvCell| place.contains_key(&c.key);
-        let stampable = |c: &WvCell| {
+        let placed = |c: &Cell| place.contains_key(&c.key);
+        let stampable = |c: &Cell| {
             placed(c) && matches!(wv_batch_cell_shape(c), Some(BatchShape::Stamp { .. }))
         };
         let mut emit: Vec<Emit> = Vec::new();
@@ -450,7 +450,7 @@ fn wv_batch_plan(
         if !emit.iter().any(|e| !matches!(e, Emit::Legacy(_))) {
             continue;
         }
-        let rects = |c: &WvCell| {
+        let rects = |c: &Cell| {
             let (px, py) = place[&c.key];
             let (kwf, khf) = (c.kw as f32, c.kh as f32);
             (
@@ -463,15 +463,15 @@ fn wv_batch_plan(
         // owns the sigma/linear semantics for BOTH paths. An empty graph is the identity: the cell
         // rides the blur stages as a sigma-0 copy so every batched cell lands in the surface the
         // later stages sample.
-        let params = |c: &WvCell| match wv_batch_cell_shape(c) {
+        let params = |c: &Cell| match wv_batch_cell_shape(c) {
             Some(BatchShape::Stamp { sigma, linear, .. }) => (sigma, linear),
             _ => (0.0, false),
         };
-        let cell_units = |c: &WvCell| match wv_batch_cell_shape(c) {
+        let cell_units = |c: &Cell| match wv_batch_cell_shape(c) {
             Some(BatchShape::Stamp { ops, .. }) => ops,
             _ => Vec::new(),
         };
-        let mut blur = |plan: &mut WvBatchPlan, c: &WvCell| {
+        let mut blur = |plan: &mut WvBatchPlan, c: &Cell| {
             let (strip_rect, atlas_rect, _) = rects(c);
             let (sigma_dev, linear) = params(c);
             plan.h.push(crate::vello::batch::Inst::new(
@@ -786,40 +786,6 @@ impl CellGeom {
     fn bh(&self) -> f32 { self.dev.3 }
 }
 
-/// One lens lens admitted to the batched stages: where it reads and writes on the accumulator,
-/// which atlas cell it owns, and the lowered unit passes it runs.
-///
-/// `red` is the cell's *reduced* rect — the sub-rect of its own cell the warp and blur render
-/// into when the chain solver dropped that prefix below native ([`crate::footprint::chain_scales`]
-/// gives a frosted lens ~0.1–0.5). It nests inside the full cell rect, so one packing serves both
-/// and the frost stage upsamples by sampling the reduced rect across the full one — the same
-/// bilinear stretch `run_graph_into` gets from binding a smaller texture.
-struct LensCell {
-    gid: u128,
-    round: u32,
-    /// Device box, render scale, sigma and the `k < 1` sharp flag — the shared cell geometry. `sigma`
-    /// and `k` drive the per-cell chain (a custom gather runs at the same reduced size the box packed
-    /// at); `sharp` is the derived `k < 0.999`.
-    geom: CellGeom,
-    cell: (f32, f32, f32, f32),
-    red: (f32, f32, f32, f32),
-    /// The sampling head, for a self-clipping lens (glass). `None` for a plain **gather** — a
-    /// backdrop-reading chain with no head (a background blur), which crops, blurs and composites
-    /// THROUGH a silhouette mask instead of an SDF. `warp.is_none()` is what the round dispatches on.
-    warp: Option<crate::vello::units::UnitOp>,
-    tail: Vec<crate::vello::units::UnitOp>,
-    /// A gather's silhouette in the MASK atlas, at device size — `Some(rect)` composites through it
-    /// (`MASKED`/`SHARP_MASKED`, the batched twin of `blit_masked`/`blit_masked_sharp`); `None` is a
-    /// self-clipping lens, whose SDF mask lives in its own composite. Rect is in mask-atlas pixels.
-    mask: Option<(f32, f32, f32, f32)>,
-    /// A custom-shader gather (`warp: None`, a `Custom` head). Its user pipeline samples its whole
-    /// input at 0..1, so it cannot read a sub-rect of the shared crop atlas the way `blur_px` does —
-    /// it runs PER CELL (crop → custom → blit into the effect atlas), then joins the batched masked
-    /// composite like every other gather. `false` for glass and blur gathers.
-    custom: bool,
-}
-
-
 /// Native A/B hook for the batched lens stages (default on): `WV_LENS=0` forces every lens back
 /// through its own pass chain, which is how the batched output is pixel-compared against the
 /// per-shape one. No browser gate — the batch is the production path.
@@ -864,43 +830,63 @@ const FX_STACK: u8 = 1;
 /// have to be tile-disjoint, because `fine` resolves a whole tile at a time.
 const TILE_PX: u32 = 16;
 
-/// One whole-viewport effect surface, resolved to geometry: which node/kind it belongs to, the device
-/// crop box it covers, the render scale `k`, the surface size at that scale, and its device sigma.
+/// One whole-viewport effect surface, resolved to geometry — the SINGLE cell type both the spread
+/// planner ([`Sink::wv_effect_cells`] → [`wv_batch_plan`]) and the gather planner
+/// ([`Sink::wv_lens_plan`]) emit, and both executors ([`Sink::wv_paint_stack`] and
+/// [`Sink::wv_lens_round`]) consume. It carries the union of what a spread stamp and a batched gather
+/// need; a given cell fills only its kind's fields (a spread leaves the gather rects/`warp`/`tail`
+/// empty and vice versa). The fields group as: identity + schedule, shared geometry + chain, then the
+/// per-kind placement and compositing metadata.
 #[derive(Clone)]
-struct WvCell {
+struct Cell {
+    /// `(node, kind, index)`. Kind is `0` drop silhouette, `1` body, `2` inner flood, `3` inner
+    /// punch for a spread, and [`GATHER_KIND`] for a gather (whose index disambiguates siblings).
     key: (u128, u8, usize),
-    /// Device box, render scale `k` and device sigma — the shared cell geometry. (`geom.sharp` is
-    /// unused for a stamp: a spread never Catmull-Rom-upscales, so it is always `false` here.)
+    /// The round this cell composites in, assigned by [`wv_rounds`]. Set for a gather (the round loop
+    /// filters on it); a spread's round is applied by [`wv_batch_plan`]/[`Sink::wv_paint_stack`] from
+    /// the shared `rounds` array, so this stays `0` on a spread cell.
+    round: u32,
+    /// Device box, render scale `k`, device sigma and the `k < 1` sharp flag — the shared geometry.
+    /// (`geom.sharp` is always `false` for a spread: a stamp never Catmull-Rom-upscales.)
     geom: CellGeom,
+    /// This cell's effect, LOWERED once to runnable [`Pass`]es — the shared units-IR chain both the
+    /// batch (`batch_admit`) and the per-shape executor (`wv_effect_blit`) consume. Empty for a
+    /// gather, which re-derives its chain from the node (`wv_gather_graph`) or rides `warp`/`tail`.
+    passes: std::rc::Rc<Vec<Pass>>,
+    /// The straight RGBA tint a spread chain applies, pre-extracted when the cell is built.
+    tint: Option<[f32; 4]>,
+    /// Device-space translation a spread's chain applies to its result (a filter graph's `Offset`).
+    dev_offset: (f32, f32),
+    /// Spread reduced surface size (its atlas slot is assigned by an external [`crate::atlas::Packing`]
+    /// keyed on `key`). A gather leaves these `0` and carries its slot in `cell`/`red` instead.
     kw: u32,
     kh: u32,
-    /// Device-space translation this cell's chain applies to its result (a filter graph's `Offset`).
-    /// Derived from the effect's ops the same way `sigma` is, because the consumers are handed a
-    /// cell rather than the ops — a value carried on the cell reaches every one of them.
-    dev_offset: (f32, f32),
-    /// This cell's effect, LOWERED once to runnable [`Pass`]es at the one place that has the effect
-    /// in hand ([`Sink::wv_effect_cells`]) — the shared units-IR chain both the batch (`batch_admit`)
-    /// and the per-shape executor (`wv_effect_blit`) consume, rather than re-lowering the graph at
-    /// each use as it did when the cell carried the raw `GraphPass`. Shared (`Rc`) because a cell is
-    /// cloned per consumer and the chain is immutable once built; the custom-shader body path clones
-    /// it to splice resolved pipelines into its `Custom` passes.
-    passes: std::rc::Rc<Vec<Pass>>,
-    /// The straight RGBA tint this chain applies, extracted from the chain when the cell is built.
-    /// Was read back out of the graph on demand; pre-extracting keeps it available once the graph
-    /// itself no longer rides the cell.
-    tint: Option<[f32; 4]>,
-    /// How this cell's atlas slot is FILLED. `false` (a stamp): the source is a silhouette
-    /// rasterized in the strip and copied into the slot. `true` (a gather): the source is a CROP of
-    /// the live accumulator, lifted in by a `Stage(BLUR-copy, Atlas, Acc)` at the effect boundary —
-    /// the batched twin of the per-shape backdrop blit. A gather rides no strip, so the strip encode
-    /// and copy-out skip it.
+    /// A gather's own atlas slot rect (`cell`) and the reduced sub-rect its warp/blur render into
+    /// (`red`, nested inside `cell`). Both `(0,0,0,0)` on a spread.
+    cell: (f32, f32, f32, f32),
+    red: (f32, f32, f32, f32),
+    /// The sampling head of a self-clipping lens (glass); `None` for a spread or a plain gather (a
+    /// backdrop-reading chain with no head — a background blur — which crops, blurs and composites
+    /// through a silhouette mask instead of an SDF). `warp.is_none()` is what the round dispatches on.
+    warp: Option<crate::vello::units::UnitOp>,
+    /// The gather chain tail after `warp`. Empty on a spread.
+    tail: Vec<crate::vello::units::UnitOp>,
+    /// How a SPREAD cell's atlas slot is FILLED: `false` a silhouette rasterized in the strip and
+    /// copied in; `true` a crop of the live accumulator. Unused by the gather path.
     crop: bool,
-    /// The silhouette this cell composites THROUGH, or `None` for an unmasked stamp (a self-clipping
-    /// lens carries its own SDF mask, so it too is `None`). `Some(key)` names another cell — a plain
-    /// coverage silhouette rasterized in the strip — bound as `tex2` at the masked composite, exactly
-    /// as the erase stage binds its punch. How a non-self-clipping gather is clipped to its shape.
+    /// The silhouette a SPREAD composites THROUGH (`Some(key)` names a coverage cell bound as `tex2`),
+    /// or `None` for an unmasked stamp / self-clipping lens.
     masked: Option<(u128, u8, usize)>,
+    /// A GATHER's silhouette rect in the mask atlas — `Some(rect)` composites through it
+    /// (`MASKED`/`SHARP_MASKED`); `None` is a self-clipping lens (its SDF mask is in its own composite).
+    mask: Option<(f32, f32, f32, f32)>,
+    /// A custom-shader gather (`warp: None`, a `Custom` head), run per-cell then joined to the shared
+    /// masked composite. `false` for spreads, glass and blur gathers.
+    custom: bool,
 }
+
+/// The `key.1` a gather cell carries — distinct from the spread kinds `0..=3`.
+const GATHER_KIND: u8 = 9;
 
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
 const MAX_POOL_PER_KEY: usize = 32;
@@ -1672,7 +1658,7 @@ impl Sink {
                                 f64::from(mx) - f64::from(gc.geom.dev.0),
                                 f64::from(my) - f64::from(gc.geom.dev.1),
                             )) * root;
-                            (gc.gid, m)
+                            (gc.key.0, m)
                         })
                     });
                     rasterize_masks(backend, device, queue, &mut enc, &m_view, mtw, mth, TRANSPARENT, masks);
@@ -1899,7 +1885,7 @@ impl Sink {
                 match kind {
                     FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, claim, sub),
                     _ if sub > 0 => {}
-                    _ if lens_cells.as_ref().is_some_and(|cs| cs.iter().any(|c| c.gid == gid)) => {}
+                    _ if lens_cells.as_ref().is_some_and(|cs| cs.iter().any(|c| c.key.0 == gid)) => {}
                     _ => self.wv_stamp_gather(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, width, height, format, acc_sz),
                 }
                 self.recycle_node_transient(tex_cp, view_cp);
@@ -2147,11 +2133,11 @@ impl Sink {
         width: u32,
         height: u32,
         max_dim: u32,
-    ) -> Option<(crate::atlas::Packing, Vec<LensCell>, (u32, u32))> {
+    ) -> Option<(crate::atlas::Packing, Vec<Cell>, (u32, u32))> {
         if !crate::vello::abi::wv_scope() {
             return None;
         }
-        let mut cells: Vec<LensCell> = Vec::new();
+        let mut cells: Vec<Cell> = Vec::new();
         for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
             if kind == FX_STACK {
                 continue;
@@ -2185,8 +2171,8 @@ impl Sink {
                 crate::effect_graph::pass_dim(kw, red_scale),
                 crate::effect_graph::pass_dim(kh, red_scale),
             );
-            cells.push(LensCell {
-                gid,
+            cells.push(Cell {
+                key: (gid, GATHER_KIND, j),
                 round: rounds[j],
                 geom: CellGeom {
                     dev: (bx as f32, by as f32, bw as f32, bh as f32),
@@ -2194,10 +2180,17 @@ impl Sink {
                     sigma,
                     sharp: k < 0.999,
                 },
+                passes: std::rc::Rc::new(Vec::new()),
+                tint: None,
+                dev_offset: (0.0, 0.0),
+                kw: 0,
+                kh: 0,
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, rw as f32, rh as f32),
                 warp: Some(warp),
                 tail,
+                crop: false,
+                masked: None,
                 mask: None,
                 custom: false,
             });
@@ -2232,8 +2225,8 @@ impl Sink {
                 continue;
             }
             let sigma = if custom { 0.0 } else { self.gather_sigma(gid, full_view, k) };
-            cells.push(LensCell {
-                gid,
+            cells.push(Cell {
+                key: (gid, GATHER_KIND, j),
                 round: rounds[j],
                 geom: CellGeom {
                     dev: (bx as f32, by as f32, bw as f32, bh as f32),
@@ -2241,10 +2234,17 @@ impl Sink {
                     sigma,
                     sharp: k < 0.999,
                 },
+                passes: std::rc::Rc::new(Vec::new()),
+                tint: None,
+                dev_offset: (0.0, 0.0),
+                kw: 0,
+                kh: 0,
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, kw as f32, kh as f32),
                 warp: None,
                 tail: Vec::new(),
+                crop: false,
+                masked: None,
                 mask: Some((0.0, 0.0, bw as f32, bh as f32)),
                 custom,
             });
@@ -2368,7 +2368,7 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         acc_view: &wgpu::TextureView,
         atlas: &WvLensAtlas,
-        cells: &[LensCell],
+        cells: &[Cell],
         round: u32,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
@@ -2378,7 +2378,7 @@ impl Sink {
         if self.batch_pipes.is_none() {
             return;
         }
-        let here: Vec<&LensCell> = cells.iter().filter(|c| c.round == round).collect();
+        let here: Vec<&Cell> = cells.iter().filter(|c| c.round == round).collect();
         if here.is_empty() {
             return;
         }
@@ -2407,7 +2407,7 @@ impl Sink {
         let (mut gmasked, mut gsharp_masked): (Vec<Inst>, Vec<Inst>) = (Vec::new(), Vec::new());
         // Custom gathers fill the effect atlas per-cell (their user pipeline samples its whole input),
         // then join the batched masked composite below via the same D→acc instances.
-        let mut customs: Vec<&LensCell> = Vec::new();
+        let mut customs: Vec<&Cell> = Vec::new();
         for c in &here {
             crops.push(Inst::new(c.cell, asz, c.geom.dev, sz, (0.0, 0.0), 0.0, false));
             let Some(warp_op) = c.warp.clone() else {
@@ -2526,7 +2526,7 @@ impl Sink {
                 src: acc_view, dst: (0.0, 0.0, kw as f32, kh as f32), src_rect: cc.geom.dev, src_size: sz, alpha: 1.0,
             });
             let passes = self.wv_gather_graph(
-                cc.gid, kw, kh, f64::from(cc.geom.dev.0), f64::from(cc.geom.dev.1), full_view, f64::from(cc.geom.k), device, format,
+                cc.key.0, kw, kh, f64::from(cc.geom.dev.0), f64::from(cc.geom.dev.1), full_view, f64::from(cc.geom.k), device, format,
             );
             let Some(passes) = passes else { continue };
             let Some((rtex, rview)) = self.wv_run_chain(device, enc, &[&input_view], &passes, kw, kh, format) else {
@@ -2700,7 +2700,7 @@ impl Sink {
     ///
     /// Cell keys stay `(node, kind, index)` with kind `0` drop silhouette, `1` body, `2` inner flood,
     /// `3` inner punch, because that is what the consuming helpers look up.
-    fn wv_effect_cells(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Vec<WvCell> {
+    fn wv_effect_cells(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Vec<Cell> {
         let Some((base, stack)) = crate::vello::abi::with_scene(|live, _, modifiers| {
             let node = live.get(id)?;
             let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
@@ -2760,13 +2760,22 @@ impl Sink {
             let sigma = device_sigma.unwrap_or(0.0);
             for &kind in kinds {
                 let graph = wv_cell_graph(effect, kind, kw, kh, sigma * k);
-                out.push(WvCell {
+                out.push(Cell {
                     key: (id, kind, index),
+                    round: 0,
                     geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma, sharp: false },
-                    kw, kh, dev_offset,
-                    tint: graph_tint(&graph),
                     passes: std::rc::Rc::new(lower_graph(&graph, None)),
-                    crop: false, masked: None,
+                    tint: graph_tint(&graph),
+                    dev_offset,
+                    kw, kh,
+                    cell: (0.0, 0.0, 0.0, 0.0),
+                    red: (0.0, 0.0, 0.0, 0.0),
+                    warp: None,
+                    tail: Vec::new(),
+                    crop: false,
+                    masked: None,
+                    mask: None,
+                    custom: false,
                 });
             }
             match kinds[0] {
@@ -2779,13 +2788,22 @@ impl Sink {
             if let Some((bx, by, bw, bh)) = wv_device_box(base, full_view, width, height) {
                 let k = tiling::resolution_cap(full_view, 0.0) as f32;
                 let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
-                out.push(WvCell {
+                out.push(Cell {
                     key: (id, 1, 0),
+                    round: 0,
                     geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma: 0.0, sharp: false },
-                    kw, kh, dev_offset: (0.0, 0.0),
-                    tint: None,
                     passes: std::rc::Rc::new(Vec::new()),
-                    crop: false, masked: None,
+                    tint: None,
+                    dev_offset: (0.0, 0.0),
+                    kw, kh,
+                    cell: (0.0, 0.0, 0.0, 0.0),
+                    red: (0.0, 0.0, 0.0, 0.0),
+                    warp: None,
+                    tail: Vec::new(),
+                    crop: false,
+                    masked: None,
+                    mask: None,
+                    custom: false,
                 });
             }
         }
@@ -2887,9 +2905,9 @@ impl Sink {
         target_w: u32,
         align: u32,
         max_dim: u32,
-    ) -> Option<(crate::atlas::Packing, Vec<(WvCell, usize)>)> {
+    ) -> Option<(crate::atlas::Packing, Vec<(Cell, usize)>)> {
         const GAP: u32 = 4;
-        let mut cells: Vec<(WvCell, usize)> = Vec::new();
+        let mut cells: Vec<(Cell, usize)> = Vec::new();
         for &(gi, gid, kind) in gathers {
             if kind != FX_STACK {
                 continue;
@@ -2919,12 +2937,12 @@ impl Sink {
     /// `(ox + cell.x, oy + cell.y)`, at the surface's render scale `k`. Shared by both fill
     /// strategies so a cell lands on the same texels whichever one runs.
     ///
-    /// The cell's own translation ([`WvCell::dev_offset`], a filter graph's `Offset`) is applied
+    /// The cell's own translation ([`Cell::dev_offset`], a filter graph's `Offset`) is applied
     /// here rather than at the stamp, because the cell's box already moved with it — its footprint
     /// walks the same ops — so rendering at the unmoved position and stamping at the moved box would
     /// cancel exactly, which is what made a filter offset a silent no-op. Zero for every chain
     /// without one, so every other cell is byte-identical.
-    fn wv_cell_transform(c: &WvCell, place: &crate::atlas::Placement, ox: u32, oy: u32, root: Affine) -> Affine {
+    fn wv_cell_transform(c: &Cell, place: &crate::atlas::Placement, ox: u32, oy: u32, root: Affine) -> Affine {
         Affine::translate((f64::from(ox + place.x), f64::from(oy + place.y)))
             * Affine::scale(f64::from(c.geom.k))
             * Affine::translate((
@@ -2943,7 +2961,7 @@ impl Sink {
         enc: &mut wgpu::CommandEncoder,
         src: &wgpu::Texture,
         packing: &crate::atlas::Packing,
-        cells: &[(WvCell, usize)],
+        cells: &[(Cell, usize)],
         ox: u32,
         oy: u32,
         format: wgpu::TextureFormat,
@@ -2993,7 +3011,7 @@ impl Sink {
         full_view: Affine,
         width: u32,
         height: u32,
-    ) -> Option<(crate::atlas::Packing, Vec<(WvCell, usize)>)> {
+    ) -> Option<(crate::atlas::Packing, Vec<(Cell, usize)>)> {
         if !crate::vello::abi::wv_atlas() {
             return None;
         }
@@ -3029,7 +3047,7 @@ impl Sink {
         backend: &mut B,
         scene: &mut B::Scene,
         packing: &crate::atlas::Packing,
-        cells: &[(WvCell, usize)],
+        cells: &[(Cell, usize)],
         root: Affine,
         strip_y: u32,
     ) {
@@ -3061,7 +3079,7 @@ impl Sink {
     /// It was four places: the strip prepass and the three per-shape painters each spelled the same
     /// match out, and each was a place `build_shadow_silhouette`'s three booleans could be flipped
     /// independently of the others.
-    fn wv_cell_source_into<B: RasterBackend>(backend: &mut B, scene: &mut B::Scene, c: &WvCell, m: Affine, root_index: usize) {
+    fn wv_cell_source_into<B: RasterBackend>(backend: &mut B, scene: &mut B::Scene, c: &Cell, m: Affine, root_index: usize) {
         match c.key.1 {
             0 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, false, true, false),
             2 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, false, false),
@@ -3076,7 +3094,7 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_cell_source<B: RasterBackend>(
         &mut self,
-        c: &WvCell,
+        c: &Cell,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3139,7 +3157,7 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_effect_blit(
         &mut self,
-        c: &WvCell,
+        c: &Cell,
         inputs: &[&wgpu::TextureView],
         passes: &[Pass],
         device: &wgpu::Device,
@@ -3176,7 +3194,7 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_paint_path_shadow<B: RasterBackend>(
         &mut self,
-        cell: WvCell,
+        cell: Cell,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3209,8 +3227,8 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_paint_inner_shadow<B: RasterBackend>(
         &mut self,
-        flood: WvCell,
-        punch: WvCell,
+        flood: Cell,
+        punch: Cell,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3350,7 +3368,7 @@ impl Sink {
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_composite_body<B: RasterBackend>(
         &mut self,
-        cell: WvCell,
+        cell: Cell,
         backend: &mut B,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3372,7 +3390,7 @@ impl Sink {
     /// texture into the next iteration by hand, because a chain could not be lowered at all without
     /// a pipeline in hand — `lower_graph` dropped the pass. Now that the shape of a chain survives
     /// lowering, the whole body is one chain and the executor threads it.
-    fn wv_resolve_pipelines(&mut self, cell: &WvCell, device: &wgpu::Device, format: wgpu::TextureFormat) -> Vec<Pass> {
+    fn wv_resolve_pipelines(&mut self, cell: &Cell, device: &wgpu::Device, format: wgpu::TextureFormat) -> Vec<Pass> {
         let mut passes = (*cell.passes).clone();
         let mut shaders = crate::vello::abi::with_scene(|live, _, _| {
             live.get(cell.key.0)
