@@ -628,6 +628,32 @@ fn wv_batch_plan(
     Some(plan)
 }
 
+/// Rasterize a batch of shape silhouettes into `target` as a stencil for effect masking. Each item
+/// is `(shape_id, transform)`, where the transform places that shape's silhouette in the target's
+/// space — an atlas slot, a scaled cell, or a whole surface. This is the skeleton (new scene, one
+/// `build_mask` per item, one flush) shared by the batch mask atlas, the per-packing-cell masks, the
+/// single-cell gather mask, and the per-shape composite tail, so they cannot drift in how a
+/// silhouette scene is built and flushed. What differs per site — the transform and which shapes are
+/// selected — is the iterator the caller passes; the guard deciding WHETHER to run stays at the call
+/// site (an empty iterator still validly clears the target).
+fn rasterize_masks<B: RasterBackend>(
+    backend: &mut B,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    enc: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    width: u32,
+    height: u32,
+    clear: Color,
+    masks: impl IntoIterator<Item = (u128, Affine)>,
+) {
+    let mut scene = backend.new_scene(width as u16, height as u16);
+    for (id, transform) in masks {
+        backend.build_mask(&mut scene, transform, id);
+    }
+    backend.rasterize(&scene, device, queue, enc, target, width, height, clear);
+}
+
 /// A marker's reach clamped to the FRAME.
 ///
 /// The accumulator is taller than the frame whenever a source strip sits below it, and the marker
@@ -1617,17 +1643,16 @@ impl Sink {
                 let mask_tex = self.pool.acquire_target(device, mtw, mth, format, self.raster_usage, "wv lens mask");
                 let m_view = mask_tex.create_view(&vd);
                 if mw > 0 {
-                    let mut mscene = backend.new_scene(mtw as u16, mth as u16);
-                    for gc in cells.iter().filter(|c| c.warp.is_none()) {
-                        if let Some((mx, my, _, _)) = gc.mask {
+                    let masks = cells.iter().filter(|c| c.warp.is_none()).filter_map(|gc| {
+                        gc.mask.map(|(mx, my, _, _)| {
                             let m = Affine::translate((
                                 f64::from(mx) - f64::from(gc.dev.0),
                                 f64::from(my) - f64::from(gc.dev.1),
                             )) * root;
-                            backend.build_mask(&mut mscene, m, gc.gid);
-                        }
-                    }
-                    backend.rasterize(&mscene, device, queue, &mut enc, &m_view, mtw, mth, TRANSPARENT);
+                            (gc.gid, m)
+                        })
+                    });
+                    rasterize_masks(backend, device, queue, &mut enc, &m_view, mtw, mth, TRANSPARENT, masks);
                 }
                 let atlas = WvLensAtlas {
                     w: aw,
@@ -2556,9 +2581,8 @@ impl Sink {
             let (mw, mh) = (bw.round() as u32, bh.round() as u32);
             let mask = self.pool.acquire_target(device, mw, mh, format, self.raster_usage, "wv gather mask");
             let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut mscene = backend.new_scene(mw as u16, mh as u16);
-            backend.build_mask(&mut mscene, Affine::translate((-(bx as f64), -(by as f64))) * root, id);
-            backend.rasterize(&mscene, device, queue, enc, &mask_view, mw, mh, TRANSPARENT);
+            let m = Affine::translate((-(bx as f64), -(by as f64))) * root;
+            rasterize_masks(backend, device, queue, enc, &mask_view, mw, mh, TRANSPARENT, [(id, m)]);
             let mb = MaskedBlit {
                 src: &rview,
                 mask: &mask_view,
@@ -3952,17 +3976,16 @@ impl Sink {
             }
             let mask_atlas = new_target_with_usage(device, aw, ah, format, self.raster_usage);
             let mask_view = mask_atlas.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut mscene = backend.new_scene(aw as u16, ah as u16);
-            for cell in &packing.cells {
-                let c = &cells[cell.index];
-                let root_for_cell = Affine::translate((f64::from(cell.x), f64::from(cell.y)))
-                    * Affine::scale(c.k)
-                    * Affine::translate((-c.bdx, -c.bdy))
-                    * root;
-                backend.build_mask(&mut mscene, root_for_cell, plan.gathers[c.gi].shape);
-            }
             if stages & 4 != 0 {
-                backend.rasterize(&mscene, device, queue, enc, &mask_view, aw, ah, CLEAR);
+                let masks = packing.cells.iter().map(|cell| {
+                    let c = &cells[cell.index];
+                    let root_for_cell = Affine::translate((f64::from(cell.x), f64::from(cell.y)))
+                        * Affine::scale(c.k)
+                        * Affine::translate((-c.bdx, -c.bdy))
+                        * root;
+                    (plan.gathers[c.gi].shape, root_for_cell)
+                });
+                rasterize_masks(backend, device, queue, enc, &mask_view, aw, ah, CLEAR, masks);
             }
 
             if crate::vello::abi::debug_atlas() == 3 {
@@ -4648,9 +4671,7 @@ impl Sink {
                 let mask = new_target_with_usage(device, bw, bh, format, self.raster_usage);
                 let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
                 let root_for_mask = Affine::scale(k) * Affine::translate((-bdx, -bdy)) * root;
-                let mut mscene = backend.new_scene(bw as u16, bh as u16);
-                backend.build_mask(&mut mscene, root_for_mask, id);
-                backend.rasterize(&mscene, device, queue, enc, &mask_view, bw, bh, CLEAR);
+                rasterize_masks(backend, device, queue, enc, &mask_view, bw, bh, CLEAR, [(id, root_for_mask)]);
                 self.surfaces.insert(mask_ref, Surface { texture: mask, view: mask_view, width: bw, height: bh });
             }
         }
