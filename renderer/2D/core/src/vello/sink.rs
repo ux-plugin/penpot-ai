@@ -3315,50 +3315,16 @@ impl Sink {
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
-        use crate::kurbo::Point;
-        let Some(page) = crate::vello::abi::with_scene(|live, _, modifiers| {
-            let n = live.get(id)?;
-            let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-            Some(crate::schedule::page_bounds(n, m))
+        // The box + render scale are the SAME derivation the batch planner uses — factored into
+        // `wv_lens_box` (self-clipping lens) and `wv_gather_box` (plain gather) so the per-shape and
+        // batched routes can never disagree about a gather's geometry.
+        let Some((bx, by, bw, bh, k)) = (if self_clips {
+            self.wv_lens_box(id, full_view, width, height)
+        } else {
+            self.wv_gather_box(id, full_view, width, height)
         }) else {
             return;
         };
-        let cs = full_view.as_coeffs();
-        let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
-        let reach = if self_clips {
-            let sigma = crate::vello::abi::with_scene(|live, _, _| {
-                live.get(id).and_then(|n| n.glass).map_or(0.0, |g| g.total_blur_sigma() * scale)
-            });
-            3.0 * f64::from(sigma) + 20.0
-        } else {
-            3.0 * f64::from(self.gather_sigma(id, full_view, 1.0)) + 6.0
-        };
-        let pts = [
-            full_view * Point::new(page.x0, page.y0),
-            full_view * Point::new(page.x1, page.y0),
-            full_view * Point::new(page.x0, page.y1),
-            full_view * Point::new(page.x1, page.y1),
-        ];
-        let minx = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min) - reach;
-        let miny = pts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min) - reach;
-        let maxx = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max) + reach;
-        let maxy = pts.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max) + reach;
-        let bx = minx.floor().clamp(0.0, f64::from(width)) as u32;
-        let by = miny.floor().clamp(0.0, f64::from(height)) as u32;
-        let ex = maxx.ceil().clamp(0.0, f64::from(width)) as u32;
-        let ey = maxy.ceil().clamp(0.0, f64::from(height)) as u32;
-        let (bw, bh) = (ex.saturating_sub(bx), ey.saturating_sub(by));
-        if bw == 0 || bh == 0 {
-            return;
-        }
-
-        let declared = f64::from(
-            crate::vello::abi::with_scene(|live, _, _| {
-                live.get(id).map_or(1.0_f32, |n| n.glass.map_or(1.0, |g| g.acceptable_downscale))
-            })
-            .clamp(f32::MIN_POSITIVE, 1.0),
-        );
-        let k = tiling::resolution_cap(full_view, reach / f64::from(scale)).min(declared);
         let (kw, kh) = (
             ((f64::from(bw) * k).round() as u32).max(1),
             ((f64::from(bh) * k).round() as u32).max(1),
