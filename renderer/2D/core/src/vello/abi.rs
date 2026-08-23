@@ -2273,6 +2273,13 @@ pub extern "C" fn load_blur_grid_scene(n: u32, radius: u32) -> u32 {
     install_fixture(crate::parity::build_blur_grid_scene(n as usize, radius as f32))
 }
 
+/// Install the **custom-gather grid** ([`crate::parity::build_custom_gather_grid_scene`]) — `n`
+/// pointwise custom-shader gathers, for the batched masked composite over a per-cell custom fill.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_custom_gather_grid_scene(n: u32) -> u32 {
+    install_fixture(crate::parity::build_custom_gather_grid_scene(n as usize))
+}
+
 /// [`load_glass_grid_scene`] with each lens's `acceptable_downscale` forced to `downscale_milli/1000`
 /// — the k-triggering fixture for the batch's scaled-stamp (`stage::SHARP`) path. A value below 1000
 /// makes every lens render at a reduced `k` and be upscaled, which the un-scaled grid never exercises.

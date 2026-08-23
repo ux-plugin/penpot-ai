@@ -43,6 +43,9 @@ fn install(scene: &str) -> u32 {
             std::env::var("BLUR_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
             std::env::var("BLUR_R").ok().and_then(|v| v.parse().ok()).unwrap_or(24),
         ),
+        "custom-gather-grid" => render_core::vello::abi::load_custom_gather_grid_scene(
+            std::env::var("CUSTOM_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+        ),
         "scope" => render_core::vello::abi::load_scope_scene(),
         "texture" => render_core::vello::abi::load_texture_scene(),
         // The one fixture whose stacks SPLIT: a custom shader on the body sits between the drop

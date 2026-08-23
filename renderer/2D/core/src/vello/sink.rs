@@ -756,6 +756,14 @@ struct LensCell {
     /// (`MASKED`/`SHARP_MASKED`, the batched twin of `blit_masked`/`blit_masked_sharp`); `None` is a
     /// self-clipping lens, whose SDF mask lives in its own composite. Rect is in mask-atlas pixels.
     mask: Option<(f32, f32, f32, f32)>,
+    /// The gather's render scale, needed to run a per-cell chain (a custom gather) at the same
+    /// reduced size the box was packed at. `sharp` is the derived `k < 0.999`; `k` is the value.
+    k: f32,
+    /// A custom-shader gather (`warp: None`, a `Custom` head). Its user pipeline samples its whole
+    /// input at 0..1, so it cannot read a sub-rect of the shared crop atlas the way `blur_px` does —
+    /// it runs PER CELL (crop → custom → blit into the effect atlas), then joins the batched masked
+    /// composite like every other gather. `false` for glass and blur gathers.
+    custom: bool,
 }
 
 
@@ -1823,7 +1831,7 @@ impl Sink {
             // disjoint by construction, so they can all read the accumulator and write their own
             // crops concurrently — the per-shape chain is what forced them apart before.
             if let (Some(cells), Some(atlas)) = (lens_cells.as_ref(), lens_atlas.as_ref()) {
-                self.wv_lens_round(device, &mut enc, &views[ci], atlas, cells, r, format, acc_sz);
+                self.wv_lens_round(device, &mut enc, &views[ci], atlas, cells, r, format, acc_sz, full_view);
             }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
                 let extra = batch_plan.as_ref().and_then(|p| p.extra.get(&gid).copied()).unwrap_or(0);
@@ -2140,6 +2148,8 @@ impl Sink {
                 sigma,
                 sharp: k < 0.999,
                 mask: None,
+                k: k as f32,
+                custom: false,
             });
         }
         // Non-self-clipping BACKDROP gathers — background blurs — batch through the same round: crop
@@ -2153,11 +2163,14 @@ impl Sink {
             if kind == FX_STACK || Self::wv_gather_self_clips(gid) {
                 continue;
             }
-            if !Self::wv_backdrop_effect(gid)
-                .is_some_and(|e| matches!(e.ops.first(), Some(crate::effect::Op::Blur { .. })))
-            {
-                continue;
-            }
+            // The head decides the fill: a `Blur` head rides the instanced `blur_px`; a `Shader` head
+            // is a custom gather, run per-cell (its user pipeline samples its whole input). Both then
+            // composite through the mask atlas — the shared masked composite.
+            let custom = match Self::wv_backdrop_effect(gid).as_ref().map(|e| e.ops.first()) {
+                Some(Some(crate::effect::Op::Blur { .. })) => false,
+                Some(Some(crate::effect::Op::Shader(_))) => true,
+                _ => continue,
+            };
             let Some((bx, by, bw, bh, k)) = self.wv_gather_box(gid, full_view, width, height) else {
                 continue;
             };
@@ -2168,7 +2181,7 @@ impl Sink {
             if kw > max_dim || kh > max_dim || bw > max_dim || bh > max_dim {
                 continue;
             }
-            let sigma = self.gather_sigma(gid, full_view, k);
+            let sigma = if custom { 0.0 } else { self.gather_sigma(gid, full_view, k) };
             cells.push(LensCell {
                 gid,
                 round: rounds[j],
@@ -2180,6 +2193,8 @@ impl Sink {
                 sigma,
                 sharp: k < 0.999,
                 mask: Some((0.0, 0.0, bw as f32, bh as f32)),
+                k: k as f32,
+                custom,
             });
             mask_sizes.push((bw, bh));
             gather_marks.push(cells.len() - 1);
@@ -2305,15 +2320,17 @@ impl Sink {
         round: u32,
         format: wgpu::TextureFormat,
         sz: (f32, f32),
+        full_view: Affine,
     ) {
         use crate::vello::batch::{stage, FieldUniform, Inst};
-        let Some(pipes) = self.batch_pipes.as_ref() else { return };
+        if self.batch_pipes.is_none() {
+            return;
+        }
         let here: Vec<&LensCell> = cells.iter().filter(|c| c.round == round).collect();
         if here.is_empty() {
             return;
         }
         let asz = (atlas.w as f32, atlas.h as f32);
-        let sampler = self.compositor.sampler();
 
         let mut crops: Vec<Inst> = Vec::with_capacity(here.len());
         let (mut sharp, mut sharp_f) = (Vec::new(), Vec::new());
@@ -2336,11 +2353,18 @@ impl Sink {
         let masz = (atlas.mw as f32, atlas.mh as f32);
         let (mut gblur_h, mut gblur_v): (Vec<Inst>, Vec<Inst>) = (Vec::new(), Vec::new());
         let (mut gmasked, mut gsharp_masked): (Vec<Inst>, Vec<Inst>) = (Vec::new(), Vec::new());
+        // Custom gathers fill the effect atlas per-cell (their user pipeline samples its whole input),
+        // then join the batched masked composite below via the same D→acc instances.
+        let mut customs: Vec<&LensCell> = Vec::new();
         for c in &here {
             crops.push(Inst::new(c.cell, asz, c.dev, sz, (0.0, 0.0), 0.0, false));
             let Some(warp_op) = c.warp.clone() else {
-                gblur_h.push(Inst::new(c.cell, asz, c.cell, asz, (1.0, 0.0), c.sigma, true));
-                gblur_v.push(Inst::new(c.cell, asz, c.cell, asz, (0.0, 1.0), c.sigma, true));
+                if c.custom {
+                    customs.push(*c);
+                } else {
+                    gblur_h.push(Inst::new(c.cell, asz, c.cell, asz, (1.0, 0.0), c.sigma, true));
+                    gblur_v.push(Inst::new(c.cell, asz, c.cell, asz, (0.0, 1.0), c.sigma, true));
+                }
                 let stamp_inst = Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false)
                     .with_src2(c.mask.expect("a gather cell carries a mask rect"), masz, 0.0);
                 if c.sharp {
@@ -2395,6 +2419,7 @@ impl Sink {
         const B: Surface = Surface::Atlas(1);
         const C: Surface = Surface::Atlas(2);
         const D: Surface = Surface::Atlas(3);
+        const M: Surface = Surface::Atlas(4);
         let mut stages = vec![
             Stage::new(stage::BLUR, A, Surface::Acc, crops).cleared(),
             Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() }), C, A, sharp).with_fields(sharp_f),
@@ -2417,24 +2442,69 @@ impl Sink {
         if !sharp_stamp.is_empty() {
             stages.push(Stage::new(stage::SHARP, Surface::Acc, C, sharp_stamp).composited());
         }
-        // Plain gathers, appended last so C/D are free (every glass composite above has read them):
-        // crop (A) → blur H (C) → blur V (D) → composite through the mask atlas (Surface::Atlas(4)).
-        // `MASKED` at native scale, `SHARP_MASKED` for k<1 — the batched twins of `blit_masked` and
-        // `blit_masked_sharp`.
+        // Blur gathers fill D separably (crop A → blur H C → blur V D). Custom gathers fill their own
+        // D cells per-cell BELOW (their user pipeline can't share the atlas crop). Both then flow
+        // through ONE masked composite reading D, split by k into MASKED / SHARP_MASKED.
         if !gblur_h.is_empty() {
-            const M: Surface = Surface::Atlas(4);
             stages.push(Stage::new(stage::BLUR, C, A, gblur_h).cleared());
             stages.push(Stage::new(stage::BLUR, D, C, gblur_v).cleared());
-            if !gmasked.is_empty() {
-                stages.push(Stage::new(stage::MASKED, Surface::Acc, D, gmasked).with_src2(M).composited());
-            }
-            if !gsharp_masked.is_empty() {
-                stages.push(Stage::new(stage::SHARP_MASKED, Surface::Acc, D, gsharp_masked).with_src2(M).composited());
+        }
+        // FILL pass — the blur-gather stages + everything glass, run before the per-cell customs so
+        // their D cells are not clobbered by the (cleared) blur-V stage.
+        {
+            let pipes = self.batch_pipes.as_ref().expect("batch pipelines present");
+            let sampler = self.compositor.sampler();
+            let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view, &atlas.m_view];
+            for st in &stages {
+                pipes.run_stage(device, enc, st, acc_view, &views, sampler);
             }
         }
-        let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view, &atlas.m_view];
-        for st in &stages {
-            pipes.run_stage(device, enc, st, acc_view, &views, sampler);
+        // Each custom gather: crop its backdrop box, run its user pipeline over it (per-cell — the
+        // shader samples its whole input), and blit the result into this cell's D slot, where the
+        // shared masked composite picks it up exactly like a blurred one.
+        for cc in &customs {
+            let (kw, kh) = (cc.cell.2 as u32, cc.cell.3 as u32);
+            let input = self.pool.acquire_target(
+                device, kw, kh, format,
+                self.raster_usage | wgpu::TextureUsages::TEXTURE_BINDING,
+                "wv gather custom input",
+            );
+            let input_view = input.create_view(&wgpu::TextureViewDescriptor::default());
+            self.compositor.blit(device, enc, &input_view, (kw as f32, kh as f32), &Blit {
+                src: acc_view, dst: (0.0, 0.0, kw as f32, kh as f32), src_rect: cc.dev, src_size: sz, alpha: 1.0,
+            });
+            let passes = self.wv_gather_graph(
+                cc.gid, kw, kh, f64::from(cc.dev.0), f64::from(cc.dev.1), full_view, f64::from(cc.k), device, format,
+            );
+            let Some(passes) = passes else { continue };
+            let Some((rtex, rview)) = self.wv_run_chain(device, enc, &[&input_view], &passes, kw, kh, format) else {
+                continue;
+            };
+            self.compositor.blit(device, enc, &atlas.d_view, asz, &Blit {
+                src: &rview, dst: (cc.cell.0, cc.cell.1, kw as f32, kh as f32),
+                src_rect: (0.0, 0.0, kw as f32, kh as f32), src_size: (kw as f32, kh as f32), alpha: 1.0,
+            });
+            self.frame_transient.push(input);
+            self.frame_transient_views.push(input_view);
+            self.frame_transient.push(rtex);
+            self.frame_transient_views.push(rview);
+        }
+        // COMPOSITE pass — every gather (blur + custom) reads its finished D cell and composites
+        // through the mask atlas. `MASKED` at native scale, `SHARP_MASKED` for k<1.
+        if !gmasked.is_empty() || !gsharp_masked.is_empty() {
+            let mut comp: Vec<Stage> = Vec::new();
+            if !gmasked.is_empty() {
+                comp.push(Stage::new(stage::MASKED, Surface::Acc, D, gmasked).with_src2(M).composited());
+            }
+            if !gsharp_masked.is_empty() {
+                comp.push(Stage::new(stage::SHARP_MASKED, Surface::Acc, D, gsharp_masked).with_src2(M).composited());
+            }
+            let pipes = self.batch_pipes.as_ref().expect("batch pipelines present");
+            let sampler = self.compositor.sampler();
+            let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view, &atlas.m_view];
+            for st in &comp {
+                pipes.run_stage(device, enc, st, acc_view, &views, sampler);
+            }
         }
         let _ = format;
     }

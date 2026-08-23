@@ -1573,6 +1573,44 @@ pub fn build_blur_grid_scene(n: usize, radius: f32) -> (Scene, Vec<(usize, &'sta
     b.finish()
 }
 
+/// A grid of `n` **custom-shader gathers** — each a pointwise tint of the backdrop (`reach = 0`,
+/// `reads_backdrop = true`). The batch runs the user pipeline PER CELL over the shape's box while the
+/// per-shape oracle runs it over the viewport; a pointwise shader is invariant to that, so the two
+/// agree within the silhouette. Exercises the batched masked composite over a custom fill.
+pub fn build_custom_gather_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    for _ in 0..(cols * rows) {
+        b.advance("custom gather grid");
+    }
+    let (cw, ch) = canvas_size(cols * rows);
+    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
+    let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
+    for i in 0..(n * 4) {
+        let (gx, gy) = ((i % (cols * 2)) as f64, (i / (cols * 2)) as f64);
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        let (x, y) = (gx * pitch_x * 0.5, gy * pitch_y * 0.5);
+        node.bounds = Rect::new(x, y, x + pitch_x * 0.5, y + pitch_y * 0.5);
+        let hue = (i * 37 % 255) as u8;
+        node.fills = vec![Paint::plain(Brush::Solid(col(40 + hue / 2, 200 - hue / 3, 120 + hue / 4)))];
+        b.root(node);
+    }
+    for i in 0..n {
+        let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);
+        let x = (gx + 0.5) * pitch_x - lw * 0.5;
+        let y = (gy + 0.5) * pitch_y - lh * 0.5;
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        node.bounds = Rect::new(x, y, x + lw, y + lh);
+        node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+        let mut s = tint_shader(0.2, 0.9, 1.0, 0.6);
+        s.reads_backdrop = true;
+        node.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: s }];
+        b.root(node);
+    }
+    b.finish()
+}
+
 pub fn build_glass_grid_scene(n: usize, frost: bool, downscale: f32) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;
