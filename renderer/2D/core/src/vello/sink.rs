@@ -449,7 +449,7 @@ fn wv_batch_plan(
             (
                 (px as f32, (strip_y + py) as f32, kwf, khf),
                 (px as f32, py as f32, kwf, khf),
-                (c.bx as f32, c.by as f32, c.bw as f32, c.bh as f32),
+                (c.geom.bx(), c.geom.by(), c.geom.bw(), c.geom.bh()),
             )
         };
         // The cell's parameters come from its lowered graph, not from the cell fields — the builder
@@ -772,6 +772,13 @@ struct CellGeom {
     sharp: bool,
 }
 
+impl CellGeom {
+    fn bx(&self) -> f32 { self.dev.0 }
+    fn by(&self) -> f32 { self.dev.1 }
+    fn bw(&self) -> f32 { self.dev.2 }
+    fn bh(&self) -> f32 { self.dev.3 }
+}
+
 /// One lens lens admitted to the batched stages: where it reads and writes on the accumulator,
 /// which atlas cell it owns, and the lowered unit passes it runs.
 ///
@@ -855,14 +862,11 @@ const TILE_PX: u32 = 16;
 #[derive(Clone)]
 struct WvCell {
     key: (u128, u8, usize),
-    bx: u32,
-    by: u32,
-    bw: u32,
-    bh: u32,
+    /// Device box, render scale `k` and device sigma — the shared cell geometry. (`geom.sharp` is
+    /// unused for a stamp: a spread never Catmull-Rom-upscales, so it is always `false` here.)
+    geom: CellGeom,
     kw: u32,
     kh: u32,
-    k: f32,
-    sigma: f32,
     /// Device-space translation this cell's chain applies to its result (a filter graph's `Offset`).
     /// Derived from the effect's ops the same way `sigma` is, because the consumers are handed a
     /// cell rather than the ops — a value carried on the cell reaches every one of them.
@@ -887,9 +891,6 @@ struct WvCell {
     /// coverage silhouette rasterized in the strip — bound as `tex2` at the masked composite, exactly
     /// as the erase stage binds its punch. How a non-self-clipping gather is clipped to its shape.
     masked: Option<(u128, u8, usize)>,
-    /// `k < 1`: the composite Catmull-Rom-upscales the reduced cell (`SHARP`/`SHARP_MASKED`) instead
-    /// of the plain bilinear copy (`TINT`/`MASKED`) — mirrors the per-shape `blit_sharp` branch.
-    sharp: bool,
 }
 
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
@@ -2751,8 +2752,10 @@ impl Sink {
             for &kind in kinds {
                 let graph = std::rc::Rc::new(wv_cell_graph(effect, kind, kw, kh, sigma * k));
                 out.push(WvCell {
-                    key: (id, kind, index), bx, by, bw, bh, kw, kh, k, sigma, dev_offset, graph,
-                    crop: false, masked: None, sharp: false,
+                    key: (id, kind, index),
+                    geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma, sharp: false },
+                    kw, kh, dev_offset, graph,
+                    crop: false, masked: None,
                 });
             }
             match kinds[0] {
@@ -2766,9 +2769,11 @@ impl Sink {
                 let k = tiling::resolution_cap(full_view, 0.0) as f32;
                 let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
                 out.push(WvCell {
-                    key: (id, 1, 0), bx, by, bw, bh, kw, kh, k, sigma: 0.0, dev_offset: (0.0, 0.0),
+                    key: (id, 1, 0),
+                    geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma: 0.0, sharp: false },
+                    kw, kh, dev_offset: (0.0, 0.0),
                     graph: std::rc::Rc::new(Vec::new()),
-                    crop: false, masked: None, sharp: false,
+                    crop: false, masked: None,
                 });
             }
         }
@@ -2794,10 +2799,10 @@ impl Sink {
             let (mut x0, mut y0, mut x1, mut y1) =
                 (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
             for c in &cells {
-                x0 = x0.min(c.bx as f32);
-                y0 = y0.min(c.by as f32);
-                x1 = x1.max((c.bx + c.bw) as f32);
-                y1 = y1.max((c.by + c.bh) as f32);
+                x0 = x0.min(c.geom.bx());
+                y0 = y0.min(c.geom.by());
+                x1 = x1.max(c.geom.bx() + c.geom.bw());
+                y1 = y1.max(c.geom.by() + c.geom.bh());
             }
             return [x0 - PAD, y0 - PAD, x1 + PAD, y1 + PAD];
         }
@@ -2909,10 +2914,10 @@ impl Sink {
     /// without one, so every other cell is byte-identical.
     fn wv_cell_transform(c: &WvCell, place: &crate::atlas::Placement, ox: u32, oy: u32, root: Affine) -> Affine {
         Affine::translate((f64::from(ox + place.x), f64::from(oy + place.y)))
-            * Affine::scale(f64::from(c.k))
+            * Affine::scale(f64::from(c.geom.k))
             * Affine::translate((
-                f64::from(c.dev_offset.0) - f64::from(c.bx),
-                f64::from(c.dev_offset.1) - f64::from(c.by),
+                f64::from(c.dev_offset.0) - f64::from(c.geom.bx()),
+                f64::from(c.dev_offset.1) - f64::from(c.geom.by()),
             ))
             * root
     }
@@ -3023,7 +3028,7 @@ impl Sink {
             #[cfg(not(target_arch = "wasm32"))]
             if std::env::var("WV_TRACE_CELLS").is_ok() {
                 eprintln!("strip key={:?} place=({},{}) k={}x{} b=({},{},{},{}) scale={} sigma={}",
-                    c.key, place.x, strip_y + place.y, c.kw, c.kh, c.bx, c.by, c.bw, c.bh, c.k, c.sigma);
+                    c.key, place.x, strip_y + place.y, c.kw, c.kh, c.geom.bx(), c.geom.by(), c.geom.bw(), c.geom.bh(), c.geom.k, c.geom.sigma);
             }
             let rect = Rect::new(
                 f64::from(place.x),
@@ -3074,8 +3079,8 @@ impl Sink {
         // A body chain may translate its result; its cell box moved with it, so the render has to
         // move by the same device vector or the two cancel out. Zero for every cell without one.
         let (odx, ody) = (f64::from(c.dev_offset.0), f64::from(c.dev_offset.1));
-        let m = Affine::scale(f64::from(c.k))
-            * Affine::translate((odx - f64::from(c.bx), ody - f64::from(c.by)))
+        let m = Affine::scale(f64::from(c.geom.k))
+            * Affine::translate((odx - f64::from(c.geom.bx()), ody - f64::from(c.geom.by())))
             * root;
         let tex = self.pool.acquire_target(device, c.kw, c.kh, format, self.raster_usage, "wv cell source");
         let v = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -3136,7 +3141,7 @@ impl Sink {
         let src = out.as_ref().map_or(inputs[0], |(_, v)| v);
         self.compositor.blit(device, enc, acc_view, sz, &Blit {
             src,
-            dst: (c.bx as f32, c.by as f32, c.bw as f32, c.bh as f32),
+            dst: (c.geom.bx(), c.geom.by(), c.geom.bw(), c.geom.bh()),
             src_rect: (0.0, 0.0, kwf, khf),
             src_size: (kwf, khf),
             alpha: 1.0,
@@ -3208,7 +3213,7 @@ impl Sink {
         let punch_view = self.wv_cell_source(&punch, backend, device, queue, enc, root, 0, format);
         // The band: the flood silhouette coloured, with its offset+blurred punch erased out. The
         // punch is a second input, blurred only when the erase declares a radius.
-        let (w, h, sig) = (flood.kw as f32, flood.kh as f32, flood.sigma * flood.k);
+        let (w, h, sig) = (flood.kw as f32, flood.kh as f32, flood.geom.sigma * flood.geom.k);
         use crate::effect_graph::{tint_unit, unit_pass, EffectPass, GraphPass, Src, UnitKind};
         let mut graph = Vec::new();
         let punch = if sig > 0.5 {
@@ -3257,12 +3262,12 @@ impl Sink {
         });
         if dragged {
             if let Some(c) = cells.iter().find(|c| c.key.1 == 1) {
-                crate::vello::prof::dbg_set(16, f64::from(c.bx));
-                crate::vello::prof::dbg_set(17, f64::from(c.by));
-                crate::vello::prof::dbg_set(18, f64::from(c.bw));
-                crate::vello::prof::dbg_set(19, f64::from(c.bh));
+                crate::vello::prof::dbg_set(16, f64::from(c.geom.bx()));
+                crate::vello::prof::dbg_set(17, f64::from(c.geom.by()));
+                crate::vello::prof::dbg_set(18, f64::from(c.geom.bw()));
+                crate::vello::prof::dbg_set(19, f64::from(c.geom.bh()));
                 crate::vello::prof::dbg_set(23, f64::from(c.kw));
-                crate::vello::prof::dbg_set(29, f64::from(c.k) * 1000.0);
+                crate::vello::prof::dbg_set(29, f64::from(c.geom.k) * 1000.0);
             }
         }
         // An entry the batch composites is not this painter's to draw; one it declined is, but only
