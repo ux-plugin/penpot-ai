@@ -754,6 +754,24 @@ impl PoolKey {
     }
 }
 
+/// The device-space geometry shared by every whole-viewport cell, whatever its effect: the device
+/// box it covers, the render scale `k` it is rasterized at, the device blur sigma, and whether the
+/// stamp Catmull-Rom-upscales it (`k < 1`). One bundle so the geometry helpers, the mask transform
+/// and the packer can operate on a cell without knowing whether it is a spread or a gather. The box
+/// is `f32` (integer-valued device pixels) so the reduced-render and atlas math stay one numeric type
+/// across both cell kinds — the shared vocabulary the single planner is built on.
+#[derive(Clone, Copy)]
+struct CellGeom {
+    /// Device box `(x, y, w, h)` in device pixels.
+    dev: (f32, f32, f32, f32),
+    /// Render scale: the cell is rasterized at `dev` size × `k`, and the stamp upscales when `k < 1`.
+    k: f32,
+    /// Device blur sigma of the cell's governing blur (`0` = none).
+    sigma: f32,
+    /// `k < 1` → the composite Catmull-Rom-upscales the reduced cell instead of a plain copy.
+    sharp: bool,
+}
+
 /// One lens lens admitted to the batched stages: where it reads and writes on the accumulator,
 /// which atlas cell it owns, and the lowered unit passes it runs.
 ///
@@ -765,7 +783,10 @@ impl PoolKey {
 struct LensCell {
     gid: u128,
     round: u32,
-    dev: (f32, f32, f32, f32),
+    /// Device box, render scale, sigma and the `k < 1` sharp flag — the shared cell geometry. `sigma`
+    /// and `k` drive the per-cell chain (a custom gather runs at the same reduced size the box packed
+    /// at); `sharp` is the derived `k < 0.999`.
+    geom: CellGeom,
     cell: (f32, f32, f32, f32),
     red: (f32, f32, f32, f32),
     /// The sampling head, for a self-clipping lens (glass). `None` for a plain **gather** — a
@@ -773,18 +794,10 @@ struct LensCell {
     /// THROUGH a silhouette mask instead of an SDF. `warp.is_none()` is what the round dispatches on.
     warp: Option<crate::vello::units::UnitOp>,
     tail: Vec<crate::vello::units::UnitOp>,
-    sigma: f32,
-    /// `k < 1`: the cell is rendered at reduced size and the stamp Catmull-Rom-upscales it
-    /// (`stage::SHARP`) — the batched twin of the per-shape `blit_sharp`. `false` = native, plain
-    /// (`Tint`) stamp.
-    sharp: bool,
     /// A gather's silhouette in the MASK atlas, at device size — `Some(rect)` composites through it
     /// (`MASKED`/`SHARP_MASKED`, the batched twin of `blit_masked`/`blit_masked_sharp`); `None` is a
     /// self-clipping lens, whose SDF mask lives in its own composite. Rect is in mask-atlas pixels.
     mask: Option<(f32, f32, f32, f32)>,
-    /// The gather's render scale, needed to run a per-cell chain (a custom gather) at the same
-    /// reduced size the box was packed at. `sharp` is the derived `k < 0.999`; `k` is the value.
-    k: f32,
     /// A custom-shader gather (`warp: None`, a `Custom` head). Its user pipeline samples its whole
     /// input at 0..1, so it cannot read a sub-rect of the shared crop atlas the way `blur_px` does —
     /// it runs PER CELL (crop → custom → blit into the effect atlas), then joins the batched masked
@@ -1646,8 +1659,8 @@ impl Sink {
                     let masks = cells.iter().filter(|c| c.warp.is_none()).filter_map(|gc| {
                         gc.mask.map(|(mx, my, _, _)| {
                             let m = Affine::translate((
-                                f64::from(mx) - f64::from(gc.dev.0),
-                                f64::from(my) - f64::from(gc.dev.1),
+                                f64::from(mx) - f64::from(gc.geom.dev.0),
+                                f64::from(my) - f64::from(gc.geom.dev.1),
                             )) * root;
                             (gc.gid, m)
                         })
@@ -1668,7 +1681,7 @@ impl Sink {
                 };
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_LENS_STATS").is_ok() {
-                    let sharp = cells.iter().filter(|c| c.sigma <= 0.0).count();
+                    let sharp = cells.iter().filter(|c| c.geom.sigma <= 0.0).count();
                     eprintln!(
                         "wv lens batch: {} lenses ({sharp} sharp, {} frosted) in {} rounds, atlas {aw}x{ah}",
                         cells.len(),
@@ -2165,15 +2178,17 @@ impl Sink {
             cells.push(LensCell {
                 gid,
                 round: rounds[j],
-                dev: (bx as f32, by as f32, bw as f32, bh as f32),
+                geom: CellGeom {
+                    dev: (bx as f32, by as f32, bw as f32, bh as f32),
+                    k: k as f32,
+                    sigma,
+                    sharp: k < 0.999,
+                },
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, rw as f32, rh as f32),
                 warp: Some(warp),
                 tail,
-                sigma,
-                sharp: k < 0.999,
                 mask: None,
-                k: k as f32,
                 custom: false,
             });
         }
@@ -2210,15 +2225,17 @@ impl Sink {
             cells.push(LensCell {
                 gid,
                 round: rounds[j],
-                dev: (bx as f32, by as f32, bw as f32, bh as f32),
+                geom: CellGeom {
+                    dev: (bx as f32, by as f32, bw as f32, bh as f32),
+                    k: k as f32,
+                    sigma,
+                    sharp: k < 0.999,
+                },
                 cell: (0.0, 0.0, kw as f32, kh as f32),
                 red: (0.0, 0.0, kw as f32, kh as f32),
                 warp: None,
                 tail: Vec::new(),
-                sigma,
-                sharp: k < 0.999,
                 mask: Some((0.0, 0.0, bw as f32, bh as f32)),
-                k: k as f32,
                 custom,
             });
             mask_sizes.push((bw, bh));
@@ -2382,17 +2399,17 @@ impl Sink {
         // then join the batched masked composite below via the same D→acc instances.
         let mut customs: Vec<&LensCell> = Vec::new();
         for c in &here {
-            crops.push(Inst::new(c.cell, asz, c.dev, sz, (0.0, 0.0), 0.0, false));
+            crops.push(Inst::new(c.cell, asz, c.geom.dev, sz, (0.0, 0.0), 0.0, false));
             let Some(warp_op) = c.warp.clone() else {
                 if c.custom {
                     customs.push(*c);
                 } else {
-                    gblur_h.push(Inst::new(c.cell, asz, c.cell, asz, (1.0, 0.0), c.sigma, true));
-                    gblur_v.push(Inst::new(c.cell, asz, c.cell, asz, (0.0, 1.0), c.sigma, true));
+                    gblur_h.push(Inst::new(c.cell, asz, c.cell, asz, (1.0, 0.0), c.geom.sigma, true));
+                    gblur_v.push(Inst::new(c.cell, asz, c.cell, asz, (0.0, 1.0), c.geom.sigma, true));
                 }
-                let stamp_inst = Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false)
+                let stamp_inst = Inst::new(c.geom.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false)
                     .with_src2(c.mask.expect("a gather cell carries a mask rect"), masz, 0.0);
-                if c.sharp {
+                if c.geom.sharp {
                     gsharp_masked.push(stamp_inst);
                 } else {
                     gmasked.push(stamp_inst);
@@ -2400,7 +2417,7 @@ impl Sink {
                 continue;
             };
             let mut ops = vec![warp_op];
-            if c.sigma <= 0.0 {
+            if c.geom.sigma <= 0.0 {
                 ops.extend(c.tail.iter().cloned());
                 sharp.push(
                     Inst::new(c.cell, asz, c.cell, asz, (0.0, 0.0), 0.0, false)
@@ -2417,8 +2434,8 @@ impl Sink {
                         .at(c.red),
                 );
                 warp_f.push(FieldUniform { u: crate::vello::units::units_uniform(&ops) });
-                blur_h.push(Inst::new(c.red, asz, c.red, asz, (1.0, 0.0), c.sigma, false));
-                blur_v.push(Inst::new(c.red, asz, c.red, asz, (0.0, 1.0), c.sigma, false));
+                blur_h.push(Inst::new(c.red, asz, c.red, asz, (1.0, 0.0), c.geom.sigma, false));
+                blur_v.push(Inst::new(c.red, asz, c.red, asz, (0.0, 1.0), c.geom.sigma, false));
                 frost.push(
                     Inst::new(c.cell, asz, c.red, asz, (0.0, 0.0), 0.0, false)
                         .with_src2(c.cell, asz, 0.0)
@@ -2427,8 +2444,8 @@ impl Sink {
                 );
                 frost_f.push(FieldUniform { u: crate::vello::units::units_uniform(&c.tail) });
             }
-            let stamp_inst = Inst::new(c.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false);
-            if c.sharp {
+            let stamp_inst = Inst::new(c.geom.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false);
+            if c.geom.sharp {
                 sharp_stamp.push(stamp_inst);
             } else {
                 stamp.push(stamp_inst);
@@ -2496,10 +2513,10 @@ impl Sink {
             );
             let input_view = input.create_view(&wgpu::TextureViewDescriptor::default());
             self.compositor.blit(device, enc, &input_view, (kw as f32, kh as f32), &Blit {
-                src: acc_view, dst: (0.0, 0.0, kw as f32, kh as f32), src_rect: cc.dev, src_size: sz, alpha: 1.0,
+                src: acc_view, dst: (0.0, 0.0, kw as f32, kh as f32), src_rect: cc.geom.dev, src_size: sz, alpha: 1.0,
             });
             let passes = self.wv_gather_graph(
-                cc.gid, kw, kh, f64::from(cc.dev.0), f64::from(cc.dev.1), full_view, f64::from(cc.k), device, format,
+                cc.gid, kw, kh, f64::from(cc.geom.dev.0), f64::from(cc.geom.dev.1), full_view, f64::from(cc.geom.k), device, format,
             );
             let Some(passes) = passes else { continue };
             let Some((rtex, rview)) = self.wv_run_chain(device, enc, &[&input_view], &passes, kw, kh, format) else {
