@@ -1533,7 +1533,7 @@ impl Sink {
                         .filter_map(|(i, &id)| {
                             let n = live.get(id)?;
                             let non_box = matches!(n.kind, crate::model::ShapeKind::Path | crate::model::ShapeKind::Text);
-                            let has_gather = n.background_blur.is_some() || n.glass.is_some() || n.gather_shader().is_some();
+                            let has_gather = n.background_blur.is_some() || n.glass.is_some() || n.gather_shader().is_some() || n.background_tint.is_some() || n.background_field.is_some();
                             let has_silhouette_shadow = non_box && !n.shadows.is_empty();
                             // Ask what the node LOWERS TO, not which authoring fields it happens to
                             // set: any effect that replaces the body runs through the stack path, so
@@ -1695,6 +1695,61 @@ impl Sink {
             None => (None, None),
         };
 
+        // Effects-in-fine: descriptors for effects that run INLINE in fine (backdrop-tint so far).
+        // Each is [bits, program, then the 24-float unit uniform]; the marker carries its float offset
+        // in p2 and the driver skips its post-fine pass. Empty → fine renders exactly as before.
+        const FX_TINT_ID: u32 = 100;
+        let mut fx_params: Vec<f32> = Vec::new();
+        let mut fx_offset: HashMap<u128, u32> = HashMap::new();
+        for &(_gi, gid, kind) in &gathers {
+            if kind == FX_STACK {
+                continue;
+            }
+            // Descriptor layout: [bits, program, then 6×vec4 uniform] = 26 floats.
+            let desc = crate::vello::abi::with_scene(|live, viewport, modifiers| {
+                let n = live.get(gid)?;
+                if let Some(color) = n.background_tint {
+                    let [r, g, b, a] = color.components;
+                    let mut d = [0.0f32; 26];
+                    d[0] = 4.0; // bits = TINT (see fine.wgsl fx_applyPointwise)
+                    d[14] = r; // u[3] = tint colour
+                    d[15] = g;
+                    d[16] = b;
+                    d[17] = a;
+                    return Some(d);
+                }
+                if let Some(color) = n.background_field {
+                    // Field-measured tint: mask fades with distance from the device-space silhouette
+                    // centre. TINT(4)|MASKMIX(16) → mix(backdrop, tinted, radial-mask); program 3.
+                    let modifier = modifiers.get(&gid).copied().unwrap_or(Affine::IDENTITY);
+                    let m = viewport * modifier * n.effective_transform();
+                    let c = m * n.bounds.center();
+                    let coeffs = m.as_coeffs();
+                    let sx = (coeffs[0] * coeffs[0] + coeffs[1] * coeffs[1]).sqrt();
+                    let radius = 0.5 * n.bounds.width().min(n.bounds.height()) * sx;
+                    let [r, g, b, a] = color.components;
+                    let mut d = [0.0f32; 26];
+                    d[0] = 20.0; // bits = TINT(4) | MASKMIX(16)
+                    d[1] = 3.0; // program = radial ramp
+                    d[4] = c.x as f32; // u[0].z = centre.x (device)
+                    d[5] = c.y as f32; // u[0].w = centre.y (device)
+                    d[6] = radius as f32; // u[1].x = radius (device)
+                    d[14] = r; // u[3] = tint colour
+                    d[15] = g;
+                    d[16] = b;
+                    d[17] = a;
+                    return Some(d);
+                }
+                None
+            });
+            if let Some(desc) = desc {
+                let off = fx_params.len() as u32;
+                fx_offset.insert(gid, off);
+                fx_params.extend_from_slice(&desc);
+            }
+        }
+        let fx_bytes: Vec<u8> = fx_params.iter().flat_map(|f| f.to_le_bytes()).collect();
+
         let boundaries: Vec<u32> = {
             let mut b = Vec::with_capacity(gathers.len());
             let mut cursor = 0usize;
@@ -1704,20 +1759,23 @@ impl Sink {
                     cursor = gi;
                 }
                 b.push(backend.draw_object_count(&scene));
-                let effect_id = if kind == FX_STACK {
-                    6u32
+                let (effect_id, fx_p2) = if let Some(&off) = fx_offset.get(&gid) {
+                    (FX_TINT_ID, off)
+                } else if kind == FX_STACK {
+                    (6u32, 0u32)
                 } else {
-                    crate::vello::abi::with_scene(|live, _, _| {
+                    let eid = crate::vello::abi::with_scene(|live, _, _| {
                         live.get(gid).map_or(1u32, |n| {
                             if n.glass.is_some() { 0 } else if n.gather_shader().is_some() { 2 } else { 1 }
                         })
-                    })
+                    });
+                    (eid, 0u32)
                 };
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_TRACE").is_ok() {
                     eprintln!("marker j={j} kind={kind} round={} reach={:?}", rounds[j], reaches[j]);
                 }
-                backend.draw_effect_marker(&mut scene, root, gid, effect_id, b.len() as u32, rounds[j], reaches[j]);
+                backend.draw_effect_marker(&mut scene, root, gid, effect_id, b.len() as u32, rounds[j], fx_p2, reaches[j]);
                 if kind == FX_STACK {
                     cursor = gi + 1;
                 }
@@ -1755,7 +1813,7 @@ impl Sink {
         }
 
         let _tpb = crate::vello::prof::now();
-        backend.phased_begin(&scene, device, queue, &mut enc, width, acc_h, crate::vello::abi::background());
+        backend.phased_begin(&scene, device, queue, &mut enc, width, acc_h, crate::vello::abi::background(), &fx_bytes);
         crate::vello::prof::dbg_add(31, crate::vello::prof::now() - _tpb);
 
         backend.phased_frontend_full(device, queue, &mut enc);
@@ -1890,6 +1948,8 @@ impl Sink {
                 match kind {
                     FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, claim, sub),
                     _ if sub > 0 => {}
+                    // An inline effect (backdrop-tint) ran in fine at its CMD_EFFECT marker; no post-fine pass.
+                    _ if fx_offset.contains_key(&gid) => {}
                     _ if lens_cells.as_ref().is_some_and(|cs| cs.iter().any(|c| c.key.0 == gid)) => {}
                     _ => self.wv_stamp_gather(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, width, height, format, acc_sz),
                 }

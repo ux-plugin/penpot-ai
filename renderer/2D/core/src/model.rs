@@ -512,6 +512,16 @@ pub struct Node {
     /// **beneath** the shape and shows it through the shape's silhouette (frosted glass). Because it
     /// reads what is already painted below, it forces true z-order interleaving in the scheduler.
     pub background_blur: Option<f32>,
+    /// A backdrop **tint**, `None` when the shape has none. A pointwise gather: it multiplies the
+    /// backdrop beneath the shape by this straight colour and shows it through the shape's silhouette.
+    /// Unlike [`background_blur`](Node::background_blur) it has no neighbourhood, so it is the first
+    /// effect to run inline in `fine` (effects-in-fine) rather than as a post-fine dispatch.
+    pub background_tint: Option<peniko::Color>,
+    /// A synthetic **field-measured** backdrop tint used to exercise the inline field VM: the tint
+    /// fades from full at the silhouette centre to none at its edge, driven per-pixel by the baked
+    /// radial field program (program 3, `mix(backdrop, tint, mask)`). It is scaffolding for the
+    /// effects-in-fine field path, not an authored effect. `None` when the shape has none.
+    pub background_field: Option<peniko::Color>,
     /// A frosted-glass gather effect (refraction lens), `None` when the shape has none. Like
     /// [`background_blur`](Node::background_blur) it reads the backdrop beneath — a gather effect.
     pub glass: Option<Glass>,
@@ -554,6 +564,8 @@ impl Node {
             blend: crate::blend::DEFAULT_BLEND,
             blur: None,
             background_blur: None,
+            background_tint: None,
+            background_field: None,
             glass: None,
             effects: Vec::new(),
             shadows: Vec::new(),

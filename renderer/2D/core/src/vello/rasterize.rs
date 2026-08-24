@@ -116,7 +116,9 @@ pub trait RasterBackend {
     /// touch. Binning per-reach (not full-viewport) keeps the marker's PTCL/tile cost proportional to
     /// the effect's area instead of `O(all tiles × boundaries)`, which overflowed vello's fixed
     /// budgets at document scale. Default no-op — only the phased (classic) backend emits markers.
-    fn draw_effect_marker(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _effect_id: u32, _seg_after: u32, _round: u32, _reach: [f32; 4]) {}
+    /// `p2` is the marker's third payload word — for an inline effect (`effect_id >= 100`) it is the
+    /// float offset of this effect's descriptor in the `effect_params` buffer; `0` otherwise.
+    fn draw_effect_marker(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _effect_id: u32, _seg_after: u32, _round: u32, _p2: u32, _reach: [f32; 4]) {}
 
     /// Rasterize `scene` into `target` (a `width × height` texture), clearing to `base_color` first.
     ///
@@ -158,6 +160,7 @@ pub trait RasterBackend {
         _width: u32,
         _height: u32,
         _base_color: Color,
+        _effect_params: &[u8],
     ) {
         unimplemented!("phased session is classic-only")
     }

@@ -805,7 +805,7 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         });
     }
 
-    fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, _transform: Affine, _id: u128, effect_id: u32, seg_after: u32, round: u32, reach: [f32; 4]) {
+    fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, effect_id: u32, seg_after: u32, round: u32, p2: u32, reach: [f32; 4]) {
         let r = Rect::new(
             f64::from(reach[0]).max(0.0),
             f64::from(reach[1]).max(0.0),
@@ -815,12 +815,21 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         if r.x1 <= r.x0 || r.y1 <= r.y0 {
             return;
         }
-        scene.draw_effect(
-            Affine::IDENTITY,
-            &r,
-            effect_id,
-            [f32::from_bits(seg_after), f32::from_bits(round), 0.0, 0.0],
-        );
+        let params = [f32::from_bits(seg_after), f32::from_bits(round), f32::from_bits(p2), 0.0];
+        // An INLINE effect (effects-in-fine) encodes the node's real silhouette as its shape, so
+        // coarse emits that coverage into `area[i]` and fine confines the effect to it. A barrier
+        // effect encodes the reach rect: it only needs to bin the z-boundary into its reach tiles.
+        if effect_id >= 100 {
+            render_core::vello::abi::with_scene(|model, viewport, modifiers| {
+                if let Some(node) = model.get(id) {
+                    let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                    let matrix = transform * viewport * modifier * node.effective_transform();
+                    scene.draw_effect(matrix, &render_core::geometry::outline(node), effect_id, params);
+                }
+            });
+        } else {
+            scene.draw_effect(Affine::IDENTITY, &r, effect_id, params);
+        }
     }
 
     fn rasterize(
@@ -856,13 +865,14 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         width: u32,
         height: u32,
         base_color: render_core::peniko::Color,
+        effect_params: &[u8],
     ) {
         let _trd = render_core::vello::prof::now();
         let params = RenderParams { base_color, width, height, antialiasing_method: AaConfig::Area };
         let session = self
             .renderer
             .inner
-            .phased_begin_into(device, queue, scene.scene(), &params, enc)
+            .phased_begin_into(device, queue, scene.scene(), &params, effect_params, enc)
             .expect("phased_begin_into");
         #[cfg(not(target_arch = "wasm32"))]
         {

@@ -226,6 +226,13 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
             ops: vec![Op::Blur { radius }],
             compose: Compose::ThroughCoverage,
         });
+    } else if let Some(color) = node.background_tint {
+        // A pointwise backdrop gather (no neighbourhood) — the first effect to run inline in `fine`.
+        out.push(Effect {
+            source: Source::Backdrop,
+            ops: vec![Op::Tint(color)],
+            compose: Compose::ThroughCoverage,
+        });
     }
 
     let body_ops: Vec<Op> = node

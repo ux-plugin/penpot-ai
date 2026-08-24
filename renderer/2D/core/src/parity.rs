@@ -1611,6 +1611,75 @@ pub fn build_custom_gather_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static 
     b.finish()
 }
 
+/// A grid of `n` **built-in backdrop-tint gathers** (`Source::Backdrop` + `Op::Tint`, reach 0) — the
+/// first effect that runs INLINE in `fine` (effects-in-fine) rather than as a post-fine dispatch. The
+/// tint is opaque blue, so each shape shows a solid premultiplied blue where its silhouette covers the
+/// backdrop. Verified by sampling the rendered `-wv.png` against the hand-computed expectation.
+pub fn build_backdrop_tint_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    for _ in 0..(cols * rows) {
+        b.advance("backdrop tint grid");
+    }
+    let (cw, ch) = canvas_size(cols * rows);
+    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
+    let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
+    for i in 0..(n * 4) {
+        let (gx, gy) = ((i % (cols * 2)) as f64, (i / (cols * 2)) as f64);
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        let (x, y) = (gx * pitch_x * 0.5, gy * pitch_y * 0.5);
+        node.bounds = Rect::new(x, y, x + pitch_x * 0.5, y + pitch_y * 0.5);
+        let hue = (i * 37 % 255) as u8;
+        node.fills = vec![Paint::plain(Brush::Solid(col(40 + hue / 2, 200 - hue / 3, 120 + hue / 4)))];
+        b.root(node);
+    }
+    for i in 0..n {
+        let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);
+        let x = (gx + 0.5) * pitch_x - lw * 0.5;
+        let y = (gy + 0.5) * pitch_y - lh * 0.5;
+        let mut node = Node::new(b.id(), ShapeKind::Circle);
+        node.bounds = Rect::new(x, y, x + lw, y + lh);
+        node.background_tint = Some(col(60, 90, 230));
+        b.root(node);
+    }
+    b.finish()
+}
+
+/// A grid whose foreground shapes carry a **field-measured** backdrop tint (radial ramp): the tint is
+/// full at each shape's centre and fades to the backdrop at its silhouette edge. It exercises the
+/// inline field VM (fx_computeField program 3 + MASKMIX) end-to-end in `fine`.
+pub fn build_field_shade_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    for _ in 0..(cols * rows) {
+        b.advance("field shade grid");
+    }
+    let (cw, ch) = canvas_size(cols * rows);
+    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
+    let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
+    for i in 0..(n * 4) {
+        let (gx, gy) = ((i % (cols * 2)) as f64, (i / (cols * 2)) as f64);
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        let (x, y) = (gx * pitch_x * 0.5, gy * pitch_y * 0.5);
+        node.bounds = Rect::new(x, y, x + pitch_x * 0.5, y + pitch_y * 0.5);
+        let hue = (i * 37 % 255) as u8;
+        node.fills = vec![Paint::plain(Brush::Solid(col(40 + hue / 2, 200 - hue / 3, 120 + hue / 4)))];
+        b.root(node);
+    }
+    for i in 0..n {
+        let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);
+        let x = (gx + 0.5) * pitch_x - lw * 0.5;
+        let y = (gy + 0.5) * pitch_y - lh * 0.5;
+        let mut node = Node::new(b.id(), ShapeKind::Circle);
+        node.bounds = Rect::new(x, y, x + lw, y + lh);
+        node.background_field = Some(col(60, 90, 230));
+        b.root(node);
+    }
+    b.finish()
+}
+
 pub fn build_glass_grid_scene(n: usize, frost: bool, downscale: f32) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;

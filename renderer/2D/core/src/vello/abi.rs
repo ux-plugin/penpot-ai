@@ -2280,6 +2280,20 @@ pub extern "C" fn load_custom_gather_grid_scene(n: u32) -> u32 {
     install_fixture(crate::parity::build_custom_gather_grid_scene(n as usize))
 }
 
+/// Install the **backdrop-tint grid** ([`crate::parity::build_backdrop_tint_grid_scene`]) — `n`
+/// built-in pointwise backdrop-tint gathers, the first effects-in-fine inline effect.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_backdrop_tint_grid_scene(n: u32) -> u32 {
+    install_fixture(crate::parity::build_backdrop_tint_grid_scene(n as usize))
+}
+
+/// Install the **field-shade grid** ([`crate::parity::build_field_shade_grid_scene`]) — `n` radial
+/// field-measured backdrop tints, exercising the inline field VM (program 3 + MASKMIX) in `fine`.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_field_shade_grid_scene(n: u32) -> u32 {
+    install_fixture(crate::parity::build_field_shade_grid_scene(n as usize))
+}
+
 /// [`load_glass_grid_scene`] with each lens's `acceptable_downscale` forced to `downscale_milli/1000`
 /// — the k-triggering fixture for the batch's scaled-stamp (`stage::SHARP`) path. A value below 1000
 /// makes every lens render at a reduced `k` and be upscaled, which the un-scaled grid never exercises.
