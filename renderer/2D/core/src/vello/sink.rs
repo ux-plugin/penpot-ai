@@ -792,18 +792,6 @@ impl CellGeom {
     fn bh(&self) -> f32 { self.dev.3 }
 }
 
-/// Native A/B hook for the batched lens stages (default on): `WV_LENS=0` forces every lens back
-/// through its own pass chain, which is how the batched output is pixel-compared against the
-/// per-shape one. No browser gate — the batch is the production path.
-fn wv_lens_batch() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        return std::env::var("WV_LENS").is_ok_and(|v| v != "0") || std::env::var("WV_LENS").is_err();
-    }
-    #[cfg(target_arch = "wasm32")]
-    true
-}
-
 /// Linchpin A/B gate for effects-in-fine gathers (default OFF): `WV_GLASS_FINE=1` routes a SHARP
 /// glass gather through `fine` — a WARP inline effect that samples the materialized backdrop
 /// (`base_in`) at the lens field's displacement in a reload round — instead of the batched lens
@@ -851,28 +839,6 @@ fn wv_shadow_fine() -> bool {
     }
     #[cfg(target_arch = "wasm32")]
     false
-}
-
-/// The four surfaces the batched lens stages ping-pong through, all packed with the same cell
-/// layout: `a` the cropped backdrops (kept — the mask-mix reads it as the original), `b` the warp
-/// then the blurred warp, `d` the horizontal-blur scratch, `c` the finished lenses awaiting the
-/// stamp. Held for the whole frame so every round reuses them.
-struct WvLensAtlas {
-    w: u32,
-    h: u32,
-    a_view: wgpu::TextureView,
-    b_view: wgpu::TextureView,
-    c_view: wgpu::TextureView,
-    d_view: wgpu::TextureView,
-    /// The **mask** atlas: every gather's silhouette rasterised once at device size, bound as the
-    /// masked composite's second texture (`Surface::Atlas(4)`). `mw`/`mh` are its own dimensions
-    /// (device-size cells, packed separately from the reduced effect cells), `0` when no gather rides
-    /// this frame. Held with the rest for the whole round loop.
-    mw: u32,
-    mh: u32,
-    m_view: wgpu::TextureView,
-    /// The atlas textures themselves, returned to the pool once the last round has run.
-    keep: Vec<wgpu::Texture>,
 }
 
 /// Effect-node kinds the whole-viewport driver dispatches on. `FX_GATHER` is a pure gather (its body
@@ -1783,71 +1749,6 @@ impl Sink {
         // pair this function decided on. Textures and their views are kept apart so the views can be
         // borrowed as a slice for the executor.
         let mut batch_rt: Option<(Vec<wgpu::Texture>, Vec<wgpu::TextureView>)> = None;
-        let (lens_gathers, lens_rounds): (Vec<(usize, u128, u8)>, Vec<u32>) = gathers
-            .iter()
-            .zip(rounds.iter())
-            .filter(|(g, _)| !fx_fine.contains_key(&g.1))
-            .map(|(&g, &r)| (g, r))
-            .unzip();
-        let lens_plan = self
-            .wv_lens_plan(&lens_gathers, &lens_rounds, full_view, width, height, device.limits().max_texture_dimension_2d)
-            .filter(|_| wv_lens_batch());
-        let (lens_cells, lens_atlas) = match lens_plan {
-            Some((packing, cells, (mw, mh))) => {
-                let _ = self
-                    .batch_pipes
-                    .get_or_insert_with(|| crate::vello::batch::BatchPipelines::new(device, format));
-                let (aw, ah) = (packing.width, packing.height);
-                let mut mk = |label| self.pool.acquire_target(device, aw, ah, format, wgpu::TextureUsages::empty(), label);
-                let (a, b, c, d) = (mk("wv lens a"), mk("wv lens b"), mk("wv lens c"), mk("wv lens d"));
-                let vd = wgpu::TextureViewDescriptor::default();
-                // The mask atlas: every gather silhouette rasterised once at device size into one
-                // texture, at each gather cell's packed mask rect. Bound as the masked composite's
-                // second texture. Allocated 1x1 when no gather rides this frame (still a valid bind).
-                let (mtw, mth) = (mw.max(1), mh.max(1));
-                let mask_tex = self.pool.acquire_target(device, mtw, mth, format, self.raster_usage, "wv lens mask");
-                let m_view = mask_tex.create_view(&vd);
-                if mw > 0 {
-                    let masks = cells.iter().filter(|c| c.passes.first().and_then(units_head).is_none()).filter_map(|gc| {
-                        match &gc.source {
-                            CellSource::Crop { mask: Some((mx, my, _, _)) } => {
-                                let m = Affine::translate((
-                                    f64::from(*mx) - f64::from(gc.geom.dev.0),
-                                    f64::from(*my) - f64::from(gc.geom.dev.1),
-                                )) * root;
-                                Some((gc.key.0, m))
-                            }
-                            _ => None,
-                        }
-                    });
-                    rasterize_masks(backend, device, queue, &mut enc, &m_view, mtw, mth, TRANSPARENT, masks);
-                }
-                let atlas = WvLensAtlas {
-                    w: aw,
-                    h: ah,
-                    a_view: a.create_view(&vd),
-                    b_view: b.create_view(&vd),
-                    c_view: c.create_view(&vd),
-                    d_view: d.create_view(&vd),
-                    mw: mtw,
-                    mh: mth,
-                    m_view,
-                    keep: vec![a, b, c, d, mask_tex],
-                };
-                #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_LENS_STATS").is_ok() {
-                    let sharp = cells.iter().filter(|c| c.geom.sigma <= 0.0).count();
-                    eprintln!(
-                        "wv lens batch: {} lenses ({sharp} sharp, {} frosted) in {} rounds, atlas {aw}x{ah}",
-                        cells.len(),
-                        cells.len() - sharp,
-                        cells.iter().map(|c| c.round).collect::<std::collections::BTreeSet<_>>().len()
-                    );
-                }
-                (Some(cells), Some(atlas))
-            }
-            None => (None, None),
-        };
 
         // Effects-in-fine: descriptors for effects that run INLINE in fine (backdrop-tint so far).
         // Each is [bits, program, then the 24-float unit uniform]; the marker carries its float offset
@@ -2266,12 +2167,6 @@ impl Sink {
                 let refs: Vec<&wgpu::TextureView> = atlas_views.iter().collect();
                 pipes.run_stages(device, &mut enc, &plan.stages, Some(r), &views[ci], &refs, self.compositor.sampler());
             }
-            // Every batched lens of this round, in one pass per stage. Lenses in a round are
-            // disjoint by construction, so they can all read the accumulator and write their own
-            // crops concurrently — the per-shape chain is what forced them apart before.
-            if let (Some(cells), Some(atlas)) = (lens_cells.as_ref(), lens_atlas.as_ref()) {
-                self.wv_lens_round(device, &mut enc, &views[ci], atlas, cells, r, format, acc_sz, full_view);
-            }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
                 let extra = batch_plan.as_ref().and_then(|p| p.extra.get(&gid).copied()).unwrap_or(0);
                 if r < rounds[j] || r > rounds[j] + extra {
@@ -2293,7 +2188,6 @@ impl Sink {
                     // An inline effect ran in fine at its CMD_EFFECT marker(s); no post-fine pass. Pointwise
                     // (tint/field) rides fx_offset; a fine gather (glass/blur) rides fx_markers.
                     _ if fx_offset.contains_key(&gid) || fx_markers.contains_key(&gid) => {}
-                    _ if lens_cells.as_ref().is_some_and(|cs| cs.iter().any(|c| c.key.0 == gid)) => {}
                     _ => self.wv_stamp_gather(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, width, height, format, acc_sz),
                 }
                 self.recycle_node_transient(tex_cp, view_cp);
@@ -2331,16 +2225,6 @@ impl Sink {
         self.frame_transient.extend(frost_texs);
         for sc in frost_scratch.into_values() {
             self.frame_transient_views.extend(sc);
-        }
-        // Same rule as the batch atlases: held outside `frame_transient` for the whole round loop
-        // (the per-node recycle point truncates that list), returned to the pool once it ends.
-        if let Some(atlas) = lens_atlas {
-            self.frame_transient.extend(atlas.keep);
-            self.frame_transient_views.push(atlas.a_view);
-            self.frame_transient_views.push(atlas.b_view);
-            self.frame_transient_views.push(atlas.c_view);
-            self.frame_transient_views.push(atlas.d_view);
-            self.frame_transient_views.push(atlas.m_view);
         }
         backend.phased_finish(device, queue, &mut enc);
         crate::vello::prof::dbg_add(27, crate::vello::prof::now() - _tpl);
@@ -2537,156 +2421,6 @@ impl Sink {
         }
     }
 
-    /// Plan the frame's batched lens: every scoped lens whose graph the instanced stages can express
-    /// ([`wv_lens_admit`]), packed into one atlas whose cells are grouped by round. Lenses sharing a
-    /// round never overlap (that is what [`wv_rounds`] guarantees), so a round's cells can all run in
-    /// one pass per stage. `None` when fewer than two lenses qualify — one lens costs the same either
-    /// way and only adds a pack.
-    fn wv_lens_plan(
-        &self,
-        gathers: &[(usize, u128, u8)],
-        rounds: &[u32],
-        full_view: Affine,
-        width: u32,
-        height: u32,
-        max_dim: u32,
-    ) -> Option<(crate::atlas::Packing, Vec<Cell>, (u32, u32))> {
-        if !crate::vello::abi::wv_scope() {
-            return None;
-        }
-        let mut cells: Vec<Cell> = Vec::new();
-        for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
-            if kind == FX_STACK {
-                continue;
-            }
-            if !Self::wv_gather_self_clips(gid) {
-                continue;
-            }
-            let Some((bx, by, bw, bh, k)) = self.wv_lens_box(gid, full_view, width, height) else {
-                continue;
-            };
-            // Render the lens at its reduced size (kw×kh) and, for k<1, Catmull-Rom-upscale it at the
-            // stamp (stage::SHARP) — the batched twin of the per-shape reduced render + blit_sharp.
-            // k>=1 gives kw=bw, so the native path lowers and packs exactly as before. The whole-cell
-            // k is threaded into lens_graph the same way wv_gather_graph does per-shape, so the two
-            // routes build byte-identical geometry.
-            let (kw, kh) = (
-                crate::effect_graph::pass_dim(bw, k as f32),
-                crate::effect_graph::pass_dim(bh, k as f32),
-            );
-            if kw > max_dim || kh > max_dim {
-                continue;
-            }
-            let Some(passes) = self.lens_graph(gid, kw, kh, f64::from(bx), f64::from(by), full_view, k) else {
-                continue;
-            };
-            let Some(BatchShape::Lens { sigma, .. }) = batch_admit(&passes) else {
-                continue;
-            };
-            let red_scale = if sigma > 0.0 { passes[0].scale } else { 1.0 };
-            let (rw, rh) = (
-                crate::effect_graph::pass_dim(kw, red_scale),
-                crate::effect_graph::pass_dim(kh, red_scale),
-            );
-            cells.push(Cell {
-                key: (gid, GATHER_KIND, j),
-                round: rounds[j],
-                geom: CellGeom {
-                    dev: (bx as f32, by as f32, bw as f32, bh as f32),
-                    k: k as f32,
-                    sigma,
-                    sharp: k < 0.999,
-                },
-                passes: std::rc::Rc::new(passes),
-                tint: None,
-                kw: 0,
-                kh: 0,
-                cell: (0.0, 0.0, kw as f32, kh as f32),
-                red: (0.0, 0.0, rw as f32, rh as f32),
-                source: CellSource::Crop { mask: None },
-                custom: false,
-            });
-        }
-        // Non-self-clipping BACKDROP gathers — background blurs — batch through the same round: crop
-        // the accumulator, blur separably, composite THROUGH a silhouette mask (the batched twin of
-        // the per-shape `blit_masked`). Custom-shader gathers are S3; only blur heads admit here. Each
-        // gather cell rides two atlases — the effect atlas (reduced, its crop/blur) and the mask atlas
-        // (device size, its silhouette) — so its mask size is collected for a second packing.
-        let mut mask_sizes: Vec<(u32, u32)> = Vec::new();
-        let mut gather_marks: Vec<usize> = Vec::new();
-        for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
-            if kind == FX_STACK || Self::wv_gather_self_clips(gid) {
-                continue;
-            }
-            // The head decides the fill: a `Blur` head rides the instanced `blur_px`; a `Shader` head
-            // is a custom gather, run per-cell (its user pipeline samples its whole input). Both then
-            // composite through the mask atlas — the shared masked composite.
-            let custom = match Self::wv_backdrop_effect(gid).as_ref().map(|e| e.ops.first()) {
-                Some(Some(crate::effect::Op::Blur { .. })) => false,
-                Some(Some(crate::effect::Op::Shader(_))) => true,
-                _ => continue,
-            };
-            let Some((bx, by, bw, bh, k)) = self.wv_gather_box(gid, full_view, width, height) else {
-                continue;
-            };
-            let (kw, kh) = (
-                crate::effect_graph::pass_dim(bw, k as f32),
-                crate::effect_graph::pass_dim(bh, k as f32),
-            );
-            if kw > max_dim || kh > max_dim || bw > max_dim || bh > max_dim {
-                continue;
-            }
-            let sigma = if custom { 0.0 } else { self.gather_sigma(gid, full_view, k) };
-            cells.push(Cell {
-                key: (gid, GATHER_KIND, j),
-                round: rounds[j],
-                geom: CellGeom {
-                    dev: (bx as f32, by as f32, bw as f32, bh as f32),
-                    k: k as f32,
-                    sigma,
-                    sharp: k < 0.999,
-                },
-                passes: std::rc::Rc::new(Vec::new()),
-                tint: None,
-                kw: 0,
-                kh: 0,
-                cell: (0.0, 0.0, kw as f32, kh as f32),
-                red: (0.0, 0.0, kw as f32, kh as f32),
-                source: CellSource::Crop { mask: Some((0.0, 0.0, bw as f32, bh as f32)) },
-                custom,
-            });
-            mask_sizes.push((bw, bh));
-            gather_marks.push(cells.len() - 1);
-        }
-        if cells.len() < 2 {
-            return None;
-        }
-        let sizes: Vec<(u32, u32)> = cells.iter().map(|c| (c.cell.2 as u32, c.cell.3 as u32)).collect();
-        let packing = crate::atlas::shelf_pack(&sizes, 4, max_dim.min(4096), max_dim)?;
-        for (c, pl) in cells.iter_mut().zip(&packing.cells) {
-            c.cell.0 = pl.x as f32;
-            c.cell.1 = pl.y as f32;
-            c.red.0 = pl.x as f32;
-            c.red.1 = pl.y as f32;
-        }
-        // Second packing: the gather silhouettes, at device size, into the mask atlas. Its rects are
-        // written back onto each gather cell so the round's masked composite reads `tex2` at them.
-        let (mw, mh) = if mask_sizes.is_empty() {
-            (0, 0)
-        } else {
-            let mpack = crate::atlas::shelf_pack(&mask_sizes, 4, max_dim.min(4096), max_dim)?;
-            for (&ci, pl) in gather_marks.iter().zip(&mpack.cells) {
-                let (mw2, mh2) = match &cells[ci].source {
-                    CellSource::Crop { mask: Some((_, _, w, h)) } => (*w, *h),
-                    _ => unreachable!("a gather mark points at a Crop cell with a mask"),
-                };
-                cells[ci].source = CellSource::Crop { mask: Some((pl.x as f32, pl.y as f32, mw2, mh2)) };
-            }
-            (mpack.width, mpack.height)
-        };
-        Some((packing, cells, (mw, mh)))
-    }
-
     /// The device box and render scale one scoped lens reads and writes — the same derivation
     /// [`Self::wv_stamp_gather_scoped`] does, factored out so the batch planner and the per-shape
     /// path can never disagree about a lens's geometry.
@@ -2767,217 +2501,6 @@ impl Sink {
         Some((bx, by, bw, bh, k))
     }
 
-    /// Run every batched lens of ONE round: crop each lens's backdrop out of the accumulator, run the
-    /// unit stages over all of them at once — one pass per stage, not per lens — and composite the
-    /// results back. A round's lenses are disjoint, so the whole round is at most six passes
-    /// regardless of how many lenses it holds (crop, sharp, warp, blur H, blur V, frost, stamp).
-    #[expect(clippy::too_many_arguments, reason = "the GPU context + atlas set travel together")]
-    fn wv_lens_round(
-        &mut self,
-        device: &wgpu::Device,
-        enc: &mut wgpu::CommandEncoder,
-        acc_view: &wgpu::TextureView,
-        atlas: &WvLensAtlas,
-        cells: &[Cell],
-        round: u32,
-        format: wgpu::TextureFormat,
-        sz: (f32, f32),
-        full_view: Affine,
-    ) {
-        use crate::vello::batch::{stage, FieldUniform, Inst};
-        if self.batch_pipes.is_none() {
-            return;
-        }
-        let here: Vec<&Cell> = cells.iter().filter(|c| c.round == round).collect();
-        if here.is_empty() {
-            return;
-        }
-        let asz = (atlas.w as f32, atlas.h as f32);
-
-        let mut crops: Vec<Inst> = Vec::with_capacity(here.len());
-        let (mut sharp, mut sharp_f) = (Vec::new(), Vec::new());
-        let (mut warp, mut warp_f) = (Vec::new(), Vec::new());
-        let (mut blur_h, mut blur_v) = (Vec::new(), Vec::new());
-        let (mut frost, mut frost_f) = (Vec::new(), Vec::new());
-        let mut stamp: Vec<Inst> = Vec::with_capacity(here.len());
-        // The k<1 cells' stamps, which Catmull-Rom-upscale their reduced cell (stage::SHARP) instead
-        // of the plain `Tint` copy — a native cell must NOT take this path, as SHARP's sharpen term
-        // would alter an un-scaled cell.
-        let mut sharp_stamp: Vec<Inst> = Vec::new();
-        // A lens result is already coloured, so its stamp runs the `Tint` arm with the disabling
-        // sentinel. Every stamp shares the one entry, which is the index an instance carries by
-        // default.
-        let mut no_tint = [0.0_f32; 24];
-        no_tint[15] = -1.0;
-        // A plain gather (no head): its crop is blurred separably and composited THROUGH its mask.
-        // Reuses slots C/D — free once every glass composite above has read them — so a round of
-        // gathers needs no surfaces of its own.
-        let masz = (atlas.mw as f32, atlas.mh as f32);
-        let (mut gblur_h, mut gblur_v): (Vec<Inst>, Vec<Inst>) = (Vec::new(), Vec::new());
-        let (mut gmasked, mut gsharp_masked): (Vec<Inst>, Vec<Inst>) = (Vec::new(), Vec::new());
-        // Custom gathers fill the effect atlas per-cell (their user pipeline samples its whole input),
-        // then join the batched masked composite below via the same D→acc instances.
-        let mut customs: Vec<&Cell> = Vec::new();
-        for c in &here {
-            crops.push(Inst::new(c.cell, asz, c.geom.dev, sz, (0.0, 0.0), 0.0, false));
-            let lens = match batch_admit(&c.passes) {
-                Some(BatchShape::Lens { head, tail, .. }) => Some((head, tail)),
-                _ => None,
-            };
-            let Some((warp_op, tail)) = lens else {
-                if c.custom {
-                    customs.push(*c);
-                } else {
-                    gblur_h.push(Inst::new(c.cell, asz, c.cell, asz, (1.0, 0.0), c.geom.sigma, true));
-                    gblur_v.push(Inst::new(c.cell, asz, c.cell, asz, (0.0, 1.0), c.geom.sigma, true));
-                }
-                let mask_rect = match &c.source {
-                    CellSource::Crop { mask: Some(m) } => *m,
-                    _ => unreachable!("a masked gather cell carries a Crop mask rect"),
-                };
-                let stamp_inst = Inst::new(c.geom.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false)
-                    .with_src2(mask_rect, masz, 0.0);
-                if c.geom.sharp {
-                    gsharp_masked.push(stamp_inst);
-                } else {
-                    gmasked.push(stamp_inst);
-                }
-                continue;
-            };
-            let mut ops = vec![warp_op];
-            if c.geom.sigma <= 0.0 {
-                ops.extend(tail.iter().cloned());
-                sharp.push(
-                    Inst::new(c.cell, asz, c.cell, asz, (0.0, 0.0), 0.0, false)
-                        .with_src2(c.cell, asz, 0.0)
-                        .with_units(sharp_f.len())
-                        .at(c.cell),
-                );
-                sharp_f.push(FieldUniform { u: crate::vello::units::units_uniform(&ops) });
-            } else {
-                warp.push(
-                    Inst::new(c.red, asz, c.cell, asz, (0.0, 0.0), 0.0, false)
-                        .with_src2(c.cell, asz, 0.0)
-                        .with_units(warp_f.len())
-                        .at(c.red),
-                );
-                warp_f.push(FieldUniform { u: crate::vello::units::units_uniform(&ops) });
-                blur_h.push(Inst::new(c.red, asz, c.red, asz, (1.0, 0.0), c.geom.sigma, false));
-                blur_v.push(Inst::new(c.red, asz, c.red, asz, (0.0, 1.0), c.geom.sigma, false));
-                frost.push(
-                    Inst::new(c.cell, asz, c.red, asz, (0.0, 0.0), 0.0, false)
-                        .with_src2(c.cell, asz, 0.0)
-                        .with_units(frost_f.len())
-                        .at(c.cell),
-                );
-                frost_f.push(FieldUniform { u: crate::vello::units::units_uniform(&tail) });
-            }
-            let stamp_inst = Inst::new(c.geom.dev, sz, c.cell, asz, (0.0, 0.0), 0.0, false);
-            if c.geom.sharp {
-                sharp_stamp.push(stamp_inst);
-            } else {
-                stamp.push(stamp_inst);
-            }
-        }
-
-        // The round's whole schedule, in dependency order — the crop lifts every lens's backdrop
-        // into slot A, the unit stages run over all of them, and the stamp puts them back. Emitting
-        // stages rather than issuing passes is what makes this a plan the executor runs, identical
-        // in kind to the blur-cell plan above.
-        use crate::vello::batch::{Stage, Surface};
-        const A: Surface = Surface::Atlas(0);
-        const B: Surface = Surface::Atlas(1);
-        const C: Surface = Surface::Atlas(2);
-        const D: Surface = Surface::Atlas(3);
-        const M: Surface = Surface::Atlas(4);
-        let mut stages = vec![
-            Stage::new(stage::BLUR, A, Surface::Acc, crops).cleared(),
-            Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 1, shade: true, maskmix: true, ..Default::default() }), C, A, sharp).with_fields(sharp_f),
-            Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 1, ..Default::default() }), B, A, warp).with_fields(warp_f),
-            Stage::new(stage::BLUR, D, B, blur_h).cleared(),
-            Stage::new(stage::BLUR, B, D, blur_v).cleared(),
-            Stage::new(crate::vello::batch::arm_tag(crate::vello::units::UnitKey { head: 2, shade: true, maskmix: true, two_tex: true, ..Default::default() }), C, B, frost).with_src2(A).with_fields(frost_f),
-            Stage::new(
-                crate::vello::batch::arm_tag(crate::vello::batch::pw_key(crate::vello::batch::pointwise::TINT)),
-                Surface::Acc,
-                C,
-                stamp,
-            )
-            .with_fields(vec![FieldUniform { u: no_tint }])
-            .composited(),
-        ];
-        // k<1 cells composite through the Catmull-Rom SHARP arm instead of the plain Tint copy — the
-        // batched twin of blit_sharp. A separate stage because it is a different arm; it reads the
-        // same finished-lens atlas (C) and upscales each reduced cell to its device box.
-        if !sharp_stamp.is_empty() {
-            stages.push(Stage::new(stage::SHARP, Surface::Acc, C, sharp_stamp).composited());
-        }
-        // Blur gathers fill D separably (crop A → blur H C → blur V D). Custom gathers fill their own
-        // D cells per-cell BELOW (their user pipeline can't share the atlas crop). Both then flow
-        // through ONE masked composite reading D, split by k into MASKED / SHARP_MASKED.
-        if !gblur_h.is_empty() {
-            stages.push(Stage::new(stage::BLUR, C, A, gblur_h).cleared());
-            stages.push(Stage::new(stage::BLUR, D, C, gblur_v).cleared());
-        }
-        // FILL pass — the blur-gather stages + everything glass, run before the per-cell customs so
-        // their D cells are not clobbered by the (cleared) blur-V stage.
-        {
-            let pipes = self.batch_pipes.as_ref().expect("batch pipelines present");
-            let sampler = self.compositor.sampler();
-            let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view, &atlas.m_view];
-            for st in &stages {
-                pipes.run_stage(device, enc, st, acc_view, &views, sampler);
-            }
-        }
-        // Each custom gather: crop its backdrop box, run its user pipeline over it (per-cell — the
-        // shader samples its whole input), and blit the result into this cell's D slot, where the
-        // shared masked composite picks it up exactly like a blurred one.
-        for cc in &customs {
-            let (kw, kh) = (cc.cell.2 as u32, cc.cell.3 as u32);
-            let input = self.pool.acquire_target(
-                device, kw, kh, format,
-                self.raster_usage | wgpu::TextureUsages::TEXTURE_BINDING,
-                "wv gather custom input",
-            );
-            let input_view = input.create_view(&wgpu::TextureViewDescriptor::default());
-            self.compositor.blit(device, enc, &input_view, (kw as f32, kh as f32), &Blit {
-                src: acc_view, dst: (0.0, 0.0, kw as f32, kh as f32), src_rect: cc.geom.dev, src_size: sz, alpha: 1.0,
-            });
-            let passes = self.wv_gather_graph(
-                cc.key.0, kw, kh, f64::from(cc.geom.dev.0), f64::from(cc.geom.dev.1), full_view, f64::from(cc.geom.k), device, format,
-            );
-            let Some(passes) = passes else { continue };
-            let Some((rtex, rview)) = self.wv_run_chain(device, enc, &[&input_view], &passes, kw, kh, format) else {
-                continue;
-            };
-            self.compositor.blit(device, enc, &atlas.d_view, asz, &Blit {
-                src: &rview, dst: (cc.cell.0, cc.cell.1, kw as f32, kh as f32),
-                src_rect: (0.0, 0.0, kw as f32, kh as f32), src_size: (kw as f32, kh as f32), alpha: 1.0,
-            });
-            self.frame_transient.push(input);
-            self.frame_transient_views.push(input_view);
-            self.frame_transient.push(rtex);
-            self.frame_transient_views.push(rview);
-        }
-        // COMPOSITE pass — every gather (blur + custom) reads its finished D cell and composites
-        // through the mask atlas. `MASKED` at native scale, `SHARP_MASKED` for k<1.
-        if !gmasked.is_empty() || !gsharp_masked.is_empty() {
-            let mut comp: Vec<Stage> = Vec::new();
-            if !gmasked.is_empty() {
-                comp.push(Stage::new(stage::MASKED, Surface::Acc, D, gmasked).with_src2(M).composited());
-            }
-            if !gsharp_masked.is_empty() {
-                comp.push(Stage::new(stage::SHARP_MASKED, Surface::Acc, D, gsharp_masked).with_src2(M).composited());
-            }
-            let pipes = self.batch_pipes.as_ref().expect("batch pipelines present");
-            let sampler = self.compositor.sampler();
-            let views = [&atlas.a_view, &atlas.b_view, &atlas.c_view, &atlas.d_view, &atlas.m_view];
-            for st in &comp {
-                pipes.run_stage(device, enc, st, acc_view, &views, sampler);
-            }
-        }
-        let _ = format;
-    }
 
     /// Run a gather's effect graph over the whole-viewport backdrop (`acc`) and stamp the result back
     /// onto `acc` through the shape's silhouette — the whole-viewport counterpart of the tiled
