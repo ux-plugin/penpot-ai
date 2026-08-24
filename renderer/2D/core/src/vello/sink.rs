@@ -829,6 +829,18 @@ fn wv_blur_fine() -> bool {
     false
 }
 
+/// A FROSTED glass lens (`total_blur_sigma > 0.5`) routed through fine as a chained gather —
+/// warp → blur H/V → scatter → shade+maskmix, materialising intermediates across a reserved 5-round
+/// block. Default OFF (`WV_FROST_FINE=1`) while it matures; sharp glass rides `WV_GLASS_FINE` alone.
+fn wv_frost_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_FROST_FINE").is_ok_and(|v| v == "1");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// Sibling for a path/text drop + inner SHADOW: blurs the offset silhouette through the fine draft blur
 /// (a mini phased session in the shadow pre-pass) instead of the `run_chain` Gaussian. DEFAULT ON as of
 /// the effects-in-fine collapse (D); `WV_SHADOW_FINE=0` forces the batched/graph shadow oracle.
@@ -1686,11 +1698,31 @@ impl Sink {
         } else {
             vec![false; gathers.len()]
         };
-        let rounds: Vec<u32> = rounds
-            .iter()
-            .zip(&blur_gather)
-            .map(|(&r, &b)| if b { (2 * r).saturating_sub(1) } else { 2 * r })
-            .collect();
+        // A FROSTED lens is a five-link chain (warp → blur H → blur V → scatter → tail) that
+        // materialises intermediates, so it reserves a 5-round BLOCK — its markers land at the block's
+        // consecutive rounds and each is dispatched to the right scratch surface below.
+        let frost_gather: Vec<bool> = if wv_frost_fine() {
+            gathers
+                .iter()
+                .map(|&(_, gid, kind)| kind != FX_STACK && self.wv_frost_passes(gid, full_view, width, height).is_some())
+                .collect()
+        } else {
+            vec![false; gathers.len()]
+        };
+        let any_frost = frost_gather.iter().any(|&f| f);
+        let rounds: Vec<u32> = if any_frost {
+            // Pack each base round into a contiguous 5-round block starting at round 1 (right after the
+            // strip window, which seeds `window_lo = 1` — a pre-gap would break the window tracking the
+            // frost routing keys on). Block for base r = [1 + 5(r-1) .. +4]; reach-disjoint gathers share
+            // one block (their scratch writes land in disjoint regions).
+            rounds.iter().map(|&r| 1 + 5 * r.saturating_sub(1)).collect()
+        } else {
+            rounds
+                .iter()
+                .zip(&blur_gather)
+                .map(|(&r, &b)| if b { (2 * r).saturating_sub(1) } else { 2 * r })
+                .collect()
+        };
         let mut max_round = rounds.iter().copied().max().unwrap_or(0);
         let batch_plan = strip.as_ref().and_then(|(packing, cells)| {
             wv_batch_plan(&gathers, &rounds, packing, cells, strip_y, (width as f32, acc_h as f32))
@@ -1710,7 +1742,7 @@ impl Sink {
         // backdrop materialises (so `base_in` holds it) — hence `max_round >= its round + 1` — and its
         // device-space lens uniform, keyed by gid. Excluded from `wv_lens_plan` below so it renders
         // once, and it forces the ping-pong path (`base_in` is unbound in the rw accumulator).
-        let fx_fine: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_glass_fine() || wv_blur_fine() {
+        let fx_fine: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_glass_fine() || wv_blur_fine() || wv_frost_fine() {
             gathers
                 .iter()
                 .enumerate()
@@ -1889,13 +1921,13 @@ impl Sink {
                 b.push(backend.draw_object_count(&scene));
                 mb.push(z);
                 if let Some(markers) = fx_markers.get(&gid) {
-                    // A separable blur is two markers (H then V). The H pass writes the draft and must
-                    // cover the REACH so the V pass's taps land on H-blurred pixels; the V pass keeps
-                    // the silhouette for its masked composite.
-                    let is_blur = markers.len() == 2;
+                    // Every MATERIALIZE link of a chained gather (a blur's H, a frosted lens's
+                    // warp/blurH/blurV/scatter) writes an UNMASKED scratch that a later link samples over
+                    // the REACH, so it needs the dilated reach-rect coverage; only the LAST marker (the
+                    // blur's V, the lens's tail) keeps the silhouette for its masked composite.
                     for (mi, &(mround, moff)) in markers.iter().enumerate() {
                         z += 1;
-                        let eid = if is_blur && mi == 0 { FX_TINT_DILATED_ID } else { FX_TINT_ID };
+                        let eid = if mi < markers.len() - 1 { FX_TINT_DILATED_ID } else { FX_TINT_ID };
                         backend.draw_effect_marker(&mut scene, root, gid, eid, z, mround, moff, reaches[_j]);
                     }
                 } else {
@@ -1970,6 +2002,24 @@ impl Sink {
         // its H up at `round - 1`. Held for the whole loop, released to the frame-transient list after.
         let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
         let mut draft_views: std::collections::HashMap<u32, wgpu::TextureView> = std::collections::HashMap::new();
+
+        // A FROSTED lens is a five-link chain over a reserved 5-round block: warp (stage 0) → blur H (1)
+        // → blur V (2) → scatter (3) → tail shade+maskmix (4). `frost_stage` names each round's link;
+        // the four intermediate links write to a private set of scratch surfaces (one texture per link
+        // so no in-block surface is both read and written — the same-texture hazard the blur draft
+        // taught), keyed by the block's start round and shared by every reach-disjoint lens in it.
+        let mut frost_stage: std::collections::HashMap<u32, u8> = std::collections::HashMap::new();
+        if any_frost {
+            for (j, &f) in frost_gather.iter().enumerate() {
+                if f {
+                    for p in 0..5u32 {
+                        frost_stage.insert(rounds[j] + p, p as u8);
+                    }
+                }
+            }
+        }
+        let mut frost_texs: Vec<wgpu::Texture> = Vec::new();
+        let mut frost_scratch: std::collections::HashMap<u32, [wgpu::TextureView; 4]> = std::collections::HashMap::new();
 
         for (_, (tex, _)) in std::mem::take(&mut self.wv_atlas) {
             self.pool.release(tex);
@@ -2101,6 +2151,37 @@ impl Sink {
                         draft_views.insert(window_lo, dv);
                         draft_texs.push(dt);
                     }
+                } else if let Some(&stage) = frost_stage.get(&window_lo) {
+                    // A frosted lens chain link. Every link reads the accumulator (`views[c]`, the
+                    // backdrop) as `base`. Stages 0..3 write to a private scratch and DON'T advance the
+                    // ping-pong (the backdrop must survive for the warp displacement and the tail's
+                    // maskmix orig); the tail (stage 4) composites masked into the next slot.
+                    let c = cur.expect("a frost chain has a backdrop to read");
+                    let block = window_lo - u32::from(stage);
+                    if stage == 0 {
+                        let mut mk = |label| {
+                            let t = self.pool.acquire_target(device, width, acc_h, format, phase_usage, label);
+                            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+                            frost_texs.push(t);
+                            v
+                        };
+                        frost_scratch.insert(
+                            block,
+                            [mk("wv frost warp"), mk("wv frost blurH"), mk("wv frost blurV"), mk("wv frost scatter")],
+                        );
+                    }
+                    let sc = frost_scratch.get(&block).expect("frost scratch allocated at stage 0");
+                    match stage {
+                        0 => backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), &sc[0]),
+                        1 => backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[0], &sc[1]),
+                        2 => backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], &sc[1], &sc[2]),
+                        3 => backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[2], &sc[3]),
+                        _ => {
+                            let out = 1 - c;
+                            backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[3], &views[out]);
+                            cur = Some(out);
+                        }
+                    }
                 } else {
                     let out = cur.map_or(0, |c| 1 - c);
                     let base = cur.map(|c| &views[c]);
@@ -2226,6 +2307,11 @@ impl Sink {
         // frame-transient list so they return to the pool after the frame, not at a per-node recycle.
         self.frame_transient.extend(draft_texs);
         self.frame_transient_views.extend(draft_views.into_values());
+        // Frosted-lens scratch surfaces lived across the block; return them with the frame.
+        self.frame_transient.extend(frost_texs);
+        for sc in frost_scratch.into_values() {
+            self.frame_transient_views.extend(sc);
+        }
         // Same rule as the batch atlases: held outside `frame_transient` for the whole round loop
         // (the per-node recycle point truncates that list), returned to the pool once it ends.
         if let Some(atlas) = lens_atlas {
@@ -5383,8 +5469,10 @@ impl Sink {
     /// the live scene and lowers the neutral graph (no custom pass, so no pipeline to resolve). Lens
     /// geometry is the shape's rounded box (axis-aligned; rotation is a gap); the composite's own SDF
     /// mask does the clip, so no silhouette mask is needed.
-    fn lens_graph(&self, id: u128, bw: u32, bh: u32, bdx: f64, bdy: f64, full_view: Affine, k: f64) -> Option<Vec<Pass>> {
-        let (g, geom) = crate::vello::abi::with_scene(|live, _, modifiers| {
+    /// The glass params and its device-independent [`LensGeometry`] for `id`, shared by the batched
+    /// lens graph and the effects-in-fine frosted chain.
+    fn lens_geom(&self, id: u128) -> Option<(crate::model::Glass, LensGeometry)> {
+        crate::vello::abi::with_scene(|live, _, modifiers| {
             live.get(id).and_then(|n| {
                 n.glass.map(|g| {
                     let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
@@ -5401,7 +5489,11 @@ impl Sink {
                     (g, geom)
                 })
             })
-        })?;
+        })
+    }
+
+    fn lens_graph(&self, id: u128, bw: u32, bh: u32, bdx: f64, bdy: f64, full_view: Affine, k: f64) -> Option<Vec<Pass>> {
+        let (g, geom) = self.lens_geom(id)?;
         let graph = effect_graph::lens_graph_scaled(&g, geom, (bw, bh), (bdx, bdy), full_view, k);
         Some(lower_graph(&graph, None))
     }
@@ -5429,6 +5521,64 @@ impl Sink {
         }
     }
 
+    /// The effects-in-fine chain for a FROSTED lens (`total_blur_sigma > 0.5`): five markers —
+    /// warp → blur H → blur V → scatter → tail (shade+maskmix) — each a 26-float descriptor, run one
+    /// per round of a reserved 5-round block. `None` for a sharp lens (handled by
+    /// [`Self::wv_lens_fine_uniform`]) or a non-glass gather.
+    ///
+    /// The four field units (warp/scatter/shade/maskmix) share ONE merged 24-float lens uniform — each
+    /// fine arm reads only its own slots (warp's chromatic aberration, scatter's frost, shade's
+    /// specular), so `units_uniform`'s first-non-zero merge is exactly the union. The two blur markers
+    /// instead carry their axis + device sigma in `u[0]` and blur in sRGB (bit 1024), matching the
+    /// batched lens `Blur { linear: false }`. The intermediate links set MATERIALIZE (512) so they write
+    /// their scratch UNMASKED; the tail composites masked (`area[i]`).
+    fn wv_frost_passes(&self, gid: u128, full_view: Affine, w: u32, h: u32) -> Option<Vec<[f32; 26]>> {
+        use crate::effect_graph::EffectPass;
+        let (g, geom) = self.lens_geom(gid)?;
+        let zoom = {
+            let c = full_view.as_coeffs();
+            (c[0] * c[0] + c[1] * c[1]).sqrt()
+        };
+        let sigma = g.total_blur_sigma() * zoom as f32;
+        if sigma <= 0.5 {
+            return None;
+        }
+        // Device-scale (k = 1) lens graph; merge the field units' uniforms first-non-zero per slot.
+        let graph = crate::effect_graph::lens_graph(&g, geom, (w, h), (0.0, 0.0), full_view, 1.0);
+        let mut u = [0.0f32; 24];
+        for p in &graph {
+            if let EffectPass::Unit { u: pu, .. } = &p.pass {
+                for (i, v) in pu.iter().enumerate().take(24) {
+                    if u[i] == 0.0 {
+                        u[i] = *v;
+                    }
+                }
+            }
+        }
+        let lens = |bits: f32| {
+            let mut d = [0.0f32; 26];
+            d[0] = bits;
+            d[1] = 1.0; // program = lens
+            d[2..26].copy_from_slice(&u);
+            d
+        };
+        let blur = |ax: f32, ay: f32| {
+            let mut d = [0.0f32; 26];
+            d[0] = 64.0 + 512.0 + 1024.0; // BLUR | MATERIALIZE | sRGB
+            d[2] = ax; // u[0].x = axis.x
+            d[3] = ay; // u[0].y = axis.y
+            d[4] = sigma; // u[0].z = device sigma
+            d
+        };
+        Some(vec![
+            lens(32.0 + 512.0),   // warp → scratchA (materialize)
+            blur(1.0, 0.0),       // blur H (input = warp) → scratchB
+            blur(0.0, 1.0),       // blur V (draft = H) → scratchC
+            lens(256.0 + 512.0),  // scatter (input = blurred) → scratchA
+            lens(8.0 + 16.0),     // tail: shade | maskmix (input = scattered) → accumulator
+        ])
+    }
+
     /// The effects-in-fine PASSES for a gather that rides fine, each a full 26-float descriptor
     /// `[bits, program, 6×vec4 u]`; `None` if it does not ride fine. One pass per marker the planner
     /// emits, in round order: a sharp glass → one WARP|SHADE|MASKMIX pass over the lens field (program
@@ -5442,6 +5592,13 @@ impl Sink {
                 d[1] = 1.0; // program = lens
                 d[2..26].copy_from_slice(&u);
                 return Some(vec![d]);
+            }
+        }
+        // A frosted lens is not a single fused marker (`wv_lens_fine_uniform` returns None) — it rides
+        // fine as the five-marker chained gather when `WV_FROST_FINE` is on.
+        if wv_frost_fine() {
+            if let Some(chain) = self.wv_frost_passes(gid, full_view, w, h) {
+                return Some(chain);
             }
         }
         if wv_blur_fine() {
