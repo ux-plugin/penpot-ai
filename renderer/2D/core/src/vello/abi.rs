@@ -2294,6 +2294,13 @@ pub extern "C" fn load_field_shade_grid_scene(n: u32) -> u32 {
     install_fixture(crate::parity::build_field_shade_grid_scene(n as usize))
 }
 
+/// Install the **whole-viewport blur** ([`crate::parity::build_vpblur_scene`]) — a grid backdrop under
+/// one full-viewport `background_blur`, for the BLUR-as-a-fine-arm path (`WV_BLUR_FINE=1`).
+#[unsafe(no_mangle)]
+pub extern "C" fn load_vpblur_scene(n: u32, radius: f32) -> u32 {
+    install_fixture(crate::parity::build_vpblur_scene(n as usize, radius))
+}
+
 /// [`load_glass_grid_scene`] with each lens's `acceptable_downscale` forced to `downscale_milli/1000`
 /// — the k-triggering fixture for the batch's scaled-stamp (`stage::SHARP`) path. A value below 1000
 /// makes every lens render at a reduced `k` and be upscaled, which the un-scaled grid never exercises.

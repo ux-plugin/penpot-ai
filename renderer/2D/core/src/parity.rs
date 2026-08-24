@@ -1680,6 +1680,34 @@ pub fn build_field_shade_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static st
     b.finish()
 }
 
+/// A grid backdrop with ONE full-viewport `background_blur` shape on top — the clean, unmasked case for
+/// testing the BLUR-as-a-fine-arm path (`WV_BLUR_FINE=1`): the whole backdrop is Gaussian-blurred by a
+/// fine BLUR arm, no atlas cell or mask involved.
+pub fn build_vpblur_scene(n: usize, radius: f32) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    for _ in 0..(cols * rows) {
+        b.advance("vp blur");
+    }
+    let (cw, ch) = canvas_size(cols * rows);
+    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
+    for i in 0..(n * 4) {
+        let (gx, gy) = ((i % (cols * 2)) as f64, (i / (cols * 2)) as f64);
+        let mut node = Node::new(b.id(), ShapeKind::Rect);
+        let (x, y) = (gx * pitch_x * 0.5, gy * pitch_y * 0.5);
+        node.bounds = Rect::new(x, y, x + pitch_x * 0.5, y + pitch_y * 0.5);
+        let hue = (i * 37 % 255) as u8;
+        node.fills = vec![Paint::plain(Brush::Solid(col(40 + hue / 2, 200 - hue / 3, 120 + hue / 4)))];
+        b.root(node);
+    }
+    let mut blur = Node::new(b.id(), ShapeKind::Rect);
+    blur.bounds = Rect::new(0.0, 0.0, f64::from(cw), f64::from(ch));
+    blur.background_blur = Some(radius);
+    b.root(blur);
+    b.finish()
+}
+
 pub fn build_glass_grid_scene(n: usize, frost: bool, downscale: f32) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;

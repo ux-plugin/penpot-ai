@@ -811,6 +811,18 @@ fn wv_glass_fine() -> bool {
     false
 }
 
+/// Sibling of [`wv_glass_fine`] for a background BLUR: `WV_BLUR_FINE=1` routes it through fine as a
+/// BLUR arm (a Gaussian tap loop over `base_in`) instead of the dedicated `blur_px` pipeline — testing
+/// "the blur is just another fine arm" end to end.
+fn wv_blur_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_BLUR_FINE").is_ok_and(|v| v == "1");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// The four surfaces the batched lens stages ping-pong through, all packed with the same cell
 /// layout: `a` the cropped backdrops (kept — the mask-mix reads it as the original), `b` the warp
 /// then the blurred warp, `d` the horizontal-blur scratch, `c` the finished lenses awaiting the
@@ -1649,15 +1661,15 @@ impl Sink {
         // backdrop materialises (so `base_in` holds it) — hence `max_round >= its round + 1` — and its
         // device-space lens uniform, keyed by gid. Excluded from `wv_lens_plan` below so it renders
         // once, and it forces the ping-pong path (`base_in` is unbound in the rw accumulator).
-        let glass_fine: std::collections::HashMap<u128, [f32; 24]> = if wv_glass_fine() {
+        let fx_fine: std::collections::HashMap<u128, [f32; 26]> = if wv_glass_fine() || wv_blur_fine() {
             gathers
                 .iter()
                 .enumerate()
                 .filter(|(_, g)| g.2 != FX_STACK)
                 .filter_map(|(j, &(_, gid, _))| {
-                    self.wv_lens_fine_uniform(gid, full_view, width, height).map(|u| {
+                    self.wv_fine_descriptor(gid, full_view, width, height).map(|d| {
                         max_round = max_round.max(rounds[j] + 1);
-                        (gid, u)
+                        (gid, d)
                     })
                 })
                 .collect()
@@ -1672,7 +1684,7 @@ impl Sink {
         let (lens_gathers, lens_rounds): (Vec<(usize, u128, u8)>, Vec<u32>) = gathers
             .iter()
             .zip(rounds.iter())
-            .filter(|(g, _)| !glass_fine.contains_key(&g.1))
+            .filter(|(g, _)| !fx_fine.contains_key(&g.1))
             .map(|(&g, &r)| (g, r))
             .unzip();
         let lens_plan = self
@@ -1745,16 +1757,12 @@ impl Sink {
             if kind == FX_STACK {
                 continue;
             }
-            // A sharp glass routed through fine: WARP(32)|SHADE(8)|MASKMIX(16), lens field program 1,
-            // device-space uniform. The interpreter samples base_in at the field displacement.
-            if let Some(u) = glass_fine.get(&gid) {
+            // A gather routed through fine (glass WARP or background BLUR): its full descriptor is
+            // prebuilt in fx_fine. The interpreter reads bits/program and samples base_in accordingly.
+            if let Some(d) = fx_fine.get(&gid) {
                 let off = fx_params.len() as u32;
                 fx_offset.insert(gid, off);
-                let mut d = [0.0f32; 26];
-                d[0] = 56.0; // bits = SHADE(8) | MASKMIX(16) | WARP(32)
-                d[1] = 1.0; // program = lens (fx_computeField_lens)
-                d[2..26].copy_from_slice(u);
-                fx_params.extend_from_slice(&d);
+                fx_params.extend_from_slice(d);
                 continue;
             }
             // Descriptor layout: [bits, program, then 6×vec4 uniform] = 26 floats.
@@ -1853,7 +1861,7 @@ impl Sink {
         // read-only backdrop to sample cross-tile without racing. So force ping-pong when one rides.
         let rw = backend.rw_accumulator()
             && format == wgpu::TextureFormat::Rgba8Unorm
-            && glass_fine.is_empty();
+            && fx_fine.is_empty();
         let n_slots: usize = if rw { 1 } else { 2 };
         let texs: Vec<wgpu::Texture> = (0..n_slots)
             .map(|_| self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv phase"))
@@ -1891,7 +1899,7 @@ impl Sink {
                     rounds[j] >= lo && (hi == crate::vello::rasterize::SEG_ALL || rounds[j] < hi);
                 // An inline WARP marker IS work in its reload window even with no scene draw after it:
                 // it composites the lens over base_in. So a glass-fine gather opens its window itself.
-                let warp_here = in_window && glass_fine.contains_key(&gathers[j].1);
+                let warp_here = in_window && fx_fine.contains_key(&gathers[j].1);
                 (in_window && draws_after(j) > 0) || warp_here
             })
         };
@@ -5169,6 +5177,33 @@ impl Sink {
             }
             _ => None,
         }
+    }
+
+    /// The full 26-float effects-in-fine descriptor `[bits, program, 6×vec4 u]` for a gather that rides
+    /// fine, or `None` if it does not. A sharp glass → WARP|SHADE|MASKMIX over the lens field (program
+    /// 1). A background blur → a single-pass 2D BLUR arm (`u[0].xy = (0,0)`, `u[0].z = device sigma`).
+    /// Gated per effect kind by `WV_GLASS_FINE` / `WV_BLUR_FINE`.
+    fn wv_fine_descriptor(&self, gid: u128, full_view: Affine, w: u32, h: u32) -> Option<[f32; 26]> {
+        if wv_glass_fine() {
+            if let Some(u) = self.wv_lens_fine_uniform(gid, full_view, w, h) {
+                let mut d = [0.0f32; 26];
+                d[0] = 56.0; // bits = SHADE(8) | MASKMIX(16) | WARP(32)
+                d[1] = 1.0; // program = lens
+                d[2..26].copy_from_slice(&u);
+                return Some(d);
+            }
+        }
+        if wv_blur_fine() {
+            let has_blur =
+                crate::vello::abi::with_scene(|live, _, _| live.get(gid).and_then(|n| n.background_blur)).is_some();
+            if has_blur {
+                let mut d = [0.0f32; 26];
+                d[0] = 64.0; // bits = BLUR
+                d[4] = self.gather_sigma(gid, full_view, 1.0); // u[0].z = device sigma; u[0].xy = (0,0) → 2D
+                return Some(d);
+            }
+        }
+        None
     }
 
     /// Build the custom-shader graph: one custom pass over the assembled backdrop (input 0). The
