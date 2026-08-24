@@ -197,6 +197,25 @@ pub trait RasterBackend {
         unimplemented!("phased session is classic-only")
     }
 
+    /// Dispatch the `fine_area_load_draft` permutation for one window `[seg_lo, seg_target)`: like
+    /// [`Self::phased_fine_segment`] with a base, plus a second sampled input `draft` at binding 10 —
+    /// a separable blur's V pass, sampling its blur taps from `draft` (its H pass's unmasked result)
+    /// and its margin from `base` (the original backdrop). Classic-only; default panics.
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    fn phased_fine_segment_draft(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _base: &wgpu::TextureView,
+        _draft: &wgpu::TextureView,
+        _out: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
     /// Whether this backend's device can bind `rgba8unorm` as a READ-WRITE storage texture — the
     /// single-accumulator fast path ([`Self::phased_fine_segment_rw`]). Default false: the driver
     /// keeps the two-texture ping-pong.

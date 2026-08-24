@@ -1642,6 +1642,28 @@ impl Sink {
             })
             .collect();
         let rounds = wv_rounds(&reaches, width, height);
+        // A separable blur needs TWO consecutive windows — H writes the draft, V composites — that must
+        // not collide: a round can't be one blur's V and another's H, and an H window's dispatch target
+        // is the draft, so nothing else may share it. Stretch the timeline: every effect's round
+        // doubles (2r), and each fine blur's H pass takes the dedicated ODD round just before it (2r-1).
+        // Blur-H rounds are then exclusively blur H; V and every other effect land on even rounds.
+        // Reach-disjoint parallelism is preserved (same relative order, wider gaps between rounds).
+        let blur_gather: Vec<bool> = if wv_blur_fine() {
+            gathers
+                .iter()
+                .map(|&(_, gid, kind)| {
+                    kind != FX_STACK
+                        && crate::vello::abi::with_scene(|live, _, _| live.get(gid).and_then(|n| n.background_blur)).is_some()
+                })
+                .collect()
+        } else {
+            vec![false; gathers.len()]
+        };
+        let rounds: Vec<u32> = rounds
+            .iter()
+            .zip(&blur_gather)
+            .map(|(&r, &b)| if b { (2 * r).saturating_sub(1) } else { 2 * r })
+            .collect();
         let mut max_round = rounds.iter().copied().max().unwrap_or(0);
         let batch_plan = strip.as_ref().and_then(|(packing, cells)| {
             wv_batch_plan(&gathers, &rounds, packing, cells, strip_y, (width as f32, acc_h as f32))
@@ -1888,6 +1910,25 @@ impl Sink {
         let views: Vec<wgpu::TextureView> =
             texs.iter().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default())).collect();
 
+        // A separable blur is TWO fine markers (H then V) at consecutive rounds. The H pass writes its
+        // UNMASKED result to this draft (a scratch surface, not the accumulator) so the V pass can
+        // sample the full blurred field while `base_in` still holds the original backdrop — the mask
+        // then applies exactly once, at V. `blur_round_role` names, per round, whether that round's
+        // window is a blur's H pass (draft is its `out`) or V pass (draft is its extra input). Only the
+        // ping-pong path carries base_in, so blurs already force it off the rw accumulator (fx_fine).
+        let mut blur_round_role: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
+        for (j, &(_, gid, _)) in gathers.iter().enumerate() {
+            if let Some(passes) = fx_fine.get(&gid) {
+                if passes.len() == 2 && (passes[0][0] as u32) & 64u32 != 0 {
+                    blur_round_role.insert(rounds[j], false); // H
+                    blur_round_role.insert(rounds[j] + 1, true); // V
+                }
+            }
+        }
+        let draft = (!blur_round_role.is_empty())
+            .then(|| self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv blur draft"));
+        let draft_view = draft.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
+
         for (_, (tex, _)) in std::mem::take(&mut self.wv_atlas) {
             self.pool.release(tex);
         }
@@ -1954,6 +1995,19 @@ impl Sink {
                         cur = Some(0);
                     } else {
                         backend.phased_fine_segment_rw(device, queue, &mut enc, window_lo, r, &views[0]);
+                    }
+                } else if let (Some(&is_v), Some(dv)) = (blur_round_role.get(&window_lo), draft_view.as_ref()) {
+                    // A separable blur window. H: read the accumulator (backdrop), write the draft, and
+                    // DON'T advance the ping-pong — the accumulator still holds the original backdrop
+                    // the V pass needs for its margin. V: read that backdrop as base_in AND the draft as
+                    // the blur source, composite masked into the next slot.
+                    let c = cur.expect("a blur has a backdrop to read");
+                    if is_v {
+                        let out = 1 - c;
+                        backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &views[out]);
+                        cur = Some(out);
+                    } else {
+                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), dv);
                     }
                 } else {
                     let out = cur.map_or(0, |c| 1 - c);
@@ -2075,6 +2129,14 @@ impl Sink {
         if let Some((texs, atlas_views)) = batch_rt.take() {
             self.frame_transient.extend(texs);
             self.frame_transient_views.extend(atlas_views);
+        }
+        // The blur draft lived across the whole round loop (like the batch atlases); hand it to the
+        // frame-transient list so it returns to the pool after the frame, not at a per-node recycle.
+        if let Some(t) = draft {
+            self.frame_transient.push(t);
+        }
+        if let Some(v) = draft_view {
+            self.frame_transient_views.push(v);
         }
         // Same rule as the batch atlases: held outside `frame_transient` for the whole round loop
         // (the per-node recycle point truncates that list), returned to the pool once it ends.
@@ -5225,14 +5287,20 @@ impl Sink {
                 crate::vello::abi::with_scene(|live, _, _| live.get(gid).and_then(|n| n.background_blur)).is_some();
             if has_blur {
                 let sigma = self.gather_sigma(gid, full_view, 1.0);
-                // ONE marker: a 2D Gaussian gather of `base_in`, composited masked once by the shape's
-                // coverage. Correct for any silhouette (a masked blur is not a special case). A separable
-                // H+V pair would be O(r) but needs a private scratch for the unmasked first pass; that is
-                // a later perf layer, not a second code path.
-                let mut d = [0.0f32; 26];
-                d[0] = 64.0; // bits = BLUR
-                d[4] = sigma; // u[0].z = device sigma
-                return Some(vec![d]);
+                // SEPARABLE — two markers, O(r). The H pass (axis (1,0)) blurs `base_in` and writes its
+                // result UNMASKED to a draft (the driver points its `out` at the draft); the V pass
+                // (axis (0,1)) blurs that draft and composites masked ONCE. Splitting the mask off the
+                // first pass is what keeps a masked blur correct: an in-place separable blur clips its
+                // intermediate to the silhouette and the second pass reads holes.
+                let pass = |ax: f32, ay: f32| {
+                    let mut d = [0.0f32; 26];
+                    d[0] = 64.0; // bits = BLUR
+                    d[2] = ax; // u[0].x = axis.x
+                    d[3] = ay; // u[0].y = axis.y
+                    d[4] = sigma; // u[0].z = device sigma
+                    d
+                };
+                return Some(vec![pass(1.0, 0.0), pass(0.0, 1.0)]);
             }
         }
         None

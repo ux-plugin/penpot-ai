@@ -913,6 +913,26 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
     }
 
+    fn phased_fine_segment_draft(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        seg_lo: u32,
+        seg_target: u32,
+        base: &wgpu::TextureView,
+        draft: &wgpu::TextureView,
+        out: &wgpu::TextureView,
+    ) {
+        let _trd = render_core::vello::prof::now();
+        let session = self.phased_session.as_mut().expect("phased_fine_segment_draft without phased_begin");
+        self.renderer
+            .inner
+            .phased_fine_segment_draft_into(session, device, queue, enc, seg_lo, seg_target, base, draft, out)
+            .expect("phased_fine_segment_draft_into");
+        render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
+    }
+
     fn rw_accumulator(&self) -> bool {
         wv_rw_supported()
     }
