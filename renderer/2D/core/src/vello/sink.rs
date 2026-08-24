@@ -811,7 +811,7 @@ fn wv_lens_batch() -> bool {
 fn wv_glass_fine() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_GLASS_FINE").is_ok_and(|v| v == "1");
+        return std::env::var("WV_GLASS_FINE").map_or(true, |v| v != "0");
     }
     #[cfg(target_arch = "wasm32")]
     false
@@ -835,7 +835,7 @@ fn wv_blur_fine() -> bool {
 fn wv_frost_fine() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_FROST_FINE").is_ok_and(|v| v == "1");
+        return std::env::var("WV_FROST_FINE").map_or(true, |v| v != "0");
     }
     #[cfg(target_arch = "wasm32")]
     false
@@ -1711,11 +1711,31 @@ impl Sink {
         };
         let any_frost = frost_gather.iter().any(|&f| f);
         let rounds: Vec<u32> = if any_frost {
-            // Pack each base round into a contiguous 5-round block starting at round 1 (right after the
-            // strip window, which seeds `window_lo = 1` — a pre-gap would break the window tracking the
-            // frost routing keys on). Block for base r = [1 + 5(r-1) .. +4]; reach-disjoint gathers share
-            // one block (their scratch writes land in disjoint regions).
-            rounds.iter().map(|&r| 1 + 5 * r.saturating_sub(1)).collect()
+            // With a frosted chain in play the timeline is laid out in CONTIGUOUS blocks, grouped by the
+            // reach round (z-order) and, within each, by kind — frost (5 rounds) then blur (2) then the
+            // rest (1). Two rules drive it: (a) different-KIND links write different scratch targets, so
+            // they must not share a round; (b) the window tracking the routing keys on breaks on a GAP,
+            // so blocks pack with no empty rounds between them. Reach-disjoint gathers of the SAME kind
+            // and reach round share one block (their scratch writes land in disjoint regions).
+            let base = rounds.clone();
+            let max_base = base.iter().copied().max().unwrap_or(0);
+            let mut out = vec![0u32; gathers.len()];
+            let mut cursor = 1u32;
+            let mut lay = |out: &mut Vec<u32>, cursor: &mut u32, pick: &dyn Fn(usize) -> bool, span: u32| {
+                let group: Vec<usize> = (0..gathers.len()).filter(|&j| pick(j)).collect();
+                if !group.is_empty() {
+                    for &j in &group {
+                        out[j] = *cursor;
+                    }
+                    *cursor += span;
+                }
+            };
+            for br in 0..=max_base {
+                lay(&mut out, &mut cursor, &|j| base[j] == br && frost_gather[j], 5);
+                lay(&mut out, &mut cursor, &|j| base[j] == br && blur_gather[j] && !frost_gather[j], 2);
+                lay(&mut out, &mut cursor, &|j| base[j] == br && !frost_gather[j] && !blur_gather[j], 1);
+            }
+            out
         } else {
             rounds
                 .iter()
