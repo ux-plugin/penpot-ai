@@ -817,25 +817,25 @@ fn wv_glass_fine() -> bool {
     false
 }
 
-/// Sibling of [`wv_glass_fine`] for a background BLUR: `WV_BLUR_FINE=1` routes it through fine as a
-/// BLUR arm (a Gaussian tap loop over `base_in`) instead of the dedicated `blur_px` pipeline — testing
-/// "the blur is just another fine arm" end to end.
+/// Sibling of [`wv_glass_fine`] for a background BLUR: routes it through fine as a BLUR arm (a
+/// separable Gaussian over `base_in` + a draft) instead of the dedicated `blur_px` pipeline. DEFAULT
+/// ON as of the effects-in-fine collapse (D); `WV_BLUR_FINE=0` forces the batched `blur_px` oracle.
 fn wv_blur_fine() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_BLUR_FINE").is_ok_and(|v| v == "1");
+        return std::env::var("WV_BLUR_FINE").map_or(true, |v| v != "0");
     }
     #[cfg(target_arch = "wasm32")]
     false
 }
 
-/// Sibling for a path/text drop SHADOW: `WV_SHADOW_FINE=1` blurs the offset silhouette through the fine
-/// draft blur (a mini phased session in the shadow pre-pass) instead of the `run_chain` Gaussian — the
-/// spread effect ("silhouette-sourced blur") riding fine, step A of the effects-in-fine collapse.
+/// Sibling for a path/text drop + inner SHADOW: blurs the offset silhouette through the fine draft blur
+/// (a mini phased session in the shadow pre-pass) instead of the `run_chain` Gaussian. DEFAULT ON as of
+/// the effects-in-fine collapse (D); `WV_SHADOW_FINE=0` forces the batched/graph shadow oracle.
 fn wv_shadow_fine() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_SHADOW_FINE").is_ok_and(|v| v == "1");
+        return std::env::var("WV_SHADOW_FINE").map_or(true, |v| v != "0");
     }
     #[cfg(target_arch = "wasm32")]
     false
