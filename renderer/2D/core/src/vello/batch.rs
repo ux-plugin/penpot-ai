@@ -73,15 +73,6 @@ pub(crate) mod stage {
     /// The separable Gaussian. Not a unit arm — its own tap loop — so it keeps a fixed tag apart
     /// from the generated arm table.
     pub const BLUR: f32 = 2.0;
-    /// The detail-preserving (Catmull-Rom) upscale of a k<1 cell — the batched twin of `blit_sharp`.
-    /// Its own tap set, like the blur, so it too sits apart from the generated arm table.
-    pub const SHARP: f32 = 3.0;
-    /// A bilinear copy times a silhouette mask (read from `tex2`) — the batched twin of `blit_masked`,
-    /// how a non-self-clipping gather composites its result through the shape's coverage.
-    pub const MASKED: f32 = 4.0;
-    /// [`SHARP`] times a silhouette mask (`tex2`) — the batched twin of `blit_masked_sharp`, for a
-    /// k<1 gather that both upscales its reduced cell and clips it to the shape.
-    pub const SHARP_MASKED: f32 = 5.0;
 }
 
 /// A pointwise composition, as the bits that pick its arm. One bit per unit that can appear in a
@@ -175,16 +166,6 @@ impl Inst {
     /// colours, and what any future unit reads its own slots out of.
     pub fn with_units(mut self, index: usize) -> Self {
         self._pad[3] = index as f32;
-        self
-    }
-
-    /// The instance tagged with its destination origin in target pixels — what the lens arms
-    /// subtract from the fragment position to get the cell-local coordinate the field is expressed
-    /// in. Integers on both sides, so the recovered coordinate is exactly the dedicated-texture
-    /// `fragCoord` the per-shape pipeline sees.
-    pub fn at(mut self, dst_rect: (f32, f32, f32, f32)) -> Self {
-        self._pad[1] = dst_rect.0;
-        self._pad[2] = dst_rect.1;
         self
     }
 
@@ -765,19 +746,9 @@ impl BatchPipelines {
         key
     }
 
-    fn bind(
-        &self,
-        device: &wgpu::Device,
-        buffer: &wgpu::Buffer,
-        src: &wgpu::TextureView,
-        src2: &wgpu::TextureView,
-        sampler: &wgpu::Sampler,
-    ) -> wgpu::BindGroup {
-        self.bind_fields(device, buffer, src, src2, sampler, &self.no_fields)
-    }
-
-    /// [`Self::bind`] with an explicit field buffer — the lens stages' per-cell parameters. Every
-    /// other stage binds the one-element placeholder, since the layout always declares binding 4.
+    /// Bind one stage's resources with an explicit field buffer — the lens stages' per-cell
+    /// parameters. Every other stage binds the one-element placeholder, since the layout always
+    /// declares binding 4.
     #[expect(clippy::too_many_arguments, reason = "one bind group, one argument per binding")]
     fn bind_fields(
         &self,
