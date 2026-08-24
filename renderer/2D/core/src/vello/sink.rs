@@ -395,11 +395,13 @@ fn wv_batch_plan(
         }
         let placed = |c: &Cell| place.contains_key(&c.key);
         let stampable = |c: &Cell| {
-            // WV_SHADOW_FINE routes drop silhouettes (kind 0) through the fine pre-pass + per-shape
-            // painter, so the batch must NOT claim them — declining here drops them to the per-shape
-            // path where `wv_paint_path_shadow` blits the fine-blurred layer.
+            // WV_SHADOW_FINE routes shadow silhouettes through the fine pre-pass + per-shape painters,
+            // so the batch must NOT claim them — declining here drops them to the per-shape path where
+            // `wv_paint_path_shadow` / `wv_paint_inner_shadow` blit the fine-blurred layer. Drops are
+            // kind 0; an inner shadow's flood (kind 2) and punch (kind 3) both decline so the whole
+            // band falls to `wv_paint_inner_shadow`.
             placed(c) && matches!(wv_batch_cell_shape(c), Some(BatchShape::Stamp { .. }))
-                && !(wv_shadow_fine() && c.key.1 == 0)
+                && !(wv_shadow_fine() && matches!(c.key.1, 0 | 2 | 3))
         };
         let mut emit: Vec<Emit> = Vec::new();
         let (mut drop_i, mut inner_i, mut body_done) = (0usize, 0usize, false);
@@ -1978,38 +1980,46 @@ impl Sink {
         }
 
         // Shadow pre-pass (`WV_SHADOW_FINE`): the fine blur is a mini phased session and the backend
-        // holds ONE session, so a drop shadow's blur cannot nest inside the frame's main phased render —
-        // it runs here, BEFORE `phased_begin`. For each stack shape's drop silhouette, rasterise it
-        // TINTED and offset (like the tiled `paint_path_shadow` oracle, not the untinted-then-tint graph
-        // the WV path used), blur it through fine, and stash the layer for `wv_paint_path_shadow` to blit
-        // under the body during the round loop. Sharp shadows (sigma < 0.5) fall through to the graph.
+        // holds ONE session, so a shadow's blur cannot nest inside the frame's main phased render — it
+        // runs here, BEFORE `phased_begin`. For each stack shape's shadow silhouette, blur it through
+        // fine and stash the layer keyed by cell for the round-loop painter to pick up. Drops (kind 0)
+        // are blitted directly by `wv_paint_path_shadow`, so bake the tint in and offset them like the
+        // tiled `paint_path_shadow` oracle; inner-shadow punches (kind 3) are the erase input to
+        // `wv_paint_inner_shadow`'s band, so leave them untinted (the flood carries the colour) and
+        // build them exactly as `wv_cell_source` would. Sharp shadows (sigma < 0.5) fall through to the
+        // graph in both painters.
         if wv_shadow_fine() {
             let stack_ids: Vec<u128> = gathers.iter().filter(|g| g.2 == FX_STACK).map(|g| g.1).collect();
             for id in stack_ids {
-                for cell in self.wv_effect_cells(id, full_view, width, height).into_iter().filter(|c| c.key.1 == 0) {
+                for cell in self.wv_effect_cells(id, full_view, width, height).into_iter().filter(|c| c.key.1 == 0 || c.key.1 == 3) {
                     let sigma = cell.geom.sigma * cell.geom.k;
                     if sigma < 0.5 || cell.kw == 0 || cell.kh == 0 {
                         continue;
                     }
-                    let (odx, ody) = match &cell.source {
-                        CellSource::Silhouette { offset } => (f64::from(offset.0), f64::from(offset.1)),
-                        CellSource::Crop { .. } => (0.0, 0.0),
+                    let sil_view = if cell.key.1 == 0 {
+                        let (odx, ody) = match &cell.source {
+                            CellSource::Silhouette { offset } => (f64::from(offset.0), f64::from(offset.1)),
+                            CellSource::Crop { .. } => (0.0, 0.0),
+                        };
+                        let m = Affine::scale(f64::from(cell.geom.k))
+                            * Affine::translate((odx - f64::from(cell.geom.bx()), ody - f64::from(cell.geom.by())))
+                            * root;
+                        let sil = self.pool.acquire_target(device, cell.kw, cell.kh, format, self.raster_usage, "wv shadow sil tinted");
+                        let sil_view = sil.create_view(&wgpu::TextureViewDescriptor::default());
+                        let mut sscene = backend.new_scene(cell.kw as u16, cell.kh as u16);
+                        backend.build_shadow_silhouette(&mut sscene, m, cell.key.0, cell.key.2, false, true, true);
+                        backend.rasterize(&sscene, device, queue, &mut enc, &sil_view, cell.kw, cell.kh, TRANSPARENT);
+                        self.frame_transient.push(sil);
+                        self.frame_transient_views.push(sil_view.clone());
+                        sil_view
+                    } else {
+                        self.wv_cell_source(&cell, backend, device, queue, &mut enc, root, 0, format)
                     };
-                    let m = Affine::scale(f64::from(cell.geom.k))
-                        * Affine::translate((odx - f64::from(cell.geom.bx()), ody - f64::from(cell.geom.by())))
-                        * root;
-                    let sil = self.pool.acquire_target(device, cell.kw, cell.kh, format, self.raster_usage, "wv shadow sil tinted");
-                    let sil_view = sil.create_view(&wgpu::TextureViewDescriptor::default());
-                    let mut sscene = backend.new_scene(cell.kw as u16, cell.kh as u16);
-                    backend.build_shadow_silhouette(&mut sscene, m, cell.key.0, cell.key.2, false, true, true);
-                    backend.rasterize(&sscene, device, queue, &mut enc, &sil_view, cell.kw, cell.kh, TRANSPARENT);
                     let blurred = self.wv_blur_texture_fine(backend, device, queue, &mut enc, &sil_view, cell.kw, cell.kh, sigma, format);
                     if let Some((tex, view)) = blurred {
                         self.frame_transient.push(tex);
                         self.shadow_fine.insert(cell.key, view);
                     }
-                    self.frame_transient.push(sil);
-                    self.frame_transient_views.push(sil_view);
                 }
             }
         }
@@ -3608,17 +3618,23 @@ impl Sink {
     ) {
         let Some(colour) = wv_cell_tint(&flood) else { return };
         let flood_view = self.wv_cell_source(&flood, backend, device, queue, enc, root, 0, format);
-        let punch_view = self.wv_cell_source(&punch, backend, device, queue, enc, root, 0, format);
+        // Blurred through fine in the pre-pass? Take that layer as the (already-blurred) punch input
+        // and drop the graph Blur pass; otherwise rasterise the punch and let the graph blur it.
+        let fine_punch = self.shadow_fine.get(&punch.key).cloned();
+        let punch_view = match &fine_punch {
+            Some(view) => view.clone(),
+            None => self.wv_cell_source(&punch, backend, device, queue, enc, root, 0, format),
+        };
         // The band: the flood silhouette coloured, with its offset+blurred punch erased out. The
         // punch is a second input, blurred only when the erase declares a radius.
         let (w, h, sig) = (flood.kw as f32, flood.kh as f32, flood.geom.sigma * flood.geom.k);
         use crate::effect_graph::{tint_unit, unit_pass, EffectPass, GraphPass, Src, UnitKind};
         let mut graph = Vec::new();
-        let punch = if sig > 0.5 {
+        let punch = if fine_punch.is_some() || sig <= 0.5 {
+            Src::Input(1)
+        } else {
             graph.push(GraphPass::new(EffectPass::Blur { sigma: sig, linear: true }, vec![Src::Input(1)]));
             Src::Pass(0)
-        } else {
-            Src::Input(1)
         };
         let band = graph.len();
         graph.push(GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)]));
