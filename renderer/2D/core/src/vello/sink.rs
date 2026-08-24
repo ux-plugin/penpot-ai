@@ -395,7 +395,11 @@ fn wv_batch_plan(
         }
         let placed = |c: &Cell| place.contains_key(&c.key);
         let stampable = |c: &Cell| {
+            // WV_SHADOW_FINE routes drop silhouettes (kind 0) through the fine pre-pass + per-shape
+            // painter, so the batch must NOT claim them — declining here drops them to the per-shape
+            // path where `wv_paint_path_shadow` blits the fine-blurred layer.
             placed(c) && matches!(wv_batch_cell_shape(c), Some(BatchShape::Stamp { .. }))
+                && !(wv_shadow_fine() && c.key.1 == 0)
         };
         let mut emit: Vec<Emit> = Vec::new();
         let (mut drop_i, mut inner_i, mut body_done) = (0usize, 0usize, false);
@@ -823,6 +827,18 @@ fn wv_blur_fine() -> bool {
     false
 }
 
+/// Sibling for a path/text drop SHADOW: `WV_SHADOW_FINE=1` blurs the offset silhouette through the fine
+/// draft blur (a mini phased session in the shadow pre-pass) instead of the `run_chain` Gaussian — the
+/// spread effect ("silhouette-sourced blur") riding fine, step A of the effects-in-fine collapse.
+fn wv_shadow_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_SHADOW_FINE").is_ok_and(|v| v == "1");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// The four surfaces the batched lens stages ping-pong through, all packed with the same cell
 /// layout: `a` the cropped backdrops (kept — the mask-mix reads it as the original), `b` the warp
 /// then the blurred warp, `d` the horizontal-blur scratch, `c` the finished lenses awaiting the
@@ -1126,6 +1142,13 @@ pub struct Sink {
     /// records into the frame encoder instead of self-submitting. Dropped (cleared) each frame.
     frame_transient_views: Vec<wgpu::TextureView>,
 
+    /// Drop-shadow silhouettes blurred through FINE this frame (`WV_SHADOW_FINE`), keyed by the cell's
+    /// `(node, kind, index)`. The fine blur is a mini phased session and the backend holds a single
+    /// session, so it cannot nest inside the frame's main phased render — the shadow pre-pass fills this
+    /// BEFORE `phased_begin`, and [`Self::wv_paint_path_shadow`] blits the layer out of it during the
+    /// round loop. Cleared each frame; the layer textures ride in `frame_transient`.
+    shadow_fine: HashMap<(u128, u8, usize), wgpu::TextureView>,
+
     /// Whole-viewport effect surfaces materialised from the strip by [`Self::wv_atlas_copy_out`]
     /// (only for shapes the batch cannot express), keyed by
     /// `(node, kind, index)` — kind `0` a drop-shadow silhouette, `1` the node's isolated body.
@@ -1194,6 +1217,7 @@ impl Sink {
             pool: TexturePool::default(),
             frame_transient: Vec::new(),
             frame_transient_views: Vec::new(),
+            shadow_fine: HashMap::new(),
             wv_atlas: HashMap::new(),
             dbg_atlas: None,
             gpu_timer: None,
@@ -1490,6 +1514,7 @@ impl Sink {
             self.pool.release(tex);
         }
         self.frame_transient_views.clear();
+        self.shadow_fine.clear();
         let full_view = crate::vello::abi::effective_view(root);
         let sz = (width as f32, height as f32);
         let sw_view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1950,6 +1975,43 @@ impl Sink {
         if passes_recorded().wrapping_sub(flush_mark) >= WV_PASS_FLUSH_BUDGET {
             Self::submit_batch(&mut enc, device, queue, backend);
             flush_mark = passes_recorded();
+        }
+
+        // Shadow pre-pass (`WV_SHADOW_FINE`): the fine blur is a mini phased session and the backend
+        // holds ONE session, so a drop shadow's blur cannot nest inside the frame's main phased render —
+        // it runs here, BEFORE `phased_begin`. For each stack shape's drop silhouette, rasterise it
+        // TINTED and offset (like the tiled `paint_path_shadow` oracle, not the untinted-then-tint graph
+        // the WV path used), blur it through fine, and stash the layer for `wv_paint_path_shadow` to blit
+        // under the body during the round loop. Sharp shadows (sigma < 0.5) fall through to the graph.
+        if wv_shadow_fine() {
+            let stack_ids: Vec<u128> = gathers.iter().filter(|g| g.2 == FX_STACK).map(|g| g.1).collect();
+            for id in stack_ids {
+                for cell in self.wv_effect_cells(id, full_view, width, height).into_iter().filter(|c| c.key.1 == 0) {
+                    let sigma = cell.geom.sigma * cell.geom.k;
+                    if sigma < 0.5 || cell.kw == 0 || cell.kh == 0 {
+                        continue;
+                    }
+                    let (odx, ody) = match &cell.source {
+                        CellSource::Silhouette { offset } => (f64::from(offset.0), f64::from(offset.1)),
+                        CellSource::Crop { .. } => (0.0, 0.0),
+                    };
+                    let m = Affine::scale(f64::from(cell.geom.k))
+                        * Affine::translate((odx - f64::from(cell.geom.bx()), ody - f64::from(cell.geom.by())))
+                        * root;
+                    let sil = self.pool.acquire_target(device, cell.kw, cell.kh, format, self.raster_usage, "wv shadow sil tinted");
+                    let sil_view = sil.create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut sscene = backend.new_scene(cell.kw as u16, cell.kh as u16);
+                    backend.build_shadow_silhouette(&mut sscene, m, cell.key.0, cell.key.2, false, true, true);
+                    backend.rasterize(&sscene, device, queue, &mut enc, &sil_view, cell.kw, cell.kh, TRANSPARENT);
+                    let blurred = self.wv_blur_texture_fine(backend, device, queue, &mut enc, &sil_view, cell.kw, cell.kh, sigma, format);
+                    if let Some((tex, view)) = blurred {
+                        self.frame_transient.push(tex);
+                        self.shadow_fine.insert(cell.key, view);
+                    }
+                    self.frame_transient.push(sil);
+                    self.frame_transient_views.push(sil_view);
+                }
+            }
         }
 
         let _tpb = crate::vello::prof::now();
@@ -3429,6 +3491,69 @@ impl Sink {
     ///
     /// Offset, colour and spread ride on the node and were applied when the silhouette was drawn, so
     /// nothing here reads the shadow list.
+    /// Blur one texture through FINE — a self-contained mini phased session (front-end once over a
+    /// two-marker full-frame BLUR), the separable draft blur applied to an arbitrary surface rather
+    /// than the frame backdrop. `src` is the (already tinted, offset) silhouette; the result is its
+    /// blurred copy, transparent out-of-bounds (base colour is TRANSPARENT so the shadow fades to
+    /// nothing at the crop edge). Runs OUTSIDE the main phased session — the backend holds a single
+    /// session — so the shadow pre-pass calls it before the frame's `phased_begin`. Returns None below
+    /// the blur threshold (the caller uses the sharp silhouette) or if the surface is degenerate.
+    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
+    fn wv_blur_texture_fine<B: RasterBackend>(
+        &mut self,
+        backend: &mut B,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        w: u32,
+        h: u32,
+        sigma: f32,
+        format: wgpu::TextureFormat,
+    ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+        if sigma < 0.5 || w == 0 || h == 0 {
+            return None;
+        }
+        // Two BLUR markers (H axis (1,0), V axis (0,1)) over the WHOLE w×h — a dilated inline id (101)
+        // rasterises the reach rect as coverage, so both passes cover every pixel (no silhouette mask;
+        // the shadow's own extent already bounds it). The descriptors are the same [f32; 26] the frame
+        // path builds: bits = BLUR(64), u[0] = (axis.x, axis.y, sigma, _).
+        let mk = |ax: f32, ay: f32| {
+            let mut d = [0.0f32; 26];
+            d[0] = 64.0;
+            d[2] = ax;
+            d[3] = ay;
+            d[4] = sigma;
+            d
+        };
+        let mut fx_params: Vec<f32> = Vec::with_capacity(52);
+        let off_h = fx_params.len() as u32;
+        fx_params.extend_from_slice(&mk(1.0, 0.0));
+        let off_v = fx_params.len() as u32;
+        fx_params.extend_from_slice(&mk(0.0, 1.0));
+        let fx_bytes: Vec<u8> = fx_params.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let reach = [0.0, 0.0, w as f32, h as f32];
+
+        let mut scene = backend.new_scene(w as u16, h as u16);
+        backend.draw_effect_marker(&mut scene, Affine::IDENTITY, 1u128, 101, 1, 1, off_h, reach);
+        backend.draw_effect_marker(&mut scene, Affine::IDENTITY, 1u128, 101, 2, 2, off_v, reach);
+        backend.phased_begin(&scene, device, queue, enc, w, h, TRANSPARENT, &fx_bytes);
+        backend.phased_frontend_full(device, queue, enc);
+
+        let draft = self.pool.acquire_target(device, w, h, format, self.raster_usage, "wv shadow draft");
+        let out = self.pool.acquire_target(device, w, h, format, self.raster_usage, "wv shadow blurred");
+        let draft_view = draft.create_view(&wgpu::TextureViewDescriptor::default());
+        let out_view = out.create_view(&wgpu::TextureViewDescriptor::default());
+        // H reads `src` → draft; V reads the draft → `out`. Windows keyed to the two marker rounds.
+        backend.phased_fine_segment(device, queue, &mut *enc, 1, 2, Some(src), &draft_view);
+        backend.phased_fine_segment_draft(device, queue, &mut *enc, 2, crate::vello::rasterize::SEG_ALL, src, &draft_view, &out_view);
+        backend.phased_finish(device, queue, enc);
+
+        self.frame_transient.push(draft);
+        self.frame_transient_views.push(draft_view);
+        Some((out, out_view))
+    }
+
     #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
     fn wv_paint_path_shadow<B: RasterBackend>(
         &mut self,
@@ -3442,6 +3567,11 @@ impl Sink {
         format: wgpu::TextureFormat,
         sz: (f32, f32),
     ) {
+        // Blurred through fine in the pre-pass? Blit that layer (empty passes = straight SrcOver blit).
+        if let Some(view) = self.shadow_fine.get(&cell.key).cloned() {
+            self.wv_effect_blit(&cell, &[&view], &[], device, enc, acc_view, format, sz);
+            return;
+        }
         let sil = self.wv_cell_source(&cell, backend, device, queue, enc, root, 0, format);
         let passes = cell.passes.clone();
         self.wv_effect_blit(&cell, &[&sil], &passes, device, enc, acc_view, format, sz);
