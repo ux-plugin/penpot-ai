@@ -798,6 +798,19 @@ fn wv_lens_batch() -> bool {
     true
 }
 
+/// Linchpin A/B gate for effects-in-fine gathers (default OFF): `WV_GLASS_FINE=1` routes a SHARP
+/// glass gather through `fine` — a WARP inline effect that samples the materialized backdrop
+/// (`base_in`) at the lens field's displacement in a reload round — instead of the batched lens
+/// stages. The batched path stays the oracle; this proves a barrier can ride `fine` at all.
+fn wv_glass_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_GLASS_FINE").is_ok_and(|v| v == "1");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// The four surfaces the batched lens stages ping-pong through, all packed with the same cell
 /// layout: `a` the cropped backdrops (kept — the mask-mix reads it as the original), `b` the warp
 /// then the blurred warp, `d` the horizontal-blur scratch, `c` the finished lenses awaiting the
@@ -1631,12 +1644,39 @@ impl Sink {
                 }
             }
         }
+        // Effects-in-fine WARP gathers (linchpin, gated `WV_GLASS_FINE=1`): a sharp glass routed
+        // through `fine` instead of the batched lens stages. Each needs a RELOAD round after its
+        // backdrop materialises (so `base_in` holds it) — hence `max_round >= its round + 1` — and its
+        // device-space lens uniform, keyed by gid. Excluded from `wv_lens_plan` below so it renders
+        // once, and it forces the ping-pong path (`base_in` is unbound in the rw accumulator).
+        let glass_fine: std::collections::HashMap<u128, [f32; 24]> = if wv_glass_fine() {
+            gathers
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.2 != FX_STACK)
+                .filter_map(|(j, &(_, gid, _))| {
+                    self.wv_lens_fine_uniform(gid, full_view, width, height).map(|u| {
+                        max_round = max_round.max(rounds[j] + 1);
+                        (gid, u)
+                    })
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
         // As many scratch atlases as the stage colouring asked for — A4's chromatic number, not a
         // pair this function decided on. Textures and their views are kept apart so the views can be
         // borrowed as a slice for the executor.
         let mut batch_rt: Option<(Vec<wgpu::Texture>, Vec<wgpu::TextureView>)> = None;
+        let (lens_gathers, lens_rounds): (Vec<(usize, u128, u8)>, Vec<u32>) = gathers
+            .iter()
+            .zip(rounds.iter())
+            .filter(|(g, _)| !glass_fine.contains_key(&g.1))
+            .map(|(&g, &r)| (g, r))
+            .unzip();
         let lens_plan = self
-            .wv_lens_plan(&gathers, &rounds, full_view, width, height, device.limits().max_texture_dimension_2d)
+            .wv_lens_plan(&lens_gathers, &lens_rounds, full_view, width, height, device.limits().max_texture_dimension_2d)
             .filter(|_| wv_lens_batch());
         let (lens_cells, lens_atlas) = match lens_plan {
             Some((packing, cells, (mw, mh))) => {
@@ -1703,6 +1743,18 @@ impl Sink {
         let mut fx_offset: HashMap<u128, u32> = HashMap::new();
         for &(_gi, gid, kind) in &gathers {
             if kind == FX_STACK {
+                continue;
+            }
+            // A sharp glass routed through fine: WARP(32)|SHADE(8)|MASKMIX(16), lens field program 1,
+            // device-space uniform. The interpreter samples base_in at the field displacement.
+            if let Some(u) = glass_fine.get(&gid) {
+                let off = fx_params.len() as u32;
+                fx_offset.insert(gid, off);
+                let mut d = [0.0f32; 26];
+                d[0] = 56.0; // bits = SHADE(8) | MASKMIX(16) | WARP(32)
+                d[1] = 1.0; // program = lens (fx_computeField_lens)
+                d[2..26].copy_from_slice(u);
+                fx_params.extend_from_slice(&d);
                 continue;
             }
             // Descriptor layout: [bits, program, then 6×vec4 uniform] = 26 floats.
@@ -1796,7 +1848,12 @@ impl Sink {
         // texture in place (untouched tiles cost nothing) and the second ping-pong slot is never
         // allocated. Same usage bits either way — the phase textures already carry storage +
         // attachment + sampling.
-        let rw = backend.rw_accumulator() && format == wgpu::TextureFormat::Rgba8Unorm;
+        // An inline WARP samples `base_in` (the prior window's output as a read-only texture) at a
+        // displaced offset — only the ping-pong path binds it; the rw accumulator has no separable
+        // read-only backdrop to sample cross-tile without racing. So force ping-pong when one rides.
+        let rw = backend.rw_accumulator()
+            && format == wgpu::TextureFormat::Rgba8Unorm
+            && glass_fine.is_empty();
         let n_slots: usize = if rw { 1 } else { 2 };
         let texs: Vec<wgpu::Texture> = (0..n_slots)
             .map(|_| self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv phase"))
@@ -1830,7 +1887,12 @@ impl Sink {
                 return real_draws > 0;
             }
             (0..gathers.len()).any(|j| {
-                rounds[j] >= lo && (hi == crate::vello::rasterize::SEG_ALL || rounds[j] < hi) && draws_after(j) > 0
+                let in_window =
+                    rounds[j] >= lo && (hi == crate::vello::rasterize::SEG_ALL || rounds[j] < hi);
+                // An inline WARP marker IS work in its reload window even with no scene draw after it:
+                // it composites the lens over base_in. So a glass-fine gather opens its window itself.
+                let warp_here = in_window && glass_fine.contains_key(&gathers[j].1);
+                (in_window && draws_after(j) > 0) || warp_here
             })
         };
         let mut window_lo = 0u32;
@@ -5084,6 +5146,29 @@ impl Sink {
         })?;
         let graph = effect_graph::lens_graph_scaled(&g, geom, (bw, bh), (bdx, bdy), full_view, k);
         Some(lower_graph(&graph, None))
+    }
+
+    /// The device-space 24-float lens field uniform for glass `gid`, for the effects-in-fine WARP path
+    /// (`fx_computeField_lens` in fine.wgsl). Built like the batched lens but at DEVICE resolution —
+    /// backdrop origin `(0,0)`, `k = 1` — so `fine` evaluates the field in global pixel coordinates and
+    /// samples `base_in` there. `None` unless the glass is SHARP (no frost/blur): a blurred lens is a
+    /// barrier `fine` cannot run inline (a neighbourhood, not a single displaced tap).
+    fn wv_lens_fine_uniform(&self, gid: u128, full_view: Affine, w: u32, h: u32) -> Option<[f32; 24]> {
+        let sharp = crate::vello::abi::with_scene(|live, _, _| {
+            live.get(gid).and_then(|n| n.glass).is_some_and(|g| g.total_blur_sigma() <= 0.5)
+        });
+        if !sharp {
+            return None;
+        }
+        let passes = self.lens_graph(gid, w, h, 0.0, 0.0, full_view, 1.0)?;
+        match batch_admit(&passes) {
+            Some(BatchShape::Lens { head, tail, .. }) => {
+                let mut ops = vec![head];
+                ops.extend(tail);
+                Some(crate::vello::units::units_uniform(&ops))
+            }
+            _ => None,
+        }
     }
 
     /// Build the custom-shader graph: one custom pass over the assembled backdrop (input 0). The
