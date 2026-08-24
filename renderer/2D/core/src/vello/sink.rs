@@ -1774,6 +1774,11 @@ impl Sink {
         // Each is [bits, program, then the 24-float unit uniform]; the marker carries its float offset
         // in p2 and the driver skips its post-fine pass. Empty → fine renders exactly as before.
         const FX_TINT_ID: u32 = 100;
+        // Same inline effect (>= EFFECT_INLINE_BASE), but coarse rasterises its coverage over the REACH
+        // rect instead of the shape silhouette — the separable blur's H pass, whose draft the V pass
+        // samples up to its radius PAST the silhouette; without the dilated coverage the draft is only
+        // H-blurred inside the silhouette and the V taps beyond it read the sharp backdrop (bands).
+        const FX_TINT_DILATED_ID: u32 = 101;
         let mut fx_params: Vec<f32> = Vec::new();
         let mut fx_offset: HashMap<u128, u32> = HashMap::new();
         // A fine gather emits ONE marker per pass, at successive rounds R, R+1, … — the separable blur
@@ -1857,9 +1862,14 @@ impl Sink {
                 b.push(backend.draw_object_count(&scene));
                 mb.push(z);
                 if let Some(markers) = fx_markers.get(&gid) {
-                    for &(mround, moff) in markers {
+                    // A separable blur is two markers (H then V). The H pass writes the draft and must
+                    // cover the REACH so the V pass's taps land on H-blurred pixels; the V pass keeps
+                    // the silhouette for its masked composite.
+                    let is_blur = markers.len() == 2;
+                    for (mi, &(mround, moff)) in markers.iter().enumerate() {
                         z += 1;
-                        backend.draw_effect_marker(&mut scene, root, gid, FX_TINT_ID, z, mround, moff, reaches[_j]);
+                        let eid = if is_blur && mi == 0 { FX_TINT_DILATED_ID } else { FX_TINT_ID };
+                        backend.draw_effect_marker(&mut scene, root, gid, eid, z, mround, moff, reaches[_j]);
                     }
                 } else {
                     let (effect_id, fx_p2) = if let Some(&off) = fx_offset.get(&gid) {
@@ -1925,9 +1935,14 @@ impl Sink {
                 }
             }
         }
-        let draft = (!blur_round_role.is_empty())
-            .then(|| self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv blur draft"));
-        let draft_view = draft.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
+        // A FRESH draft per blur-H round, not one reused texture: the engine orders cross-dispatch
+        // reads/writes of an EXTERNAL texture the way the accumulator ping-pong does — by alternating
+        // surfaces. One draft written (H), read (V), written (next H), read (next V) is a same-texture
+        // hazard the tracking misses, and the second V reads the first H's stale content (its blur
+        // never took → the checker's vertical bands survive). Keyed by the H round; the V round looks
+        // its H up at `round - 1`. Held for the whole loop, released to the frame-transient list after.
+        let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
+        let mut draft_views: std::collections::HashMap<u32, wgpu::TextureView> = std::collections::HashMap::new();
 
         for (_, (tex, _)) in std::mem::take(&mut self.wv_atlas) {
             self.pool.release(tex);
@@ -1996,18 +2011,23 @@ impl Sink {
                     } else {
                         backend.phased_fine_segment_rw(device, queue, &mut enc, window_lo, r, &views[0]);
                     }
-                } else if let (Some(&is_v), Some(dv)) = (blur_round_role.get(&window_lo), draft_view.as_ref()) {
-                    // A separable blur window. H: read the accumulator (backdrop), write the draft, and
-                    // DON'T advance the ping-pong — the accumulator still holds the original backdrop
-                    // the V pass needs for its margin. V: read that backdrop as base_in AND the draft as
-                    // the blur source, composite masked into the next slot.
+                } else if let Some(&is_v) = blur_round_role.get(&window_lo) {
+                    // A separable blur window. H: read the accumulator (backdrop), write a fresh draft,
+                    // and DON'T advance the ping-pong — the accumulator still holds the original
+                    // backdrop the V pass needs for its margin. V: read that backdrop as base_in AND the
+                    // draft its H wrote (keyed at `round - 1`) as the blur source, composite masked.
                     let c = cur.expect("a blur has a backdrop to read");
                     if is_v {
                         let out = 1 - c;
+                        let dv = draft_views.get(&(window_lo - 1)).expect("blur V after its H");
                         backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &views[out]);
                         cur = Some(out);
                     } else {
-                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), dv);
+                        let dt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv blur draft");
+                        let dv = dt.create_view(&wgpu::TextureViewDescriptor::default());
+                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), &dv);
+                        draft_views.insert(window_lo, dv);
+                        draft_texs.push(dt);
                     }
                 } else {
                     let out = cur.map_or(0, |c| 1 - c);
@@ -2130,14 +2150,10 @@ impl Sink {
             self.frame_transient.extend(texs);
             self.frame_transient_views.extend(atlas_views);
         }
-        // The blur draft lived across the whole round loop (like the batch atlases); hand it to the
-        // frame-transient list so it returns to the pool after the frame, not at a per-node recycle.
-        if let Some(t) = draft {
-            self.frame_transient.push(t);
-        }
-        if let Some(v) = draft_view {
-            self.frame_transient_views.push(v);
-        }
+        // The blur drafts lived across the whole round loop (like the batch atlases); hand them to the
+        // frame-transient list so they return to the pool after the frame, not at a per-node recycle.
+        self.frame_transient.extend(draft_texs);
+        self.frame_transient_views.extend(draft_views.into_values());
         // Same rule as the batch atlases: held outside `frame_transient` for the whole round loop
         // (the per-node recycle point truncates that list), returned to the pool once it ends.
         if let Some(atlas) = lens_atlas {

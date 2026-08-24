@@ -819,7 +819,12 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         // An INLINE effect (effects-in-fine) encodes the node's real silhouette as its shape, so
         // coarse emits that coverage into `area[i]` and fine confines the effect to it. A barrier
         // effect encodes the reach rect: it only needs to bin the z-boundary into its reach tiles.
-        if effect_id >= 100 {
+        // A DILATED inline effect (101) is still inline in the shader (>= 100) but rasterises its
+        // coverage over the reach rect — the separable blur's H pass, which must write its draft past
+        // the silhouette so the V pass's taps stay on H-blurred pixels.
+        if effect_id == 101 {
+            scene.draw_effect(Affine::IDENTITY, &r, effect_id, params);
+        } else if effect_id >= 100 {
             render_core::vello::abi::with_scene(|model, viewport, modifiers| {
                 if let Some(node) = model.get(id) {
                     let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
