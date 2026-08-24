@@ -1661,15 +1661,16 @@ impl Sink {
         // backdrop materialises (so `base_in` holds it) — hence `max_round >= its round + 1` — and its
         // device-space lens uniform, keyed by gid. Excluded from `wv_lens_plan` below so it renders
         // once, and it forces the ping-pong path (`base_in` is unbound in the rw accumulator).
-        let fx_fine: std::collections::HashMap<u128, [f32; 26]> = if wv_glass_fine() || wv_blur_fine() {
+        let fx_fine: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_glass_fine() || wv_blur_fine() {
             gathers
                 .iter()
                 .enumerate()
                 .filter(|(_, g)| g.2 != FX_STACK)
                 .filter_map(|(j, &(_, gid, _))| {
-                    self.wv_fine_descriptor(gid, full_view, width, height).map(|d| {
-                        max_round = max_round.max(rounds[j] + 1);
-                        (gid, d)
+                    self.wv_fine_passes(gid, full_view, width, height).map(|passes| {
+                        // Each pass is one marker in a successive reload window (glass 1, blur H+V 2).
+                        max_round = max_round.max(rounds[j] + passes.len() as u32);
+                        (gid, passes)
                     })
                 })
                 .collect()
@@ -1753,16 +1754,24 @@ impl Sink {
         const FX_TINT_ID: u32 = 100;
         let mut fx_params: Vec<f32> = Vec::new();
         let mut fx_offset: HashMap<u128, u32> = HashMap::new();
-        for &(_gi, gid, kind) in &gathers {
+        // A fine gather emits ONE marker per pass, at successive rounds R, R+1, … — the separable blur
+        // is two markers (H, V), the planner's whole say over the passes; the executor runs each.
+        let mut fx_markers: HashMap<u128, Vec<(u32, u32)>> = HashMap::new();
+        for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
             if kind == FX_STACK {
                 continue;
             }
-            // A gather routed through fine (glass WARP or background BLUR): its full descriptor is
-            // prebuilt in fx_fine. The interpreter reads bits/program and samples base_in accordingly.
-            if let Some(d) = fx_fine.get(&gid) {
-                let off = fx_params.len() as u32;
-                fx_offset.insert(gid, off);
-                fx_params.extend_from_slice(d);
+            if let Some(passes) = fx_fine.get(&gid) {
+                let markers = passes
+                    .iter()
+                    .enumerate()
+                    .map(|(p, d)| {
+                        let off = fx_params.len() as u32;
+                        fx_params.extend_from_slice(d);
+                        (rounds[j] + p as u32, off)
+                    })
+                    .collect();
+                fx_markers.insert(gid, markers);
                 continue;
             }
             // Descriptor layout: [bits, program, then 6×vec4 uniform] = 26 floats.
@@ -1810,38 +1819,48 @@ impl Sink {
         }
         let fx_bytes: Vec<u8> = fx_params.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-        let boundaries: Vec<u32> = {
+        // `boundaries[j]` = draw count before gather j's marker(s); `markers_before[j]` = markers emitted
+        // before it; `total_markers` = all of them. A gather emits one marker per pass, each at its own
+        // z ordinal — so a gather is no longer 1:1 with a marker (a separable blur emits two).
+        let (boundaries, markers_before, total_markers): (Vec<u32>, Vec<u32>, u32) = {
             let mut b = Vec::with_capacity(gathers.len());
+            let mut mb = Vec::with_capacity(gathers.len());
             let mut cursor = 0usize;
-            for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
+            let mut z = 0u32;
+            for (_j, &(gi, gid, kind)) in gathers.iter().enumerate() {
                 if gi > cursor {
                     backend.draw_scene_range(&mut scene, root, cursor, gi);
                     cursor = gi;
                 }
                 b.push(backend.draw_object_count(&scene));
-                let (effect_id, fx_p2) = if let Some(&off) = fx_offset.get(&gid) {
-                    (FX_TINT_ID, off)
-                } else if kind == FX_STACK {
-                    (6u32, 0u32)
+                mb.push(z);
+                if let Some(markers) = fx_markers.get(&gid) {
+                    for &(mround, moff) in markers {
+                        z += 1;
+                        backend.draw_effect_marker(&mut scene, root, gid, FX_TINT_ID, z, mround, moff, reaches[_j]);
+                    }
                 } else {
-                    let eid = crate::vello::abi::with_scene(|live, _, _| {
-                        live.get(gid).map_or(1u32, |n| {
-                            if n.glass.is_some() { 0 } else if n.gather_shader().is_some() { 2 } else { 1 }
-                        })
-                    });
-                    (eid, 0u32)
-                };
-                #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_TRACE").is_ok() {
-                    eprintln!("marker j={j} kind={kind} round={} reach={:?}", rounds[j], reaches[j]);
-                }
-                backend.draw_effect_marker(&mut scene, root, gid, effect_id, b.len() as u32, rounds[j], fx_p2, reaches[j]);
-                if kind == FX_STACK {
-                    cursor = gi + 1;
+                    let (effect_id, fx_p2) = if let Some(&off) = fx_offset.get(&gid) {
+                        (FX_TINT_ID, off)
+                    } else if kind == FX_STACK {
+                        (6u32, 0u32)
+                    } else {
+                        let eid = crate::vello::abi::with_scene(|live, _, _| {
+                            live.get(gid).map_or(1u32, |n| {
+                                if n.glass.is_some() { 0 } else if n.gather_shader().is_some() { 2 } else { 1 }
+                            })
+                        });
+                        (eid, 0u32)
+                    };
+                    z += 1;
+                    backend.draw_effect_marker(&mut scene, root, gid, effect_id, z, rounds[_j], fx_p2, reaches[_j]);
+                    if kind == FX_STACK {
+                        cursor = gi + 1;
+                    }
                 }
             }
             backend.draw_scene_range(&mut scene, root, cursor, usize::MAX);
-            b
+            (b, mb, z)
         };
         if let Some((packing, cells)) = strip.as_ref() {
             self.wv_strip_encode(backend, &mut scene, packing, cells, root, strip_y);
@@ -1885,10 +1904,10 @@ impl Sink {
         let n_gathers = gathers.len() as u32;
 
         let _tpl = crate::vello::prof::now();
-        let n_markers = n_gathers;
+        let n_markers = total_markers;
         let real_draws = total_draws.saturating_sub(n_markers);
         let draws_after = |j: usize| -> u32 {
-            total_draws.saturating_sub(boundaries[j]).saturating_sub(n_markers - j as u32)
+            total_draws.saturating_sub(boundaries[j]).saturating_sub(n_markers - markers_before[j])
         };
         let window_has_draws = |lo: u32, hi: u32| -> bool {
             if lo == 0 {
@@ -1897,10 +1916,16 @@ impl Sink {
             (0..gathers.len()).any(|j| {
                 let in_window =
                     rounds[j] >= lo && (hi == crate::vello::rasterize::SEG_ALL || rounds[j] < hi);
-                // An inline WARP marker IS work in its reload window even with no scene draw after it:
-                // it composites the lens over base_in. So a glass-fine gather opens its window itself.
-                let warp_here = in_window && fx_fine.contains_key(&gathers[j].1);
-                (in_window && draws_after(j) > 0) || warp_here
+                // An inline base-reading marker IS work in its reload window even with no scene draw
+                // after it. A single-tap gather opens one window (round R); a separable BLUR opens two
+                // (round R = H pass, R+1 = V pass), off the one marker.
+                let fine_here = fx_fine.get(&gathers[j].1).is_some_and(|passes| {
+                    (0..passes.len() as u32).any(|p| {
+                        let w = rounds[j] + p;
+                        w >= lo && (hi == crate::vello::rasterize::SEG_ALL || w < hi)
+                    })
+                });
+                (in_window && draws_after(j) > 0) || fine_here
             })
         };
         let mut window_lo = 0u32;
@@ -2018,8 +2043,9 @@ impl Sink {
                 match kind {
                     FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, claim, sub),
                     _ if sub > 0 => {}
-                    // An inline effect (backdrop-tint) ran in fine at its CMD_EFFECT marker; no post-fine pass.
-                    _ if fx_offset.contains_key(&gid) => {}
+                    // An inline effect ran in fine at its CMD_EFFECT marker(s); no post-fine pass. Pointwise
+                    // (tint/field) rides fx_offset; a fine gather (glass/blur) rides fx_markers.
+                    _ if fx_offset.contains_key(&gid) || fx_markers.contains_key(&gid) => {}
                     _ if lens_cells.as_ref().is_some_and(|cs| cs.iter().any(|c| c.key.0 == gid)) => {}
                     _ => self.wv_stamp_gather(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, width, height, format, acc_sz),
                 }
@@ -5179,28 +5205,35 @@ impl Sink {
         }
     }
 
-    /// The full 26-float effects-in-fine descriptor `[bits, program, 6×vec4 u]` for a gather that rides
-    /// fine, or `None` if it does not. A sharp glass → WARP|SHADE|MASKMIX over the lens field (program
-    /// 1). A background blur → a single-pass 2D BLUR arm (`u[0].xy = (0,0)`, `u[0].z = device sigma`).
-    /// Gated per effect kind by `WV_GLASS_FINE` / `WV_BLUR_FINE`.
-    fn wv_fine_descriptor(&self, gid: u128, full_view: Affine, w: u32, h: u32) -> Option<[f32; 26]> {
+    /// The effects-in-fine PASSES for a gather that rides fine, each a full 26-float descriptor
+    /// `[bits, program, 6×vec4 u]`; `None` if it does not ride fine. One pass per marker the planner
+    /// emits, in round order: a sharp glass → one WARP|SHADE|MASKMIX pass over the lens field (program
+    /// 1); a background blur → two BLUR passes, H then V, each carrying its axis in `u[0].xy` (the
+    /// separable blur, one marker each). Gated per kind by `WV_GLASS_FINE` / `WV_BLUR_FINE`.
+    fn wv_fine_passes(&self, gid: u128, full_view: Affine, w: u32, h: u32) -> Option<Vec<[f32; 26]>> {
         if wv_glass_fine() {
             if let Some(u) = self.wv_lens_fine_uniform(gid, full_view, w, h) {
                 let mut d = [0.0f32; 26];
                 d[0] = 56.0; // bits = SHADE(8) | MASKMIX(16) | WARP(32)
                 d[1] = 1.0; // program = lens
                 d[2..26].copy_from_slice(&u);
-                return Some(d);
+                return Some(vec![d]);
             }
         }
         if wv_blur_fine() {
             let has_blur =
                 crate::vello::abi::with_scene(|live, _, _| live.get(gid).and_then(|n| n.background_blur)).is_some();
             if has_blur {
-                let mut d = [0.0f32; 26];
-                d[0] = 64.0; // bits = BLUR
-                d[4] = self.gather_sigma(gid, full_view, 1.0); // u[0].z = device sigma; u[0].xy = (0,0) → 2D
-                return Some(d);
+                let sigma = self.gather_sigma(gid, full_view, 1.0);
+                let pass = |ax: f32, ay: f32| {
+                    let mut d = [0.0f32; 26];
+                    d[0] = 64.0; // bits = BLUR
+                    d[2] = ax; // u[0].x = axis.x
+                    d[3] = ay; // u[0].y = axis.y
+                    d[4] = sigma; // u[0].z = device sigma
+                    d
+                };
+                return Some(vec![pass(1.0, 0.0), pass(0.0, 1.0)]);
             }
         }
         None
