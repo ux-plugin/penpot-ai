@@ -1551,14 +1551,20 @@ pub fn build_blur_grid_scene(n: usize, radius: f32) -> (Scene, Vec<(usize, &'sta
     let (cw, ch) = canvas_size(cols * rows);
     let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
     let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
-    for i in 0..(n * 4) {
-        let (gx, gy) = ((i % (cols * 2)) as f64, (i / (cols * 2)) as f64);
-        let mut node = Node::new(b.id(), ShapeKind::Rect);
-        let (x, y) = (gx * pitch_x * 0.5, gy * pitch_y * 0.5);
-        node.bounds = Rect::new(x, y, x + pitch_x * 0.5, y + pitch_y * 0.5);
-        let hue = (i * 37 % 255) as u8;
-        node.fills = vec![Paint::plain(Brush::Solid(col(40 + hue / 2, 200 - hue / 3, 120 + hue / 4)))];
-        b.root(node);
+    // A high-frequency checkerboard backdrop: a flat colour hides blur defects (a blurred flat is the
+    // same flat), but a chequer smears to grey under a correct blur and leaks its hard edges through a
+    // broken one — so holes and edge steps show up plainly.
+    let cell = 24.0_f64;
+    let (nx, ny) = ((f64::from(cw) / cell).ceil() as i64, (f64::from(ch) / cell).ceil() as i64);
+    for gy in 0..ny {
+        for gx in 0..nx {
+            let mut node = Node::new(b.id(), ShapeKind::Rect);
+            let (x, y) = (gx as f64 * cell, gy as f64 * cell);
+            node.bounds = Rect::new(x, y, x + cell, y + cell);
+            let dark = (gx + gy) % 2 == 0;
+            node.fills = vec![Paint::plain(Brush::Solid(if dark { col(30, 120, 90) } else { col(230, 210, 80) }))];
+            b.root(node);
+        }
     }
     for i in 0..n {
         let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);

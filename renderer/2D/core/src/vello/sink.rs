@@ -5225,15 +5225,14 @@ impl Sink {
                 crate::vello::abi::with_scene(|live, _, _| live.get(gid).and_then(|n| n.background_blur)).is_some();
             if has_blur {
                 let sigma = self.gather_sigma(gid, full_view, 1.0);
-                let pass = |ax: f32, ay: f32| {
-                    let mut d = [0.0f32; 26];
-                    d[0] = 64.0; // bits = BLUR
-                    d[2] = ax; // u[0].x = axis.x
-                    d[3] = ay; // u[0].y = axis.y
-                    d[4] = sigma; // u[0].z = device sigma
-                    d
-                };
-                return Some(vec![pass(1.0, 0.0), pass(0.0, 1.0)]);
+                // ONE marker: a 2D Gaussian gather of `base_in`, composited masked once by the shape's
+                // coverage. Correct for any silhouette (a masked blur is not a special case). A separable
+                // H+V pair would be O(r) but needs a private scratch for the unmasked first pass; that is
+                // a later perf layer, not a second code path.
+                let mut d = [0.0f32; 26];
+                d[0] = 64.0; // bits = BLUR
+                d[4] = sigma; // u[0].z = device sigma
+                return Some(vec![d]);
             }
         }
         None
