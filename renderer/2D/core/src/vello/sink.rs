@@ -2302,12 +2302,20 @@ impl Sink {
                     Some(WindowRole::InnerV(punch_key)) => {
                         // Blur V of the draft, MATERIALISE the 2D-blurred punch to its own scratch keyed by
                         // `punch_key` (does not touch the accumulator — the body still paints normally). The
-                        // band reads it later, possibly several rounds on (past the body).
-                        let c = cur.expect("an inner shadow composites over a backdrop");
+                        // band reads it later, possibly several rounds on (past the body). `base_in` is the
+                        // OFFSET silhouette (keyed by `punch_key` = this inner's H round), not the accumulator:
+                        // a TEXT inner's FLOOD_ERASE fold samples it (shifted back by the shadow offset) to
+                        // recover the flood; a PATH inner never reads base here, so binding it is harmless.
+                        let _c = cur.expect("an inner shadow composites over a backdrop");
                         let dv = draft_views.get(&(window_lo - 1)).expect("inner V after its H");
+                        let sil = self
+                            .stack_sil
+                            .get(&punch_key)
+                            .expect("inner silhouette rasterised pre-pass")
+                            .clone();
                         let pt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv inner punch");
                         let pv = pt.create_view(&wgpu::TextureViewDescriptor::default());
-                        backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &pv);
+                        backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &sil, dv, &pv);
                         self.frame_transient.push(pt);
                         self.stack_punch.insert(punch_key, pv);
                     }
@@ -5453,9 +5461,7 @@ impl Sink {
                         if !wv_innerblur_fine() {
                             return None; // soft inners A/B'd off — whole shape defers to the pre-pass
                         }
-                        if n.kind != crate::model::ShapeKind::Path {
-                            return None; // a Text inner band needs glyph coverage in area[i] — pre-pass for now
-                        }
+                        let is_text = n.kind == crate::model::ShapeKind::Text;
                         // An inner shadow's blur rides on its EraseBy op (the punch's own radius).
                         let blur = e.ops.iter().find_map(|op| match op {
                             crate::effect::Op::EraseBy { blur, .. } => Some(*blur),
@@ -5476,6 +5482,19 @@ impl Sink {
                         v[4] = sigma;
                         let mut band = [0.0f32; 26];
                         band[0] = 128.0 + 2.0; // SPREAD | ERASE (flood minus punch, over body)
+                        if is_text {
+                            // Text has no glyph coverage in `area[i]` (its outline is the bounds rect), so the
+                            // band's FLOOD is recovered by sampling the OFFSET silhouette shifted BACK by the
+                            // shadow offset. The V pass folds flood*(1 - alpha*punch) into its scratch alpha
+                            // (FLOOD_ERASE 4096, offset in u[1].xy device px, alpha in u[3].w), and the band
+                            // reads that precomputed coverage directly (SCRATCH_COV 8192) — no area[i]/erase.
+                            let sh = n.shadows.iter().filter(|s| s.inset).nth(inner_slot)?;
+                            v[0] += 4096.0; // FLOOD_ERASE
+                            v[6] = sh.offset.x as f32 * scale; // u[1].x = device offset x
+                            v[7] = sh.offset.y as f32 * scale; // u[1].y = device offset y
+                            v[17] = a; // u[3].w = shadow alpha (erase fold)
+                            band[0] = 128.0 + 8192.0; // SPREAD | SCRATCH_COV
+                        }
                         band[14] = r;
                         band[15] = g;
                         band[16] = b;
