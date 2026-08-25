@@ -481,12 +481,11 @@ fn wv_spread_fine() -> bool {
 
 /// A SOFT (σ≥0.5) drop shadow on a pure drop+body PATH stack blurs in the MAIN round loop (a rasterised
 /// silhouette scratch → BLUR H/V → SPREAD composite under the body) instead of the `wv_shadow_fine`
-/// PRE-PASS mini-session. Default OFF while it lands (increment 2); `WV_DROPBLUR_FINE=1` opts in. Once
-/// verified against the pre-pass this flips default-on and retires `wv_blur_texture_fine` for drops.
+/// PRE-PASS mini-session. Default ON; `WV_DROPBLUR_FINE=0` forces the pre-pass (the A/B oracle).
 fn wv_dropblur_fine() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_DROPBLUR_FINE").is_ok_and(|v| v != "0");
+        return std::env::var("WV_DROPBLUR_FINE").map_or(true, |v| v != "0");
     }
     #[cfg(target_arch = "wasm32")]
     false
@@ -494,11 +493,11 @@ fn wv_dropblur_fine() -> bool {
 
 /// A SOFT (σ≥0.5) INNER shadow on a pure inner+body PATH stack builds its band in the MAIN round loop
 /// (blur the offset silhouette to a punch, then a flood-minus-punch band OVER the body) instead of the
-/// pre-pass. Default OFF while it lands (increment 3); `WV_INNERBLUR_FINE=1` opts in.
+/// pre-pass. Default ON; `WV_INNERBLUR_FINE=0` forces the pre-pass (the A/B oracle).
 fn wv_innerblur_fine() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_INNERBLUR_FINE").is_ok_and(|v| v != "0");
+        return std::env::var("WV_INNERBLUR_FINE").map_or(true, |v| v != "0");
     }
     #[cfg(target_arch = "wasm32")]
     false
