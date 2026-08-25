@@ -2239,6 +2239,13 @@ pub extern "C" fn load_dropblur_diag_scene() -> u32 {
     install_fixture(crate::parity::build_dropblur_diag_scene())
 }
 
+/// Install the **multi-shadow test** ([`crate::parity::build_multi_shadow_scene`]) — one path carrying
+/// two soft drops, another carrying a drop + inner (mixed), the inline multi-shadow verification target.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_multi_shadow_scene() -> u32 {
+    install_fixture(crate::parity::build_multi_shadow_scene())
+}
+
 /// Install the **layer-blur test** ([`crate::parity::build_layer_blur_scene`]) — a shape with a
 /// layer blur beside the same shape without one. Classic has no inline layer blur, so this is driven
 /// through the sink (`layer_blur_over_body`), not the tree walk. Returns the cell count.

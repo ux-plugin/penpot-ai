@@ -1155,6 +1155,55 @@ pub fn build_path_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
     b.finish()
 }
 
+/// A single path carrying SEVERAL shadows at once — the multi-shadow inline case. Left blob: two SOFT
+/// drops (a tight dark one + a wide soft one) stacked under the body. Middle blob: a soft drop AND a soft
+/// inner shadow (mixed, drop under + inner over the body). Right: the same blob with no shadow. Each shadow
+/// is an independent marker block in the main fine loop; the pre-pass drives them one PaintPathShadow /
+/// PaintInnerShadow step per shadow, so this is the oracle for the inline plan handling a `Vec<Shadow>`.
+#[must_use]
+pub fn build_multi_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(r));
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        n.shadows = vec![
+            Shadow { color: cola(0, 0, 0, 190), blur: 6.0, spread: 0.0, offset: Vec2::new(6.0, 7.0), inset: false },
+            Shadow { color: cola(20, 40, 120, 150), blur: 18.0, spread: 0.0, offset: Vec2::new(-10.0, 16.0), inset: false },
+        ];
+        b.root(n);
+        b.advance("blob + two soft drops");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(r));
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        n.shadows = vec![
+            Shadow { color: cola(0, 0, 0, 170), blur: 10.0, spread: 0.0, offset: Vec2::new(8.0, 10.0), inset: false },
+            Shadow { color: cola(0, 0, 0, 200), blur: 12.0, spread: 0.0, offset: Vec2::new(6.0, 8.0), inset: true },
+        ];
+        b.root(n);
+        b.advance("blob + drop + inner (mixed)");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(r));
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        b.root(n);
+        b.advance("blob (no shadow)");
+    }
+    b.finish()
+}
+
 /// Two cells over a light page: a bezier blob with a HARD (blur=0) drop shadow — offset and slightly
 /// spread but not softened — beside the same blob without one. A sharp drop is the σ<0.5 spread case:
 /// the shadow is pure offset-silhouette coverage, no blur pass, so it exercises the inline SPREAD marker
