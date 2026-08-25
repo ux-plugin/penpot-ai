@@ -1155,6 +1155,37 @@ pub fn build_path_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
     b.finish()
 }
 
+/// Two cells over a light page: a bezier blob with a HARD (blur=0) drop shadow — offset and slightly
+/// spread but not softened — beside the same blob without one. A sharp drop is the σ<0.5 spread case:
+/// the shadow is pure offset-silhouette coverage, no blur pass, so it exercises the inline SPREAD marker
+/// path (`effect_id` 102) without the source-strip blur machinery a soft shadow needs.
+#[must_use]
+pub fn build_sharp_drop_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(r));
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 180), blur: 0.0, spread: 4.0, offset: Vec2::new(16.0, 20.0), inset: false }];
+        b.root(n);
+        b.advance("blob hard drop shadow");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(r));
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        b.root(n);
+        b.advance("blob (no shadow)");
+    }
+    b.finish()
+}
+
 /// Cells over a light page exercising non-box INNER shadows: a filled path and a text block, each with
 /// an inset shadow (a dark band hugging the inside edge on the offset side), beside the same path with
 /// no shadow. Classic has no inline non-box inner shadow, so this is driven through the sink

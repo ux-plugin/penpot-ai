@@ -2225,6 +2225,13 @@ pub extern "C" fn load_path_shadow_scene() -> u32 {
     install_fixture(crate::parity::build_path_shadow_scene())
 }
 
+/// Install the **sharp-drop test** ([`crate::parity::build_sharp_drop_scene`]) — a blob with a hard
+/// (blur=0) drop shadow, the inline SPREAD-marker verification target.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_sharp_drop_scene() -> u32 {
+    install_fixture(crate::parity::build_sharp_drop_scene())
+}
+
 /// Install the **layer-blur test** ([`crate::parity::build_layer_blur_scene`]) — a shape with a
 /// layer blur beside the same shape without one. Classic has no inline layer blur, so this is driven
 /// through the sink (`layer_blur_over_body`), not the tree walk. Returns the cell count.
