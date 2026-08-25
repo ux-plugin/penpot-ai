@@ -2436,6 +2436,17 @@ impl Sink {
                 let sdf = sdf_view.as_ref().expect("a SampledGlass window has a baked SDF");
                 backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], sdf, &views[out]);
                 out
+            } else if let Some(&WindowRole::InnerBand(punch_key)) = window_role.get(&window_lo) {
+                // An inner band is the LAST marker of its block, so it commonly lands in this final window.
+                // Bind the materialised punch as `input_in` exactly like the in-loop arm — the generic
+                // fallthrough below leaves `input_in` unbound, so the SPREAD|ERASE arm reads a stale punch
+                // (a pure-inner block's punch happens to survive, but a mixed drop+inner block's extra
+                // dispatches clobber it → the band vanishes).
+                let c = cur.expect("an inner band composites over the body");
+                let out = 1 - c;
+                let punch = self.stack_punch.get(&punch_key).expect("inner punch materialised by its V").clone();
+                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &punch, &views[out]);
+                out
             } else {
                 let out = cur.map_or(0, |c| 1 - c);
                 let base = cur.map(|c| &views[c]);
