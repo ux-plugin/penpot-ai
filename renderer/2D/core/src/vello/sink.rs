@@ -492,6 +492,18 @@ fn wv_dropblur_fine() -> bool {
     false
 }
 
+/// A SOFT (σ≥0.5) INNER shadow on a pure inner+body PATH stack builds its band in the MAIN round loop
+/// (blur the offset silhouette to a punch, then a flood-minus-punch band OVER the body) instead of the
+/// pre-pass. Default OFF while it lands (increment 3); `WV_INNERBLUR_FINE=1` opts in.
+fn wv_innerblur_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_INNERBLUR_FINE").is_ok_and(|v| v != "0");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// Routes an FX_STACK node's BACKDROP effect (its glass/blur, which reads the accumulator mid-stack)
 /// through `fine` as a marker instead of the imperative `wv_stamp_gather` → `run_chain`. The stack
 /// FRACTURES across two rounds: its z-below layers (drops) composite at round R, the glass marker
@@ -804,6 +816,11 @@ pub struct Sink {
     /// `frame_transient`, the view is cleared each frame.
     stack_sil: HashMap<u128, wgpu::TextureView>,
 
+    /// The 2D-blurred PUNCH scratch for an INNER shadow riding the main loop (`WV_INNERBLUR_FINE`), keyed
+    /// by node — the offset silhouette after blur H+V, written by the inner V marker and read by the band
+    /// marker. Populated during the round loop; the texture rides in `frame_transient`.
+    stack_punch: HashMap<u128, wgpu::TextureView>,
+
     /// Whole-viewport effect surfaces materialised from the strip by [`Self::wv_atlas_copy_out`]
     /// (only for shapes the batch cannot express), keyed by
     /// `(node, kind, index)` — kind `0` a drop-shadow silhouette, `1` the node's isolated body.
@@ -878,6 +895,7 @@ impl Sink {
             frame_transient_views: Vec::new(),
             shadow_fine: HashMap::new(),
             stack_sil: HashMap::new(),
+            stack_punch: HashMap::new(),
             wv_atlas: HashMap::new(),
             dbg_atlas: None,
             gpu_timer: None,
@@ -1177,6 +1195,7 @@ impl Sink {
         self.frame_transient_views.clear();
         self.shadow_fine.clear();
         self.stack_sil.clear();
+        self.stack_punch.clear();
         let full_view = crate::vello::abi::effective_view(root);
         let sz = (width as f32, height as f32);
         let sw_view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1418,6 +1437,19 @@ impl Sink {
         } else {
             std::collections::HashMap::new()
         };
+        // SOFT inner shadows on a pure inner+body PATH stack build their band in the MAIN loop (increment
+        // 3, gated `WV_INNERBLUR_FINE`): blur the offset silhouette to a punch, then a flood-minus-punch
+        // band OVER the body. Exclusive with the other stack routes.
+        let stack_innerblur: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_innerblur_fine() {
+            gathers
+                .iter()
+                .filter(|(_, _, k)| *k == FX_STACK)
+                .filter(|(_, gid, _)| !stack_fine.contains_key(gid) && !stack_frost.contains_key(gid) && !stack_spread.contains_key(gid) && !stack_dropblur.contains_key(gid))
+                .filter_map(|&(_, gid, _)| self.wv_innerblur_passes(gid, full_view, width, height).map(|c| (gid, c)))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
         // Shape-following (`Sampled`) glass: for each SHARP stack whose shape is a PATH the field distance
         // comes from a baked SDF of the real outline, not the analytic box — flip the descriptor to program
         // 4 with `decode` in the corner slot (`u[1].z` = `d[8]`). A FROSTED stack does NOT need this: its
@@ -1459,8 +1491,11 @@ impl Sink {
         // layout (the ×2 doubling only frees ONE slot). Its presence forces block mode.
         let dropblur_stack_gather: Vec<bool> =
             gathers.iter().map(|&(_, gid, _)| stack_dropblur.contains_key(&gid)).collect();
+        // A SOFT inner stack is H → V(punch) → body → band — a 4-round block; also forces block mode.
+        let innerblur_stack_gather: Vec<bool> =
+            gathers.iter().map(|&(_, gid, _)| stack_innerblur.contains_key(&gid)).collect();
         let any_frost = frost_gather.iter().any(|&f| f) || frost_stack_gather.iter().any(|&f| f);
-        let any_block = any_frost || dropblur_stack_gather.iter().any(|&f| f);
+        let any_block = any_frost || dropblur_stack_gather.iter().any(|&f| f) || innerblur_stack_gather.iter().any(|&f| f);
         let mut rounds: Vec<u32> = if any_block {
             // With a frosted chain in play the timeline is laid out in CONTIGUOUS blocks, grouped by the
             // reach round (z-order) and, within each, by kind — standalone frost (5 rounds), a frosted
@@ -1492,9 +1527,12 @@ impl Sink {
                 lay(&mut out, &mut cursor, &|j| base[j] == br && sharp_stack_gather[j], 2);
                 // 3 = blur H + blur V + a trailing round for the BODY (same body-after-tail rule as frost).
                 lay(&mut out, &mut cursor, &|j| base[j] == br && dropblur_stack_gather[j], 3);
+                // 4 = blur H + blur V(punch) + body + band. The band composites OVER the body, so it lands
+                // the round after the body (which is itself after the punch materialises).
+                lay(&mut out, &mut cursor, &|j| base[j] == br && innerblur_stack_gather[j], 4);
                 lay(&mut out, &mut cursor, &|j| base[j] == br && blur_gather[j] && !frost_gather[j], 2);
                 lay(&mut out, &mut cursor, &|j| {
-                    base[j] == br && !frost_gather[j] && !frost_stack_gather[j] && !sharp_stack_gather[j] && !dropblur_stack_gather[j] && !blur_gather[j]
+                    base[j] == br && !frost_gather[j] && !frost_stack_gather[j] && !sharp_stack_gather[j] && !dropblur_stack_gather[j] && !innerblur_stack_gather[j] && !blur_gather[j]
                 }, 1);
             }
             out
@@ -1522,8 +1560,8 @@ impl Sink {
             .filter_map(|&(_, gid, _)| {
                 if stack_frost.contains_key(&gid) {
                     Some((gid, 6))
-                } else if stack_dropblur.contains_key(&gid) {
-                    // Soft drop: blur H@R, V@R+1, body@R+2.
+                } else if stack_dropblur.contains_key(&gid) || stack_innerblur.contains_key(&gid) {
+                    // Soft drop: blur H@R, V@R+1, body@R+2. Soft inner: same, then band@R+3.
                     Some((gid, 2))
                 } else if stack_fine.contains_key(&gid) || stack_spread.contains_key(&gid) {
                     // Sharp glass reload OR sharp-drop marker at the block start; body one round later.
@@ -1537,6 +1575,10 @@ impl Sink {
         for (j, &(_, gid, _)) in gathers.iter().enumerate() {
             if let Some(&s) = stack_reload_sub.get(&gid) {
                 max_round = max_round.max(rounds[j] + s);
+            }
+            // An inner stack's band composites the round AFTER its body (reload_sub 2) — one past.
+            if stack_innerblur.contains_key(&gid) {
+                max_round = max_round.max(rounds[j] + 3);
             }
         }
         // Effects-in-fine WARP gathers (linchpin, gated `WV_GLASS_FINE=1`): a sharp glass routed
@@ -1627,6 +1669,20 @@ impl Sink {
                             let off = fx_params.len() as u32;
                             fx_params.extend_from_slice(d);
                             (rounds[j] + p as u32, off)
+                        })
+                        .collect();
+                    stack_markers.insert(gid, markers);
+                } else if let Some(chain) = stack_innerblur.get(&gid) {
+                    // Soft inner: blur H@R, blur V (punch materialise)@R+1, body@R+2, band@R+3. The band
+                    // skips the body's round so it composites OVER it.
+                    let rs = [rounds[j], rounds[j] + 1, rounds[j] + 3];
+                    let markers = chain
+                        .iter()
+                        .zip(rs)
+                        .map(|(d, w)| {
+                            let off = fx_params.len() as u32;
+                            fx_params.extend_from_slice(d);
+                            (w, off)
                         })
                         .collect();
                     stack_markers.insert(gid, markers);
@@ -1752,11 +1808,15 @@ impl Sink {
                             // own coverage — the shadow follows the shape, offset — so it is neither the
                             // node silhouette (FX_TINT_ID) nor the reach rect (dilated).
                             let is_spread = stack_spread.contains_key(&gid);
+                            // A soft inner's band (last marker) clips to the shape's UNOFFSET outline (the
+                            // flood, FX_TINT_ID); its blur H/V materialise over the dilated reach.
+                            let is_inner = stack_innerblur.contains_key(&gid);
                             for (mi, &(mround, moff)) in markers.iter().enumerate() {
                                 z += 1;
+                                let last = mi == markers.len() - 1;
                                 let eid = if is_spread {
                                     FX_SPREAD_ID
-                                } else if is_frost && mi == markers.len() - 1 {
+                                } else if (is_frost || is_inner) && last {
                                     FX_TINT_ID
                                 } else {
                                     FX_TINT_DILATED_ID
@@ -1793,7 +1853,8 @@ impl Sink {
             && stack_fine.is_empty()
             && stack_frost.is_empty()
             && stack_spread.is_empty()
-            && stack_dropblur.is_empty();
+            && stack_dropblur.is_empty()
+            && stack_innerblur.is_empty();
         let n_slots: usize = if rw { 1 } else { 2 };
         let texs: Vec<wgpu::Texture> = (0..n_slots)
             .map(|_| self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv phase"))
@@ -1864,6 +1925,12 @@ impl Sink {
             /// A soft drop shadow's blur V + SPREAD composite: reads that draft, blurs vertically, lays the
             /// shadow colour over the 2D-blurred coverage source-OVER the accumulator (under the body).
             DropBlurV,
+            /// A soft INNER shadow's blur V: reads the H-blurred draft, blurs vertically, MATERIALISES the
+            /// 2D-blurred punch to [`Self::stack_punch`] (does NOT composite). Carries the gid.
+            InnerV(u128),
+            /// A soft INNER shadow's BAND: reads the punch scratch (`input_in`) and lays the shadow colour
+            /// where the shape's flood coverage is NOT under it (`cov*(1-punch)`), OVER the body. Gid keyed.
+            InnerBand(u128),
         }
         let mut window_role: std::collections::HashMap<u32, WindowRole> = std::collections::HashMap::new();
         if rw {
@@ -1892,6 +1959,14 @@ impl Sink {
                 if dropblur_stack_gather[j] {
                     window_role.insert(rounds[j], WindowRole::DropBlurH(gid));
                     window_role.insert(rounds[j] + 1, WindowRole::DropBlurV);
+                    continue;
+                }
+                // A soft-inner stack: blur H (reuses DropBlurH — reads the offset INSET silhouette), blur V
+                // materialises the punch, then the band composites over the body two rounds later.
+                if innerblur_stack_gather[j] {
+                    window_role.insert(rounds[j], WindowRole::DropBlurH(gid));
+                    window_role.insert(rounds[j] + 1, WindowRole::InnerV(gid));
+                    window_role.insert(rounds[j] + 3, WindowRole::InnerBand(gid));
                     continue;
                 }
                 let Some(passes) = fx_fine.get(&gid) else { continue };
@@ -1942,8 +2017,11 @@ impl Sink {
         if wv_shadow_fine() {
             // A soft drop that rides the MAIN loop (`stack_dropblur`) blurs its silhouette in-session, so
             // it must NOT also go through the pre-pass mini-session — skip those stacks here.
-            let stack_ids: Vec<u128> =
-                gathers.iter().filter(|g| g.2 == FX_STACK && !stack_dropblur.contains_key(&g.1)).map(|g| g.1).collect();
+            let stack_ids: Vec<u128> = gathers
+                .iter()
+                .filter(|g| g.2 == FX_STACK && !stack_dropblur.contains_key(&g.1) && !stack_innerblur.contains_key(&g.1))
+                .map(|g| g.1)
+                .collect();
             for id in stack_ids {
                 for cell in self.wv_effect_cells(id, full_view, width, height).into_iter().filter(|c| c.key.1 == 0 || c.key.1 == 3) {
                     let sigma = cell.geom.sigma * cell.geom.k;
@@ -1982,11 +2060,13 @@ impl Sink {
         // read it as `input_in` inside the main session. This is just a rasterise (no nested phased
         // session) — the one thing the pre-pass could not do in the main render. The blur + composite then
         // ride the round loop like any other effect.
-        for (&gid, _) in &stack_dropblur {
-            let sil = self.pool.acquire_target(device, width, acc_h, format, self.raster_usage, "wv dropblur silhouette");
+        for (&gid, inset) in stack_dropblur.keys().map(|g| (g, false)).chain(stack_innerblur.keys().map(|g| (g, true))) {
+            let sil = self.pool.acquire_target(device, width, acc_h, format, self.raster_usage, "wv shadow silhouette");
             let sv = sil.create_view(&wgpu::TextureViewDescriptor::default());
             let mut sscene = backend.new_scene(width as u16, acc_h as u16);
-            backend.build_shadow_silhouette(&mut sscene, root, gid, 0, false, true, false);
+            // A drop blurs its OFFSET drop silhouette; an inner blurs its OFFSET INSET silhouette (the
+            // punch). Both untinted (white coverage) — the band/spread marker carries the colour.
+            backend.build_shadow_silhouette(&mut sscene, root, gid, 0, inset, true, false);
             backend.rasterize(&sscene, device, queue, &mut enc, &sv, width, acc_h, TRANSPARENT);
             self.frame_transient.push(sil);
             self.frame_transient_views.push(sv.clone());
@@ -2111,6 +2191,27 @@ impl Sink {
                         backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &views[out]);
                         cur = Some(out);
                     }
+                    Some(WindowRole::InnerV(gid)) => {
+                        // Blur V of the draft, MATERIALISE the 2D-blurred punch to its own scratch (does not
+                        // touch the accumulator — the body still paints normally). The band reads it later.
+                        let c = cur.expect("an inner shadow composites over a backdrop");
+                        let dv = draft_views.get(&(window_lo - 1)).expect("inner V after its H");
+                        let pt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv inner punch");
+                        let pv = pt.create_view(&wgpu::TextureViewDescriptor::default());
+                        backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &pv);
+                        self.frame_transient.push(pt);
+                        self.stack_punch.insert(gid, pv);
+                    }
+                    Some(WindowRole::InnerBand(gid)) => {
+                        // The band: read the materialised punch (`input_in`) and lay the shadow colour where
+                        // the shape's flood coverage (`area[i]`, the unoffset outline) is NOT under it —
+                        // the SPREAD|ERASE arm — source-OVER the body already in the accumulator.
+                        let c = cur.expect("an inner band composites over the body");
+                        let out = 1 - c;
+                        let punch = self.stack_punch.get(&gid).expect("inner punch materialised by its V").clone();
+                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &punch, &views[out]);
+                        cur = Some(out);
+                    }
                     Some(WindowRole::Frost(stage)) => {
                         // A frosted lens chain link. Every link reads the accumulator (`views[c]`, the
                         // backdrop) as `base`. Stages 0..3 write to a private scratch and DON'T advance the
@@ -2199,7 +2300,7 @@ impl Sink {
                     flush_mark = passes_recorded();
                 }
                 match kind {
-                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, None, sub, stack_reload_sub.get(&gid).copied(), stack_spread.contains_key(&gid) || stack_dropblur.contains_key(&gid)),
+                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, None, sub, stack_reload_sub.get(&gid).copied(), stack_spread.contains_key(&gid) || stack_dropblur.contains_key(&gid), stack_innerblur.contains_key(&gid)),
                     _ if sub > 0 => {}
                     // An inline effect ran in fine at its CMD_EFFECT marker(s); no post-fine pass. Pointwise
                     // (tint/field) rides fx_offset; a fine gather (glass/blur) rides fx_markers.
@@ -3324,6 +3425,7 @@ impl Sink {
         sub: u32,
         reload_sub: Option<u32>,
         drops_ride_fine: bool,
+        inners_ride_fine: bool,
     ) {
         let stack = crate::vello::abi::with_scene(|live, _, _| {
             live.get(id).map(crate::effect::effect_stack).unwrap_or_default()
@@ -3424,7 +3526,9 @@ impl Sink {
                         }
                         body_done = true;
                     }
-                    if here {
+                    // A soft inner that rides fine builds its band as the InnerBand marker (over the body);
+                    // the painter must not also blit it.
+                    if here && !inners_ride_fine {
                         if let (Some(flood), Some(punch)) = (find(2, inner_i), source(3, inner_i)) {
                             self.wv_paint_inner_shadow(flood, punch, backend, device, queue, enc, acc_view, root, format, sz);
                         }
@@ -5223,6 +5327,74 @@ impl Sink {
                 }
             }
             if drops == 1 {
+                chain
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The three-marker inline chain for a SOFT (σ≥0.5) INNER shadow on a pure inner+body PATH stack.
+    /// The punch is the shape's OFFSET silhouette blurred (H → V, materialised to a scratch); the band
+    /// marker then lays the shadow colour where the shape's own coverage (`area[i]`, the UNOFFSET outline)
+    /// is NOT under that punch — `cov*(1-punch.a)` — OVER the body (the ERASE bit in the SPREAD arm):
+    /// - H: `BLUR(64)|MATERIALIZE(512)` axis `(1,0)` — reads the offset silhouette (`input_in`) → draft.
+    /// - V: `BLUR(64)|MATERIALIZE(512)` axis `(0,1)` — reads the draft → the punch scratch.
+    /// - band: `SPREAD(128)|ERASE(2)` — reads the punch scratch (`input_in`), flood coverage in `area[i]`.
+    /// `None` unless every effect is a soft inset shadow or the body, and exactly one inset shadow.
+    fn wv_innerblur_passes(&self, gid: u128, full_view: Affine, _w: u32, _h: u32) -> Option<Vec<[f32; 26]>> {
+        crate::vello::abi::with_scene(|live, _, _| {
+            let n = live.get(gid)?;
+            if n.kind != crate::model::ShapeKind::Path {
+                return None;
+            }
+            let stack = crate::effect::effect_stack(n);
+            if stack.is_empty() {
+                return None;
+            }
+            let cs = full_view.as_coeffs();
+            let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
+            let mut chain: Option<Vec<[f32; 26]>> = None;
+            let mut inners = 0usize;
+            for e in &stack {
+                match (&e.source, e.compose) {
+                    (crate::effect::Source::Coverage { .. }, crate::effect::Compose::Over) => {
+                        inners += 1;
+                        // An inner shadow's blur rides on its EraseBy op (the punch's own radius).
+                        let blur = e.ops.iter().find_map(|op| match op {
+                            crate::effect::Op::EraseBy { blur, .. } => Some(*blur),
+                            _ => None,
+                        });
+                        let sigma = blur.map_or(0.0, |r| crate::blur::radius_to_sigma(r) * scale);
+                        if sigma < 0.5 {
+                            return None; // sharp inner — keeps the graph path for now
+                        }
+                        let color = e.ops.iter().find_map(|op| match op {
+                            crate::effect::Op::Tint(c) => Some(*c),
+                            _ => None,
+                        })?;
+                        let [r, g, b, a] = color.components;
+                        let mut h = [0.0f32; 26];
+                        h[0] = 64.0 + 512.0; // BLUR | MATERIALIZE
+                        h[2] = 1.0;
+                        h[4] = sigma;
+                        let mut v = [0.0f32; 26];
+                        v[0] = 64.0 + 512.0; // BLUR | MATERIALIZE (2D-blurred punch → scratch)
+                        v[3] = 1.0;
+                        v[4] = sigma;
+                        let mut band = [0.0f32; 26];
+                        band[0] = 128.0 + 2.0; // SPREAD | ERASE (flood minus punch, over body)
+                        band[14] = r;
+                        band[15] = g;
+                        band[16] = b;
+                        band[17] = a;
+                        chain = Some(vec![h, v, band]);
+                    }
+                    (crate::effect::Source::Body, _) => {}
+                    _ => return None,
+                }
+            }
+            if inners == 1 {
                 chain
             } else {
                 None
