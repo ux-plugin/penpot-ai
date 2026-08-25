@@ -17,8 +17,16 @@ use std::rc::Rc;
 use crate::effect_graph::Src;
 use crate::field::FieldProgram;
 use crate::kurbo::Rect;
-use crate::vello::batch::FieldUniform;
 use crate::vello::units::UnitOp;
+
+/// One fused run's field parameters — the same 24-float composed uniform the per-shape pipeline binds
+/// ([`super::units`]), carried per instance so every cell in a coalesced op has its own. `align(16)`
+/// matches the WGSL `array<vec4<f32>, 6>` a backend maps it to.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct FieldUniform {
+    pub u: [f32; 24],
+}
 
 /// One cell an [`Op`] draws: where it lands (`dst`), what slice of the input it reads (`src`), the UV
 /// clamp confining that read to its own cell in a shared atlas, its per-cell field parameters, and
@@ -154,9 +162,8 @@ pub fn coalesce(ops: Vec<Op>, caps: Caps) -> FxSchedule {
 
 #[cfg(test)]
 mod coalesce_tests {
-    use super::{coalesce, Caps, Instance, Op, Target};
+    use super::{coalesce, Caps, FieldUniform, Instance, Op, Target};
     use crate::kurbo::Rect;
-    use crate::vello::batch::FieldUniform;
     use crate::vello::units::UnitOp;
 
     fn field() -> std::rc::Rc<crate::field::FieldProgram> {

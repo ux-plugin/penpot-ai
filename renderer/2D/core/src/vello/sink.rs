@@ -75,36 +75,6 @@ fn wv_device_box(page: crate::kurbo::Rect, full_view: Affine, width: u32, height
     (bw > 0 && bh > 0).then_some((bx, by, bw, bh))
 }
 
-/// The frame's instanced-batch plan: which FX_STACK shapes run through the per-stage passes, and the
-/// instances each stage draws. `h`/`v` cover every batched cell once; `c` is ordered by round, then
-/// by the shape's own stack order (shadows before body — instance order IS composite order), with
-/// `c_ranges` naming each round's slice.
-struct WvBatchPlan {
-    h: Vec<crate::vello::batch::Inst>,
-    v: Vec<crate::vello::batch::Inst>,
-    /// EraseBy band materialisations, one per inner shadow, drawn in ONE combine pass.
-    combine: Vec<crate::vello::batch::Inst>,
-    /// The erase draw's unit uniforms, one per instance — where `EraseBy` reads its strength.
-    combine_f: Vec<crate::vello::batch::FieldUniform>,
-    /// The frame's stages in dependency order — the blur pair and the combine hoisted out of the
-    /// round loop, one composite pinned to each round that has work. Which atlas each one writes is
-    /// the planner's answer, not a constant here ([`crate::vello::plan::colour_stages`]).
-    stages: Vec<crate::vello::batch::Stage>,
-    /// How many scratch atlases the colouring needs — A4's chromatic number, which is what the
-    /// executor has to pool. Two for today's chains; a stage reading two live atlases would raise it
-    /// without anything else changing.
-    atlases: usize,
-    /// The CELLS the batch composites. Admission is per entry, not per shape: a stack with one
-    /// custom-shader body used to send its plain drop shadows down the per-shape path too, which is
-    /// why the 4K stress scene batched nothing at all.
-    taken: HashSet<(u128, u8, usize)>,
-    /// For a cell the batch declined, which of its shape's rounds the per-shape painter draws it in.
-    /// Absent means round offset zero, which is every shape the batch never looked at.
-    legacy_sub: HashMap<(u128, u8, usize), u32>,
-    /// Extra rounds a shape needs beyond its own, because the batch had to step over a declined
-    /// entry. Zero for a shape the batch took whole.
-    extra: HashMap<u128, u32>,
-}
 
 /// The straight RGBA this cell's chain tints with, read off the chain itself.
 ///
@@ -293,352 +263,6 @@ fn batch_admit(passes: &[Pass]) -> Option<BatchShape> {
         }
     }
     Some(BatchShape::Stamp { sigma, linear, ops: tail })
-}
-
-/// [`batch_admit`] for one cell, lowering the cell's OWN chain the way the executor will. Nothing
-/// is reconstructed here: a chain the stages cannot run declines because of what it is.
-fn wv_batch_cell_shape(c: &Cell) -> Option<BatchShape> {
-    batch_admit(&c.passes)
-}
-
-/// One cell's unit uniform — the same 24 floats the per-shape pipeline binds, which is now what the
-/// batch binds too.
-///
-/// A chain with no `Tint` gets the disabling sentinel (alpha below zero) rather than a zero colour,
-/// because the pointwise arms carry `Tint` unconditionally so that a coloured silhouette and an
-/// uncoloured body can ride the same draw. Zero would multiply the body away.
-fn wv_stamp_uniform(ops: &[crate::vello::units::UnitOp]) -> crate::vello::batch::FieldUniform {
-    let mut u = crate::vello::units::units_uniform(ops);
-    if !ops.iter().any(|o| matches!(o, crate::vello::units::UnitOp::Tint(_))) {
-        u[12..16].copy_from_slice(&[0.0, 0.0, 0.0, -1.0]);
-    }
-    crate::vello::batch::FieldUniform { u }
-}
-
-/// Which pointwise arm a composite draw of `ops` runs. `Tint` is always in it (self-disabling), and
-/// every other pointwise unit the tail carries adds its bit — so a unit the admission accepted is
-/// automatically reachable in the shader, with no second list to keep in step.
-fn wv_composite_bits(ops: &[crate::vello::units::UnitOp]) -> u32 {
-    use crate::vello::batch::pointwise;
-    use crate::vello::units::UnitOp;
-    let mut bits = pointwise::TINT;
-    for op in ops {
-        if matches!(op, UnitOp::ClipToSource(_)) {
-            bits |= pointwise::CLIP;
-        }
-    }
-    bits
-}
-
-/// Build the batch plan for this frame, or `None` when batching is off or nothing qualifies.
-///
-/// Each candidate cell carries its own lowered chain ([`Cell::graph`]) and is admitted iff
-/// [`wv_batch_supported`] — so the batch executes the same IR the per-shape path executes, through
-/// instanced stages instead of private pass chains. Shapes stay per-shape when their stack composes
-/// mid-backdrop (lens), carries custom `Shader` ops, or blurs past what the instanced stage
-/// expresses; inner shadows batch through the combine (`EraseBy`) stage.
-fn wv_batch_plan(
-    gathers: &[(usize, u128, u8)],
-    rounds: &[u32],
-    packing: &crate::atlas::Packing,
-    cells: &[(Cell, usize)],
-    strip_y: u32,
-    acc_size: (f32, f32),
-) -> Option<WvBatchPlan> {
-    let atlas_size = (packing.width as f32, packing.height as f32);
-    let mut place: HashMap<(u128, u8, usize), (u32, u32)> = HashMap::new();
-    for pl in &packing.cells {
-        place.insert(cells[pl.index].0.key, (pl.x, pl.y));
-    }
-    let mut plan = WvBatchPlan {
-        h: Vec::new(),
-        v: Vec::new(),
-        combine: Vec::new(),
-        combine_f: Vec::new(),
-        stages: Vec::new(),
-        atlases: 0,
-        taken: HashSet::new(),
-        legacy_sub: HashMap::new(),
-        extra: HashMap::new(),
-    };
-    // Keyed by round AND by the arm the draw runs: instances of one round that compose differently
-    // are different draws, because an arm is per-pipeline-invocation and not per-instance. Today
-    // every stamp composes the same way and this is one group per round, exactly as before.
-    type Group = (Vec<crate::vello::batch::Inst>, Vec<crate::vello::batch::FieldUniform>);
-    let mut by_round: std::collections::BTreeMap<(u32, u32), Group> =
-        std::collections::BTreeMap::new();
-    for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
-        if kind != FX_STACK {
-            continue;
-        }
-        let stack = crate::vello::abi::with_scene(|live, _, _| {
-            live.get(gid).map(crate::effect::effect_stack).unwrap_or_default()
-        });
-        let shape_cells: Vec<&Cell> =
-            cells.iter().map(|(c, _)| c).filter(|c| c.key.0 == gid).collect();
-        // A scoped backdrop reads the accumulator mid-stack and is composed by `wv_stamp_gather`
-        // for the whole shape at once, so it is still all-or-nothing. Everything else is admitted
-        // ENTRY BY ENTRY below.
-        if stack.iter().any(|e| matches!(e.source, Source::Backdrop)) || shape_cells.is_empty() {
-            continue;
-        }
-        let find = |kind: u8, idx: usize| {
-            shape_cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).copied()
-        };
-        #[derive(Clone, Copy)]
-        enum Emit<'a> {
-            Cell(&'a Cell),
-            Inner { flood: &'a Cell, punch: &'a Cell },
-            /// An entry the batch declined. It is not a hole: it holds the position the per-shape
-            /// painter has to composite in, which is what the round assignment below reads.
-            Legacy(Option<(u128, u8, usize)>),
-        }
-        let placed = |c: &Cell| place.contains_key(&c.key);
-        let stampable = |c: &Cell| {
-            // WV_SHADOW_FINE routes shadow silhouettes through the fine pre-pass + per-shape painters,
-            // so the batch must NOT claim them — declining here drops them to the per-shape path where
-            // `wv_paint_path_shadow` / `wv_paint_inner_shadow` blit the fine-blurred layer. Drops are
-            // kind 0; an inner shadow's flood (kind 2) and punch (kind 3) both decline so the whole
-            // band falls to `wv_paint_inner_shadow`.
-            placed(c) && matches!(wv_batch_cell_shape(c), Some(BatchShape::Stamp { .. }))
-                && !(wv_shadow_fine() && matches!(c.key.1, 0 | 2 | 3))
-        };
-        let mut emit: Vec<Emit> = Vec::new();
-        let (mut drop_i, mut inner_i, mut body_done) = (0usize, 0usize, false);
-        // The body appears at most once, so its verdict is a value rather than something recomputed
-        // at each of the three places the stack can reach it. A shaded body declines inside
-        // `stampable` now: its chain carries the `Custom` pass, and no stamp stage runs one.
-        let body = match find(1, 0) {
-            Some(c) if stampable(c) => Emit::Cell(c),
-            Some(c) => Emit::Legacy(Some(c.key)),
-            None => Emit::Legacy(None),
-        };
-        for e in &stack {
-            match (&e.source, e.compose) {
-                (Source::Coverage { .. }, Compose::Under) => {
-                    match find(0, drop_i) {
-                        Some(c) if stampable(c) => emit.push(Emit::Cell(c)),
-                        Some(c) => emit.push(Emit::Legacy(Some(c.key))),
-                        None => {}
-                    }
-                    drop_i += 1;
-                }
-                (Source::Body, _) => {
-                    if !body_done {
-                        emit.push(body);
-                        body_done = true;
-                    }
-                }
-                (Source::Coverage { .. }, Compose::Over) => {
-                    // The per-shape path paints the body before its first inner shadow; the batch
-                    // preserves that by emitting it here in the same position.
-                    if !body_done {
-                        emit.push(body);
-                        body_done = true;
-                    }
-                    match (find(2, inner_i), find(3, inner_i)) {
-                        (Some(flood), Some(punch)) if stampable(flood) && stampable(punch) => {
-                            emit.push(Emit::Inner { flood, punch });
-                        }
-                        // A planned inner shadow the batch cannot express keeps its position and
-                        // goes back to the per-shape painter — dropping it would change pixels.
-                        (Some(flood), _) => emit.push(Emit::Legacy(Some(flood.key))),
-                        _ => emit.push(Emit::Legacy(None)),
-                    }
-                    inner_i += 1;
-                }
-                _ => {}
-            }
-        }
-        if !body_done {
-            emit.push(body);
-        }
-        if !emit.iter().any(|e| !matches!(e, Emit::Legacy(_))) {
-            continue;
-        }
-        let rects = |c: &Cell| {
-            let (px, py) = place[&c.key];
-            let (kwf, khf) = (c.kw as f32, c.kh as f32);
-            (
-                (px as f32, (strip_y + py) as f32, kwf, khf),
-                (px as f32, py as f32, kwf, khf),
-                (c.geom.bx(), c.geom.by(), c.geom.bw(), c.geom.bh()),
-            )
-        };
-        // The cell's parameters come from its lowered graph, not from the cell fields — the builder
-        // owns the sigma/linear semantics for BOTH paths. An empty graph is the identity: the cell
-        // rides the blur stages as a sigma-0 copy so every batched cell lands in the surface the
-        // later stages sample.
-        let params = |c: &Cell| match wv_batch_cell_shape(c) {
-            Some(BatchShape::Stamp { sigma, linear, .. }) => (sigma, linear),
-            _ => (0.0, false),
-        };
-        let cell_units = |c: &Cell| match wv_batch_cell_shape(c) {
-            Some(BatchShape::Stamp { ops, .. }) => ops,
-            _ => Vec::new(),
-        };
-        let mut blur = |plan: &mut WvBatchPlan, c: &Cell| {
-            let (strip_rect, atlas_rect, _) = rects(c);
-            let (sigma_dev, linear) = params(c);
-            plan.h.push(crate::vello::batch::Inst::new(
-                atlas_rect, atlas_size, strip_rect, acc_size, (1.0, 0.0), sigma_dev, linear,
-            ));
-            plan.v.push(crate::vello::batch::Inst::new(
-                atlas_rect, atlas_size, atlas_rect, atlas_size, (0.0, 1.0), sigma_dev, linear,
-            ));
-        };
-        // Slot order inside a round is fixed by the executor: the batch stages run first, then the
-        // per-shape painters. So an entry the batch takes that FOLLOWS one it declined cannot sit in
-        // the same round — it would composite underneath what should be beneath it. Moving it to the
-        // next round is the whole of the fix, and it is the only reason the batch splits a shape.
-        //
-        // Stepping over a round is safe because of what [`wv_rounds`] guarantees. The extra round
-        // flushes the fine window that holds every marker at this shape's own round, and shapes that
-        // SHARE a round are reach-disjoint by construction — so nothing that window materialises can
-        // overlap the pixels this suffix writes. Markers below the shape were already beneath it,
-        // and markers above it flush a round later, exactly as before. Instances inside one round
-        // keep gather order, which is z order, so a suffix never overtakes a shape above it.
-        let mut sub = 0u32;
-        let mut after_legacy = false;
-        for e in &emit {
-            match e {
-                Emit::Legacy(key) => {
-                    after_legacy = true;
-                    if let Some(k) = key {
-                        plan.legacy_sub.insert(*k, sub);
-                    }
-                }
-                _ if after_legacy => {
-                    sub += 1;
-                    after_legacy = false;
-                }
-                _ => {}
-            }
-        }
-        let extra = sub;
-        let mut sub = 0u32;
-        let mut after_legacy = false;
-        for e in emit {
-            if matches!(e, Emit::Legacy(_)) {
-                after_legacy = true;
-            } else if after_legacy {
-                sub += 1;
-                after_legacy = false;
-            }
-            let round = rounds[j] + sub;
-            match e {
-                Emit::Legacy(_) => {}
-                Emit::Cell(c) => {
-                    plan.taken.insert(c.key);
-                    blur(&mut plan, c);
-                    let (_, atlas_rect, frame_rect) = rects(c);
-                    let ops = cell_units(c);
-                    let g = by_round.entry((round, wv_composite_bits(&ops))).or_default();
-                    g.0.push(
-                        crate::vello::batch::Inst::new(
-                            frame_rect, acc_size, atlas_rect, atlas_size, (0.0, 0.0), 0.0, false,
-                        )
-                        .with_units(g.1.len()),
-                    );
-                    g.1.push(wv_stamp_uniform(&ops));
-                }
-                Emit::Inner { flood, punch } => {
-                    blur(&mut plan, flood);
-                    blur(&mut plan, punch);
-                    let (_, flood_rect, frame_rect) = rects(flood);
-                    let (_, punch_rect, _) = rects(punch);
-                    // Materialise the band in atlas A at the flood's own rect (both reads from B),
-                    // then composite it from A — `mode` 1 selects the second texture. The two draws
-                    // run different halves of the same chain: the erase materialises the band, the
-                    // composite colours it, and each reads its parameters out of the flood's own
-                    // uniform.
-                    let ops = cell_units(flood);
-                    plan.combine.push(
-                        crate::vello::batch::Inst::new(
-                            flood_rect, atlas_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
-                        )
-                        .with_src2(punch_rect, atlas_size, 0.0)
-                        .with_units(plan.combine_f.len()),
-                    );
-                    plan.combine_f.push(wv_stamp_uniform(&ops));
-                    plan.taken.insert(flood.key);
-                    plan.taken.insert(punch.key);
-                    let g = by_round.entry((round, wv_composite_bits(&ops))).or_default();
-                    g.0.push(
-                        crate::vello::batch::Inst::new(
-                            frame_rect, acc_size, flood_rect, atlas_size, (0.0, 0.0), 0.0, false,
-                        )
-                        .with_src2(punch_rect, atlas_size, 1.0)
-                        .with_units(g.1.len()),
-                    );
-                    g.1.push(wv_stamp_uniform(&ops));
-                }
-            }
-        }
-        if extra > 0 {
-            plan.extra.insert(gid, extra);
-        }
-    }
-    if plan.taken.is_empty() {
-        return None;
-    }
-    {
-        use crate::vello::batch::{stage, Stage, Surface};
-        use crate::vello::plan::{atlases_needed, colour_stages, Input, StageSpec, Target, ValueId};
-        // The surfaces are not chosen here. Each stage declares what it READS, and A3 — never write
-        // an atlas you read in the same draw — decides where it writes. The ping-pong, and the fact
-        // that the erase can land back in the first atlas, are consequences of that rule rather than
-        // constants this function has to keep consistent with the executor.
-        let spec = [
-            StageSpec { reads: vec![Input::External(0)], target: Target::Atlas },
-            StageSpec { reads: vec![Input::Value(ValueId(0))], target: Target::Atlas },
-            StageSpec {
-                reads: vec![Input::Value(ValueId(1)), Input::Value(ValueId(1))],
-                target: Target::Atlas,
-            },
-            StageSpec {
-                reads: vec![Input::Value(ValueId(1)), Input::Value(ValueId(2))],
-                target: Target::Accumulator,
-            },
-        ];
-        let colour = colour_stages(&spec);
-        let at = |i: usize| Surface::Atlas(colour[i].expect("an atlas stage was coloured"));
-        plan.atlases = atlases_needed(&colour);
-        plan.stages
-            .push(Stage::new(stage::BLUR, at(0), Surface::Acc, std::mem::take(&mut plan.h)).cleared());
-        plan.stages
-            .push(Stage::new(stage::BLUR, at(1), at(0), std::mem::take(&mut plan.v)).cleared());
-        plan.stages.push(
-            Stage::new(
-                crate::vello::batch::arm_tag(crate::vello::batch::pw_key(crate::vello::batch::pointwise::ERASE)),
-                at(2),
-                at(1),
-                std::mem::take(&mut plan.combine),
-            )
-            .with_fields(std::mem::take(&mut plan.combine_f)),
-        );
-        for ((r, bits), (insts, fields)) in by_round {
-            plan.stages.push(
-                Stage::new(crate::vello::batch::arm_tag(crate::vello::batch::pw_key(bits)), Surface::Acc, at(1), insts)
-                    .with_src2(at(2))
-                    .with_fields(fields)
-                    .composited()
-                    .with_round(r),
-            );
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    if std::env::var("WV_BATCH_STATS").is_ok() {
-        eprintln!(
-            "wv batch: cells={} declined={} split={} stages={} instances={}",
-            plan.taken.len(),
-            plan.legacy_sub.len(),
-            plan.extra.len(),
-            plan.stages.len(),
-            plan.stages.iter().map(|s| s.insts.len()).sum::<usize>(),
-        );
-    }
-    Some(plan)
 }
 
 /// Rasterize a batch of shape silhouettes into `target` as a stencil for effect masking. Each item
@@ -841,6 +465,47 @@ fn wv_shadow_fine() -> bool {
     false
 }
 
+/// Routes an FX_STACK node's BACKDROP effect (its glass/blur, which reads the accumulator mid-stack)
+/// through `fine` as a marker instead of the imperative `wv_stamp_gather` → `run_chain`. The stack
+/// FRACTURES across two rounds: its z-below layers (drops) composite at round R, the glass marker
+/// reloads that materialised backdrop at R+1, and the body/inner composite after it. Default ON as of
+/// the effects-in-fine collapse; `WV_STACK_GATHER_FINE=0` forces the whole stack back onto `run_chain`.
+fn wv_stack_gather_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_STACK_GATHER_FINE").map_or(true, |v| v != "0");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
+/// Sibling of [`wv_stack_gather_fine`] for a FROSTED-backdrop stack: routes the 5-link frost chain
+/// through fine over a 7-round block (drops, warp, blur H/V, scatter, tail, then the BODY one round past
+/// the tail — an imperative body sharing the tail round is overwritten by the tail's masked composite).
+/// Default ON as of the effects-in-fine collapse; `WV_STACK_FROST_FINE=0` forces the frosted stack back
+/// onto `run_chain` (the A/B oracle).
+fn wv_stack_frost_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_STACK_FROST_FINE").map_or(true, |v| v != "0");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
+/// A sharp glass lens on a non-box shape (a path) follows its real OUTLINE, not a rounded box: its
+/// distance comes from a baked signed-distance field of the outline ([`crate::field::FieldSource::Sampled`],
+/// program 4) rather than the analytic `sdfRoundedBox`. Default ON; `WV_GLASS_SHAPE=0` forces the
+/// analytic box (the pre-SDF behaviour) for the A/B oracle.
+fn wv_glass_shape_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_GLASS_SHAPE").map_or(true, |v| v != "0");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// Effect-node kinds the whole-viewport driver dispatches on. `FX_GATHER` is a pure gather (its body
 /// stays in the shared walk); `FX_STACK` carries a non-box shadow, a layer blur or a spread shader, so
 /// its body is excluded from the walk and its whole ordered stack runs at the boundary.
@@ -861,55 +526,32 @@ const TILE_PX: u32 = 16;
 #[derive(Clone)]
 struct Cell {
     /// `(node, kind, index)`. Kind is `0` drop silhouette, `1` body, `2` inner flood, `3` inner
-    /// punch for a spread, and [`GATHER_KIND`] for a gather (whose index disambiguates siblings).
+    /// punch for a spread (the index disambiguates siblings).
     key: (u128, u8, usize),
-    /// The round this cell composites in, assigned by [`wv_rounds`]. Set for a gather (the round loop
-    /// filters on it); a spread's round is applied by [`wv_batch_plan`]/[`Sink::wv_paint_stack`] from
-    /// the shared `rounds` array, so this stays `0` on a spread cell.
-    round: u32,
-    /// Device box, render scale `k`, device sigma and the `k < 1` sharp flag — the shared geometry.
-    /// (`geom.sharp` is always `false` for a spread: a stamp never Catmull-Rom-upscales.)
+    /// Device box, render scale `k`, device sigma. (`geom.sharp` is always `false` for a spread: a
+    /// stamp never Catmull-Rom-upscales.)
     geom: CellGeom,
-    /// This cell's effect, LOWERED once to runnable [`Pass`]es — the shared units-IR chain both the
-    /// batch (`batch_admit`) and the per-shape executor (`wv_effect_blit`) consume. A self-clipping
-    /// lens carries its lowered chain here too; the round re-derives its head + tail via
-    /// [`batch_admit`] (no separate `warp`/`tail` fields). A plain blur/custom gather leaves this
-    /// empty and re-derives from the node (`wv_gather_graph`).
+    /// This cell's effect, LOWERED once to runnable [`Pass`]es — the shared units-IR chain the
+    /// per-shape executor (`wv_effect_blit`) consumes.
     passes: std::rc::Rc<Vec<Pass>>,
     /// The straight RGBA tint a spread chain applies, pre-extracted when the cell is built.
     tint: Option<[f32; 4]>,
-    /// Spread reduced surface size (its atlas slot is assigned by an external [`crate::atlas::Packing`]
-    /// keyed on `key`). A gather leaves these `0` and carries its slot in `cell`/`red` instead.
+    /// Reduced surface size (its atlas slot is assigned by an external [`crate::atlas::Packing`]
+    /// keyed on `key`).
     kw: u32,
     kh: u32,
-    /// A gather's own atlas slot rect (`cell`) and the reduced sub-rect its warp/blur render into
-    /// (`red`, nested inside `cell`). Both `(0,0,0,0)` on a spread.
-    cell: (f32, f32, f32, f32),
-    red: (f32, f32, f32, f32),
-    /// How this cell's source pixels are obtained — the one spread/gather axis (see [`CellSource`]).
+    /// How this cell's source pixels are obtained (see [`CellSource`]).
     source: CellSource,
-    /// A custom-shader gather (a `Custom` head), run per-cell then joined to the shared masked
-    /// composite. `false` for spreads, glass and blur gathers.
-    custom: bool,
 }
 
-/// The one irreducible spread/gather axis: how a cell's source pixels are obtained. This is NOT
-/// derivable from the effect chain, which is why it is a field. Everything else about a cell — glass
-/// vs blur vs custom, tint, self-clip vs mask-composite — is read off the chain.
+/// The one irreducible spread axis: how a cell's source pixels are obtained. This is NOT derivable
+/// from the effect chain, which is why it is a field.
 #[derive(Clone)]
 enum CellSource {
     /// Spread: rasterise the shape's silhouette into the cell and run the chain over it. `offset` is
     /// the device translation the chain applies (a filter graph's `Offset`); `(0, 0)` for most.
     Silhouette { offset: (f32, f32) },
-    /// Gather: crop the backdrop region out of the accumulator and run the chain over it. A chain with
-    /// a sampling head (a lens) self-clips via its SDF (`mask: None`); a headless chain (blur/custom)
-    /// composites through a rasterised silhouette placed at `mask` (the packer writes the rect;
-    /// `None` until it does).
-    Crop { mask: Option<(f32, f32, f32, f32)> },
 }
-
-/// The `key.1` a gather cell carries — distinct from the spread kinds `0..=3`.
-const GATHER_KIND: u8 = 9;
 
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
 const MAX_POOL_PER_KEY: usize = 32;
@@ -1079,7 +721,6 @@ pub struct Sink {
     compositor: Compositor,
     unit_pipeline: UnitPipeline,
     /// Instanced batch pipelines (blur H/V + per-round composite), built on first batched frame.
-    batch_pipes: Option<crate::vello::batch::BatchPipelines>,
     /// Physical surface per logical ref, this frame. Slice-1 allocates fresh each frame (no
     /// cross-frame reuse yet — that folds in with the tile cache later).
     surfaces: HashMap<SurfaceRef, Surface>,
@@ -1178,6 +819,11 @@ pub struct Sink {
     /// consecutive blend composites in one encoder reuses it in order, which is safe because passes in
     /// an encoder execute in submission order. `(texture, format)` so a format change rebuilds it.
     blend_scratch: Option<(wgpu::Texture, wgpu::TextureFormat)>,
+
+    /// The signed-distance-field bake pipeline for shape-following (`Sampled`) glass — a lens on a path
+    /// or other non-box shape reads a baked SDF of its real outline instead of the analytic rounded
+    /// box. Built once, lazily (the first sampled lens), since most frames have none.
+    sdf_baker: Option<crate::vello::sdf::SdfBaker>,
 }
 
 impl Sink {
@@ -1185,7 +831,6 @@ impl Sink {
         Self {
             compositor: Compositor::new(device, format),
             unit_pipeline: UnitPipeline::new(device, format),
-            batch_pipes: None,
             surfaces: HashMap::new(),
             written: HashSet::new(),
             backdrop_origin: HashMap::new(),
@@ -1208,6 +853,7 @@ impl Sink {
             last_view: None,
             wv_gathers_cache: None,
             blend_scratch: None,
+            sdf_baker: None,
         }
     }
 
@@ -1675,19 +1321,87 @@ impl Sink {
         } else {
             vec![false; gathers.len()]
         };
-        let any_frost = frost_gather.iter().any(|&f| f);
-        let rounds: Vec<u32> = if any_frost {
+        // Glass-in-a-stack rides fine (gated `WV_STACK_GATHER_FINE`): a stack whose BACKDROP is a glass
+        // fractures — its z-below layers (drops) composite at the block's FIRST round, the glass RELOADS
+        // that materialised backdrop at the next round(s), and the body/inner composite on the last.
+        // SHARP glass is a single reload marker (2-round block); FROSTED is the 5-link chain (6-round
+        // block, the chain OFFSET one round past the drops). A pure-sharp frame skips the block layout and
+        // uses the cheaper ×2 doubling instead. `stack_fine[gid]` = the sharp descriptor;
+        // `stack_frost[gid]` = the frosted 5-descriptor chain — a stack is in at most one.
+        let mut stack_fine: std::collections::HashMap<u128, [f32; 26]> = if wv_stack_gather_fine() {
+            gathers
+                .iter()
+                .filter(|(_, _, k)| *k == FX_STACK)
+                .filter_map(|&(_, gid, _)| {
+                    let u = self.wv_lens_fine_uniform(gid, full_view, width, height)?;
+                    let mut d = [0.0f32; 26];
+                    d[0] = 56.0; // bits = SHADE(8) | MASKMIX(16) | WARP(32)
+                    d[1] = 1.0; // program = lens
+                    d[2..26].copy_from_slice(&u);
+                    Some((gid, d))
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+        let stack_frost: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_stack_frost_fine() && wv_frost_fine() {
+            gathers
+                .iter()
+                .filter(|(_, _, k)| *k == FX_STACK)
+                .filter_map(|&(_, gid, _)| self.wv_frost_passes(gid, full_view, width, height).map(|c| (gid, c)))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+        // Shape-following (`Sampled`) glass: for each SHARP stack whose shape is a PATH the field distance
+        // comes from a baked SDF of the real outline, not the analytic box — flip the descriptor to program
+        // 4 with `decode` in the corner slot (`u[1].z` = `d[8]`). A FROSTED stack does NOT need this: its
+        // TAIL clips to the silhouette (`area[i]`) so the shape follows regardless, and the warp
+        // displacement is washed out by the blur — so the SDF there was invisible. Gated `WV_GLASS_SHAPE`.
+        let stack_sdf: std::collections::HashMap<u128, (Vec<[f32; 4]>, (u32, u32, u32, u32), f32)> =
+            if wv_glass_shape_fine() {
+                stack_fine
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .filter_map(|gid| {
+                        let segs = self.wv_lens_sdf_segments(gid, full_view)?;
+                        let (bx, by, bw, bh, _k) = self.wv_lens_box(gid, full_view, width, height)?;
+                        // half = u[1].xy = uni[4], uni[5]; decode sizes the box so interior distances
+                        // stay in the encoded [0, 1] range.
+                        let u = self.wv_lens_fine_uniform(gid, full_view, width, height)?;
+                        let decode = 2.0 * u[4].max(u[5]);
+                        Some((gid, (segs, (bx, by, bw, bh), decode)))
+                    })
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+        for (gid, (_, _, decode)) in &stack_sdf {
+            if let Some(d) = stack_fine.get_mut(gid) {
+                d[1] = 4.0; // program = sampled lens (baked SDF)
+                d[8] = *decode; // u[1].z = decode
+            }
+        }
+        let frost_stack_gather: Vec<bool> =
+            gathers.iter().map(|&(_, gid, _)| stack_frost.contains_key(&gid)).collect();
+        let sharp_stack_gather: Vec<bool> =
+            gathers.iter().map(|&(_, gid, _)| stack_fine.contains_key(&gid)).collect();
+        let any_frost = frost_gather.iter().any(|&f| f) || frost_stack_gather.iter().any(|&f| f);
+        let mut rounds: Vec<u32> = if any_frost {
             // With a frosted chain in play the timeline is laid out in CONTIGUOUS blocks, grouped by the
-            // reach round (z-order) and, within each, by kind — frost (5 rounds) then blur (2) then the
-            // rest (1). Two rules drive it: (a) different-KIND links write different scratch targets, so
-            // they must not share a round; (b) the window tracking the routing keys on breaks on a GAP,
-            // so blocks pack with no empty rounds between them. Reach-disjoint gathers of the SAME kind
-            // and reach round share one block (their scratch writes land in disjoint regions).
+            // reach round (z-order) and, within each, by kind — standalone frost (5 rounds), a frosted
+            // stack (6 = drops + 5), a sharp stack (2 = drops + glass), blur (2), the rest (1). Two rules
+            // drive it: (a) different-KIND links write different scratch targets, so they must not share a
+            // round; (b) the window tracking the routing keys on breaks on a GAP, so blocks pack with no
+            // empty rounds between them. Reach-disjoint gathers of the SAME kind and reach round share one
+            // block (their scratch writes land in disjoint regions).
             let base = rounds.clone();
             let max_base = base.iter().copied().max().unwrap_or(0);
             let mut out = vec![0u32; gathers.len()];
             let mut cursor = 1u32;
-            let mut lay = |out: &mut Vec<u32>, cursor: &mut u32, pick: &dyn Fn(usize) -> bool, span: u32| {
+            let lay = |out: &mut Vec<u32>, cursor: &mut u32, pick: &dyn Fn(usize) -> bool, span: u32| {
                 let group: Vec<usize> = (0..gathers.len()).filter(|&j| pick(j)).collect();
                 if !group.is_empty() {
                     for &j in &group {
@@ -1698,8 +1412,16 @@ impl Sink {
             };
             for br in 0..=max_base {
                 lay(&mut out, &mut cursor, &|j| base[j] == br && frost_gather[j], 5);
+                // 7 = drops + 5 frost links + a trailing round for the BODY. The body must land the round
+                // AFTER the frost tail: an imperative paint at round X runs BEFORE the fine marker at
+                // round X (whose window is [X,X+1), dispatched next iteration), so a body sharing the tail
+                // round would be OVERWRITTEN by the tail's masked composite (it reads base_in = the body).
+                lay(&mut out, &mut cursor, &|j| base[j] == br && frost_stack_gather[j], 7);
+                lay(&mut out, &mut cursor, &|j| base[j] == br && sharp_stack_gather[j], 2);
                 lay(&mut out, &mut cursor, &|j| base[j] == br && blur_gather[j] && !frost_gather[j], 2);
-                lay(&mut out, &mut cursor, &|j| base[j] == br && !frost_gather[j] && !blur_gather[j], 1);
+                lay(&mut out, &mut cursor, &|j| {
+                    base[j] == br && !frost_gather[j] && !frost_stack_gather[j] && !sharp_stack_gather[j] && !blur_gather[j]
+                }, 1);
             }
             out
         } else {
@@ -1709,18 +1431,34 @@ impl Sink {
                 .map(|(&r, &b)| if b { (2 * r).saturating_sub(1) } else { 2 * r })
                 .collect()
         };
-        let mut max_round = rounds.iter().copied().max().unwrap_or(0);
-        let batch_plan = strip.as_ref().and_then(|(packing, cells)| {
-            wv_batch_plan(&gathers, &rounds, packing, cells, strip_y, (width as f32, acc_h as f32))
-        });
-        // A shape the batch had to split occupies rounds beyond its own, so the loop has to reach
-        // them. Rounds with no draws open no fine segment, so the only cost is the split shape's
-        // second composite.
-        if let Some(plan) = batch_plan.as_ref() {
-            for (j, (_, gid, _)) in gathers.iter().enumerate() {
-                if let Some(extra) = plan.extra.get(gid) {
-                    max_round = max_round.max(rounds[j] + extra);
+        // No frost anywhere: sharp stacks ride the cheaper ×2 doubling — every round doubles, freeing the
+        // odd "R+1" slot for a stack's glass reload without colliding with a separable blur's H/V pair
+        // (which stay a consecutive pair below their ×2 grid point).
+        if !any_frost && !stack_fine.is_empty() {
+            for r in &mut rounds {
+                *r *= 2;
+            }
+        }
+        // A sharp stack's glass reload + body land ONE round past its drops (the block/×2 both put the
+        // drops at rounds[j]). A frosted stack's chain runs at rounds[j]+1..+5 and its body on the tail
+        // (round +5). `stack_reload_sub[gid]` = the round OFFSET at which the body composites (1 sharp,
+        // 5 frosted) — the fracture phase `wv_paint_stack` paints its post-backdrop layers at.
+        let stack_reload_sub: std::collections::HashMap<u128, u32> = gathers
+            .iter()
+            .filter_map(|&(_, gid, _)| {
+                if stack_frost.contains_key(&gid) {
+                    Some((gid, 6))
+                } else if stack_fine.contains_key(&gid) {
+                    Some((gid, 1))
+                } else {
+                    None
                 }
+            })
+            .collect();
+        let mut max_round = rounds.iter().copied().max().unwrap_or(0);
+        for (j, &(_, gid, _)) in gathers.iter().enumerate() {
+            if let Some(&s) = stack_reload_sub.get(&gid) {
+                max_round = max_round.max(rounds[j] + s);
             }
         }
         // Effects-in-fine WARP gathers (linchpin, gated `WV_GLASS_FINE=1`): a sharp glass routed
@@ -1748,7 +1486,6 @@ impl Sink {
         // As many scratch atlases as the stage colouring asked for — A4's chromatic number, not a
         // pair this function decided on. Textures and their views are kept apart so the views can be
         // borrowed as a slice for the executor.
-        let mut batch_rt: Option<(Vec<wgpu::Texture>, Vec<wgpu::TextureView>)> = None;
 
         // Effects-in-fine: descriptors for effects that run INLINE in fine (backdrop-tint so far).
         // Each is [bits, program, then the 24-float unit uniform]; the marker carries its float offset
@@ -1764,8 +1501,28 @@ impl Sink {
         // A fine gather emits ONE marker per pass, at successive rounds R, R+1, … — the separable blur
         // is two markers (H, V), the planner's whole say over the passes; the executor runs each.
         let mut fx_markers: HashMap<u128, Vec<(u32, u32)>> = HashMap::new();
+        // A fine-backdrop STACK's glass markers as (round, fx_params offset): SHARP glass is one marker
+        // at the reload round R+1; FROSTED is the 5-link chain at R+1..R+5. Emitted beside the eid=6
+        // window marker in the draw loop below. All use DILATED coverage (see there).
+        let mut stack_markers: HashMap<u128, Vec<(u32, u32)>> = HashMap::new();
         for (j, &(_gi, gid, kind)) in gathers.iter().enumerate() {
             if kind == FX_STACK {
+                if let Some(d) = stack_fine.get(&gid) {
+                    let off = fx_params.len() as u32;
+                    fx_params.extend_from_slice(d);
+                    stack_markers.insert(gid, vec![(rounds[j] + 1, off)]);
+                } else if let Some(chain) = stack_frost.get(&gid) {
+                    let markers = chain
+                        .iter()
+                        .enumerate()
+                        .map(|(p, d)| {
+                            let off = fx_params.len() as u32;
+                            fx_params.extend_from_slice(d);
+                            (rounds[j] + 1 + p as u32, off)
+                        })
+                        .collect();
+                    stack_markers.insert(gid, markers);
+                }
                 continue;
             }
             if let Some(passes) = fx_fine.get(&gid) {
@@ -1867,6 +1624,32 @@ impl Sink {
                     z += 1;
                     backend.draw_effect_marker(&mut scene, root, gid, effect_id, z, rounds[_j], fx_p2, reaches[_j]);
                     if kind == FX_STACK {
+                        // A fine-backdrop stack ALSO emits its glass marker (inline WARP, silhouette
+                        // coverage) at the RELOAD round — one past the eid=6 window marker its drops
+                        // composited under. The eid=6 marker opens the drops window (round R); this
+                        // reloads the materialised backdrop at R+1 and the body composites over it.
+                        // DILATED coverage (the reach rect, not the node silhouette): the lens SDF is its
+                        // own shape (a rounded rect that may differ from a path body), so the MASKMIX field
+                        // does the shaping and the coverage must not clip it to the node's outline — exactly
+                        // the run_chain/tiled oracle's self-clipping lens. A frosted chain's intermediate
+                        // links materialise scratch over the reach too, so dilated fits every marker.
+                        if let Some(markers) = stack_markers.get(&gid) {
+                            // A FROSTED stack is a 5-link chain whose TAIL (shade+maskmix) composites the
+                            // masked result: it needs the SILHOUETTE (`FX_TINT_ID`) so `area[i]` clips the
+                            // frost to the node's real outline — its analytic-box maskmix does NOT shape a
+                            // path. The intermediate links (and the sharp stack's SDF-masked marker) keep
+                            // the dilated reach-rect. This mirrors the standalone frost chain's coverage.
+                            let is_frost = stack_frost.contains_key(&gid);
+                            for (mi, &(mround, moff)) in markers.iter().enumerate() {
+                                z += 1;
+                                let eid = if is_frost && mi == markers.len() - 1 {
+                                    FX_TINT_ID
+                                } else {
+                                    FX_TINT_DILATED_ID
+                                };
+                                backend.draw_effect_marker(&mut scene, root, gid, eid, z, mround, moff, reaches[_j]);
+                            }
+                        }
                         cursor = gi + 1;
                     }
                 }
@@ -1892,7 +1675,9 @@ impl Sink {
         // read-only backdrop to sample cross-tile without racing. So force ping-pong when one rides.
         let rw = backend.rw_accumulator()
             && format == wgpu::TextureFormat::Rgba8Unorm
-            && fx_fine.is_empty();
+            && fx_fine.is_empty()
+            && stack_fine.is_empty()
+            && stack_frost.is_empty();
         let n_slots: usize = if rw { 1 } else { 2 };
         let texs: Vec<wgpu::Texture> = (0..n_slots)
             .map(|_| self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv phase"))
@@ -1900,18 +1685,94 @@ impl Sink {
         let views: Vec<wgpu::TextureView> =
             texs.iter().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default())).collect();
 
+        // Shape-following glass: bake every sampled lens's outline SDF into ONE viewport-sized scratch,
+        // each into its own device rectangle (disjoint, so they share the texture the way the frost
+        // chain shares its scratch). Bound as `input_in` at each `SampledGlass` window below; `fine`
+        // reads it at the device pixel. Built once the frame has any sampled lens; the baker is lazy.
+        let sdf_view: Option<wgpu::TextureView> = if stack_sdf.is_empty() {
+            None
+        } else {
+            if self.sdf_baker.is_none() {
+                self.sdf_baker = Some(crate::vello::sdf::SdfBaker::new(device));
+            }
+            let tex = self.pool.acquire_target(
+                device,
+                width,
+                acc_h,
+                crate::vello::sdf::SDF_FORMAT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                "wv glass sdf",
+            );
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let baker = self.sdf_baker.as_ref().expect("sdf baker just built");
+            let mut first = true;
+            for (segs, region, decode) in stack_sdf.values() {
+                baker.bake_into(device, &mut enc, &view, segs, *region, *decode, first);
+                first = false;
+            }
+            self.frame_transient.push(tex);
+            Some(view)
+        };
+
         // A separable blur is TWO fine markers (H then V) at consecutive rounds. The H pass writes its
         // UNMASKED result to this draft (a scratch surface, not the accumulator) so the V pass can
         // sample the full blurred field while `base_in` still holds the original backdrop — the mask
-        // then applies exactly once, at V. `blur_round_role` names, per round, whether that round's
-        // window is a blur's H pass (draft is its `out`) or V pass (draft is its extra input). Only the
-        // ping-pong path carries base_in, so blurs already force it off the rw accumulator (fx_fine).
-        let mut blur_round_role: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
-        for (j, &(_, gid, _)) in gathers.iter().enumerate() {
-            if let Some(passes) = fx_fine.get(&gid) {
-                if passes.len() == 2 && (passes[0][0] as u32) & 64u32 != 0 {
-                    blur_round_role.insert(rounds[j], false); // H
-                    blur_round_role.insert(rounds[j] + 1, true); // V
+        // then applies exactly once, at V. `WindowRole::BlurH`/`BlurV` name, per round, whether that
+        // round's window is a blur's H pass (draft is its `out`) or V pass (draft is its extra input).
+        // Only the ping-pong path carries base_in, so blurs already force it off the rw accumulator (fx_fine).
+        // ONE order-driven plan folds what were three ad-hoc routing maps (rw / blur-H-V / frost-stage):
+        // for a window's start round it names the ROLE the fine dispatch plays there, and the dispatch
+        // resolves that role's surfaces from the shared scratch stores below. A round ABSENT from the map
+        // is a plain ping-pong window. `Rw` (single accumulator, applied to every round) is mutually
+        // exclusive with the blur/frost roles — a blur or frost forces the ping-pong path (`rw` requires
+        // `fx_fine` empty) — so the two arms of the build below never overlap. The rounds themselves were
+        // assigned in the effects' declared order (contiguous per-kind blocks), so walking the map in
+        // round order walks the composition in the order the node declared.
+        #[derive(Clone, Copy)]
+        enum WindowRole {
+            /// Single rw accumulator, updated in place.
+            Rw,
+            /// A separable blur's H pass: reads the accumulator, writes a fresh draft (keyed by this round).
+            BlurH,
+            /// A blur's V pass: reads the accumulator + the draft its H wrote (round − 1), composites masked.
+            BlurV,
+            /// A frosted lens chain link, stage 0..=4 (warp / blur-H / blur-V / scatter / tail).
+            Frost(u8),
+            /// A sharp shape-following glass: a single WARP reload that reads the backdrop (`base_in`)
+            /// AND the baked SDF of the shape's outline (`input_in`) for its `Sampled` field distance.
+            SampledGlass,
+        }
+        let mut window_role: std::collections::HashMap<u32, WindowRole> = std::collections::HashMap::new();
+        if rw {
+            for r in 1..=max_round {
+                window_role.insert(r, WindowRole::Rw);
+            }
+        } else {
+            for (j, &(_, gid, _)) in gathers.iter().enumerate() {
+                // A FROSTED stack's chain runs one round PAST its drops (rounds[j] = the drops round), so
+                // its Frost windows are offset +1; the sharp stack's single glass marker rides a plain
+                // ping-pong (None) window at rounds[j]+1. Neither is in `fx_fine` (both ride `stack_*`).
+                if frost_stack_gather[j] {
+                    for p in 0..5u32 {
+                        window_role.insert(rounds[j] + 1 + p, WindowRole::Frost(p as u8));
+                    }
+                    continue;
+                }
+                // A sharp SHAPE-FOLLOWING stack: its single glass reload (round +1 past the drops, the
+                // same slot the analytic sharp stack rides as a plain `None` window) needs the SDF bound
+                // as `input_in`, so it takes the `SampledGlass` role instead.
+                if sharp_stack_gather[j] && stack_sdf.contains_key(&gid) {
+                    window_role.insert(rounds[j] + 1, WindowRole::SampledGlass);
+                    continue;
+                }
+                let Some(passes) = fx_fine.get(&gid) else { continue };
+                if frost_gather[j] {
+                    for p in 0..5u32 {
+                        window_role.insert(rounds[j] + p, WindowRole::Frost(p as u8));
+                    }
+                } else if passes.len() == 2 && (passes[0][0] as u32) & 64u32 != 0 {
+                    window_role.insert(rounds[j], WindowRole::BlurH);
+                    window_role.insert(rounds[j] + 1, WindowRole::BlurV);
                 }
             }
         }
@@ -1924,21 +1785,11 @@ impl Sink {
         let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
         let mut draft_views: std::collections::HashMap<u32, wgpu::TextureView> = std::collections::HashMap::new();
 
-        // A FROSTED lens is a five-link chain over a reserved 5-round block: warp (stage 0) → blur H (1)
-        // → blur V (2) → scatter (3) → tail shade+maskmix (4). `frost_stage` names each round's link;
-        // the four intermediate links write to a private set of scratch surfaces (one texture per link
-        // so no in-block surface is both read and written — the same-texture hazard the blur draft
-        // taught), keyed by the block's start round and shared by every reach-disjoint lens in it.
-        let mut frost_stage: std::collections::HashMap<u32, u8> = std::collections::HashMap::new();
-        if any_frost {
-            for (j, &f) in frost_gather.iter().enumerate() {
-                if f {
-                    for p in 0..5u32 {
-                        frost_stage.insert(rounds[j] + p, p as u8);
-                    }
-                }
-            }
-        }
+        // A FROSTED lens is a five-link chain over its reserved 5-round block (warp / blur-H / blur-V /
+        // scatter / tail) — named per round by `WindowRole::Frost` above. The four intermediate links
+        // write to a private set of scratch surfaces (one texture per link so no in-block surface is both
+        // read and written — the same-texture hazard the blur draft taught), keyed by the block's start
+        // round and shared by every reach-disjoint lens in it.
         let mut frost_texs: Vec<wgpu::Texture> = Vec::new();
         let mut frost_scratch: std::collections::HashMap<u32, [wgpu::TextureView; 4]> = std::collections::HashMap::new();
 
@@ -1970,7 +1821,6 @@ impl Sink {
                     let sil_view = if cell.key.1 == 0 {
                         let (odx, ody) = match &cell.source {
                             CellSource::Silhouette { offset } => (f64::from(offset.0), f64::from(offset.1)),
-                            CellSource::Crop { .. } => (0.0, 0.0),
                         };
                         let m = Affine::scale(f64::from(cell.geom.k))
                             * Affine::translate((odx - f64::from(cell.geom.bx()), ody - f64::from(cell.geom.by())))
@@ -2024,7 +1874,18 @@ impl Sink {
                         w >= lo && (hi == crate::vello::rasterize::SEG_ALL || w < hi)
                     })
                 });
-                (in_window && draws_after(j) > 0) || fine_here
+                // A fine-backdrop stack's rounds are work even without a scene draw after them: the DROPS
+                // round (rounds[j], where its z-below layers composite and its backdrop materialises) and
+                // every glass marker round (the reload chain + the body). The drops round MUST open its own
+                // window — if it merged forward into the warp round (which happens when the stack has no
+                // drops and nothing draws after it, e.g. a glass-first stack late in z) the frost chain
+                // desyncs and renders nothing.
+                let stack_here = stack_markers.get(&gathers[j].1).is_some_and(|markers| {
+                    let drops = rounds[j];
+                    (drops >= lo && (hi == crate::vello::rasterize::SEG_ALL || drops < hi))
+                        || markers.iter().any(|&(w, _)| w >= lo && (hi == crate::vello::rasterize::SEG_ALL || w < hi))
+                });
+                (in_window && draws_after(j) > 0) || fine_here || stack_here
             })
         };
         let mut window_lo = 0u32;
@@ -2043,71 +1904,88 @@ impl Sink {
             // coalescing gate reads.
             if window_has_draws(window_lo, r) {
                 note_passes_of(pass_kind::FINE, 2);
-                if rw {
-                    // The FIRST window keeps the plain clearing permutation (write-only, clears to
-                    // the base color in-shader — no load, exactly the ping-pong phase 0); only the
-                    // windows after it go in-place, where the read is the price of skipping
-                    // untouched tiles entirely.
-                    if cur.is_none() {
-                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, None, &views[0]);
-                        cur = Some(0);
-                    } else {
-                        backend.phased_fine_segment_rw(device, queue, &mut enc, window_lo, r, &views[0]);
+                match window_role.get(&window_lo).copied() {
+                    Some(WindowRole::Rw) => {
+                        // The FIRST window keeps the plain clearing permutation (write-only, clears to
+                        // the base color in-shader — no load, exactly the ping-pong phase 0); only the
+                        // windows after it go in-place, where the read is the price of skipping
+                        // untouched tiles entirely.
+                        if cur.is_none() {
+                            backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, None, &views[0]);
+                            cur = Some(0);
+                        } else {
+                            backend.phased_fine_segment_rw(device, queue, &mut enc, window_lo, r, &views[0]);
+                        }
                     }
-                } else if let Some(&is_v) = blur_round_role.get(&window_lo) {
-                    // A separable blur window. H: read the accumulator (backdrop), write a fresh draft,
-                    // and DON'T advance the ping-pong — the accumulator still holds the original
-                    // backdrop the V pass needs for its margin. V: read that backdrop as base_in AND the
-                    // draft its H wrote (keyed at `round - 1`) as the blur source, composite masked.
-                    let c = cur.expect("a blur has a backdrop to read");
-                    if is_v {
-                        let out = 1 - c;
-                        let dv = draft_views.get(&(window_lo - 1)).expect("blur V after its H");
-                        backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &views[out]);
-                        cur = Some(out);
-                    } else {
+                    Some(WindowRole::BlurH) => {
+                        // Read the accumulator (backdrop), write a fresh draft, and DON'T advance the
+                        // ping-pong — the accumulator still holds the original backdrop the V pass needs.
+                        let c = cur.expect("a blur has a backdrop to read");
                         let dt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv blur draft");
                         let dv = dt.create_view(&wgpu::TextureViewDescriptor::default());
                         backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), &dv);
                         draft_views.insert(window_lo, dv);
                         draft_texs.push(dt);
                     }
-                } else if let Some(&stage) = frost_stage.get(&window_lo) {
-                    // A frosted lens chain link. Every link reads the accumulator (`views[c]`, the
-                    // backdrop) as `base`. Stages 0..3 write to a private scratch and DON'T advance the
-                    // ping-pong (the backdrop must survive for the warp displacement and the tail's
-                    // maskmix orig); the tail (stage 4) composites masked into the next slot.
-                    let c = cur.expect("a frost chain has a backdrop to read");
-                    let block = window_lo - u32::from(stage);
-                    if stage == 0 {
-                        let mut mk = |label| {
-                            let t = self.pool.acquire_target(device, width, acc_h, format, phase_usage, label);
-                            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
-                            frost_texs.push(t);
-                            v
-                        };
-                        frost_scratch.insert(
-                            block,
-                            [mk("wv frost warp"), mk("wv frost blurH"), mk("wv frost blurV"), mk("wv frost scatter")],
-                        );
+                    Some(WindowRole::BlurV) => {
+                        // Read that backdrop as base_in AND the draft its H wrote (keyed at `round − 1`)
+                        // as the blur source, composite masked.
+                        let c = cur.expect("a blur has a backdrop to read");
+                        let out = 1 - c;
+                        let dv = draft_views.get(&(window_lo - 1)).expect("blur V after its H");
+                        backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &views[out]);
+                        cur = Some(out);
                     }
-                    let sc = frost_scratch.get(&block).expect("frost scratch allocated at stage 0");
-                    match stage {
-                        0 => backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), &sc[0]),
-                        1 => backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[0], &sc[1]),
-                        2 => backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], &sc[1], &sc[2]),
-                        3 => backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[2], &sc[3]),
-                        _ => {
-                            let out = 1 - c;
-                            backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[3], &views[out]);
-                            cur = Some(out);
+                    Some(WindowRole::Frost(stage)) => {
+                        // A frosted lens chain link. Every link reads the accumulator (`views[c]`, the
+                        // backdrop) as `base`. Stages 0..3 write to a private scratch and DON'T advance the
+                        // ping-pong (the backdrop must survive for the warp displacement and the tail's
+                        // maskmix orig); the tail (stage 4) composites masked into the next slot.
+                        let c = cur.expect("a frost chain has a backdrop to read");
+                        let block = window_lo - u32::from(stage);
+                        if stage == 0 {
+                            let mut mk = |label| {
+                                let t = self.pool.acquire_target(device, width, acc_h, format, phase_usage, label);
+                                let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+                                frost_texs.push(t);
+                                v
+                            };
+                            frost_scratch.insert(
+                                block,
+                                [mk("wv frost warp"), mk("wv frost blurH"), mk("wv frost blurV"), mk("wv frost scatter")],
+                            );
+                        }
+                        let sc = frost_scratch.get(&block).expect("frost scratch allocated at stage 0");
+                        match stage {
+                            0 => backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), &sc[0]),
+                            1 => backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[0], &sc[1]),
+                            2 => backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], &sc[1], &sc[2]),
+                            3 => backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[2], &sc[3]),
+                            _ => {
+                                let out = 1 - c;
+                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sc[3], &views[out]);
+                                cur = Some(out);
+                            }
                         }
                     }
-                } else {
-                    let out = cur.map_or(0, |c| 1 - c);
-                    let base = cur.map(|c| &views[c]);
-                    backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, base, &views[out]);
-                    cur = Some(out);
+                    Some(WindowRole::SampledGlass) => {
+                        // A sharp shape-following glass: read the materialised backdrop (`base_in`) for
+                        // the refracted sample AND the baked SDF (`input_in`) for the field distance, then
+                        // composite masked into the next slot — exactly the analytic sharp stack's reload,
+                        // plus the SDF input. The drops already ran, so the accumulator holds the backdrop.
+                        let c = cur.expect("a sampled glass has a materialised backdrop to read");
+                        let out = 1 - c;
+                        let sdf = sdf_view.as_ref().expect("a SampledGlass window has a baked SDF");
+                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], sdf, &views[out]);
+                        cur = Some(out);
+                    }
+                    None => {
+                        // A plain ping-pong window: read the current accumulator, write the other slot.
+                        let out = cur.map_or(0, |c| 1 - c);
+                        let base = cur.map(|c| &views[c]);
+                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, base, &views[out]);
+                        cur = Some(out);
+                    }
                 }
                 window_lo = r;
             } else if cur.is_none() {
@@ -2126,49 +2004,13 @@ impl Sink {
             // one-per-consumer between the effect passes cost ~45 ms/frame at 4K in encoder churn
             // (measured); issued back-to-back here they cost ~3 ms.
             if let Some((packing, cells)) = strip.as_ref().filter(|_| !strip_filled) {
-                self.wv_atlas_copy_out(
-                    device, &mut enc, &texs[ci], packing, cells, 0, strip_y, format,
-                    batch_plan.as_ref().map(|p| &p.taken),
-                );
-                // Batched shapes never materialise per-cell textures at all: TWO instanced passes
-                // blur every batched cell in place in a packed pair of atlas surfaces, and the
-                // per-round composite draws straight from the second. Stage count is constant in
-                // the number of shapes.
-                if let Some(plan) = batch_plan.as_ref() {
-                    let (aw, ah) = (packing.width, packing.height);
-                    let pipes = self
-                        .batch_pipes
-                        .get_or_insert_with(|| crate::vello::batch::BatchPipelines::new(device, format));
-                    let texs: Vec<wgpu::Texture> = (0..plan.atlases)
-                        .map(|_| {
-                            self.pool.acquire_target(
-                                device,
-                                aw,
-                                ah,
-                                format,
-                                wgpu::TextureUsages::empty(),
-                                "wv batch atlas",
-                            )
-                        })
-                        .collect();
-                    let atlas_views: Vec<wgpu::TextureView> =
-                        texs.iter().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default())).collect();
-                    let refs: Vec<&wgpu::TextureView> = atlas_views.iter().collect();
-                    pipes.run_stages(device, &mut enc, &plan.stages, None, &views[ci], &refs, self.compositor.sampler());
-                    // Held OUTSIDE `frame_transient` on purpose: the per-node recycle point
-                    // truncates that list back to its pre-loop checkpoint, and the blurred atlas
-                    // must survive every round. It returns to the pool after the final window.
-                    batch_rt = Some((texs, atlas_views));
-                }
+                self.wv_atlas_copy_out(device, &mut enc, &texs[ci], packing, cells, 0, strip_y, format, None);
                 strip_filled = true;
             }
-            if let (Some(plan), Some((_, atlas_views))) = (batch_plan.as_ref(), batch_rt.as_ref()) {
-                let pipes = self.batch_pipes.as_ref().expect("batch pipelines built with the plan");
-                let refs: Vec<&wgpu::TextureView> = atlas_views.iter().collect();
-                pipes.run_stages(device, &mut enc, &plan.stages, Some(r), &views[ci], &refs, self.compositor.sampler());
-            }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
-                let extra = batch_plan.as_ref().and_then(|p| p.extra.get(&gid).copied()).unwrap_or(0);
+                // A fine-backdrop stack spans its reload sub too: R (drops, sub 0) through R+reload (glass
+                // marker(s) + body). Its glass rides fine, so the whole stack runs per-shape here.
+                let extra = stack_reload_sub.get(&gid).copied().unwrap_or(0);
                 if r < rounds[j] || r > rounds[j] + extra {
                     continue;
                 }
@@ -2181,9 +2023,8 @@ impl Sink {
                     Self::submit_batch(&mut enc, device, queue, backend);
                     flush_mark = passes_recorded();
                 }
-                let claim = batch_plan.as_ref().map(|p| (&p.taken, &p.legacy_sub));
                 match kind {
-                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, claim, sub),
+                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, None, sub, stack_reload_sub.get(&gid).copied()),
                     _ if sub > 0 => {}
                     // An inline effect ran in fine at its CMD_EFFECT marker(s); no post-fine pass. Pointwise
                     // (tint/field) rides fx_offset; a fine gather (glass/blur) rides fx_markers.
@@ -2201,6 +2042,15 @@ impl Sink {
                     backend.phased_fine_segment_rw(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[0]);
                 }
                 0
+            } else if matches!(window_role.get(&window_lo), Some(WindowRole::SampledGlass)) {
+                // The sharp shape-following glass marker often lands in THIS final window (a lone stack has
+                // nothing after it). Honor the role here too: bind the backdrop + SDF like the in-loop arm,
+                // else the marker runs load_base-only and `program 4` falls through to a null field.
+                let c = cur.expect("a sampled glass has a materialised backdrop to read");
+                let out = 1 - c;
+                let sdf = sdf_view.as_ref().expect("a SampledGlass window has a baked SDF");
+                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], sdf, &views[out]);
+                out
             } else {
                 let out = cur.map_or(0, |c| 1 - c);
                 let base = cur.map(|c| &views[c]);
@@ -2213,10 +2063,6 @@ impl Sink {
             seed_clear(&mut enc, &views[0]);
             0
         };
-        if let Some((texs, atlas_views)) = batch_rt.take() {
-            self.frame_transient.extend(texs);
-            self.frame_transient_views.extend(atlas_views);
-        }
         // The blur drafts lived across the whole round loop (like the batch atlases); hand them to the
         // frame-transient list so they return to the pool after the frame, not at a per-node recycle.
         self.frame_transient.extend(draft_texs);
@@ -2424,6 +2270,22 @@ impl Sink {
     /// The device box and render scale one scoped lens reads and writes — the same derivation
     /// [`Self::wv_stamp_gather_scoped`] does, factored out so the batch planner and the per-shape
     /// path can never disagree about a lens's geometry.
+    /// The lens shape's outline as DEVICE-space line segments for the SDF bake — `Some` only for a path
+    /// (a non-box shape whose glass must follow the real outline, not the analytic rounded box). The
+    /// outline is `full_view · modifier · local`, exactly the device transform the shape is drawn under,
+    /// so the baked field lands on the shape's own device pixels.
+    fn wv_lens_sdf_segments(&self, id: u128, full_view: Affine) -> Option<Vec<[f32; 4]>> {
+        let path = crate::vello::abi::with_scene(|live, _, modifiers| {
+            let n = live.get(id)?;
+            if n.kind != crate::model::ShapeKind::Path {
+                return None;
+            }
+            let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+            Some(full_view * m * crate::geometry::outline(n))
+        })?;
+        Some(crate::vello::sdf::flatten_segments(&path, 0.3))
+    }
+
     fn wv_lens_box(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Option<(u32, u32, u32, u32, f64)> {
         use crate::kurbo::Point;
         let page = crate::vello::abi::with_scene(|live, _, modifiers| {
@@ -2703,15 +2565,11 @@ impl Sink {
                 let graph = wv_cell_graph(effect, kind, kw, kh, sigma * k);
                 out.push(Cell {
                     key: (id, kind, index),
-                    round: 0,
                     geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma, sharp: false },
                     passes: std::rc::Rc::new(lower_graph(&graph, None)),
                     tint: graph_tint(&graph),
                     kw, kh,
-                    cell: (0.0, 0.0, 0.0, 0.0),
-                    red: (0.0, 0.0, 0.0, 0.0),
                     source: CellSource::Silhouette { offset: dev_offset },
-                    custom: false,
                 });
             }
             match kinds[0] {
@@ -2726,15 +2584,11 @@ impl Sink {
                 let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
                 out.push(Cell {
                     key: (id, 1, 0),
-                    round: 0,
                     geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma: 0.0, sharp: false },
                     passes: std::rc::Rc::new(Vec::new()),
                     tint: None,
                     kw, kh,
-                    cell: (0.0, 0.0, 0.0, 0.0),
-                    red: (0.0, 0.0, 0.0, 0.0),
                     source: CellSource::Silhouette { offset: (0.0, 0.0) },
-                    custom: false,
                 });
             }
         }
@@ -2877,7 +2731,6 @@ impl Sink {
     fn wv_cell_transform(c: &Cell, place: &crate::atlas::Placement, ox: u32, oy: u32, root: Affine) -> Affine {
         let (dox, doy) = match &c.source {
             CellSource::Silhouette { offset } => *offset,
-            CellSource::Crop { .. } => (0.0, 0.0),
         };
         Affine::translate((f64::from(ox + place.x), f64::from(oy + place.y)))
             * Affine::scale(f64::from(c.geom.k))
@@ -3046,7 +2899,6 @@ impl Sink {
         // move by the same device vector or the two cancel out. Zero for every cell without one.
         let (odx, ody) = match &c.source {
             CellSource::Silhouette { offset } => (f64::from(offset.0), f64::from(offset.1)),
-            CellSource::Crop { .. } => (0.0, 0.0),
         };
         let m = Affine::scale(f64::from(c.geom.k))
             * Affine::translate((odx - f64::from(c.geom.bx()), ody - f64::from(c.geom.by())))
@@ -3295,6 +3147,7 @@ impl Sink {
         sz: (f32, f32),
         claim: Option<(&HashSet<(u128, u8, usize)>, &HashMap<(u128, u8, usize), u32>)>,
         sub: u32,
+        reload_sub: Option<u32>,
     ) {
         let stack = crate::vello::abi::with_scene(|live, _, _| {
             live.get(id).map(crate::effect::effect_stack).unwrap_or_default()
@@ -3316,12 +3169,25 @@ impl Sink {
         // An entry the batch composites is not this painter's to draw; one it declined is, but only
         // in the round the plan put it in. A shape the batch never looked at has neither, so every
         // entry is mine and they all sit in round offset zero.
+        //
+        // When the backdrop rides fine (`reload_sub` = Some), the stack instead FRACTURES across rounds
+        // and `sub` is the z-PHASE relative to the fine glass marker(s): the layers BEFORE the backdrop
+        // (drops) paint at sub 0, the layers AFTER it (body, inner) at sub == reload_sub (1 for a sharp
+        // glass marker, 5 for the frosted chain's tail), with the glass reloading the materialised
+        // backdrop on the rounds between. The batch never claims a backdrop stack, so `mine` is bypassed
+        // and the phase gate replaces it.
+        let fine_backdrop = reload_sub.is_some();
+        let body_sub = reload_sub.unwrap_or(0);
         let mine = |key: &(u128, u8, usize)| match claim {
             Some((taken, legacy)) => !taken.contains(key) && legacy.get(key).copied().unwrap_or(0) == sub,
             None => sub == 0,
         };
         let find = |kind: u8, idx: usize| {
-            cells.iter().find(|c| c.key.1 == kind && c.key.2 == idx).cloned().filter(|c| mine(&c.key))
+            cells
+                .iter()
+                .find(|c| c.key.1 == kind && c.key.2 == idx)
+                .cloned()
+                .filter(|c| fine_backdrop || mine(&c.key))
         };
         // The inner shadow's punch is an INPUT to the flood's chain, never composited on its own, so
         // it is not claimed and not assigned a round — the flood's verdict covers both. Filtering it
@@ -3332,41 +3198,58 @@ impl Sink {
 
         let (mut drop_i, mut inner_i) = (0usize, 0usize);
         let mut body_done = false;
+        // z-phase relative to the fine glass marker(s): 0 before them (drops paint at sub 0), 1 after
+        // (body/inner paint at sub == body_sub). With no fine backdrop `here` is always true, so the whole
+        // stack paints in one round.
+        let mut phase = 0u32;
+        let here_at = |phase: u32| !fine_backdrop || sub == if phase == 0 { 0 } else { body_sub };
         for effect in &stack {
+            let here = here_at(phase);
             match (&effect.source, effect.compose) {
                 (Source::Coverage { .. }, Compose::Under) => {
-                    if let Some(c) = find(0, drop_i) {
-                        self.wv_paint_path_shadow(c, backend, device, queue, enc, acc_view, root, format, sz);
+                    if here {
+                        if let Some(c) = find(0, drop_i) {
+                            self.wv_paint_path_shadow(c, backend, device, queue, enc, acc_view, root, format, sz);
+                        }
                     }
                     drop_i += 1;
                 }
                 (Source::Backdrop, _) => {
-                    if sub == 0 {
+                    if fine_backdrop {
+                        // The glass rides fine at the reload round; everything after it is phase 1.
+                        phase = 1;
+                    } else if sub == 0 {
                         self.wv_stamp_gather(backend, device, queue, enc, acc_view, root, full_view, id, width, height, format, sz);
                     }
                 }
                 (Source::Body, _) => {
-                    if let Some(c) = find(1, 0) {
-                        self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
+                    if here {
+                        if let Some(c) = find(1, 0) {
+                            self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
+                        }
                     }
                     body_done = true;
                 }
                 (Source::Coverage { .. }, Compose::Over) => {
                     if !body_done {
-                        if let Some(c) = find(1, 0) {
-                            self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
+                        if here {
+                            if let Some(c) = find(1, 0) {
+                                self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
+                            }
                         }
                         body_done = true;
                     }
-                    if let (Some(flood), Some(punch)) = (find(2, inner_i), source(3, inner_i)) {
-                        self.wv_paint_inner_shadow(flood, punch, backend, device, queue, enc, acc_view, root, format, sz);
+                    if here {
+                        if let (Some(flood), Some(punch)) = (find(2, inner_i), source(3, inner_i)) {
+                            self.wv_paint_inner_shadow(flood, punch, backend, device, queue, enc, acc_view, root, format, sz);
+                        }
                     }
                     inner_i += 1;
                 }
                 _ => {}
             }
         }
-        if !body_done {
+        if !body_done && here_at(phase) {
             if let Some(c) = find(1, 0) {
                 self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
             }
@@ -5220,49 +5103,6 @@ mod batch_admission_tests {
         ] {
             assert!(matches!(admit(&g), Some(BatchShape::Stamp { .. })), "expected a stamp");
         }
-    }
-
-    /// The tail reaches the composite through admission, so a unit's parameters cannot be read one
-    /// way by the batch and another way by the fallback.
-    #[test]
-    fn a_stamp_carries_its_units_out_of_admission() {
-        let Some(BatchShape::Stamp { ops, sigma, .. }) = admit(&drop_shadow_graph(64.0, 64.0, C, 4.0))
-        else {
-            panic!("a drop shadow is a stamp")
-        };
-        let u = super::wv_stamp_uniform(&ops);
-        assert_eq!(&u.u[12..16], &C, "the tint's colour survives into the uniform the batch binds");
-        assert!(sigma > 0.0, "a blurred drop shadow keeps its sigma");
-    }
-
-    /// An empty chain is still a stamp — the cell rides the blur stages as a sigma-0 copy so every
-    /// batched cell lands in the surface the later stages sample — and its uniform disables the
-    /// tint rather than zeroing it, or the body would be multiplied away.
-    #[test]
-    fn an_empty_chain_is_an_untinted_stamp() {
-        assert_eq!(admit(&[]), Some(BatchShape::Stamp { sigma: 0.0, linear: false, ops: Vec::new() }));
-        assert!(super::wv_stamp_uniform(&[]).u[15] < 0.0);
-    }
-
-    /// The tail is not a list of names. A pointwise unit no chain builds today still admits, and
-    /// its composition selects an arm that exists — which is what stops the shader's arm set and
-    /// the admission rule from drifting apart.
-    #[test]
-    fn a_pointwise_unit_no_builder_emits_still_admits() {
-        use crate::vello::units::UnitOp;
-        let clip = crate::vello::graph::Pass {
-            units: vec![UnitOp::ClipToSource(vec![0.0; 24])],
-            field: Some(std::rc::Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() })),
-            custom: None,
-            inputs: vec![crate::effect_graph::Src::Input(0)],
-            scale: 1.0,
-        };
-        let Some(BatchShape::Stamp { ops, .. }) = batch_admit(&[clip]) else {
-            panic!("a pointwise unit is a stamp")
-        };
-        let bits = super::wv_composite_bits(&ops);
-        assert!(bits & crate::vello::batch::pointwise::CLIP != 0);
-        assert!(bits < crate::vello::batch::pointwise::COUNT, "the arm the bits select is generated");
     }
 
     /// One blur per cell is what the H/V stage pair expresses; a second would need a round trip the

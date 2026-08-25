@@ -43,6 +43,10 @@ fn install(scene: &str) -> u32 {
             std::env::var("BLUR_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
             std::env::var("BLUR_R").ok().and_then(|v| v.parse().ok()).unwrap_or(24),
         ),
+        "stack-glass" => render_core::vello::abi::load_stack_glass_scene(
+            std::env::var("GLASS_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+            u32::from(std::env::var("GLASS_FROST").is_ok()),
+        ),
         "custom-gather-grid" => render_core::vello::abi::load_custom_gather_grid_scene(
             std::env::var("CUSTOM_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
         ),

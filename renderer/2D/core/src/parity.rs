@@ -1754,6 +1754,63 @@ pub fn build_glass_grid_scene(n: usize, frost: bool, downscale: f32) -> (Scene, 
     b.finish()
 }
 
+/// A grid of `n` **glass lenses that are also stacks** — each a non-box PATH carrying a drop shadow, so
+/// the node is `FX_STACK` (its body leaves the shared walk and its ordered stack — drop UNDER, glass
+/// BACKDROP, body — runs at the boundary) rather than the bare `FX_GATHER` a shadow-less glass rect is.
+/// This is the fixture for glass-in-a-stack riding `fine`: the drop must materialise into the backdrop
+/// the glass refracts, then the body composites over the refraction, all in the node's declared order.
+/// Same disjoint middle-third layout as [`build_glass_grid_scene`] so no reach bridges a neighbour.
+#[must_use]
+pub fn build_stack_glass_scene(n: usize, frost: bool) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    for _ in 0..(cols * rows) {
+        b.advance("stack glass");
+    }
+    let (cw, ch) = canvas_size(cols * rows);
+    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
+    let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
+    let cell = 24.0_f64;
+    let (nx, ny) = ((f64::from(cw) / cell).ceil() as i64, (f64::from(ch) / cell).ceil() as i64);
+    for gy in 0..ny {
+        for gx in 0..nx {
+            let mut node = Node::new(b.id(), ShapeKind::Rect);
+            let (x, y) = (gx as f64 * cell, gy as f64 * cell);
+            node.bounds = Rect::new(x, y, x + cell, y + cell);
+            let dark = (gx + gy) % 2 == 0;
+            node.fills = vec![Paint::plain(Brush::Solid(if dark { col(30, 120, 90) } else { col(230, 210, 80) }))];
+            b.root(node);
+        }
+    }
+    for i in 0..n {
+        let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);
+        let x = (gx + 0.5) * pitch_x - lw * 0.5;
+        let y = (gy + 0.5) * pitch_y - lh * 0.5;
+        let r = Rect::new(x, y, x + lw, y + lh);
+        let mut node = Node::new(b.id(), ShapeKind::Path);
+        node.bounds = r;
+        node.path = Some(blob_path(r));
+        // No body fill: the shape is pure glass, so the magnified/refracted backdrop shows THROUGH the
+        // outline. A light drop shadow keeps the node on the STACK path (a non-box silhouette shadow is
+        // what makes it FX_STACK, where the shape-following SDF lens lives) without darkening the lens the
+        // way the original heavy shadow did.
+        node.fills = vec![];
+        node.shadows = vec![Shadow { color: cola(0, 0, 0, 90), blur: 6.0, spread: 0.0, offset: Vec2::new(4.0, 6.0), inset: false }];
+        let mut g = glass_lens(TileMode::Decal);
+        // 2× magnification through the lens so the effect reads clearly over the checker (the shared
+        // `glass_lens` uses zoom = 1.0, i.e. no magnification): zoomFactor = 1/zoom − 1 = 1 at zoom 0.5.
+        g.zoom = 0.5;
+        if !frost {
+            g.blur = 0.0;
+            g.frost = 0.0;
+        }
+        node.glass = Some(g);
+        b.root(node);
+    }
+    b.finish()
+}
+
 /// Every shape the **texture** (noise displacement) effect can produce, plus the **noise** overlay
 /// and the two chained. The fill is a sweep gradient on purpose: a displacement over a solid colour
 /// only shows at the silhouette, so a solid fill would hide a regression across the entire interior.

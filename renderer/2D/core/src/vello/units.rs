@@ -388,14 +388,36 @@ pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
 /// profile kind `1.w`, bezel `2.x`, thickness `2.y`, index of refraction `2.z`, light angle `2.w`,
 /// splay `3.x`, tilt `3.y`, edge boost `3.z`, zoom `3.w`, device scale `4.x`.
 pub(crate) fn lens_field_program() -> crate::field::FieldProgram {
-    use crate::field::{FieldOp, FieldProgram, FieldRef, FieldSource, Slot, Slot2};
+    use crate::field::{FieldSource, Slot, Slot2};
+    lens_field_program_with(FieldSource::RoundedBox {
+        centre: Slot2::new(0, 2),
+        half: Slot2::new(1, 0),
+        corner: Slot::new(1, 2),
+    })
+}
+
+/// The shape-following lens: identical to [`lens_field_program`] except its distance comes from a
+/// BAKED signed-distance field of the actual shape ([`FieldSource::Sampled`]) rather than the analytic
+/// rounded box. `centre`/`half` still describe the bake's box, so every operator downstream — the ramp,
+/// the refraction, the specular, the mask — follows the shape without a single change; `decode` reuses
+/// the corner-radius slot (a sampled lens has no corner) to map the stored value back to device pixels.
+pub(crate) fn lens_field_program_sampled() -> crate::field::FieldProgram {
+    use crate::field::{FieldSource, Slot, Slot2};
+    lens_field_program_with(FieldSource::Sampled {
+        centre: Slot2::new(0, 2),
+        half: Slot2::new(1, 0),
+        decode: Slot::new(1, 2),
+    })
+}
+
+/// The lens field program parameterised over its distance SOURCE — the one line that decides whether
+/// the lens is a rectangle (analytic) or the shape (baked). Everything after the distance node is
+/// source-agnostic, which is the whole point of factoring the source out of the units.
+fn lens_field_program_with(source: crate::field::FieldSource) -> crate::field::FieldProgram {
+    use crate::field::{FieldOp, FieldProgram, FieldRef, Slot, Slot2};
     FieldProgram {
         nodes: vec![
-            FieldOp::Distance(FieldSource::RoundedBox {
-                centre: Slot2::new(0, 2),
-                half: Slot2::new(1, 0),
-                corner: Slot::new(1, 2),
-            }),
+            FieldOp::Distance(source),
             FieldOp::Ramp { d: FieldRef::Node(0), edge: Slot::new(2, 0), clamp_edge_to_extent: true },
             FieldOp::RadialDirection {
                 half: Slot2::new(1, 0),
@@ -743,6 +765,25 @@ mod fuse_tests {
         std::fs::write(format!("{dir}/field_lens.wgsl"), &lens).unwrap();
         std::fs::write(format!("{dir}/field_texture.wgsl"), &texture).unwrap();
         eprintln!("lens={} bytes, texture={} bytes", lens.len(), texture.len());
+    }
+
+    /// The `Sampled` lens is a clean SOURCE substitution: its generated WGSL differs from the analytic
+    /// lens ONLY in the `fieldDistance` body (formula vs texture read). Everything downstream — the ramp,
+    /// refraction, specular, coverage, and the `computeField` assembly — is byte-identical, which is the
+    /// whole promise of factoring the source out of the units.
+    #[test]
+    fn sampled_lens_differs_only_in_field_distance() {
+        let analytic = super::field_prelude(&super::lens_field_program());
+        let sampled = super::field_prelude(&super::lens_field_program_sampled());
+        assert!(analytic.contains("sdfRoundedBox"), "analytic uses the rounded-box formula");
+        assert!(!analytic.contains("textureSampleLevel(fieldTex"), "analytic reads no texture");
+        assert!(sampled.contains("textureSampleLevel(fieldTex"), "sampled reads the baked field");
+        assert!(!sampled.contains("sdfRoundedBox"), "sampled has no rounded-box formula");
+        // `fn fieldRamp` is the first shared helper after the distance source; everything from there on
+        // — the ramp, refraction, specular, coverage, and the whole `computeField` body (which calls
+        // `fieldDistance` identically in both) — must be byte-for-byte the same.
+        let tail = |w: &str| w.split("fn fieldRamp").nth(1).expect("prelude has fieldRamp").to_string();
+        assert_eq!(tail(&analytic), tail(&sampled), "everything below the distance source is identical");
     }
 
     fn warp() -> UnitOp { UnitOp::Warp(vec![]) }

@@ -2273,6 +2273,13 @@ pub extern "C" fn load_blur_grid_scene(n: u32, radius: u32) -> u32 {
     install_fixture(crate::parity::build_blur_grid_scene(n as usize, radius as f32))
 }
 
+/// Install the **stack-glass grid** ([`crate::parity::build_stack_glass_scene`]) — `n` glass lenses
+/// that are also stacks (a non-box path with a drop shadow), for glass-in-a-stack riding `fine`.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_stack_glass_scene(n: u32, frost: u32) -> u32 {
+    install_fixture(crate::parity::build_stack_glass_scene(n as usize, frost != 0))
+}
+
 /// Install the **custom-gather grid** ([`crate::parity::build_custom_gather_grid_scene`]) — `n`
 /// pointwise custom-shader gathers, for the batched masked composite over a per-cell custom fill.
 #[unsafe(no_mangle)]

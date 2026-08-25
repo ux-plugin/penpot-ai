@@ -17,7 +17,6 @@
 //! render-core + `vello_common::paint::ImageId` for the atlas hand-off; no Vello renderer type).
 
 pub mod abi;
-pub(crate) mod batch;
 pub mod blend;
 pub mod draw;
 pub mod editor;
@@ -29,6 +28,7 @@ pub mod graph;
 pub mod plan;
 pub mod prof;
 pub mod rasterize;
+pub mod sdf;
 pub mod rich_editor;
 pub mod svg;
 /// The GPU production sink — executes a `crate::schedule::Schedule` on a Vello backend. Generic
