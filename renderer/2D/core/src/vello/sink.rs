@@ -5401,7 +5401,11 @@ impl Sink {
     fn wv_shadow_plan(&self, gid: u128, full_view: Affine, _w: u32, _h: u32) -> Option<Vec<ShadowMarker>> {
         crate::vello::abi::with_scene(|live, _, _| {
             let n = live.get(gid)?;
-            if n.kind != crate::model::ShapeKind::Path {
+            // Path and Text both ride fine: `build_shadow_silhouette` rasterises each (a Text draws its
+            // glyphs), and a DROP's coverage is the reach rect + the blurred silhouette — no per-glyph
+            // coverage needed. A Text INNER band, though, floods `area[i]` with `outline(node)` (the bounds
+            // rect for a Text, not the glyphs), so it stays on the pre-pass for now (handled in the Over arm).
+            if !matches!(n.kind, crate::model::ShapeKind::Path | crate::model::ShapeKind::Text) {
                 return None;
             }
             let stack = crate::effect::effect_stack(n);
@@ -5448,6 +5452,9 @@ impl Sink {
                     (crate::effect::Source::Coverage { .. }, crate::effect::Compose::Over) => {
                         if !wv_innerblur_fine() {
                             return None; // soft inners A/B'd off — whole shape defers to the pre-pass
+                        }
+                        if n.kind != crate::model::ShapeKind::Path {
+                            return None; // a Text inner band needs glyph coverage in area[i] — pre-pass for now
                         }
                         // An inner shadow's blur rides on its EraseBy op (the punch's own radius).
                         let blur = e.ops.iter().find_map(|op| match op {
