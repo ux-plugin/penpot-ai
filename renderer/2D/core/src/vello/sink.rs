@@ -1527,9 +1527,9 @@ impl Sink {
                 lay(&mut out, &mut cursor, &|j| base[j] == br && sharp_stack_gather[j], 2);
                 // 3 = blur H + blur V + a trailing round for the BODY (same body-after-tail rule as frost).
                 lay(&mut out, &mut cursor, &|j| base[j] == br && dropblur_stack_gather[j], 3);
-                // 4 = blur H + blur V(punch) + body + band. The band composites OVER the body, so it lands
-                // the round after the body (which is itself after the punch materialises).
-                lay(&mut out, &mut cursor, &|j| base[j] == br && innerblur_stack_gather[j], 4);
+                // 3 = blur H + blur V(punch) + band. The body composites at the block start (phase 0); the
+                // band composites over it in the final flush.
+                lay(&mut out, &mut cursor, &|j| base[j] == br && innerblur_stack_gather[j], 3);
                 lay(&mut out, &mut cursor, &|j| base[j] == br && blur_gather[j] && !frost_gather[j], 2);
                 lay(&mut out, &mut cursor, &|j| {
                     base[j] == br && !frost_gather[j] && !frost_stack_gather[j] && !sharp_stack_gather[j] && !dropblur_stack_gather[j] && !innerblur_stack_gather[j] && !blur_gather[j]
@@ -1576,9 +1576,9 @@ impl Sink {
             if let Some(&s) = stack_reload_sub.get(&gid) {
                 max_round = max_round.max(rounds[j] + s);
             }
-            // An inner stack's band composites the round AFTER its body (reload_sub 2) — one past.
+            // An inner stack's band composites at rounds[j]+2 (reload_sub already covers it).
             if stack_innerblur.contains_key(&gid) {
-                max_round = max_round.max(rounds[j] + 3);
+                max_round = max_round.max(rounds[j] + 2);
             }
         }
         // Effects-in-fine WARP gathers (linchpin, gated `WV_GLASS_FINE=1`): a sharp glass routed
@@ -1673,9 +1673,10 @@ impl Sink {
                         .collect();
                     stack_markers.insert(gid, markers);
                 } else if let Some(chain) = stack_innerblur.get(&gid) {
-                    // Soft inner: blur H@R, blur V (punch materialise)@R+1, body@R+2, band@R+3. The band
-                    // skips the body's round so it composites OVER it.
-                    let rs = [rounds[j], rounds[j] + 1, rounds[j] + 3];
+                    // Soft inner: blur H@R, blur V (punch materialise)@R+1, band@R+2. The body composites
+                    // at the block start (phase 0, sub 0) and the band lands in the final flush with the
+                    // InnerBand role — it must be the LAST marker round so window_lo carries that role.
+                    let rs = [rounds[j], rounds[j] + 1, rounds[j] + 2];
                     let markers = chain
                         .iter()
                         .zip(rs)
@@ -1966,7 +1967,7 @@ impl Sink {
                 if innerblur_stack_gather[j] {
                     window_role.insert(rounds[j], WindowRole::DropBlurH(gid));
                     window_role.insert(rounds[j] + 1, WindowRole::InnerV(gid));
-                    window_role.insert(rounds[j] + 3, WindowRole::InnerBand(gid));
+                    window_role.insert(rounds[j] + 2, WindowRole::InnerBand(gid));
                     continue;
                 }
                 let Some(passes) = fx_fine.get(&gid) else { continue };
