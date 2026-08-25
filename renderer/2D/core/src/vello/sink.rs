@@ -479,6 +479,19 @@ fn wv_spread_fine() -> bool {
     false
 }
 
+/// A SOFT (σ≥0.5) drop shadow on a pure drop+body PATH stack blurs in the MAIN round loop (a rasterised
+/// silhouette scratch → BLUR H/V → SPREAD composite under the body) instead of the `wv_shadow_fine`
+/// PRE-PASS mini-session. Default OFF while it lands (increment 2); `WV_DROPBLUR_FINE=1` opts in. Once
+/// verified against the pre-pass this flips default-on and retires `wv_blur_texture_fine` for drops.
+fn wv_dropblur_fine() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_DROPBLUR_FINE").is_ok_and(|v| v != "0");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// Routes an FX_STACK node's BACKDROP effect (its glass/blur, which reads the accumulator mid-stack)
 /// through `fine` as a marker instead of the imperative `wv_stamp_gather` → `run_chain`. The stack
 /// FRACTURES across two rounds: its z-below layers (drops) composite at round R, the glass marker
@@ -784,6 +797,13 @@ pub struct Sink {
     /// round loop. Cleared each frame; the layer textures ride in `frame_transient`.
     shadow_fine: HashMap<(u128, u8, usize), wgpu::TextureView>,
 
+    /// Full-frame OFFSET-SILHOUETTE scratches for SOFT drop shadows riding the MAIN round loop
+    /// (`WV_DROPBLUR_FINE`), keyed by node. Unlike [`Self::shadow_fine`], this is the RAW (un-blurred)
+    /// coverage at device position — the H blur marker reads it as `input_in` inside the main session, so
+    /// no nested `phased_begin` is needed. Rasterised before `phased_begin`; the texture rides in
+    /// `frame_transient`, the view is cleared each frame.
+    stack_sil: HashMap<u128, wgpu::TextureView>,
+
     /// Whole-viewport effect surfaces materialised from the strip by [`Self::wv_atlas_copy_out`]
     /// (only for shapes the batch cannot express), keyed by
     /// `(node, kind, index)` — kind `0` a drop-shadow silhouette, `1` the node's isolated body.
@@ -857,6 +877,7 @@ impl Sink {
             frame_transient: Vec::new(),
             frame_transient_views: Vec::new(),
             shadow_fine: HashMap::new(),
+            stack_sil: HashMap::new(),
             wv_atlas: HashMap::new(),
             dbg_atlas: None,
             gpu_timer: None,
@@ -1155,6 +1176,7 @@ impl Sink {
         }
         self.frame_transient_views.clear();
         self.shadow_fine.clear();
+        self.stack_sil.clear();
         let full_view = crate::vello::abi::effective_view(root);
         let sz = (width as f32, height as f32);
         let sw_view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1383,6 +1405,19 @@ impl Sink {
         } else {
             std::collections::HashMap::new()
         };
+        // SOFT drop shadows on a pure drop+body PATH stack ride the MAIN loop as a 2-marker blur chain
+        // (increment 2, gated `WV_DROPBLUR_FINE`), retiring the pre-pass. A stack is in at most one of
+        // stack_fine/frost/spread/dropblur (spread = sharp, dropblur = soft; exclusive by sigma).
+        let stack_dropblur: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_dropblur_fine() {
+            gathers
+                .iter()
+                .filter(|(_, _, k)| *k == FX_STACK)
+                .filter(|(_, gid, _)| !stack_fine.contains_key(gid) && !stack_frost.contains_key(gid) && !stack_spread.contains_key(gid))
+                .filter_map(|&(_, gid, _)| self.wv_dropblur_passes(gid, full_view, width, height).map(|c| (gid, c)))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
         // Shape-following (`Sampled`) glass: for each SHARP stack whose shape is a PATH the field distance
         // comes from a baked SDF of the real outline, not the analytic box — flip the descriptor to program
         // 4 with `decode` in the corner slot (`u[1].z` = `d[8]`). A FROSTED stack does NOT need this: its
@@ -1420,8 +1455,13 @@ impl Sink {
         // block start, body one round later) — same layout, so they share this flag.
         let sharp_stack_gather: Vec<bool> =
             gathers.iter().map(|&(_, gid, _)| stack_fine.contains_key(&gid) || stack_spread.contains_key(&gid)).collect();
+        // A SOFT-drop stack blurs H→V→body — a 3-round block, so like frost it needs the CONTIGUOUS-block
+        // layout (the ×2 doubling only frees ONE slot). Its presence forces block mode.
+        let dropblur_stack_gather: Vec<bool> =
+            gathers.iter().map(|&(_, gid, _)| stack_dropblur.contains_key(&gid)).collect();
         let any_frost = frost_gather.iter().any(|&f| f) || frost_stack_gather.iter().any(|&f| f);
-        let mut rounds: Vec<u32> = if any_frost {
+        let any_block = any_frost || dropblur_stack_gather.iter().any(|&f| f);
+        let mut rounds: Vec<u32> = if any_block {
             // With a frosted chain in play the timeline is laid out in CONTIGUOUS blocks, grouped by the
             // reach round (z-order) and, within each, by kind — standalone frost (5 rounds), a frosted
             // stack (6 = drops + 5), a sharp stack (2 = drops + glass), blur (2), the rest (1). Two rules
@@ -1450,9 +1490,11 @@ impl Sink {
                 // round would be OVERWRITTEN by the tail's masked composite (it reads base_in = the body).
                 lay(&mut out, &mut cursor, &|j| base[j] == br && frost_stack_gather[j], 7);
                 lay(&mut out, &mut cursor, &|j| base[j] == br && sharp_stack_gather[j], 2);
+                // 3 = blur H + blur V + a trailing round for the BODY (same body-after-tail rule as frost).
+                lay(&mut out, &mut cursor, &|j| base[j] == br && dropblur_stack_gather[j], 3);
                 lay(&mut out, &mut cursor, &|j| base[j] == br && blur_gather[j] && !frost_gather[j], 2);
                 lay(&mut out, &mut cursor, &|j| {
-                    base[j] == br && !frost_gather[j] && !frost_stack_gather[j] && !sharp_stack_gather[j] && !blur_gather[j]
+                    base[j] == br && !frost_gather[j] && !frost_stack_gather[j] && !sharp_stack_gather[j] && !dropblur_stack_gather[j] && !blur_gather[j]
                 }, 1);
             }
             out
@@ -1466,7 +1508,7 @@ impl Sink {
         // No frost anywhere: sharp stacks ride the cheaper ×2 doubling — every round doubles, freeing the
         // odd "R+1" slot for a stack's glass reload without colliding with a separable blur's H/V pair
         // (which stay a consecutive pair below their ×2 grid point).
-        if !any_frost && (!stack_fine.is_empty() || !stack_spread.is_empty()) {
+        if !any_block && (!stack_fine.is_empty() || !stack_spread.is_empty()) {
             for r in &mut rounds {
                 *r *= 2;
             }
@@ -1480,6 +1522,9 @@ impl Sink {
             .filter_map(|&(_, gid, _)| {
                 if stack_frost.contains_key(&gid) {
                     Some((gid, 6))
+                } else if stack_dropblur.contains_key(&gid) {
+                    // Soft drop: blur H@R, V@R+1, body@R+2.
+                    Some((gid, 2))
                 } else if stack_fine.contains_key(&gid) || stack_spread.contains_key(&gid) {
                     // Sharp glass reload OR sharp-drop marker at the block start; body one round later.
                     Some((gid, 1))
@@ -1569,6 +1614,19 @@ impl Sink {
                             let off = fx_params.len() as u32;
                             fx_params.extend_from_slice(d);
                             (rounds[j], off)
+                        })
+                        .collect();
+                    stack_markers.insert(gid, markers);
+                } else if let Some(chain) = stack_dropblur.get(&gid) {
+                    // Soft drop: blur H at the block start (R), blur V + SPREAD composite at R+1, body at
+                    // R+2 (reload_sub 2). Two markers, one per successive round.
+                    let markers = chain
+                        .iter()
+                        .enumerate()
+                        .map(|(p, d)| {
+                            let off = fx_params.len() as u32;
+                            fx_params.extend_from_slice(d);
+                            (rounds[j] + p as u32, off)
                         })
                         .collect();
                     stack_markers.insert(gid, markers);
@@ -1734,7 +1792,8 @@ impl Sink {
             && fx_fine.is_empty()
             && stack_fine.is_empty()
             && stack_frost.is_empty()
-            && stack_spread.is_empty();
+            && stack_spread.is_empty()
+            && stack_dropblur.is_empty();
         let n_slots: usize = if rw { 1 } else { 2 };
         let texs: Vec<wgpu::Texture> = (0..n_slots)
             .map(|_| self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv phase"))
@@ -1798,6 +1857,13 @@ impl Sink {
             /// A sharp shape-following glass: a single WARP reload that reads the backdrop (`base_in`)
             /// AND the baked SDF of the shape's outline (`input_in`) for its `Sampled` field distance.
             SampledGlass,
+            /// A soft drop shadow's blur H: reads the node's rasterised offset SILHOUETTE (`input_in`,
+            /// [`Self::stack_sil`] keyed by this gid), writes the H-blurred draft. Carries the gid to find
+            /// the silhouette scratch at dispatch.
+            DropBlurH(u128),
+            /// A soft drop shadow's blur V + SPREAD composite: reads that draft, blurs vertically, lays the
+            /// shadow colour over the 2D-blurred coverage source-OVER the accumulator (under the body).
+            DropBlurV,
         }
         let mut window_role: std::collections::HashMap<u32, WindowRole> = std::collections::HashMap::new();
         if rw {
@@ -1820,6 +1886,12 @@ impl Sink {
                 // as `input_in`, so it takes the `SampledGlass` role instead.
                 if sharp_stack_gather[j] && stack_sdf.contains_key(&gid) {
                     window_role.insert(rounds[j] + 1, WindowRole::SampledGlass);
+                    continue;
+                }
+                // A soft-drop stack: blur H at the drops round, blur V (+ SPREAD composite) one round later.
+                if dropblur_stack_gather[j] {
+                    window_role.insert(rounds[j], WindowRole::DropBlurH(gid));
+                    window_role.insert(rounds[j] + 1, WindowRole::DropBlurV);
                     continue;
                 }
                 let Some(passes) = fx_fine.get(&gid) else { continue };
@@ -1868,7 +1940,10 @@ impl Sink {
         // build them exactly as `wv_cell_source` would. Sharp shadows (sigma < 0.5) fall through to the
         // graph in both painters.
         if wv_shadow_fine() {
-            let stack_ids: Vec<u128> = gathers.iter().filter(|g| g.2 == FX_STACK).map(|g| g.1).collect();
+            // A soft drop that rides the MAIN loop (`stack_dropblur`) blurs its silhouette in-session, so
+            // it must NOT also go through the pre-pass mini-session — skip those stacks here.
+            let stack_ids: Vec<u128> =
+                gathers.iter().filter(|g| g.2 == FX_STACK && !stack_dropblur.contains_key(&g.1)).map(|g| g.1).collect();
             for id in stack_ids {
                 for cell in self.wv_effect_cells(id, full_view, width, height).into_iter().filter(|c| c.key.1 == 0 || c.key.1 == 3) {
                     let sigma = cell.geom.sigma * cell.geom.k;
@@ -1900,6 +1975,22 @@ impl Sink {
                     }
                 }
             }
+        }
+
+        // Soft drops riding the MAIN loop (`stack_dropblur`): rasterise each node's OFFSET silhouette into
+        // a full-frame scratch at device position (untinted white coverage), so the `DropBlurH` marker can
+        // read it as `input_in` inside the main session. This is just a rasterise (no nested phased
+        // session) — the one thing the pre-pass could not do in the main render. The blur + composite then
+        // ride the round loop like any other effect.
+        for (&gid, _) in &stack_dropblur {
+            let sil = self.pool.acquire_target(device, width, acc_h, format, self.raster_usage, "wv dropblur silhouette");
+            let sv = sil.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut sscene = backend.new_scene(width as u16, acc_h as u16);
+            backend.build_shadow_silhouette(&mut sscene, root, gid, 0, false, true, false);
+            backend.rasterize(&sscene, device, queue, &mut enc, &sv, width, acc_h, TRANSPARENT);
+            self.frame_transient.push(sil);
+            self.frame_transient_views.push(sv.clone());
+            self.stack_sil.insert(gid, sv);
         }
 
         let _tpb = crate::vello::prof::now();
@@ -1993,6 +2084,33 @@ impl Sink {
                         backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &views[out]);
                         cur = Some(out);
                     }
+                    Some(WindowRole::DropBlurH(gid)) => {
+                        // A soft drop's blur H: the tap SOURCE is the rasterised offset silhouette
+                        // (`input_in`), NOT the accumulator — the shadow blurs its own coverage, not the
+                        // backdrop. Writes the H-blurred draft; the accumulator (`views[c]`, bound as
+                        // base_in for the permutation) is untouched so the V's SPREAD composite still has it.
+                        let _c = cur.expect("a soft drop composites over a backdrop");
+                        let sil = self.stack_sil.get(&gid).expect("soft-drop silhouette rasterised pre-pass");
+                        let dt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv dropblur draft");
+                        let dv = dt.create_view(&wgpu::TextureViewDescriptor::default());
+                        // base_in is the SILHOUETTE, not the accumulator: a fine pass writes `base_in`
+                        // through on any tile the marker's coverage misses, so with the accumulator as base
+                        // the OPAQUE backdrop would land in the draft just past the reach and the V's taps
+                        // would read its alpha=1 as coverage — a solid shadow bar at the reach edge. The
+                        // silhouette is transparent outside the shape, so those tiles stay empty.
+                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, sil, sil, &dv);
+                        draft_views.insert(window_lo, dv);
+                        draft_texs.push(dt);
+                    }
+                    Some(WindowRole::DropBlurV) => {
+                        // Blur V of that draft, then the SPREAD arm lays the shadow colour over the 2D-blurred
+                        // coverage source-OVER the accumulator (`views[c]`) — the shadow layer, under the body.
+                        let c = cur.expect("a soft drop composites over a backdrop");
+                        let out = 1 - c;
+                        let dv = draft_views.get(&(window_lo - 1)).expect("dropblur V after its H");
+                        backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &views[out]);
+                        cur = Some(out);
+                    }
                     Some(WindowRole::Frost(stage)) => {
                         // A frosted lens chain link. Every link reads the accumulator (`views[c]`, the
                         // backdrop) as `base`. Stages 0..3 write to a private scratch and DON'T advance the
@@ -2081,7 +2199,7 @@ impl Sink {
                     flush_mark = passes_recorded();
                 }
                 match kind {
-                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, None, sub, stack_reload_sub.get(&gid).copied(), stack_spread.contains_key(&gid)),
+                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, None, sub, stack_reload_sub.get(&gid).copied(), stack_spread.contains_key(&gid) || stack_dropblur.contains_key(&gid)),
                     _ if sub > 0 => {}
                     // An inline effect ran in fine at its CMD_EFFECT marker(s); no post-fine pass. Pointwise
                     // (tint/field) rides fx_offset; a fine gather (glass/blur) rides fx_markers.
@@ -5041,6 +5159,71 @@ impl Sink {
             }
             if descs.len() == 1 {
                 Some(descs)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The two-marker inline chain for a SOFT (σ≥0.5) drop shadow on a pure drop+body PATH stack — the
+    /// blurred analogue of [`Self::wv_spread_passes`], retiring the `wv_shadow_fine`/`wv_blur_texture_fine`
+    /// PRE-PASS by running the blur in the MAIN round loop. Mirrors a frosted lens's separable blur, but
+    /// its source is a rasterised OFFSET SILHOUETTE (a private full-frame scratch, [`Sink::stack_sil`]),
+    /// not a fine-computed surface, and its tail is a SPREAD composite (bit 128) rather than shade/maskmix:
+    /// - H: `BLUR(64) | MATERIALIZE(512)`, axis `(1,0)`, device sigma — reads the silhouette scratch
+    ///   (`input_in`), writes the H-blurred draft UNMASKED.
+    /// - V: `BLUR(64) | SPREAD(128)`, axis `(0,1)` — reads that draft, blurs vertically, then lays the
+    ///   shadow colour (`u[3]`) over the 2D-blurred coverage (`value.a`), source-OVER, under the body.
+    /// Shadow coverage is a pure alpha field, so the blur is LINEAR (no sRGB bit 1024, unlike a frost
+    /// lens). `None` unless every effect is a soft non-inset drop or the body, and exactly one drop.
+    fn wv_dropblur_passes(&self, gid: u128, full_view: Affine, _w: u32, _h: u32) -> Option<Vec<[f32; 26]>> {
+        crate::vello::abi::with_scene(|live, _, _| {
+            let n = live.get(gid)?;
+            if n.kind != crate::model::ShapeKind::Path {
+                return None;
+            }
+            let stack = crate::effect::effect_stack(n);
+            if stack.is_empty() {
+                return None;
+            }
+            let cs = full_view.as_coeffs();
+            let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
+            let mut chain: Option<Vec<[f32; 26]>> = None;
+            let mut drops = 0usize;
+            for e in &stack {
+                match (&e.source, e.compose) {
+                    (crate::effect::Source::Coverage { .. }, crate::effect::Compose::Under) => {
+                        drops += 1;
+                        let sigma =
+                            e.governing_blur().map_or(0.0, |r| crate::blur::radius_to_sigma(r) * scale);
+                        if sigma < 0.5 {
+                            return None; // a HARD drop — that is wv_spread_passes' job
+                        }
+                        let color = e.ops.iter().find_map(|op| match op {
+                            crate::effect::Op::Tint(c) => Some(*c),
+                            _ => None,
+                        })?;
+                        let [r, g, b, a] = color.components;
+                        let mut h = [0.0f32; 26];
+                        h[0] = 64.0 + 512.0; // BLUR | MATERIALIZE (linear)
+                        h[2] = 1.0; // u[0].x = axis.x (H)
+                        h[4] = sigma; // u[0].z = device sigma
+                        let mut v = [0.0f32; 26];
+                        v[0] = 64.0 + 128.0; // BLUR | SPREAD (linear)
+                        v[3] = 1.0; // u[0].y = axis.y (V)
+                        v[4] = sigma;
+                        v[14] = r; // u[3] = straight shadow colour
+                        v[15] = g;
+                        v[16] = b;
+                        v[17] = a;
+                        chain = Some(vec![h, v]);
+                    }
+                    (crate::effect::Source::Body, _) => {}
+                    _ => return None,
+                }
+            }
+            if drops == 1 {
+                chain
             } else {
                 None
             }

@@ -1186,6 +1186,38 @@ pub fn build_sharp_drop_scene() -> (Scene, Vec<(usize, &'static str)>) {
     b.finish()
 }
 
+/// A SOFT drop shadow over a STRIPED backdrop, under a SEMI-TRANSPARENT blob — the increment-2
+/// (`WV_DROPBLUR_FINE`) diagnostic. A flat background hides blur defects; horizontal stripes smear to
+/// grey under a correct blur but leak hard edges through a broken one, and the see-through body lets the
+/// shadow show behind it. Reveals whether an artifact corrupts the backdrop or overlays it.
+#[must_use]
+pub fn build_dropblur_diag_scene() -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    b.advance("soft drop over stripes");
+    let r = b.rect();
+    let region = r.inflate(60.0, 60.0);
+    let stripe = 12.0_f64;
+    let mut y = region.y0;
+    let mut i = 0i64;
+    while y < region.y1 {
+        let id = b.id();
+        let mut node = Node::new(id, ShapeKind::Rect);
+        node.bounds = Rect::new(region.x0, y, region.x1, (y + stripe).min(region.y1));
+        node.fills = vec![Paint::plain(Brush::Solid(if i % 2 == 0 { col(70, 130, 200) } else { col(235, 235, 245) }))];
+        b.root(node);
+        y += stripe;
+        i += 1;
+    }
+    let id = b.id();
+    let mut n = Node::new(id, ShapeKind::Path);
+    n.bounds = r;
+    n.path = Some(blob_path(r));
+    n.fills = vec![Paint::plain(Brush::Solid(cola(84, 74, 183, 110)))];
+    n.shadows = vec![Shadow { color: cola(0, 0, 0, 200), blur: 12.0, spread: 0.0, offset: Vec2::new(16.0, 20.0), inset: false }];
+    b.root(n);
+    b.finish()
+}
+
 /// Cells over a light page exercising non-box INNER shadows: a filled path and a text block, each with
 /// an inset shadow (a dark band hugging the inside edge on the offset side), beside the same path with
 /// no shadow. Classic has no inline non-box inner shadow, so this is driven through the sink

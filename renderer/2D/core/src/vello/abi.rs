@@ -2232,6 +2232,13 @@ pub extern "C" fn load_sharp_drop_scene() -> u32 {
     install_fixture(crate::parity::build_sharp_drop_scene())
 }
 
+/// Install the **dropblur diagnostic** ([`crate::parity::build_dropblur_diag_scene`]) — a soft drop over
+/// stripes under a semi-transparent blob, for the `WV_DROPBLUR_FINE` inline-blur path.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_dropblur_diag_scene() -> u32 {
+    install_fixture(crate::parity::build_dropblur_diag_scene())
+}
+
 /// Install the **layer-blur test** ([`crate::parity::build_layer_blur_scene`]) — a shape with a
 /// layer blur beside the same shape without one. Classic has no inline layer blur, so this is driven
 /// through the sink (`layer_blur_over_body`), not the tree walk. Returns the cell count.

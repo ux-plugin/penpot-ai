@@ -27,6 +27,7 @@ fn install(scene: &str) -> u32 {
         "path-shadow" => render_core::vello::abi::load_path_shadow_scene(),
         "inner-shadow" => render_core::vello::abi::load_inner_shadow_scene(),
         "sharp-drop" => render_core::vello::abi::load_sharp_drop_scene(),
+        "dropblur-diag" => render_core::vello::abi::load_dropblur_diag_scene(),
         "combined" => render_core::vello::abi::load_combined_scene(),
         "boolean" => render_core::vello::abi::load_boolean_scene(),
         "matrix" => render_core::vello::abi::load_matrix_scene(),
