@@ -824,28 +824,6 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         // the silhouette so the V pass's taps stay on H-blurred pixels.
         if effect_id == 101 {
             scene.draw_effect(Affine::IDENTITY, &r, effect_id, params);
-        } else if effect_id == 102 {
-            // A drop-shadow SPREAD marker (bit 128): coverage is the shape's OFFSET (+spread)
-            // silhouette, so fine lays the shadow colour under the body confined to it — the
-            // rasterised analogue of `build_shadow_silhouette`, run inline instead of pre-blitted.
-            // Sharp drops only (a blurred drop rides the source strip); the first non-inset shadow
-            // (multi-drop is a later increment). Text defers to its own silhouette route.
-            render_core::vello::abi::with_scene(|model, viewport, modifiers| {
-                let Some(node) = model.get(id) else { return };
-                let Some(s) = node.shadows.iter().find(|s| !s.inset) else { return };
-                let modifier = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                let matrix = transform
-                    * viewport
-                    * modifier
-                    * node.effective_transform()
-                    * Affine::translate((s.offset.x, s.offset.y));
-                let path = if s.spread > 0.0 {
-                    render_core::geometry::spread_outline(node, f64::from(s.spread))
-                } else {
-                    render_core::geometry::outline(node)
-                };
-                scene.draw_effect(matrix, &path, effect_id, params);
-            });
         } else if effect_id >= 100 {
             render_core::vello::abi::with_scene(|model, viewport, modifiers| {
                 if let Some(node) = model.get(id) {

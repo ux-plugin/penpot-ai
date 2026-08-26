@@ -194,6 +194,9 @@ enum BatchShape {
 /// inners (over it), each an independent block of rounds keyed by its H marker's round.
 #[derive(Clone)]
 enum ShadowMarker {
+    /// A SHARP (σ<0.5) drop: ONE marker composites the shape's offset silhouette (unblurred coverage,
+    /// `SPREAD|SCRATCH_COV` reading the rasterised silhouette scratch's alpha) under the body. PRE-body.
+    SharpDrop { desc: [f32; 26], slot: usize },
     /// A SOFT (σ≥0.5) drop: H blurs the offset silhouette scratch → draft, V blurs it vertically and
     /// SPREAD-composites the shadow colour under the body. Two markers, both PRE-body.
     SoftDrop { h: [f32; 26], v: [f32; 26], slot: usize },
@@ -206,6 +209,9 @@ enum ShadowMarker {
 /// [`ShadowMarker`] so the driver's window plan and dispatch resolve scratches by round alone.
 #[derive(Clone, Copy, PartialEq)]
 enum ShadowRole {
+    /// A SHARP drop: composite the rasterised offset silhouette (keyed by this round) UNDER the body,
+    /// no blur — `SPREAD|SCRATCH_COV` lays the shadow colour at the silhouette's alpha.
+    SharpDrop,
     /// Blur H of an offset silhouette scratch → draft (drops AND inners share this — the inner just
     /// reads its INSET silhouette). The silhouette is keyed by this marker's round.
     BlurH,
@@ -230,9 +236,9 @@ struct ShadowMk {
     punch_key: u32,
 }
 
-/// Rounds the pre-body half of a shadow plan spans: two markers (H, V) per soft shadow, drop or inner.
+/// Rounds the pre-body half of a shadow plan spans: two (H, V) per soft shadow, one per sharp drop.
 fn shadow_pre_rounds(plan: &[ShadowMarker]) -> u32 {
-    (plan.len() as u32) * 2
+    plan.iter().map(|m| if matches!(m, ShadowMarker::SharpDrop { .. }) { 1 } else { 2 }).sum()
 }
 
 /// Inner shadows in the plan — the number of POST-body band rounds.
@@ -258,6 +264,10 @@ fn schedule_shadows(plan: &[ShadowMarker], base: u32) -> Vec<ShadowMk> {
     let mut inners: Vec<(u32, [f32; 26], usize)> = Vec::new();
     for m in plan {
         match m {
+            ShadowMarker::SharpDrop { desc, slot } => {
+                mks.push(ShadowMk { round: cursor, desc: *desc, role: ShadowRole::SharpDrop, slot: *slot, inset: false, punch_key: 0 });
+                cursor += 1;
+            }
             ShadowMarker::SoftDrop { h, v, slot } => {
                 mks.push(ShadowMk { round: cursor, desc: *h, role: ShadowRole::BlurH, slot: *slot, inset: false, punch_key: 0 });
                 mks.push(ShadowMk { round: cursor + 1, desc: *v, role: ShadowRole::DropV, slot: *slot, inset: false, punch_key: 0 });
@@ -558,11 +568,10 @@ fn wv_shadow_fine() -> bool {
     false
 }
 
-/// A HARD (σ<0.5) drop shadow on a pure drop+body PATH stack rides fine as an inline SPREAD marker
-/// ([`Sink::wv_spread_passes`]) instead of the per-shape silhouette blit — the first spread to ride the
-/// MAIN round loop rather than the shadow pre-pass. Default ON; `WV_SPREAD_FINE=0` forces the blit path
-/// (the A/B oracle). Independent of [`wv_shadow_fine`] so a sharp drop can be A/B'd without also flipping
-/// the soft-drop pre-pass.
+/// A HARD (σ<0.5) drop shadow rides fine as a single `SPREAD|SCRATCH_COV` marker over the rasterised
+/// offset silhouette ([`Sink::wv_shadow_plan`]'s [`ShadowMarker::SharpDrop`]) instead of the pre-pass
+/// blit — any number of sharp drops, mixable with soft shadows, Path or Text. Default ON;
+/// `WV_SPREAD_FINE=0` forces the pre-pass (the A/B oracle) for a shape carrying a sharp drop.
 fn wv_spread_fine() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1502,34 +1511,18 @@ impl Sink {
         } else {
             std::collections::HashMap::new()
         };
-        // A HARD (σ<0.5) drop shadow on a pure drop+body PATH stack rides fine as an inline SPREAD marker
-        // instead of the per-shape silhouette blit: its offset-silhouette coverage is stamped in fine and
-        // the shadow colour laid down source-OVER, a layer UNDER the body. A sharp drop needs no blur pass
-        // (coverage = `area[i]`), so no in-session source-strip materialisation — unlike a soft drop.
-        // Gated `WV_SHADOW_FINE`; excludes stacks that also carry a glass/blur backdrop or an inner shadow
-        // (those keep the pre-pass path). A stack is in at most one of stack_fine/stack_frost/stack_spread.
-        let stack_spread: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_spread_fine() {
-            gathers
-                .iter()
-                .filter(|(_, _, k)| *k == FX_STACK)
-                .filter(|(_, gid, _)| !stack_fine.contains_key(gid) && !stack_frost.contains_key(gid))
-                .filter_map(|&(_, gid, _)| self.wv_spread_passes(gid, full_view, width, height).map(|c| (gid, c)))
-                .collect()
-        } else {
-            std::collections::HashMap::new()
-        };
-        // SOFT shadows (drops AND inners, any number, mixed) on a PATH stack ride the MAIN loop as
-        // per-shadow blur blocks (gated `WV_DROPBLUR_FINE`/`WV_INNERBLUR_FINE`), retiring the pre-pass. One
-        // `Vec<ShadowMarker>` per node holds every soft shadow in z-order — drops under the body, inners
-        // over it. A stack is in at most one of stack_fine/frost/spread/shadows (spread = a single sharp
-        // drop; shadows = soft). `wv_shadow_plan` returns `None` (→ pre-pass) if any shadow is sharp, its
-        // gate is off, or the node is not a path.
+        // Shadows (drops AND inners, any number, mixed, SHARP or SOFT) on a Path/Text stack ride the MAIN
+        // loop as per-shadow blocks (gated `WV_DROPBLUR_FINE`/`WV_INNERBLUR_FINE`/`WV_SPREAD_FINE`), retiring
+        // the pre-pass. One `Vec<ShadowMarker>` per node holds every shadow in z-order — drops under the
+        // body, inners over it; a sharp drop is a single composite marker (no blur), a soft shadow an H/V
+        // block. A stack is in at most one of stack_fine/frost/shadows. `wv_shadow_plan` returns `None` (→
+        // pre-pass) if a shadow's gate is off, a sharp INNER is present, or the node is not a Path/Text.
         let stack_shadows: std::collections::HashMap<u128, Vec<ShadowMarker>> =
-            if wv_dropblur_fine() || wv_innerblur_fine() {
+            if wv_dropblur_fine() || wv_innerblur_fine() || wv_spread_fine() {
                 gathers
                     .iter()
                     .filter(|(_, _, k)| *k == FX_STACK)
-                    .filter(|(_, gid, _)| !stack_fine.contains_key(gid) && !stack_frost.contains_key(gid) && !stack_spread.contains_key(gid))
+                    .filter(|(_, gid, _)| !stack_fine.contains_key(gid) && !stack_frost.contains_key(gid))
                     .filter_map(|&(_, gid, _)| self.wv_shadow_plan(gid, full_view, width, height).map(|c| (gid, c)))
                     .collect()
             } else {
@@ -1568,10 +1561,9 @@ impl Sink {
         }
         let frost_stack_gather: Vec<bool> =
             gathers.iter().map(|&(_, gid, _)| stack_frost.contains_key(&gid)).collect();
-        // Sharp glass stacks AND sharp-drop SPREAD stacks both want a 2-round block (drops/marker at the
-        // block start, body one round later) — same layout, so they share this flag.
+        // A sharp GLASS stack wants a 2-round block (drops at the block start, glass reload one round later).
         let sharp_stack_gather: Vec<bool> =
-            gathers.iter().map(|&(_, gid, _)| stack_fine.contains_key(&gid) || stack_spread.contains_key(&gid)).collect();
+            gathers.iter().map(|&(_, gid, _)| stack_fine.contains_key(&gid)).collect();
         // A SOFT-shadow stack blurs each shadow H→V (drop composites, inner materialises a punch) then the
         // body then the inner bands — a per-shadow block ([`shadow_span`]), so like frost it needs the
         // CONTIGUOUS-block layout (the ×2 doubling only frees ONE slot). Its presence forces block mode.
@@ -1634,7 +1626,7 @@ impl Sink {
         // No frost anywhere: sharp stacks ride the cheaper ×2 doubling — every round doubles, freeing the
         // odd "R+1" slot for a stack's glass reload without colliding with a separable blur's H/V pair
         // (which stay a consecutive pair below their ×2 grid point).
-        if !any_block && (!stack_fine.is_empty() || !stack_spread.is_empty()) {
+        if !any_block && !stack_fine.is_empty() {
             for r in &mut rounds {
                 *r *= 2;
             }
@@ -1662,8 +1654,8 @@ impl Sink {
                 } else if let Some(plan) = stack_shadows.get(&gid) {
                     // Body composites after all the pre-body H/V rounds; the inner bands follow.
                     Some((gid, shadow_pre_rounds(plan)))
-                } else if stack_fine.contains_key(&gid) || stack_spread.contains_key(&gid) {
-                    // Sharp glass reload OR sharp-drop marker at the block start; body one round later.
+                } else if stack_fine.contains_key(&gid) {
+                    // Sharp glass reload at the block start; body one round later.
                     Some((gid, 1))
                 } else {
                     None
@@ -1715,10 +1707,6 @@ impl Sink {
         // samples up to its radius PAST the silhouette; without the dilated coverage the draft is only
         // H-blurred inside the silhouette and the V taps beyond it read the sharp backdrop (bands).
         const FX_TINT_DILATED_ID: u32 = 101;
-        // Inline (>= EFFECT_INLINE_BASE), but coarse rasterises the shape's OFFSET (+spread) silhouette as
-        // its coverage — a drop-shadow SPREAD marker, so fine lays the shadow colour under the body
-        // confined to the offset outline.
-        const FX_SPREAD_ID: u32 = 102;
         let mut fx_params: Vec<f32> = Vec::new();
         let mut fx_offset: HashMap<u128, u32> = HashMap::new();
         // A fine gather emits ONE marker per pass, at successive rounds R, R+1, … — the separable blur
@@ -1742,19 +1730,6 @@ impl Sink {
                             let off = fx_params.len() as u32;
                             fx_params.extend_from_slice(d);
                             (rounds[j] + 1 + p as u32, off)
-                        })
-                        .collect();
-                    stack_markers.insert(gid, markers);
-                } else if let Some(chain) = stack_spread.get(&gid) {
-                    // A sharp-drop SPREAD marker composites at the block's FIRST round (`rounds[j]`, where
-                    // a glass stack's imperative drops sat) so the body — one round later at reload_sub 1 —
-                    // lands over it. (Single drop for now; a multi-drop stack is excluded upstream.)
-                    let markers = chain
-                        .iter()
-                        .map(|d| {
-                            let off = fx_params.len() as u32;
-                            fx_params.extend_from_slice(d);
-                            (rounds[j], off)
                         })
                         .collect();
                     stack_markers.insert(gid, markers);
@@ -1889,21 +1864,15 @@ impl Sink {
                             // path. The intermediate links (and the sharp stack's SDF-masked marker) keep
                             // the dilated reach-rect. This mirrors the standalone frost chain's coverage.
                             let is_frost = stack_frost.contains_key(&gid);
-                            // A SPREAD drop marker (102) rasterises the OFFSET (+spread) silhouette as its
-                            // own coverage — the shadow follows the shape, offset — so it is neither the
-                            // node silhouette (FX_TINT_ID) nor the reach rect (dilated).
-                            let is_spread = stack_spread.contains_key(&gid);
-                            // A soft-shadow stack's per-marker eid comes from the scheduled role: an inner
-                            // BAND clips to the shape's UNOFFSET outline (the flood, FX_TINT_ID); every blur
-                            // H/V materialises over the dilated reach. A frost tail (last marker) also takes
-                            // FX_TINT_ID so `area[i]` clips it to the outline.
+                            // A shadow stack's per-marker eid comes from the scheduled role: an inner BAND
+                            // clips to the shape's UNOFFSET outline (the flood, FX_TINT_ID); every sharp
+                            // drop / blur H/V materialises or composites over the dilated reach. A frost tail
+                            // (last marker) also takes FX_TINT_ID so `area[i]` clips it to the outline.
                             let sched = shadow_sched.get(&gid);
                             for (mi, &(mround, moff)) in markers.iter().enumerate() {
                                 z += 1;
                                 let last = mi == markers.len() - 1;
-                                let eid = if is_spread {
-                                    FX_SPREAD_ID
-                                } else if let Some(sched) = sched {
+                                let eid = if let Some(sched) = sched {
                                     if sched[mi].role == ShadowRole::InnerBand { FX_TINT_ID } else { FX_TINT_DILATED_ID }
                                 } else if is_frost && last {
                                     FX_TINT_ID
@@ -1941,7 +1910,6 @@ impl Sink {
             && fx_fine.is_empty()
             && stack_fine.is_empty()
             && stack_frost.is_empty()
-            && stack_spread.is_empty()
             && stack_shadows.is_empty();
         let n_slots: usize = if rw { 1 } else { 2 };
         let texs: Vec<wgpu::Texture> = (0..n_slots)
@@ -2006,6 +1974,10 @@ impl Sink {
             /// A sharp shape-following glass: a single WARP reload that reads the backdrop (`base_in`)
             /// AND the baked SDF of the shape's outline (`input_in`) for its `Sampled` field distance.
             SampledGlass,
+            /// A SHARP drop shadow: reads the rasterised offset SILHOUETTE (`input_in`, [`Self::stack_sil`]
+            /// keyed by THIS round) and lays the shadow colour at its alpha (no blur), source-OVER the
+            /// accumulator (under the body) — the crisp analogue of `DropBlurV`.
+            SharpDrop,
             /// A soft shadow's blur H (drop OR inner): reads the shadow's rasterised offset SILHOUETTE
             /// (`input_in`, [`Self::stack_sil`] keyed by THIS round), writes the H-blurred draft. The
             /// silhouette is round-keyed so a shape's several shadows never collide.
@@ -2051,6 +2023,7 @@ impl Sink {
                 if let Some(sched) = shadow_sched.get(&gid) {
                     for mk in sched {
                         let role = match mk.role {
+                            ShadowRole::SharpDrop => WindowRole::SharpDrop,
                             ShadowRole::BlurH => WindowRole::DropBlurH,
                             ShadowRole::DropV => WindowRole::DropBlurV,
                             ShadowRole::InnerV => WindowRole::InnerV(mk.punch_key),
@@ -2157,7 +2130,7 @@ impl Sink {
             .flat_map(|(&gid, sched)| {
                 sched
                     .iter()
-                    .filter(|mk| mk.role == ShadowRole::BlurH)
+                    .filter(|mk| matches!(mk.role, ShadowRole::BlurH | ShadowRole::SharpDrop))
                     .map(move |mk| (mk.round, gid, mk.slot, mk.inset))
             })
             .collect();
@@ -2270,6 +2243,16 @@ impl Sink {
                         let out = 1 - c;
                         let dv = draft_views.get(&(window_lo - 1)).expect("blur V after its H");
                         backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], dv, &views[out]);
+                        cur = Some(out);
+                    }
+                    Some(WindowRole::SharpDrop) => {
+                        // A sharp drop: read the rasterised offset silhouette (`input_in`, keyed by THIS
+                        // round) and SPREAD|SCRATCH_COV lays the shadow colour at its alpha, source-OVER the
+                        // accumulator — under the body (which composites a later round). No blur, no draft.
+                        let c = cur.expect("a sharp drop composites over a backdrop");
+                        let out = 1 - c;
+                        let sil = self.stack_sil.get(&window_lo).expect("sharp-drop silhouette rasterised pre-pass").clone();
+                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sil, &views[out]);
                         cur = Some(out);
                     }
                     Some(WindowRole::DropBlurH) => {
@@ -2417,7 +2400,7 @@ impl Sink {
                     flush_mark = passes_recorded();
                 }
                 match kind {
-                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, None, sub, stack_reload_sub.get(&gid).copied(), stack_spread.contains_key(&gid) || stack_shadows.contains_key(&gid), stack_shadows.contains_key(&gid)),
+                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, None, sub, stack_reload_sub.get(&gid).copied(), stack_shadows.contains_key(&gid), stack_shadows.contains_key(&gid)),
                     _ if sub > 0 => {}
                     // An inline effect ran in fine at its CMD_EFFECT marker(s); no post-fine pass. Pointwise
                     // (tint/field) rides fx_offset; a fine gather (glass/blur) rides fx_markers.
@@ -5341,78 +5324,22 @@ impl Sink {
         Some(lower_graph(&graph, None))
     }
 
-    /// The inline SPREAD descriptor(s) for a HARD (σ<0.5) drop shadow on a pure drop+body PATH stack —
-    /// the `wv_shadow_fine` route for a sharp drop, run as a fine marker instead of a per-shape blit.
-    ///
-    /// `Some` only when EVERY effect on the node is a sharp non-inset drop or the body: a soft drop
-    /// (device sigma ≥ 0.5px, needs the source-strip blur an increment later), an inner shadow
-    /// (`Compose::Over`), a backdrop gather, or a body-replacing effect all decline and keep their
-    /// existing path. Restricted to a SINGLE drop for now — [`ClassicBackend::draw_effect_marker`]'s
-    /// `102` arm rasterises the first non-inset shadow, so two would stamp over one silhouette. Each
-    /// descriptor is `[bits=SPREAD(128), program=0, u[3]=straight shadow colour]`; fine lays the colour
-    /// over the marker's offset-silhouette coverage, source-OVER, a layer under the body.
-    fn wv_spread_passes(&self, gid: u128, full_view: Affine, _w: u32, _h: u32) -> Option<Vec<[f32; 26]>> {
-        crate::vello::abi::with_scene(|live, _, _| {
-            let n = live.get(gid)?;
-            if n.kind != crate::model::ShapeKind::Path {
-                return None;
-            }
-            let stack = crate::effect::effect_stack(n);
-            if stack.is_empty() {
-                return None;
-            }
-            let cs = full_view.as_coeffs();
-            let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
-            let mut descs = Vec::new();
-            for e in &stack {
-                match (&e.source, e.compose) {
-                    (crate::effect::Source::Coverage { .. }, crate::effect::Compose::Under) => {
-                        let sigma =
-                            e.governing_blur().map_or(0.0, |r| crate::blur::radius_to_sigma(r) * scale);
-                        if sigma >= 0.5 {
-                            return None; // a SOFT drop — keep the pre-pass blur path
-                        }
-                        let color = e.ops.iter().find_map(|op| match op {
-                            crate::effect::Op::Tint(c) => Some(*c),
-                            _ => None,
-                        })?;
-                        let [r, g, b, a] = color.components;
-                        let mut d = [0.0f32; 26];
-                        d[0] = 128.0; // bits = SPREAD
-                        d[14] = r; // u[3] = straight shadow colour
-                        d[15] = g;
-                        d[16] = b;
-                        d[17] = a;
-                        descs.push(d);
-                    }
-                    (crate::effect::Source::Body, _) => {}
-                    _ => return None,
-                }
-            }
-            if descs.len() == 1 {
-                Some(descs)
-            } else {
-                None
-            }
-        })
-    }
-
-    /// The inline marker PLAN for every SOFT shadow on a PATH stack — the multi-shadow generalisation of
-    /// the old per-kind `wv_dropblur_passes`/`wv_innerblur_passes`, retiring the
-    /// `wv_shadow_fine`/`wv_blur_texture_fine` PRE-PASS by running each shadow's blur in the MAIN round
-    /// loop. Walks the effect stack in z-order emitting a [`ShadowMarker::SoftDrop`] per soft non-inset
-    /// shadow (H `BLUR|MATERIALIZE` → draft, V `BLUR|SPREAD` composites the colour under the body) and a
-    /// [`ShadowMarker::SoftInner`] per soft inset shadow (H, V materialise the punch, band `SPREAD|ERASE`
-    /// over the body). Shadow coverage is a pure alpha field so the blur is LINEAR (no sRGB bit 1024).
-    /// `None` (defer to the pre-pass) unless EVERY effect is a soft drop, a soft inner, or the body — a
-    /// SHARP (σ<0.5) shadow keeps the SPREAD/pre-pass path, a backdrop gather or non-Path node the pre-pass.
+    /// The inline marker PLAN for every shadow on a Path/Text stack — the unified planner that retires the
+    /// `wv_shadow_fine`/`wv_blur_texture_fine` PRE-PASS by running each shadow in the MAIN round loop. Walks
+    /// the effect stack in z-order emitting a [`ShadowMarker::SharpDrop`] per sharp (σ<0.5) non-inset shadow
+    /// (one `SPREAD|SCRATCH_COV` composite of the offset silhouette), a [`ShadowMarker::SoftDrop`] per soft
+    /// non-inset shadow (H `BLUR|MATERIALIZE` → draft, V `BLUR|SPREAD` under the body), and a
+    /// [`ShadowMarker::SoftInner`] per soft inset shadow (H, V materialise the punch, band over the body).
+    /// Shadow coverage is a pure alpha field so the blur is LINEAR (no sRGB bit 1024). `None` (defer to the
+    /// pre-pass) unless EVERY effect is a supported shadow or the body — a SHARP INNER keeps the pre-pass, a
+    /// backdrop gather or non-Path/Text node too, and a shadow whose gate is off.
     fn wv_shadow_plan(&self, gid: u128, full_view: Affine, _w: u32, _h: u32) -> Option<Vec<ShadowMarker>> {
         crate::vello::abi::with_scene(|live, _, _| {
             let n = live.get(gid)?;
             // Path and Text both ride fine: `build_shadow_silhouette` rasterises each (a Text draws its
-            // glyphs), and a DROP's coverage is the reach rect + the blurred silhouette — no per-glyph
-            // coverage needed. A Text INNER band, though, floods `area[i]` with `outline(node)` (the bounds
-            // rect for a Text, not the glyphs), so it stays on the pre-pass for now (handled in the Over arm).
+            // glyphs). A DROP's coverage is the blurred/offset silhouette; a Text INNER recovers its flood by
+            // sampling that offset silhouette shifted back by the shadow offset (FLOOD_ERASE), so neither
+            // needs per-glyph `area[i]` coverage.
             if !matches!(n.kind, crate::model::ShapeKind::Path | crate::model::ShapeKind::Text) {
                 return None;
             }
@@ -5433,13 +5360,28 @@ impl Sink {
             for e in &stack {
                 match (&e.source, e.compose) {
                     (crate::effect::Source::Coverage { .. }, crate::effect::Compose::Under) => {
-                        if !wv_dropblur_fine() {
-                            return None; // soft drops A/B'd off — whole shape defers to the pre-pass
-                        }
                         let sigma =
                             e.governing_blur().map_or(0.0, |r| crate::blur::radius_to_sigma(r) * scale);
                         if sigma < 0.5 {
-                            return None; // a sharp drop rides wv_spread_passes / the pre-pass
+                            // SHARP drop: one marker composites the offset silhouette (no blur) under the
+                            // body. SPREAD|SCRATCH_COV lays the shadow colour at the silhouette scratch's
+                            // alpha — the sink-rasterised offset coverage (slot-native, Path or Text).
+                            if !wv_spread_fine() {
+                                return None; // sharp drops A/B'd off — whole shape defers to the pre-pass
+                            }
+                            let [r, g, b, a] = tint(e)?.components;
+                            let mut d = [0.0f32; 26];
+                            d[0] = 128.0 + 8192.0; // SPREAD | SCRATCH_COV
+                            d[14] = r; // u[3] = straight shadow colour
+                            d[15] = g;
+                            d[16] = b;
+                            d[17] = a;
+                            plan.push(ShadowMarker::SharpDrop { desc: d, slot: drop_slot });
+                            drop_slot += 1;
+                            continue;
+                        }
+                        if !wv_dropblur_fine() {
+                            return None; // soft drops A/B'd off — whole shape defers to the pre-pass
                         }
                         let [r, g, b, a] = tint(e)?.components;
                         let mut h = [0.0f32; 26];

@@ -1229,6 +1229,34 @@ pub fn build_sharp_drop_scene() -> (Scene, Vec<(usize, &'static str)>) {
         n.bounds = r;
         n.path = Some(blob_path(r));
         n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        n.shadows = vec![
+            Shadow { color: cola(0, 0, 0, 170), blur: 0.0, spread: 2.0, offset: Vec2::new(18.0, 22.0), inset: false },
+            Shadow { color: cola(180, 40, 20, 200), blur: 0.0, spread: 0.0, offset: Vec2::new(-14.0, 10.0), inset: false },
+        ];
+        b.root(n);
+        b.advance("blob two hard drops");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(r));
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
+        n.shadows = vec![
+            Shadow { color: cola(30, 60, 140, 150), blur: 14.0, spread: 0.0, offset: Vec2::new(-8.0, 14.0), inset: false },
+            Shadow { color: cola(0, 0, 0, 190), blur: 0.0, spread: 3.0, offset: Vec2::new(16.0, 18.0), inset: false },
+        ];
+        b.root(n);
+        b.advance("blob hard + soft drops");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(r));
+        n.fills = vec![Paint::plain(Brush::Solid(col(84, 74, 183)))];
         b.root(n);
         b.advance("blob (no shadow)");
     }
