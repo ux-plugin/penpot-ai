@@ -22,6 +22,7 @@ pub mod draw;
 pub mod editor;
 pub mod fx;
 pub mod frame_dag;
+pub mod frame_exec;
 pub mod effects;
 pub mod units;
 pub mod gputime;
