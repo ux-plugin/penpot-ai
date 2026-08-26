@@ -135,6 +135,39 @@ impl FrameDag {
         None
     }
 
+    /// Lower the frame graph to the executor's stage IR ([`crate::vello::plan::StageSpec`]) — one
+    /// stage per node, in schedule order (the node vector is already topologically sorted). A `Draft`
+    /// or a `Backdrop` reload writes a scratch atlas; every spine node (`Background`, `Paint`,
+    /// `Composite`) writes the frame accumulator. Each input references its producer by node index:
+    /// a [`Input::Value`] when that producer wrote an atlas, else the [`Input::External`] accumulator.
+    ///
+    /// This is the Phase-4 bridge: it proves the whole-frame DAG produces plans the existing allocator
+    /// ([`crate::vello::plan::colour_stages`] / [`crate::vello::plan::atlases_needed`]) can colour and
+    /// pack, without the live executor being cut over yet.
+    #[must_use]
+    pub fn to_stage_specs(&self) -> Vec<crate::vello::plan::StageSpec> {
+        use crate::vello::plan::{Input, StageSpec, Target, ValueId};
+        let is_atlas = |k: NodeKind| matches!(k, NodeKind::Draft | NodeKind::Backdrop);
+        self.nodes
+            .iter()
+            .map(|n| {
+                let reads = n
+                    .inputs
+                    .iter()
+                    .map(|&j| {
+                        if is_atlas(self.nodes[j].kind) {
+                            Input::Value(ValueId(j))
+                        } else {
+                            Input::External(0)
+                        }
+                    })
+                    .collect();
+                let target = if is_atlas(n.kind) { Target::Atlas } else { Target::Accumulator };
+                StageSpec { reads, target }
+            })
+            .collect()
+    }
+
     /// The barrier-aware round of every node: `round[i] = max_j( round[j] + [edge j→i is a barrier] )`.
     /// One forward pass, since nodes are pre-sorted. Nodes sharing a round run in one dispatch (the
     /// composite spine folds into a single fine pass); a new round appears only across a materialize or
@@ -499,5 +532,29 @@ mod tests {
         let dag = build_frame_dag_installed();
         let rounds = dag.schedule(TILE_PX).rounds();
         assert!(rounds <= 5, "disjoint grid cells must not chain (got {rounds} rounds for 20 cells)");
+    }
+
+    #[test]
+    fn stage_specs_are_executor_ready() {
+        use crate::vello::plan::{atlases_needed, colour_stages, Target};
+        crate::vello::abi::load_combined_scene();
+        let dag = build_frame_dag_installed();
+        let specs = dag.to_stage_specs();
+
+        // One stage per node, and the whole thing runs through the real allocator.
+        assert_eq!(specs.len(), dag.nodes.len());
+        let colours = colour_stages(&specs);
+        // A3/A4: a blur reads its silhouette so it takes a different atlas, but disjoint drafts reuse
+        // atlases — the frame-wide count stays a small constant, not one-per-draft.
+        let atlases = atlases_needed(&colours);
+        assert!(atlases >= 2, "a blur ping-pongs off its source → at least 2 atlases");
+        assert!(atlases <= 4, "disjoint drafts must reuse atlases (got {atlases})");
+        // The spine writes the accumulator; an accumulator stage takes no atlas colour.
+        for (i, n) in dag.nodes.iter().enumerate() {
+            if n.kind == NodeKind::Composite || n.kind == NodeKind::Background {
+                assert_eq!(specs[i].target, Target::Accumulator);
+                assert!(colours[i].is_none(), "accumulator stage must not be coloured");
+            }
+        }
     }
 }

@@ -96,7 +96,13 @@ fn main() {
     let dag = frame_dag::build_frame_dag_installed();
     let naive = dag.levels().iter().copied().max().unwrap_or(0) + 1;
     let rounds = dag.schedule(TILE_PX).rounds();
-    eprintln!("frame-dag [{scene}]: {} nodes, {rounds} rounds (naive {naive})", dag.nodes.len());
+    let specs = dag.to_stage_specs();
+    let atlases = render_core::vello::plan::atlases_needed(&render_core::vello::plan::colour_stages(&specs));
+    eprintln!(
+        "frame-dag [{scene}]: {} nodes, {rounds} rounds (naive {naive}), {} stages → {atlases} atlases",
+        dag.nodes.len(),
+        specs.len(),
+    );
 
     println!("%% ===== RAW DAG ({scene}) =====");
     println!("{}", to_mermaid(&dag));
