@@ -60,6 +60,24 @@ impl Op {
     }
 }
 
+/// Where a node's concrete work comes from in the scene — the thread the *executor* follows to build
+/// the actual GPU pass (geometry to rasterize, effect config to bake into the uniform). The scheduler
+/// never reads it; it exists only so `frame_exec`'s dispatch can resolve an [`Op`] to real work
+/// without re-deriving anything.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Source {
+    /// The page background fill.
+    Background,
+    /// A coalesced run of plain shapes — rasterize their fills, in order.
+    Band(Vec<u128>),
+    /// The shape's own body (plain fills / text).
+    Body(u128),
+    /// A pass belonging to one entry of a shape's effect stack: `shape`'s `effect_stack()[slot]`. The
+    /// `Op` says which pass within that effect (rasterize the source, blur it, compose it); `slot` says
+    /// which effect — so a drop's colour and an inner's colour never get confused.
+    Effect { shape: u128, slot: usize },
+}
+
 /// The coarse role of a node, DERIVED from its `op` and `target` — a view for display and queries, not
 /// a stored tag. (The scheduler branches on `op`/`target`, never on this.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,6 +101,8 @@ pub enum Category {
 pub struct Node {
     pub op: Op,
     pub target: Target,
+    /// Back-reference to the scene work this runs — read only by the executor, never the scheduler.
+    pub source: Source,
     /// A human-readable name for the dev dump — display only, never branched on.
     pub label: String,
     /// Page-space footprint, for the region-scoped accumulator and tile-vs-footprint barrier test.
@@ -285,24 +305,25 @@ impl Accumulator {
 
 /// A pending run of plain shapes waiting to coalesce into one rasterize band. Carries the union of
 /// their bounds so the band's `reach` is its real footprint — not the whole frame — which keeps
-/// disjoint bands (e.g. a per-cell background behind each effect) from re-chaining the whole frontier.
+/// disjoint bands (e.g. a per-cell background behind each effect) from re-chaining the whole frontier,
+/// and the shape ids so the executor can rasterize them.
 #[derive(Default)]
 struct Band {
-    count: usize,
+    ids: Vec<u128>,
     bounds: Option<Rect>,
 }
 
 impl Band {
-    fn push(&mut self, r: Rect) {
-        self.count += 1;
+    fn push(&mut self, id: u128, r: Rect) {
+        self.ids.push(id);
         self.bounds = Some(self.bounds.map_or(r, |b| b.union(r)));
     }
     fn is_empty(&self) -> bool {
-        self.count == 0
+        self.ids.is_empty()
     }
-    fn clear(&mut self) {
-        self.count = 0;
+    fn take(&mut self) -> Vec<u128> {
         self.bounds = None;
+        std::mem::take(&mut self.ids)
     }
 }
 
@@ -312,12 +333,16 @@ struct Builder {
     acc: Accumulator,
     /// Per-effect-node counter, for readable labels (`s1`, `s2`, …).
     fx_no: u32,
+    /// The source every subsequent `push` stamps onto its node — set once per effect/body/band so the
+    /// individual op emitters don't each thread it.
+    cur: Source,
 }
 
 impl Builder {
     fn push(&mut self, op: Op, target: Target, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
         let id = self.dag.nodes.len();
-        self.dag.nodes.push(Node { op, target, label, reach, inputs });
+        let source = self.cur.clone();
+        self.dag.nodes.push(Node { op, target, source, label, reach, inputs });
         id
     }
 
@@ -332,12 +357,13 @@ impl Builder {
         if band.is_empty() {
             return;
         }
-        let label = format!("paint band · {} shape(s)", band.count);
         let reach = band.bounds;
+        let label = format!("paint band · {} shape(s)", band.ids.len());
         let inputs = self.acc.readers(reach);
+        self.cur = Source::Band(band.take());
         let id = self.push(Op::Rasterize, Target::Accumulator, label, reach, inputs);
         self.acc.write(reach, id);
-        band.clear();
+        self.cur = Source::Background;
     }
 
     /// Lower a chain of effect ops onto a starting value, emitting one draft per real pass. Every
@@ -376,7 +402,7 @@ impl Builder {
     /// body, the body, a gather through the coverage, inners over. Each effect is the identical shape —
     /// `rasterize/reload source → op drafts → compose(acc, tail)` — differing only in where it sits and
     /// whether it reloads.
-    fn lower_effect_node(&mut self, node: &crate::model::Node) {
+    fn lower_effect_node(&mut self, shape: u128, node: &crate::model::Node) {
         self.fx_no += 1;
         let name = format!("s{}", self.fx_no);
         let base = node.bounds;
@@ -384,46 +410,48 @@ impl Builder {
         let has_replace = stack.iter().any(|e| e.compose == Compose::Replace);
         let has_paint = !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty();
 
-        // 1. Drop shadows (Under) — rasterize silhouette → blur → compose, under the body.
-        for e in stack.iter().filter(|e| e.compose == Compose::Under) {
+        // One loop, in paint order (drops under → body → gather/replace → inners over — the order
+        // effect_stack already returns). Every effect is the identical shape: a source pass (rasterize a
+        // silhouette, or reload the backdrop), its op drafts, then a compose. The plain body slots in
+        // once we pass the under-shadows.
+        let mut body_done = false;
+        for (slot, e) in stack.iter().enumerate() {
+            if !body_done && e.compose != Compose::Under {
+                self.emit_body(shape, base, has_replace, has_paint, &name);
+                body_done = true;
+            }
             let reach = Some(e.footprint(base));
-            let sil = self.draft(Op::Rasterize, format!("{name} drop silhouette"), reach, vec![]);
-            let tail = self.lower_ops(&e.ops, sil, reach, &name, "drop");
-            self.compose(format!("{name} drop → acc"), reach, tail);
+            self.cur = Source::Effect { shape, slot };
+            let (source, tag) = match e.compose {
+                Compose::Under => (self.draft(Op::Rasterize, format!("{name} drop silhouette"), reach, vec![]), "drop"),
+                Compose::Over => (self.draft(Op::Rasterize, format!("{name} inner silhouette"), reach, vec![]), "inner"),
+                Compose::Replace => (self.draft(Op::Rasterize, format!("{name} body-read"), reach, vec![]), "body"),
+                Compose::ThroughCoverage => {
+                    let reads = self.acc.readers(reach);
+                    (self.draft(Op::Reload, format!("{name} read backdrop"), reach, reads), "gather")
+                }
+            };
+            let tail = self.lower_ops(&e.ops, source, reach, &name, tag);
+            self.compose(format!("{name} {tag} → acc"), reach, tail);
+            self.cur = Source::Background;
         }
+        if !body_done {
+            self.emit_body(shape, base, has_replace, has_paint, &name);
+        }
+    }
 
-        // 2. The node's own body (plain fills/text), unless a Replace effect stands in for it.
-        if !has_replace && has_paint {
-            let reach = Some(base);
-            let inputs = self.acc.readers(reach);
-            let id = self.push(Op::Rasterize, Target::Accumulator, format!("{name} body"), reach, inputs);
-            self.acc.write(reach, id);
+    /// Emit the shape's own body (plain fills/text) onto the spine — unless a Replace effect replaces
+    /// it, or it has no paint.
+    fn emit_body(&mut self, shape: u128, base: Rect, has_replace: bool, has_paint: bool, name: &str) {
+        if has_replace || !has_paint {
+            return;
         }
-        // 2b. Body-replacing effects (layer blur / body shader): rasterize the body into scratch, transform.
-        for e in stack.iter().filter(|e| e.compose == Compose::Replace) {
-            let reach = Some(e.footprint(base));
-            let read = self.draft(Op::Rasterize, format!("{name} body-read"), reach, vec![]);
-            let tail = self.lower_ops(&e.ops, read, reach, &name, "body");
-            self.compose(format!("{name} body → acc"), reach, tail);
-        }
-
-        // 3. Backdrop gathers (ThroughCoverage) — reload the accumulator, run the lens/blur, compose
-        //    through the coverage over the body.
-        for e in stack.iter().filter(|e| e.compose == Compose::ThroughCoverage) {
-            let reach = Some(e.footprint(base));
-            let read_inputs = self.acc.readers(reach);
-            let read = self.draft(Op::Reload, format!("{name} read backdrop"), reach, read_inputs);
-            let tail = self.lower_ops(&e.ops, read, reach, &name, "gather");
-            self.compose(format!("{name} gather → acc"), reach, tail);
-        }
-
-        // 4. Inner shadows (Over) — rasterize silhouette → punch → compose, over the body.
-        for e in stack.iter().filter(|e| e.compose == Compose::Over) {
-            let reach = Some(e.footprint(base));
-            let sil = self.draft(Op::Rasterize, format!("{name} inner silhouette"), reach, vec![]);
-            let tail = self.lower_ops(&e.ops, sil, reach, &name, "inner");
-            self.compose(format!("{name} inner → acc"), reach, tail);
-        }
+        let reach = Some(base);
+        let inputs = self.acc.readers(reach);
+        self.cur = Source::Body(shape);
+        let id = self.push(Op::Rasterize, Target::Accumulator, format!("{name} body"), reach, inputs);
+        self.acc.write(reach, id);
+        self.cur = Source::Background;
     }
 
     /// Land an effect result (`tail`) onto the region-scoped accumulator: read the writers `reach`
@@ -450,16 +478,16 @@ impl Builder {
             return;
         }
         if !has_effects {
-            // A plain leaf shape → coalesce into the pending rasterize band (union its bounds).
+            // A plain leaf shape → coalesce into the pending rasterize band (id + bounds).
             if has_paint {
-                band.push(node.bounds);
+                band.push(id, node.bounds);
             }
             return;
         }
         // An effect-bearing node breaks the band: flush it, then lower the effects. (v1 treats an
         // effect node as a leaf — nested children of an effect node are a follow-up.)
         self.flush_band(band);
-        self.lower_effect_node(node);
+        self.lower_effect_node(id, node);
     }
 }
 
@@ -468,7 +496,7 @@ impl Builder {
 /// stack into the shared primitive alphabet.
 #[must_use]
 pub fn build_frame_dag(scene: &Scene) -> FrameDag {
-    let mut b = Builder { dag: FrameDag::default(), acc: Accumulator::default(), fx_no: 0 };
+    let mut b = Builder { dag: FrameDag::default(), acc: Accumulator::default(), fx_no: 0, cur: Source::Background };
     let bg = b.push(Op::Rasterize, Target::Accumulator, "BG".to_string(), None, vec![]);
     b.acc.write(None, bg);
     let mut band = Band::default();
@@ -573,6 +601,39 @@ mod tests {
         let dag = build_frame_dag_installed();
         let rounds = dag.schedule(TILE_PX).rounds();
         assert!(rounds <= 5, "disjoint grid cells must not chain (got {rounds} rounds for 20 cells)");
+    }
+
+    #[test]
+    fn every_node_resolves_to_real_scene_work() {
+        // The executor follows `source` back to the scene; every node must point at work that exists —
+        // a band's shape ids, a body's shape, or an effect slot that indexes a real effect stack.
+        crate::vello::abi::load_combined_scene();
+        let dag = build_frame_dag_installed();
+
+        assert_eq!(dag.nodes[0].source, Source::Background, "node 0 is the background");
+        crate::vello::abi::with_scene(|scene, _, _| {
+            for n in &dag.nodes {
+                match &n.source {
+                    Source::Background => {}
+                    Source::Band(ids) => {
+                        assert!(!ids.is_empty(), "a band names its shapes");
+                        for id in ids {
+                            assert!(scene.get(*id).is_some(), "band shape {id:x} is in the scene");
+                        }
+                    }
+                    Source::Body(shape) => {
+                        assert!(scene.get(*shape).is_some(), "body shape {shape:x} is in the scene");
+                    }
+                    Source::Effect { shape, slot } => {
+                        let node = scene.get(*shape).expect("effect shape is in the scene");
+                        assert!(
+                            *slot < crate::effect::effect_stack(node).len(),
+                            "slot {slot} indexes shape {shape:x}'s effect stack",
+                        );
+                    }
+                }
+            }
+        });
     }
 
     #[test]
