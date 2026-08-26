@@ -3,7 +3,7 @@
  * `querySelectionRect` is the stateless WASM query used after selection/renderer changes and commits.
  */
 
-import { signal } from '@preact/signals-core'
+import { effect, signal } from '@preact/signals-core'
 import type { Fill, Gradient, Selrect } from 'penpot-exporter/types'
 import type { Renderer } from '../renderer'
 import type { SelectionRectResult } from '../types'
@@ -25,6 +25,101 @@ export interface ActiveEditorTarget {
 export const activeEditorTarget = signal<ActiveEditorTarget | null>(null)
 export const selectionRect = signal<Selrect | null>(null)
 export const shapeDrawPreview = signal<Selrect | null>(null)
+
+/** Which eraser sub-mode the Erase tool is in: a swept `brush` band, or a
+ *  free-form `lasso` whose enclosed area is cropped. Written by PenEditFlyout,
+ *  read by the PathEditorOverlay to pick the handler + preview. Persisted so the
+ *  eraser reopens in the last-used mode. */
+const ERASE_MODE_KEY = 'zoetrope.eraseMode'
+const readEraseMode = (): 'brush' | 'lasso' => {
+  try {
+    const v = localStorage.getItem(ERASE_MODE_KEY)
+    return v === 'lasso' || v === 'brush' ? v : 'brush'
+  } catch {
+    return 'brush'
+  }
+}
+export const eraseMode = signal<'brush' | 'lasso'>(readEraseMode())
+effect(() => {
+  const v = eraseMode.value
+  try {
+    localStorage.setItem(ERASE_MODE_KEY, v)
+  } catch {
+    /* storage unavailable — mode just won't persist */
+  }
+})
+
+/** Free-form (brush) eraser width, as the band's half-width in SCREEN px (so the
+ *  felt size is zoom-independent). Persisted; edited from the path-edit flyout. */
+const ERASE_WIDTH_KEY = 'zoetrope.eraseBrushRadius'
+export const ERASE_BRUSH_MIN = 4
+export const ERASE_BRUSH_MAX = 80
+const readEraseBrushRadius = (): number => {
+  try {
+    const n = Number(localStorage.getItem(ERASE_WIDTH_KEY))
+    if (Number.isFinite(n) && n > 0) return Math.min(ERASE_BRUSH_MAX, Math.max(ERASE_BRUSH_MIN, n))
+  } catch {
+    /* ignore */
+  }
+  return 22
+}
+export const eraseBrushRadius = signal<number>(readEraseBrushRadius())
+effect(() => {
+  const v = eraseBrushRadius.value
+  try {
+    localStorage.setItem(ERASE_WIDTH_KEY, String(v))
+  } catch {
+    /* storage unavailable */
+  }
+})
+
+/** Free-form (brush) end/edge style: `round` sweeps a capsule, `square` a
+ *  rectangle (flat, extended ends). Persisted; edited from the flyout. */
+const ERASE_CAP_KEY = 'zoetrope.eraseBrushCap'
+const readEraseBrushCap = (): 'round' | 'square' => {
+  try {
+    const v = localStorage.getItem(ERASE_CAP_KEY)
+    return v === 'square' ? 'square' : 'round'
+  } catch {
+    return 'round'
+  }
+}
+export const eraseBrushCap = signal<'round' | 'square'>(readEraseBrushCap())
+effect(() => {
+  const v = eraseBrushCap.value
+  try {
+    localStorage.setItem(ERASE_CAP_KEY, v)
+  } catch {
+    /* storage unavailable */
+  }
+})
+
+/**
+ * Live eraser stroke during an erase drag: the accumulated stroke as WORLD-space
+ * points plus the brush radius (world units) and the active `mode`, or null when
+ * no erase is in flight. Written at pointer rate by the PathEditorOverlay; read by
+ * SelectionOverlay to preview the swept band (brush) or the lasso loop before the
+ * destructive boolean commits on release.
+ */
+export const eraseStroke = signal<{
+  /** The outline polyline to preview (curved edges already flattened). */
+  points: Array<{ x: number; y: number }>
+  radius: number
+  mode: 'brush' | 'lasso'
+  /** Brush only: end/edge style of the swept band. */
+  cap?: 'round' | 'square'
+  /** Free-form only: the placed anchor nodes (with any bézier handles) to draw as
+   *  editable markers — distinct from the flattened `points`. */
+  nodes?: Array<{
+    x: number
+    y: number
+    hIn?: { x: number; y: number }
+    hOut?: { x: number; y: number }
+  }>
+  /** Free-form only: the cursor is over the first node, so the next click CLOSES
+   *  the loop — the overlay shows a scissors affordance there. */
+  close?: boolean
+} | null>(null)
 
 /**
  * Live working vector network during a path-edit drag (R4), or null when no drag

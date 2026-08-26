@@ -32,6 +32,8 @@ import { wasmSelectionRect } from '../signals/selection'
 import { textToolHoverTarget } from '../signals/text-editor'
 import { queryNodesAtPoint, pickTopmostNode } from '../selection/query-at-point'
 import { createPenStartPath } from '../handlers/draw-path'
+import { isConvertibleToPath, primitiveToPathPartial } from '../handlers/primitive-to-path'
+import { commitNodePartialUpdate, getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
 import { beginTextEdit, dragTextEdit, endTextEdit, screenToShapeLocal } from '../handlers/text-edit'
 import { buildKeyBindings, dispatchKey } from '../input/key-bindings'
 import type { CommandCtx } from '../input/commands'
@@ -430,7 +432,7 @@ export function useViewportInteractions({
     const vp = viewport.value
     if (!workerClient || !vp || !hitPageId || !page) return
 
-    queryNodesAtPoint(workerClient, hitPageId, vp, screenX, screenY).then((ids) => {
+    queryNodesAtPoint(workerClient, hitPageId, vp, screenX, screenY).then(async (ids) => {
       const topId = pickTopmostNode(page, ids)
       const node = topId ? (page.objects[topId] as { type?: string } | undefined) : undefined
       if (topId && isScene3D(topId)) {
@@ -449,6 +451,15 @@ export function useViewportInteractions({
         // path analogue of double-clicking a text shape to edit its content.
         setSelectedIds(new Set([topId]))
         canvasActor.send({ type: 'START_PATH_EDIT', shapeId: topId })
+      } else if (topId && isConvertibleToPath(node)) {
+        // A primitive (rect/ellipse) first bakes into an editable path — one
+        // undoable step — then drops into the same vector-edit mode, so a
+        // double-click "explodes" it into draggable anchors like a star.
+        setSelectedIds(new Set([topId]))
+        const before = getCommittedNodeOnActivePage(topId)
+        const partial = primitiveToPathPartial(before)
+        if (before && partial) await commitNodePartialUpdate(topId, before, partial, hitPageId)
+        canvasActor.send({ type: 'START_PATH_EDIT', shapeId: topId })
       } else {
         // Stroke-miss fallback: open paths only register a hit on the stroke
         // (query-selection uses precise geometry, not the bbox), so a double-click
@@ -459,12 +470,17 @@ export function useViewportInteractions({
         const selId = sel.size === 1 ? [...sel][0] : null
         const selObj = selId ? (page.objects[selId] as { type?: string } | undefined) : undefined
         const wasmRect = wasmSelectionRect.peek()
-        if (
-          selId &&
-          selObj?.type === 'path' &&
-          wasmRect &&
-          isPointInSelectionBounds(screenToWorld(vp, screenX, screenY), wasmRect)
-        ) {
+        const inBounds =
+          !!selId && !!wasmRect && isPointInSelectionBounds(screenToWorld(vp, screenX, screenY), wasmRect)
+        if (selId && selObj?.type === 'path' && inBounds) {
+          canvasActor.send({ type: 'START_PATH_EDIT', shapeId: selId })
+        } else if (selId && isConvertibleToPath(selObj) && inBounds) {
+          // Same bounds-fallback for a selected primitive: convert then edit, so a
+          // double-click into a rect's fill still enters vector-edit even when the
+          // hit-test worker returned nothing.
+          const before = getCommittedNodeOnActivePage(selId)
+          const partial = primitiveToPathPartial(before)
+          if (before && partial) await commitNodePartialUpdate(selId, before, partial, hitPageId)
           canvasActor.send({ type: 'START_PATH_EDIT', shapeId: selId })
         }
       }

@@ -16,6 +16,7 @@ import { isEmptyTextContent } from '../RightSidePanel/Sections/text-typography'
 import { pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
 import { textEditorIsEmpty, textEditorShapeId } from '../../renderer/signals/text-editor'
 import {
+  eraseStroke as eraseStrokeSignal,
   selectionCornerHandlesVisible,
   selectionRectOutlineVisible,
   selectionRect as selectionRectSignal,
@@ -23,6 +24,7 @@ import {
   wasmSelectionRect as wasmSelectionRectSignal,
 } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
+import { strokeToBandPolygon } from '../../renderer/handlers/erase'
 import { motionPlaying, motionPreviewActive } from '../../renderer/motion/motion-store'
 import {
   HANDLE_FILL,
@@ -148,6 +150,7 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
     usePointerDownFactory(canvasRef, canvasActor)
 
   const shapeDrawPreview = useSignalCoalesced(shapeDrawPreviewSignal)
+  const eraseStroke = useSignalCoalesced(eraseStrokeSignal)
   const isDrawingShape = useSelector(canvasActor, (s) => s.matches('drawingShape'))
   const shapeDrawWorld =
     isDrawingShape &&
@@ -280,6 +283,81 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
           </feMerge>
         </filter>
       </defs>
+      {eraseStroke != null && eraseStroke.points.length >= 1 && (
+        <g style={{ pointerEvents: 'none' }}>
+          <polygon
+            points={(eraseStroke.mode === 'lasso'
+              ? eraseStroke.points
+              : strokeToBandPolygon(eraseStroke.points, eraseStroke.radius, eraseStroke.cap)
+            )
+              .map((p) => `${p.x},${p.y}`)
+              .join(' ')}
+            fill="rgba(226,75,74,0.18)"
+            stroke="#E24B4A"
+            strokeWidth={1 / rawZoom}
+            strokeLinejoin="round"
+            strokeDasharray={eraseStroke.mode === 'lasso' ? `${5 / rawZoom},${4 / rawZoom}` : undefined}
+          />
+          {/* Free-form: bézier handle lines + square markers on each placed node. */}
+          {eraseStroke.mode === 'lasso' &&
+            (eraseStroke.nodes ?? []).map((n, i) => (
+              <g key={i}>
+                {(['hIn', 'hOut'] as const).map((h) =>
+                  n[h] ? (
+                    <g key={h}>
+                      <line
+                        x1={n.x}
+                        y1={n.y}
+                        x2={n[h]!.x}
+                        y2={n[h]!.y}
+                        stroke="#E24B4A"
+                        strokeWidth={1 / rawZoom}
+                      />
+                      <circle cx={n[h]!.x} cy={n[h]!.y} r={3 / rawZoom} fill="#E24B4A" />
+                    </g>
+                  ) : null,
+                )}
+                <rect
+                  x={n.x - 3 / rawZoom}
+                  y={n.y - 3 / rawZoom}
+                  width={6 / rawZoom}
+                  height={6 / rawZoom}
+                  fill="#fff"
+                  stroke="#E24B4A"
+                  strokeWidth={1.5 / rawZoom}
+                />
+              </g>
+            ))}
+          {/* Cursor over the first node → next click cuts the loop closed. */}
+          {eraseStroke.mode === 'lasso' &&
+            eraseStroke.close &&
+            eraseStroke.nodes?.[0] &&
+            (() => {
+              const n0 = eraseStroke.nodes[0]
+              const off = 15 / rawZoom
+              const s = 20 / rawZoom / 24
+              return (
+                <g transform={`translate(${n0.x + off} ${n0.y - off})`}>
+                  <circle r={13 / rawZoom} fill="#fff" stroke="#E24B4A" strokeWidth={1.5 / rawZoom} />
+                  <g
+                    transform={`scale(${s}) translate(-12 -12)`}
+                    fill="none"
+                    stroke="#E24B4A"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="6" cy="6" r="3" />
+                    <circle cx="6" cy="18" r="3" />
+                    <line x1="20" y1="4" x2="8.12" y2="15.88" />
+                    <line x1="14.47" y1="14.48" x2="20" y2="20" />
+                    <line x1="8.12" y1="8.12" x2="12" y2="12" />
+                  </g>
+                </g>
+              )
+            })()}
+        </g>
+      )}
       <g ref={dropIntentGRef} style={{ display: 'none', pointerEvents: 'none' }}>
         <rect ref={dropRectRef} fill="none" stroke="#378ADD" rx={6} style={{ pointerEvents: 'none' }} />
         <rect ref={dropGhostRef} fill="rgba(55,138,221,0.10)" stroke="#378ADD" rx={4} style={{ pointerEvents: 'none' }} />

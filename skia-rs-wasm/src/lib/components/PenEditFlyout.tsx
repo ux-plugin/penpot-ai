@@ -14,9 +14,29 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSelector } from '@xstate/react'
 import { useSnapshot } from 'valtio'
-import { Check, ChevronDown, MousePointer2, Plus, Spline, UnfoldVertical } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Circle,
+  Eraser,
+  MousePointer2,
+  Plus,
+  Spline,
+  Square,
+  SquaresSubtract,
+  UnfoldVertical,
+} from 'lucide-react'
+import { Popover as PopoverPrimitive } from 'radix-ui'
 import { useCanvasActor } from '../renderer/machine/canvas-actor-context'
 import { modAlt } from '../renderer/signals/pointer'
+import {
+  ERASE_BRUSH_MAX,
+  ERASE_BRUSH_MIN,
+  eraseBrushCap,
+  eraseBrushRadius,
+  eraseMode,
+} from '../renderer/signals/selection'
 import { useSignalCoalesced } from '../renderer/signals/use-signal-coalesced'
 import { docProxy } from '../renderer/store/doc-proxy'
 import { getCommittedNodeOnActivePage } from '../renderer/properties/commit-node-properties'
@@ -62,12 +82,30 @@ export function PenEditFlyout() {
   const inBend = eff === 'bend'
   const inMove = eff === 'move'
   const inWidth = eff === 'width'
+  const inEraser = eff === 'eraser'
 
   const onMove = () => actor.send({ type: 'PATH_SET_SUBTOOL', subTool: 'move' })
   const onAdd = () => actor.send({ type: 'PATH_SET_SUBTOOL', subTool: 'add' })
   const onBend = () => actor.send({ type: 'PATH_SET_SUBTOOL', subTool: 'bend' })
   const onWidth = () => actor.send({ type: 'PATH_SET_SUBTOOL', subTool: 'width' })
+  const onErase = () => actor.send({ type: 'PATH_SET_SUBTOOL', subTool: 'eraser' })
   const onDone = () => actor.send({ type: 'STOP_PATH_EDIT' })
+
+  // Eraser sub-mode: a swept Brush band vs a Free-form lasso whose enclosed area
+  // is cropped. Chosen from a flyout that opens ABOVE the Erase pill (like the
+  // main toolbar's tool sub-menus), so the Erase button itself is the trigger.
+  const curEraseMode = useSignalCoalesced(eraseMode)
+  const [eraseMenuOpen, setEraseMenuOpen] = useState(false)
+  const eraseMenuVisible = eraseMenuOpen && inEraser
+  const ERASE_MODES = [
+    { key: 'brush' as const, label: 'Free-form', Icon: Eraser },
+    { key: 'lasso' as const, label: 'Vector shape', Icon: SquaresSubtract },
+  ]
+  const activeEraseMode = ERASE_MODES.find((m) => m.key === curEraseMode) ?? ERASE_MODES[0]
+  // Free-form (brush) has a width + an end style (rounded capsule vs rectangle);
+  // both are persisted signals, surfaced beside the Erase pill while it's active.
+  const brushRadius = useSignalCoalesced(eraseBrushRadius)
+  const brushCap = useSignalCoalesced(eraseBrushCap)
 
   // Per-point interpolation mode for the selected width point. The overlay owns
   // the geometry and publishes the selection here; this is a thin control.
@@ -125,6 +163,120 @@ export function PenEditFlyout() {
           <UnfoldVertical className="size-4 shrink-0 stroke-[1.5]" />
           <span>Width</span>
         </button>
+        {/* Erase is a collapsible tool: the pill activates it, and a flyout of its
+            sub-modes (Brush / Free-form) grows UPWARD from the pill — the same
+            shape as the main toolbar's tool menus, not a side dropdown. */}
+        <PopoverPrimitive.Root
+          open={eraseMenuVisible}
+          onOpenChange={(o) => {
+            setEraseMenuOpen(o)
+            if (o && !inEraser) onErase()
+          }}
+        >
+          <PopoverPrimitive.Trigger asChild>
+            <button
+              type="button"
+              onClick={() => {
+                if (!inEraser) onErase()
+                setEraseMenuOpen((o) => !o)
+              }}
+              aria-pressed={inEraser}
+              aria-haspopup="menu"
+              title="Erase — subtract from the fill (Free-form sweeps a dragged band · Vector shape crops a drawn region)"
+              className={seg(inEraser)}
+            >
+              <activeEraseMode.Icon className="size-4 shrink-0 stroke-[1.5]" />
+              <span>Erase</span>
+              <ChevronUp className="size-3.5 shrink-0 opacity-60" />
+            </button>
+          </PopoverPrimitive.Trigger>
+          <PopoverPrimitive.Portal>
+            <PopoverPrimitive.Content
+              side="top"
+              sideOffset={12}
+              align="center"
+              role="menu"
+              className="z-[70] w-[200px] rounded-xl border border-border/80 bg-white p-1 shadow-md"
+            >
+              {ERASE_MODES.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={m.key === curEraseMode}
+                  onClick={() => {
+                    // Keep the menu open: selecting Free-form reveals its width +
+                    // end-style controls right below, so closing would hide them.
+                    eraseMode.value = m.key
+                    if (!inEraser) onErase()
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-xs text-foreground hover:bg-muted"
+                >
+                  <m.Icon className="size-4 shrink-0 stroke-[1.5]" />
+                  <span>{m.label}</span>
+                  {m.key === curEraseMode && <Check className="ml-auto size-3.5 shrink-0 text-blue-600" />}
+                </button>
+              ))}
+              {/* Free-form's width + end style live inside the menu (like the mode
+                  choice itself), not in the toolbar strip. */}
+              {curEraseMode === 'brush' && (
+                <div className="mt-1 border-t border-border/60 px-2.5 pb-1.5 pt-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-muted-foreground">Width</span>
+                    <span className="tabular-nums text-[11px] text-foreground">{Math.round(brushRadius)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={ERASE_BRUSH_MIN}
+                    max={ERASE_BRUSH_MAX}
+                    step={1}
+                    value={brushRadius}
+                    aria-label="Brush width"
+                    onChange={(e) => {
+                      eraseBrushRadius.value = Number(e.target.value)
+                    }}
+                    className="mt-1 h-1 w-full cursor-pointer accent-blue-600"
+                  />
+                  <div className="mt-2.5 flex items-center gap-1">
+                    <span className="mr-auto text-[11px] text-muted-foreground">Ends</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        eraseBrushCap.value = 'round'
+                      }}
+                      aria-pressed={brushCap === 'round'}
+                      title="Rounded ends"
+                      className={cn(
+                        'flex size-7 items-center justify-center rounded-md',
+                        brushCap === 'round'
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200'
+                          : 'text-muted-foreground hover:bg-muted',
+                      )}
+                    >
+                      <Circle className="size-4 shrink-0 stroke-[1.5]" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        eraseBrushCap.value = 'square'
+                      }}
+                      aria-pressed={brushCap === 'square'}
+                      title="Rectangular ends"
+                      className={cn(
+                        'flex size-7 items-center justify-center rounded-md',
+                        brushCap === 'square'
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200'
+                          : 'text-muted-foreground hover:bg-muted',
+                      )}
+                    >
+                      <Square className="size-4 shrink-0 stroke-[1.5]" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </PopoverPrimitive.Content>
+          </PopoverPrimitive.Portal>
+        </PopoverPrimitive.Root>
         {showModePicker && wes.mode && (
           <>
             <span aria-hidden className="mx-0.5 h-5 w-px bg-border/70" />

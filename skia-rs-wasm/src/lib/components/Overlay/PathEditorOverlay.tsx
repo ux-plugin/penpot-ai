@@ -30,7 +30,14 @@ import { useCanvasActor } from '../../renderer/machine/canvas-actor-context'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
 import { modAlt, modCtrl, modMeta, modShift, pointerPos, viewport as viewportSignal } from '../../renderer/signals/pointer'
 import { useViewportShortcutsStore } from '../../renderer/store/shortcuts-store'
-import { pathEditNetwork } from '../../renderer/signals/selection'
+import {
+  eraseBrushCap,
+  eraseBrushRadius,
+  eraseMode,
+  eraseStroke,
+  pathEditNetwork,
+} from '../../renderer/signals/selection'
+import { eraseBrush, eraseLassoAnchors, flattenAnchorLoop } from '../../renderer/handlers/erase'
 import { docProxy, getActiveOrSinglePageId } from '../../renderer/store/doc-proxy'
 import { getSelectedIdsSet, setSelectedIds } from '../../renderer/store/document-selection'
 import { applyChanges } from '../../page-crud'
@@ -82,6 +89,10 @@ import { resolvePathInteraction, type PathHover } from './path-interaction'
 const ADD_HIT_PX = 8
 /** Screen-px radius to snap onto an existing node (close / connect / grab). */
 const NODE_HIT_PX = 12
+/** Free-form: click within this of the first node (screen px) to close the loop. */
+const ERASER_CLOSE_PX = 12
+/** Free-form: snap a placed node onto the shape's outline within this (screen px). */
+const ERASER_SNAP_PX = 9
 
 type XY = { x: number; y: number }
 
@@ -226,6 +237,7 @@ export function PathEditorOverlay() {
   const subTool = useSelector(canvasActor, (s) => s.context.pathSubTool)
   const inPen = subTool === 'add'
   const inBend = subTool === 'bend'
+  const inEraser = subTool === 'eraser'
   const draftFrom = useSelector(canvasActor, (s) => s.context.pathDraftFromNode)
   const shapeId = useSelector(canvasActor, (s) => s.context.pathEditingShapeId)
   // Re-render whenever the document changes so committed edits refresh the markers.
@@ -569,6 +581,234 @@ export function PathEditorOverlay() {
     },
     [shapeId, vn, draftFrom, canvasActor, runDrag, renderLiveVN, commitVN],
   )
+
+  // ── Erase. Two modes:
+  //    Brush    — drag a swept band; on release the band is subtracted.
+  //    Free-form — click to place polygon nodes (like the pen's Add); close on
+  //                the first node / double-click / Enter, then the enclosed region
+  //                is subtracted. Esc cancels the in-progress polygon.
+  const eraserPolyRef = useRef<Anchor[]>([])
+  const eraserCursorRef = useRef<Pt | null>(null)
+  const eraserDraggingRef = useRef(false)
+  const [eraserBuilding, setEraserBuilding] = useState(false)
+
+  // Snap a world point onto the edited shape's outline (its nodes first, then its
+  // edges) when within a few screen px, so free-form cuts align to real edges.
+  const snapEraserPoint = useCallback(
+    (world: Pt, zoom: number): Pt => {
+      const tol = ERASER_SNAP_PX / zoom
+      let best: Pt | null = null
+      let bestD = tol
+      for (const nd of vn.nodes) {
+        const d = Math.hypot(world.x - nd.x, world.y - nd.y)
+        if (d < bestD) {
+          bestD = d
+          best = { x: nd.x, y: nd.y }
+        }
+      }
+      for (let ei = 0; ei < vn.edges.length; ei++) {
+        const hit = nearestPointOnPath(edgeAnchors(vn, ei), false, world)
+        if (hit && hit.dist < bestD) {
+          bestD = hit.dist
+          best = { x: hit.point.x, y: hit.point.y }
+        }
+      }
+      return best ?? world
+    },
+    [vn],
+  )
+
+  // Publish the flattened curved outline (+ the placed anchor nodes with handles)
+  // so the overlay previews the polygon, its nodes, and the rubber-band as built.
+  const syncErasePreview = useCallback(() => {
+    const anchors = eraserPolyRef.current
+    // The live cursor becomes a temporary trailing corner (rubber-band), unless a
+    // node is mid-drag (then the curve it's shaping is the live feedback).
+    const cur = eraserDraggingRef.current ? null : eraserCursorRef.current
+    const loop: Anchor[] = cur ? [...anchors, { point: { x: cur.x, y: cur.y } }] : anchors
+    const points = loop.length ? flattenAnchorLoop(loop, true) : []
+    const nodes = anchors.map((a) => ({
+      x: a.point.x,
+      y: a.point.y,
+      ...(a.handleIn ? { hIn: { x: a.handleIn.x, y: a.handleIn.y } } : {}),
+      ...(a.handleOut ? { hOut: { x: a.handleOut.x, y: a.handleOut.y } } : {}),
+    }))
+    // Cursor over the first node (with ≥3 placed) → next click closes: scissors.
+    const zoom = viewportSignal.value?.zoom || 1
+    const first = anchors[0]?.point
+    const close =
+      !eraserDraggingRef.current &&
+      anchors.length >= 3 &&
+      !!cur &&
+      !!first &&
+      Math.hypot(cur.x - first.x, cur.y - first.y) <= ERASER_CLOSE_PX / zoom
+    eraseStroke.value =
+      points.length || nodes.length ? { points, radius: 0, mode: 'lasso', nodes, close } : null
+  }, [])
+
+  const commitEraserPoly = useCallback(() => {
+    const anchors = eraserPolyRef.current.slice()
+    eraserPolyRef.current = []
+    eraserCursorRef.current = null
+    eraserDraggingRef.current = false
+    eraseStroke.value = null
+    setEraserBuilding(false)
+    if (anchors.length < 3 || !shapeId) return
+    const pid = getActiveOrSinglePageId()
+    if (!pid) return
+    const zoom = viewportSignal.value?.zoom || 1
+    void eraseLassoAnchors(anchors, shapeId, pid, zoom).then((erasedAway) => {
+      if (erasedAway) canvasActor.send({ type: 'STOP_PATH_EDIT' })
+    })
+  }, [shapeId, canvasActor])
+
+  const cancelEraserPoly = useCallback(() => {
+    eraserPolyRef.current = []
+    eraserCursorRef.current = null
+    eraserDraggingRef.current = false
+    eraseStroke.value = null
+    setEraserBuilding(false)
+  }, [])
+
+  const onEraseCanvas = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (!shapeId) return
+      const vp = viewportSignal.value
+      const svg = svgRef.current
+      if (!vp || !svg) return
+      const rect = svg.getBoundingClientRect()
+      const zoom = vp.zoom || 1
+      const rawWorld = screenToWorld(vp, e.clientX - rect.left, e.clientY - rect.top)
+
+      if (eraseMode.value === 'lasso') {
+        // Pen-style: click drops a corner node; clicking the first node closes and
+        // subtracts. Dragging the just-placed node pulls a bézier handle (mirrored,
+        // Alt for a one-sided handle) so the outgoing/closing edges curve. Placed
+        // nodes snap onto the shape's outline so cuts sit on real edges.
+        const anchors = eraserPolyRef.current
+        if (anchors.length >= 3) {
+          const first = anchors[0].point
+          if (Math.hypot(rawWorld.x - first.x, rawWorld.y - first.y) <= ERASER_CLOSE_PX / zoom) {
+            commitEraserPoly()
+            return
+          }
+        }
+        const world = snapEraserPoint(rawWorld, zoom)
+        const anchor: Anchor = { point: { x: world.x, y: world.y } }
+        anchors.push(anchor)
+        eraserCursorRef.current = { x: world.x, y: world.y }
+        eraserDraggingRef.current = true
+        setEraserBuilding(true)
+        syncErasePreview()
+        const altStart = e.altKey
+        runDrag(e, {
+          onMove: (w) => {
+            anchor.handleOut = { x: w.x, y: w.y }
+            if (altStart || modAlt.value) delete anchor.handleIn
+            else anchor.handleIn = { x: 2 * world.x - w.x, y: 2 * world.y - w.y }
+            syncErasePreview()
+          },
+          onUp: (moved: boolean) => {
+            eraserDraggingRef.current = false
+            if (!moved) {
+              delete anchor.handleIn
+              delete anchor.handleOut
+            }
+            eraserCursorRef.current = { x: world.x, y: world.y }
+            syncErasePreview()
+          },
+        })
+        return
+      }
+
+      // Brush: drag a swept band; on release subtract it. Width + end style come
+      // from the persisted flyout controls (radius is a screen size → /zoom).
+      const cap = eraseBrushCap.value
+      const radius = eraseBrushRadius.value / zoom
+      const pts: Pt[] = [rawWorld]
+      eraseStroke.value = { points: [rawWorld], radius, mode: 'brush', cap }
+      runDrag(e, {
+        onMove: (w) => {
+          const last = pts[pts.length - 1]
+          const minWorld = 2 / (viewportSignal.value?.zoom || 1)
+          if (!last || Math.hypot(w.x - last.x, w.y - last.y) >= minWorld) {
+            pts.push(w)
+            eraseStroke.value = { points: pts.slice(), radius, mode: 'brush', cap }
+          }
+        },
+        onUp: () => {
+          eraseStroke.value = null
+          const pid = getActiveOrSinglePageId()
+          if (!pid) return
+          void eraseBrush(pts, shapeId, pid, radius, zoom, cap).then((erasedAway) => {
+            if (erasedAway) canvasActor.send({ type: 'STOP_PATH_EDIT' })
+          })
+        },
+      })
+    },
+    [shapeId, canvasActor, runDrag, commitEraserPoly, syncErasePreview, snapEraserPoint],
+  )
+
+  // Free-form: track the cursor for the rubber-band to the next node (snapped to
+  // the outline, so you can see where a node will land).
+  const onEraseMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (eraseMode.value !== 'lasso' || eraserDraggingRef.current || eraserPolyRef.current.length === 0)
+        return
+      const vp = viewportSignal.value
+      const svg = svgRef.current
+      if (!vp || !svg) return
+      const rect = svg.getBoundingClientRect()
+      const zoom = vp.zoom || 1
+      const raw = screenToWorld(vp, e.clientX - rect.left, e.clientY - rect.top)
+      // Keep the raw cursor near the first node (so closing stays easy), else snap.
+      const first = eraserPolyRef.current[0]?.point
+      const nearFirst =
+        eraserPolyRef.current.length >= 3 &&
+        first &&
+        Math.hypot(raw.x - first.x, raw.y - first.y) <= ERASER_CLOSE_PX / zoom
+      eraserCursorRef.current = nearFirst ? raw : snapEraserPoint(raw, zoom)
+      syncErasePreview()
+    },
+    [syncErasePreview, snapEraserPoint],
+  )
+
+  // Free-form: double-click closes the polygon on the current nodes.
+  const onEraseDblClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (eraseMode.value !== 'lasso') return
+      e.preventDefault()
+      e.stopPropagation()
+      commitEraserPoly()
+    },
+    [commitEraserPoly],
+  )
+
+  // Enter closes the free-form polygon, Esc cancels it (only while building).
+  useEffect(() => {
+    if (!eraserBuilding) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        e.stopPropagation()
+        commitEraserPoly()
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        cancelEraserPoly()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [eraserBuilding, commitEraserPoly, cancelEraserPoly])
+
+  // Abandon any half-built polygon when the eraser tool is left.
+  useEffect(() => {
+    if (!inEraser) cancelEraserPoly()
+  }, [inEraser, cancelEraserPoly])
 
   // Delete the selected node (and any node it strands); Esc cancels the pen draft.
   const deleteSelected = useCallback(() => {
@@ -927,6 +1167,21 @@ export function PathEditorOverlay() {
             style={{ pointerEvents: it.capture ? 'auto' : 'none', cursor: it.cursor }}
             onPointerMove={onTrackMove}
             onPointerDown={onPenCanvas}
+          />
+        )}
+
+        {/* Erase mode: full-area capture — brush drag, or free-form node clicks. */}
+        {inEraser && (
+          <rect
+            x={0}
+            y={0}
+            width="100%"
+            height="100%"
+            fill="transparent"
+            style={{ pointerEvents: it.capture ? 'auto' : 'none', cursor: it.cursor }}
+            onPointerDown={onEraseCanvas}
+            onPointerMove={onEraseMove}
+            onDoubleClick={onEraseDblClick}
           />
         )}
 
