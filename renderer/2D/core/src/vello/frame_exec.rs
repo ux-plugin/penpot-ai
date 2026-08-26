@@ -1,20 +1,25 @@
 //! Frame executor — the dumb VM half of the plan/execute split.
 //!
-//! The scheduler ([`crate::vello::frame_dag`]) decides everything: the ops, their rounds, the barriers,
-//! and — via [`crate::vello::plan::colour_stages`] — which atlas each scratch value lives in. This
-//! module lowers that decision into a flat [`Program`]: a list of rounds, each a list of [`Step`]s with
-//! their surfaces already resolved to `acc` or `atlasN`. The VM decides NOTHING — it walks the program
-//! top to bottom, and the one thing left is the per-op wgpu dispatch (see [`Program::describe`] for the
-//! command stream it stands in for; the live dispatch is the pixel-gated seam, wired against a device).
+//! The scheduler ([`crate::vello::frame_dag`]) decides everything: the ops, their rounds, and the
+//! barriers. This module lowers that into a flat [`Program`]: a list of rounds, each a list of [`Step`]s
+//! with their surfaces resolved — the frame accumulator, or the scratch value a producing node wrote.
+//! The VM decides NOTHING — it walks the program top to bottom, handing each step to a [`Dispatcher`].
+//!
+//! A scratch surface is identified by its **producer node**, not an atlas colour: many values share a
+//! colour (two silhouettes both `atlas0`), so a colour cannot bind a texture, but a producer names
+//! exactly one value. Atlas colouring ([`crate::vello::plan::colour_stages`]) is a separate memory
+//! optimization the dispatcher MAY apply to alias textures; the correct baseline is one texture per
+//! live value.
 
 use crate::kurbo::Rect;
 use crate::vello::frame_dag::{Barrier, FrameDag, Op, Schedule, Source};
 
-/// A surface a step reads or writes — the frame accumulator (the spine) or one scratch atlas.
+/// A surface a step reads or writes — the frame accumulator (the spine), or the scratch value written
+/// by the node whose index this holds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Surface {
     Accumulator,
-    Atlas(usize),
+    Scratch(usize),
 }
 
 /// One instruction: run `op` for source node `node`, reading `reads`, writing `write`.
@@ -41,15 +46,15 @@ pub struct Program {
     pub rounds: Vec<Round>,
 }
 
-/// Lower a scheduled frame graph to its program. `colours` is [`crate::vello::plan::colour_stages`] of
-/// [`FrameDag::to_stage_specs`] — the atlas each scratch value takes; a spine node has `None` and
-/// writes the accumulator.
+/// Lower a scheduled frame graph to its program: one step per node, resolving every input and output to
+/// a [`Surface`] — the accumulator for a spine node, else the producer's own scratch value.
 #[must_use]
-pub fn lower(dag: &FrameDag, sched: &Schedule, colours: &[Option<usize>]) -> Program {
+pub fn lower(dag: &FrameDag, sched: &Schedule) -> Program {
     let surface_of = |i: usize| -> Surface {
-        match colours[i] {
-            Some(a) => Surface::Atlas(a),
-            None => Surface::Accumulator,
+        if dag.nodes[i].writes_accumulator() {
+            Surface::Accumulator
+        } else {
+            Surface::Scratch(i)
         }
     };
     let n_rounds = sched.rounds() as usize;
@@ -85,7 +90,7 @@ impl Program {
     pub fn describe(&self) -> String {
         let surf = |s: &Surface| match s {
             Surface::Accumulator => "acc".to_string(),
-            Surface::Atlas(a) => format!("atlas{a}"),
+            Surface::Scratch(n) => format!("v{n}"),
         };
         let mut out = String::new();
         for (r, round) in self.rounds.iter().enumerate() {
@@ -137,14 +142,12 @@ pub fn execute<D: Dispatcher>(program: &Program, dag: &FrameDag, d: &mut D) {
 mod tests {
     use super::*;
     use crate::vello::frame_dag::{build_frame_dag_installed, TILE_PX};
-    use crate::vello::plan::colour_stages;
 
     fn program_for(load: impl FnOnce()) -> (FrameDag, Program) {
         load();
         let dag = build_frame_dag_installed();
         let sched = dag.schedule(TILE_PX);
-        let colours = colour_stages(&dag.to_stage_specs());
-        let prog = lower(&dag, &sched, &colours);
+        let prog = lower(&dag, &sched);
         (dag, prog)
     }
 
@@ -166,7 +169,7 @@ mod tests {
                 if dag.nodes[st.node].writes_accumulator() {
                     assert_eq!(st.write, Surface::Accumulator);
                 } else {
-                    assert!(matches!(st.write, Surface::Atlas(_)));
+                    assert_eq!(st.write, Surface::Scratch(st.node), "a scratch value is its own producer");
                 }
                 // Every input was produced in an earlier-or-equal round (topological in time).
                 for &j in &dag.nodes[st.node].inputs {
@@ -199,17 +202,21 @@ mod tests {
             prog.rounds.iter().filter(|r| r.barrier == Some(Barrier::Reload)).count();
         assert_eq!(reload_rounds, 1, "disjoint glass → the reloads share one round");
 
-        let max_atlas = prog
-            .rounds
-            .iter()
-            .flat_map(|r| &r.steps)
-            .filter_map(|s| match s.write {
-                Surface::Atlas(a) => Some(a),
-                Surface::Accumulator => None,
-            })
-            .max()
-            .unwrap_or(0);
-        assert!(max_atlas <= 1, "the program uses at most two atlases (got {})", max_atlas + 1);
+        // Every read binds to a real value: a scratch read names a node produced earlier.
+        for (r, round) in prog.rounds.iter().enumerate() {
+            for st in &round.steps {
+                for read in &st.reads {
+                    if let Surface::Scratch(p) = read {
+                        let pr = prog
+                            .rounds
+                            .iter()
+                            .position(|rd| rd.steps.iter().any(|s| s.node == *p))
+                            .expect("producer scheduled");
+                        assert!(pr <= r, "step reads a value produced in a later round");
+                    }
+                }
+            }
+        }
     }
 
     /// A recording `Dispatcher` — proves `execute` drives the program in the right order without a GPU.
@@ -248,8 +255,8 @@ mod tests {
         assert_eq!(rec.ops.len(), dag.nodes.len());
         // The frame starts by rasterizing the background onto the accumulator.
         assert_eq!(rec.ops[0], (Op::Rasterize, Surface::Accumulator));
-        // Blurs land in atlases; composites land on the spine.
-        assert!(rec.ops.iter().any(|(op, w)| matches!(op, Op::Blur { .. }) && matches!(w, Surface::Atlas(_))));
+        // Blurs land in scratch values; composites land on the spine.
+        assert!(rec.ops.iter().any(|(op, w)| matches!(op, Op::Blur { .. }) && matches!(w, Surface::Scratch(_))));
         assert!(rec.ops.iter().any(|(op, w)| *op == Op::Compose && *w == Surface::Accumulator));
     }
 }
