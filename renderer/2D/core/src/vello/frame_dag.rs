@@ -1,56 +1,119 @@
-//! Frame value-DAG (Phase C spike) — the explicit, whole-frame dependency graph.
+//! Frame value-DAG (Phase C) — the explicit, whole-frame dependency graph, where every node *is* the
+//! operation it runs.
 //!
 //! Today the render order is split across three mechanisms: the tree walk linearises shapes into a
 //! draw stream (z-order = array index), per-effect [`crate::effect_graph`] DAGs describe a single
 //! effect's passes, and the whole-viewport scheduler (`wv_rounds` + the shadow/stack maps) infers a
-//! round order from reach-rectangle overlap. This module builds ONE graph that owns all of it: every
-//! operation — the background, a paint band of plain shapes, a shadow's silhouette/blur/composite, a
-//! gather's backdrop-read/lens/composite — is a [`Node`], and edges are value dependencies (a node's
-//! `inputs` are the nodes whose output it reads). The accumulator is threaded explicitly: each op that
-//! writes it takes the previous writer as an input, so z-order is a spine of edges rather than an
-//! implicit index.
+//! round order from reach-rectangle overlap. This module builds ONE graph that owns all of it.
 //!
-//! This first slice only GENERATES the graph; rendering it for inspection (Mermaid) lives out in the
-//! dev harness (`webgpu-vello/examples/frame_dag_dump.rs`), not here — the library owns the model and
-//! the schedule, not the visualization. Leaves stay coarse: a run of plain shapes is ONE `Paint` band
-//! node, not a node per shape — the tiled rasterizer still owns the per-shape compositing inside a band.
+//! The point is a *single path*, not a faithful copy of the per-effect ones. Every effect — drop
+//! shadow, inner shadow, glass, layer blur, background blur — decomposes into the SAME small alphabet
+//! of primitives ([`Op`]): rasterize, blur, sample, erase, custom, reload, compose. There is no
+//! "drop path" or "glass path": a frost *is* a blur, a silhouette *is* a rasterize, a lens warp *is* a
+//! sample. A node carries its `op` and its `target` (scratch atlas vs. the frame accumulator) — which
+//! is exactly a runnable stage (`reads` + `target` + `work`) — and the old node *kind* is a derived
+//! view ([`Node::category`]), never a stored tag.
+//!
+//! Leaves stay coarse: a run of plain shapes is ONE rasterize band, not a node per shape — the tiled
+//! rasterizer still owns the per-shape compositing inside a band. Rendering the graph for inspection
+//! (Mermaid) lives in the dev harness (`webgpu-vello/examples/frame_dag_dump.rs`), not here.
 
 use crate::kurbo::Rect;
 
-use crate::effect::{effect_stack, Compose, Op};
+use crate::effect::{effect_stack, Compose, Op as EffectOp};
 use crate::model::Scene;
+use crate::vello::plan::Target;
 
-/// What an operation does to the frame. The accumulator-writing kinds (`Background`, `Paint`,
-/// `Composite`) form the z-order spine; `Draft` and `Backdrop` are off-spine scratch the composites
-/// read.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum NodeKind {
-    /// The page background — the first accumulator version. A leaf.
-    Background,
-    /// A paint-band leaf (a coalesced run of plain shapes) or a shape's own body. Reads the
-    /// accumulator, writes the next version. Its internals stay the display list.
-    Paint,
-    /// An off-accumulator scratch pass — a shadow silhouette, a blur, an inner-shadow punch, a lens
-    /// link, a custom pass. A `Draft` with no inputs is a leaf that can be filled from the get-go.
-    Draft,
-    /// A materialize of the accumulator so a gather can sample it (the reload). Reads the accumulator
-    /// but does not write it — its output is a value the gather's passes consume.
-    Backdrop,
-    /// Lands an effect result into the accumulator (a shadow under/over the body, a gather through the
-    /// coverage). Reads the accumulator + the effect chain's tail; writes the next version.
-    Composite,
+/// The primitive an operation runs — the whole alphabet, shared by every effect. What distinguishes a
+/// drop shadow from a glass card is *which* of these it emits and in what order, never a different
+/// code path. Intrinsic (page-space) parameters that size the op live here; the GPU uniforms are baked
+/// by the executor from the source effect, not stored (that would duplicate [`crate::effect_graph`]).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Op {
+    /// Turn geometry into pixels — a plain-shape band, a shape's own body, or a coverage silhouette.
+    /// One primitive; whether it writes the spine or a scratch source is the node's `target`, not a
+    /// separate op.
+    Rasterize,
+    /// Snapshot the accumulator so a gather can sample the composited backdrop (the reload).
+    Reload,
+    /// A separable Gaussian of the given page-space radius. EVERY blur is this: drop, inner pre-blur,
+    /// frost, layer, background.
+    Blur { radius: f32 },
+    /// A displaced / jittered read of the input — the lens sampling head (warp / scatter).
+    Sample,
+    /// Erase the input by a blurred copy of itself (dst-out) — the inner-shadow punch, nothing else.
+    Erase { radius: f32 },
+    /// A hand-written WGSL pass — the escape hatch.
+    Custom,
+    /// Source-over the chain tail onto the accumulator. Under / over / replace is z-order (the node's
+    /// place on the spine), not a compose variant — the executor runs one blend.
+    Compose,
 }
 
-/// One operation in the frame graph. `inputs` are the indices of the nodes whose output this reads
-/// (the [`crate::effect_graph::Src`] idea, generalised to frame scope — every value is a node).
+impl Op {
+    /// A gather reads its input at coordinates other than its own pixel (a neighbourhood or a
+    /// displacement), so it can cross tiles — the property the barrier predicate turns on. `Reload` is
+    /// its own barrier and handled separately; the rest are pointwise and fold.
+    #[must_use]
+    pub fn is_gather(self) -> bool {
+        matches!(self, Op::Blur { .. } | Op::Sample | Op::Erase { .. } | Op::Custom)
+    }
+}
+
+/// The coarse role of a node, DERIVED from its `op` and `target` — a view for display and queries, not
+/// a stored tag. (The scheduler branches on `op`/`target`, never on this.)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Category {
+    /// The page background — the first accumulator value (a rasterize with no inputs).
+    Background,
+    /// A spine rasterize that writes the accumulator: a paint band or a shape body.
+    Paint,
+    /// A scratch value: any op writing an atlas (silhouette, blur, sample, erase, custom).
+    Draft,
+    /// The accumulator snapshot a gather samples.
+    Reload,
+    /// A source-over onto the accumulator.
+    Compose,
+}
+
+/// One operation in the frame graph. `inputs` are the indices of the nodes whose output this reads;
+/// `op` is the primitive it runs; `target` is where its output lives (a scratch atlas, or the frame
+/// accumulator — the spine). Together `(inputs, op, target)` is a runnable stage.
 #[derive(Clone, Debug)]
 pub struct Node {
-    pub kind: NodeKind,
+    pub op: Op,
+    pub target: Target,
+    /// A human-readable name for the dev dump — display only, never branched on.
     pub label: String,
-    /// Page-space footprint, for the region-aware batching a later topological schedule needs. `None`
-    /// for nodes whose extent is the whole frame (the background, a paint band).
+    /// Page-space footprint, for the region-scoped accumulator and tile-vs-footprint barrier test.
+    /// `None` for a whole-frame node (the background).
     pub reach: Option<Rect>,
     pub inputs: Vec<usize>,
+}
+
+impl Node {
+    /// The node's coarse role, derived from `op` + `target` + whether it has inputs.
+    #[must_use]
+    pub fn category(&self) -> Category {
+        match self.op {
+            Op::Reload => Category::Reload,
+            Op::Compose => Category::Compose,
+            Op::Rasterize if self.target == Target::Accumulator => {
+                if self.inputs.is_empty() {
+                    Category::Background
+                } else {
+                    Category::Paint
+                }
+            }
+            _ => Category::Draft,
+        }
+    }
+
+    /// Writes the frame accumulator (a spine node) rather than a scratch atlas.
+    #[must_use]
+    pub fn writes_accumulator(&self) -> bool {
+        self.target == Target::Accumulator
+    }
 }
 
 /// The whole-frame value-DAG: a flat, topologically-buildable node list (a node only ever cites
@@ -69,16 +132,16 @@ pub const TILE_PX: f64 = 16.0;
 /// dispatch boundary). Everything else folds into a neighbouring pass.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Barrier {
-    /// A gather (blur / punch / warp / frost) reads a freshly-computed draft over a neighbourhood, so
-    /// that draft must be flushed to VRAM and its producing dispatch must finish first.
+    /// A gather reads a freshly-computed draft over a neighbourhood, so that draft must be flushed to
+    /// VRAM and its producing dispatch must finish first.
     Materialize,
     /// A gather reads the composited accumulator (the backdrop), so every layer below it must have
     /// composited to VRAM before this dispatch can sample it.
     Reload,
 }
 
-/// The barrier-aware schedule: each node's round, where a round is one dispatch and consecutive
-/// rounds are one barrier apart.
+/// The barrier-aware schedule: each node's round, where a round is one dispatch and consecutive rounds
+/// are one barrier apart.
 pub struct Schedule {
     /// `round[i]` — the dispatch node `i` runs in.
     pub round: Vec<u32>,
@@ -97,9 +160,8 @@ impl Schedule {
 
 impl FrameDag {
     /// The NAIVE topological depth: `0` for a leaf, else `1 + max(input round)` — a barrier at *every*
-    /// edge. This is the upper bound the real scheduler improves on (it serialises the composite
-    /// spine, which carries no barrier). Kept only as the baseline to compare [`Self::schedule`]
-    /// against; nothing executes it.
+    /// edge. The upper bound the real scheduler improves on (it folds the composite spine, which
+    /// carries no barrier). Kept only as the baseline to compare [`Self::schedule`] against.
     #[must_use]
     pub fn levels(&self) -> Vec<u32> {
         let mut lv = vec![0u32; self.nodes.len()];
@@ -110,62 +172,26 @@ impl FrameDag {
     }
 
     /// Does reading `from`'s output inside `to` require a barrier? The whole schedule reduces to this
-    /// predicate. Two — and only two — edges carry one:
-    /// * `to` is a [`NodeKind::Backdrop`] → the accumulator must flush before it can be sampled
-    ///   (`Reload`).
-    /// * `to` is a gather (a `Draft` that reads an input) over a *freshly-computed* source that spans
-    ///   tiles → that source must materialize first (`Materialize`). A gather over the backdrop is
-    ///   free: the reload already made it resident. A gather over a source that fits one tile blurs
-    ///   on-chip.
+    /// predicate, over `op` alone. Two — and only two — edges carry one:
+    /// * `to` is a [`Op::Reload`] → the accumulator must flush before it can be sampled (`Reload`).
+    /// * `to` is a gather over a *freshly-computed* source that spans tiles → that source must
+    ///   materialize first (`Materialize`). A gather over a reload is free (already resident); a gather
+    ///   over a source that fits one tile blurs on-chip.
     ///
     /// Every other edge — the composite spine, a body reading the accumulator, a pointwise pass — is
     /// same-tile, same-dispatch and folds.
     fn edge_barrier(&self, from: usize, to: usize, tile: f64) -> Option<Barrier> {
         let (src, dst) = (&self.nodes[from], &self.nodes[to]);
-        if dst.kind == NodeKind::Backdrop {
+        if dst.op == Op::Reload {
             return Some(Barrier::Reload);
         }
-        let dst_gathers = dst.kind == NodeKind::Draft && !dst.inputs.is_empty();
-        if dst_gathers && src.kind != NodeKind::Backdrop {
+        if dst.op.is_gather() && src.op != Op::Reload {
             let on_chip = src.reach.is_some_and(|r| r.width() <= tile && r.height() <= tile);
             if !on_chip {
                 return Some(Barrier::Materialize);
             }
         }
         None
-    }
-
-    /// Lower the frame graph to the executor's stage IR ([`crate::vello::plan::StageSpec`]) — one
-    /// stage per node, in schedule order (the node vector is already topologically sorted). A `Draft`
-    /// or a `Backdrop` reload writes a scratch atlas; every spine node (`Background`, `Paint`,
-    /// `Composite`) writes the frame accumulator. Each input references its producer by node index:
-    /// a [`Input::Value`] when that producer wrote an atlas, else the [`Input::External`] accumulator.
-    ///
-    /// This is the Phase-4 bridge: it proves the whole-frame DAG produces plans the existing allocator
-    /// ([`crate::vello::plan::colour_stages`] / [`crate::vello::plan::atlases_needed`]) can colour and
-    /// pack, without the live executor being cut over yet.
-    #[must_use]
-    pub fn to_stage_specs(&self) -> Vec<crate::vello::plan::StageSpec> {
-        use crate::vello::plan::{Input, StageSpec, Target, ValueId};
-        let is_atlas = |k: NodeKind| matches!(k, NodeKind::Draft | NodeKind::Backdrop);
-        self.nodes
-            .iter()
-            .map(|n| {
-                let reads = n
-                    .inputs
-                    .iter()
-                    .map(|&j| {
-                        if is_atlas(self.nodes[j].kind) {
-                            Input::Value(ValueId(j))
-                        } else {
-                            Input::External(0)
-                        }
-                    })
-                    .collect();
-                let target = if is_atlas(n.kind) { Target::Atlas } else { Target::Accumulator };
-                StageSpec { reads, target }
-            })
-            .collect()
     }
 
     /// The barrier-aware round of every node: `round[i] = max_j( round[j] + [edge j→i is a barrier] )`.
@@ -188,12 +214,37 @@ impl FrameDag {
         }
         Schedule { round, barrier }
     }
+
+    /// Project each node to the allocator's stage IR ([`crate::vello::plan::StageSpec`]) — the same
+    /// object, with the `op` erased, so `colour_stages` / `pack_groups` can place the scratch atlases.
+    /// `target` is the node's own; an input is a [`Input::Value`] when its producer wrote an atlas,
+    /// else the [`Input::External`] accumulator.
+    #[must_use]
+    pub fn to_stage_specs(&self) -> Vec<crate::vello::plan::StageSpec> {
+        use crate::vello::plan::{Input, StageSpec, ValueId};
+        self.nodes
+            .iter()
+            .map(|n| {
+                let reads = n
+                    .inputs
+                    .iter()
+                    .map(|&j| {
+                        if self.nodes[j].writes_accumulator() {
+                            Input::External(0)
+                        } else {
+                            Input::Value(ValueId(j))
+                        }
+                    })
+                    .collect();
+                StageSpec { reads, target: n.target }
+            })
+            .collect()
+    }
 }
 
 /// Does region `a` overlap region `b`? `None` is the whole frame, which overlaps everything. Two
-/// finite rects overlap only with positive area — touching edges (a shared boundary) do not, and
-/// since reach rects already include the 3σ blur halo, genuinely-interacting effects have
-/// overlapping rects.
+/// finite rects overlap only with positive area — touching edges do not, and since reach rects already
+/// include the 3σ blur halo, genuinely-interacting effects have overlapping rects.
 fn overlaps(a: Option<Rect>, b: Option<Rect>) -> bool {
     match (a, b) {
         (Some(x), Some(y)) => x.x0 < y.x1 && y.x0 < x.x1 && x.y0 < y.y1 && y.y0 < x.y1,
@@ -213,7 +264,7 @@ fn covers(outer: Option<Rect>, inner: Option<Rect>) -> bool {
 
 /// The region-scoped accumulator: the frontier of spine writers, each tagged with the region it last
 /// wrote (`None` = whole frame). A new spine node reads every writer its footprint overlaps, then
-/// supersedes the writers it fully covers. So two disjoint effects never depend on each other — only
+/// supersedes the ones it fully covers. So two disjoint effects never depend on each other — only
 /// overlapping ones keep a z-order edge — and no edge is lost, because a covered writer is always an
 /// input of the node that replaced it (the dependency survives transitively).
 #[derive(Default)]
@@ -222,22 +273,19 @@ struct Accumulator {
 }
 
 impl Accumulator {
-    /// The current writers whose region overlaps `reach`, in paint order — the accumulator inputs a
-    /// node reading region `reach` depends on.
     fn readers(&self, reach: Option<Rect>) -> Vec<usize> {
         self.writers.iter().filter(|(r, _)| overlaps(*r, reach)).map(|&(_, n)| n).collect()
     }
 
-    /// Record `node` as the writer for `reach`, dropping every writer it fully covers.
     fn write(&mut self, reach: Option<Rect>, node: usize) {
         self.writers.retain(|&(r, _)| !covers(reach, r));
         self.writers.push((reach, node));
     }
 }
 
-/// A pending run of plain shapes waiting to coalesce into one paint band. Carries the union of their
-/// bounds so the band's `reach` is its real footprint — not the whole frame — which keeps disjoint
-/// bands (e.g. a per-cell background behind each effect) from re-chaining the whole frontier.
+/// A pending run of plain shapes waiting to coalesce into one rasterize band. Carries the union of
+/// their bounds so the band's `reach` is its real footprint — not the whole frame — which keeps
+/// disjoint bands (e.g. a per-cell background behind each effect) from re-chaining the whole frontier.
 #[derive(Default)]
 struct Band {
     count: usize,
@@ -267,13 +315,18 @@ struct Builder {
 }
 
 impl Builder {
-    fn push(&mut self, kind: NodeKind, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
+    fn push(&mut self, op: Op, target: Target, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
         let id = self.dag.nodes.len();
-        self.dag.nodes.push(Node { kind, label, reach, inputs });
+        self.dag.nodes.push(Node { op, target, label, reach, inputs });
         id
     }
 
-    /// Coalesce a pending run of plain shapes into ONE paint band on the spine, scoped to their
+    /// A scratch draft: writes an atlas, reads its single predecessor (or nothing, for a source).
+    fn draft(&mut self, op: Op, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
+        self.push(op, Target::Atlas, label, reach, inputs)
+    }
+
+    /// Coalesce a pending run of plain shapes into ONE rasterize band on the spine, scoped to their
     /// union bounds so it only chains with effects it actually overlaps.
     fn flush_band(&mut self, band: &mut Band) {
         if band.is_empty() {
@@ -282,51 +335,47 @@ impl Builder {
         let label = format!("paint band · {} shape(s)", band.count);
         let reach = band.bounds;
         let inputs = self.acc.readers(reach);
-        let id = self.push(NodeKind::Paint, label, reach, inputs);
+        let id = self.push(Op::Rasterize, Target::Accumulator, label, reach, inputs);
         self.acc.write(reach, id);
         band.clear();
     }
 
-    /// Lower a chain of ops onto a starting value, emitting one `Draft` per real pass (blur, punch,
-    /// lens link, custom). Pointwise ops (tint, offset) fold into their neighbours — no node. Returns
-    /// the chain tail.
-    fn lower_ops(&mut self, ops: &[Op], start: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
+    /// Lower a chain of effect ops onto a starting value, emitting one draft per real pass. Every
+    /// effect uses the SAME mapping — blur→Blur, erase→Erase, lens→Sample(+Blur for frost),
+    /// shader→Custom — so there is no per-effect path. Pointwise ops (tint, offset, lens shade) fold
+    /// into the composite that consumes the tail. Returns the chain tail.
+    fn lower_ops(&mut self, ops: &[EffectOp], start: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
         let mut cur = start;
         for op in ops {
             cur = match op {
-                Op::Blur { radius } => self.push(
-                    NodeKind::Draft,
-                    format!("{name} {tag} blur r{radius:.0}"),
-                    reach,
-                    vec![cur],
-                ),
-                Op::EraseBy { blur, .. } => self.push(
-                    NodeKind::Draft,
-                    format!("{name} {tag} punch (erase r{blur:.0})"),
-                    reach,
-                    vec![cur],
-                ),
-                Op::Lens(g) => {
-                    // warp (displaced read) and frost (blur) are neighbourhood gathers → real drafts.
-                    // The shade (per-pixel fresnel/tint) is pointwise → it folds into the composite,
-                    // exactly like Tint, so it emits no node and every remaining draft is a gather.
-                    let warp = self.push(NodeKind::Draft, format!("{name} lens warp"), reach, vec![cur]);
-                    if g.total_blur_sigma() > 0.5 {
-                        self.push(NodeKind::Draft, format!("{name} lens frost"), reach, vec![warp])
+                EffectOp::Blur { radius } => {
+                    self.draft(Op::Blur { radius: *radius }, format!("{name} {tag} blur r{radius:.0}"), reach, vec![cur])
+                }
+                EffectOp::EraseBy { blur, .. } => {
+                    self.draft(Op::Erase { radius: *blur }, format!("{name} {tag} punch (erase r{blur:.0})"), reach, vec![cur])
+                }
+                EffectOp::Lens(g) => {
+                    // warp is a Sample, frost is a Blur — the same primitives as everything else. The
+                    // shade (pointwise fresnel/tint) folds into the composite, so it emits no node.
+                    let warp = self.draft(Op::Sample, format!("{name} lens warp"), reach, vec![cur]);
+                    let sigma = g.total_blur_sigma();
+                    if sigma > 0.5 {
+                        self.draft(Op::Blur { radius: sigma }, format!("{name} lens frost"), reach, vec![warp])
                     } else {
                         warp
                     }
                 }
-                Op::Shader(_) => self.push(NodeKind::Draft, format!("{name} custom pass"), reach, vec![cur]),
-                Op::Tint(_) | Op::Offset(_) => cur, // pointwise — folds into the silhouette/composite
+                EffectOp::Shader(_) => self.draft(Op::Custom, format!("{name} custom pass"), reach, vec![cur]),
+                EffectOp::Tint(_) | EffectOp::Offset(_) => cur, // pointwise — folds into the composite
             };
         }
         cur
     }
 
     /// Lower one effect-bearing node's whole stack onto the spine, in paint order: drops under the
-    /// body, the body, a gather through the coverage, inners over. Each effect is
-    /// `source-draft → op drafts → composite(acc, tail)`.
+    /// body, the body, a gather through the coverage, inners over. Each effect is the identical shape —
+    /// `rasterize/reload source → op drafts → compose(acc, tail)` — differing only in where it sits and
+    /// whether it reloads.
     fn lower_effect_node(&mut self, node: &crate::model::Node) {
         self.fx_no += 1;
         let name = format!("s{}", self.fx_no);
@@ -335,54 +384,54 @@ impl Builder {
         let has_replace = stack.iter().any(|e| e.compose == Compose::Replace);
         let has_paint = !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty();
 
-        // 1. Drop shadows (Under) — silhouette → blur → composite, under the body.
+        // 1. Drop shadows (Under) — rasterize silhouette → blur → compose, under the body.
         for e in stack.iter().filter(|e| e.compose == Compose::Under) {
             let reach = Some(e.footprint(base));
-            let sil = self.push(NodeKind::Draft, format!("{name} drop silhouette"), reach, vec![]);
+            let sil = self.draft(Op::Rasterize, format!("{name} drop silhouette"), reach, vec![]);
             let tail = self.lower_ops(&e.ops, sil, reach, &name, "drop");
-            self.compose(NodeKind::Composite, format!("{name} drop → acc"), reach, tail);
+            self.compose(format!("{name} drop → acc"), reach, tail);
         }
 
         // 2. The node's own body (plain fills/text), unless a Replace effect stands in for it.
         if !has_replace && has_paint {
             let reach = Some(base);
             let inputs = self.acc.readers(reach);
-            let id = self.push(NodeKind::Paint, format!("{name} body"), reach, inputs);
+            let id = self.push(Op::Rasterize, Target::Accumulator, format!("{name} body"), reach, inputs);
             self.acc.write(reach, id);
         }
-        // 2b. Body-replacing effects (layer blur / body shader): read the node's own body, transform.
+        // 2b. Body-replacing effects (layer blur / body shader): rasterize the body into scratch, transform.
         for e in stack.iter().filter(|e| e.compose == Compose::Replace) {
             let reach = Some(e.footprint(base));
-            let read = self.push(NodeKind::Draft, format!("{name} body-read"), reach, vec![]);
+            let read = self.draft(Op::Rasterize, format!("{name} body-read"), reach, vec![]);
             let tail = self.lower_ops(&e.ops, read, reach, &name, "body");
-            self.compose(NodeKind::Composite, format!("{name} body → acc"), reach, tail);
+            self.compose(format!("{name} body → acc"), reach, tail);
         }
 
-        // 3. Backdrop gathers (ThroughCoverage) — materialize the accumulator, run the lens/blur,
-        //    composite through the coverage over the body.
+        // 3. Backdrop gathers (ThroughCoverage) — reload the accumulator, run the lens/blur, compose
+        //    through the coverage over the body.
         for e in stack.iter().filter(|e| e.compose == Compose::ThroughCoverage) {
             let reach = Some(e.footprint(base));
             let read_inputs = self.acc.readers(reach);
-            let read = self.push(NodeKind::Backdrop, format!("{name} read backdrop"), reach, read_inputs);
+            let read = self.draft(Op::Reload, format!("{name} read backdrop"), reach, read_inputs);
             let tail = self.lower_ops(&e.ops, read, reach, &name, "gather");
-            self.compose(NodeKind::Composite, format!("{name} gather → acc"), reach, tail);
+            self.compose(format!("{name} gather → acc"), reach, tail);
         }
 
-        // 4. Inner shadows (Over) — silhouette → punch → composite, over the body.
+        // 4. Inner shadows (Over) — rasterize silhouette → punch → compose, over the body.
         for e in stack.iter().filter(|e| e.compose == Compose::Over) {
             let reach = Some(e.footprint(base));
-            let sil = self.push(NodeKind::Draft, format!("{name} inner silhouette"), reach, vec![]);
+            let sil = self.draft(Op::Rasterize, format!("{name} inner silhouette"), reach, vec![]);
             let tail = self.lower_ops(&e.ops, sil, reach, &name, "inner");
-            self.compose(NodeKind::Composite, format!("{name} inner → acc"), reach, tail);
+            self.compose(format!("{name} inner → acc"), reach, tail);
         }
     }
 
     /// Land an effect result (`tail`) onto the region-scoped accumulator: read the writers `reach`
-    /// overlaps, add the chain tail, emit the composite, and make it the new writer for `reach`.
-    fn compose(&mut self, kind: NodeKind, label: String, reach: Option<Rect>, tail: usize) {
+    /// overlaps, add the chain tail, emit the compose, and make it the new writer for `reach`.
+    fn compose(&mut self, label: String, reach: Option<Rect>, tail: usize) {
         let mut inputs = self.acc.readers(reach);
         inputs.push(tail);
-        let id = self.push(kind, label, reach, inputs);
+        let id = self.push(Op::Compose, Target::Accumulator, label, reach, inputs);
         self.acc.write(reach, id);
     }
 
@@ -401,7 +450,7 @@ impl Builder {
             return;
         }
         if !has_effects {
-            // A plain leaf shape → coalesce into the pending paint band (union its bounds).
+            // A plain leaf shape → coalesce into the pending rasterize band (union its bounds).
             if has_paint {
                 band.push(node.bounds);
             }
@@ -415,11 +464,12 @@ impl Builder {
 }
 
 /// Build the whole-frame value-DAG for an installed [`Scene`]. Walks the roots in z-order, threading
-/// the accumulator spine; plain shapes coalesce into paint bands, effect nodes lower their stack.
+/// the region-scoped accumulator; plain shapes coalesce into rasterize bands, effect nodes lower their
+/// stack into the shared primitive alphabet.
 #[must_use]
 pub fn build_frame_dag(scene: &Scene) -> FrameDag {
     let mut b = Builder { dag: FrameDag::default(), acc: Accumulator::default(), fx_no: 0 };
-    let bg = b.push(NodeKind::Background, "BG".to_string(), None, vec![]);
+    let bg = b.push(Op::Rasterize, Target::Accumulator, "BG".to_string(), None, vec![]);
     b.acc.write(None, bg);
     let mut band = Band::default();
     for &root in scene.roots() {
@@ -441,7 +491,7 @@ mod tests {
 
     /// Every node cites only earlier indices, so the node vector is already a valid topological
     /// order — the invariant the whole design leans on (no separate sort, `levels()` is one forward
-    /// pass). If a builder ever emits a forward/self edge this catches it.
+    /// pass).
     fn assert_topological(dag: &FrameDag) {
         for (i, n) in dag.nodes.iter().enumerate() {
             for &j in &n.inputs {
@@ -450,8 +500,8 @@ mod tests {
         }
     }
 
-    fn kinds(dag: &FrameDag, k: NodeKind) -> usize {
-        dag.nodes.iter().filter(|n| n.kind == k).count()
+    fn count(dag: &FrameDag, c: Category) -> usize {
+        dag.nodes.iter().filter(|n| n.category() == c).count()
     }
 
     #[test]
@@ -460,33 +510,29 @@ mod tests {
         let dag = build_frame_dag_installed();
 
         assert_topological(&dag);
-        // Exactly one background, and it is node 0 with no inputs (the spine root).
-        assert_eq!(kinds(&dag, NodeKind::Background), 1);
-        assert_eq!(dag.nodes[0].kind, NodeKind::Background);
+        // Exactly one background, node 0, no inputs — the spine root.
+        assert_eq!(count(&dag, Category::Background), 1);
+        assert_eq!(dag.nodes[0].category(), Category::Background);
         assert!(dag.nodes[0].inputs.is_empty());
-        // The scene has effects, so the graph has drafts and composites.
-        assert!(kinds(&dag, NodeKind::Draft) > 0, "expected effect drafts");
-        assert!(kinds(&dag, NodeKind::Composite) > 0, "expected effect composites");
-        // combined has no backdrop gather → no reload nodes.
-        assert_eq!(kinds(&dag, NodeKind::Backdrop), 0);
-        // Every composite reads the accumulator (>= 2 inputs: prev spine + effect tail).
-        for n in dag.nodes.iter().filter(|n| n.kind == NodeKind::Composite) {
-            assert!(n.inputs.len() >= 2, "composite '{}' must read acc + tail", n.label);
+        // The scene has effects → drafts and composites, and no backdrop gather → no reloads.
+        assert!(count(&dag, Category::Draft) > 0, "expected effect drafts");
+        assert!(count(&dag, Category::Compose) > 0, "expected effect composites");
+        assert_eq!(count(&dag, Category::Reload), 0);
+        // Every compose reads the accumulator + the effect tail (>= 2 inputs).
+        for n in dag.nodes.iter().filter(|n| n.category() == Category::Compose) {
+            assert!(n.inputs.len() >= 2, "compose '{}' must read acc + tail", n.label);
         }
     }
 
     #[test]
     fn plain_shapes_coalesce_into_one_band() {
-        // stack-glass grounds on a 550-shape checker; it must collapse to a single paint band, not
-        // 550 nodes — the coarse-leaf invariant.
         crate::vello::abi::load_stack_glass_scene(2, 0);
         let dag = build_frame_dag_installed();
 
         assert_topological(&dag);
         let bands = dag.nodes.iter().filter(|n| n.label.starts_with("paint band")).count();
         assert_eq!(bands, 1, "the checker ground must be ONE band");
-        // Glass reads the backdrop → at least one reload + gather composite.
-        assert!(kinds(&dag, NodeKind::Backdrop) > 0, "glass must read the backdrop");
+        assert!(count(&dag, Category::Reload) > 0, "glass must read the backdrop");
     }
 
     #[test]
@@ -497,8 +543,6 @@ mod tests {
         let naive = dag.levels().iter().copied().max().unwrap() + 1;
         let real = dag.schedule(TILE_PX).rounds();
         assert!(real < naive, "barrier-aware schedule must beat naive ({real} vs {naive})");
-        // combined has no backdrop gather: one materialize round for the blurs/punches, then the whole
-        // composite spine folds into a single fine pass → 2 rounds.
         assert_eq!(real, 2, "combined collapses to a materialize round + a fold round");
     }
 
@@ -516,18 +560,15 @@ mod tests {
             sched.barrier.iter().any(|b| matches!(b, Some(Barrier::Materialize))),
             "a drop shadow's blur must materialize its silhouette",
         );
-        // Stacked glass genuinely serialises (each layer reads the one below), but still far under the
-        // naive per-edge count.
         let naive = dag.levels().iter().copied().max().unwrap() + 1;
         assert!(sched.rounds() < naive, "still beats naive on the stacked case");
     }
 
     #[test]
     fn disjoint_cells_do_not_serialise() {
-        // The matrix is a 20-cell grid of independent effects, each behind its own background rect.
-        // Region-scoping the accumulator must keep the round count at the depth of the deepest single
-        // cell — NOT growing with the cell count. (A whole-frame paint band would re-chain them and
-        // this would blow up.)
+        // 20-cell grid of independent effects, each behind its own background rect. Region-scoping the
+        // accumulator keeps the round count at the depth of the deepest single cell — NOT the cell
+        // count. (A whole-frame band would re-chain them and this would blow up.)
         crate::vello::abi::load_matrix_scene();
         let dag = build_frame_dag_installed();
         let rounds = dag.schedule(TILE_PX).rounds();
@@ -541,17 +582,15 @@ mod tests {
         let dag = build_frame_dag_installed();
         let specs = dag.to_stage_specs();
 
-        // One stage per node, and the whole thing runs through the real allocator.
         assert_eq!(specs.len(), dag.nodes.len());
         let colours = colour_stages(&specs);
         // A3/A4: a blur reads its silhouette so it takes a different atlas, but disjoint drafts reuse
         // atlases — the frame-wide count stays a small constant, not one-per-draft.
         let atlases = atlases_needed(&colours);
-        assert!(atlases >= 2, "a blur ping-pongs off its source → at least 2 atlases");
-        assert!(atlases <= 4, "disjoint drafts must reuse atlases (got {atlases})");
-        // The spine writes the accumulator; an accumulator stage takes no atlas colour.
+        assert!((2..=4).contains(&atlases), "disjoint drafts must reuse atlases (got {atlases})");
+        // Every spine node writes the accumulator and takes no atlas colour.
         for (i, n) in dag.nodes.iter().enumerate() {
-            if n.kind == NodeKind::Composite || n.kind == NodeKind::Background {
+            if n.writes_accumulator() {
                 assert_eq!(specs[i].target, Target::Accumulator);
                 assert!(colours[i].is_none(), "accumulator stage must not be coloured");
             }

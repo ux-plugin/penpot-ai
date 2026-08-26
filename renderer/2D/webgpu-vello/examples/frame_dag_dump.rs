@@ -6,18 +6,18 @@
 //!
 //! Run: `SCENE=combined cargo run --release --example frame_dag_dump`.
 
-use render_core::vello::frame_dag::{self, Barrier, FrameDag, Node, NodeKind, TILE_PX};
+use render_core::vello::frame_dag::{self, Barrier, Category, FrameDag, Node, TILE_PX};
 
 const CLASSDEFS: &str = "  classDef bg fill:#9fe1cb,stroke:#0f6e56,color:#04342c;\n  classDef paint fill:#b5d4f4,stroke:#185fa5,color:#042c53;\n  classDef draft fill:#d3d1c7,stroke:#5f5e5a,color:#2c2c2a;\n  classDef backdrop fill:#fac775,stroke:#854f0b,color:#412402;\n  classDef composite fill:#cecbf6,stroke:#534ab7,color:#26215c;\n";
 
 fn node_decl(i: usize, n: &Node) -> String {
     let label = n.label.replace('"', "'");
-    let (open, close, class) = match n.kind {
-        NodeKind::Background => ("([\"", "\"])", "bg"),
-        NodeKind::Paint => ("[\"", "\"]", "paint"),
-        NodeKind::Draft => ("(\"", "\")", "draft"),
-        NodeKind::Backdrop => ("{{\"", "\"}}", "backdrop"),
-        NodeKind::Composite => ("[\"", "\"]", "composite"),
+    let (open, close, class) = match n.category() {
+        Category::Background => ("([\"", "\"])", "bg"),
+        Category::Paint => ("[\"", "\"]", "paint"),
+        Category::Draft => ("(\"", "\")", "draft"),
+        Category::Reload => ("{{\"", "\"}}", "backdrop"),
+        Category::Compose => ("[\"", "\"]", "composite"),
     };
     format!("n{i}{open}{label}{close}:::{class}")
 }
