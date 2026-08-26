@@ -60,11 +60,46 @@ pub struct FrameDag {
     pub nodes: Vec<Node>,
 }
 
+/// The on-chip tile edge in page units. A gather whose source fits inside one tile blurs entirely
+/// within a workgroup (no cross-tile read → no barrier); a larger source spans workgroups and must
+/// materialize. Matches the fine-pass 16×16 tile.
+pub const TILE_PX: f64 = 16.0;
+
+/// The reason a node opens a new round — the only two things that force a GPU-wide barrier (a
+/// dispatch boundary). Everything else folds into a neighbouring pass.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Barrier {
+    /// A gather (blur / punch / warp / frost) reads a freshly-computed draft over a neighbourhood, so
+    /// that draft must be flushed to VRAM and its producing dispatch must finish first.
+    Materialize,
+    /// A gather reads the composited accumulator (the backdrop), so every layer below it must have
+    /// composited to VRAM before this dispatch can sample it.
+    Reload,
+}
+
+/// The barrier-aware schedule: each node's round, where a round is one dispatch and consecutive
+/// rounds are one barrier apart.
+pub struct Schedule {
+    /// `round[i]` — the dispatch node `i` runs in.
+    pub round: Vec<u32>,
+    /// `barrier[i]` — set when node `i` opens its round across a barrier edge (why it could not fold
+    /// into an earlier one); `None` when it shares its inputs' round.
+    pub barrier: Vec<Option<Barrier>>,
+}
+
+impl Schedule {
+    /// Round count = one past the deepest round.
+    #[must_use]
+    pub fn rounds(&self) -> u32 {
+        self.round.iter().copied().max().unwrap_or(0) + 1
+    }
+}
+
 impl FrameDag {
-    /// The topological depth (round) of every node: `0` for a leaf, else `1 + max(input round)`. Since
-    /// a node only ever cites earlier indices, one forward pass suffices. This IS the schedule — nodes
-    /// sharing a round have no dependency between them and can run together (different workgroups); a
-    /// later region-aware pass would additionally split a round by reach so only disjoint ones batch.
+    /// The NAIVE topological depth: `0` for a leaf, else `1 + max(input round)` — a barrier at *every*
+    /// edge. This is the upper bound the real scheduler improves on (it serialises the composite
+    /// spine, which carries no barrier). Kept only as the baseline to compare [`Self::schedule`]
+    /// against; nothing executes it.
     #[must_use]
     pub fn levels(&self) -> Vec<u32> {
         let mut lv = vec![0u32; self.nodes.len()];
@@ -72,6 +107,53 @@ impl FrameDag {
             lv[i] = n.inputs.iter().map(|&j| lv[j] + 1).max().unwrap_or(0);
         }
         lv
+    }
+
+    /// Does reading `from`'s output inside `to` require a barrier? The whole schedule reduces to this
+    /// predicate. Two — and only two — edges carry one:
+    /// * `to` is a [`NodeKind::Backdrop`] → the accumulator must flush before it can be sampled
+    ///   (`Reload`).
+    /// * `to` is a gather (a `Draft` that reads an input) over a *freshly-computed* source that spans
+    ///   tiles → that source must materialize first (`Materialize`). A gather over the backdrop is
+    ///   free: the reload already made it resident. A gather over a source that fits one tile blurs
+    ///   on-chip.
+    ///
+    /// Every other edge — the composite spine, a body reading the accumulator, a pointwise pass — is
+    /// same-tile, same-dispatch and folds.
+    fn edge_barrier(&self, from: usize, to: usize, tile: f64) -> Option<Barrier> {
+        let (src, dst) = (&self.nodes[from], &self.nodes[to]);
+        if dst.kind == NodeKind::Backdrop {
+            return Some(Barrier::Reload);
+        }
+        let dst_gathers = dst.kind == NodeKind::Draft && !dst.inputs.is_empty();
+        if dst_gathers && src.kind != NodeKind::Backdrop {
+            let on_chip = src.reach.is_some_and(|r| r.width() <= tile && r.height() <= tile);
+            if !on_chip {
+                return Some(Barrier::Materialize);
+            }
+        }
+        None
+    }
+
+    /// The barrier-aware round of every node: `round[i] = max_j( round[j] + [edge j→i is a barrier] )`.
+    /// One forward pass, since nodes are pre-sorted. Nodes sharing a round run in one dispatch (the
+    /// composite spine folds into a single fine pass); a new round appears only across a materialize or
+    /// a reload. `tile` is the on-chip tile edge (use [`TILE_PX`]).
+    #[must_use]
+    pub fn schedule(&self, tile: f64) -> Schedule {
+        let mut round = vec![0u32; self.nodes.len()];
+        let mut barrier = vec![None; self.nodes.len()];
+        for (i, n) in self.nodes.iter().enumerate() {
+            for &j in &n.inputs {
+                let b = self.edge_barrier(j, i, tile);
+                let r = round[j] + u32::from(b.is_some());
+                if r > round[i] {
+                    round[i] = r;
+                    barrier[i] = b;
+                }
+            }
+        }
+        Schedule { round, barrier }
     }
 }
 
@@ -122,13 +204,15 @@ impl Builder {
                     vec![cur],
                 ),
                 Op::Lens(g) => {
+                    // warp (displaced read) and frost (blur) are neighbourhood gathers → real drafts.
+                    // The shade (per-pixel fresnel/tint) is pointwise → it folds into the composite,
+                    // exactly like Tint, so it emits no node and every remaining draft is a gather.
                     let warp = self.push(NodeKind::Draft, format!("{name} lens warp"), reach, vec![cur]);
-                    let mid = if g.total_blur_sigma() > 0.5 {
+                    if g.total_blur_sigma() > 0.5 {
                         self.push(NodeKind::Draft, format!("{name} lens frost"), reach, vec![warp])
                     } else {
                         warp
-                    };
-                    self.push(NodeKind::Draft, format!("{name} lens shade"), reach, vec![mid])
+                    }
                 }
                 Op::Shader(_) => self.push(NodeKind::Draft, format!("{name} custom pass"), reach, vec![cur]),
                 Op::Tint(_) | Op::Offset(_) => cur, // pointwise — folds into the silhouette/composite
@@ -293,5 +377,38 @@ mod tests {
         assert_eq!(bands, 1, "the checker ground must be ONE band");
         // Glass reads the backdrop → at least one reload + gather composite.
         assert!(kinds(&dag, NodeKind::Backdrop) > 0, "glass must read the backdrop");
+    }
+
+    #[test]
+    fn schedule_collapses_the_naive_spine() {
+        crate::vello::abi::load_combined_scene();
+        let dag = build_frame_dag_installed();
+
+        let naive = dag.levels().iter().copied().max().unwrap() + 1;
+        let real = dag.schedule(TILE_PX).rounds();
+        assert!(real < naive, "barrier-aware schedule must beat naive ({real} vs {naive})");
+        // combined has no backdrop gather: one materialize round for the blurs/punches, then the whole
+        // composite spine folds into a single fine pass → 2 rounds.
+        assert_eq!(real, 2, "combined collapses to a materialize round + a fold round");
+    }
+
+    #[test]
+    fn glass_reloads_drops_materialize() {
+        crate::vello::abi::load_stack_glass_scene(2, 0);
+        let dag = build_frame_dag_installed();
+        let sched = dag.schedule(TILE_PX);
+
+        assert!(
+            sched.barrier.iter().any(|b| matches!(b, Some(Barrier::Reload))),
+            "a glass gather must reload the backdrop",
+        );
+        assert!(
+            sched.barrier.iter().any(|b| matches!(b, Some(Barrier::Materialize))),
+            "a drop shadow's blur must materialize its silhouette",
+        );
+        // Stacked glass genuinely serialises (each layer reads the one below), but still far under the
+        // naive per-edge count.
+        let naive = dag.levels().iter().copied().max().unwrap() + 1;
+        assert!(sched.rounds() < naive, "still beats naive on the stacked case");
     }
 }
