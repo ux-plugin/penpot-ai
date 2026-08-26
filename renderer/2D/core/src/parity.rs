@@ -1350,6 +1350,17 @@ pub fn build_inner_shadow_scene() -> (Scene, Vec<(usize, &'static str)>) {
         n.bounds = r;
         n.path = Some(blob_path(Rect::new(r.x0 + 10.0, r.y0 + 6.0, r.x1 - 10.0, r.y1 - 16.0)));
         n.fills = vec![Paint::plain(Brush::Solid(col(206, 212, 222)))];
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 210), blur: 0.0, spread: 0.0, offset: Vec2::new(9.0, 11.0), inset: true }];
+        b.root(n);
+        b.advance("vector shape + SHARP inner shadow");
+    }
+    {
+        let r = b.rect();
+        let id = b.id();
+        let mut n = Node::new(id, ShapeKind::Path);
+        n.bounds = r;
+        n.path = Some(blob_path(Rect::new(r.x0 + 10.0, r.y0 + 6.0, r.x1 - 10.0, r.y1 - 16.0)));
+        n.fills = vec![Paint::plain(Brush::Solid(col(206, 212, 222)))];
         b.root(n);
         b.advance("vector shape (no shadow)");
     }

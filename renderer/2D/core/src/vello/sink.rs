@@ -197,6 +197,9 @@ enum ShadowMarker {
     /// A SHARP (σ<0.5) drop: ONE marker composites the shape's offset silhouette (unblurred coverage,
     /// `SPREAD|SCRATCH_COV` reading the rasterised silhouette scratch's alpha) under the body. PRE-body.
     SharpDrop { desc: [f32; 26], slot: usize },
+    /// A SHARP (σ<0.5) inner: ONE band marker (POST-body). No blur — the punch is the raw offset inset
+    /// silhouette, so the band (`SPREAD|ERASE`, `flood=area[i]` minus that silhouette) reads it directly.
+    SharpInner { band: [f32; 26], slot: usize },
     /// A SOFT (σ≥0.5) drop: H blurs the offset silhouette scratch → draft, V blurs it vertically and
     /// SPREAD-composites the shadow colour under the body. Two markers, both PRE-body.
     SoftDrop { h: [f32; 26], v: [f32; 26], slot: usize },
@@ -221,6 +224,9 @@ enum ShadowRole {
     InnerV,
     /// The inner band: flood-minus-punch (punch keyed by `punch_key`) over the body.
     InnerBand,
+    /// A SHARP inner band: reads the raw offset inset silhouette (`stack_sil` at THIS round, no blur) as
+    /// the punch and lays flood-minus-punch over the body — the crisp analogue of `InnerBand`.
+    SharpInnerBand,
 }
 
 /// One scheduled shadow marker with its absolute round, descriptor, dispatch role, and the keys the
@@ -236,14 +242,21 @@ struct ShadowMk {
     punch_key: u32,
 }
 
-/// Rounds the pre-body half of a shadow plan spans: two (H, V) per soft shadow, one per sharp drop.
+/// Rounds the pre-body half of a shadow plan spans: two (H, V) per soft shadow, one per sharp drop, none
+/// for a sharp inner (its lone band is POST-body).
 fn shadow_pre_rounds(plan: &[ShadowMarker]) -> u32 {
-    plan.iter().map(|m| if matches!(m, ShadowMarker::SharpDrop { .. }) { 1 } else { 2 }).sum()
+    plan.iter()
+        .map(|m| match m {
+            ShadowMarker::SharpDrop { .. } => 1,
+            ShadowMarker::SharpInner { .. } => 0,
+            ShadowMarker::SoftDrop { .. } | ShadowMarker::SoftInner { .. } => 2,
+        })
+        .sum()
 }
 
-/// Inner shadows in the plan — the number of POST-body band rounds.
+/// Inner shadows in the plan (soft OR sharp) — the number of POST-body band rounds.
 fn shadow_num_inners(plan: &[ShadowMarker]) -> u32 {
-    plan.iter().filter(|m| matches!(m, ShadowMarker::SoftInner { .. })).count() as u32
+    plan.iter().filter(|m| matches!(m, ShadowMarker::SoftInner { .. } | ShadowMarker::SharpInner { .. })).count() as u32
 }
 
 /// Total rounds a shadow plan's block spans: the pre-body H/V pairs, then one round per inner band
@@ -261,12 +274,17 @@ fn shadow_span(plan: &[ShadowMarker]) -> u32 {
 fn schedule_shadows(plan: &[ShadowMarker], base: u32) -> Vec<ShadowMk> {
     let mut mks = Vec::new();
     let mut cursor = base;
-    let mut inners: Vec<(u32, [f32; 26], usize)> = Vec::new();
+    // Post-body bands: `Some(hk)` = a SOFT inner reading its materialised punch at H round `hk`; `None` = a
+    // SHARP inner reading its raw offset silhouette at its OWN band round.
+    let mut inners: Vec<(Option<u32>, [f32; 26], usize)> = Vec::new();
     for m in plan {
         match m {
             ShadowMarker::SharpDrop { desc, slot } => {
                 mks.push(ShadowMk { round: cursor, desc: *desc, role: ShadowRole::SharpDrop, slot: *slot, inset: false, punch_key: 0 });
                 cursor += 1;
+            }
+            ShadowMarker::SharpInner { band, slot } => {
+                inners.push((None, *band, *slot)); // no pre-body round; the band reads its own silhouette
             }
             ShadowMarker::SoftDrop { h, v, slot } => {
                 mks.push(ShadowMk { round: cursor, desc: *h, role: ShadowRole::BlurH, slot: *slot, inset: false, punch_key: 0 });
@@ -277,14 +295,20 @@ fn schedule_shadows(plan: &[ShadowMarker], base: u32) -> Vec<ShadowMk> {
                 let hk = cursor;
                 mks.push(ShadowMk { round: cursor, desc: *h, role: ShadowRole::BlurH, slot: *slot, inset: true, punch_key: hk });
                 mks.push(ShadowMk { round: cursor + 1, desc: *v, role: ShadowRole::InnerV, slot: *slot, inset: true, punch_key: hk });
-                inners.push((hk, *band, *slot));
+                inners.push((Some(hk), *band, *slot));
                 cursor += 2;
             }
         }
     }
     let mut band_round = cursor; // = base + pre_rounds (the body round)
-    for (hk, band, slot) in inners {
-        mks.push(ShadowMk { round: band_round, desc: band, role: ShadowRole::InnerBand, slot, inset: true, punch_key: hk });
+    for (src, band, slot) in inners {
+        // A soft band reads its blurred punch (`InnerBand`, punch_key = its H round); a sharp band reads the
+        // raw offset silhouette rasterised at its OWN round (`SharpInnerBand`, so `sil_jobs` rasterises here).
+        let (role, punch_key) = match src {
+            Some(hk) => (ShadowRole::InnerBand, hk),
+            None => (ShadowRole::SharpInnerBand, band_round),
+        };
+        mks.push(ShadowMk { round: band_round, desc: band, role, slot, inset: true, punch_key });
         band_round += 1;
     }
     mks
@@ -1873,7 +1897,11 @@ impl Sink {
                                 z += 1;
                                 let last = mi == markers.len() - 1;
                                 let eid = if let Some(sched) = sched {
-                                    if sched[mi].role == ShadowRole::InnerBand { FX_TINT_ID } else { FX_TINT_DILATED_ID }
+                                    if matches!(sched[mi].role, ShadowRole::InnerBand | ShadowRole::SharpInnerBand) {
+                                        FX_TINT_ID
+                                    } else {
+                                        FX_TINT_DILATED_ID
+                                    }
                                 } else if is_frost && last {
                                     FX_TINT_ID
                                 } else {
@@ -1993,6 +2021,9 @@ impl Sink {
             /// carried `punch_key`) and lays the shadow colour where the shape's flood coverage is NOT under
             /// it (`cov*(1-punch)`), OVER the body.
             InnerBand(u32),
+            /// A SHARP inner shadow's BAND: like `InnerBand` but the punch is the RAW offset silhouette
+            /// ([`Self::stack_sil`] at THIS round, no blur) rather than a blurred `stack_punch` scratch.
+            SharpInnerBand,
         }
         let mut window_role: std::collections::HashMap<u32, WindowRole> = std::collections::HashMap::new();
         if rw {
@@ -2028,6 +2059,7 @@ impl Sink {
                             ShadowRole::DropV => WindowRole::DropBlurV,
                             ShadowRole::InnerV => WindowRole::InnerV(mk.punch_key),
                             ShadowRole::InnerBand => WindowRole::InnerBand(mk.punch_key),
+                            ShadowRole::SharpInnerBand => WindowRole::SharpInnerBand,
                         };
                         window_role.insert(mk.round, role);
                     }
@@ -2130,7 +2162,7 @@ impl Sink {
             .flat_map(|(&gid, sched)| {
                 sched
                     .iter()
-                    .filter(|mk| matches!(mk.role, ShadowRole::BlurH | ShadowRole::SharpDrop))
+                    .filter(|mk| matches!(mk.role, ShadowRole::BlurH | ShadowRole::SharpDrop | ShadowRole::SharpInnerBand))
                     .map(move |mk| (mk.round, gid, mk.slot, mk.inset))
             })
             .collect();
@@ -2312,6 +2344,16 @@ impl Sink {
                         backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &punch, &views[out]);
                         cur = Some(out);
                     }
+                    Some(WindowRole::SharpInnerBand) => {
+                        // A sharp inner band: the punch is the RAW offset silhouette (`stack_sil` at THIS
+                        // round, no blur); SPREAD|ERASE lays the shadow colour where `area[i]` (the unoffset
+                        // outline flood) is NOT under it, source-OVER the body.
+                        let c = cur.expect("an inner band composites over the body");
+                        let out = 1 - c;
+                        let sil = self.stack_sil.get(&window_lo).expect("sharp-inner silhouette rasterised pre-pass").clone();
+                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sil, &views[out]);
+                        cur = Some(out);
+                    }
                     Some(WindowRole::Frost(stage)) => {
                         // A frosted lens chain link. Every link reads the accumulator (`views[c]`, the
                         // backdrop) as `base`. Stages 0..3 write to a private scratch and DON'T advance the
@@ -2437,6 +2479,15 @@ impl Sink {
                 let out = 1 - c;
                 let punch = self.stack_punch.get(&punch_key).expect("inner punch materialised by its V").clone();
                 backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &punch, &views[out]);
+                out
+            } else if matches!(window_role.get(&window_lo), Some(WindowRole::SharpInnerBand)) {
+                // A sharp inner band is the LAST (often ONLY) marker of its block — for a pure sharp inner
+                // it shares the body round — so it lands here. Bind the raw silhouette as `input_in` like the
+                // in-loop arm; the generic fallthrough would leave it unbound.
+                let c = cur.expect("an inner band composites over the body");
+                let out = 1 - c;
+                let sil = self.stack_sil.get(&window_lo).expect("sharp-inner silhouette rasterised pre-pass").clone();
+                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &sil, &views[out]);
                 out
             } else {
                 let out = cur.map_or(0, |c| 1 - c);
@@ -5411,7 +5462,22 @@ impl Sink {
                         });
                         let sigma = blur.map_or(0.0, |r| crate::blur::radius_to_sigma(r) * scale);
                         if sigma < 0.5 {
-                            return None; // sharp inner keeps the pre-pass
+                            // SHARP inner: no blur — the punch is the raw offset inset silhouette, so ONE band
+                            // marker (SPREAD|ERASE, flood=area[i] minus that silhouette) reads it directly.
+                            // Text has no glyph coverage in area[i], so a text sharp inner keeps the pre-pass.
+                            if is_text {
+                                return None;
+                            }
+                            let [r, g, b, a] = tint(e)?.components;
+                            let mut band = [0.0f32; 26];
+                            band[0] = 128.0 + 2.0; // SPREAD | ERASE
+                            band[14] = r;
+                            band[15] = g;
+                            band[16] = b;
+                            band[17] = a;
+                            plan.push(ShadowMarker::SharpInner { band, slot: inner_slot });
+                            inner_slot += 1;
+                            continue;
                         }
                         let [r, g, b, a] = tint(e)?.components;
                         let mut h = [0.0f32; 26];
