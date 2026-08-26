@@ -507,6 +507,11 @@ impl PoolKey {
         Self { w: t.width(), h: t.height(), format: t.format(), usage: t.usage().bits() }
     }
 
+    /// Construct a key directly — for callers outside the pool's own paths (e.g. the frame executor).
+    pub(crate) fn new(w: u32, h: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> Self {
+        Self { w, h, format, usage: usage.bits() }
+    }
+
     /// Approximate GPU footprint of one texture with this key, for the pool budget.
     fn approx_bytes(&self) -> u64 {
         let bpp = match self.format {
@@ -5751,5 +5756,120 @@ mod batch_admission_tests {
         // Pointwise units the stamp stages do not implement are refused outright rather than
         // silently falling into the wrong family.
         assert_eq!(batch_admit(&[units(vec![UnitOp::MaskMix(u())])]), None);
+    }
+}
+
+/// GPU dispatcher for the frame executor ([`crate::vello::frame_exec::execute`]) — the device-bound
+/// seam. Holds the frame's GPU context and renders each step against the existing primitives.
+///
+/// This slice implements the **plain-paint path**: the background, bands, and bodies composited onto
+/// the accumulator, which renders effect-free frames end to end. The effect ops (silhouette coverage,
+/// blur, lens sample, reload, and scratch composites) are the next slice — they need the shadow/lens
+/// primitives and a real-GPU pixel gate, so they are left as an explicit no-op here rather than
+/// approximated into wrong pixels.
+pub(crate) struct FrameGpu<'a, B: RasterBackend> {
+    backend: &'a mut B,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    enc: &'a mut wgpu::CommandEncoder,
+    pool: &'a mut TexturePool,
+    compositor: &'a Compositor,
+    /// The frame accumulator every spine op writes.
+    target: &'a wgpu::TextureView,
+    size: (u32, u32),
+    format: wgpu::TextureFormat,
+    /// Page → device transform for the whole frame.
+    root: Affine,
+    /// The page background colour, cleared into the accumulator on the first write.
+    background: Color,
+    /// Scratch textures kept alive until the frame's single submit.
+    keep: Vec<wgpu::Texture>,
+    first: bool,
+}
+
+impl<'a, B: RasterBackend> FrameGpu<'a, B> {
+    #[expect(clippy::too_many_arguments, reason = "the GPU context lives on the renderer wrapper")]
+    pub(crate) fn new(
+        backend: &'a mut B,
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        enc: &'a mut wgpu::CommandEncoder,
+        pool: &'a mut TexturePool,
+        compositor: &'a Compositor,
+        target: &'a wgpu::TextureView,
+        size: (u32, u32),
+        format: wgpu::TextureFormat,
+        root: Affine,
+        background: Color,
+    ) -> Self {
+        Self { backend, device, queue, enc, pool, compositor, target, size, format, root, background, keep: Vec::new(), first: true }
+    }
+
+    /// The shape bodies a plain rasterize draws. A shadow silhouette / lens source is NOT a body — it
+    /// needs coverage/effect rasterization, handled in the effect slice.
+    fn paint_ops(source: &crate::vello::frame_dag::Source) -> Vec<PaintOp> {
+        use crate::vello::frame_dag::Source as S;
+        match source {
+            S::Band(ids) => ids.iter().map(|id| PaintOp::Body(*id)).collect(),
+            S::Body(id) => vec![PaintOp::Body(*id)],
+            S::Background | S::Effect { .. } => Vec::new(),
+        }
+    }
+
+    /// Rasterize `ops` onto the accumulator: the first write clears to the page background; later ones
+    /// render to a scratch and SrcOver-blit on top (the backend rasterize always clears its target, so
+    /// accumulation goes through a blit — mirrors [`Sink::rasterize_accumulate`]).
+    fn rasterize_onto_acc(&mut self, ops: &[PaintOp]) {
+        let (w, h) = self.size;
+        if self.first {
+            let mut scene = self.backend.new_scene(w as u16, h as u16);
+            self.backend.build_bodies(&mut scene, self.root, ops);
+            self.backend.rasterize(&scene, self.device, self.queue, self.enc, self.target, w, h, self.background);
+            self.first = false;
+            return;
+        }
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let scratch = self.pool.acquire(self.device, PoolKey::new(w, h, self.format, usage), "frame-exec scratch");
+        let view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut scene = self.backend.new_scene(w as u16, h as u16);
+        self.backend.build_bodies(&mut scene, self.root, ops);
+        self.backend.rasterize(&scene, self.device, self.queue, self.enc, &view, w, h, CLEAR);
+        self.compositor.blit(self.device, self.enc, self.target, (w as f32, h as f32), &Blit {
+            src: &view,
+            dst: (0.0, 0.0, w as f32, h as f32),
+            src_rect: (0.0, 0.0, w as f32, h as f32),
+            src_size: (w as f32, h as f32),
+            alpha: 1.0,
+        });
+        self.keep.push(scratch);
+    }
+}
+
+impl<B: RasterBackend> crate::vello::frame_exec::Dispatcher for FrameGpu<'_, B> {
+    fn begin_round(&mut self, _round: usize, _barrier: Option<crate::vello::frame_dag::Barrier>) {
+        // One encoder per frame; read-after-write between its passes is ordered, so a same-encoder
+        // barrier needs no explicit command. A cross-submit reload would split the encoder — the
+        // effect slice.
+    }
+
+    fn run(
+        &mut self,
+        op: crate::vello::frame_dag::Op,
+        source: &crate::vello::frame_dag::Source,
+        _reach: Option<Rect>,
+        _reads: &[crate::vello::frame_exec::Surface],
+        write: crate::vello::frame_exec::Surface,
+    ) {
+        use crate::vello::frame_dag::Op;
+        use crate::vello::frame_exec::Surface;
+        match (op, write) {
+            // Plain paint onto the spine: background, bands, bodies. Renders effect-free frames.
+            (Op::Rasterize, Surface::Accumulator) => {
+                let ops = Self::paint_ops(source);
+                self.rasterize_onto_acc(&ops);
+            }
+            // Effect ops + scratch writes — the next slice, gated on a real-GPU pixel diff.
+            _ => {}
+        }
     }
 }
