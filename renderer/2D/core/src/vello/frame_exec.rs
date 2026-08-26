@@ -7,7 +7,8 @@
 //! top to bottom, and the one thing left is the per-op wgpu dispatch (see [`Program::describe`] for the
 //! command stream it stands in for; the live dispatch is the pixel-gated seam, wired against a device).
 
-use crate::vello::frame_dag::{Barrier, FrameDag, Op, Schedule};
+use crate::kurbo::Rect;
+use crate::vello::frame_dag::{Barrier, FrameDag, Op, Schedule, Source};
 
 /// A surface a step reads or writes — the frame accumulator (the spine) or one scratch atlas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -106,6 +107,32 @@ impl Program {
     }
 }
 
+/// The one device-bound seam. `execute` owns the control flow — rounds, barriers, order — and hands
+/// each step to a `Dispatcher` that does the actual GPU work: resolve the [`Source`] to geometry /
+/// effect config, run the pipeline for the step's [`Op`], and write the resolved [`Surface`]. The GPU
+/// implementation lives on the sink (it needs the device, pools, compositor, and backend); tests use a
+/// recording double. The VM decides everything the dispatcher does *not* — the dispatcher decides
+/// nothing about scheduling.
+pub trait Dispatcher {
+    /// Open round `r`. `barrier` is the GPU barrier that must precede it (`None` for round 0).
+    fn begin_round(&mut self, r: usize, barrier: Option<Barrier>);
+    /// Run one step: its `op` (with intrinsic params), the scene `source` to resolve, its page-space
+    /// `reach`, the surfaces it reads, and the surface it writes.
+    fn run(&mut self, op: Op, source: &Source, reach: Option<Rect>, reads: &[Surface], write: Surface);
+}
+
+/// Walk the program: for each round, signal its barrier, then dispatch every step in order. That is the
+/// entire executor — the plan is fixed, so this loop is all the VM is.
+pub fn execute<D: Dispatcher>(program: &Program, dag: &FrameDag, d: &mut D) {
+    for (r, round) in program.rounds.iter().enumerate() {
+        d.begin_round(r, round.barrier);
+        for step in &round.steps {
+            let node = &dag.nodes[step.node];
+            d.run(step.op, &node.source, node.reach, &step.reads, step.write);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +210,46 @@ mod tests {
             .max()
             .unwrap_or(0);
         assert!(max_atlas <= 1, "the program uses at most two atlases (got {})", max_atlas + 1);
+    }
+
+    /// A recording `Dispatcher` — proves `execute` drives the program in the right order without a GPU.
+    #[derive(Default)]
+    struct Recorder {
+        rounds: Vec<Option<Barrier>>,
+        ops: Vec<(Op, Surface)>,
+    }
+    impl Dispatcher for Recorder {
+        fn begin_round(&mut self, r: usize, barrier: Option<Barrier>) {
+            assert_eq!(r, self.rounds.len(), "rounds opened in order");
+            self.rounds.push(barrier);
+        }
+        fn run(&mut self, op: Op, _source: &Source, _reach: Option<Rect>, _reads: &[Surface], write: Surface) {
+            assert!(!self.rounds.is_empty(), "a step ran before its round opened");
+            self.ops.push((op, write));
+        }
+    }
+
+    #[test]
+    fn execute_drives_the_program() {
+        let (dag, prog) = program_for(|| {
+            crate::vello::abi::load_combined_scene();
+        });
+
+        let mut rec = Recorder::default();
+        execute(&prog, &dag, &mut rec);
+
+        // One begin_round per round, in order, with the program's barriers.
+        assert_eq!(rec.rounds.len(), prog.rounds.len());
+        for (got, round) in rec.rounds.iter().zip(&prog.rounds) {
+            assert_eq!(*got, round.barrier);
+        }
+        assert_eq!(rec.rounds[0], None, "round 0 opens with no barrier");
+        // Every step was dispatched exactly once.
+        assert_eq!(rec.ops.len(), dag.nodes.len());
+        // The frame starts by rasterizing the background onto the accumulator.
+        assert_eq!(rec.ops[0], (Op::Rasterize, Surface::Accumulator));
+        // Blurs land in atlases; composites land on the spine.
+        assert!(rec.ops.iter().any(|(op, w)| matches!(op, Op::Blur { .. }) && matches!(w, Surface::Atlas(_))));
+        assert!(rec.ops.iter().any(|(op, w)| *op == Op::Compose && *w == Surface::Accumulator));
     }
 }
