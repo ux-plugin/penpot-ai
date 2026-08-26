@@ -157,10 +157,78 @@ impl FrameDag {
     }
 }
 
+/// Does region `a` overlap region `b`? `None` is the whole frame, which overlaps everything. Two
+/// finite rects overlap only with positive area — touching edges (a shared boundary) do not, and
+/// since reach rects already include the 3σ blur halo, genuinely-interacting effects have
+/// overlapping rects.
+fn overlaps(a: Option<Rect>, b: Option<Rect>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x.x0 < y.x1 && y.x0 < x.x1 && x.y0 < y.y1 && y.y0 < x.y1,
+        _ => true,
+    }
+}
+
+/// Does region `outer` fully contain `inner`? The whole frame contains everything; a finite region
+/// never contains the whole frame.
+fn covers(outer: Option<Rect>, inner: Option<Rect>) -> bool {
+    match (outer, inner) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(o), Some(i)) => o.x0 <= i.x0 && o.y0 <= i.y0 && o.x1 >= i.x1 && o.y1 >= i.y1,
+    }
+}
+
+/// The region-scoped accumulator: the frontier of spine writers, each tagged with the region it last
+/// wrote (`None` = whole frame). A new spine node reads every writer its footprint overlaps, then
+/// supersedes the writers it fully covers. So two disjoint effects never depend on each other — only
+/// overlapping ones keep a z-order edge — and no edge is lost, because a covered writer is always an
+/// input of the node that replaced it (the dependency survives transitively).
+#[derive(Default)]
+struct Accumulator {
+    writers: Vec<(Option<Rect>, usize)>,
+}
+
+impl Accumulator {
+    /// The current writers whose region overlaps `reach`, in paint order — the accumulator inputs a
+    /// node reading region `reach` depends on.
+    fn readers(&self, reach: Option<Rect>) -> Vec<usize> {
+        self.writers.iter().filter(|(r, _)| overlaps(*r, reach)).map(|&(_, n)| n).collect()
+    }
+
+    /// Record `node` as the writer for `reach`, dropping every writer it fully covers.
+    fn write(&mut self, reach: Option<Rect>, node: usize) {
+        self.writers.retain(|&(r, _)| !covers(reach, r));
+        self.writers.push((reach, node));
+    }
+}
+
+/// A pending run of plain shapes waiting to coalesce into one paint band. Carries the union of their
+/// bounds so the band's `reach` is its real footprint — not the whole frame — which keeps disjoint
+/// bands (e.g. a per-cell background behind each effect) from re-chaining the whole frontier.
+#[derive(Default)]
+struct Band {
+    count: usize,
+    bounds: Option<Rect>,
+}
+
+impl Band {
+    fn push(&mut self, r: Rect) {
+        self.count += 1;
+        self.bounds = Some(self.bounds.map_or(r, |b| b.union(r)));
+    }
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+    fn clear(&mut self) {
+        self.count = 0;
+        self.bounds = None;
+    }
+}
+
 struct Builder {
     dag: FrameDag,
-    /// The node that wrote the current accumulator version (the spine tail).
-    acc: Option<usize>,
+    /// The region-scoped spine frontier — the last writer of each region (see [`Accumulator`]).
+    acc: Accumulator,
     /// Per-effect-node counter, for readable labels (`s1`, `s2`, …).
     fx_no: u32,
 }
@@ -172,15 +240,17 @@ impl Builder {
         id
     }
 
-    /// Coalesce a pending run of plain shapes into ONE paint band on the spine.
-    fn flush_band(&mut self, band: &mut Vec<String>) {
+    /// Coalesce a pending run of plain shapes into ONE paint band on the spine, scoped to their
+    /// union bounds so it only chains with effects it actually overlaps.
+    fn flush_band(&mut self, band: &mut Band) {
         if band.is_empty() {
             return;
         }
-        let label = format!("paint band · {} shape(s)", band.len());
-        let inputs = self.acc.into_iter().collect();
-        let id = self.push(NodeKind::Paint, label, None, inputs);
-        self.acc = Some(id);
+        let label = format!("paint band · {} shape(s)", band.count);
+        let reach = band.bounds;
+        let inputs = self.acc.readers(reach);
+        let id = self.push(NodeKind::Paint, label, reach, inputs);
+        self.acc.write(reach, id);
         band.clear();
     }
 
@@ -237,33 +307,32 @@ impl Builder {
             let reach = Some(e.footprint(base));
             let sil = self.push(NodeKind::Draft, format!("{name} drop silhouette"), reach, vec![]);
             let tail = self.lower_ops(&e.ops, sil, reach, &name, "drop");
-            let acc = self.acc.into_iter().chain(std::iter::once(tail)).collect();
-            self.acc = Some(self.push(NodeKind::Composite, format!("{name} drop → acc"), reach, acc));
+            self.compose(NodeKind::Composite, format!("{name} drop → acc"), reach, tail);
         }
 
         // 2. The node's own body (plain fills/text), unless a Replace effect stands in for it.
         if !has_replace && has_paint {
-            let acc = self.acc.into_iter().collect();
-            self.acc = Some(self.push(NodeKind::Paint, format!("{name} body"), None, acc));
+            let reach = Some(base);
+            let inputs = self.acc.readers(reach);
+            let id = self.push(NodeKind::Paint, format!("{name} body"), reach, inputs);
+            self.acc.write(reach, id);
         }
         // 2b. Body-replacing effects (layer blur / body shader): read the node's own body, transform.
         for e in stack.iter().filter(|e| e.compose == Compose::Replace) {
             let reach = Some(e.footprint(base));
             let read = self.push(NodeKind::Draft, format!("{name} body-read"), reach, vec![]);
             let tail = self.lower_ops(&e.ops, read, reach, &name, "body");
-            let acc = self.acc.into_iter().chain(std::iter::once(tail)).collect();
-            self.acc = Some(self.push(NodeKind::Composite, format!("{name} body → acc"), reach, acc));
+            self.compose(NodeKind::Composite, format!("{name} body → acc"), reach, tail);
         }
 
         // 3. Backdrop gathers (ThroughCoverage) — materialize the accumulator, run the lens/blur,
         //    composite through the coverage over the body.
         for e in stack.iter().filter(|e| e.compose == Compose::ThroughCoverage) {
             let reach = Some(e.footprint(base));
-            let read_inputs = self.acc.into_iter().collect();
+            let read_inputs = self.acc.readers(reach);
             let read = self.push(NodeKind::Backdrop, format!("{name} read backdrop"), reach, read_inputs);
             let tail = self.lower_ops(&e.ops, read, reach, &name, "gather");
-            let acc = self.acc.into_iter().chain(std::iter::once(tail)).collect();
-            self.acc = Some(self.push(NodeKind::Composite, format!("{name} gather → acc"), reach, acc));
+            self.compose(NodeKind::Composite, format!("{name} gather → acc"), reach, tail);
         }
 
         // 4. Inner shadows (Over) — silhouette → punch → composite, over the body.
@@ -271,12 +340,20 @@ impl Builder {
             let reach = Some(e.footprint(base));
             let sil = self.push(NodeKind::Draft, format!("{name} inner silhouette"), reach, vec![]);
             let tail = self.lower_ops(&e.ops, sil, reach, &name, "inner");
-            let acc = self.acc.into_iter().chain(std::iter::once(tail)).collect();
-            self.acc = Some(self.push(NodeKind::Composite, format!("{name} inner → acc"), reach, acc));
+            self.compose(NodeKind::Composite, format!("{name} inner → acc"), reach, tail);
         }
     }
 
-    fn walk(&mut self, scene: &Scene, id: u128, band: &mut Vec<String>) {
+    /// Land an effect result (`tail`) onto the region-scoped accumulator: read the writers `reach`
+    /// overlaps, add the chain tail, emit the composite, and make it the new writer for `reach`.
+    fn compose(&mut self, kind: NodeKind, label: String, reach: Option<Rect>, tail: usize) {
+        let mut inputs = self.acc.readers(reach);
+        inputs.push(tail);
+        let id = self.push(kind, label, reach, inputs);
+        self.acc.write(reach, id);
+    }
+
+    fn walk(&mut self, scene: &Scene, id: u128, band: &mut Band) {
         let Some(node) = scene.get(id) else { return };
         if node.hidden {
             return;
@@ -291,9 +368,9 @@ impl Builder {
             return;
         }
         if !has_effects {
-            // A plain leaf shape → coalesce into the pending paint band.
+            // A plain leaf shape → coalesce into the pending paint band (union its bounds).
             if has_paint {
-                band.push(format!("{id:x}"));
+                band.push(node.bounds);
             }
             return;
         }
@@ -308,10 +385,10 @@ impl Builder {
 /// the accumulator spine; plain shapes coalesce into paint bands, effect nodes lower their stack.
 #[must_use]
 pub fn build_frame_dag(scene: &Scene) -> FrameDag {
-    let mut b = Builder { dag: FrameDag::default(), acc: None, fx_no: 0 };
+    let mut b = Builder { dag: FrameDag::default(), acc: Accumulator::default(), fx_no: 0 };
     let bg = b.push(NodeKind::Background, "BG".to_string(), None, vec![]);
-    b.acc = Some(bg);
-    let mut band = Vec::new();
+    b.acc.write(None, bg);
+    let mut band = Band::default();
     for &root in scene.roots() {
         b.walk(scene, root, &mut band);
     }
@@ -410,5 +487,17 @@ mod tests {
         // naive per-edge count.
         let naive = dag.levels().iter().copied().max().unwrap() + 1;
         assert!(sched.rounds() < naive, "still beats naive on the stacked case");
+    }
+
+    #[test]
+    fn disjoint_cells_do_not_serialise() {
+        // The matrix is a 20-cell grid of independent effects, each behind its own background rect.
+        // Region-scoping the accumulator must keep the round count at the depth of the deepest single
+        // cell — NOT growing with the cell count. (A whole-frame paint band would re-chain them and
+        // this would blow up.)
+        crate::vello::abi::load_matrix_scene();
+        let dag = build_frame_dag_installed();
+        let rounds = dag.schedule(TILE_PX).rounds();
+        assert!(rounds <= 5, "disjoint grid cells must not chain (got {rounds} rounds for 20 cells)");
     }
 }
