@@ -794,10 +794,12 @@ mod fuse_tests {
     fn dump_field_wgsl_for_fine() {
         let dir = "/private/tmp/claude-501/-Users-dhiat-coding-penpot-ai--claude-worktrees-ai-chat-feature-status-bbf703/50ceaa3f-c306-4ef6-83e9-0fe15d702017/scratchpad";
         let lens = super::field_prelude(&super::lens_field_program());
+        let sampled = super::field_prelude(&super::lens_field_program_sampled());
         let texture = super::field_prelude(&crate::effect_graph::texture_field_program());
         std::fs::write(format!("{dir}/field_lens.wgsl"), &lens).unwrap();
+        std::fs::write(format!("{dir}/field_lens_sampled.wgsl"), &sampled).unwrap();
         std::fs::write(format!("{dir}/field_texture.wgsl"), &texture).unwrap();
-        eprintln!("lens={} bytes, texture={} bytes", lens.len(), texture.len());
+        eprintln!("lens={} bytes, sampled={} bytes, texture={} bytes", lens.len(), sampled.len(), texture.len());
     }
 
     /// The `Sampled` lens is a clean SOURCE substitution: its generated WGSL differs from the analytic
