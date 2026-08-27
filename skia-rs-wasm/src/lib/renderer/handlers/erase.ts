@@ -96,11 +96,27 @@ function brushBand(points: Pt[], radius: number, capStyle: 'round' | 'square', z
   return union([ring])
 }
 
+/** A closed cubic-Bézier SVG path from fitted anchors (handles carry the curve;
+ *  a handleless anchor is a sharp corner). */
+function anchorsToClosedPathD(anchors: Anchor[]): string {
+  const n = anchors.length
+  if (n < 2) return ''
+  let d = `M ${anchors[0].point.x} ${anchors[0].point.y}`
+  for (let i = 0; i < n; i++) {
+    const cur = anchors[i]
+    const nxt = anchors[(i + 1) % n]
+    const c1 = cur.handleOut ?? cur.point
+    const c2 = nxt.handleIn ?? nxt.point
+    d += ` C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${nxt.point.x} ${nxt.point.y}`
+  }
+  return d + ' Z'
+}
+
 /**
- * The swept brush band as an SVG path `d` (all rings, sub-paths concatenated) — for
- * the live erase preview, so re-crossing the same area shows the union of the swept
- * region (one merged blob) instead of overlapping self-intersecting outlines. It is
- * exactly the geometry {@link eraseBrush} subtracts, so the preview never lies.
+ * The swept brush band as an SVG path `d` for the live preview. The union rings are
+ * run through the SAME curve fit the commit uses ({@link fitClosedRing}), so the
+ * preview is smoothed Béziers — not a raw faceted polyline that wobbles as points
+ * stream in — and it matches how the erased edge will actually look on release.
  */
 export function brushBandPath(
   points: Pt[],
@@ -111,8 +127,10 @@ export function brushBandPath(
   let d = ''
   for (const poly of brushBand(points, radius, capStyle, zoom)) {
     for (const ring of poly) {
-      if (ring.length < 2) continue
-      d += 'M' + ring.map(([x, y]) => `${x} ${y}`).join(' L ') + ' Z'
+      const closed = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      const pts = closed ? ring.slice(0, -1) : ring.slice()
+      if (pts.length < 3) continue
+      d += anchorsToClosedPathD(fitClosedRing(pts.map(([x, y]) => ({ x, y })), SIMPLIFY_EPS))
     }
   }
   return d
