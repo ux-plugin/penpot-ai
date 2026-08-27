@@ -5350,22 +5350,9 @@ impl Sink {
     /// lens graph and the effects-in-fine frosted chain.
     fn lens_geom(&self, id: u128) -> Option<(crate::model::Glass, LensGeometry)> {
         crate::vello::abi::with_scene(|live, _, modifiers| {
-            live.get(id).and_then(|n| {
-                n.glass.map(|g| {
-                    let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                    let page = crate::schedule::page_bounds(n, m);
-                    let [a, b, c, d, _, _] = (m * n.effective_transform()).as_coeffs();
-                    let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
-                    let geom = LensGeometry {
-                        center: page.center(),
-                        width: page.width(),
-                        height: page.height(),
-                        corner_radius: n.corners.map_or(0.0, |r| r.top_left) * scale,
-                        is_circle: n.kind == crate::model::ShapeKind::Circle,
-                    };
-                    (g, geom)
-                })
-            })
+            let n = live.get(id)?;
+            let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+            crate::effect_graph::lens_geometry(n, m)
         })
     }
 

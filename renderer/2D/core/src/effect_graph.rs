@@ -329,6 +329,26 @@ pub struct LensGeometry {
 /// scale `s`. This is the ONLY non-trivial "baking" a unit needs; the per-unit trailing slots
 /// (chromatic aberration 17, frost 18, specular 19/20) are added by the caller. `bake`/the scheduler
 /// calls THIS to fill a lens unit's uniform, instead of building the whole pass chain to extract it.
+/// The page-space lens geometry of a node — its glass params + the rounded box the field measures
+/// against (centre, extents, corner in page units, scaled by the node's device scale for the corner).
+/// Pure over `(node, modifier)`; the scheduler calls it to fill a glass unit's uniform. `None` unless
+/// the node carries glass.
+#[must_use]
+pub fn lens_geometry(node: &crate::model::Node, modifier: Affine) -> Option<(Glass, LensGeometry)> {
+    let g = node.glass?;
+    let page = crate::schedule::page_bounds(node, modifier);
+    let [a, b, c, d, _, _] = (modifier * node.effective_transform()).as_coeffs();
+    let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
+    let geom = LensGeometry {
+        center: page.center(),
+        width: page.width(),
+        height: page.height(),
+        corner_radius: node.corners.map_or(0.0, |r| r.top_left) * scale,
+        is_circle: node.kind == crate::model::ShapeKind::Circle,
+    };
+    Some((g, geom))
+}
+
 #[must_use]
 pub fn lens_device_field(
     g: &Glass,

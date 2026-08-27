@@ -252,6 +252,46 @@ impl FrameDag {
             .collect()
     }
 
+    /// Fill each glass unit node's device uniform — the scheduler's viewport pass, the one non-trivial
+    /// "baking". For every `Source::Effect` node whose shape carries glass, compute the device field
+    /// ([`crate::effect_graph::lens_device_field`] at the whole viewport, origin 0, k=1) and stamp each
+    /// unit's own slots onto it: warp's chromatic aberration, scatter's frost, shade's specular. The
+    /// caller supplies `geom_of` (it holds the scene + modifiers); frame_dag stays decoupled from the
+    /// host types. After this the units carry exactly what the descriptor needs — no separate `bake`.
+    pub fn fill_lens_uniforms(
+        &mut self,
+        viewport: crate::kurbo::Affine,
+        w: u32,
+        h: u32,
+        geom_of: impl Fn(u128) -> Option<(crate::model::Glass, crate::effect_graph::LensGeometry)>,
+    ) {
+        for node in &mut self.nodes {
+            let Source::Effect { shape, .. } = node.source else { continue };
+            let Some((g, geom)) = geom_of(shape) else { continue };
+            let base = crate::effect_graph::lens_device_field(&g, geom, (w, h), (0.0, 0.0), viewport, 1.0);
+            node.op = match &node.op {
+                UnitOp::Warp(_) => {
+                    let mut u = base.to_vec();
+                    u[17] = g.chromatic_aberration;
+                    UnitOp::Warp(u)
+                }
+                UnitOp::Scatter(_) => {
+                    let mut u = base.to_vec();
+                    u[18] = g.frost;
+                    UnitOp::Scatter(u)
+                }
+                UnitOp::Shade(_) => {
+                    let mut u = base.to_vec();
+                    u[19] = g.specular_opacity;
+                    u[20] = g.specular_saturation;
+                    UnitOp::Shade(u)
+                }
+                UnitOp::MaskMix(_) => UnitOp::MaskMix(base.to_vec()),
+                other => other.clone(),
+            };
+        }
+    }
+
     /// Project each node to the allocator's stage IR ([`crate::vello::plan::StageSpec`]) — the same
     /// object, with the `op` erased, so `colour_stages` / `pack_groups` can place the scratch atlases.
     /// `target` is the node's own; an input is a [`Input::Value`] when its producer wrote an atlas,
@@ -727,6 +767,35 @@ mod tests {
         // A reload opens a later round than the drop blur it sits over — the schedule, not a window role.
         let reload_round = markers.iter().find(|m| m.op == UnitOp::Reload).unwrap().round;
         assert!(reload_round >= 1, "the backdrop reload runs after the drop materializes");
+    }
+
+    #[test]
+    fn a_sharp_glass_dag_fills_and_serializes_to_the_descriptor() {
+        // The whole scheduler→serialize pipeline on the real DAG: build the sharp-glass graph, let the
+        // scheduler fill the lens units' device uniforms, and serialize the arm. It must produce the
+        // shipping sharp-glass descriptor shape — bits 56, lens program, real (non-zero) device field.
+        use crate::vello::bake::{arm_descriptor, Policy, PROGRAM_LENS};
+        crate::vello::abi::load_stack_glass_scene(1, 0);
+        let mut dag = build_frame_dag_installed();
+        crate::vello::abi::with_scene(|scene, viewport, modifiers| {
+            dag.fill_lens_uniforms(viewport, 400, 400, |id| {
+                let n = scene.get(id)?;
+                let m = modifiers.get(&id).copied().unwrap_or(crate::kurbo::Affine::IDENTITY);
+                crate::effect_graph::lens_geometry(n, m)
+            });
+        });
+        // Sharp glass drops the scatter, so the fused arm is warp + shade + mask-mix, in order.
+        let run: Vec<UnitOp> = dag
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.op, UnitOp::Warp(_) | UnitOp::Shade(_) | UnitOp::MaskMix(_)))
+            .map(|n| n.op.clone())
+            .collect();
+        assert_eq!(run.len(), 3, "sharp glass = warp + shade + mask-mix");
+        let d = arm_descriptor(&run, Policy::default(), None);
+        assert_eq!(d[0], 56.0, "WARP|SHADE|MASKMIX");
+        assert_eq!(d[1], PROGRAM_LENS);
+        assert!(d[2] > 0.0 && d[3] > 0.0, "the device field was filled (backdrop resolution present)");
     }
 
     #[test]
