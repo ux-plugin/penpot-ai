@@ -14,10 +14,15 @@
 //! `units_uniform` the field and its units read. This module owns that vocabulary so both the current
 //! `fine.wgsl` and the clean `new_fine.wgsl` read one definition of it.
 
+use crate::vello::units::UnitOp;
+
 /// The `bits` field (descriptor slot 0) — one flag per unit/mode the fine CMD_EFFECT arm branches on.
 /// Mirrors the literals `fine.wgsl` tests (`fx_applyPointwise` + the CMD_EFFECT interpreter); named
 /// here so a descriptor is assembled from `bits::WARP | bits::SHADE`, never a bare `56.0`.
 pub mod bits {
+    /// Pointwise multiply by the input's own alpha at the undisplaced pixel — confines a displaced
+    /// result to the coverage it started from (`ClipToSource`).
+    pub const CLIP: u32 = 1;
     /// Pointwise erase by a second input's alpha (`DestOut`) — the inner-shadow punch.
     pub const ERASE: u32 = 2;
     /// Pointwise multiply by a straight colour, premultiplied out — a coverage silhouette → coloured.
@@ -115,9 +120,131 @@ pub fn gather_chain(passes: Vec<[f32; 26]>) -> Vec<Baked> {
         .collect()
 }
 
+/// The policy bits an arm carries that come from its POSITION and compose-mode, not its units — the
+/// honest residue `bits_of` cannot see from the run alone (see the "four policy bits" analysis).
+/// `spread` = a colour-layer composite (a shadow's `Compose::Under`/`Over`, laying `u[3]` over) rather
+/// than the field-masked mix a backdrop effect uses; `materialize` = an intermediate link of a chained
+/// gather (writes its scratch UNMASKED); `shadow_edge` = a silhouette blur (OOB taps fade to
+/// transparent, not the page). All three are derivable at bake time from the effect's compose-mode and
+/// the arm's place in the chain — never a stored tag.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Policy {
+    pub spread: bool,
+    pub materialize: bool,
+    pub shadow_edge: bool,
+}
+
+/// Map a fused unit run to the descriptor's `bits` word — the ONE genuinely-new derivation of the bake
+/// rebase, and pure. Each unit sets its own flag: a sampling head (`Warp`/`Scatter`), a `Blur` (with
+/// `SRGB` when it mixes in gamma space), and the pointwise tail (`Shade`/`MaskMix`/`Tint`/`Clip`/
+/// `Erase`). A `Custom` carries its behaviour in its program, not a bit; structural ops never appear in
+/// a run. Whether a trailing `Tint` is a `TINT` pointwise (a backdrop tint) or the colour of a `SPREAD`
+/// composite (a shadow) is decided by arm-GROUPING upstream — a spread arm's run is the gather alone,
+/// its colour riding `u[3]` — so `bits_of` needs no compose context.
+#[must_use]
+pub fn bits_of(run: &[UnitOp]) -> u32 {
+    run.iter().fold(0u32, |b, u| {
+        b | match u {
+            UnitOp::Warp(_) => bits::WARP,
+            UnitOp::Scatter(_) => bits::SCATTER,
+            UnitOp::Blur { linear, .. } => bits::BLUR | if *linear { 0 } else { bits::SRGB },
+            UnitOp::Shade(_) => bits::SHADE,
+            UnitOp::MaskMix(_) => bits::MASKMIX,
+            UnitOp::Tint(_) => bits::TINT,
+            UnitOp::ClipToSource(_) => bits::CLIP,
+            UnitOp::EraseBy(_) => bits::ERASE,
+            UnitOp::Custom { .. } | UnitOp::Rasterize | UnitOp::Reload | UnitOp::Compose => 0,
+        }
+    })
+}
+
+/// The complete `bits` word for one arm: its unit-derived bits plus the position/compose policy bits.
+#[must_use]
+pub fn arm_bits(run: &[UnitOp], p: Policy) -> u32 {
+    bits_of(run)
+        | if p.spread { bits::SPREAD } else { 0 }
+        | if p.materialize { bits::MATERIALIZE } else { 0 }
+        | if p.shadow_edge { bits::SHADOW_EDGE } else { 0 }
+}
+
+/// The field program a run measures: a lens field when any unit reads it (a head or a field-measuring
+/// pointwise), else no field (a plain stamp). A radial/sampled/custom field is set by the effect at
+/// bake time — this covers the common lens case.
+#[must_use]
+pub fn program_of(run: &[UnitOp]) -> f32 {
+    let reads_field = run.iter().any(|u| {
+        matches!(u, UnitOp::Warp(_) | UnitOp::Scatter(_) | UnitOp::Shade(_) | UnitOp::MaskMix(_))
+    });
+    if reads_field { PROGRAM_LENS } else { PROGRAM_NONE }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vello::units::UnitOp;
+
+    fn warp() -> UnitOp { UnitOp::Warp(Vec::new()) }
+    fn scatter() -> UnitOp { UnitOp::Scatter(Vec::new()) }
+    fn shade() -> UnitOp { UnitOp::Shade(Vec::new()) }
+    fn maskmix() -> UnitOp { UnitOp::MaskMix(Vec::new()) }
+    fn tint() -> UnitOp { UnitOp::Tint(Vec::new()) }
+
+    /// Sharp glass — the one fused arm `[Warp, Shade, MaskMix]` bakes to exactly the descriptor
+    /// `wv_lens_fine_uniform`/`wv_fine_passes` emits today: bits 56.
+    #[test]
+    fn bits_of_reproduces_sharp_glass() {
+        assert_eq!(bits_of(&[warp(), shade(), maskmix()]), bits::WARP | bits::SHADE | bits::MASKMIX);
+        assert_eq!(bits_of(&[warp(), shade(), maskmix()]), 56, "the byte fine reads for sharp glass");
+        assert_eq!(program_of(&[warp(), shade(), maskmix()]), PROGRAM_LENS);
+    }
+
+    /// A frost blur link — `Blur{linear:false}` mixes in sRGB and is an intermediate link, so with the
+    /// materialize policy it is `BLUR|SRGB|MATERIALIZE` = 1600, exactly `wv_frost_passes`' blur bytes.
+    #[test]
+    fn arm_bits_reproduces_the_frost_blur_link() {
+        let blur = UnitOp::Blur { sigma: 4.0, linear: false };
+        let p = Policy { materialize: true, ..Policy::default() };
+        assert_eq!(arm_bits(&[blur], p), bits::BLUR | bits::SRGB | bits::MATERIALIZE);
+        assert_eq!(arm_bits(&[UnitOp::Blur { sigma: 4.0, linear: false }], p), 1600);
+    }
+
+    /// The two shadow-blur arms: a drop blurs its silhouette in LINEAR light (no SRGB) with SHADOW_EDGE,
+    /// H materializes, V spreads. Reproduces `wv_shadow_plan`'s 2624 (H) and 2240 (V) byte-for-byte.
+    #[test]
+    fn arm_bits_reproduces_the_shadow_blur_arms() {
+        let blur = || UnitOp::Blur { sigma: 6.0, linear: true };
+        let h = arm_bits(&[blur()], Policy { materialize: true, shadow_edge: true, ..Policy::default() });
+        let v = arm_bits(&[blur()], Policy { spread: true, shadow_edge: true, ..Policy::default() });
+        assert_eq!(h, bits::BLUR | bits::MATERIALIZE | bits::SHADOW_EDGE);
+        assert_eq!(h, 2624);
+        assert_eq!(v, bits::BLUR | bits::SPREAD | bits::SHADOW_EDGE);
+        assert_eq!(v, 2240);
+    }
+
+    /// The new fused frost tail — `[Scatter, Shade, MaskMix]` in ONE arm (the 4-arm frost), where the
+    /// old fine split scatter (256|512) from the tail (8|16). This is the intended new byte: 280.
+    #[test]
+    fn bits_of_fuses_the_frost_tail() {
+        assert_eq!(bits_of(&[scatter(), shade(), maskmix()]), bits::SCATTER | bits::SHADE | bits::MASKMIX);
+        assert_eq!(bits_of(&[scatter(), shade(), maskmix()]), 280);
+    }
+
+    /// A background tint is one `[Tint]` stamp with no field; a background field is `[Tint, MaskMix]`
+    /// over a radial ramp. Reproduces `bg_tint_desc`'s bits 4 and 20.
+    #[test]
+    fn bits_of_reproduces_the_background_tints() {
+        assert_eq!(bits_of(&[tint()]), bits::TINT);
+        assert_eq!(bits_of(&[tint()]), 4);
+        assert_eq!(program_of(&[tint()]), PROGRAM_NONE, "a plain tint measures no field");
+        assert_eq!(bits_of(&[tint(), maskmix()]), bits::TINT | bits::MASKMIX);
+        assert_eq!(bits_of(&[tint(), maskmix()]), 20);
+    }
+
+    /// Structural ops carry no bit — they are never part of a fused fragment run.
+    #[test]
+    fn structural_ops_contribute_no_bits() {
+        assert_eq!(bits_of(&[UnitOp::Rasterize, UnitOp::Reload, UnitOp::Compose]), 0);
+    }
 
     /// A sharp lens is one fused arm: a single masked composite at the effect's base round.
     #[test]
