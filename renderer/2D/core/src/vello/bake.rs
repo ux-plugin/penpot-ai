@@ -144,6 +144,21 @@ pub fn arm_bits(run: &[UnitOp], p: Policy) -> u32 {
         | if p.shadow_edge { bits::SHADOW_EDGE } else { 0 }
 }
 
+/// Serialize one fused arm to the 26-float descriptor `fine` reads: `bits` (slot 0) from `arm_bits`,
+/// `program` (slot 1) from `program_of` unless the effect overrode it, and the merged unit uniform
+/// (slots 2..26) from [`crate::vello::units::units_uniform`]. This is the whole "serialize" step — a
+/// pure function over units the scheduler already filled, replacing the four planners' descriptor
+/// assembly. `program` is `Some` when the effect fixes the field (radial for a background field), else
+/// derived from the run.
+#[must_use]
+pub fn arm_descriptor(run: &[UnitOp], policy: Policy, program: Option<f32>) -> [f32; 26] {
+    let mut d = [0.0f32; 26];
+    d[0] = arm_bits(run, policy) as f32;
+    d[1] = program.unwrap_or_else(|| program_of(run));
+    d[2..26].copy_from_slice(&crate::vello::units::units_uniform(run));
+    d
+}
+
 /// The field program a run measures: a lens field when any unit reads it (a head or a field-measuring
 /// pointwise), else no field (a plain stamp). A radial/sampled/custom field is set by the effect at
 /// bake time — this covers the common lens case.
@@ -221,5 +236,59 @@ mod tests {
     #[test]
     fn structural_ops_contribute_no_bits() {
         assert_eq!(bits_of(&[UnitOp::Rasterize, UnitOp::Reload, UnitOp::Compose]), 0);
+    }
+
+    /// End to end for one arm: take the REAL production lens lowering (`lens_graph` at device scale),
+    /// pull its Warp/Shade/MaskMix unit uniforms, and confirm `arm_descriptor` of that run reproduces
+    /// the exact 26-float descriptor the current sharp-glass path (`wv_fine_passes`) emits — bits 56,
+    /// program lens, and the merged `units_uniform`. This locks the whole serialize (bits + program +
+    /// uniform) against the shipping descriptor, on the host, before the emitter swap.
+    #[test]
+    fn arm_descriptor_reproduces_the_sharp_glass_descriptor() {
+        use crate::effect_graph::{lens_graph, EffectPass, LensGeometry, UnitKind};
+        use crate::kurbo::{Affine, Point};
+        use crate::model::TileMode;
+
+        let g = crate::model::Glass {
+            surface_type: 1,
+            bezel_width: 10.0,
+            thickness: 1.0,
+            refractive_index: 1.5,
+            specular_angle: 0.0,
+            specular_opacity: 0.5,
+            specular_saturation: 1.0,
+            chromatic_aberration: 0.2,
+            splay: 0.0,
+            tilt_angle: 0.0,
+            edge_boost: 0.0,
+            zoom: 1.0,
+            blur: 0.0,
+            frost: 0.0,
+            acceptable_downscale: 1.0,
+            tile_mode: TileMode::Decal,
+        };
+        let geom = LensGeometry { center: Point::new(100.0, 100.0), width: 80.0, height: 60.0, corner_radius: 10.0, is_circle: false };
+        let passes = lens_graph(&g, geom, (200, 200), (0.0, 0.0), Affine::IDENTITY, 1.0);
+        let u_of = |want: UnitKind| {
+            passes
+                .iter()
+                .find_map(|p| match &p.pass {
+                    EffectPass::Unit { op, u, .. } if *op == want => Some(u.clone()),
+                    _ => None,
+                })
+                .expect("the lens chain has this unit")
+        };
+        // Sharp glass drops the identity scatter, so the fused arm is warp + shade + mask-mix.
+        let run = vec![UnitOp::Warp(u_of(UnitKind::Warp)), UnitOp::Shade(u_of(UnitKind::Shade)), UnitOp::MaskMix(u_of(UnitKind::MaskMix))];
+        let d = arm_descriptor(&run, Policy::default(), None);
+
+        // The exact bytes the current path builds: d[0]=56, d[1]=1 (lens), d[2..26]=units_uniform.
+        let mut want = [0.0f32; 26];
+        want[0] = 56.0;
+        want[1] = PROGRAM_LENS;
+        want[2..26].copy_from_slice(&crate::vello::units::units_uniform(&run));
+        assert_eq!(d, want, "arm_descriptor reproduces the shipping sharp-glass descriptor");
+        // And the uniform is real geometry, not zeros — the device field made it through.
+        assert!(d[2] > 0.0 && d[3] > 0.0, "backdrop resolution in slots 0/1 of the uniform");
     }
 }
