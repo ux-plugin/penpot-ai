@@ -336,6 +336,34 @@ impl FrameDag {
         }
     }
 
+    /// Fill a drop shadow's device uniforms — the shadow half of the viewport pass. For every
+    /// `Source::Effect` node on a shadow slot, stamp the device sigma into its `Blur` (`sigma_of(shape,
+    /// slot)`) and the straight colour into its `Tint` (`tint_of(shape, slot)`, packed as the vec's first
+    /// four floats). `Sink::wv_shadow_plan_dag` then reads sigma/colour straight from the filled nodes. A
+    /// node whose closure returns `None` (a non-shadow blur/tint) is left as-is.
+    pub fn fill_shadow_uniforms(
+        &mut self,
+        sigma_of: impl Fn(u128, usize) -> Option<f32>,
+        tint_of: impl Fn(u128, usize) -> Option<[f32; 4]>,
+    ) {
+        for node in &mut self.nodes {
+            let Source::Effect { shape, slot } = node.source else { continue };
+            match node.op {
+                UnitOp::Blur { linear, .. } => {
+                    if let Some(sigma) = sigma_of(shape, slot) {
+                        node.op = UnitOp::Blur { sigma, linear };
+                    }
+                }
+                UnitOp::Tint(_) => {
+                    if let Some(c) = tint_of(shape, slot) {
+                        node.op = UnitOp::Tint(c.to_vec());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Fill each glass unit node's device uniform — the scheduler's viewport pass, the one non-trivial
     /// "baking". For every `Source::Effect` node whose shape carries glass, compute the device field
     /// ([`crate::effect_graph::lens_device_field`] at the whole viewport, origin 0, k=1) and stamp each

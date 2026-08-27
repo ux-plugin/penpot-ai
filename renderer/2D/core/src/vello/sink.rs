@@ -1548,19 +1548,74 @@ impl Sink {
         } else {
             std::collections::HashMap::new()
         };
+        // Emitter-swap (WV_DAG): build + fill the whole-frame DAG once so an effect's descriptor comes
+        // from the scheduler's baked units (`bake`) instead of the per-effect planner. Filled at the whole
+        // viewport (origin 0, k=1). Built here — before stack_shadows — so both the shadow plan and fx_fine
+        // source from it.
+        let wv_dag_graph = wv_dag().then(|| {
+            let mut d = crate::vello::frame_dag::build_frame_dag_installed();
+            crate::vello::abi::with_scene(|scene, _viewport, modifiers| {
+                d.fill_lens_uniforms(full_view, width, height, |id| {
+                    let n = scene.get(id)?;
+                    let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                    crate::effect_graph::lens_geometry(n, m)
+                });
+            });
+            // The blur half of the fill: a PURE background blur (a blur, no lens) gets its device sigma
+            // stamped so its axis passes drive through `arms_for`. A frost blur (blur WITH a lens) is left
+            // page-space — `arms_for` gates it out and it rides the planner.
+            d.fill_blur_uniforms(|id| {
+                let pure_blur = crate::vello::abi::with_scene(|live, _, _| {
+                    live.get(id).map(|n| n.background_blur.is_some() && n.glass.is_none())
+                })
+                .unwrap_or(false);
+                pure_blur.then(|| self.gather_sigma(id, full_view, 1.0))
+            });
+            // The shadow half of the fill: device sigma + straight colour for each DROP-shadow slot, so
+            // `wv_shadow_plan_dag` sources its SoftDrop markers straight from the DAG's filled nodes.
+            let cs = full_view.as_coeffs();
+            let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
+            let drop_at = |id: u128, slot: usize| -> Option<crate::effect::Effect> {
+                crate::vello::abi::with_scene(|live, _, _| {
+                    let n = live.get(id)?;
+                    let e = crate::effect::effect_stack(n).into_iter().nth(slot)?;
+                    matches!((&e.source, e.compose), (crate::effect::Source::Coverage { .. }, crate::effect::Compose::Under)).then_some(e)
+                })
+            };
+            d.fill_shadow_uniforms(
+                |id, slot| drop_at(id, slot).map(|e| e.governing_blur().map_or(0.0, |r| crate::blur::radius_to_sigma(r) * scale)),
+                |id, slot| {
+                    drop_at(id, slot).and_then(|e| {
+                        e.ops.iter().find_map(|op| match op {
+                            crate::effect::Op::Tint(c) => Some(c.components),
+                            _ => None,
+                        })
+                    })
+                },
+            );
+            d
+        });
         // Shadows (drops AND inners, any number, mixed, SHARP or SOFT) on a Path/Text stack ride the MAIN
         // loop as per-shadow blocks (gated `WV_DROPBLUR_FINE`/`WV_INNERBLUR_FINE`/`WV_SPREAD_FINE`), retiring
         // the pre-pass. One `Vec<ShadowMarker>` per node holds every shadow in z-order — drops under the
         // body, inners over it; a sharp drop is a single composite marker (no blur), a soft shadow an H/V
-        // block. A stack is in at most one of stack_fine/frost/shadows. `wv_shadow_plan` returns `None` (→
-        // pre-pass) if a shadow's gate is off, a sharp INNER is present, or the node is not a Path/Text.
+        // block. A stack is in at most one of stack_fine/frost/shadows. Under WV_DAG an all-soft-drop shape
+        // sources its markers from the DAG (`wv_shadow_plan_dag`); every other case falls back to
+        // `wv_shadow_plan`, which returns `None` (→ pre-pass) if a shadow's gate is off, a sharp INNER is
+        // present, or the node is not a Path/Text.
         let stack_shadows: std::collections::HashMap<u128, Vec<ShadowMarker>> =
             if wv_dropblur_fine() || wv_innerblur_fine() || wv_spread_fine() {
                 gathers
                     .iter()
                     .filter(|(_, _, k)| *k == FX_STACK)
                     .filter(|(_, gid, _)| !stack_fine.contains_key(gid) && !stack_frost.contains_key(gid))
-                    .filter_map(|&(_, gid, _)| self.wv_shadow_plan(gid, full_view, width, height).map(|c| (gid, c)))
+                    .filter_map(|&(_, gid, _)| {
+                        wv_dag_graph
+                            .as_ref()
+                            .and_then(|d| self.wv_shadow_plan_dag(gid, d))
+                            .or_else(|| self.wv_shadow_plan(gid, full_view, width, height))
+                            .map(|c| (gid, c))
+                    })
                     .collect()
             } else {
                 std::collections::HashMap::new()
@@ -1714,30 +1769,7 @@ impl Sink {
         // backdrop materialises (so `base_in` holds it) — hence `max_round >= its round + 1` — and its
         // device-space lens uniform, keyed by gid. Excluded from `wv_lens_plan` below so it renders
         // once, and it forces the ping-pong path (`base_in` is unbound in the rw accumulator).
-        // Emitter-swap A/B (WV_DAG): build + fill the whole-frame DAG once so a matching effect's
-        // descriptor comes from the scheduler's baked units (`bake`) instead of the per-effect planner.
-        // Filled at the whole viewport (origin 0, k=1), the same space `wv_lens_fine_uniform` uses.
-        let wv_dag_graph = wv_dag().then(|| {
-            let mut d = crate::vello::frame_dag::build_frame_dag_installed();
-            crate::vello::abi::with_scene(|scene, _viewport, modifiers| {
-                d.fill_lens_uniforms(full_view, width, height, |id| {
-                    let n = scene.get(id)?;
-                    let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-                    crate::effect_graph::lens_geometry(n, m)
-                });
-            });
-            // The blur half of the fill: a PURE background blur (a blur, no lens) gets its device sigma
-            // stamped so its axis passes drive through `arms_for`. A frost blur (blur WITH a lens) is
-            // left page-space — `arms_for` gates it out and it rides the planner.
-            d.fill_blur_uniforms(|id| {
-                let pure_blur = crate::vello::abi::with_scene(|live, _, _| {
-                    live.get(id).map(|n| n.background_blur.is_some() && n.glass.is_none())
-                })
-                .unwrap_or(false);
-                pure_blur.then(|| self.gather_sigma(id, full_view, 1.0))
-            });
-            d
-        });
+        // wv_dag_graph (the filled whole-frame DAG) is built above, before stack_shadows.
         let fx_fine: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_glass_fine() || wv_blur_fine() || wv_frost_fine() {
             gathers
                 .iter()
@@ -5521,6 +5553,63 @@ impl Sink {
             }
             (!plan.is_empty()).then_some(plan)
         })
+    }
+
+    /// The DAG-sourced shadow plan for `gid` — the same `Vec<ShadowMarker>` `wv_shadow_plan` builds, but
+    /// read straight from the filled whole-frame DAG instead of re-walking the effect stack. The
+    /// beachhead of the stack-path swap: it handles an ALL-SOFT-DROP shape (every effect slot a soft drop,
+    /// σ≥0.5) and returns `None` for anything else (a sharp drop, an inner, a non-shadow) so that shape
+    /// falls back to `wv_shadow_plan`. Downstream (`schedule_shadows`, the window/dispatch machine) is
+    /// untouched — only the SOURCE of the marker vec moves to the DAG. Each slot's `SoftDrop` H/V comes
+    /// from `bake::blur_arm` over the slot's filled `Blur` sigma + `Tint` colour, matching `wv_shadow_plan`
+    /// byte-for-byte.
+    fn wv_shadow_plan_dag(&self, gid: u128, dag: &crate::vello::frame_dag::FrameDag) -> Option<Vec<ShadowMarker>> {
+        use crate::vello::bake::{blur_arm, Policy};
+        use crate::vello::frame_dag::Source;
+        use crate::vello::units::UnitOp;
+        use std::collections::BTreeMap;
+        // Group this shape's effect nodes by slot, in slot order.
+        let mut slots: BTreeMap<usize, Vec<&UnitOp>> = BTreeMap::new();
+        for n in &dag.nodes {
+            if let Source::Effect { shape, slot } = n.source {
+                if shape == gid {
+                    slots.entry(slot).or_default().push(&n.op);
+                }
+            }
+        }
+        if slots.is_empty() {
+            return None;
+        }
+        let mut plan = Vec::new();
+        for (drop_slot, ops) in slots.values().enumerate() {
+            // A soft drop is a Tint + a filled Blur (σ≥0.5), with NO EraseBy (an inner) and no head (glass).
+            let has_erase = ops.iter().any(|o| matches!(o, UnitOp::EraseBy(_)));
+            let has_head = ops.iter().any(|o| matches!(o, UnitOp::Warp(_) | UnitOp::Scatter(_)));
+            let sigma = ops.iter().find_map(|o| match o {
+                UnitOp::Blur { sigma, .. } => Some(*sigma),
+                _ => None,
+            });
+            let colour = ops.iter().find_map(|o| match o {
+                UnitOp::Tint(u) if u.len() >= 4 => Some([u[0], u[1], u[2], u[3]]),
+                _ => None,
+            });
+            match (has_erase, has_head, sigma, colour) {
+                (false, false, Some(s), Some(c)) if s >= 0.5 => {
+                    let mat = Policy { materialize: true, shadow_edge: true, ..Policy::default() };
+                    let spr = Policy { spread: true, shadow_edge: true, ..Policy::default() };
+                    let h = blur_arm(s, true, false, mat, None);
+                    let v = blur_arm(s, true, true, spr, Some(c));
+                    plan.push(ShadowMarker::SoftDrop { h, v, slot: drop_slot });
+                }
+                // A sharp drop, an inner, or a non-shadow slot — out of the beachhead's scope, so the whole
+                // shape falls back to the effect-stack planner.
+                _ => return None,
+            }
+        }
+        if std::env::var("WV_TRACE").is_ok() {
+            eprintln!("  WV_DAG: {} soft-drop shadow marker(s) for gid {gid:x} from the DAG", plan.len());
+        }
+        (!plan.is_empty()).then_some(plan)
     }
 
     /// The device-space 24-float lens field uniform for glass `gid`, for the effects-in-fine WARP path
