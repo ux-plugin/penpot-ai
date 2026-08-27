@@ -5645,6 +5645,74 @@ impl Sink {
         None
     }
 
+    /// The background tint/field descriptor for `gid` — the pointwise-only inline effect the emitter
+    /// builds inline (a solid `background_tint` → TINT; a `background_field` → TINT|MASKMIX over a
+    /// radial ramp). `None` if the node carries neither. Factored out of the emitter so `bake_effect`
+    /// is the one producer of it.
+    fn bg_tint_desc(&self, gid: u128, full_view: Affine) -> Option<[f32; 26]> {
+        use crate::vello::bake::{bits, PROGRAM_RADIAL};
+        crate::vello::abi::with_scene(|live, viewport, modifiers| {
+            let _ = full_view;
+            let n = live.get(gid)?;
+            if let Some(color) = n.background_tint {
+                let [r, g, b, a] = color.components;
+                let mut d = [0.0f32; 26];
+                d[0] = bits::TINT as f32;
+                d[14] = r;
+                d[15] = g;
+                d[16] = b;
+                d[17] = a;
+                return Some(d);
+            }
+            if let Some(color) = n.background_field {
+                let modifier = modifiers.get(&gid).copied().unwrap_or(Affine::IDENTITY);
+                let m = viewport * modifier * n.effective_transform();
+                let c = m * n.bounds.center();
+                let coeffs = m.as_coeffs();
+                let sx = (coeffs[0] * coeffs[0] + coeffs[1] * coeffs[1]).sqrt();
+                let radius = 0.5 * n.bounds.width().min(n.bounds.height()) * sx;
+                let [r, g, b, a] = color.components;
+                let mut d = [0.0f32; 26];
+                d[0] = (bits::TINT | bits::MASKMIX) as f32;
+                d[1] = PROGRAM_RADIAL;
+                d[4] = c.x as f32;
+                d[5] = c.y as f32;
+                d[6] = radius as f32;
+                d[14] = r;
+                d[15] = g;
+                d[16] = b;
+                d[17] = a;
+                return Some(d);
+            }
+            None
+        })
+    }
+
+    /// Turn one effect-bearing node into the ordered list of fine descriptors that run it — the single
+    /// producer that replaces the emitter's per-kind reconstruction (`fx_markers`/`fx_offset`, and next
+    /// the shadow `stack_markers`/`ShadowRole` reconciliation). Each [`crate::vello::bake::Baked`]
+    /// carries its descriptor, its `eid` (masked composite vs materialize intermediate) and its
+    /// `round_off` (this arm's round relative to the effect's base round). The emitter adds the base
+    /// round (from `frame_dag`'s schedule) and a strictly-increasing `z`; nothing else is decided.
+    ///
+    /// This slice covers the gather family — sharp/frosted glass and background blur, via
+    /// [`Self::wv_fine_passes`] — and the pointwise background tint/field. Shadows (the FX_STACK
+    /// `wv_shadow_plan` family) fold in next; they are the same shape (a descriptor list with per-marker
+    /// roles), only with a richer round layout.
+    pub(crate) fn bake_effect(&self, gid: u128, full_view: Affine, w: u32, h: u32) -> Vec<crate::vello::bake::Baked> {
+        use crate::vello::bake::{gather_chain, Baked, EID_MASKED};
+        // A chained gather (sharp/frosted glass, background blur): the descriptor bytes come verbatim
+        // from the (unchanged, pixel-trusted) planner; `gather_chain` assigns the eid + round layout.
+        if let Some(passes) = self.wv_fine_passes(gid, full_view, w, h) {
+            return gather_chain(passes);
+        }
+        // A pointwise background tint/field: one masked composite, no intermediates.
+        if let Some(params) = self.bg_tint_desc(gid, full_view) {
+            return vec![Baked { eid: EID_MASKED, round_off: 0, params }];
+        }
+        Vec::new()
+    }
+
     /// Build the custom-shader graph: one custom pass over the assembled backdrop (input 0). The
     /// neutral graph is render-core's [`effect_graph::custom_graph`]; this resolves the shape's
     /// pipeline (compiled once per distinct WGSL source, cached by hash) and lowers with it. The

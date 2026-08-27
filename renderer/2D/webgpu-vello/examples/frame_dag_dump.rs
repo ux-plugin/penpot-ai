@@ -95,14 +95,35 @@ fn main() {
 
     let dag = frame_dag::build_frame_dag_installed();
     let naive = dag.levels().iter().copied().max().unwrap_or(0) + 1;
-    let rounds = dag.schedule(TILE_PX).rounds();
+    let sched = dag.schedule(TILE_PX);
+    let rounds = sched.rounds();
     let specs = dag.to_stage_specs();
-    let atlases = render_core::vello::plan::atlases_needed(&render_core::vello::plan::colour_stages(&specs));
+    let colours = render_core::vello::plan::colour_stages(&specs);
+    let atlases = render_core::vello::plan::atlases_needed(&colours);
     eprintln!(
         "frame-dag [{scene}]: {} nodes, {rounds} rounds (naive {naive}), {} stages → {atlases} atlases",
         dag.nodes.len(),
         specs.len(),
     );
+    // The scheduler's output, one row per node: round · barrier · target(atlas) · op · inputs · name.
+    eprintln!("  #  rnd  barrier      target     inputs        op / label");
+    for (i, n) in dag.nodes.iter().enumerate() {
+        let bar = match sched.barrier[i] {
+            Some(Barrier::Reload) => "reload",
+            Some(Barrier::Materialize) => "materialize",
+            None => "·",
+        };
+        let target = match colours[i] {
+            Some(a) => format!("atlas{a}"),
+            None => "acc".to_string(),
+        };
+        let ins = n.inputs.iter().map(|j| format!("n{j}")).collect::<Vec<_>>().join(",");
+        eprintln!(
+            "  n{i:<2} {r:>2}   {bar:<11}  {target:<9}  {ins:<12}  {label}",
+            r = sched.round[i],
+            label = n.label,
+        );
+    }
 
     println!("%% ===== RAW DAG ({scene}) =====");
     println!("{}", to_mermaid(&dag));

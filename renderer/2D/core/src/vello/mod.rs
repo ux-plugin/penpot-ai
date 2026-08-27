@@ -17,6 +17,7 @@
 //! render-core + `vello_common::paint::ImageId` for the atlas hand-off; no Vello renderer type).
 
 pub mod abi;
+pub mod bake;
 pub mod blend;
 pub mod draw;
 pub mod editor;

@@ -22,10 +22,27 @@ use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
-/// One unit in a composed pass, lowered: the discriminant selects its snippet, the payload is the
-/// 20-float IR uniform it was declared with ([`crate::effect_graph::EffectPass`] unit kinds).
+/// One operation in the frame — the SINGLE alphabet, shared by the scheduler and the executor. The
+/// fragment units below (warp … custom) are what a fine arm runs, and several fuse into one fragment
+/// ([`fuse`]); the three STRUCTURAL ops ([`UnitOp::Rasterize`]/[`UnitOp::Reload`]/[`UnitOp::Compose`])
+/// are the plumbing the whole-frame DAG ([`crate::vello::frame_dag`]) needs to express dependency and
+/// barrier structure — they are not fragment snippets and never enter `fuse`/`units()`. Keeping both
+/// kinds in one enum is what lets the DAG node BE the operation the executor runs, with no separate
+/// scheduler alphabet to translate through. For a fragment unit the discriminant selects its snippet
+/// and the payload is the 20-float IR uniform it was declared with
+/// ([`crate::effect_graph::EffectPass`] unit kinds).
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnitOp {
+    /// STRUCTURAL: turn scene geometry into pixels — a plain-shape band, a shape body, or a coverage
+    /// silhouette. Not a fragment snippet; the scene rasterizer runs it. Whether it writes the spine or
+    /// a scratch is the DAG node's `target`.
+    Rasterize,
+    /// STRUCTURAL: snapshot the accumulator so a gather can sample the composited backdrop. Its own
+    /// barrier (the reload); not a fragment snippet.
+    Reload,
+    /// STRUCTURAL: source-over the fragment result onto the accumulator (the spine write). Under / over
+    /// / replace is z-order (the node's place on the spine), not a variant.
+    Compose,
     /// Masked displaced sample + chromatic aberration (a composed pass's sampling head).
     Warp(Vec<f32>),
     /// Jittered sample (a composed pass's sampling head).
@@ -321,6 +338,22 @@ impl UnitOp {
     #[must_use]
     pub fn is_head(&self) -> bool {
         matches!(self, UnitOp::Warp(_) | UnitOp::Scatter(_))
+    }
+
+    /// STRUCTURAL plumbing (rasterize / reload / compose) rather than a fragment unit — the scheduler
+    /// treats these as nodes but they never enter a fused fragment.
+    #[must_use]
+    pub fn is_structural(&self) -> bool {
+        matches!(self, UnitOp::Rasterize | UnitOp::Reload | UnitOp::Compose)
+    }
+
+    /// A gather reads its input at coordinates other than its own pixel (a neighbourhood or a
+    /// displacement), so it can cross tiles — the property the DAG's barrier predicate turns on. A head
+    /// (warp/scatter) or a barrier (blur/custom) gathers; every other fragment unit is pointwise, and
+    /// [`UnitOp::Reload`] is its own barrier handled separately.
+    #[must_use]
+    pub fn is_gather(&self) -> bool {
+        self.is_head() || self.is_barrier()
     }
 }
 

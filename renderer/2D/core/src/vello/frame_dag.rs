@@ -23,55 +23,16 @@ use crate::kurbo::Rect;
 use crate::effect::{effect_stack, Compose, Op as EffectOp};
 use crate::model::Scene;
 use crate::vello::plan::Target;
+use crate::vello::units::UnitOp;
 
-/// The primitive an operation runs — the whole alphabet, shared by every effect. What distinguishes a
-/// drop shadow from a glass card is *which* of these it emits and in what order, never a different
-/// code path. Intrinsic (page-space) parameters that size the op live here; the GPU uniforms are baked
-/// by the executor from the source effect, not stored (that would duplicate [`crate::effect_graph`]).
-/// A separable blur's axis — the two passes of a Gaussian, in order (`X` reads the source, `Y` reads
-/// the `X` output).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BlurAxis {
-    X,
-    Y,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Op {
-    /// Turn geometry into pixels — a plain-shape band, a shape's own body, or a coverage silhouette.
-    /// One primitive; whether it writes the spine or a scratch source is the node's `target`, not a
-    /// separate op.
-    Rasterize,
-    /// Snapshot the accumulator so a gather can sample the composited backdrop (the reload).
-    Reload,
-    /// ONE axis of a separable Gaussian of the given page-space radius. A blur is TWO of these — an `X`
-    /// pass then a `Y` pass reading it — emitted as two nodes by the planner, so the schedule puts the
-    /// `Y` pass one barrier after the `X` pass and the executor never splits anything. EVERY blur is
-    /// this: drop, inner pre-blur, frost, layer, background.
-    Blur { radius: f32, axis: BlurAxis },
-    /// A displaced read of the input — the lens refraction head (warp).
-    Sample,
-    /// A jittered read of the input — the frosted-lens sampling head, run after the blur to soften the
-    /// refracted, blurred backdrop before the shade/mask-mix tail.
-    Scatter,
-    /// Erase the input by a blurred copy of itself (dst-out) — the inner-shadow punch, nothing else.
-    Erase { radius: f32 },
-    /// A hand-written WGSL pass — the escape hatch.
-    Custom,
-    /// Source-over the chain tail onto the accumulator. Under / over / replace is z-order (the node's
-    /// place on the spine), not a compose variant — the executor runs one blend.
-    Compose,
-}
-
-impl Op {
-    /// A gather reads its input at coordinates other than its own pixel (a neighbourhood or a
-    /// displacement), so it can cross tiles — the property the barrier predicate turns on. `Reload` is
-    /// its own barrier and handled separately; the rest are pointwise and fold.
-    #[must_use]
-    pub fn is_gather(self) -> bool {
-        matches!(self, Op::Blur { .. } | Op::Sample | Op::Scatter | Op::Erase { .. } | Op::Custom)
-    }
-}
+/// The frame's operation alphabet is [`UnitOp`] — the SAME enum the executor runs, so a DAG node *is*
+/// the operation, with no separate scheduler alphabet to translate through. A node carries one atomic
+/// unit; a fine arm is a *fused run* of them ([`crate::vello::units::fuse`]). The structural ops
+/// (`Rasterize`/`Reload`/`Compose`) express the frame's dependency + barrier structure; the fragment
+/// units (`Warp`/`Blur`/`Scatter`/`EraseBy`/`Shade`/`MaskMix`/`Tint`/`Custom`) are the shader math. A
+/// separable blur is TWO positional `UnitOp::Blur` nodes (X then Y reading it); the schedule puts Y one
+/// barrier after X and `bake` assigns the axis from position. The device GPU uniform is computed by
+/// `bake` at draw time (it needs the viewport); the DAG carries structure alone.
 
 /// Where a node's concrete work comes from in the scene — the thread the *executor* follows to build
 /// the actual GPU pass (geometry to rasterize, effect config to bake into the uniform). The scheduler
@@ -112,7 +73,7 @@ pub enum Category {
 /// accumulator — the spine). Together `(inputs, op, target)` is a runnable stage.
 #[derive(Clone, Debug)]
 pub struct Node {
-    pub op: Op,
+    pub op: UnitOp,
     pub target: Target,
     /// Back-reference to the scene work this runs — read only by the executor, never the scheduler.
     pub source: Source,
@@ -129,9 +90,9 @@ impl Node {
     #[must_use]
     pub fn category(&self) -> Category {
         match self.op {
-            Op::Reload => Category::Reload,
-            Op::Compose => Category::Compose,
-            Op::Rasterize if self.target == Target::Accumulator => {
+            UnitOp::Reload => Category::Reload,
+            UnitOp::Compose => Category::Compose,
+            UnitOp::Rasterize if self.target == Target::Accumulator => {
                 if self.inputs.is_empty() {
                     Category::Background
                 } else {
@@ -194,13 +155,13 @@ impl Schedule {
 /// One effect pass, ready for `draw_effect_marker`: the shape it belongs to, which effect slot, the
 /// round it runs in, its footprint, and the primitive. The Sink maps `(op, gid, slot)` to the
 /// `effect_id` and bakes the unit uniform — the single per-op step this stream does not carry.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EffectMarker {
     pub gid: u128,
     pub slot: usize,
     pub round: u32,
     pub reach: Option<Rect>,
-    pub op: Op,
+    pub op: UnitOp,
 }
 
 impl FrameDag {
@@ -218,7 +179,7 @@ impl FrameDag {
 
     /// Does reading `from`'s output inside `to` require a barrier? The whole schedule reduces to this
     /// predicate, over `op` alone. Two — and only two — edges carry one:
-    /// * `to` is a [`Op::Reload`] → the accumulator must flush before it can be sampled (`Reload`).
+    /// * `to` is a [`UnitOp::Reload`] → the accumulator must flush before it can be sampled (`Reload`).
     /// * `to` is a gather over a *freshly-computed* source that spans tiles → that source must
     ///   materialize first (`Materialize`). A gather over a reload is free (already resident); a gather
     ///   over a source that fits one tile blurs on-chip.
@@ -227,10 +188,10 @@ impl FrameDag {
     /// same-tile, same-dispatch and folds.
     fn edge_barrier(&self, from: usize, to: usize, tile: f64) -> Option<Barrier> {
         let (src, dst) = (&self.nodes[from], &self.nodes[to]);
-        if dst.op == Op::Reload {
+        if dst.op == UnitOp::Reload {
             return Some(Barrier::Reload);
         }
-        if dst.op.is_gather() && src.op != Op::Reload {
+        if dst.op.is_gather() && src.op != UnitOp::Reload {
             let on_chip = src.reach.is_some_and(|r| r.width() <= tile && r.height() <= tile);
             if !on_chip {
                 return Some(Barrier::Materialize);
@@ -276,15 +237,16 @@ impl FrameDag {
             .enumerate()
             .filter_map(|(i, n)| {
                 let Source::Effect { shape, slot } = n.source else { return None };
-                // The passes that become CMD_EFFECT markers: gathers, the reload, and the effect
-                // composite. A rasterized silhouette is scene coverage, not a marker.
-                let is_marker = n.op.is_gather() || n.op == Op::Reload || n.op == Op::Compose;
+                // The passes that become CMD_EFFECT markers: gathers, the reload, the effect composite,
+                // and the pointwise fragment units that fuse into an arm. A rasterized silhouette is
+                // scene coverage, not a marker.
+                let is_marker = !matches!(n.op, UnitOp::Rasterize);
                 is_marker.then_some(EffectMarker {
                     gid: shape,
                     slot,
                     round: sched.round[i],
                     reach: n.reach,
-                    op: n.op,
+                    op: n.op.clone(),
                 })
             })
             .collect()
@@ -394,24 +356,30 @@ struct Builder {
 }
 
 impl Builder {
-    fn push(&mut self, op: Op, target: Target, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
+    fn push(&mut self, op: UnitOp, target: Target, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
         let id = self.dag.nodes.len();
         let source = self.cur.clone();
         self.dag.nodes.push(Node { op, target, source, label, reach, inputs });
         id
     }
 
-    /// A scratch draft: writes an atlas, reads its single predecessor (or nothing, for a source).
-    fn draft(&mut self, op: Op, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
+    /// A scratch draft: writes an atlas, reads its predecessors (or nothing, for a source).
+    fn draft(&mut self, op: UnitOp, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
         self.push(op, Target::Atlas, label, reach, inputs)
     }
 
-    /// Lower a separable Gaussian to its two axis passes: `X` reads `cur`, `Y` reads `X`. The planner
-    /// emits both; the schedule puts `Y` one barrier after `X` (it gathers a fresh draft), so the
-    /// executor never has to know a blur is two passes. Returns the `Y` tail.
-    fn blur(&mut self, radius: f32, cur: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
-        let x = self.draft(Op::Blur { radius, axis: BlurAxis::X }, format!("{name} {tag} blur-X r{radius:.0}"), reach, vec![cur]);
-        self.draft(Op::Blur { radius, axis: BlurAxis::Y }, format!("{name} {tag} blur-Y r{radius:.0}"), reach, vec![x])
+    /// A pointwise fragment unit (an empty-uniform structural placeholder — `bake` computes the device
+    /// uniform). Reads `cur` (and any extra input, e.g. a mask-mix backdrop or an erase punch).
+    fn pointwise(&mut self, op: UnitOp, label: String, reach: Option<Rect>, inputs: Vec<usize>) -> usize {
+        self.draft(op, label, reach, inputs)
+    }
+
+    /// Lower a separable Gaussian to its two axis passes as two positional [`UnitOp::Blur`] nodes: X
+    /// reads `cur`, Y reads X. The schedule puts Y one barrier after X (it gathers a fresh draft); `bake`
+    /// assigns the axis from position. Returns the Y tail.
+    fn blur(&mut self, radius: f32, linear: bool, cur: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
+        let x = self.draft(UnitOp::Blur { sigma: radius, linear }, format!("{name} {tag} blur-X r{radius:.0}"), reach, vec![cur]);
+        self.draft(UnitOp::Blur { sigma: radius, linear }, format!("{name} {tag} blur-Y r{radius:.0}"), reach, vec![x])
     }
 
     /// Coalesce a pending run of plain shapes into ONE rasterize band on the spine, scoped to their
@@ -424,49 +392,58 @@ impl Builder {
         let label = format!("paint band · {} shape(s)", band.ids.len());
         let inputs = self.acc.readers(reach);
         self.cur = Source::Band(band.take());
-        let id = self.push(Op::Rasterize, Target::Accumulator, label, reach, inputs);
+        let id = self.push(UnitOp::Rasterize, Target::Accumulator, label, reach, inputs);
         self.acc.write(reach, id);
         self.cur = Source::Background;
     }
 
-    /// Lower a chain of effect ops onto a starting value, emitting one draft per real pass. Every
-    /// effect uses the SAME mapping — blur→Blur, erase→Erase, lens→Sample(+Blur for frost),
-    /// shader→Custom — so there is no per-effect path. Pointwise ops (tint, offset, lens shade) fold
-    /// into the composite that consumes the tail. Returns the chain tail.
-    fn lower_ops(&mut self, ops: &[EffectOp], start: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
+    /// Lower a chain of effect ops onto a starting value, emitting the atomic units each decomposes to —
+    /// NO pointwise gets folded away: a lens emits `Warp` (+ `Blur`/`Scatter` for frost) then explicit
+    /// `Shade` + `MaskMix` nodes; a shadow tint emits a `Tint` node; a background blur emits `Blur` (+
+    /// `MaskMix`). `fuse` recombines the adjacent ones into fine arms at bake time, so the DAG carries the
+    /// exact units the executor runs and `bake` never re-derives them. `linear` selects the blur's light
+    /// space. Returns the chain tail. (Inner-shadow erase is a two-input op handled by the caller.)
+    fn lower_ops(&mut self, ops: &[EffectOp], start: usize, reach: Option<Rect>, name: &str, tag: &str, linear: bool) -> usize {
         let mut cur = start;
         for op in ops {
             cur = match op {
-                EffectOp::Blur { radius } => self.blur(*radius, cur, reach, name, tag),
+                EffectOp::Blur { radius } => self.blur(*radius, linear, cur, reach, name, tag),
                 EffectOp::EraseBy { blur, .. } => {
-                    self.draft(Op::Erase { radius: *blur }, format!("{name} {tag} punch (erase r{blur:.0})"), reach, vec![cur])
+                    // The punch is a blurred copy of the silhouette; the erase is the pointwise dst-out
+                    // of `cur` by it. Two units, not one bundled `Erase` — the same Blur every effect uses.
+                    let punch = self.blur(*blur, linear, cur, reach, name, "punch");
+                    self.pointwise(UnitOp::EraseBy(Vec::new()), format!("{name} {tag} erase"), reach, vec![cur, punch])
                 }
                 EffectOp::Lens(g) => {
-                    // warp is a Sample, frost is a Blur — the same primitives as everything else. The
-                    // shade (pointwise fresnel/tint) folds into the composite, so it emits no node.
-                    // Sharp lens (σ ≤ 0.5): just warp, then the shade+mask-mix tail folds into the
-                    // compose — one fused arm. Frosted: warp → blur-X → blur-Y → scatter, five passes
-                    // matching wv_frost_passes; the compose is the masked tail.
-                    let warp = self.draft(Op::Sample, format!("{name} lens warp"), reach, vec![cur]);
-                    let sigma = g.total_blur_sigma();
-                    if sigma > 0.5 {
-                        let blurred = self.blur(sigma, warp, reach, name, "frost");
-                        self.draft(Op::Scatter, format!("{name} lens scatter"), reach, vec![blurred])
+                    // Lens is warp (+ blur → scatter for frost) then the pointwise shade + mask-mix, all
+                    // explicit. `fuse` folds sharp glass to one arm ([Warp,Shade,MaskMix]) and frost to
+                    // four ([Warp][BlurH][BlurV][Scatter,Shade,MaskMix]).
+                    let warp = self.draft(UnitOp::Warp(Vec::new()), format!("{name} lens warp"), reach, vec![cur]);
+                    let head = if g.total_blur_sigma() > 0.5 {
+                        let blurred = self.blur(g.total_blur_sigma(), false, warp, reach, name, "frost");
+                        self.draft(UnitOp::Scatter(Vec::new()), format!("{name} lens scatter"), reach, vec![blurred])
                     } else {
                         warp
-                    }
+                    };
+                    let shaded = self.pointwise(UnitOp::Shade(Vec::new()), format!("{name} lens shade"), reach, vec![head]);
+                    self.pointwise(UnitOp::MaskMix(Vec::new()), format!("{name} lens mask-mix"), reach, vec![shaded])
                 }
-                EffectOp::Shader(_) => self.draft(Op::Custom, format!("{name} custom pass"), reach, vec![cur]),
-                EffectOp::Tint(_) | EffectOp::Offset(_) => cur, // pointwise — folds into the composite
+                EffectOp::Shader(_) => self.draft(
+                    UnitOp::Custom { u: Vec::new(), param_vec4s: 0, reach: 0.0, reads_backdrop: true },
+                    format!("{name} custom pass"),
+                    reach,
+                    vec![cur],
+                ),
+                EffectOp::Tint(_) => self.pointwise(UnitOp::Tint(Vec::new()), format!("{name} {tag} tint"), reach, vec![cur]),
+                EffectOp::Offset(_) => cur, // geometry — baked into which silhouette is rasterized, no unit
             };
         }
         cur
     }
 
     /// Lower one effect-bearing node's whole stack onto the spine, in paint order: drops under the
-    /// body, the body, a gather through the coverage, inners over. Each effect is the identical shape —
-    /// `rasterize/reload source → op drafts → compose(acc, tail)` — differing only in where it sits and
-    /// whether it reloads.
+    /// body, the body, a gather through the coverage, inners over. Each effect is `rasterize/reload
+    /// source → units → compose`, differing only in where it sits and whether it reloads.
     fn lower_effect_node(&mut self, shape: u128, node: &crate::model::Node) {
         self.fx_no += 1;
         let name = format!("s{}", self.fx_no);
@@ -475,10 +452,6 @@ impl Builder {
         let has_replace = stack.iter().any(|e| e.compose == Compose::Replace);
         let has_paint = !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty();
 
-        // One loop, in paint order (drops under → body → gather/replace → inners over — the order
-        // effect_stack already returns). Every effect is the identical shape: a source pass (rasterize a
-        // silhouette, or reload the backdrop), its op drafts, then a compose. The plain body slots in
-        // once we pass the under-shadows.
         let mut body_done = false;
         for (slot, e) in stack.iter().enumerate() {
             if !body_done && e.compose != Compose::Under {
@@ -487,17 +460,43 @@ impl Builder {
             }
             let reach = Some(e.footprint(base));
             self.cur = Source::Effect { shape, slot };
-            let (source, tag) = match e.compose {
-                Compose::Under => (self.draft(Op::Rasterize, format!("{name} drop silhouette"), reach, vec![]), "drop"),
-                Compose::Over => (self.draft(Op::Rasterize, format!("{name} inner silhouette"), reach, vec![]), "inner"),
-                Compose::Replace => (self.draft(Op::Rasterize, format!("{name} body-read"), reach, vec![]), "body"),
+            let tail = match e.compose {
+                // An inner shadow is a two-coverage op — flood MINUS an offset+blurred punch. Both are
+                // plain `Rasterize` nodes (the flood is the shape's UNOFFSET coverage — for a Text that
+                // is its glyphs, drawn by the silhouette rasterizer), so there is no back-sampling
+                // special case: the erase reads the flood and the blurred punch directly.
+                Compose::Over => {
+                    let flood = self.draft(UnitOp::Rasterize, format!("{name} inner flood"), reach, vec![]);
+                    let punch_sil = self.draft(UnitOp::Rasterize, format!("{name} inner punch silhouette"), reach, vec![]);
+                    let blur = e.ops.iter().find_map(|o| match o {
+                        EffectOp::EraseBy { blur, .. } => Some(*blur),
+                        EffectOp::Blur { radius } => Some(*radius),
+                        _ => None,
+                    });
+                    let punch = match blur {
+                        Some(r) if r > 0.5 => self.blur(r, false, punch_sil, reach, &name, "punch"),
+                        _ => punch_sil,
+                    };
+                    let band = self.pointwise(UnitOp::EraseBy(Vec::new()), format!("{name} inner band"), reach, vec![flood, punch]);
+                    self.pointwise(UnitOp::Tint(Vec::new()), format!("{name} inner tint"), reach, vec![band])
+                }
+                Compose::Under => {
+                    let sil = self.draft(UnitOp::Rasterize, format!("{name} drop silhouette"), reach, vec![]);
+                    self.lower_ops(&e.ops, sil, reach, &name, "drop", false)
+                }
+                Compose::Replace => {
+                    let sil = self.draft(UnitOp::Rasterize, format!("{name} body-read"), reach, vec![]);
+                    self.lower_ops(&e.ops, sil, reach, &name, "body", false)
+                }
                 Compose::ThroughCoverage => {
                     let reads = self.acc.readers(reach);
-                    (self.draft(Op::Reload, format!("{name} read backdrop"), reach, reads), "gather")
+                    let reload = self.draft(UnitOp::Reload, format!("{name} read backdrop"), reach, reads);
+                    // A background blur mixes in linear light; a lens (its own Blur) mixes in sRGB.
+                    let linear = e.ops.iter().any(|o| matches!(o, EffectOp::Blur { .. }));
+                    self.lower_ops(&e.ops, reload, reach, &name, "gather", linear)
                 }
             };
-            let tail = self.lower_ops(&e.ops, source, reach, &name, tag);
-            self.compose(format!("{name} {tag} → acc"), reach, tail);
+            self.compose(format!("{name} → acc"), reach, tail);
             self.cur = Source::Background;
         }
         if !body_done {
@@ -514,7 +513,7 @@ impl Builder {
         let reach = Some(base);
         let inputs = self.acc.readers(reach);
         self.cur = Source::Body(shape);
-        let id = self.push(Op::Rasterize, Target::Accumulator, format!("{name} body"), reach, inputs);
+        let id = self.push(UnitOp::Rasterize, Target::Accumulator, format!("{name} body"), reach, inputs);
         self.acc.write(reach, id);
         self.cur = Source::Background;
     }
@@ -524,7 +523,7 @@ impl Builder {
     fn compose(&mut self, label: String, reach: Option<Rect>, tail: usize) {
         let mut inputs = self.acc.readers(reach);
         inputs.push(tail);
-        let id = self.push(Op::Compose, Target::Accumulator, label, reach, inputs);
+        let id = self.push(UnitOp::Compose, Target::Accumulator, label, reach, inputs);
         self.acc.write(reach, id);
     }
 
@@ -562,7 +561,7 @@ impl Builder {
 #[must_use]
 pub fn build_frame_dag(scene: &Scene) -> FrameDag {
     let mut b = Builder { dag: FrameDag::default(), acc: Accumulator::default(), fx_no: 0, cur: Source::Background };
-    let bg = b.push(Op::Rasterize, Target::Accumulator, "BG".to_string(), None, vec![]);
+    let bg = b.push(UnitOp::Rasterize, Target::Accumulator, "BG".to_string(), None, vec![]);
     b.acc.write(None, bg);
     let mut band = Band::default();
     for &root in scene.roots() {
@@ -715,9 +714,9 @@ mod tests {
         let sched = dag.schedule(TILE_PX);
 
         assert!(!markers.is_empty(), "glass emits markers");
-        // Each glass layer contributes a reload + a warp (Sample). Two layers → two of each.
-        assert_eq!(markers.iter().filter(|m| m.op == Op::Reload).count(), 2);
-        assert_eq!(markers.iter().filter(|m| m.op == Op::Sample).count(), 2);
+        // Each glass layer contributes a reload + a warp. Two layers → two of each.
+        assert_eq!(markers.iter().filter(|m| m.op == UnitOp::Reload).count(), 2);
+        assert_eq!(markers.iter().filter(|m| matches!(m.op, UnitOp::Warp(_))).count(), 2);
         crate::vello::abi::with_scene(|scene, _, _| {
             for m in &markers {
                 assert!(scene.get(m.gid).is_some(), "marker names a real shape");
@@ -726,7 +725,7 @@ mod tests {
             }
         });
         // A reload opens a later round than the drop blur it sits over — the schedule, not a window role.
-        let reload_round = markers.iter().find(|m| m.op == Op::Reload).unwrap().round;
+        let reload_round = markers.iter().find(|m| m.op == UnitOp::Reload).unwrap().round;
         assert!(reload_round >= 1, "the backdrop reload runs after the drop materializes");
     }
 
