@@ -159,6 +159,34 @@ pub fn arm_descriptor(run: &[UnitOp], policy: Policy, program: Option<f32>) -> [
     d
 }
 
+/// Serialize ONE separable-blur axis pass to the 26-float descriptor `fine` reads — the single place
+/// a `Blur` unit becomes bytes, shared by every path that emits one (the fx_fine background blur, a
+/// soft shadow's H/V). `units_uniform` deliberately skips `Blur` (a barrier carries no fused uniform),
+/// so its `u[0]` is written here: `axis` in slots 2/3 (X pass = `(1,0)`, Y pass = `(0,1)`) and the
+/// device `sigma` in slot 4. `bits` is `BLUR` plus `SRGB` when it mixes in gamma space (a lens frost;
+/// a background/shadow blur is linear) plus the `policy` bits (`materialize`/`spread`/`shadow_edge`).
+/// `tint` rides `u[3]` (slots 14..18) for a `spread` arm that lays a straight colour — a shadow's V
+/// pass — and is `None` for a plain draft blur.
+#[must_use]
+pub fn blur_arm(sigma: f32, linear: bool, axis_y: bool, policy: Policy, tint: Option<[f32; 4]>) -> [f32; 26] {
+    let mut d = [0.0f32; 26];
+    d[0] = (bits::BLUR
+        | if linear { 0 } else { bits::SRGB }
+        | if policy.materialize { bits::MATERIALIZE } else { 0 }
+        | if policy.spread { bits::SPREAD } else { 0 }
+        | if policy.shadow_edge { bits::SHADOW_EDGE } else { 0 }) as f32;
+    d[2] = f32::from(!axis_y); // u[0].x
+    d[3] = f32::from(axis_y); // u[0].y
+    d[4] = sigma; // u[0].z = device sigma
+    if let Some([r, g, b, a]) = tint {
+        d[14] = r; // u[3] = straight spread colour
+        d[15] = g;
+        d[16] = b;
+        d[17] = a;
+    }
+    d
+}
+
 /// The field program a run measures: a lens field when any unit reads it (a head or a field-measuring
 /// pointwise), else no field (a plain stamp). A radial/sampled/custom field is set by the effect at
 /// bake time — this covers the common lens case.
@@ -230,6 +258,29 @@ mod tests {
         assert_eq!(program_of(&[tint()]), PROGRAM_NONE, "a plain tint measures no field");
         assert_eq!(bits_of(&[tint(), maskmix()]), bits::TINT | bits::MASKMIX);
         assert_eq!(bits_of(&[tint(), maskmix()]), 20);
+    }
+
+    /// `blur_arm` is the ONE serializer for every axis pass. It reproduces both conventions byte-for-byte:
+    /// the emitter-driven fx_fine background blur (plain BLUR(64), axis + sigma, no policy/colour) and the
+    /// baked soft-drop shadow arms (`wv_shadow_plan`'s H = 2624, V = 2240 + straight colour).
+    #[test]
+    fn blur_arm_reproduces_both_conventions() {
+        // fx_fine background blur: two plain-BLUR axis passes, linear, no policy, no colour.
+        let h = blur_arm(3.0, true, false, Policy::default(), None);
+        let v = blur_arm(3.0, true, true, Policy::default(), None);
+        assert_eq!([h[0], h[2], h[3], h[4]], [64.0, 1.0, 0.0, 3.0], "H = BLUR, axis X, sigma");
+        assert_eq!([v[0], v[2], v[3], v[4]], [64.0, 0.0, 1.0, 3.0], "V = BLUR, axis Y, sigma");
+
+        // Soft-drop shadow: linear silhouette blur, H materializes a draft, V spreads the colour under
+        // the body — both SHADOW_EDGE. Byte-identical to wv_shadow_plan's hand-built descriptors.
+        let colour = [0.1, 0.2, 0.3, 0.8];
+        let sh = blur_arm(6.0, true, false, Policy { materialize: true, shadow_edge: true, ..Policy::default() }, None);
+        let sv = blur_arm(6.0, true, true, Policy { spread: true, shadow_edge: true, ..Policy::default() }, Some(colour));
+        assert_eq!(sh[0], 2624.0, "H = BLUR|MATERIALIZE|SHADOW_EDGE");
+        assert_eq!([sh[2], sh[3], sh[4]], [1.0, 0.0, 6.0], "H axis + sigma");
+        assert_eq!(sv[0], 2240.0, "V = BLUR|SPREAD|SHADOW_EDGE");
+        assert_eq!([sv[2], sv[3], sv[4]], [0.0, 1.0, 6.0], "V axis + sigma");
+        assert_eq!([sv[14], sv[15], sv[16], sv[17]], colour, "V carries the straight shadow colour in u[3]");
     }
 
     /// Structural ops carry no bit — they are never part of a fused fragment run.

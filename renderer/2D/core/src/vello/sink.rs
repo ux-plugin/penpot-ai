@@ -5464,19 +5464,11 @@ impl Sink {
                         if !wv_dropblur_fine() {
                             return None; // soft drops A/B'd off — whole shape defers to the pre-pass
                         }
-                        let [r, g, b, a] = tint(e)?.components;
-                        let mut h = [0.0f32; 26];
-                        h[0] = 64.0 + 512.0 + 2048.0; // BLUR | MATERIALIZE | SHADOW_EDGE (fade OOB to 0)
-                        h[2] = 1.0; // u[0].x = axis.x (H)
-                        h[4] = sigma; // u[0].z = device sigma
-                        let mut v = [0.0f32; 26];
-                        v[0] = 64.0 + 128.0 + 2048.0; // BLUR | SPREAD | SHADOW_EDGE
-                        v[3] = 1.0; // u[0].y = axis.y (V)
-                        v[4] = sigma;
-                        v[14] = r; // u[3] = straight shadow colour
-                        v[15] = g;
-                        v[16] = b;
-                        v[17] = a;
+                        use crate::vello::bake::{blur_arm, Policy};
+                        // Shadow coverage is a pure alpha field → LINEAR blur (no sRGB). H materializes a
+                        // draft; V spreads the straight colour under the body. Both SHADOW_EDGE (OOB → 0).
+                        let h = blur_arm(sigma, true, false, Policy { materialize: true, shadow_edge: true, ..Policy::default() }, None);
+                        let v = blur_arm(sigma, true, true, Policy { spread: true, shadow_edge: true, ..Policy::default() }, Some(tint(e)?.components));
                         plan.push(ShadowMarker::SoftDrop { h, v, slot: drop_slot });
                         drop_slot += 1;
                     }

@@ -264,7 +264,7 @@ impl FrameDag {
     /// widens as the scheduler grows to fill more units.
     #[must_use]
     pub fn arms_for(&self, gid: u128, tile: f64) -> Option<Vec<[f32; 26]>> {
-        use crate::vello::bake::{arm_descriptor, bits, Policy};
+        use crate::vello::bake::{arm_descriptor, Policy};
         use std::collections::BTreeMap;
         // Shape-level gate: a lens HEAD together with a BLUR is frosted glass — 4 arms in the DAG vs the
         // 5 current `fine` expects, so it is not byte-reproducible here and stays on the planner. Pure
@@ -303,13 +303,8 @@ impl FrameDag {
                 // `units_uniform` skips `Blur`, so `u[0]` (slots 2..5) is written here; the axis comes
                 // from the pass ordinal (the DAG's two positional Blur nodes, X before Y).
                 [UnitOp::Blur { sigma, linear }] => {
-                    let mut d = [0.0f32; 26];
-                    d[0] = f64::from(bits::BLUR | if *linear { 0 } else { bits::SRGB }) as f32;
-                    d[2] = f32::from(blur_axis == 0); // u[0].x = axis.x
-                    d[3] = f32::from(blur_axis != 0); // u[0].y = axis.y
-                    d[4] = *sigma; // u[0].z = device sigma (filled by fill_blur_uniforms)
+                    arms.push(crate::vello::bake::blur_arm(*sigma, *linear, blur_axis != 0, Policy::default(), None));
                     blur_axis += 1;
-                    arms.push(d);
                 }
                 // A fused fragment run (glass = Warp+Shade+MaskMix). Drivable only where every unit is a
                 // FILLED fragment (a non-empty device uniform the scheduler stamped); an unfilled
