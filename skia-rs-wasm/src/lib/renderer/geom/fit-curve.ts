@@ -13,19 +13,42 @@ import type { Anchor, Pt } from './anchors'
  *  as a sharp node; gentler bends are reconstructed as a smooth curve. */
 const CORNER_ANGLE_DEG = 32
 
-/** Perpendicular distance from `p` to the segment `a`→`b`. */
-function segDist(p: Pt, a: Pt, b: Pt): number {
-  const dx = b.x - a.x
-  const dy = b.y - a.y
-  const len2 = dx * dx + dy * dy
-  if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y)
-  const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2
-  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+/**
+ * Squared distance from `p` to the SEGMENT `a`→`b`. Distance math adapted from
+ * simplify-js (mourner/simplify-js, BSD): the projection is clamped to the segment
+ * (correct where a polyline hooks past an endpoint, unlike an infinite-line
+ * perpendicular) and left squared so the RDP scan needs no per-point `sqrt`.
+ */
+function sqSegDist(p: Pt, a: Pt, b: Pt): number {
+  let x = a.x
+  let y = a.y
+  let dx = b.x - x
+  let dy = b.y - y
+  if (dx !== 0 || dy !== 0) {
+    const t = ((p.x - x) * dx + (p.y - y) * dy) / (dx * dx + dy * dy)
+    if (t > 1) {
+      x = b.x
+      y = b.y
+    } else if (t > 0) {
+      x += dx * t
+      y += dy * t
+    }
+  }
+  dx = p.x - x
+  dy = p.y - y
+  return dx * dx + dy * dy
 }
 
-/** Douglas–Peucker on an open polyline; returns the kept LOCAL indices. */
+/**
+ * Douglas–Peucker on an open polyline; returns the kept LOCAL indices. The RDP is
+ * the classic split-at-farthest-point, run iteratively (an explicit stack, so a
+ * very long drag can't overflow the call stack) and returning indices so callers
+ * can keep corner flags aligned — the two things we need that simplify-js's
+ * point-returning recursion doesn't give. `eps` is the tolerance (world px).
+ */
 function rdpOpenIdx(pts: Pt[], eps: number): number[] {
   if (pts.length < 3) return pts.map((_, i) => i)
+  const sqEps = eps * eps
   const keep = new Array(pts.length).fill(false)
   keep[0] = true
   keep[pts.length - 1] = true
@@ -33,11 +56,11 @@ function rdpOpenIdx(pts: Pt[], eps: number): number[] {
   while (stack.length) {
     const [lo, hi] = stack.pop()!
     let idx = -1
-    let maxD = eps
+    let maxSq = sqEps
     for (let i = lo + 1; i < hi; i++) {
-      const d = segDist(pts[i], pts[lo], pts[hi])
-      if (d > maxD) {
-        maxD = d
+      const d = sqSegDist(pts[i], pts[lo], pts[hi])
+      if (d > maxSq) {
+        maxSq = d
         idx = i
       }
     }
@@ -84,6 +107,45 @@ function rdpClosedIdx(pts: Pt[], eps: number): number[] {
 export function rdpSimplify(pts: Pt[], eps: number): Pt[] {
   if (pts.length < 3) return pts.slice()
   return rdpOpenIdx(pts, eps).map((i) => pts[i])
+}
+
+/**
+ * Corner-aware thinning of an OPEN polyline: keep both endpoints, keep sharp
+ * corners, and Douglas–Peucker the smooth runs between them. Returns the kept
+ * indices (into `pts`) and, aligned to them, whether each kept vertex is a corner
+ * (endpoints report as corners so callers leave them un-smoothed unless they own
+ * the tangent). Used to re-fit only the arc a cut actually changed, leaving the
+ * rest of a shape's anchors untouched.
+ */
+export function fitOpenRunIdx(pts: Pt[], eps: number): { idx: number[]; corner: boolean[] } {
+  const n = pts.length
+  if (n <= 2) return { idx: pts.map((_, i) => i), corner: pts.map(() => true) }
+  const cornerCos = Math.cos((CORNER_ANGLE_DEG * Math.PI) / 180)
+  const cornerFlag = new Array<boolean>(n).fill(false)
+  for (let i = 1; i < n - 1; i++) {
+    const p = pts[i - 1]
+    const a = pts[i]
+    const q = pts[i + 1]
+    const ax = a.x - p.x
+    const ay = a.y - p.y
+    const bx = q.x - a.x
+    const by = q.y - a.y
+    const la = Math.hypot(ax, ay)
+    const lb = Math.hypot(bx, by)
+    cornerFlag[i] = la > 1e-6 && lb > 1e-6 && (ax * bx + ay * by) / (la * lb) < cornerCos
+  }
+  const splits = [0]
+  for (let i = 1; i < n - 1; i++) if (cornerFlag[i]) splits.push(i)
+  splits.push(n - 1)
+  const keep = new Set<number>([0, n - 1])
+  for (let s = 0; s + 1 < splits.length; s++) {
+    const lo = splits[s]
+    const hi = splits[s + 1]
+    const sub = pts.slice(lo, hi + 1)
+    for (const li of rdpOpenIdx(sub, eps)) keep.add(lo + li)
+  }
+  const idx = [...keep].sort((a, b) => a - b)
+  return { idx, corner: idx.map((i) => i === 0 || i === n - 1 || cornerFlag[i]) }
 }
 
 /**

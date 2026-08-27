@@ -28,7 +28,7 @@ const pc = (polygonClippingNs as unknown as { default?: typeof polygonClippingNs
 const { difference, union, xor } = pc
 import { getPage } from '../store/doc-proxy'
 import { getSubpaths, compoundContent, reverseSubpath, type Subpath } from '../geom/subpaths'
-import { fitClosedRing, rdpSimplify } from '../geom/fit-curve'
+import { fitClosedRing, fitOpenRunIdx, rdpSimplify } from '../geom/fit-curve'
 import type { Anchor, Pt } from '../geom/anchors'
 import { anchorsTightBounds } from '../geom/anchors'
 import { commitNodePartialUpdate, getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
@@ -73,19 +73,49 @@ export async function eraseBrush(
   zoom = 1,
   capStyle: 'round' | 'square' = 'round',
 ): Promise<boolean> {
-  const r = Math.max(radius, 0.5)
-  // Drop hand jitter, then offset the stroke into ONE smooth capsule outline (not
-  // a union of per-point discs — that scallops the edge into dozens of false
-  // corners the fit can't coarsen). `union` normalizes any self-intersection a
-  // sharp turn introduces into a clean, subtractable polygon.
-  const pts = rdpSimplify(dedupePts(worldPts), Math.max(r * 0.2, 0.5 / zoom))
-  const outline = strokeToBandPolygon(pts, r, capStyle)
-  if (outline.length < 3) return false
-  const ring: Ring = outline.map((p): [number, number] => [p.x, p.y])
-  ring.push([ring[0][0], ring[0][1]])
-  const band = union([ring])
+  const band = brushBand(worldPts, radius, capStyle, zoom)
   if (band.length === 0) return false
   return subtractClips(shapeId, pageId, [band], zoom)
+}
+
+/**
+ * The swept brush band as a clean MERGED region (self-overlaps unioned away): the
+ * drag polyline, jitter-dropped, is thickened by the radius into ONE capsule
+ * outline (not a union of per-point discs — that scallops the edge into dozens of
+ * false corners), then `union`ed so a stroke that re-crosses itself becomes a
+ * single area rather than a tangle of self-intersecting edges. Shared by the cut
+ * ({@link eraseBrush}) and the live preview ({@link brushBandPath}) so they match.
+ */
+function brushBand(points: Pt[], radius: number, capStyle: 'round' | 'square', zoom: number): MultiPolygon {
+  const r = Math.max(radius, 0.5)
+  const pts = rdpSimplify(dedupePts(points), Math.max(r * 0.2, 0.5 / zoom))
+  const outline = strokeToBandPolygon(pts, r, capStyle)
+  if (outline.length < 3) return []
+  const ring: Ring = outline.map((p): [number, number] => [p.x, p.y])
+  ring.push([ring[0][0], ring[0][1]])
+  return union([ring])
+}
+
+/**
+ * The swept brush band as an SVG path `d` (all rings, sub-paths concatenated) — for
+ * the live erase preview, so re-crossing the same area shows the union of the swept
+ * region (one merged blob) instead of overlapping self-intersecting outlines. It is
+ * exactly the geometry {@link eraseBrush} subtracts, so the preview never lies.
+ */
+export function brushBandPath(
+  points: Pt[],
+  radius: number,
+  capStyle: 'round' | 'square' = 'round',
+  zoom = 1,
+): string {
+  let d = ''
+  for (const poly of brushBand(points, radius, capStyle, zoom)) {
+    for (const ring of poly) {
+      if (ring.length < 2) continue
+      d += 'M' + ring.map(([x, y]) => `${x} ${y}`).join(' L ') + ' Z'
+    }
+  }
+  return d
 }
 
 /**
@@ -179,7 +209,10 @@ async function subtractClips(
   const subjectArea = mpArea(subject)
   const result = difference(subject, clips[0], ...clips.slice(1))
   const remaining = mpArea(result)
-  const outClosed = mpToSubpaths(result)
+  // Re-fit ONLY the boundary the cut touched, reusing the shape's existing anchors
+  // everywhere else — so erasing a new area doesn't reshuffle nodes computed for a
+  // previous cut. `clips` supplies the cut boundary the arc is measured against.
+  const outClosed = refitPreservingAnchors(result, closed, clips)
 
   // Erased away: what's left is a negligible sliver (or the fit dropped every
   // ring), AND this stroke actually consumed the shape (not a stray miss that
@@ -401,6 +434,166 @@ function ringToSubpath(ring: Ring, exterior: boolean): Subpath | null {
   if (pts.length < 3) return null
   const anchors = fitClosedRing(pts.map((p) => ({ x: p[0], y: p[1] })), SIMPLIFY_EPS)
   if (anchors.length < 3) return null
+  const positive = ringArea(anchors.map((a): [number, number] => [a.point.x, a.point.y])) > 0
+  const sp: Subpath = { vertices: anchors, closed: true }
+  return positive === exterior ? sp : reverseSubpath(sp)
+}
+
+/** World-px: a result-ring vertex this close to an existing anchor reuses it. */
+const REFIT_MATCH_EPS = 0.5
+/** World-px: a result-ring vertex this close to a cut edge is NEW boundary. */
+const REFIT_CLIP_EPS = 0.6
+
+type Seg = [readonly [number, number], readonly [number, number]]
+
+/** Perp distance from a point to a segment (both endpoints as [x,y]). */
+function segDistPt(p: Pt, a: readonly [number, number], b: readonly [number, number]): number {
+  const dx = b[0] - a[0]
+  const dy = b[1] - a[1]
+  const l2 = dx * dx + dy * dy
+  if (l2 === 0) return Math.hypot(p.x - a[0], p.y - a[1])
+  let t = ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / l2
+  t = Math.max(0, Math.min(1, t))
+  return Math.hypot(p.x - (a[0] + t * dx), p.y - (a[1] + t * dy))
+}
+
+/** Recursively collect every ring (Array of [x,y]) out of clipper nesting. */
+function collectRings(node: unknown, out: Ring[]): void {
+  if (Array.isArray(node) && node.length > 0 && Array.isArray(node[0]) && typeof (node[0] as number[])[0] === 'number') {
+    out.push(node as Ring)
+    return
+  }
+  if (Array.isArray(node)) for (const child of node) collectRings(child, out)
+}
+
+function distToSegs(p: Pt, segs: Seg[]): number {
+  let m = Infinity
+  for (const [a, b] of segs) {
+    const d = segDistPt(p, a, b)
+    if (d < m) {
+      m = d
+      if (m < 1e-6) break
+    }
+  }
+  return m
+}
+
+/**
+ * Turn a cut result into sub-paths WITHOUT reshuffling the shape's existing
+ * anchors: every result-ring vertex that still coincides with a prior anchor
+ * reuses that anchor verbatim, and only the arcs the cut actually changed (their
+ * vertices lie on the cut boundary) are re-fitted to fresh nodes. So erasing a new
+ * area leaves the nodes from earlier cuts exactly where they were. Falls back to a
+ * full {@link fitClosedRing} for a ring with no surviving anchors (fresh geometry).
+ */
+function refitPreservingAnchors(
+  result: MultiPolygon,
+  oldClosed: Subpath[],
+  clips: Array<Polygon | MultiPolygon>,
+): Subpath[] {
+  const oldAnchors = oldClosed.flatMap((sp) => sp.vertices)
+  if (oldAnchors.length === 0) return mpToSubpaths(result)
+  const clipRings: Ring[] = []
+  collectRings(clips, clipRings)
+  const clipSegs: Seg[] = []
+  for (const r of clipRings) for (let i = 0; i + 1 < r.length; i++) clipSegs.push([r[i], r[i + 1]])
+
+  const out: Subpath[] = []
+  for (const poly of result) {
+    poly.forEach((ring, i) => {
+      const sp = refitRing(ring, i === 0, oldAnchors, clipSegs)
+      if (sp) out.push(sp)
+    })
+  }
+  return out
+}
+
+function refitRing(ring: Ring, exterior: boolean, oldAnchors: Anchor[], clipSegs: Seg[]): Subpath | null {
+  const pts = ring.slice()
+  if (pts.length > 1) {
+    const f = pts[0]
+    const l = pts[pts.length - 1]
+    if (f[0] === l[0] && f[1] === l[1]) pts.pop()
+  }
+  if (pts.length < 3) return null
+  const V: Pt[] = pts.map((p) => ({ x: p[0], y: p[1] }))
+  const n = V.length
+
+  // Match each surviving anchor to its nearest ring vertex (one-to-one).
+  type Seed = { idx: number; anchor: Anchor; corner: boolean }
+  const seeds: Seed[] = []
+  const used = new Set<number>()
+  for (const oa of oldAnchors) {
+    let best = -1
+    let bd = REFIT_MATCH_EPS
+    for (let i = 0; i < n; i++) {
+      if (used.has(i)) continue
+      const d = Math.hypot(V[i].x - oa.point.x, V[i].y - oa.point.y)
+      if (d < bd) {
+        bd = d
+        best = i
+      }
+    }
+    if (best >= 0) {
+      used.add(best)
+      seeds.push({ idx: best, anchor: oa, corner: !oa.handleIn && !oa.handleOut })
+    }
+  }
+  // A ring with almost no surviving anchors is fresh geometry — fit it wholesale.
+  if (seeds.length < 2) return ringToSubpath(ring, exterior)
+  seeds.sort((a, b) => a.idx - b.idx)
+
+  type Node = { p: Pt; corner: boolean; reuse?: Anchor }
+  const nodes: Node[] = []
+  const seedNodeIdx: number[] = []
+  const arcChanged: boolean[] = []
+  for (let s = 0; s < seeds.length; s++) {
+    const cur = seeds[s]
+    const nxt = seeds[(s + 1) % seeds.length]
+    const interior: Pt[] = []
+    for (let i = (cur.idx + 1) % n; i !== nxt.idx; i = (i + 1) % n) interior.push(V[i])
+    const changed = interior.some((v) => distToSegs(v, clipSegs) < REFIT_CLIP_EPS)
+    arcChanged.push(changed)
+    seedNodeIdx.push(nodes.length)
+    nodes.push({ p: { x: cur.anchor.point.x, y: cur.anchor.point.y }, corner: cur.corner, reuse: cur.anchor })
+    if (changed && interior.length) {
+      const withEnds = [V[cur.idx], ...interior, V[nxt.idx]]
+      const { idx, corner } = fitOpenRunIdx(withEnds, SIMPLIFY_EPS)
+      for (let k = 0; k < idx.length; k++) {
+        const li = idx[k]
+        if (li === 0 || li === withEnds.length - 1) continue
+        nodes.push({ p: { x: withEnds[li].x, y: withEnds[li].y }, corner: corner[k] })
+      }
+    }
+  }
+  // A seed is reused whole only when BOTH its arcs are unchanged; if either arc was
+  // cut, keep its position but recompute handles so they follow the new boundary.
+  for (let s = 0; s < seeds.length; s++) {
+    const prevCh = arcChanged[(s - 1 + seeds.length) % seeds.length]
+    const nextCh = arcChanged[s]
+    if (prevCh || nextCh) nodes[seedNodeIdx[s]].reuse = undefined
+  }
+
+  const m = nodes.length
+  if (m < 3) return ringToSubpath(ring, exterior)
+  const anchors: Anchor[] = nodes.map((nd, i) => {
+    if (nd.reuse) return nd.reuse
+    if (nd.corner) return { point: { x: nd.p.x, y: nd.p.y } }
+    const prev = nodes[(i - 1 + m) % m].p
+    const next = nodes[(i + 1) % m].p
+    const tx = next.x - prev.x
+    const ty = next.y - prev.y
+    const tl = Math.hypot(tx, ty) || 1
+    const ux = tx / tl
+    const uy = ty / tl
+    const dPrev = Math.hypot(nd.p.x - prev.x, nd.p.y - prev.y) / 3
+    const dNext = Math.hypot(next.x - nd.p.x, next.y - nd.p.y) / 3
+    return {
+      point: { x: nd.p.x, y: nd.p.y },
+      handleIn: { x: nd.p.x - ux * dPrev, y: nd.p.y - uy * dPrev },
+      handleOut: { x: nd.p.x + ux * dNext, y: nd.p.y + uy * dNext },
+    }
+  })
   const positive = ringArea(anchors.map((a): [number, number] => [a.point.x, a.point.y])) > 0
   const sp: Subpath = { vertices: anchors, closed: true }
   return positive === exterior ? sp : reverseSubpath(sp)

@@ -24,7 +24,7 @@ import {
   wasmSelectionRect as wasmSelectionRectSignal,
 } from '../../renderer/signals/selection'
 import { useSignalCoalesced } from '../../renderer/signals/use-signal-coalesced'
-import { strokeToBandPolygon } from '../../renderer/handlers/erase'
+import { brushBandPath } from '../../renderer/handlers/erase'
 import { motionPlaying, motionPreviewActive } from '../../renderer/motion/motion-store'
 import {
   HANDLE_FILL,
@@ -285,19 +285,28 @@ export function SelectionOverlay({ canvasSize, canvasRef }: SelectionOverlayProp
       </defs>
       {eraseStroke != null && eraseStroke.points.length >= 1 && (
         <g style={{ pointerEvents: 'none' }}>
-          <polygon
-            points={(eraseStroke.mode === 'lasso'
-              ? eraseStroke.points
-              : strokeToBandPolygon(eraseStroke.points, eraseStroke.radius, eraseStroke.cap)
-            )
-              .map((p) => `${p.x},${p.y}`)
-              .join(' ')}
-            fill="rgba(226,75,74,0.18)"
-            stroke="#E24B4A"
-            strokeWidth={1 / rawZoom}
-            strokeLinejoin="round"
-            strokeDasharray={eraseStroke.mode === 'lasso' ? `${5 / rawZoom},${4 / rawZoom}` : undefined}
-          />
+          {eraseStroke.mode === 'lasso' ? (
+            <polygon
+              points={eraseStroke.points.map((p) => `${p.x},${p.y}`).join(' ')}
+              fill="rgba(226,75,74,0.18)"
+              stroke="#E24B4A"
+              strokeWidth={1 / rawZoom}
+              strokeLinejoin="round"
+              strokeDasharray={`${5 / rawZoom},${4 / rawZoom}`}
+            />
+          ) : (
+            // Brush: draw the UNIONed swept band (self-overlaps merged) so passing
+            // back over the same spot reads as one filled area, not a tangle of
+            // crossing outlines. This is exactly what the release will subtract.
+            <path
+              d={brushBandPath(eraseStroke.points, eraseStroke.radius, eraseStroke.cap, rawZoom)}
+              fill="rgba(226,75,74,0.18)"
+              fillRule="evenodd"
+              stroke="#E24B4A"
+              strokeWidth={1 / rawZoom}
+              strokeLinejoin="round"
+            />
+          )}
           {/* Free-form: bézier handle lines + square markers on each placed node. */}
           {eraseStroke.mode === 'lasso' &&
             (eraseStroke.nodes ?? []).map((n, i) => (
