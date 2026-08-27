@@ -49,8 +49,11 @@ pub enum Op {
     /// `Y` pass one barrier after the `X` pass and the executor never splits anything. EVERY blur is
     /// this: drop, inner pre-blur, frost, layer, background.
     Blur { radius: f32, axis: BlurAxis },
-    /// A displaced / jittered read of the input — the lens sampling head (warp / scatter).
+    /// A displaced read of the input — the lens refraction head (warp).
     Sample,
+    /// A jittered read of the input — the frosted-lens sampling head, run after the blur to soften the
+    /// refracted, blurred backdrop before the shade/mask-mix tail.
+    Scatter,
     /// Erase the input by a blurred copy of itself (dst-out) — the inner-shadow punch, nothing else.
     Erase { radius: f32 },
     /// A hand-written WGSL pass — the escape hatch.
@@ -66,7 +69,7 @@ impl Op {
     /// its own barrier and handled separately; the rest are pointwise and fold.
     #[must_use]
     pub fn is_gather(self) -> bool {
-        matches!(self, Op::Blur { .. } | Op::Sample | Op::Erase { .. } | Op::Custom)
+        matches!(self, Op::Blur { .. } | Op::Sample | Op::Scatter | Op::Erase { .. } | Op::Custom)
     }
 }
 
@@ -441,10 +444,14 @@ impl Builder {
                 EffectOp::Lens(g) => {
                     // warp is a Sample, frost is a Blur — the same primitives as everything else. The
                     // shade (pointwise fresnel/tint) folds into the composite, so it emits no node.
+                    // Sharp lens (σ ≤ 0.5): just warp, then the shade+mask-mix tail folds into the
+                    // compose — one fused arm. Frosted: warp → blur-X → blur-Y → scatter, five passes
+                    // matching wv_frost_passes; the compose is the masked tail.
                     let warp = self.draft(Op::Sample, format!("{name} lens warp"), reach, vec![cur]);
                     let sigma = g.total_blur_sigma();
                     if sigma > 0.5 {
-                        self.blur(sigma, warp, reach, name, "frost")
+                        let blurred = self.blur(sigma, warp, reach, name, "frost");
+                        self.draft(Op::Scatter, format!("{name} lens scatter"), reach, vec![blurred])
                     } else {
                         warp
                     }
