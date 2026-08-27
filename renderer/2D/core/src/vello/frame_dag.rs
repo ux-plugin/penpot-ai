@@ -178,6 +178,18 @@ impl Schedule {
     }
 }
 
+/// One effect pass, ready for `draw_effect_marker`: the shape it belongs to, which effect slot, the
+/// round it runs in, its footprint, and the primitive. The Sink maps `(op, gid, slot)` to the
+/// `effect_id` and bakes the unit uniform — the single per-op step this stream does not carry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectMarker {
+    pub gid: u128,
+    pub slot: usize,
+    pub round: u32,
+    pub reach: Option<Rect>,
+    pub op: Op,
+}
+
 impl FrameDag {
     /// The NAIVE topological depth: `0` for a leaf, else `1 + max(input round)` — a barrier at *every*
     /// edge. The upper bound the real scheduler improves on (it folds the composite spine, which
@@ -233,6 +245,36 @@ impl FrameDag {
             }
         }
         Schedule { round, barrier }
+    }
+
+    /// The uniform effect-marker stream — ONE emission that replaces the four per-effect-type marker
+    /// builders (`wv_rounds`, `wv_shadow_plan`/`schedule_shadows`, `stack_markers`, `fx_markers`) and
+    /// the scaffolding they need to reconcile (`ShadowMarker`/`ShadowRole`/`WindowRole`, the
+    /// pre-round/span math). Every effect pass — a gather (blur/sample/erase/custom), a backdrop
+    /// reload, or an effect composite — becomes one marker carrying its `gid`, its `round` (straight
+    /// from [`Self::schedule`]), its page-space `reach`, and its `op`. The Sink turns `(op, gid)` into
+    /// the `effect_id` + the baked unit uniform (the one irreducible, per-op step) and calls
+    /// `draw_effect_marker`; there is no per-type builder and no window-role reconciliation left.
+    #[must_use]
+    pub fn effect_markers(&self, tile: f64) -> Vec<EffectMarker> {
+        let sched = self.schedule(tile);
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                let Source::Effect { shape, slot } = n.source else { return None };
+                // The passes that become CMD_EFFECT markers: gathers, the reload, and the effect
+                // composite. A rasterized silhouette is scene coverage, not a marker.
+                let is_marker = n.op.is_gather() || n.op == Op::Reload || n.op == Op::Compose;
+                is_marker.then_some(EffectMarker {
+                    gid: shape,
+                    slot,
+                    round: sched.round[i],
+                    reach: n.reach,
+                    op: n.op,
+                })
+            })
+            .collect()
     }
 
     /// Project each node to the allocator's stage IR ([`crate::vello::plan::StageSpec`]) — the same
@@ -634,6 +676,31 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn effect_markers_are_uniform_and_scheduled() {
+        // One emission for every effect, whatever its type: stack-glass's markers all carry a real
+        // shape, a schedule round, and a footprint — no per-type builder, no window roles.
+        crate::vello::abi::load_stack_glass_scene(2, 0);
+        let dag = build_frame_dag_installed();
+        let markers = dag.effect_markers(TILE_PX);
+        let sched = dag.schedule(TILE_PX);
+
+        assert!(!markers.is_empty(), "glass emits markers");
+        // Each glass layer contributes a reload + a warp (Sample). Two layers → two of each.
+        assert_eq!(markers.iter().filter(|m| m.op == Op::Reload).count(), 2);
+        assert_eq!(markers.iter().filter(|m| m.op == Op::Sample).count(), 2);
+        crate::vello::abi::with_scene(|scene, _, _| {
+            for m in &markers {
+                assert!(scene.get(m.gid).is_some(), "marker names a real shape");
+                assert!(m.round < sched.rounds(), "marker round is within the schedule");
+                assert!(m.reach.is_some(), "an effect marker has a footprint (for binning)");
+            }
+        });
+        // A reload opens a later round than the drop blur it sits over — the schedule, not a window role.
+        let reload_round = markers.iter().find(|m| m.op == Op::Reload).unwrap().round;
+        assert!(reload_round >= 1, "the backdrop reload runs after the drop materializes");
     }
 
     #[test]
