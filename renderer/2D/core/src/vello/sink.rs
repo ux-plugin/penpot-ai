@@ -556,6 +556,19 @@ fn wv_glass_fine() -> bool {
     false
 }
 
+/// Route the effect descriptors through the whole-frame DAG (`frame_dag` + `bake`) instead of the
+/// per-effect planners — the emitter-swap A/B toggle. OFF by default; `WV_DAG=1` sources a descriptor
+/// from the scheduler's baked units where the DAG's arm structure matches current fine (sharp glass so
+/// far), falling back to the planner otherwise. Native-only.
+fn wv_dag() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_DAG").is_ok_and(|v| v != "0");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// Sibling of [`wv_glass_fine`] for a background BLUR: routes it through fine as a BLUR arm (a
 /// separable Gaussian over `base_in` + a draft) instead of the dedicated `blur_px` pipeline. DEFAULT
 /// ON as of the effects-in-fine collapse (D); `WV_BLUR_FINE=0` forces the batched `blur_px` oracle.
@@ -1701,13 +1714,33 @@ impl Sink {
         // backdrop materialises (so `base_in` holds it) — hence `max_round >= its round + 1` — and its
         // device-space lens uniform, keyed by gid. Excluded from `wv_lens_plan` below so it renders
         // once, and it forces the ping-pong path (`base_in` is unbound in the rw accumulator).
+        // Emitter-swap A/B (WV_DAG): build + fill the whole-frame DAG once so a matching effect's
+        // descriptor comes from the scheduler's baked units (`bake`) instead of the per-effect planner.
+        // Filled at the whole viewport (origin 0, k=1), the same space `wv_lens_fine_uniform` uses.
+        let wv_dag_graph = wv_dag().then(|| {
+            let mut d = crate::vello::frame_dag::build_frame_dag_installed();
+            crate::vello::abi::with_scene(|scene, _viewport, modifiers| {
+                d.fill_lens_uniforms(full_view, width, height, |id| {
+                    let n = scene.get(id)?;
+                    let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                    crate::effect_graph::lens_geometry(n, m)
+                });
+            });
+            d
+        });
         let fx_fine: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_glass_fine() || wv_blur_fine() || wv_frost_fine() {
             gathers
                 .iter()
                 .enumerate()
                 .filter(|(_, g)| g.2 != FX_STACK)
                 .filter_map(|(j, &(_, gid, _))| {
-                    self.wv_fine_passes(gid, full_view, width, height).map(|passes| {
+                    // WV_DAG: the scheduler's baked descriptor where its arm structure matches current
+                    // fine (sharp glass); otherwise the planner. Byte-identical where both fire.
+                    let passes = wv_dag_graph
+                        .as_ref()
+                        .and_then(|d| self.wv_dag_glass_passes(gid, d))
+                        .or_else(|| self.wv_fine_passes(gid, full_view, width, height));
+                    passes.map(|passes| {
                         // Each pass is one marker in a successive reload window (glass 1, blur H+V 2).
                         max_round = max_round.max(rounds[j] + passes.len() as u32);
                         (gid, passes)
@@ -5591,6 +5624,35 @@ impl Sink {
     /// emits, in round order: a sharp glass → one WARP|SHADE|MASKMIX pass over the lens field (program
     /// 1); a background blur → two BLUR passes, H then V, each carrying its axis in `u[0].xy` (the
     /// separable blur, one marker each). Gated per kind by `WV_GLASS_FINE` / `WV_BLUR_FINE`.
+    /// The DAG-driven descriptor for `gid`, when the scheduler's arm structure matches what current
+    /// `fine.wgsl` expects. Today that is SHARP glass: the DAG lowers it to `Warp → Shade → MaskMix`
+    /// (one fused arm), which `bake::arm_descriptor` serializes to the same single `bits 56` descriptor
+    /// `wv_fine_passes` builds. Returns `None` for anything whose arm count differs from current fine
+    /// (frosted glass is 4 arms vs fine's 5, background blur rides its own path) so the caller falls
+    /// back to the planner. This is the seam the emitter swap grows through.
+    fn wv_dag_glass_passes(&self, gid: u128, dag: &crate::vello::frame_dag::FrameDag) -> Option<Vec<[f32; 26]>> {
+        use crate::vello::bake::{arm_descriptor, Policy};
+        use crate::vello::frame_dag::Source;
+        use crate::vello::units::UnitOp;
+        let run: Vec<UnitOp> = dag
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.source, Source::Effect { shape, .. } if shape == gid))
+            .filter(|n| matches!(n.op, UnitOp::Warp(_) | UnitOp::Shade(_) | UnitOp::MaskMix(_) | UnitOp::Scatter(_) | UnitOp::Blur { .. }))
+            .map(|n| n.op.clone())
+            .collect();
+        // Sharp glass only: warp head + shade + mask-mix, no blur/scatter — one arm, one marker.
+        match run.as_slice() {
+            [UnitOp::Warp(_), UnitOp::Shade(_), UnitOp::MaskMix(_)] => {
+                if std::env::var("WV_TRACE").is_ok() {
+                    eprintln!("  WV_DAG: baked sharp-glass arm for gid {gid:x} (bits 56)");
+                }
+                Some(vec![arm_descriptor(&run, Policy::default(), None)])
+            }
+            _ => None,
+        }
+    }
+
     fn wv_fine_passes(&self, gid: u128, full_view: Affine, w: u32, h: u32) -> Option<Vec<[f32; 26]>> {
         if wv_glass_fine() {
             if let Some(u) = self.wv_lens_fine_uniform(gid, full_view, w, h) {
