@@ -264,8 +264,23 @@ impl FrameDag {
     /// widens as the scheduler grows to fill more units.
     #[must_use]
     pub fn arms_for(&self, gid: u128, tile: f64) -> Option<Vec<[f32; 26]>> {
-        use crate::vello::bake::arm_descriptor;
+        use crate::vello::bake::{arm_descriptor, bits, Policy};
         use std::collections::BTreeMap;
+        // Shape-level gate: a lens HEAD together with a BLUR is frosted glass — 4 arms in the DAG vs the
+        // 5 current `fine` expects, so it is not byte-reproducible here and stays on the planner. Pure
+        // glass (a head, no blur) and pure background blur (a blur, no head) each reproduce their planner
+        // descriptors exactly, so both flow through.
+        let (mut has_head, mut has_blur) = (false, false);
+        for n in self.nodes.iter().filter(|n| matches!(n.source, Source::Effect { shape, .. } if shape == gid)) {
+            match n.op {
+                UnitOp::Warp(_) | UnitOp::Scatter(_) => has_head = true,
+                UnitOp::Blur { .. } => has_blur = true,
+                _ => {}
+            }
+        }
+        if has_head && has_blur {
+            return None;
+        }
         let sched = self.schedule(tile);
         let mut by_round: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
         for (i, n) in self.nodes.iter().enumerate() {
@@ -277,37 +292,52 @@ impl FrameDag {
             return None;
         }
         let mut arms = Vec::new();
+        let mut blur_axis = 0u32; // 0 → the first (X) blur pass of this effect, 1 → the second (Y)
         for (_round, idxs) in by_round {
             let run: Vec<UnitOp> = idxs.iter().map(|&i| self.nodes[i].op.clone()).filter(|op| !op.is_structural()).collect();
-            if run.is_empty() {
-                continue; // a reload-only round carries no arm of its own
+            match run.as_slice() {
+                [] => continue, // a reload-only round carries no arm of its own
+                // One axis pass of a separable blur. In the fx_fine wire the materialize (H → draft) and
+                // masked composite (V) are driven by the emitter's round layout, NOT descriptor bits, so
+                // the arm is axis + device sigma only: bits BLUR (+SRGB when it mixes in gamma space).
+                // `units_uniform` skips `Blur`, so `u[0]` (slots 2..5) is written here; the axis comes
+                // from the pass ordinal (the DAG's two positional Blur nodes, X before Y).
+                [UnitOp::Blur { sigma, linear }] => {
+                    let mut d = [0.0f32; 26];
+                    d[0] = f64::from(bits::BLUR | if *linear { 0 } else { bits::SRGB }) as f32;
+                    d[2] = f32::from(blur_axis == 0); // u[0].x = axis.x
+                    d[3] = f32::from(blur_axis != 0); // u[0].y = axis.y
+                    d[4] = *sigma; // u[0].z = device sigma (filled by fill_blur_uniforms)
+                    blur_axis += 1;
+                    arms.push(d);
+                }
+                // A fused fragment run (glass = Warp+Shade+MaskMix). Drivable only where every unit is a
+                // FILLED fragment (a non-empty device uniform the scheduler stamped); an unfilled
+                // placeholder means this effect is not on the DAG wire yet → bail to the planner.
+                _ => {
+                    if !run.iter().all(is_filled_fragment) {
+                        return None;
+                    }
+                    arms.push(arm_descriptor(&run, Policy::default(), None));
+                }
             }
-            // Drivable only where every unit is a FILLED fragment unit — a non-empty device uniform the
-            // scheduler stamped. A `Blur`/`Custom`, or an unfilled placeholder, means this effect is not
-            // on the DAG wire yet: bail to the planner rather than emit a zero-uniform arm.
-            if !run.iter().all(is_filled_fragment) {
-                return None;
-            }
-            arms.push(arm_descriptor(&run, self.round_policy(&idxs), None));
         }
         (!arms.is_empty()).then_some(arms)
     }
 
-    /// The compose/position policy of one scheduled round, derived from its structural nodes (never a
-    /// stored tag): `materialize` when the round writes only a scratch a later round reads (no
-    /// accumulator `Compose` in the round); `spread` when its `Compose` lays a straight colour — a
-    /// shadow tail, which ends in `Tint` with no `MaskMix` — rather than the field-masked mix a backdrop
-    /// effect ends in. `shadow_edge` marks a silhouette blur, not reached here yet (blur rounds bail in
-    /// [`Self::arms_for`]).
-    fn round_policy(&self, idxs: &[usize]) -> crate::vello::bake::Policy {
-        let op = |i: usize| &self.nodes[i].op;
-        let has_compose = idxs.iter().any(|&i| matches!(op(i), UnitOp::Compose));
-        let ends_masked = idxs.iter().any(|&i| matches!(op(i), UnitOp::MaskMix(_)));
-        let ends_tint = idxs.iter().any(|&i| matches!(op(i), UnitOp::Tint(_)));
-        crate::vello::bake::Policy {
-            materialize: !has_compose,
-            spread: has_compose && ends_tint && !ends_masked,
-            shadow_edge: false,
+    /// Fill each background-blur node's DEVICE sigma — the blur half of the scheduler's viewport pass,
+    /// the sibling to [`Self::fill_lens_uniforms`]. For every `Source::Effect` `Blur` node whose shape
+    /// `sigma_of` resolves (a pure background blur; the caller returns `None` for a frost blur so it
+    /// stays page-space and falls back), replace the page-radius sigma with the device sigma. `arms_for`
+    /// then reads it straight into the axis pass's `u[0].z`.
+    pub fn fill_blur_uniforms(&mut self, sigma_of: impl Fn(u128) -> Option<f32>) {
+        for node in &mut self.nodes {
+            let Source::Effect { shape, .. } = node.source else { continue };
+            if let UnitOp::Blur { linear, .. } = node.op {
+                if let Some(sigma) = sigma_of(shape) {
+                    node.op = UnitOp::Blur { sigma, linear };
+                }
+            }
         }
     }
 
@@ -906,6 +936,30 @@ mod tests {
         assert_eq!(arms[0][0], 56.0, "WARP|SHADE|MASKMIX");
         assert_eq!(arms[0][1], PROGRAM_LENS);
         assert!(arms[0][2] > 0.0 && arms[0][3] > 0.0, "the device field was filled");
+    }
+
+    #[test]
+    fn arms_for_reproduces_the_background_blur_pair() {
+        // A pure background blur drives through the SAME wire as glass: `arms_for` partitions it into
+        // its two axis rounds and emits the emitter-driven pair the planner (`wv_fine_passes`) does —
+        // both bits BLUR(64), axes (1,0) then (0,1), each carrying the filled device sigma in u[0].z.
+        use crate::vello::bake::bits;
+        crate::vello::abi::load_vpblur_scene(4, 8.0);
+        let mut dag = build_frame_dag_installed();
+        let gid = dag
+            .nodes
+            .iter()
+            .find_map(|n| match n.source {
+                Source::Effect { shape, .. } => Some(shape),
+                _ => None,
+            })
+            .expect("the blurred shape is an effect node");
+        dag.fill_blur_uniforms(|_| Some(3.0));
+        let arms = dag.arms_for(gid, TILE_PX).expect("a pure background blur drives through arms_for");
+        assert_eq!(arms.len(), 2, "separable blur = two axis passes");
+        assert_eq!(arms[0][0], f64::from(bits::BLUR) as f32, "H pass is plain BLUR — materialize is emitter-driven");
+        assert_eq!([arms[0][2], arms[0][3], arms[0][4]], [1.0, 0.0, 3.0], "H axis + device sigma");
+        assert_eq!([arms[1][2], arms[1][3], arms[1][4]], [0.0, 1.0, 3.0], "V axis + device sigma");
     }
 
     #[test]

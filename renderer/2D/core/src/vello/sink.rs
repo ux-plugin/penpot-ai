@@ -1726,6 +1726,16 @@ impl Sink {
                     crate::effect_graph::lens_geometry(n, m)
                 });
             });
+            // The blur half of the fill: a PURE background blur (a blur, no lens) gets its device sigma
+            // stamped so its axis passes drive through `arms_for`. A frost blur (blur WITH a lens) is
+            // left page-space — `arms_for` gates it out and it rides the planner.
+            d.fill_blur_uniforms(|id| {
+                let pure_blur = crate::vello::abi::with_scene(|live, _, _| {
+                    live.get(id).map(|n| n.background_blur.is_some() && n.glass.is_none())
+                })
+                .unwrap_or(false);
+                pure_blur.then(|| self.gather_sigma(id, full_view, 1.0))
+            });
             d
         });
         let fx_fine: std::collections::HashMap<u128, Vec<[f32; 26]>> = if wv_glass_fine() || wv_blur_fine() || wv_frost_fine() {
