@@ -28,6 +28,14 @@ use crate::vello::plan::Target;
 /// drop shadow from a glass card is *which* of these it emits and in what order, never a different
 /// code path. Intrinsic (page-space) parameters that size the op live here; the GPU uniforms are baked
 /// by the executor from the source effect, not stored (that would duplicate [`crate::effect_graph`]).
+/// A separable blur's axis — the two passes of a Gaussian, in order (`X` reads the source, `Y` reads
+/// the `X` output).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BlurAxis {
+    X,
+    Y,
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Op {
     /// Turn geometry into pixels — a plain-shape band, a shape's own body, or a coverage silhouette.
@@ -36,9 +44,11 @@ pub enum Op {
     Rasterize,
     /// Snapshot the accumulator so a gather can sample the composited backdrop (the reload).
     Reload,
-    /// A separable Gaussian of the given page-space radius. EVERY blur is this: drop, inner pre-blur,
-    /// frost, layer, background.
-    Blur { radius: f32 },
+    /// ONE axis of a separable Gaussian of the given page-space radius. A blur is TWO of these — an `X`
+    /// pass then a `Y` pass reading it — emitted as two nodes by the planner, so the schedule puts the
+    /// `Y` pass one barrier after the `X` pass and the executor never splits anything. EVERY blur is
+    /// this: drop, inner pre-blur, frost, layer, background.
+    Blur { radius: f32, axis: BlurAxis },
     /// A displaced / jittered read of the input — the lens sampling head (warp / scatter).
     Sample,
     /// Erase the input by a blurred copy of itself (dst-out) — the inner-shadow punch, nothing else.
@@ -393,6 +403,14 @@ impl Builder {
         self.push(op, Target::Atlas, label, reach, inputs)
     }
 
+    /// Lower a separable Gaussian to its two axis passes: `X` reads `cur`, `Y` reads `X`. The planner
+    /// emits both; the schedule puts `Y` one barrier after `X` (it gathers a fresh draft), so the
+    /// executor never has to know a blur is two passes. Returns the `Y` tail.
+    fn blur(&mut self, radius: f32, cur: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
+        let x = self.draft(Op::Blur { radius, axis: BlurAxis::X }, format!("{name} {tag} blur-X r{radius:.0}"), reach, vec![cur]);
+        self.draft(Op::Blur { radius, axis: BlurAxis::Y }, format!("{name} {tag} blur-Y r{radius:.0}"), reach, vec![x])
+    }
+
     /// Coalesce a pending run of plain shapes into ONE rasterize band on the spine, scoped to their
     /// union bounds so it only chains with effects it actually overlaps.
     fn flush_band(&mut self, band: &mut Band) {
@@ -416,9 +434,7 @@ impl Builder {
         let mut cur = start;
         for op in ops {
             cur = match op {
-                EffectOp::Blur { radius } => {
-                    self.draft(Op::Blur { radius: *radius }, format!("{name} {tag} blur r{radius:.0}"), reach, vec![cur])
-                }
+                EffectOp::Blur { radius } => self.blur(*radius, cur, reach, name, tag),
                 EffectOp::EraseBy { blur, .. } => {
                     self.draft(Op::Erase { radius: *blur }, format!("{name} {tag} punch (erase r{blur:.0})"), reach, vec![cur])
                 }
@@ -428,7 +444,7 @@ impl Builder {
                     let warp = self.draft(Op::Sample, format!("{name} lens warp"), reach, vec![cur]);
                     let sigma = g.total_blur_sigma();
                     if sigma > 0.5 {
-                        self.draft(Op::Blur { radius: sigma }, format!("{name} lens frost"), reach, vec![warp])
+                        self.blur(sigma, warp, reach, name, "frost")
                     } else {
                         warp
                     }
@@ -613,7 +629,9 @@ mod tests {
         let naive = dag.levels().iter().copied().max().unwrap() + 1;
         let real = dag.schedule(TILE_PX).rounds();
         assert!(real < naive, "barrier-aware schedule must beat naive ({real} vs {naive})");
-        assert_eq!(real, 2, "combined collapses to a materialize round + a fold round");
+        // silhouette(0) → blur-X(1) → blur-Y(2) → composite(2): a separable blur is two barriers, then
+        // the whole spine folds into the last round.
+        assert_eq!(real, 3, "combined collapses to two blur rounds + a fold round");
     }
 
     #[test]
@@ -642,7 +660,9 @@ mod tests {
         crate::vello::abi::load_matrix_scene();
         let dag = build_frame_dag_installed();
         let rounds = dag.schedule(TILE_PX).rounds();
-        assert!(rounds <= 5, "disjoint grid cells must not chain (got {rounds} rounds for 20 cells)");
+        // The deepest single cell ("everything": drop blur X/Y + bg-blur + inner) sets the count; it
+        // must not grow with the 20 cells.
+        assert!(rounds <= 8, "disjoint grid cells must not chain (got {rounds} rounds for 20 cells)");
     }
 
     #[test]
