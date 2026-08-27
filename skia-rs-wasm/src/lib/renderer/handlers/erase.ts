@@ -614,6 +614,11 @@ function erasePartial(before: PenpotNode, subpaths: Subpath[]): Partial<PenpotNo
   const b = unionTightBounds(subpaths)
   const prev = (before as { content?: Record<string, unknown> }).content ?? {}
   return {
+    // Re-emit `fills` (unchanged) alongside the new content: the renderer only
+    // re-tessellates a path's FILL when its fills are (re)pushed, so a content-only
+    // update leaves the fill stale — the cut commits but doesn't show — most visibly
+    // on a shape whose last stroke was removed. Pushing fills forces the rebuild.
+    fills: (before as { fills?: PenpotNode['fills'] }).fills ?? [],
     content: {
       ...prev,
       network: undefined,
