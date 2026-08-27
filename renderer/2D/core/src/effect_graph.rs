@@ -323,15 +323,21 @@ pub struct LensGeometry {
 /// `backdrop_origin` its top-left in **full-zoom** device pixels, `view` the page→device transform,
 /// and `k ∈ (0, 1]` the resolution-cap factor. The composite's own SDF mask does the clip, so no
 /// silhouette mask is needed. Ported verbatim from the sink so pixels are unchanged.
+/// The device-space lens FIELD uniform (`6×vec4`, first 17 slots) for one glass, in the reduced
+/// backdrop's texel space — the pure page→device projection of the rounded-box geometry (centre via
+/// `view`, half-extents × `eff = zoom·k`, corner, bezel×s, thresholds), with slot 16 = the device
+/// scale `s`. This is the ONLY non-trivial "baking" a unit needs; the per-unit trailing slots
+/// (chromatic aberration 17, frost 18, specular 19/20) are added by the caller. `bake`/the scheduler
+/// calls THIS to fill a lens unit's uniform, instead of building the whole pass chain to extract it.
 #[must_use]
-pub fn lens_graph(
+pub fn lens_device_field(
     g: &Glass,
     geom: LensGeometry,
     backdrop_size: (u32, u32),
     backdrop_origin: (f64, f64),
     view: Affine,
     k: f64,
-) -> Vec<GraphPass> {
+) -> [f32; 24] {
     let (bw, bh) = backdrop_size;
     let (bdx, bdy) = backdrop_origin;
     let zoom = {
@@ -347,14 +353,27 @@ pub fn lens_graph(
     let corner = if geom.is_circle { hx.min(hy) } else { (geom.corner_radius * eff) as f32 };
     let s = eff as f32;
     let (bwf, bhf) = (bw as f32, bh as f32);
-
-    let field: [f32; 20] = [
+    [
         bwf, bhf, gcx, gcy,
         hx, hy, corner, g.surface_type as f32,
         g.bezel_width * s, g.thickness, g.refractive_index, g.specular_angle,
         g.splay, g.tilt_angle, g.edge_boost, g.zoom,
         s, 0.0, 0.0, 0.0,
-    ];
+        0.0, 0.0, 0.0, 0.0,
+    ]
+}
+
+#[must_use]
+pub fn lens_graph(
+    g: &Glass,
+    geom: LensGeometry,
+    backdrop_size: (u32, u32),
+    backdrop_origin: (f64, f64),
+    view: Affine,
+    k: f64,
+) -> Vec<GraphPass> {
+    let base_arr = lens_device_field(g, geom, backdrop_size, backdrop_origin, view, k);
+    let s = base_arr[16];
     // One field program, shared by every unit of this lens; only the numbers differ per pass,
     // because the chain solver rewrites each pass into its own texel space.
     let program = std::rc::Rc::new(crate::vello::units::lens_field_program());
@@ -364,8 +383,7 @@ pub fn lens_graph(
         u,
         reach,
     };
-    let mut base = field.to_vec();
-    base.resize(24, 0.0);
+    let base = base_arr.to_vec();
     let mut warp_u = base.clone();
     warp_u[17] = g.chromatic_aberration;
     let mut scatter_u = base.clone();
