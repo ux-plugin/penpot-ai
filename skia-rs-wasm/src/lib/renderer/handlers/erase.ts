@@ -78,22 +78,81 @@ export async function eraseBrush(
   return subtractClips(shapeId, pageId, [band], zoom)
 }
 
+/** The axis-perpendicular rectangle swept by a disc of radius `r` along segment a→b
+ *  (flat ends; joints/caps are added separately as discs). */
+function segmentRect(a: Pt, b: Pt, r: number): Ring {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len = Math.hypot(dx, dy) || 1
+  const nx = (-dy / len) * r
+  const ny = (dx / len) * r
+  return [
+    [a.x + nx, a.y + ny],
+    [b.x + nx, b.y + ny],
+    [b.x - nx, b.y - ny],
+    [a.x - nx, a.y - ny],
+    [a.x + nx, a.y + ny],
+  ]
+}
+
+/** A square of side 2r centred on `c` (single-point square cap). */
+function squareRing(c: Pt, r: number): Ring {
+  return [
+    [c.x - r, c.y - r],
+    [c.x + r, c.y - r],
+    [c.x + r, c.y + r],
+    [c.x - r, c.y + r],
+    [c.x - r, c.y - r],
+  ]
+}
+
+/** A square end cap: the r-deep rectangle extending past endpoint `p` along `dir`. */
+function squareEndCap(p: Pt, dir: Pt, r: number): Ring {
+  const nx = -dir.y * r
+  const ny = dir.x * r
+  const ex = dir.x * r
+  const ey = dir.y * r
+  return [
+    [p.x + nx, p.y + ny],
+    [p.x + nx + ex, p.y + ny + ey],
+    [p.x - nx + ex, p.y - ny + ey],
+    [p.x - nx, p.y - ny],
+    [p.x + nx, p.y + ny],
+  ]
+}
+
 /**
- * The swept brush band as a clean MERGED region (self-overlaps unioned away): the
- * drag polyline, jitter-dropped, is thickened by the radius into ONE capsule
- * outline (not a union of per-point discs — that scallops the edge into dozens of
- * false corners), then `union`ed so a stroke that re-crosses itself becomes a
- * single area rather than a tangle of self-intersecting edges. Shared by the cut
+ * The swept brush band as a clean MERGED region, built from CONVEX pieces — a
+ * rectangle per segment, a disc at every interior joint (round joins), and a chosen
+ * cap at each end — then `union`ed. Because every piece is convex, the union is
+ * hole-free and smooth-jointed even when the stroke crosses itself many times
+ * (scribbling over one spot), unlike offsetting a single self-intersecting ring,
+ * which leaves even-odd slivers and rough concave kinks. Shared by the cut
  * ({@link eraseBrush}) and the live preview ({@link brushBandPath}) so they match.
  */
 function brushBand(points: Pt[], radius: number, capStyle: 'round' | 'square', zoom: number): MultiPolygon {
   const r = Math.max(radius, 0.5)
-  const pts = rdpSimplify(dedupePts(points), Math.max(r * 0.2, 0.5 / zoom))
-  const outline = strokeToBandPolygon(pts, r, capStyle)
-  if (outline.length < 3) return []
-  const ring: Ring = outline.map((p): [number, number] => [p.x, p.y])
-  ring.push([ring[0][0], ring[0][1]])
-  return union([ring])
+  const pts = rdpSimplify(dedupePts(points), Math.max(r * 0.4, 0.5 / zoom))
+  if (pts.length === 0) return []
+  if (pts.length === 1) {
+    return union([capStyle === 'square' ? squareRing(pts[0], r) : discRing(pts[0], r)])
+  }
+  const dir = (a: Pt, b: Pt): Pt => {
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const l = Math.hypot(dx, dy) || 1
+    return { x: dx / l, y: dy / l }
+  }
+  const parts: Polygon[] = []
+  for (let i = 0; i + 1 < pts.length; i++) parts.push([segmentRect(pts[i], pts[i + 1], r)])
+  for (let i = 1; i + 1 < pts.length; i++) parts.push([discRing(pts[i], r)])
+  const n = pts.length
+  if (capStyle === 'round') {
+    parts.push([discRing(pts[0], r)], [discRing(pts[n - 1], r)])
+  } else {
+    parts.push([squareEndCap(pts[0], dir(pts[1], pts[0]), r)], [squareEndCap(pts[n - 1], dir(pts[n - 2], pts[n - 1]), r)])
+  }
+  return union(parts[0], ...parts.slice(1))
 }
 
 /** A closed cubic-Bézier SVG path from fitted anchors (handles carry the curve;
@@ -271,77 +330,6 @@ function discRing(c: Pt, r: number): Ring {
   for (let k = 0; k <= DISC_STEPS; k++) {
     const a = (k / DISC_STEPS) * Math.PI * 2
     out.push([c.x + Math.cos(a) * r, c.y + Math.sin(a) * r])
-  }
-  return out
-}
-
-/**
- * A single closed capsule outline around the drag polyline — the exact swept
- * band, for the overlay to preview while the drag is in flight (cosmetic only;
- * the real cut unions {@link bandPieces}). Offsets both sides by `radius` and
- * rounds the two ends.
- */
-export function strokeToBandPolygon(pts: Pt[], radius: number, capStyle: 'round' | 'square' = 'round'): Pt[] {
-  const r = Math.max(radius, 0.5)
-  if (pts.length === 0) return []
-  if (pts.length === 1) {
-    const c = pts[0]
-    if (capStyle === 'square') {
-      return [
-        { x: c.x - r, y: c.y - r },
-        { x: c.x + r, y: c.y - r },
-        { x: c.x + r, y: c.y + r },
-        { x: c.x - r, y: c.y + r },
-      ]
-    }
-    return discRing(c, r).map(([x, y]) => ({ x, y }))
-  }
-
-  const n = pts.length
-  const dirAt = (i: number): Pt => {
-    const prev = pts[Math.max(0, i - 1)]
-    const next = pts[Math.min(n - 1, i + 1)]
-    const dx = next.x - prev.x
-    const dy = next.y - prev.y
-    const len = Math.hypot(dx, dy) || 1
-    return { x: dx / len, y: dy / len }
-  }
-  const left: Pt[] = []
-  const right: Pt[] = []
-  for (let i = 0; i < n; i++) {
-    const d = dirAt(i)
-    const nx = -d.y
-    const ny = d.x
-    left.push({ x: pts[i].x + nx * r, y: pts[i].y + ny * r })
-    right.push({ x: pts[i].x - nx * r, y: pts[i].y - ny * r })
-  }
-  const startDir = dirAt(0)
-  const endDir = dirAt(n - 1)
-  // A square cap extends the two side corners past the endpoint by `r` and joins
-  // them flat, so a straight drag reads as a rectangle; a round cap rounds them.
-  const endCap = (center: Pt, dir: Pt, a: Pt, b: Pt): Pt[] =>
-    capStyle === 'square'
-      ? [
-          { x: a.x + dir.x * r, y: a.y + dir.y * r },
-          { x: b.x + dir.x * r, y: b.y + dir.y * r },
-        ]
-      : cap(center, dir, r)
-  const poly: Pt[] = []
-  for (let i = 0; i < n; i++) poly.push(left[i])
-  poly.push(...endCap(pts[n - 1], endDir, left[n - 1], right[n - 1]))
-  for (let i = n - 1; i >= 0; i--) poly.push(right[i])
-  poly.push(...endCap(pts[0], { x: -startDir.x, y: -startDir.y }, right[0], left[0]))
-  return poly
-}
-
-/** Semicircle of `r` around `center`, bulging toward `dir`. */
-function cap(center: Pt, dir: Pt, r: number): Pt[] {
-  const base = Math.atan2(dir.y, dir.x)
-  const out: Pt[] = []
-  const steps = Math.round(DISC_STEPS / 2)
-  for (let k = 0; k <= steps; k++) {
-    const a = base + Math.PI / 2 - Math.PI * (k / steps)
-    out.push({ x: center.x + Math.cos(a) * r, y: center.y + Math.sin(a) * r })
   }
   return out
 }
