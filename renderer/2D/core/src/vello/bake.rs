@@ -187,6 +187,21 @@ pub fn blur_arm(sigma: f32, linear: bool, axis_y: bool, policy: Policy, tint: Op
     d
 }
 
+/// Serialize a SPREAD composite arm — a shadow that lays a straight colour source-OVER the accumulator
+/// with no blur of its own: a sharp drop (the offset silhouette), a sharp/soft inner band (flood minus
+/// punch). `bits` is `SPREAD` plus the `coverage` bit that says where the arm's alpha comes from —
+/// [`bits::SCRATCH_COV`] (a precomputed scratch coverage, e.g. the sink-rasterised offset silhouette or
+/// a text flood) or [`bits::ERASE`] (flood `area[i]` minus the punch) — and the straight `colour` rides
+/// `u[3]` (slots 14..18). This is the non-blur companion to [`blur_arm`]; a soft shadow's blur passes
+/// use `blur_arm`, its final colour composite uses this.
+#[must_use]
+pub fn spread_arm(coverage: u32, colour: [f32; 4]) -> [f32; 26] {
+    let mut d = [0.0f32; 26];
+    d[0] = (bits::SPREAD | coverage) as f32;
+    d[14..18].copy_from_slice(&colour);
+    d
+}
+
 /// The field program a run measures: a lens field when any unit reads it (a head or a field-measuring
 /// pointwise), else no field (a plain stamp). A radial/sampled/custom field is set by the effect at
 /// bake time — this covers the common lens case.
@@ -281,6 +296,19 @@ mod tests {
         assert_eq!(sv[0], 2240.0, "V = BLUR|SPREAD|SHADOW_EDGE");
         assert_eq!([sv[2], sv[3], sv[4]], [0.0, 1.0, 6.0], "V axis + sigma");
         assert_eq!([sv[14], sv[15], sv[16], sv[17]], colour, "V carries the straight shadow colour in u[3]");
+    }
+
+    /// `spread_arm` reproduces `wv_shadow_plan`'s non-blur composites: a sharp drop / text inner band
+    /// (SPREAD|SCRATCH_COV = 8320) and a sharp/soft inner band (SPREAD|ERASE = 130), colour in u[3].
+    #[test]
+    fn spread_arm_reproduces_the_shadow_composites() {
+        let colour = [0.4, 0.5, 0.6, 0.7];
+        let scratch = spread_arm(bits::SCRATCH_COV, colour);
+        assert_eq!(scratch[0], 8320.0, "SPREAD|SCRATCH_COV (sharp drop / text inner flood)");
+        assert_eq!([scratch[14], scratch[15], scratch[16], scratch[17]], colour, "straight colour in u[3]");
+        let erase = spread_arm(bits::ERASE, colour);
+        assert_eq!(erase[0], 130.0, "SPREAD|ERASE (inner band: flood minus punch)");
+        assert_eq!([erase[14], erase[15], erase[16], erase[17]], colour);
     }
 
     /// Structural ops carry no bit — they are never part of a fused fragment run.

@@ -5450,14 +5450,9 @@ impl Sink {
                             if !wv_spread_fine() {
                                 return None; // sharp drops A/B'd off — whole shape defers to the pre-pass
                             }
-                            let [r, g, b, a] = tint(e)?.components;
-                            let mut d = [0.0f32; 26];
-                            d[0] = 128.0 + 8192.0; // SPREAD | SCRATCH_COV
-                            d[14] = r; // u[3] = straight shadow colour
-                            d[15] = g;
-                            d[16] = b;
-                            d[17] = a;
-                            plan.push(ShadowMarker::SharpDrop { desc: d, slot: drop_slot });
+                            // One SPREAD composite of the sink-rasterised offset silhouette (SCRATCH_COV).
+                            let desc = crate::vello::bake::spread_arm(crate::vello::bake::bits::SCRATCH_COV, tint(e)?.components);
+                            plan.push(ShadowMarker::SharpDrop { desc, slot: drop_slot });
                             drop_slot += 1;
                             continue;
                         }
@@ -5490,45 +5485,33 @@ impl Sink {
                             if is_text {
                                 return None;
                             }
-                            let [r, g, b, a] = tint(e)?.components;
-                            let mut band = [0.0f32; 26];
-                            band[0] = 128.0 + 2.0; // SPREAD | ERASE
-                            band[14] = r;
-                            band[15] = g;
-                            band[16] = b;
-                            band[17] = a;
+                            // ONE band marker: flood (area[i]) minus the raw offset inset silhouette.
+                            let band = crate::vello::bake::spread_arm(crate::vello::bake::bits::ERASE, tint(e)?.components);
                             plan.push(ShadowMarker::SharpInner { band, slot: inner_slot });
                             inner_slot += 1;
                             continue;
                         }
-                        let [r, g, b, a] = tint(e)?.components;
-                        let mut h = [0.0f32; 26];
-                        h[0] = 64.0 + 512.0 + 2048.0; // BLUR | MATERIALIZE | SHADOW_EDGE
-                        h[2] = 1.0;
-                        h[4] = sigma;
-                        let mut v = [0.0f32; 26];
-                        v[0] = 64.0 + 512.0 + 2048.0; // BLUR | MATERIALIZE | SHADOW_EDGE (2D punch → scratch)
-                        v[3] = 1.0;
-                        v[4] = sigma;
-                        let mut band = [0.0f32; 26];
-                        band[0] = 128.0 + 2.0; // SPREAD | ERASE (flood minus punch, over body)
+                        use crate::vello::bake::{blur_arm, bits, spread_arm, Policy};
+                        // Both axis passes materialize (the 2D punch → scratch); linear silhouette blur,
+                        // fade OOB to 0. The band composites flood minus punch, over the body.
+                        let mat = Policy { materialize: true, shadow_edge: true, ..Policy::default() };
+                        let colour = tint(e)?.components;
+                        let h = blur_arm(sigma, true, false, mat, None);
+                        let mut v = blur_arm(sigma, true, true, mat, None);
+                        let mut band = spread_arm(bits::ERASE, colour);
                         if is_text {
                             // Text has no glyph coverage in `area[i]` (its outline is the bounds rect), so the
                             // band's FLOOD is recovered by sampling the OFFSET silhouette shifted BACK by the
                             // shadow offset. The V pass folds flood*(1 - alpha*punch) into its scratch alpha
-                            // (FLOOD_ERASE 4096, offset in u[1].xy device px, alpha in u[3].w), and the band
-                            // reads that precomputed coverage directly (SCRATCH_COV 8192) — no area[i]/erase.
+                            // (FLOOD_ERASE, offset in u[1].xy device px, alpha in u[3].w), and the band reads
+                            // that precomputed coverage directly (SCRATCH_COV) — no area[i]/erase.
                             let sh = n.shadows.iter().filter(|s| s.inset).nth(inner_slot)?;
-                            v[0] += 4096.0; // FLOOD_ERASE
+                            v[0] += bits::FLOOD_ERASE as f32;
                             v[6] = sh.offset.x as f32 * scale; // u[1].x = device offset x
                             v[7] = sh.offset.y as f32 * scale; // u[1].y = device offset y
-                            v[17] = a; // u[3].w = shadow alpha (erase fold)
-                            band[0] = 128.0 + 8192.0; // SPREAD | SCRATCH_COV
+                            v[17] = colour[3]; // u[3].w = shadow alpha (erase fold)
+                            band = spread_arm(bits::SCRATCH_COV, colour);
                         }
-                        band[14] = r;
-                        band[15] = g;
-                        band[16] = b;
-                        band[17] = a;
                         plan.push(ShadowMarker::SoftInner { h, v, band, slot: inner_slot });
                         inner_slot += 1;
                     }
