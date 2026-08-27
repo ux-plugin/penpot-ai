@@ -252,6 +252,65 @@ impl FrameDag {
             .collect()
     }
 
+    /// The fine arms for one shape, straight from the schedule — the direct schedule→`fine` wire, with
+    /// no per-effect planner in the middle. Partition this shape's effect nodes by their scheduled round
+    /// (the round-partition IS the fuse cut — a barrier bumps the round, so units sharing a round are
+    /// exactly one fused arm); each round whose fragment run the scheduler has FILLED becomes one
+    /// 26-float descriptor ([`crate::vello::bake::arm_descriptor`]), its policy derived structurally from
+    /// that round's own nodes. Returns `None` when any round is not yet DAG-drivable — a unit whose
+    /// device uniform [`Self::fill_lens_uniforms`] has not stamped, or a `Blur`/`Custom` whose
+    /// axis/params the arm grouping does not assign yet — so the caller falls back to the planner for
+    /// that shape. Today SHARP glass drives through here byte-identically with the planner; the seam
+    /// widens as the scheduler grows to fill more units.
+    #[must_use]
+    pub fn arms_for(&self, gid: u128, tile: f64) -> Option<Vec<[f32; 26]>> {
+        use crate::vello::bake::arm_descriptor;
+        use std::collections::BTreeMap;
+        let sched = self.schedule(tile);
+        let mut by_round: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            if matches!(n.source, Source::Effect { shape, .. } if shape == gid) {
+                by_round.entry(sched.round[i]).or_default().push(i);
+            }
+        }
+        if by_round.is_empty() {
+            return None;
+        }
+        let mut arms = Vec::new();
+        for (_round, idxs) in by_round {
+            let run: Vec<UnitOp> = idxs.iter().map(|&i| self.nodes[i].op.clone()).filter(|op| !op.is_structural()).collect();
+            if run.is_empty() {
+                continue; // a reload-only round carries no arm of its own
+            }
+            // Drivable only where every unit is a FILLED fragment unit — a non-empty device uniform the
+            // scheduler stamped. A `Blur`/`Custom`, or an unfilled placeholder, means this effect is not
+            // on the DAG wire yet: bail to the planner rather than emit a zero-uniform arm.
+            if !run.iter().all(is_filled_fragment) {
+                return None;
+            }
+            arms.push(arm_descriptor(&run, self.round_policy(&idxs), None));
+        }
+        (!arms.is_empty()).then_some(arms)
+    }
+
+    /// The compose/position policy of one scheduled round, derived from its structural nodes (never a
+    /// stored tag): `materialize` when the round writes only a scratch a later round reads (no
+    /// accumulator `Compose` in the round); `spread` when its `Compose` lays a straight colour — a
+    /// shadow tail, which ends in `Tint` with no `MaskMix` — rather than the field-masked mix a backdrop
+    /// effect ends in. `shadow_edge` marks a silhouette blur, not reached here yet (blur rounds bail in
+    /// [`Self::arms_for`]).
+    fn round_policy(&self, idxs: &[usize]) -> crate::vello::bake::Policy {
+        let op = |i: usize| &self.nodes[i].op;
+        let has_compose = idxs.iter().any(|&i| matches!(op(i), UnitOp::Compose));
+        let ends_masked = idxs.iter().any(|&i| matches!(op(i), UnitOp::MaskMix(_)));
+        let ends_tint = idxs.iter().any(|&i| matches!(op(i), UnitOp::Tint(_)));
+        crate::vello::bake::Policy {
+            materialize: !has_compose,
+            spread: has_compose && ends_tint && !ends_masked,
+            shadow_edge: false,
+        }
+    }
+
     /// Fill each glass unit node's device uniform — the scheduler's viewport pass, the one non-trivial
     /// "baking". For every `Source::Effect` node whose shape carries glass, compute the device field
     /// ([`crate::effect_graph::lens_device_field`] at the whole viewport, origin 0, k=1) and stamp each
@@ -317,6 +376,23 @@ impl FrameDag {
             })
             .collect()
     }
+}
+
+/// A fragment unit the scheduler has already stamped with its device uniform — the arm-drivable ones.
+/// A sampling head or pointwise tail whose uniform `Vec` is non-empty; `Blur`/`Custom` carry no fused
+/// uniform (their axis/params are assigned by arm grouping, not here) and structural ops never fuse, so
+/// both read as not-yet-drivable — the gate [`FrameDag::arms_for`] falls back on.
+fn is_filled_fragment(op: &UnitOp) -> bool {
+    matches!(
+        op,
+        UnitOp::Warp(u)
+            | UnitOp::Scatter(u)
+            | UnitOp::Shade(u)
+            | UnitOp::MaskMix(u)
+            | UnitOp::ClipToSource(u)
+            | UnitOp::EraseBy(u)
+            | UnitOp::Tint(u) if !u.is_empty()
+    )
 }
 
 /// Does region `a` overlap region `b`? `None` is the whole frame, which overlaps everything. Two
@@ -796,6 +872,40 @@ mod tests {
         assert_eq!(d[0], 56.0, "WARP|SHADE|MASKMIX");
         assert_eq!(d[1], PROGRAM_LENS);
         assert!(d[2] > 0.0 && d[3] > 0.0, "the device field was filled (backdrop resolution present)");
+    }
+
+    #[test]
+    fn arms_for_reproduces_the_sharp_glass_arm() {
+        // The direct schedule→fine wire on the real DAG: build sharp glass, fill the lens uniforms, and
+        // let `arms_for` partition by round + serialize. It must yield exactly ONE arm — the fused
+        // `[Warp, Shade, MaskMix]` round — carrying bits 56 (WARP|SHADE|MASKMIX) and the lens program,
+        // the same descriptor the planner emits. This is what the emitter swap sources.
+        use crate::vello::bake::PROGRAM_LENS;
+        // The pure-glass grid — a shadow-less rounded rect carrying only a lens, the `FX_GATHER` shape
+        // the `fx_fine`/`arms_for` wire actually drives (a stack-glass node also has a drop shadow, so
+        // its shadow rounds are not yet fillable and it rides the planner).
+        crate::vello::abi::load_glass_grid_scene(1, 0);
+        let mut dag = build_frame_dag_installed();
+        let gid = dag
+            .nodes
+            .iter()
+            .find_map(|n| match n.source {
+                Source::Effect { shape, .. } => Some(shape),
+                _ => None,
+            })
+            .expect("the glass shape is an effect node");
+        crate::vello::abi::with_scene(|scene, viewport, modifiers| {
+            dag.fill_lens_uniforms(viewport, 400, 400, |id| {
+                let n = scene.get(id)?;
+                let m = modifiers.get(&id).copied().unwrap_or(crate::kurbo::Affine::IDENTITY);
+                crate::effect_graph::lens_geometry(n, m)
+            });
+        });
+        let arms = dag.arms_for(gid, TILE_PX).expect("sharp glass drives through arms_for");
+        assert_eq!(arms.len(), 1, "sharp glass is one fused arm");
+        assert_eq!(arms[0][0], 56.0, "WARP|SHADE|MASKMIX");
+        assert_eq!(arms[0][1], PROGRAM_LENS);
+        assert!(arms[0][2] > 0.0 && arms[0][3] > 0.0, "the device field was filled");
     }
 
     #[test]

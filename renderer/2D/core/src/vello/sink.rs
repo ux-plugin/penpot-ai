@@ -5624,33 +5624,18 @@ impl Sink {
     /// emits, in round order: a sharp glass → one WARP|SHADE|MASKMIX pass over the lens field (program
     /// 1); a background blur → two BLUR passes, H then V, each carrying its axis in `u[0].xy` (the
     /// separable blur, one marker each). Gated per kind by `WV_GLASS_FINE` / `WV_BLUR_FINE`.
-    /// The DAG-driven descriptor for `gid`, when the scheduler's arm structure matches what current
-    /// `fine.wgsl` expects. Today that is SHARP glass: the DAG lowers it to `Warp → Shade → MaskMix`
-    /// (one fused arm), which `bake::arm_descriptor` serializes to the same single `bits 56` descriptor
-    /// `wv_fine_passes` builds. Returns `None` for anything whose arm count differs from current fine
-    /// (frosted glass is 4 arms vs fine's 5, background blur rides its own path) so the caller falls
-    /// back to the planner. This is the seam the emitter swap grows through.
+    /// The DAG-driven descriptors for `gid`, straight from the schedule via
+    /// [`crate::vello::frame_dag::FrameDag::arms_for`] — the scheduler's round-partition, serialized by
+    /// `bake`, with no per-effect planner. `arms_for` returns `None` for any shape not yet fully
+    /// DAG-drivable (a unit the scheduler has not stamped, or a `Blur`/`Custom` arm), so the caller
+    /// falls back to the planner for it. Today SHARP glass flows through here byte-identically; the seam
+    /// widens as `fill_lens_uniforms` fills more units.
     fn wv_dag_glass_passes(&self, gid: u128, dag: &crate::vello::frame_dag::FrameDag) -> Option<Vec<[f32; 26]>> {
-        use crate::vello::bake::{arm_descriptor, Policy};
-        use crate::vello::frame_dag::Source;
-        use crate::vello::units::UnitOp;
-        let run: Vec<UnitOp> = dag
-            .nodes
-            .iter()
-            .filter(|n| matches!(n.source, Source::Effect { shape, .. } if shape == gid))
-            .filter(|n| matches!(n.op, UnitOp::Warp(_) | UnitOp::Shade(_) | UnitOp::MaskMix(_) | UnitOp::Scatter(_) | UnitOp::Blur { .. }))
-            .map(|n| n.op.clone())
-            .collect();
-        // Sharp glass only: warp head + shade + mask-mix, no blur/scatter — one arm, one marker.
-        match run.as_slice() {
-            [UnitOp::Warp(_), UnitOp::Shade(_), UnitOp::MaskMix(_)] => {
-                if std::env::var("WV_TRACE").is_ok() {
-                    eprintln!("  WV_DAG: baked sharp-glass arm for gid {gid:x} (bits 56)");
-                }
-                Some(vec![arm_descriptor(&run, Policy::default(), None)])
-            }
-            _ => None,
+        let passes = dag.arms_for(gid, crate::vello::frame_dag::TILE_PX)?;
+        if std::env::var("WV_TRACE").is_ok() {
+            eprintln!("  WV_DAG: {} baked arm(s) for gid {gid:x} from the schedule", passes.len());
         }
+        Some(passes)
     }
 
     fn wv_fine_passes(&self, gid: u128, full_view: Affine, w: u32, h: u32) -> Option<Vec<[f32; 26]>> {
