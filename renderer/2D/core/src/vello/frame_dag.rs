@@ -320,6 +320,91 @@ impl FrameDag {
         (!arms.is_empty()).then_some(arms)
     }
 
+    /// The COMPLETE baked fine arms for one shape — the clean [`crate::vello::bake`] emitter that
+    /// replaces the per-effect planners (`wv_shadow_plan`/`stack_markers`/`schedule_shadows`). Partitions
+    /// the shape's effect nodes by scheduled round (the round-partition IS the fuse cut) and bakes each
+    /// round's fused run to one [`crate::vello::bake::Baked`] — the 26-float descriptor plus its `eid`
+    /// (coverage) and `round_off` (round relative to the shape's base). Every policy is derived
+    /// STRUCTURALLY, no tags: `axis_y` = the blur's input is itself a blur; `materialize` = the run
+    /// writes no accumulator node (an intermediate draft); `shadow_edge`/`spread` = the chain sources
+    /// from a silhouette `Rasterize` rather than a `Reload` backdrop; `eid` is the dilated-reach marker
+    /// for a materialize or a drop spread, else the masked (silhouette-clipped) marker.
+    ///
+    /// `None` while any round is a case not yet covered (a bare spread composite — a sharp drop, an inner
+    /// band, or a frost tail) so the caller falls back; coverage grows to total, then the fallback and the
+    /// per-effect planners are deleted.
+    #[must_use]
+    pub fn bake_effect(&self, gid: u128, tile: f64) -> Option<Vec<crate::vello::bake::Baked>> {
+        use crate::vello::bake::{self, Baked, Policy, EID_MASKED, EID_MATERIALIZE};
+        use std::collections::BTreeMap;
+        let sched = self.schedule(tile);
+        let mut by_round: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            if matches!(n.source, Source::Effect { shape, .. } if shape == gid)
+                && !matches!(n.op, UnitOp::Rasterize | UnitOp::Reload)
+            {
+                by_round.entry(sched.round[i]).or_default().push(i);
+            }
+        }
+        let &base = by_round.keys().next()?;
+        // Trace a node's inputs[0] chain to its root: a silhouette `Rasterize` (a shadow blurs its own
+        // coverage → true) or a `Reload` backdrop / nothing (a background gather → false).
+        let from_silhouette = |mut i: usize| loop {
+            match self.nodes[i].op {
+                UnitOp::Rasterize => break true,
+                UnitOp::Reload => break false,
+                _ => match self.nodes[i].inputs.first() {
+                    Some(&j) => i = j,
+                    None => break false,
+                },
+            }
+        };
+        let mut arms = Vec::new();
+        for (&round, idxs) in &by_round {
+            let round_off = round - base;
+            let run: Vec<UnitOp> =
+                idxs.iter().map(|&i| self.nodes[i].op.clone()).filter(|op| !op.is_structural()).collect();
+            if run.is_empty() {
+                continue; // a reload/compose-only round carries no arm of its own
+            }
+            let writes_acc = idxs.iter().any(|&i| self.nodes[i].writes_accumulator());
+            let materialize = !writes_acc;
+            let has_head = run.iter().any(|op| matches!(op, UnitOp::Warp(_) | UnitOp::Scatter(_)));
+            let blur = idxs.iter().copied().find(|&i| matches!(self.nodes[i].op, UnitOp::Blur { .. }));
+            let baked = if let (Some(bi), false) = (blur, has_head) {
+                // A separable-blur axis pass: a shadow's H/V (chain from a silhouette) or a background
+                // blur (chain from the reload). The axis is positional — X reads a non-blur source, Y
+                // reads the previous blur.
+                let UnitOp::Blur { sigma, linear } = self.nodes[bi].op else { unreachable!() };
+                let axis_y = matches!(self.nodes[self.nodes[bi].inputs[0]].op, UnitOp::Blur { .. });
+                // A background blur (chain from the Reload) carries a plain BLUR descriptor — the H's
+                // draft-write is the emitter's job, not a bit. A SHADOW blur (chain from a silhouette)
+                // carries the shadow policy in its bits: the H materialises unmasked, the V spreads its
+                // colour. So the materialize/spread/shadow_edge bits are gated by `shadow_edge`.
+                let shadow_edge = from_silhouette(bi);
+                let spread = shadow_edge && writes_acc;
+                let materialize = shadow_edge && !writes_acc;
+                let tint = spread.then(|| {
+                    let u = crate::vello::units::units_uniform(&run);
+                    [u[12], u[13], u[14], u[15]]
+                });
+                let params = bake::blur_arm(sigma, linear, axis_y, Policy { spread, materialize, shadow_edge }, tint);
+                let eid = if materialize || spread { EID_MATERIALIZE } else { EID_MASKED };
+                Baked { eid, round_off, params }
+            } else if has_head {
+                // A fused fragment run: a lens/frost head (Warp/Scatter) + its Shade + MaskMix tail, one
+                // masked composite over the materialized backdrop.
+                let params = bake::arm_descriptor(&run, Policy { materialize, ..Policy::default() }, None);
+                let eid = if materialize { EID_MATERIALIZE } else { EID_MASKED };
+                Baked { eid, round_off, params }
+            } else {
+                return None; // a bare spread composite (sharp drop / inner band / frost tail) — TODO
+            };
+            arms.push(baked);
+        }
+        (!arms.is_empty()).then_some(arms)
+    }
+
     /// Fill each background-blur node's DEVICE sigma — the blur half of the scheduler's viewport pass,
     /// the sibling to [`Self::fill_lens_uniforms`]. For every `Source::Effect` `Blur` node whose shape
     /// `sigma_of` resolves (a pure background blur; the caller returns `None` for a frost blur so it
@@ -861,6 +946,27 @@ mod tests {
         );
         let naive = dag.levels().iter().copied().max().unwrap() + 1;
         assert!(sched.rounds() < naive, "still beats naive on the stacked case");
+    }
+
+    #[test]
+    fn bake_effect_reproduces_arms_for_on_a_background_blur() {
+        crate::vello::abi::load_vpblur_scene(1, 8.0);
+        let dag = build_frame_dag_installed();
+        let gid = dag
+            .nodes
+            .iter()
+            .find_map(|n| match n.source {
+                Source::Effect { shape, .. } => Some(shape),
+                _ => None,
+            })
+            .expect("the blur is an effect");
+        let baked = dag.bake_effect(gid, TILE_PX).expect("a background blur bakes");
+        let arms = dag.arms_for(gid, TILE_PX).expect("arms_for covers a background blur");
+        assert_eq!(baked.len(), arms.len(), "one Baked per arms_for descriptor");
+        for (i, (b, a)) in baked.iter().zip(&arms).enumerate() {
+            assert_eq!(b.params, *a, "bake_effect arm {i} must reproduce arms_for byte-for-byte");
+            assert_eq!(b.round_off, i as u32, "arm {i} rides round_off {i}");
+        }
     }
 
     #[test]
