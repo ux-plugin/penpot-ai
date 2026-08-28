@@ -2678,9 +2678,12 @@ impl Sink {
                         };
                         // base_in: the coverage silhouette (a shadow) or the accumulator backdrop (a blur /
                         // lens link), decided by tracing the input chain to its Rasterize or Reload root.
+                        // LAZY — `None` when the traced Rasterize is not materialised (e.g. an inner band's
+                        // flood, recovered in-shader from the offset silhouette, not a baked scratch); only
+                        // the base-reading arms (Warp head / Blur H / Scatter) `expect` it.
                         let base = match dag_base_rasterize(dag, node) {
-                            Some(rz) => node_scratch.get(&rz).expect("silhouette materialised").clone(),
-                            None => views[cur.expect("a backdrop effect reads the accumulator")].clone(),
+                            Some(rz) => node_scratch.get(&rz).cloned(),
+                            None => cur.map(|c| views[c].clone()),
                         };
                         // Does a later EFFECT stage read this node (→ materialise a scratch it will bind), or
                         // does it feed the final composite (→ composite over the accumulator)?
@@ -2694,8 +2697,9 @@ impl Sink {
                                 if materialize {
                                     // A FROST warp head: read the backdrop, materialise the refracted
                                     // sample for the blur chain that follows.
+                                    let base = base.as_ref().expect("a frost warp reads the backdrop");
                                     let dv = acquire();
-                                    backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&base), &dv);
+                                    backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(base), &dv);
                                     node_scratch.insert(node, dv);
                                 } else {
                                     // A SHARP glass warp = the whole fused [Warp,Shade,MaskMix] arm in one
@@ -2717,24 +2721,25 @@ impl Sink {
                             }
                             UnitOp::Blur { .. } => {
                                 let input = n.inputs[0];
+                                let base = base.as_ref().expect("a blur reads a base (silhouette or backdrop)");
                                 match &dag.nodes[input].op {
                                     // H over a SILHOUETTE (shadow): base_in = input_in = the source.
                                     UnitOp::Rasterize => {
                                         let dv = acquire();
-                                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &base, &base, &dv);
+                                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, base, base, &dv);
                                         node_scratch.insert(node, dv);
                                     }
                                     // H over the BACKDROP (background blur): base only, no input.
                                     UnitOp::Reload => {
                                         let dv = acquire();
-                                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&base), &dv);
+                                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(base), &dv);
                                         node_scratch.insert(node, dv);
                                     }
                                     // H over a WARP scratch (frost blur): base = backdrop, input = warp scratch.
                                     UnitOp::Warp(_) => {
                                         let src = node_scratch.get(&input).expect("warp scratch materialised").clone();
                                         let dv = acquire();
-                                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &base, &src, &dv);
+                                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, base, &src, &dv);
                                         node_scratch.insert(node, dv);
                                     }
                                     // V (input is a Blur draft): materialise (inner punch / frost blur-V) or
@@ -2743,7 +2748,7 @@ impl Sink {
                                         let src = node_scratch.get(&input).expect("H draft materialised").clone();
                                         if materialize {
                                             let dv = acquire();
-                                            backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &base, &src, &dv);
+                                            backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, base, &src, &dv);
                                             node_scratch.insert(node, dv);
                                         } else {
                                             let c = cur.expect("a composite reads a backdrop");
@@ -2756,9 +2761,10 @@ impl Sink {
                             }
                             UnitOp::Scatter(_) => {
                                 // Frost scatter: read the backdrop + the blur-V scratch, materialise.
+                                let base = base.as_ref().expect("a frost scatter reads the backdrop");
                                 let src = node_scratch.get(&n.inputs[0]).expect("blur-V scratch materialised").clone();
                                 let dv = acquire();
-                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &base, &src, &dv);
+                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, base, &src, &dv);
                                 node_scratch.insert(node, dv);
                             }
                             UnitOp::Shade(_) => {
