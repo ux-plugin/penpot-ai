@@ -596,7 +596,7 @@ impl Builder {
     /// `MaskMix`). `fuse` recombines the adjacent ones into fine arms at bake time, so the DAG carries the
     /// exact units the executor runs and `bake` never re-derives them. `linear` selects the blur's light
     /// space. Returns the chain tail. (Inner-shadow erase is a two-input op handled by the caller.)
-    fn lower_ops(&mut self, ops: &[EffectOp], start: usize, reach: Option<Rect>, name: &str, tag: &str, linear: bool) -> usize {
+    fn lower_ops(&mut self, ops: &[EffectOp], start: usize, reach: Option<Rect>, name: &str, tag: &str, linear: bool, sampled: bool) -> usize {
         let mut cur = start;
         for op in ops {
             cur = match op {
@@ -610,8 +610,18 @@ impl Builder {
                 EffectOp::Lens(g) => {
                     // Lens is warp (+ blur → scatter for frost) then the pointwise shade + mask-mix, all
                     // explicit. `fuse` folds sharp glass to one arm ([Warp,Shade,MaskMix]) and frost to
-                    // four ([Warp][BlurH][BlurV][Scatter,Shade,MaskMix]).
-                    let warp = self.draft(UnitOp::Warp(Vec::new()), format!("{name} lens warp"), reach, vec![cur]);
+                    // four ([Warp][BlurH][BlurV][Scatter,Shade,MaskMix]). A SHAPE-FOLLOWING (sampled) lens
+                    // reads a baked signed-distance field of the outline for its `fieldDistance` — that SDF
+                    // is its OWN source node (a `Rasterize` bake, the distance-field analogue of a
+                    // silhouette), the warp's second input. The executor bakes the SDF (not coverage)
+                    // because a `Warp` reads it; an analytic box lens has no such node.
+                    let warp_inputs = if sampled {
+                        let sdf = self.draft(UnitOp::Rasterize, format!("{name} lens sdf"), reach, vec![]);
+                        vec![cur, sdf]
+                    } else {
+                        vec![cur]
+                    };
+                    let warp = self.draft(UnitOp::Warp(Vec::new()), format!("{name} lens warp"), reach, warp_inputs);
                     let head = if g.total_blur_sigma() > 0.5 {
                         let blurred = self.blur(g.total_blur_sigma(), false, warp, reach, name, "frost");
                         self.draft(UnitOp::Scatter(Vec::new()), format!("{name} lens scatter"), reach, vec![blurred])
@@ -675,18 +685,20 @@ impl Builder {
                 }
                 Compose::Under => {
                     let sil = self.draft(UnitOp::Rasterize, format!("{name} drop silhouette"), reach, vec![]);
-                    self.lower_ops(&e.ops, sil, reach, &name, "drop", false)
+                    self.lower_ops(&e.ops, sil, reach, &name, "drop", false, false)
                 }
                 Compose::Replace => {
                     let sil = self.draft(UnitOp::Rasterize, format!("{name} body-read"), reach, vec![]);
-                    self.lower_ops(&e.ops, sil, reach, &name, "body", false)
+                    self.lower_ops(&e.ops, sil, reach, &name, "body", false, false)
                 }
                 Compose::ThroughCoverage => {
                     let reads = self.acc.readers(reach);
                     let reload = self.draft(UnitOp::Reload, format!("{name} read backdrop"), reach, reads);
                     // A background blur mixes in linear light; a lens (its own Blur) mixes in sRGB.
                     let linear = e.ops.iter().any(|o| matches!(o, EffectOp::Blur { .. }));
-                    self.lower_ops(&e.ops, reload, reach, &name, "gather", linear)
+                    // A path outline → a shape-following (sampled SDF) lens; a box shape → the analytic field.
+                    let sampled = node.path.is_some();
+                    self.lower_ops(&e.ops, reload, reach, &name, "gather", linear, sampled)
                 }
             };
             self.compose(format!("{name} → acc"), reach, tail);
