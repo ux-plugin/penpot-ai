@@ -79,23 +79,41 @@ fn main() {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        // Warm up (pipeline/atlas creation), excluded from the timing.
-        for i in 0..3 {
+        // Warm up (pipeline/atlas creation + pool growth to steady state), excluded from the timing.
+        // The first few frames allocate every scratch/atlas the frame needs; 3 was too few (the first
+        // TIMED frame was a >1s outlier that skewed the mean), so warm generously.
+        for i in 0..10 {
             let (z, px, py) = view_at(i);
             render_core::vello::abi::set_view(z, px, py);
             let _ = render_core::vello::abi::take_dirty();
             sink.render_whole_viewport(&mut backend, &device, &queue, &target, root, w, h, true);
         }
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        let start = std::time::Instant::now();
+        let mut per: Vec<f64> = Vec::with_capacity(frames as usize);
         for i in 0..frames {
             let (z, px, py) = view_at(i);
             render_core::vello::abi::set_view(z, px, py);
             let _ = render_core::vello::abi::take_dirty();
+            let t0 = std::time::Instant::now();
             sink.render_whole_viewport(&mut backend, &device, &queue, &target, root, w, h, true);
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            per.push(t0.elapsed().as_secs_f64() * 1000.0);
         }
-        start.elapsed().as_secs_f64() * 1000.0 / f64::from(frames)
+        let mut sorted = per.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = sorted[sorted.len() / 2];
+        if std::env::var("WV_PERFRAME").is_ok() {
+            let label = if dag_exec { "edge" } else if dag_build { "build" } else { "legacy" };
+            let mean = per.iter().sum::<f64>() / per.len() as f64;
+            eprintln!(
+                "    [{label}] per-frame: median={median:.1} mean={mean:.1} min={:.1} max={:.1} first={:.1} last={:.1}",
+                sorted[0], sorted[sorted.len() - 1], per[0], per[per.len() - 1],
+            );
+            if std::env::var("WV_PERFRAME_ALL").is_ok() {
+                eprintln!("      seq: {}", per.iter().map(|t| format!("{t:.0}")).collect::<Vec<_>>().join(" "));
+            }
+        }
+        median
     };
 
     let legacy = time_it(false, false);
@@ -107,7 +125,7 @@ fn main() {
     }
     let _ = cells;
     let pct = |x: f64| 100.0 * (x - legacy) / legacy;
-    println!("  zoom+pan frame time (ms/frame):");
+    println!("  zoom+pan frame time (MEDIAN ms/frame, 10 warm-up frames excluded):");
     println!("    legacy (no DAG)          {legacy:8.2}");
     println!("    DAG built, legacy dispatch {build_only:8.2}  ({:+.1}%)  <- DAG build+fill cost", pct(build_only));
     println!("    DAG built, edge dispatch  {full:8.2}  ({:+.1}%)  <- + edge executor", pct(full));
