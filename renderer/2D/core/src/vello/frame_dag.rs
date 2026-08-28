@@ -336,6 +336,30 @@ impl FrameDag {
         }
     }
 
+    /// Elide every `Blur` whose device sigma is negligible (< 0.5 px) — a sub-pixel blur is visually a
+    /// no-op, so its consumers are rewired to read the blur's own input instead, and the blur node is left
+    /// an orphan (no consumer → no scheduled pass). This is the SCHEDULER's per-frame simplification that
+    /// dissolves the sharp-vs-soft-shadow split: a "sharp" shadow is just a soft one whose blur elided, so
+    /// its composite's edge lands on the silhouette and it flows through the SAME edge-driven dispatch — no
+    /// separate lane. Run AFTER the sigma fills (the sigmas must be device-space). Node indices are
+    /// preserved (orphans stay in place), so anything holding an index stays valid.
+    pub fn elide_negligible_blurs(&mut self) {
+        for i in 0..self.nodes.len() {
+            let UnitOp::Blur { sigma, .. } = self.nodes[i].op else { continue };
+            if sigma >= 0.5 {
+                continue;
+            }
+            let Some(&src) = self.nodes[i].inputs.first() else { continue };
+            for n in &mut self.nodes {
+                for inp in &mut n.inputs {
+                    if *inp == i {
+                        *inp = src;
+                    }
+                }
+            }
+        }
+    }
+
     /// Fill a drop shadow's device uniforms — the shadow half of the viewport pass. For every
     /// `Source::Effect` node on a shadow slot, stamp the device sigma into its `Blur` (`sigma_of(shape,
     /// slot)`) and the straight colour into its `Tint` (`tint_of(shape, slot)`, packed as the vec's first

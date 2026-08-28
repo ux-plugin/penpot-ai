@@ -1598,21 +1598,35 @@ impl Sink {
                 .unwrap_or(false);
                 pure_blur.then(|| self.gather_sigma(id, full_view, 1.0))
             });
-            // The shadow half of the fill: device sigma + straight colour for each DROP-shadow slot, so
-            // `wv_shadow_plan_dag` sources its SoftDrop markers straight from the DAG's filled nodes.
+            // The shadow half of the fill: device sigma + straight colour for each shadow slot, so the
+            // DAG's shadow nodes carry device values (elision + the edge-driven dispatch read them).
             let cs = full_view.as_coeffs();
             let scale = (cs[0] * cs[0] + cs[1] * cs[1]).sqrt() as f32;
-            let drop_at = |id: u128, slot: usize| -> Option<crate::effect::Effect> {
+            // Any shadow slot (drop OR inner) — the blur sigma (drop's governing blur / inner's EraseBy
+            // blur) and the tint colour, in DEVICE units, so the elision below sees device sigmas.
+            let shadow_at = |id: u128, slot: usize| -> Option<crate::effect::Effect> {
                 crate::vello::abi::with_scene(|live, _, _| {
                     let n = live.get(id)?;
                     let e = crate::effect::effect_stack(n).into_iter().nth(slot)?;
-                    matches!((&e.source, e.compose), (crate::effect::Source::Coverage { .. }, crate::effect::Compose::Under)).then_some(e)
+                    matches!(e.source, crate::effect::Source::Coverage { .. }).then_some(e)
                 })
             };
             d.fill_shadow_uniforms(
-                |id, slot| drop_at(id, slot).map(|e| e.governing_blur().map_or(0.0, |r| crate::blur::radius_to_sigma(r) * scale)),
                 |id, slot| {
-                    drop_at(id, slot).and_then(|e| {
+                    shadow_at(id, slot).map(|e| {
+                        let r = match e.compose {
+                            crate::effect::Compose::Over => e.ops.iter().find_map(|op| match op {
+                                crate::effect::Op::EraseBy { blur, .. } => Some(*blur),
+                                crate::effect::Op::Blur { radius } => Some(*radius),
+                                _ => None,
+                            }),
+                            _ => e.governing_blur(),
+                        };
+                        crate::blur::radius_to_sigma(r.unwrap_or(0.0)) * scale
+                    })
+                },
+                |id, slot| {
+                    shadow_at(id, slot).and_then(|e| {
                         e.ops.iter().find_map(|op| match op {
                             crate::effect::Op::Tint(c) => Some(c.components),
                             _ => None,
@@ -1620,6 +1634,9 @@ impl Sink {
                     })
                 },
             );
+            // Scheduler simplification: drop the sub-pixel blurs → a sharp shadow's composite edge lands on
+            // the silhouette and rides the SAME edge-driven dispatch as a soft one (no sharp lane).
+            d.elide_negligible_blurs();
             d
         });
         // Shadows (drops AND inners, any number, mixed, SHARP or SOFT) on a Path/Text stack ride the MAIN
@@ -2593,6 +2610,15 @@ impl Sink {
                                 backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &punch, &views[out]);
                                 cur = Some(out);
                             }
+                            crate::vello::units::UnitOp::Tint(_) => {
+                                // A SHARP drop (blur elided): composite the raw silhouette (inputs[0],
+                                // SPREAD|SCRATCH_COV) over the accumulator — no blur, no draft.
+                                let sil = node_scratch.get(&n.inputs[0]).expect("sharp-drop silhouette materialised").clone();
+                                let c = cur.expect("a sharp drop composites over a backdrop");
+                                let out = 1 - c;
+                                backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &sil, &views[out]);
+                                cur = Some(out);
+                            }
                             other => panic!("DagNode dispatch: unexpected op {other:?}"),
                         }
                     }
@@ -2694,19 +2720,22 @@ impl Sink {
                 // (A materialise pass — H / inner V — always has a later reader, so it never lands here.)
                 let dag = wv_dag_graph.as_ref().expect("a DagNode window has the DAG");
                 let n = &dag.nodes[node];
-                let src = match &n.op {
-                    crate::vello::units::UnitOp::EraseBy(_) => node_scratch.get(&n.inputs[1]),
-                    _ => node_scratch.get(&n.inputs[0]),
-                }
-                .expect("edge source materialised")
-                .clone();
                 let c = cur.expect("an edge-driven composite reads a backdrop");
                 let out = 1 - c;
                 match &n.op {
+                    // An inner band (reads punch inputs[1]) or a sharp drop (reads sil inputs[0]) —
+                    // composite the coverage as input_in.
                     crate::vello::units::UnitOp::EraseBy(_) => {
+                        let src = node_scratch.get(&n.inputs[1]).expect("edge source materialised").clone();
                         backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &src, &views[out]);
                     }
+                    crate::vello::units::UnitOp::Tint(_) => {
+                        let src = node_scratch.get(&n.inputs[0]).expect("edge source materialised").clone();
+                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &src, &views[out]);
+                    }
+                    // A drop's V blur: composite its draft (inputs[0]) as the blur source.
                     _ => {
+                        let src = node_scratch.get(&n.inputs[0]).expect("edge source materialised").clone();
                         backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &src, &views[out]);
                     }
                 }
@@ -5786,25 +5815,28 @@ impl Sink {
         let blur_v = |s: usize| slots.get(&s)?.iter().copied().find(|&i| matches!(op(i), UnitOp::Blur { .. }) && !is_raster(dag.nodes[i].inputs[0]));
         let erase = |s: usize| slots.get(&s)?.iter().copied().find(|&i| matches!(op(i), UnitOp::EraseBy(_)));
         let is_inner = |s: usize| slots.get(&s).is_some_and(|v| v.iter().any(|&i| matches!(op(i), UnitOp::EraseBy(_))));
+        // After `elide_negligible_blurs`, a SHARP drop's `Tint` reads the silhouette `Rasterize` directly
+        // (its blurs are gone) and a SHARP inner's `EraseBy` reads a raw `Rasterize` punch — the same
+        // nodes, just with a silhouette edge instead of a blur edge, so no separate lane.
+        let tint_sil = |s: usize| slots.get(&s)?.iter().copied().find(|&i| matches!(op(i), UnitOp::Tint(_)) && is_raster(dag.nodes[i].inputs[0]));
         let mut passes = Vec::new();
         for mk in sched {
-            // Map the scheduled marker to the DAG node it runs. Sharp drop / sharp inner not on the
-            // executor yet → bail so the whole shape keeps the role dispatch.
+            // Map the scheduled marker to the DAG node it runs — the executor then binds it by op + edges.
             let node = match mk.role {
                 ShadowRole::BlurH => blur_h(mk.slot)?,
                 ShadowRole::DropV | ShadowRole::InnerV => blur_v(mk.slot)?,
-                ShadowRole::InnerBand => erase(mk.slot)?,
-                ShadowRole::SharpDrop | ShadowRole::SharpInnerBand => return None,
+                ShadowRole::InnerBand | ShadowRole::SharpInnerBand => erase(mk.slot)?,
+                ShadowRole::SharpDrop => tint_sil(mk.slot)?,
             };
             passes.push((mk.round, node));
         }
-        // The silhouettes a pass BINDS (a blur's source edge, or an EraseBy's punch edge inputs[1]) — the
-        // ones that must be rasterised into node_scratch. The inner flood (EraseBy inputs[0]) is area[i],
-        // never a scratch, so it is excluded.
+        // The silhouettes a pass BINDS (a blur/Tint's source edge inputs[0], or an EraseBy's punch edge
+        // inputs[1]) — the ones rasterised into node_scratch. The inner flood (EraseBy inputs[0]) is
+        // area[i], never a scratch, so it is excluded.
         let (mut sils, mut seen) = (Vec::new(), HashSet::new());
         for &(_, node) in &passes {
             let bound = match op(node) {
-                UnitOp::Blur { .. } => dag.nodes[node].inputs[0],
+                UnitOp::Blur { .. } | UnitOp::Tint(_) => dag.nodes[node].inputs[0],
                 UnitOp::EraseBy(_) => dag.nodes[node].inputs[1],
                 _ => continue,
             };
