@@ -31,6 +31,9 @@ import { getSubpaths, compoundContent, segmentsToSubpaths, type Subpath } from '
 import { fitClosedRing, rdpSimplify } from '../geom/fit-curve'
 import { pathBoolean } from '../api/boolean'
 import { getWasmModule } from '../wasm-module'
+import { operatorContent, type Operator, type BooleanFn } from '../geom/operators'
+import { eraseNonDestructive } from '../signals/selection'
+import type { PathContent } from '../types'
 import type { Anchor, Pt } from '../geom/anchors'
 import { anchorsTightBounds } from '../geom/anchors'
 import { commitNodePartialUpdate, getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
@@ -293,19 +296,35 @@ async function subtractClips(
   const clipSubpaths = clipsToSubpaths(clips)
   if (clipSubpaths.length === 0) return false
 
-  const result = pathBoolean(
-    module,
-    compoundContent(closed),
-    compoundContent(clipSubpaths),
-    'difference',
-    'evenodd',
-  )
-  const outClosed = result
-    ? segmentsToSubpaths(result.segments ?? []).filter((sp) => sp.closed && sp.vertices.length >= 3)
-    : []
+  const boolFn: BooleanFn = (s, c, op, fill) => pathBoolean(module, s, c, op, fill)
+
+  let outClosed: Subpath[]
+  let extras: Partial<PathContent>
+  let allowDelete: boolean
+
+  if (eraseNonDestructive.value) {
+    const prev = ((before as { content?: PathContent }).content ?? {}) as PathContent
+    const base = (prev.base && prev.base.length ? prev.base : closed) as Subpath[]
+    const operators: Operator[] = [
+      ...((prev.operators ?? []) as Operator[]),
+      { type: 'subtract', clip: clipSubpaths },
+    ]
+    const oc = operatorContent(base, operators, boolFn)
+    outClosed = oc.subpaths.filter((sp) => sp.closed && sp.vertices.length >= 3)
+    extras = { base: oc.base, operators: oc.operators }
+    allowDelete = false
+  } else {
+    const result = boolFn(compoundContent(closed), compoundContent(clipSubpaths), 'difference', 'evenodd')
+    outClosed = result
+      ? segmentsToSubpaths(result.segments ?? []).filter((sp) => sp.closed && sp.vertices.length >= 3)
+      : []
+    extras = { base: undefined, operators: undefined }
+    allowDelete = true
+  }
   const remaining = subpathsArea(outClosed)
 
   if (
+    allowDelete &&
     canDelete &&
     remaining < subjectArea * 0.5 &&
     (outClosed.length === 0 || remaining < DELETE_REMNANT_AREA)
@@ -319,7 +338,7 @@ async function subtractClips(
   await commitNodePartialUpdate(
     shapeId,
     before,
-    erasePartial(before, [...outClosed, ...openSubpaths]),
+    erasePartial(before, [...outClosed, ...openSubpaths], extras),
     pageId,
   )
   return false
@@ -450,9 +469,15 @@ function clipsToSubpaths(clips: Array<Polygon | MultiPolygon>): Subpath[] {
 
 /**
  * Node-geometry partial from the cut result: compound content (clearing the
- * single-path/network mirrors so holes survive) and a tight curve bbox.
+ * single-path/network mirrors so holes survive) and a tight curve bbox. `extras`
+ * carries the non-destructive `base`/`operators` to store (live erase) or the
+ * same keys set `undefined` to clear the stack (a baked/destructive erase).
  */
-function erasePartial(before: PenpotNode, subpaths: Subpath[]): Partial<PenpotNode> {
+function erasePartial(
+  before: PenpotNode,
+  subpaths: Subpath[],
+  extras: Partial<PathContent> = {},
+): Partial<PenpotNode> {
   const compound = compoundContent(subpaths)
   const b = unionTightBounds(subpaths)
   const prev = (before as { content?: Record<string, unknown> }).content ?? {}
@@ -468,6 +493,7 @@ function erasePartial(before: PenpotNode, subpaths: Subpath[]): Partial<PenpotNo
       vertices: undefined,
       closed: undefined,
       ...compound,
+      ...extras,
     } as PenpotNode['content'],
     points: [
       { x: b.x, y: b.y },

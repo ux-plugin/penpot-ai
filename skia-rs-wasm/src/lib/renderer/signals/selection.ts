@@ -94,6 +94,27 @@ effect(() => {
   }
 })
 
+/** Non-destructive erase (Phase 2): when on, an erase appends a live `subtract`
+ *  operator to the shape instead of baking the cut into its points, so it stays
+ *  re-editable and animatable. Off (default) = bake, the classic destructive cut. */
+const ERASE_ND_KEY = 'zoetrope.eraseNonDestructive'
+const readEraseNonDestructive = (): boolean => {
+  try {
+    return localStorage.getItem(ERASE_ND_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+export const eraseNonDestructive = signal<boolean>(readEraseNonDestructive())
+effect(() => {
+  const v = eraseNonDestructive.value
+  try {
+    localStorage.setItem(ERASE_ND_KEY, v ? '1' : '0')
+  } catch {
+    /* storage unavailable */
+  }
+})
+
 /**
  * Live eraser stroke during an erase drag: the accumulated stroke as WORLD-space
  * points plus the brush radius (world units) and the active `mode`, or null when

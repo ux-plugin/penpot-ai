@@ -36,6 +36,7 @@ import {
   eraseBrushCap,
   eraseBrushRadius,
   eraseMode,
+  eraseNonDestructive,
 } from '../renderer/signals/selection'
 import { useSignalCoalesced } from '../renderer/signals/use-signal-coalesced'
 import { docProxy } from '../renderer/store/doc-proxy'
@@ -106,6 +107,7 @@ export function PenEditFlyout() {
   // both are persisted signals, surfaced beside the Erase pill while it's active.
   const brushRadius = useSignalCoalesced(eraseBrushRadius)
   const brushCap = useSignalCoalesced(eraseBrushCap)
+  const nonDestructive = useSignalCoalesced(eraseNonDestructive)
 
   // Per-point interpolation mode for the selected width point. The overlay owns
   // the geometry and publishes the selection here; this is a thin control.
@@ -274,6 +276,32 @@ export function PenEditFlyout() {
                   </div>
                 </div>
               )}
+              <div className="mt-1 border-t border-border/60 px-2.5 pb-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    eraseNonDestructive.value = !eraseNonDestructive.value
+                  }}
+                  aria-pressed={nonDestructive}
+                  title="Keep each erase as a live, re-editable operator instead of baking the cut into the points"
+                  className="flex w-full items-center gap-2"
+                >
+                  <span className="text-[11px] text-muted-foreground">Non-destructive</span>
+                  <span
+                    className={cn(
+                      'ml-auto relative inline-flex h-4 w-7 items-center rounded-full transition-colors',
+                      nonDestructive ? 'bg-blue-600' : 'bg-muted',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'inline-block size-3 rounded-full bg-white transition-transform',
+                        nonDestructive ? 'translate-x-3.5' : 'translate-x-0.5',
+                      )}
+                    />
+                  </span>
+                </button>
+              </div>
             </PopoverPrimitive.Content>
           </PopoverPrimitive.Portal>
         </PopoverPrimitive.Root>
