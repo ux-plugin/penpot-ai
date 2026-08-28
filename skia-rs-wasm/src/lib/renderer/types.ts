@@ -90,13 +90,6 @@ export interface PathContent {
   /** Single shape-wide corner radius (P4). The stored `segments` stay sharp; the
    * fillet is applied only when serializing to the renderer. */
   cornerRadius?: number
-  /** Non-destructive operator stack (Phase 2). When present, `base` is the
-   * geometry BEFORE the operators and `operators` the ordered stack (eraser cut,
-   * later Trim/Merge/Repeater/Offset); `subpaths`/`segments` are their derived
-   * render mirror, kept in sync by `operatorContent()`. Baking clears both. Typed
-   * structurally here to avoid a cycle with the `geom/` layer. */
-  base?: PathContent['subpaths']
-  operators?: Array<{ type: string; clip?: PathContent['subpaths']; [key: string]: unknown }>
   [key: string]: unknown
 }
 

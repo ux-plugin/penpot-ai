@@ -31,9 +31,6 @@ import { getSubpaths, compoundContent, segmentsToSubpaths, type Subpath } from '
 import { fitClosedRing, rdpSimplify } from '../geom/fit-curve'
 import { pathBoolean } from '../api/boolean'
 import { getWasmModule } from '../wasm-module'
-import { operatorContent, type Operator, type BooleanFn } from '../geom/operators'
-import { eraseNonDestructive } from '../signals/selection'
-import type { PathContent } from '../types'
 import type { Anchor, Pt } from '../geom/anchors'
 import { anchorsTightBounds } from '../geom/anchors'
 import { commitNodePartialUpdate, getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
@@ -296,38 +293,19 @@ async function subtractClips(
   const clipSubpaths = clipsToSubpaths(clips)
   if (clipSubpaths.length === 0) return false
 
-  const boolFn: BooleanFn = (s, c, op, fill) => pathBoolean(module, s, c, op, fill)
-
-  let committedSubpaths: Subpath[]
-  let outClosed: Subpath[]
-  let extras: Partial<PathContent>
-  let allowDelete: boolean
-
-  if (eraseNonDestructive.value) {
-    const prev = ((before as { content?: PathContent }).content ?? {}) as PathContent
-    const base = (prev.base && prev.base.length ? prev.base : subpaths) as Subpath[]
-    const operators: Operator[] = [
-      ...((prev.operators ?? []) as Operator[]),
-      { type: 'subtract', clip: clipSubpaths },
-    ]
-    const oc = operatorContent(base, operators, boolFn)
-    committedSubpaths = oc.subpaths
-    outClosed = oc.subpaths.filter((sp) => sp.closed && sp.vertices.length >= 3)
-    extras = { base: oc.base, operators: oc.operators }
-    allowDelete = false
-  } else {
-    const result = boolFn(compoundContent(closed), compoundContent(clipSubpaths), 'difference', 'evenodd')
-    outClosed = result
-      ? segmentsToSubpaths(result.segments ?? []).filter((sp) => sp.closed && sp.vertices.length >= 3)
-      : []
-    committedSubpaths = [...outClosed, ...openSubpaths]
-    extras = { base: undefined, operators: undefined }
-    allowDelete = true
-  }
+  const result = pathBoolean(
+    module,
+    compoundContent(closed),
+    compoundContent(clipSubpaths),
+    'difference',
+    'evenodd',
+  )
+  const outClosed = result
+    ? segmentsToSubpaths(result.segments ?? []).filter((sp) => sp.closed && sp.vertices.length >= 3)
+    : []
   const remaining = subpathsArea(outClosed)
 
   if (
-    allowDelete &&
     canDelete &&
     remaining < subjectArea * 0.5 &&
     (outClosed.length === 0 || remaining < DELETE_REMNANT_AREA)
@@ -341,70 +319,10 @@ async function subtractClips(
   await commitNodePartialUpdate(
     shapeId,
     before,
-    erasePartial(before, committedSubpaths, extras),
+    erasePartial(before, [...outClosed, ...openSubpaths]),
     pageId,
   )
   return false
-}
-
-/**
- * Re-apply a shape's non-destructive operator stack and commit the result. The
- * operator inspector uses this to remove/reorder operators: it re-resolves `base`
- * through the edited `operators` and stores the new render mirror plus the updated
- * stack. An empty stack reverts the shape to its bare `base` (every cut undone)
- * and clears the stack metadata.
- */
-export async function applyShapeOperators(
-  shapeId: string,
-  pageId: string,
-  base: Subpath[],
-  operators: Operator[],
-): Promise<void> {
-  const page = getPage(pageId)
-  if (!page) return
-  const before = getCommittedNodeOnActivePage(shapeId)
-  if (!before) return
-  const module = getWasmModule()
-  if (!module) return
-  const boolFn: BooleanFn = (s, c, op, fill) => pathBoolean(module, s, c, op, fill)
-
-  if (operators.length === 0) {
-    await commitNodePartialUpdate(
-      shapeId,
-      before,
-      erasePartial(before, base, { base: undefined, operators: undefined }),
-      pageId,
-    )
-    return
-  }
-  const oc = operatorContent(base, operators, boolFn)
-  await commitNodePartialUpdate(
-    shapeId,
-    before,
-    erasePartial(before, oc.subpaths, { base: oc.base, operators: oc.operators }),
-    pageId,
-  )
-}
-
-/**
- * Bake a shape's operator stack: keep the currently-resolved geometry but drop
- * `base`/`operators`, so it becomes a plain editable path again and future edits
- * are destructive. A no-op if the shape carries no operators.
- */
-export async function bakeShapeOperators(shapeId: string, pageId: string): Promise<void> {
-  const page = getPage(pageId)
-  if (!page) return
-  const before = getCommittedNodeOnActivePage(shapeId)
-  if (!before) return
-  const prev = ((before as { content?: PathContent }).content ?? {}) as PathContent
-  if (!prev.operators || prev.operators.length === 0) return
-  const resolved = getSubpaths(prev)
-  await commitNodePartialUpdate(
-    shapeId,
-    before,
-    erasePartial(before, resolved, { base: undefined, operators: undefined }),
-    pageId,
-  )
 }
 
 /** Drop consecutive duplicate points (within a hair) from the raw drag. */
@@ -532,15 +450,9 @@ function clipsToSubpaths(clips: Array<Polygon | MultiPolygon>): Subpath[] {
 
 /**
  * Node-geometry partial from the cut result: compound content (clearing the
- * single-path/network mirrors so holes survive) and a tight curve bbox. `extras`
- * carries the non-destructive `base`/`operators` to store (live erase) or the
- * same keys set `undefined` to clear the stack (a baked/destructive erase).
+ * single-path/network mirrors so holes survive) and a tight curve bbox.
  */
-function erasePartial(
-  before: PenpotNode,
-  subpaths: Subpath[],
-  extras: Partial<PathContent> = {},
-): Partial<PenpotNode> {
+function erasePartial(before: PenpotNode, subpaths: Subpath[]): Partial<PenpotNode> {
   const compound = compoundContent(subpaths)
   const b = unionTightBounds(subpaths)
   const prev = (before as { content?: Record<string, unknown> }).content ?? {}
@@ -556,7 +468,6 @@ function erasePartial(
       vertices: undefined,
       closed: undefined,
       ...compound,
-      ...extras,
     } as PenpotNode['content'],
     points: [
       { x: b.x, y: b.y },

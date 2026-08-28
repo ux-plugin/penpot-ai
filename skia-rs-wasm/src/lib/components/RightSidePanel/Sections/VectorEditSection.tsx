@@ -7,22 +7,17 @@
 
 import { useCallback } from 'react'
 import { useSelector } from '@xstate/react'
-import { PenTool, X } from 'lucide-react'
+import { PenTool } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { useCanvasActor } from '@/lib/renderer/machine/canvas-actor-context'
 import { isConvertibleToPath, primitiveToPathPartial } from '@/lib/renderer/handlers/primitive-to-path'
-import { applyShapeOperators, bakeShapeOperators } from '@/lib/renderer/handlers/erase'
-import type { Operator } from '@/lib/renderer/geom/operators'
-import type { Subpath } from '@/lib/renderer/geom/subpaths'
 import {
   commitNodePartialUpdate,
   getCommittedNodeOnActivePage,
 } from '@/lib/renderer/properties/commit-node-properties'
 import { getActiveOrSinglePageId } from '@/lib/renderer/store/doc-proxy'
 import type { RectLikeNode } from '@/lib/renderer/properties/panel-utils'
-
-const OPERATOR_LABELS: Record<string, string> = { subtract: 'Erase' }
 
 export interface VectorEditSectionProps {
   nodeId: string
@@ -38,30 +33,6 @@ export function VectorEditSection({ nodeId, initialNode, readOnly }: VectorEditS
   )
 
   const isPath = (initialNode as { type?: string }).type === 'path'
-
-  const content = (initialNode as { content?: { operators?: Operator[]; base?: Subpath[] } }).content
-  const operators = content?.operators ?? []
-  const base = content?.base ?? []
-
-  const removeOperator = useCallback(
-    async (index: number) => {
-      const pid = getActiveOrSinglePageId()
-      if (!pid) return
-      await applyShapeOperators(
-        nodeId,
-        pid,
-        base,
-        operators.filter((_, i) => i !== index),
-      )
-    },
-    [nodeId, base, operators],
-  )
-
-  const bake = useCallback(async () => {
-    const pid = getActiveOrSinglePageId()
-    if (!pid) return
-    await bakeShapeOperators(nodeId, pid)
-  }, [nodeId])
 
   const toggle = useCallback(async () => {
     if (editingThis) {
@@ -112,46 +83,6 @@ export function VectorEditSection({ nodeId, initialNode, readOnly }: VectorEditS
             <li>Click the other end to close the path</li>
             <li>Pen tool → new sub-path, then click another end to join</li>
           </ul>
-        )}
-        {isPath && operators.length > 0 && (
-          <div className="mt-3">
-            <div className="mb-1 flex items-center justify-between">
-              <span className="text-[11px] font-medium text-muted-foreground">
-                Operators <span className="tabular-nums">({operators.length})</span>
-              </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-[11px]"
-                disabled={readOnly}
-                onClick={bake}
-                title="Bake the stack into the path — the cuts become permanent and future edits are destructive"
-              >
-                Bake
-              </Button>
-            </div>
-            <ul className="space-y-0.5">
-              {operators.map((op, i) => (
-                <li
-                  key={i}
-                  className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1 text-[11px]"
-                >
-                  <span className="text-foreground">{OPERATOR_LABELS[op.type] ?? op.type}</span>
-                  <span className="ml-auto tabular-nums text-muted-foreground">#{i + 1}</span>
-                  <button
-                    type="button"
-                    disabled={readOnly}
-                    onClick={() => removeOperator(i)}
-                    title="Remove this operator (restores what it cut)"
-                    className="text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
         )}
       </div>
     </>
