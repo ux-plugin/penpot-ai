@@ -1663,13 +1663,25 @@ pub fn build_scale_scene_sized(
         node.fills = vec![Paint::plain(Brush::Solid(col(60 + hue / 3, 90 + hue / 4, 200 - hue / 3)))];
         node.opacity = if opacity_every > 0 && i % opacity_every == 0 { 0.75 } else { 1.0 };
         if effect_every > 0 && i % effect_every == 0 {
-            match (i / effect_every) % 4 {
+            match (i / effect_every) % 5 {
                 0 => node.shadows = vec![Shadow { color: cola(0, 0, 0, 140), blur: 9.0, spread: 0.0, offset: Vec2::new(5.0, 6.0), inset: false }],
                 1 => node.blur = Some(3.0),
                 2 => {
                     node.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 7.0, spread: 0.0, offset: Vec2::new(-4.0, -5.0), inset: true }];
                 }
-                _ => node.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.85, 0.3, 0.45) }],
+                3 => node.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.85, 0.3, 0.45) }],
+                // A STACK GLASS: a shape-following lens + a light drop shadow (the non-box shadow is what
+                // makes it FX_STACK, where the SDF lens lives). The refracted/magnified backdrop shows
+                // through, so the effect reads over the neighbouring blobs.
+                _ => {
+                    node.fills = vec![];
+                    node.shadows = vec![Shadow { color: cola(0, 0, 0, 90), blur: 6.0, spread: 0.0, offset: Vec2::new(4.0, 6.0), inset: false }];
+                    let mut g = glass_lens(TileMode::Decal);
+                    g.zoom = 0.5;
+                    g.blur = 0.0;
+                    g.frost = 0.0;
+                    node.glass = Some(g);
+                }
             }
         }
         b.root(node);
