@@ -590,7 +590,7 @@ fn wv_glass_fine() -> bool {
 fn wv_dag() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_DAG").is_ok_and(|v| v != "0");
+        return std::env::var("WV_DAG").map_or(true, |v| v != "0");
     }
     #[cfg(target_arch = "wasm32")]
     false
@@ -605,7 +605,7 @@ fn wv_dag() -> bool {
 fn wv_dag_exec() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return std::env::var("WV_DAG_EXEC").is_ok_and(|v| v != "0");
+        return std::env::var("WV_DAG_EXEC").map_or(true, |v| v != "0");
     }
     #[cfg(target_arch = "wasm32")]
     false
