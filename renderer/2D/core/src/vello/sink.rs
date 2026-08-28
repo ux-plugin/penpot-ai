@@ -1813,6 +1813,19 @@ impl Sink {
         } else {
             std::collections::HashMap::new()
         };
+        // WV_DAG_EXEC: the sharp glass warp for each stack shape — the warp node the reload window binds
+        // by edge, plus its SDF source node (Some for a shape-following lens, None for an analytic box).
+        // Descriptor delivery still rides `stack_markers` (same round); only the binding moves to the DAG.
+        let dag_glass: std::collections::HashMap<u128, (usize, Option<usize>)> = if wv_dag_exec() {
+            stack_fine
+                .keys()
+                .filter_map(|&gid| {
+                    wv_dag_graph.as_ref().and_then(|d| self.wv_dag_glass(gid, d)).map(|w| (gid, w))
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
         // A sharp stack's glass reload + body land ONE round past its drops (the block/×2 both put the
         // drops at rounds[j]). A frosted stack's chain runs at rounds[j]+1..+5 and its body on the tail
         // (round +5). `stack_reload_sub[gid]` = the round OFFSET at which the body composites (1 sharp,
@@ -2254,6 +2267,11 @@ impl Sink {
                                 window_role.insert(rounds[j] + p as u32, WindowRole::DagNode { node });
                             }
                         }
+                    } else if let Some(&(warp, _)) = dag_glass.get(&gid) {
+                        // A sharp stack's glass reload (round +1 past its drops) — the fused warp arm binds
+                        // the backdrop as `base_in` and, for a shape-following lens, the SDF node as
+                        // `input_in`. Overrides the `SampledGlass`/`None` window.
+                        window_role.insert(rounds[j] + 1, WindowRole::DagNode { node: warp });
                     } else if fx_fine.get(&gid).is_some_and(|p| p.len() == 2) {
                         if let Some((h, v)) = self.wv_dag_bg_blur(gid, dag) {
                             window_role.insert(rounds[j], WindowRole::DagNode { node: h });
@@ -2380,6 +2398,42 @@ impl Sink {
                 self.frame_transient_views.push(sv.clone());
                 node_scratch.insert(sil_node, sv);
             }
+        }
+        // Edge-driven SDF fields (`WV_DAG_EXEC`): reach-disjoint glasses that SHARE a reload round also
+        // share ONE window dispatch (the scheduler packs same-kind stacks into one span-2 block), so their
+        // SDF `Rasterize` nodes CO-LOCATE into one region-packed texture — each glass its own device rect
+        // (`clear` only the first, later ones `load`), exactly as the shared `sdf_view` did. Every glass
+        // sdf node binds this one texture; the single window dispatch reads each glass's field at its own
+        // device pixels. (One physical scratch spans several nodes here, as the accumulator and the frost
+        // block scratch do — the node identity stays, only the allocation is shared.)
+        let glass_sdf_nodes: Vec<(usize, u128)> = dag_glass
+            .iter()
+            .filter_map(|(&gid, &(_, sdf))| sdf.map(|s| (s, gid)))
+            .collect();
+        if !glass_sdf_nodes.is_empty() {
+            if self.sdf_baker.is_none() {
+                self.sdf_baker = Some(crate::vello::sdf::SdfBaker::new(device));
+            }
+            let tex = self.pool.acquire_target(
+                device,
+                width,
+                acc_h,
+                crate::vello::sdf::SDF_FORMAT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                "wv dag sdf",
+            );
+            let sv = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let baker = self.sdf_baker.as_ref().expect("sdf baker just built");
+            let mut first = true;
+            for (sdf_node, gid) in &glass_sdf_nodes {
+                if let Some((segs, region, decode)) = stack_sdf.get(gid) {
+                    baker.bake_into(device, &mut enc, &sv, segs, *region, *decode, first);
+                    first = false;
+                }
+                node_scratch.insert(*sdf_node, sv.clone());
+            }
+            self.frame_transient.push(tex);
+            self.frame_transient_views.push(sv.clone());
         }
 
         let _tpb = crate::vello::prof::now();
@@ -2629,10 +2683,29 @@ impl Sink {
                             .any(|m| matches!(m.op, UnitOp::Blur { .. } | UnitOp::Scatter(_) | UnitOp::Warp(_) | UnitOp::EraseBy(_)));
                         match &n.op {
                             UnitOp::Warp(_) => {
-                                // A lens/frost warp head: read the backdrop, materialise the refracted sample.
-                                let dv = acquire();
-                                backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&base), &dv);
-                                node_scratch.insert(node, dv);
+                                if materialize {
+                                    // A FROST warp head: read the backdrop, materialise the refracted
+                                    // sample for the blur chain that follows.
+                                    let dv = acquire();
+                                    backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&base), &dv);
+                                    node_scratch.insert(node, dv);
+                                } else {
+                                    // A SHARP glass warp = the whole fused [Warp,Shade,MaskMix] arm in one
+                                    // pass: read the backdrop (base_in), plus the SDF (input_in) for a
+                                    // shape-following lens, and composite masked. Analytic box lens: base only.
+                                    let c = cur.expect("a glass warp composites over the backdrop");
+                                    let out = 1 - c;
+                                    match n.inputs.get(1) {
+                                        Some(&sdf) => {
+                                            let src = node_scratch.get(&sdf).expect("SDF field baked").clone();
+                                            backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], &src, &views[out]);
+                                        }
+                                        None => {
+                                            backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), &views[out]);
+                                        }
+                                    }
+                                    cur = Some(out);
+                                }
                             }
                             UnitOp::Blur { .. } => {
                                 let input = n.inputs[0];
@@ -2809,18 +2882,28 @@ impl Sink {
                 let n = &dag.nodes[node];
                 let c = cur.expect("an edge-driven composite reads a backdrop");
                 let out = 1 - c;
-                // An inner band reads its punch (inputs[1]); a sharp drop / frost tail reads its coverage
-                // (inputs[0]) as input_in; a drop's V blur reads its draft (inputs[0]) as a blur draft.
-                let src_node = match &n.op {
-                    UnitOp::EraseBy(_) => n.inputs[1],
-                    _ => n.inputs[0],
-                };
-                let src = node_scratch.get(&src_node).expect("edge source materialised").clone();
                 match &n.op {
+                    // A sharp glass warp = the fused refraction arm: read the backdrop (base_in), plus the
+                    // SDF (inputs[1]) for a shape-following lens, composite masked. Analytic box: base only.
+                    UnitOp::Warp(_) => match n.inputs.get(1) {
+                        Some(&sdf) => {
+                            let src = node_scratch.get(&sdf).expect("SDF field baked").clone();
+                            backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &src, &views[out]);
+                        }
+                        None => {
+                            backend.phased_fine_segment(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, Some(&views[c]), &views[out]);
+                        }
+                    },
+                    // A drop's V blur reads its draft (inputs[0]) as a blur draft.
                     UnitOp::Blur { .. } => {
+                        let src = node_scratch.get(&n.inputs[0]).expect("edge source materialised").clone();
                         backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &src, &views[out]);
                     }
+                    // An inner band reads its punch (inputs[1]); a sharp drop / frost tail reads its
+                    // coverage (inputs[0]) as input_in.
                     _ => {
+                        let src_node = if matches!(&n.op, UnitOp::EraseBy(_)) { n.inputs[1] } else { n.inputs[0] };
+                        let src = node_scratch.get(&src_node).expect("edge source materialised").clone();
                         backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &src, &views[out]);
                     }
                 }
@@ -5931,6 +6014,21 @@ impl Sink {
             }
         }
         (!passes.is_empty()).then_some(DagShadow { sils, passes })
+    }
+
+    /// The sharp-stack lens's warp node + its SDF source node (`WV_DAG_EXEC`). The warp is the head of the
+    /// fused `[Warp, Shade, MaskMix]` glass arm (its consumer is a `Shade`, no frost blur between); its
+    /// second input, if present, is the SDF `Rasterize` source of a shape-following (sampled) lens.
+    fn wv_dag_glass(&self, gid: u128, dag: &crate::vello::frame_dag::FrameDag) -> Option<(usize, Option<usize>)> {
+        use crate::vello::frame_dag::Source;
+        use crate::vello::units::UnitOp;
+        let warp = dag.nodes.iter().enumerate().find_map(|(i, n)| {
+            let is_mine = matches!(n.source, Source::Effect { shape, .. } if shape == gid);
+            let is_glass_warp = matches!(n.op, UnitOp::Warp(_))
+                && dag.nodes.iter().any(|m| m.inputs.contains(&i) && matches!(m.op, UnitOp::Shade(_)));
+            (is_mine && is_glass_warp).then_some(i)
+        })?;
+        Some((warp, dag.nodes[warp].inputs.get(1).copied()))
     }
 
     /// The two axis `Blur` nodes of a pure background blur (`WV_DAG_EXEC`): H reads the `Reload`
