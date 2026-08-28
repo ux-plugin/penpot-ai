@@ -173,6 +173,46 @@ fn main() {
         "  wv render passes: {wv_passes} (fine {} batch {} graph {} glass {} blur {} composite {} blit {})",
         d[0], d[1], d[2], d[3], d[4], d[5], d[6]
     );
+    if let Ok(reps) = std::env::var("WV_DAG_TIME").map(|v| v.parse::<u32>().unwrap_or(60)) {
+        // Time the DAG-edge executor (default on) against the forced-legacy WindowRole/batched path.
+        // Fresh Sink per config; each frame reinstalls the scene, clears dirty, renders, and polls to
+        // completion so the wall time is a full GPU frame, not just encode.
+        let mut time_it = |dag: bool| {
+            unsafe {
+                std::env::set_var("WV_DAG", if dag { "1" } else { "0" });
+                std::env::set_var("WV_DAG_EXEC", if dag { "1" } else { "0" });
+            }
+            let mut sink = Sink::new(&device, FORMAT);
+            let t = make_target(&device, w, h, "wv dag timing");
+            // Warm up (pipeline/atlas creation) so the first frame's one-time cost is excluded.
+            for _ in 0..3 {
+                let cells = install(&scene);
+                let _ = frame_setup(cells);
+                let _ = render_core::vello::abi::take_dirty();
+                sink.render_whole_viewport(&mut backend, &device, &queue, &t, root, w, h, true);
+            }
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            let start = std::time::Instant::now();
+            for _ in 0..reps {
+                let cells = install(&scene);
+                let _ = frame_setup(cells);
+                let _ = render_core::vello::abi::take_dirty();
+                sink.render_whole_viewport(&mut backend, &device, &queue, &t, root, w, h, true);
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            }
+            start.elapsed().as_secs_f64() * 1000.0 / f64::from(reps)
+        };
+        let dag = time_it(true);
+        let legacy = time_it(false);
+        unsafe {
+            std::env::remove_var("WV_DAG");
+            std::env::remove_var("WV_DAG_EXEC");
+        }
+        let delta = 100.0 * (dag - legacy) / legacy;
+        println!(
+            "  frame time over {reps} frames [{scene} {w}x{h}]: DAG-edge {dag:.3} ms, legacy {legacy:.3} ms ({delta:+.1}%)"
+        );
+    }
     if std::env::var("WV_GLASS_AB").is_ok() {
         unsafe { std::env::set_var("WV_LENS", "0") };
         let cells = install(&scene);
