@@ -2267,6 +2267,14 @@ impl Sink {
                                 window_role.insert(rounds[j] + p as u32, WindowRole::DagNode { node });
                             }
                         }
+                    } else if frost_stack_gather[j] {
+                        // A frosted stack: its drops ride rounds[j], so the 5-stage frost chain is offset
+                        // +1 (rounds[j]+1..+5), overriding the `Frost(0..4)` role windows.
+                        if let Some(nodes) = self.wv_dag_frost(gid, dag) {
+                            for (p, &node) in nodes.iter().enumerate() {
+                                window_role.insert(rounds[j] + 1 + p as u32, WindowRole::DagNode { node });
+                            }
+                        }
                     } else if let Some(&(warp, _)) = dag_glass.get(&gid) {
                         // A sharp stack's glass reload (round +1 past its drops) — the fused warp arm binds
                         // the backdrop as `base_in` and, for a shape-following lens, the SDF node as
