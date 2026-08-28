@@ -242,6 +242,16 @@ struct ShadowMk {
     punch_key: u32,
 }
 
+/// The edge-driven dispatch plan for a soft-drop shape (`WV_DAG_EXEC`) — DAG node references the
+/// executor binds by EDGE instead of by role/round. Produced by [`Sink::wv_dag_shadow`].
+struct DagShadow {
+    /// Each drop's silhouette `Rasterize` node index + its slot — rasterised into `node_scratch[node]`.
+    sils: Vec<(usize, usize)>,
+    /// Each axis `Blur` node: its packer round, the node index, and whether it MATERIALISES (H) or
+    /// composites (V). The dispatch finds the source by `dag.nodes[node].inputs[0]` → `node_scratch`.
+    blurs: Vec<(u32, usize, bool)>,
+}
+
 /// Rounds the pre-body half of a shadow plan spans: two (H, V) per soft shadow, one per sharp drop, none
 /// for a sharp inner (its lone band is POST-body).
 fn shadow_pre_rounds(plan: &[ShadowMarker]) -> u32 {
@@ -1756,6 +1766,21 @@ impl Sink {
                     .map(|sched| (gid, sched))
             })
             .collect();
+        // WV_DAG_EXEC: the edge-driven dispatch plan for each soft-drop shape — DAG nodes the round loop
+        // binds by edge (node scratches) instead of the `DropBlurH`/`DropBlurV` roles. Descriptor delivery
+        // still rides `shadow_sched`/`stack_markers` (same rounds); only the binding moves to the DAG.
+        let dag_shadow: std::collections::HashMap<u128, DagShadow> = if wv_dag_exec() {
+            gathers
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, _, k))| *k == FX_STACK)
+                .filter_map(|(j, &(_, gid, _))| {
+                    wv_dag_graph.as_ref().and_then(|d| self.wv_dag_shadow(gid, d, rounds[j])).map(|ds| (gid, ds))
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
         // A sharp stack's glass reload + body land ONE round past its drops (the block/×2 both put the
         // drops at rounds[j]). A frosted stack's chain runs at rounds[j]+1..+5 and its body on the tail
         // (round +5). `stack_reload_sub[gid]` = the round OFFSET at which the body composites (1 sharp,
@@ -2122,6 +2147,11 @@ impl Sink {
             /// A SHARP inner shadow's BAND: like `InnerBand` but the punch is the RAW offset silhouette
             /// ([`Self::stack_sil`] at THIS round, no blur) rather than a blurred `stack_punch` scratch.
             SharpInnerBand,
+            /// EDGE-DRIVEN (`WV_DAG_EXEC`): one axis Blur of a soft-drop, dispatched from its DAG node. The
+            /// source scratch is `node_scratch[dag.nodes[blur_node].inputs[0]]` — the silhouette node (H) or
+            /// the H node (V) — bound by EDGE, no role/round keying. `materialise` = H (writes its own node
+            /// scratch); else V (SPREAD-composites over the accumulator). Replaces `DropBlurH`/`DropBlurV`.
+            DagBlur { blur_node: usize, materialize: bool },
         }
         let mut window_role: std::collections::HashMap<u32, WindowRole> = std::collections::HashMap::new();
         if rw {
@@ -2174,6 +2204,17 @@ impl Sink {
                 }
             }
         }
+        // WV_DAG_EXEC: OVERRIDE a soft-drop's `DropBlurH`/`DropBlurV` windows with the edge-driven
+        // `DagBlur` — the dispatch binds `node_scratch` by the DAG node's input edge instead of the role.
+        for ds in dag_shadow.values() {
+            for &(round, blur_node, materialize) in &ds.blurs {
+                window_role.insert(round, WindowRole::DagBlur { blur_node, materialize });
+            }
+        }
+        // Edge-driven scratch: every materialised DAG node writes its OWN texture, keyed by NODE INDEX; a
+        // reader binds it by following its `inputs` edge. Replaces the role/round-keyed draft & silhouette
+        // maps for the effects on the executor path.
+        let mut node_scratch: std::collections::HashMap<usize, wgpu::TextureView> = std::collections::HashMap::new();
         // A FRESH draft per blur-H round, not one reused texture: the engine orders cross-dispatch
         // reads/writes of an EXTERNAL texture the way the accumulator ping-pong does — by alternating
         // surfaces. One draft written (H), read (V), written (next H), read (next V) is a same-texture
@@ -2273,6 +2314,20 @@ impl Sink {
             self.frame_transient.push(sil);
             self.frame_transient_views.push(sv.clone());
             self.stack_sil.insert(round, sv);
+        }
+        // Edge-driven silhouettes (`WV_DAG_EXEC`): rasterise each soft-drop's silhouette `Rasterize` node
+        // into `node_scratch[node]` — the H blur binds it by following its input edge, no round key.
+        for (gid, ds) in &dag_shadow {
+            for &(sil_node, slot) in &ds.sils {
+                let sil = self.pool.acquire_target(device, width, acc_h, format, self.raster_usage, "wv dag silhouette");
+                let sv = sil.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut sscene = backend.new_scene(width as u16, acc_h as u16);
+                backend.build_shadow_silhouette(&mut sscene, root, *gid, slot, false, true, false);
+                backend.rasterize(&sscene, device, queue, &mut enc, &sv, width, acc_h, TRANSPARENT);
+                self.frame_transient.push(sil);
+                self.frame_transient_views.push(sv.clone());
+                node_scratch.insert(sil_node, sv);
+            }
         }
 
         let _tpb = crate::vello::prof::now();
@@ -2495,6 +2550,28 @@ impl Sink {
                         backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &views[c], sdf, &views[out]);
                         cur = Some(out);
                     }
+                    Some(WindowRole::DagBlur { blur_node, materialize }) => {
+                        // EDGE-DRIVEN: the source scratch is this node's input edge — the silhouette node
+                        // (H) or the H node (V). No round/role keying; the DAG edge IS the link.
+                        let dag = wv_dag_graph.as_ref().expect("a DagBlur window has the DAG");
+                        let input_node = dag.nodes[blur_node].inputs[0];
+                        let src = node_scratch.get(&input_node).expect("edge source materialised").clone();
+                        if materialize {
+                            // H: blur the silhouette (base_in = input_in = the source, so tiles past the
+                            // coverage stay transparent) into THIS node's own scratch. No ping-pong advance.
+                            let dt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv dag blur draft");
+                            let dv = dt.create_view(&wgpu::TextureViewDescriptor::default());
+                            backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &src, &src, &dv);
+                            node_scratch.insert(blur_node, dv);
+                            draft_texs.push(dt);
+                        } else {
+                            // V: blur that draft vertically and SPREAD the shadow colour over the accumulator.
+                            let c = cur.expect("a soft drop composites over a backdrop");
+                            let out = 1 - c;
+                            backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], &src, &views[out]);
+                            cur = Some(out);
+                        }
+                    }
                     None => {
                         // A plain ping-pong window: read the current accumulator, write the other slot.
                         let out = cur.map_or(0, |c| 1 - c);
@@ -2586,6 +2663,15 @@ impl Sink {
                 let out = 1 - c;
                 let sil = self.stack_sil.get(&window_lo).expect("sharp-inner silhouette rasterised pre-pass").clone();
                 backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &sil, &views[out]);
+                out
+            } else if let Some(&WindowRole::DagBlur { blur_node, materialize: false }) = window_role.get(&window_lo) {
+                // A soft-drop's V (edge-driven) can land in the final window when nothing draws after it.
+                // Bind its source draft by the DAG input edge, exactly like the in-loop arm.
+                let dag = wv_dag_graph.as_ref().expect("a DagBlur window has the DAG");
+                let src = node_scratch.get(&dag.nodes[blur_node].inputs[0]).expect("edge source materialised").clone();
+                let c = cur.expect("a soft drop composites over a backdrop");
+                let out = 1 - c;
+                backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, crate::vello::rasterize::SEG_ALL, &views[c], &src, &views[out]);
                 out
             } else {
                 let out = cur.map_or(0, |c| 1 - c);
@@ -5633,6 +5719,50 @@ impl Sink {
             eprintln!("  WV_DAG: {} soft-drop shadow marker(s) for gid {gid:x} from the DAG", plan.len());
         }
         (!plan.is_empty()).then_some(plan)
+    }
+
+    /// The edge-driven dispatch plan for an all-soft-drop shape — the DAG nodes the executor binds by
+    /// EDGE, not by role/round. `sils` = each drop's silhouette `Rasterize` node (+ its slot) to
+    /// rasterise into `node_scratch[node]`; `blurs` = each axis `Blur` node with its packer round and
+    /// whether it MATERIALISES (H, writes its own node scratch that the V reads) or composites (V, SPREAD
+    /// over the accumulator). The dispatch reads `node.inputs[0]` to find its source scratch — the H's is
+    /// the silhouette node, the V's is the H node — so `punch_key`/`window_lo-1` round-keying is gone.
+    /// `None` for any sharp/inner/non-soft-drop shape (stays on the role dispatch).
+    fn wv_dag_shadow(&self, gid: u128, dag: &crate::vello::frame_dag::FrameDag, base: u32) -> Option<DagShadow> {
+        use crate::vello::frame_dag::Source;
+        use crate::vello::units::UnitOp;
+        use std::collections::BTreeMap;
+        let mut slots: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (i, n) in dag.nodes.iter().enumerate() {
+            if let Source::Effect { shape, slot } = n.source {
+                if shape == gid {
+                    slots.entry(slot).or_default().push(i);
+                }
+            }
+        }
+        if slots.is_empty() {
+            return None;
+        }
+        let (mut sils, mut blurs) = (Vec::new(), Vec::new());
+        let mut cursor = base;
+        for (drop_ord, idxs) in slots.values().enumerate() {
+            let op = |i: usize| &dag.nodes[i].op;
+            let bad = idxs.iter().any(|&i| matches!(op(i), UnitOp::EraseBy(_) | UnitOp::Warp(_) | UnitOp::Scatter(_)));
+            let soft = idxs.iter().any(|&i| matches!(op(i), UnitOp::Blur { sigma, .. } if *sigma >= 0.5));
+            if bad || !soft {
+                return None;
+            }
+            let sil = *idxs.iter().find(|&&i| matches!(op(i), UnitOp::Rasterize))?;
+            let bn: Vec<usize> = idxs.iter().copied().filter(|&i| matches!(op(i), UnitOp::Blur { .. })).collect();
+            if bn.len() != 2 {
+                return None;
+            }
+            sils.push((sil, drop_ord));
+            blurs.push((cursor, bn[0], true)); // H materialises
+            blurs.push((cursor + 1, bn[1], false)); // V spreads
+            cursor += 2;
+        }
+        Some(DagShadow { sils, blurs })
     }
 
     /// The DAG-sourced SCHEDULE for `gid` — the `Vec<ShadowMk>` (round + role + descriptor) that
