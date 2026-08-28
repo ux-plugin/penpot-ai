@@ -25,10 +25,12 @@ import type { MultiPolygon, Polygon, Ring } from 'polygon-clipping'
 // the default export, not as ES named exports, so reach through `default`.
 const pc = (polygonClippingNs as unknown as { default?: typeof polygonClippingNs }).default ??
   polygonClippingNs
-const { difference, union, xor } = pc
+const { union } = pc
 import { getPage } from '../store/doc-proxy'
-import { getSubpaths, compoundContent, reverseSubpath, type Subpath } from '../geom/subpaths'
-import { fitClosedRing, fitOpenRunIdx, rdpSimplify } from '../geom/fit-curve'
+import { getSubpaths, compoundContent, segmentsToSubpaths, type Subpath } from '../geom/subpaths'
+import { fitClosedRing, rdpSimplify } from '../geom/fit-curve'
+import { pathBoolean } from '../api/boolean'
+import { getWasmModule } from '../wasm-module'
 import type { Anchor, Pt } from '../geom/anchors'
 import { anchorsTightBounds } from '../geom/anchors'
 import { commitNodePartialUpdate, getCommittedNodeOnActivePage } from '../properties/commit-node-properties'
@@ -245,6 +247,18 @@ export async function eraseLassoAnchors(
  * the given clip geometry out of it, and commit (or delete if fully erased).
  * Returns true when the shape was erased away.
  */
+/**
+ * Subtract the given clip regions from a path shape's fill, curve-native.
+ *
+ * The shape's real béziers are the subject and the clip (brush band or lasso) is
+ * differenced out by linesweeper in Rust (`pathBoolean`) — no flattening to
+ * polygons and no re-fitting afterward — so the cut edge is exact and the
+ * surviving anchors stay clean. An erase that consumes the whole fill (or leaves
+ * only a negligible speck) deletes the shape rather than committing an
+ * un-editable remnant; one that removes nothing meaningful is a no-op. Returns
+ * true when the shape was deleted. The area thresholds are screen-relative via
+ * `zoom`, so the eraser behaves identically at any magnification.
+ */
 async function subtractClips(
   shapeId: string,
   pageId: string,
@@ -252,14 +266,11 @@ async function subtractClips(
   zoom = 1,
 ): Promise<boolean> {
   if (clips.length === 0) return false
-  // No-op floor in world units² for the current zoom (constant on screen).
   const minRemoved = MIN_REMOVED_SCREEN_AREA / (zoom * zoom)
   const page = getPage(pageId)
   if (!page) return false
   if ((page.objects[shapeId] as PenpotNode | undefined)?.type !== 'path') return false
 
-  // Plain (non-proxy) snapshot for the commit: `commitNodePartialUpdate`
-  // structuredClones `before` for the undo frame, which a valtio proxy can't.
   const before = getCommittedNodeOnActivePage(shapeId)
   if (!before) return false
 
@@ -268,14 +279,8 @@ async function subtractClips(
   const openSubpaths = subpaths.filter((sp) => !(sp.closed && sp.vertices.length >= 2))
   const canDelete = openSubpaths.length === 0
 
-  // Current filled region as a clean MultiPolygon. XOR of the stored rings is the
-  // even-odd (nesting-parity) fill — exactly how the shape paints — so nested
-  // holes fall out without classifying exterior-vs-hole by hand.
-  const polys = closed.map((sp): [Ring] => [subpathToRing(sp)])
-  const subject = closed.length ? xor(polys[0], ...polys.slice(1)) : []
-  // A path with no fillable area (no closed rings, or they collapse to ~zero) is
-  // an invisible husk — an erase gesture on it removes it rather than no-op'ing.
-  if (subject.length === 0) {
+  const subjectArea = subpathsArea(closed)
+  if (subjectArea <= 0) {
     if (canDelete) {
       await deleteShape(before, pageId)
       return true
@@ -283,17 +288,23 @@ async function subtractClips(
     return false
   }
 
-  const subjectArea = mpArea(subject)
-  const result = difference(subject, clips[0], ...clips.slice(1))
-  const remaining = mpArea(result)
-  // Re-fit ONLY the boundary the cut touched, reusing the shape's existing anchors
-  // everywhere else — so erasing a new area doesn't reshuffle nodes computed for a
-  // previous cut. `clips` supplies the cut boundary the arc is measured against.
-  const outClosed = refitPreservingAnchors(result, closed, clips)
+  const module = getWasmModule()
+  if (!module) return false
+  const clipSubpaths = clipsToSubpaths(clips)
+  if (clipSubpaths.length === 0) return false
 
-  // Erased away: what's left is a negligible sliver (or the fit dropped every
-  // ring), AND this stroke actually consumed the shape (not a stray miss that
-  // leaves the fill intact). Delete rather than commit an un-editable speck.
+  const result = pathBoolean(
+    module,
+    compoundContent(closed),
+    compoundContent(clipSubpaths),
+    'difference',
+    'evenodd',
+  )
+  const outClosed = result
+    ? segmentsToSubpaths(result.segments ?? []).filter((sp) => sp.closed && sp.vertices.length >= 3)
+    : []
+  const remaining = subpathsArea(outClosed)
+
   if (
     canDelete &&
     remaining < subjectArea * 0.5 &&
@@ -303,7 +314,6 @@ async function subtractClips(
     return true
   }
 
-  // Otherwise require a meaningful removal to commit a change (kills no-op scribbles).
   if (subjectArea - remaining < minRemoved) return false
 
   await commitNodePartialUpdate(
@@ -361,14 +371,6 @@ export function flattenAnchorLoop(vertices: Anchor[], closed: boolean): Pt[] {
   return out
 }
 
-/** Flatten a closed sub-path (lines + cubics) to a polygon ring. */
-function subpathToRing(sp: Subpath): Ring {
-  const poly = flattenAnchorLoop(sp.vertices, true)
-  const ring: Ring = poly.map((p): [number, number] => [p.x, p.y])
-  if (ring.length > 0) ring.push([ring[0][0], ring[0][1]])
-  return ring
-}
-
 function cubicAt(p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt {
   const u = 1 - t
   const a = u * u * u
@@ -390,219 +392,60 @@ function cubicLen(p0: Pt, p1: Pt, p2: Pt, p3: Pt): number {
   )
 }
 
-/** Signed shoelace area of a ring. */
-function ringArea(ring: Ring): number {
-  let a = 0
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1]
-  }
-  return a / 2
-}
-
-/** Even-odd filled area of a clipper MultiPolygon: each polygon is exterior minus
- *  its holes, so |exterior| − Σ|holes|. */
-function mpArea(mp: MultiPolygon): number {
+/**
+ * Even-odd filled area of closed sub-paths, flattened only for measurement (the
+ * committed geometry keeps its béziers). Rings wound opposite to their exterior —
+ * i.e. holes — subtract, so a shape with a hole reports its true painted area.
+ * Used purely to drive the erase-to-delete and no-op thresholds.
+ */
+function subpathsArea(subpaths: Subpath[]): number {
   let total = 0
-  for (const poly of mp) {
-    poly.forEach((ring, i) => {
-      total += i === 0 ? Math.abs(ringArea(ring)) : -Math.abs(ringArea(ring))
-    })
+  for (const sp of subpaths) {
+    if (!sp.closed) continue
+    const poly = flattenAnchorLoop(sp.vertices, true)
+    let a = 0
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      a += poly[j].x * poly[i].y - poly[i].x * poly[j].y
+    }
+    total += a / 2
   }
-  return Math.max(0, total)
+  return Math.abs(total)
 }
 
 /**
- * Clipper MultiPolygon → compound sub-paths. Each polygon contributes its
- * exterior (wound positive) and one sub-path per hole (wound negative), so
- * render-wasm's non-zero fill cuts the holes; even-odd nesting would too.
+ * Flatten the clipper Polygon/MultiPolygon nesting the brush band and lasso emit
+ * into closed line sub-paths for the boolean's clip operand. The eraser stroke is
+ * a transient cutter, not user geometry, so approximating its arcs as line rings
+ * costs nothing — only the subject's curves must stay exact.
  */
-function mpToSubpaths(mp: MultiPolygon): Subpath[] {
-  const out: Subpath[] = []
-  for (const poly of mp) {
-    poly.forEach((ring, i) => {
-      const sp = ringToSubpath(ring, i === 0)
-      if (sp) out.push(sp)
-    })
-  }
-  return out
-}
-
-/** One clipper ring → a closed sub-path, oriented positive for an exterior and
- *  negative (opposite) for a hole. Drops the duplicated closing vertex and fits
- *  the dense ring to a few corner/smooth anchors (curvature kept via handles). */
-function ringToSubpath(ring: Ring, exterior: boolean): Subpath | null {
-  const pts = ring.slice()
-  if (pts.length > 1) {
-    const first = pts[0]
-    const last = pts[pts.length - 1]
-    if (first[0] === last[0] && first[1] === last[1]) pts.pop()
-  }
-  if (pts.length < 3) return null
-  const anchors = fitClosedRing(pts.map((p) => ({ x: p[0], y: p[1] })), SIMPLIFY_EPS)
-  if (anchors.length < 3) return null
-  const positive = ringArea(anchors.map((a): [number, number] => [a.point.x, a.point.y])) > 0
-  const sp: Subpath = { vertices: anchors, closed: true }
-  return positive === exterior ? sp : reverseSubpath(sp)
-}
-
-/** World-px: a result-ring vertex this close to an existing anchor reuses it. */
-const REFIT_MATCH_EPS = 0.5
-/** World-px: a result-ring vertex this close to a cut edge is NEW boundary. */
-const REFIT_CLIP_EPS = 0.6
-
-type Seg = [readonly [number, number], readonly [number, number]]
-
-/** Perp distance from a point to a segment (both endpoints as [x,y]). */
-function segDistPt(p: Pt, a: readonly [number, number], b: readonly [number, number]): number {
-  const dx = b[0] - a[0]
-  const dy = b[1] - a[1]
-  const l2 = dx * dx + dy * dy
-  if (l2 === 0) return Math.hypot(p.x - a[0], p.y - a[1])
-  let t = ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / l2
-  t = Math.max(0, Math.min(1, t))
-  return Math.hypot(p.x - (a[0] + t * dx), p.y - (a[1] + t * dy))
-}
-
-/** Recursively collect every ring (Array of [x,y]) out of clipper nesting. */
-function collectRings(node: unknown, out: Ring[]): void {
-  if (Array.isArray(node) && node.length > 0 && Array.isArray(node[0]) && typeof (node[0] as number[])[0] === 'number') {
-    out.push(node as Ring)
-    return
-  }
-  if (Array.isArray(node)) for (const child of node) collectRings(child, out)
-}
-
-function distToSegs(p: Pt, segs: Seg[]): number {
-  let m = Infinity
-  for (const [a, b] of segs) {
-    const d = segDistPt(p, a, b)
-    if (d < m) {
-      m = d
-      if (m < 1e-6) break
+function clipsToSubpaths(clips: Array<Polygon | MultiPolygon>): Subpath[] {
+  const rings: Ring[] = []
+  const walk = (node: unknown): void => {
+    if (
+      Array.isArray(node) &&
+      node.length > 0 &&
+      Array.isArray(node[0]) &&
+      typeof (node[0] as number[])[0] === 'number'
+    ) {
+      rings.push(node as Ring)
+      return
     }
+    if (Array.isArray(node)) for (const child of node) walk(child)
   }
-  return m
-}
-
-/**
- * Turn a cut result into sub-paths WITHOUT reshuffling the shape's existing
- * anchors: every result-ring vertex that still coincides with a prior anchor
- * reuses that anchor verbatim, and only the arcs the cut actually changed (their
- * vertices lie on the cut boundary) are re-fitted to fresh nodes. So erasing a new
- * area leaves the nodes from earlier cuts exactly where they were. Falls back to a
- * full {@link fitClosedRing} for a ring with no surviving anchors (fresh geometry).
- */
-function refitPreservingAnchors(
-  result: MultiPolygon,
-  oldClosed: Subpath[],
-  clips: Array<Polygon | MultiPolygon>,
-): Subpath[] {
-  const oldAnchors = oldClosed.flatMap((sp) => sp.vertices)
-  if (oldAnchors.length === 0) return mpToSubpaths(result)
-  const clipRings: Ring[] = []
-  collectRings(clips, clipRings)
-  const clipSegs: Seg[] = []
-  for (const r of clipRings) for (let i = 0; i + 1 < r.length; i++) clipSegs.push([r[i], r[i + 1]])
+  walk(clips)
 
   const out: Subpath[] = []
-  for (const poly of result) {
-    poly.forEach((ring, i) => {
-      const sp = refitRing(ring, i === 0, oldAnchors, clipSegs)
-      if (sp) out.push(sp)
-    })
+  for (const ring of rings) {
+    const pts = ring.slice()
+    if (pts.length > 1) {
+      const first = pts[0]
+      const last = pts[pts.length - 1]
+      if (first[0] === last[0] && first[1] === last[1]) pts.pop()
+    }
+    if (pts.length < 3) continue
+    out.push({ vertices: pts.map((p) => ({ point: { x: p[0], y: p[1] } })), closed: true })
   }
   return out
-}
-
-function refitRing(ring: Ring, exterior: boolean, oldAnchors: Anchor[], clipSegs: Seg[]): Subpath | null {
-  const pts = ring.slice()
-  if (pts.length > 1) {
-    const f = pts[0]
-    const l = pts[pts.length - 1]
-    if (f[0] === l[0] && f[1] === l[1]) pts.pop()
-  }
-  if (pts.length < 3) return null
-  const V: Pt[] = pts.map((p) => ({ x: p[0], y: p[1] }))
-  const n = V.length
-
-  // Match each surviving anchor to its nearest ring vertex (one-to-one).
-  type Seed = { idx: number; anchor: Anchor; corner: boolean }
-  const seeds: Seed[] = []
-  const used = new Set<number>()
-  for (const oa of oldAnchors) {
-    let best = -1
-    let bd = REFIT_MATCH_EPS
-    for (let i = 0; i < n; i++) {
-      if (used.has(i)) continue
-      const d = Math.hypot(V[i].x - oa.point.x, V[i].y - oa.point.y)
-      if (d < bd) {
-        bd = d
-        best = i
-      }
-    }
-    if (best >= 0) {
-      used.add(best)
-      seeds.push({ idx: best, anchor: oa, corner: !oa.handleIn && !oa.handleOut })
-    }
-  }
-  // A ring with almost no surviving anchors is fresh geometry — fit it wholesale.
-  if (seeds.length < 2) return ringToSubpath(ring, exterior)
-  seeds.sort((a, b) => a.idx - b.idx)
-
-  type Node = { p: Pt; corner: boolean; reuse?: Anchor }
-  const nodes: Node[] = []
-  const seedNodeIdx: number[] = []
-  const arcChanged: boolean[] = []
-  for (let s = 0; s < seeds.length; s++) {
-    const cur = seeds[s]
-    const nxt = seeds[(s + 1) % seeds.length]
-    const interior: Pt[] = []
-    for (let i = (cur.idx + 1) % n; i !== nxt.idx; i = (i + 1) % n) interior.push(V[i])
-    const changed = interior.some((v) => distToSegs(v, clipSegs) < REFIT_CLIP_EPS)
-    arcChanged.push(changed)
-    seedNodeIdx.push(nodes.length)
-    nodes.push({ p: { x: cur.anchor.point.x, y: cur.anchor.point.y }, corner: cur.corner, reuse: cur.anchor })
-    if (changed && interior.length) {
-      const withEnds = [V[cur.idx], ...interior, V[nxt.idx]]
-      const { idx, corner } = fitOpenRunIdx(withEnds, SIMPLIFY_EPS)
-      for (let k = 0; k < idx.length; k++) {
-        const li = idx[k]
-        if (li === 0 || li === withEnds.length - 1) continue
-        nodes.push({ p: { x: withEnds[li].x, y: withEnds[li].y }, corner: corner[k] })
-      }
-    }
-  }
-  // A seed is reused whole only when BOTH its arcs are unchanged; if either arc was
-  // cut, keep its position but recompute handles so they follow the new boundary.
-  for (let s = 0; s < seeds.length; s++) {
-    const prevCh = arcChanged[(s - 1 + seeds.length) % seeds.length]
-    const nextCh = arcChanged[s]
-    if (prevCh || nextCh) nodes[seedNodeIdx[s]].reuse = undefined
-  }
-
-  const m = nodes.length
-  if (m < 3) return ringToSubpath(ring, exterior)
-  const anchors: Anchor[] = nodes.map((nd, i) => {
-    if (nd.reuse) return nd.reuse
-    if (nd.corner) return { point: { x: nd.p.x, y: nd.p.y } }
-    const prev = nodes[(i - 1 + m) % m].p
-    const next = nodes[(i + 1) % m].p
-    const tx = next.x - prev.x
-    const ty = next.y - prev.y
-    const tl = Math.hypot(tx, ty) || 1
-    const ux = tx / tl
-    const uy = ty / tl
-    const dPrev = Math.hypot(nd.p.x - prev.x, nd.p.y - prev.y) / 3
-    const dNext = Math.hypot(next.x - nd.p.x, next.y - nd.p.y) / 3
-    return {
-      point: { x: nd.p.x, y: nd.p.y },
-      handleIn: { x: nd.p.x - ux * dPrev, y: nd.p.y - uy * dPrev },
-      handleOut: { x: nd.p.x + ux * dNext, y: nd.p.y + uy * dNext },
-    }
-  })
-  const positive = ringArea(anchors.map((a): [number, number] => [a.point.x, a.point.y])) > 0
-  const sp: Subpath = { vertices: anchors, closed: true }
-  return positive === exterior ? sp : reverseSubpath(sp)
 }
 
 /**

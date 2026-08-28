@@ -160,7 +160,7 @@ function writeSegment(buffer: DataView, offset: number, segment: PathSegment): v
  * Serializes path content to Uint8Array in WASM RawSegmentData format (28 bytes per segment).
  * Never returns a buffer with invalid segment bytes (avoids Rust panic on invalid enum 0x0).
  */
-function serializePathContent(content: PathContent): Uint8Array {
+export function serializePathContent(content: PathContent): Uint8Array {
   const segments = getSegmentsFromContent(content)
   if (segments.length === 0) {
     return new Uint8Array(0)
