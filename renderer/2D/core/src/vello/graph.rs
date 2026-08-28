@@ -66,7 +66,7 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
         match &graph[head].pass {
             EffectPass::Blur { sigma, linear } => {
                 out.push(Pass {
-                    units: vec![UnitOp::Blur { sigma: *sigma, linear: *linear }],
+                    units: vec![UnitOp::Blur { sigma: *sigma, linear: *linear, axis: Default::default(), edge: Default::default() }],
                     field: None,
                     custom: None,
                     inputs: graph[head].inputs.clone(),
@@ -213,7 +213,7 @@ pub fn run_op(
     let tex = pool.acquire_target(device, w, h, format, wgpu::TextureUsages::COPY_SRC, "op target");
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     match op.units.as_slice() {
-        [UnitOp::Blur { sigma, linear }] => {
+        [UnitOp::Blur { sigma, linear, .. }] => {
             gaussian_blur(
                 compositor, device, enc, &view, inputs[0], w, h, *sigma, *linear, format, pool, keep_tex, keep_views,
             );

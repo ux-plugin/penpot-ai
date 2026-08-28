@@ -31,6 +31,27 @@ use wgpu::util::DeviceExt;
 /// scheduler alphabet to translate through. For a fragment unit the discriminant selects its snippet
 /// and the payload is the 20-float IR uniform it was declared with
 /// ([`crate::effect_graph::EffectPass`] unit kinds).
+/// Which separable axis a [`UnitOp::Blur`] pass runs. The X pass reads the blur's source; the Y pass
+/// reads the X draft. Stamped at DAG build (the builder makes X then Y), so `bake` reads it off the op
+/// instead of inferring it from "is my input another blur?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlurAxis {
+    #[default]
+    X,
+    Y,
+}
+
+/// What a [`UnitOp::Blur`] finds beyond its source — the out-of-bounds tap behaviour, stamped at DAG
+/// build from what the blur reads. `Coverage` = a shadow silhouette over transparency (OOB taps fade to
+/// 0, the `SHADOW_EDGE` behaviour); `Backdrop` = the reloaded page or a warped backdrop (OOB taps are
+/// the page). So `bake` reads it off the op instead of tracing the input chain to a `Rasterize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlurEdge {
+    #[default]
+    Backdrop,
+    Coverage,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnitOp {
     /// STRUCTURAL: turn scene geometry into pixels — a plain-shape band, a shape body, or a coverage
@@ -62,8 +83,11 @@ pub enum UnitOp {
     Tint(Vec<f32>),
     /// A separable Gaussian of `sigma` device pixels — a NEIGHBORHOOD unit, so it is a fusion
     /// barrier: it reads the whole prior result and cannot share a fragment with the units after it.
-    /// Runs as its own pass(es), never through `fs_uber`. `linear` blurs in linear light.
-    Blur { sigma: f32, linear: bool },
+    /// Runs as its own pass(es), never through `fs_uber`. `linear` blurs in linear light. `axis` is the
+    /// separable pass (X reads the source, Y reads the X draft) and `edge` is the OOB behaviour
+    /// (`Coverage` = a shadow silhouette, `Backdrop` = the page) — both stamped at build so `bake`
+    /// serializes the op without re-deriving them from the graph.
+    Blur { sigma: f32, linear: bool, axis: BlurAxis, edge: BlurEdge },
     /// A hand-written WGSL pass — the escape hatch, a barrier unit. `u` is the surface resolution plus
     /// the shader's declared params, sized to exactly `param_vec4s` vec4s; the backend supplies the
     /// compiled pipeline. `reach`/`reads_backdrop` are the shader's required footprint declaration (see
@@ -826,7 +850,7 @@ mod fuse_tests {
     fn shade() -> UnitOp { UnitOp::Shade(vec![]) }
     fn maskmix() -> UnitOp { UnitOp::MaskMix(vec![]) }
     fn tint() -> UnitOp { UnitOp::Tint(vec![]) }
-    fn blur() -> UnitOp { UnitOp::Blur { sigma: 4.0, linear: false } }
+    fn blur() -> UnitOp { UnitOp::Blur { sigma: 4.0, linear: false, axis: Default::default(), edge: Default::default() } }
 
     /// Sharp glass — the scatter is dropped as identity at lower time, so `[Warp, Shade, MaskMix]`
     /// is one sampling head plus a pointwise tail: ONE fused op, no intermediate.

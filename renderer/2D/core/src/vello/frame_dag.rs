@@ -23,7 +23,7 @@ use crate::kurbo::Rect;
 use crate::effect::{effect_stack, Compose, Op as EffectOp};
 use crate::model::Scene;
 use crate::vello::plan::Target;
-use crate::vello::units::UnitOp;
+use crate::vello::units::{BlurAxis, BlurEdge, UnitOp};
 
 /// The frame's operation alphabet is [`UnitOp`] — the SAME enum the executor runs, so a DAG node *is*
 /// the operation, with no separate scheduler alphabet to translate through. A node carries one atomic
@@ -302,7 +302,7 @@ impl FrameDag {
                 // the arm is axis + device sigma only: bits BLUR (+SRGB when it mixes in gamma space).
                 // `units_uniform` skips `Blur`, so `u[0]` (slots 2..5) is written here; the axis comes
                 // from the pass ordinal (the DAG's two positional Blur nodes, X before Y).
-                [UnitOp::Blur { sigma, linear }] => {
+                [UnitOp::Blur { sigma, linear, .. }] => {
                     arms.push(crate::vello::bake::blur_arm(*sigma, *linear, blur_axis != 0, Policy::default(), None));
                     blur_axis += 1;
                 }
@@ -347,18 +347,6 @@ impl FrameDag {
             }
         }
         let &base = by_round.keys().next()?;
-        // Trace a node's inputs[0] chain to its root: a silhouette `Rasterize` (a shadow blurs its own
-        // coverage → true) or a `Reload` backdrop / nothing (a background gather → false).
-        let from_silhouette = |mut i: usize| loop {
-            match self.nodes[i].op {
-                UnitOp::Rasterize => break true,
-                UnitOp::Reload => break false,
-                _ => match self.nodes[i].inputs.first() {
-                    Some(&j) => i = j,
-                    None => break false,
-                },
-            }
-        };
         let mut arms = Vec::new();
         for (&round, idxs) in &by_round {
             let round_off = round - base;
@@ -372,16 +360,13 @@ impl FrameDag {
             let has_head = run.iter().any(|op| matches!(op, UnitOp::Warp(_) | UnitOp::Scatter(_)));
             let blur = idxs.iter().copied().find(|&i| matches!(self.nodes[i].op, UnitOp::Blur { .. }));
             let baked = if let (Some(bi), false) = (blur, has_head) {
-                // A separable-blur axis pass: a shadow's H/V (chain from a silhouette) or a background
-                // blur (chain from the reload). The axis is positional — X reads a non-blur source, Y
-                // reads the previous blur.
-                let UnitOp::Blur { sigma, linear } = self.nodes[bi].op else { unreachable!() };
-                let axis_y = matches!(self.nodes[self.nodes[bi].inputs[0]].op, UnitOp::Blur { .. });
-                // A background blur (chain from the Reload) carries a plain BLUR descriptor — the H's
-                // draft-write is the emitter's job, not a bit. A SHADOW blur (chain from a silhouette)
-                // carries the shadow policy in its bits: the H materialises unmasked, the V spreads its
-                // colour. So the materialize/spread/shadow_edge bits are gated by `shadow_edge`.
-                let shadow_edge = from_silhouette(bi);
+                // A separable-blur axis pass. Everything is read straight off the op — no graph tracing:
+                // `axis`/`edge` were stamped at build. A background blur (`edge == Backdrop`) carries a
+                // plain BLUR descriptor; a SHADOW blur (`edge == Coverage`) carries the shadow policy in
+                // its bits — the H materialises unmasked, the V spreads its colour.
+                let UnitOp::Blur { sigma, linear, axis, edge } = self.nodes[bi].op else { unreachable!() };
+                let axis_y = axis == BlurAxis::Y;
+                let shadow_edge = edge == BlurEdge::Coverage;
                 let spread = shadow_edge && writes_acc;
                 let materialize = shadow_edge && !writes_acc;
                 let tint = spread.then(|| {
@@ -413,9 +398,9 @@ impl FrameDag {
     pub fn fill_blur_uniforms(&mut self, sigma_of: impl Fn(u128) -> Option<f32>) {
         for node in &mut self.nodes {
             let Source::Effect { shape, .. } = node.source else { continue };
-            if let UnitOp::Blur { linear, .. } = node.op {
+            if let UnitOp::Blur { linear, axis, edge, .. } = node.op {
                 if let Some(sigma) = sigma_of(shape) {
-                    node.op = UnitOp::Blur { sigma, linear };
+                    node.op = UnitOp::Blur { sigma, linear, axis, edge };
                 }
             }
         }
@@ -458,9 +443,9 @@ impl FrameDag {
         for node in &mut self.nodes {
             let Source::Effect { shape, slot } = node.source else { continue };
             match node.op {
-                UnitOp::Blur { linear, .. } => {
+                UnitOp::Blur { linear, axis, edge, .. } => {
                     if let Some(sigma) = sigma_of(shape, slot) {
-                        node.op = UnitOp::Blur { sigma, linear };
+                        node.op = UnitOp::Blur { sigma, linear, axis, edge };
                     }
                 }
                 UnitOp::Tint(_) => {
@@ -656,8 +641,12 @@ impl Builder {
     /// reads `cur`, Y reads X. The schedule puts Y one barrier after X (it gathers a fresh draft); `bake`
     /// assigns the axis from position. Returns the Y tail.
     fn blur(&mut self, radius: f32, linear: bool, cur: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
-        let x = self.draft(UnitOp::Blur { sigma: radius, linear }, format!("{name} {tag} blur-X r{radius:.0}"), reach, vec![cur]);
-        self.draft(UnitOp::Blur { sigma: radius, linear }, format!("{name} {tag} blur-Y r{radius:.0}"), reach, vec![x])
+        // The OOB behaviour is fixed by what the blur reads: a coverage silhouette (a shadow blurs its
+        // own `Rasterize`) fades to transparent; anything else (a `Reload` backdrop, a `Warp` frost
+        // source) is the page. Stamp it here, once, from the direct source — not re-traced at bake.
+        let edge = if matches!(self.dag.nodes[cur].op, UnitOp::Rasterize) { BlurEdge::Coverage } else { BlurEdge::Backdrop };
+        let x = self.draft(UnitOp::Blur { sigma: radius, linear, axis: BlurAxis::X, edge }, format!("{name} {tag} blur-X r{radius:.0}"), reach, vec![cur]);
+        self.draft(UnitOp::Blur { sigma: radius, linear, axis: BlurAxis::Y, edge }, format!("{name} {tag} blur-Y r{radius:.0}"), reach, vec![x])
     }
 
     /// Coalesce a pending run of plain shapes into ONE rasterize band on the spine, scoped to their

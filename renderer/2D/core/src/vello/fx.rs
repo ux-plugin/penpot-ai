@@ -199,7 +199,7 @@ mod coalesce_tests {
     /// Different unit chains keep separate draws.
     #[test]
     fn different_keys_stay_separate() {
-        let ops = vec![op(vec![UnitOp::Tint(vec![])], 0.0), op(vec![UnitOp::Blur { sigma: 4.0, linear: true }], 20.0)];
+        let ops = vec![op(vec![UnitOp::Tint(vec![])], 0.0), op(vec![UnitOp::Blur { sigma: 4.0, linear: true, axis: Default::default(), edge: Default::default() }], 20.0)];
         let out = coalesce(ops, no_cap());
         assert_eq!(out.len(), 2);
     }

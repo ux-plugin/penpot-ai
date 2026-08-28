@@ -237,17 +237,17 @@ mod tests {
     /// materialize policy it is `BLUR|SRGB|MATERIALIZE` = 1600, exactly `wv_frost_passes`' blur bytes.
     #[test]
     fn arm_bits_reproduces_the_frost_blur_link() {
-        let blur = UnitOp::Blur { sigma: 4.0, linear: false };
+        let blur = UnitOp::Blur { sigma: 4.0, linear: false, axis: Default::default(), edge: Default::default() };
         let p = Policy { materialize: true, ..Policy::default() };
         assert_eq!(arm_bits(&[blur], p), bits::BLUR | bits::SRGB | bits::MATERIALIZE);
-        assert_eq!(arm_bits(&[UnitOp::Blur { sigma: 4.0, linear: false }], p), 1600);
+        assert_eq!(arm_bits(&[UnitOp::Blur { sigma: 4.0, linear: false, axis: Default::default(), edge: Default::default() }], p), 1600);
     }
 
     /// The two shadow-blur arms: a drop blurs its silhouette in LINEAR light (no SRGB) with SHADOW_EDGE,
     /// H materializes, V spreads. Reproduces `wv_shadow_plan`'s 2624 (H) and 2240 (V) byte-for-byte.
     #[test]
     fn arm_bits_reproduces_the_shadow_blur_arms() {
-        let blur = || UnitOp::Blur { sigma: 6.0, linear: true };
+        let blur = || UnitOp::Blur { sigma: 6.0, linear: true, axis: Default::default(), edge: Default::default() };
         let h = arm_bits(&[blur()], Policy { materialize: true, shadow_edge: true, ..Policy::default() });
         let v = arm_bits(&[blur()], Policy { spread: true, shadow_edge: true, ..Policy::default() });
         assert_eq!(h, bits::BLUR | bits::MATERIALIZE | bits::SHADOW_EDGE);
