@@ -2227,6 +2227,20 @@ impl Sink {
                 window_role.insert(round, WindowRole::DagNode { node });
             }
         }
+        // Background blur, edge-driven too: its H reads the `Reload` backdrop, its V reads the H draft.
+        // Overrides the `BlurH`/`BlurV` roles for a pure bg blur (a lens/frost keeps its own dispatch).
+        if wv_dag_exec() {
+            if let Some(dag) = wv_dag_graph.as_ref() {
+                for (j, &(_, gid, _)) in gathers.iter().enumerate() {
+                    if fx_fine.get(&gid).is_some_and(|p| p.len() == 2) {
+                        if let Some((h, v)) = self.wv_dag_bg_blur(gid, dag) {
+                            window_role.insert(rounds[j], WindowRole::DagNode { node: h });
+                            window_role.insert(rounds[j] + 1, WindowRole::DagNode { node: v });
+                        }
+                    }
+                }
+            }
+        }
         // Edge-driven scratch: every materialised DAG node writes its OWN texture, keyed by NODE INDEX; a
         // reader binds it by following its `inputs` edge. Replaces the role/round-keyed draft & silhouette
         // maps for the effects on the executor path.
@@ -2572,33 +2586,50 @@ impl Sink {
                         let n = &dag.nodes[node];
                         match &n.op {
                             crate::vello::units::UnitOp::Blur { .. } => {
+                                use crate::vello::units::UnitOp;
                                 let input = n.inputs[0];
-                                let src = node_scratch.get(&input).expect("edge source materialised").clone();
-                                if matches!(dag.nodes[input].op, crate::vello::units::UnitOp::Rasterize) {
-                                    // H: blur a silhouette (base_in = input_in = the source, so tiles past
-                                    // coverage stay transparent) into THIS node's own scratch. No advance.
-                                    let dt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv dag blur draft");
-                                    let dv = dt.create_view(&wgpu::TextureViewDescriptor::default());
-                                    backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &src, &src, &dv);
-                                    node_scratch.insert(node, dv);
-                                    draft_texs.push(dt);
-                                } else if dag.nodes.iter().any(|m| m.inputs.contains(&node) && matches!(m.op, crate::vello::units::UnitOp::Tint(_))) {
-                                    // V of a DROP (its blur feeds a Tint → Compose): SPREAD the shadow colour
-                                    // over the accumulator.
-                                    let c = cur.expect("a soft drop composites over a backdrop");
-                                    let out = 1 - c;
-                                    backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], &src, &views[out]);
-                                    cur = Some(out);
-                                } else {
-                                    // V of an INNER (its blur feeds an EraseBy): MATERIALISE the 2D punch to
-                                    // its own scratch. base_in = the punch silhouette (this H's input, for a
-                                    // text FLOOD_ERASE fold); draft = the H draft.
-                                    let base = node_scratch.get(&dag.nodes[input].inputs[0]).expect("punch silhouette materialised").clone();
-                                    let pt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv dag inner punch");
-                                    let pv = pt.create_view(&wgpu::TextureViewDescriptor::default());
-                                    backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &base, &src, &pv);
-                                    node_scratch.insert(node, pv);
-                                    self.frame_transient.push(pt);
+                                match &dag.nodes[input].op {
+                                    UnitOp::Rasterize => {
+                                        // H over a SILHOUETTE (shadow): base_in = input_in = the source, so
+                                        // tiles past the coverage stay transparent. Materialise own scratch.
+                                        let src = node_scratch.get(&input).expect("silhouette materialised").clone();
+                                        let dt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv dag blur draft");
+                                        let dv = dt.create_view(&wgpu::TextureViewDescriptor::default());
+                                        backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, r, &src, &src, &dv);
+                                        node_scratch.insert(node, dv);
+                                        draft_texs.push(dt);
+                                    }
+                                    UnitOp::Reload => {
+                                        // H over the BACKDROP (background blur): base_in = the accumulator;
+                                        // materialise the H-blurred draft. No ping-pong advance (V needs the
+                                        // backdrop still in the accumulator).
+                                        let c = cur.expect("a background blur reads the backdrop");
+                                        let dt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv dag blur draft");
+                                        let dv = dt.create_view(&wgpu::TextureViewDescriptor::default());
+                                        backend.phased_fine_segment(device, queue, &mut enc, window_lo, r, Some(&views[c]), &dv);
+                                        node_scratch.insert(node, dv);
+                                        draft_texs.push(dt);
+                                    }
+                                    _ => {
+                                        // V (its input is a Blur draft). If a later gather reads it (an
+                                        // EraseBy → the inner punch) MATERIALISE to a scratch; otherwise it
+                                        // feeds the final composite (a drop's spread, a bg blur's masked mix)
+                                        // → composite over the accumulator, same call for both.
+                                        let src = node_scratch.get(&input).expect("H draft materialised").clone();
+                                        if dag.nodes.iter().any(|m| m.inputs.contains(&node) && matches!(m.op, UnitOp::EraseBy(_))) {
+                                            let base = node_scratch.get(&dag.nodes[input].inputs[0]).expect("punch silhouette materialised").clone();
+                                            let pt = self.pool.acquire_target(device, width, acc_h, format, phase_usage, "wv dag inner punch");
+                                            let pv = pt.create_view(&wgpu::TextureViewDescriptor::default());
+                                            backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &base, &src, &pv);
+                                            node_scratch.insert(node, pv);
+                                            self.frame_transient.push(pt);
+                                        } else {
+                                            let c = cur.expect("a composite reads a backdrop");
+                                            let out = 1 - c;
+                                            backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, r, &views[c], &src, &views[out]);
+                                            cur = Some(out);
+                                        }
+                                    }
                                 }
                             }
                             crate::vello::units::UnitOp::EraseBy(_) => {
@@ -5846,6 +5877,27 @@ impl Sink {
             }
         }
         (!passes.is_empty()).then_some(DagShadow { sils, passes })
+    }
+
+    /// The two axis `Blur` nodes of a pure background blur (`WV_DAG_EXEC`): H reads the `Reload`
+    /// backdrop, V reads H. `None` if the shape is not a bg blur (a lens/frost has a `Warp` head).
+    fn wv_dag_bg_blur(&self, gid: u128, dag: &crate::vello::frame_dag::FrameDag) -> Option<(usize, usize)> {
+        use crate::vello::frame_dag::Source;
+        use crate::vello::units::UnitOp;
+        let mine: Vec<usize> = dag
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| matches!(n.source, Source::Effect { shape, .. } if shape == gid))
+            .map(|(i, _)| i)
+            .collect();
+        if mine.iter().any(|&i| matches!(dag.nodes[i].op, UnitOp::Warp(_) | UnitOp::Scatter(_))) {
+            return None; // a lens/frost, not a background blur
+        }
+        let op = |i: usize| &dag.nodes[i].op;
+        let h = mine.iter().copied().find(|&i| matches!(op(i), UnitOp::Blur { .. }) && matches!(op(dag.nodes[i].inputs[0]), UnitOp::Reload))?;
+        let v = mine.iter().copied().find(|&i| matches!(op(i), UnitOp::Blur { .. }) && dag.nodes[i].inputs[0] == h)?;
+        Some((h, v))
     }
 
     /// The DAG-sourced SCHEDULE for `gid` — the `Vec<ShadowMk>` (round + role + descriptor) that
