@@ -569,6 +569,21 @@ fn wv_dag() -> bool {
     false
 }
 
+/// The DAG-EDGE EXECUTOR toggle (`WV_DAG_EXEC=1`) — the round loop derives its per-window dispatch from
+/// the whole-frame DAG's nodes + input edges instead of the hand-assigned `WindowRole` map. The endgame
+/// of the one-planner-one-executor collapse: the executor decides NOTHING (no role tags), it walks the
+/// scheduled nodes, allocates a scratch per materialised node, and binds each node's inputs by following
+/// its edges. Brought up in stages behind this flag, one fixture at a time; when every fixture passes the
+/// old `WindowRole`/`schedule_shadows` machine is deleted. Native-only, OFF by default. Implies wv_dag().
+fn wv_dag_exec() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::var("WV_DAG_EXEC").is_ok_and(|v| v != "0");
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// Sibling of [`wv_glass_fine`] for a background BLUR: routes it through fine as a BLUR arm (a
 /// separable Gaussian over `base_in` + a draft) instead of the dedicated `blur_px` pipeline. DEFAULT
 /// ON as of the effects-in-fine collapse (D); `WV_BLUR_FINE=0` forces the batched `blur_px` oracle.
@@ -1730,7 +1745,15 @@ impl Sink {
             .iter()
             .enumerate()
             .filter_map(|(j, &(_, gid, _))| {
-                stack_shadows.get(&gid).map(|plan| (gid, schedule_shadows(plan, rounds[j])))
+                // WV_DAG_EXEC (stage 1): derive the schedule straight from the DAG for a soft-drop shape;
+                // otherwise (and for any sharp/inner shape) the effect-stack `schedule_shadows`. The two
+                // are byte-identical where both fire, so downstream is unchanged.
+                let dag_sched = wv_dag_exec()
+                    .then(|| wv_dag_graph.as_ref().and_then(|d| self.wv_shadow_sched_dag(gid, d, rounds[j])))
+                    .flatten();
+                dag_sched
+                    .or_else(|| stack_shadows.get(&gid).map(|plan| schedule_shadows(plan, rounds[j])))
+                    .map(|sched| (gid, sched))
             })
             .collect();
         // A sharp stack's glass reload + body land ONE round past its drops (the block/×2 both put the
@@ -5610,6 +5633,56 @@ impl Sink {
             eprintln!("  WV_DAG: {} soft-drop shadow marker(s) for gid {gid:x} from the DAG", plan.len());
         }
         (!plan.is_empty()).then_some(plan)
+    }
+
+    /// The DAG-sourced SCHEDULE for `gid` — the `Vec<ShadowMk>` (round + role + descriptor) that
+    /// `schedule_shadows` produces, derived straight from the filled DAG instead of the `ShadowMarker`
+    /// plan + the hand-rolled round math. Stage 1 of the DAG-edge executor (`WV_DAG_EXEC`): for an
+    /// ALL-SOFT-DROP shape it lays each drop's H (`base+2k`) and V (`base+2k+1`) exactly as
+    /// `schedule_shadows` does, so the whole downstream machine is byte-identical; returns `None` for any
+    /// sharp/inner/non-shadow slot so that shape stays on `schedule_shadows`. This retires the scheduling
+    /// layer (`ShadowMarker` → `schedule_shadows` → `ShadowMk`) for the soft-drop path.
+    fn wv_shadow_sched_dag(&self, gid: u128, dag: &crate::vello::frame_dag::FrameDag, base: u32) -> Option<Vec<ShadowMk>> {
+        use crate::vello::bake::{blur_arm, Policy};
+        use crate::vello::frame_dag::Source;
+        use crate::vello::units::UnitOp;
+        use std::collections::BTreeMap;
+        let mut slots: BTreeMap<usize, Vec<&UnitOp>> = BTreeMap::new();
+        for n in &dag.nodes {
+            if let Source::Effect { shape, slot } = n.source {
+                if shape == gid {
+                    slots.entry(slot).or_default().push(&n.op);
+                }
+            }
+        }
+        if slots.is_empty() {
+            return None;
+        }
+        let mut mks = Vec::new();
+        let mut cursor = base;
+        for (drop_slot, ops) in slots.values().enumerate() {
+            let has_erase = ops.iter().any(|o| matches!(o, UnitOp::EraseBy(_)));
+            let has_head = ops.iter().any(|o| matches!(o, UnitOp::Warp(_) | UnitOp::Scatter(_)));
+            let sigma = ops.iter().find_map(|o| match o {
+                UnitOp::Blur { sigma, .. } => Some(*sigma),
+                _ => None,
+            });
+            let colour = ops.iter().find_map(|o| match o {
+                UnitOp::Tint(u) if u.len() >= 4 => Some([u[0], u[1], u[2], u[3]]),
+                _ => None,
+            });
+            match (has_erase, has_head, sigma, colour) {
+                (false, false, Some(s), Some(c)) if s >= 0.5 => {
+                    let h = blur_arm(s, true, false, Policy { materialize: true, shadow_edge: true, ..Policy::default() }, None);
+                    let v = blur_arm(s, true, true, Policy { spread: true, shadow_edge: true, ..Policy::default() }, Some(c));
+                    mks.push(ShadowMk { round: cursor, desc: h, role: ShadowRole::BlurH, slot: drop_slot, inset: false, punch_key: 0 });
+                    mks.push(ShadowMk { round: cursor + 1, desc: v, role: ShadowRole::DropV, slot: drop_slot, inset: false, punch_key: 0 });
+                    cursor += 2;
+                }
+                _ => return None,
+            }
+        }
+        (!mks.is_empty()).then_some(mks)
     }
 
     /// The device-space 24-float lens field uniform for glass `gid`, for the effects-in-fine WARP path
