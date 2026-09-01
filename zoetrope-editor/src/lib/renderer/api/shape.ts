@@ -2,6 +2,7 @@
  * Shape management functions
  */
 
+import type { Texture } from '../properties/panel-utils'
 import type { WasmModule } from '../wasm-types'
 import type {
   BoolType,
@@ -28,7 +29,6 @@ import {
 import { checkContext } from './context'
 import { UUID_U8_SIZE } from './constants'
 import type { BlendMode, Blur, ConstraintH, ConstraintV, Matrix, Selrect } from 'penpot-exporter/types'
-import type { Texture } from '../properties/panel-utils'
 
 /**
  * Set active shape
@@ -229,7 +229,12 @@ export function setShapeBlur(module: WasmModule, blur: Blur | null | undefined):
 export function setShapeTexture(module: WasmModule, texture: Texture | null | undefined): void {
   checkContext()
   if (texture) {
-    module._set_shape_texture(texture.noiseSize, texture.radius, texture.clipToShape, texture.hidden)
+    module._set_shape_texture(
+      texture.noiseSize,
+      texture.radius,
+      texture.clipToShape ? 1 : 0,
+      texture.hidden ? 1 : 0,
+    )
   } else {
     module._clear_shape_texture()
   }

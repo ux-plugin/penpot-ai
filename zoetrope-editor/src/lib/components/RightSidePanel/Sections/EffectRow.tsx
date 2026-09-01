@@ -9,7 +9,6 @@ import {
   DEFAULT_BLUR,
   DEFAULT_BACKGROUND_BLUR,
   DEFAULT_GLASS,
-  DEFAULT_NOISE,
   DEFAULT_TEXTURE,
   DEFAULT_MATERIAL,
 } from '../../../renderer/properties/panel-utils'
@@ -22,7 +21,6 @@ const EFFECT_KIND_OPTIONS: { value: EffectKind; label: string }[] = [
   { value: 'layer-blur', label: 'Layer blur' },
   { value: 'background-blur', label: 'Background blur' },
   { value: 'glass', label: 'Glass' },
-  { value: 'noise', label: 'Noise' },
   { value: 'texture', label: 'Texture' },
   { value: 'material', label: 'Custom shader' },
 ]
@@ -42,7 +40,6 @@ function shadowColorToFill(shadow: Shadow): import('penpot-exporter/types').Fill
 function getEffectHidden(item: EffectItem): boolean {
   if (item.kind === 'layer-blur' || item.kind === 'background-blur') return item.blur.hidden
   if (item.kind === 'glass') return item.glass.hidden ?? false
-  if (item.kind === 'noise') return item.noise.hidden ?? false
   if (item.kind === 'texture') return item.texture.hidden ?? false
   if (item.kind === 'material') return item.material.hidden ?? false
   return item.shadow.hidden
@@ -61,9 +58,6 @@ function convertEffect(current: EffectItem, newKind: EffectKind): EffectItem {
   if (newKind === 'glass') {
     return { kind: 'glass', glass: { ...DEFAULT_GLASS, hidden } }
   }
-  if (newKind === 'noise') {
-    return { kind: 'noise', noise: { ...DEFAULT_NOISE, hidden } }
-  }
   if (newKind === 'texture') {
     return { kind: 'texture', texture: { ...DEFAULT_TEXTURE, hidden } }
   }
@@ -74,7 +68,6 @@ function convertEffect(current: EffectItem, newKind: EffectKind): EffectItem {
     current.kind === 'layer-blur' ||
     current.kind === 'background-blur' ||
     current.kind === 'glass' ||
-    current.kind === 'noise' ||
     current.kind === 'texture' ||
     current.kind === 'material'
   ) {
@@ -101,7 +94,6 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove, onOpenF
   const isShadow = effect.kind === 'drop-shadow' || effect.kind === 'inner-shadow'
   const isBlur = effect.kind === 'layer-blur' || effect.kind === 'background-blur'
   const isGlass = effect.kind === 'glass'
-  const isNoise = effect.kind === 'noise'
   const isTexture = effect.kind === 'texture'
   const isMaterial = effect.kind === 'material'
 
@@ -111,16 +103,6 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove, onOpenF
   const swatchBg = isShadow
     ? fillSwatchBackground(shadowColorToFill(effect.shadow))
     : undefined
-
-  // Noise swatch: first slot's color if solid, rainbow gradient if prism.
-  const noiseSwatchBg = (() => {
-    if (!isNoise) return undefined
-    const slot0 = effect.noise.slots?.[0]
-    if (slot0?.kind === 'prism') {
-      return 'linear-gradient(135deg, #ff6b6b, #feca57, #48dbfb, #a29bfe, #ff9ff3)'
-    }
-    return slot0?.color ?? '#000000'
-  })()
 
   const handleKindChange = useCallback(
     (newKind: EffectKind) => {
@@ -155,13 +137,6 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove, onOpenF
             <div
               className="size-5 shrink-0 rounded border border-border"
               style={{ background: swatchBg }}
-              aria-hidden
-            />
-          )}
-          {isNoise && (
-            <div
-              className="size-5 shrink-0 rounded border border-border"
-              style={{ background: noiseSwatchBg }}
               aria-hidden
             />
           )}
@@ -239,22 +214,6 @@ export function EffectRow({ effect, index, readOnly, onChange, onRemove, onOpenF
           </button>
         )}
 
-        {/* Noise indicator: grain color swatch */}
-        {isNoise && (
-          <button
-            type="button"
-            onClick={toggleEffectExpand}
-            className={cn(
-              'size-5 shrink-0 rounded border border-border',
-              'focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
-              effectExpanded && 'ring-2 ring-ring',
-            )}
-            style={{ background: noiseSwatchBg }}
-            title={effectExpanded ? 'Close noise editor' : 'Open noise editor'}
-            aria-expanded={effectExpanded}
-            aria-label="Toggle noise editor"
-          />
-        )}
 
         {/* Texture indicator: grid icon */}
         {isTexture && (

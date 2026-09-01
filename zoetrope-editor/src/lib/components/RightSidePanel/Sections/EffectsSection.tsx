@@ -1,6 +1,5 @@
 import { useCallback, useState } from 'react'
 import type { Blur, Glass, PenpotNode, Shadow } from 'penpot-exporter/types'
-import type { Texture } from '../../../renderer/properties/panel-utils'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -13,8 +12,8 @@ import {
   DEFAULT_SHADOW,
   MAX_EFFECTS,
   type EffectItem,
-  type Noise,
   type RectLikeNode,
+  type Texture,
 } from '../../../renderer/properties/panel-utils'
 import { ShaderPresetGallery } from '../ShaderPresetGallery'
 import type { Material } from '../../../renderer/api/material'
@@ -23,7 +22,7 @@ import { openShaderStage } from '../../FocusStage/open-shader-stage'
 import { EffectRow } from './EffectRow'
 import { useColorEditor } from '../use-color-editor'
 
-/** Merge shape shadow[] + blur + glass + noise + texture into a unified EffectItem list. */
+/** Merge shape shadow[] + blur + glass + texture + material into a unified EffectItem list. */
 function mergeEffects(node: RectLikeNode): EffectItem[] {
   const items: EffectItem[] = []
   for (const s of (node as Record<string, unknown>).shadow as Shadow[] ?? []) {
@@ -50,10 +49,6 @@ function mergeEffects(node: RectLikeNode): EffectItem[] {
   if (glass) {
     items.push({ kind: 'glass', glass })
   }
-  const noise = (node as Record<string, unknown>).noise as Noise | undefined
-  if (noise) {
-    items.push({ kind: 'noise', noise })
-  }
   const texture = (node as Record<string, unknown>).texture as Texture | undefined
   if (texture) {
     items.push({ kind: 'texture', texture })
@@ -65,13 +60,12 @@ function mergeEffects(node: RectLikeNode): EffectItem[] {
   return items
 }
 
-/** Split EffectItem list back into shadow[], blurs, glass, noise, and texture for committing. */
+/** Split EffectItem list back into shadow[], blurs, glass, texture, and material for committing. */
 function splitEffects(effects: EffectItem[]): {
   shadow: Shadow[]
   layerBlur: Blur | undefined
   backgroundBlur: Blur | undefined
   glass: Glass | undefined
-  noise: Noise | undefined
   texture: Texture | undefined
   material: Material | undefined
 } {
@@ -79,7 +73,6 @@ function splitEffects(effects: EffectItem[]): {
   let layerBlur: Blur | undefined
   let backgroundBlur: Blur | undefined
   let glass: Glass | undefined
-  let noise: Noise | undefined
   let texture: Texture | undefined
   let material: Material | undefined
   // At most one of each blur kind survives — if the user added two
@@ -91,8 +84,6 @@ function splitEffects(effects: EffectItem[]): {
       backgroundBlur = e.blur
     } else if (e.kind === 'glass') {
       glass = e.glass
-    } else if (e.kind === 'noise') {
-      noise = e.noise
     } else if (e.kind === 'texture') {
       texture = e.texture
     } else if (e.kind === 'material') {
@@ -101,7 +92,7 @@ function splitEffects(effects: EffectItem[]): {
       shadows.push(e.shadow)
     }
   }
-  return { shadow: shadows, layerBlur, backgroundBlur, glass, noise, texture, material }
+  return { shadow: shadows, layerBlur, backgroundBlur, glass, texture, material }
 }
 
 export interface EffectsSectionProps {
@@ -128,7 +119,7 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
       const before = getCommittedNodeOnActivePage(nodeId)
       const pid = getActiveOrSinglePageId()
       if (!before || !pid) return
-      const { shadow, layerBlur, backgroundBlur, glass, noise, texture, material } = splitEffects(next)
+      const { shadow, layerBlur, backgroundBlur, glass, texture, material } = splitEffects(next)
       const partial: Record<string, unknown> = { shadow }
       // Include blur fields when they have a value or when clearing a
       // previously set blur. Use null (not undefined) to clear —
@@ -147,11 +138,6 @@ export function EffectsSection({ nodeId, readOnly, initialNode }: EffectsSection
       if (glass !== undefined || hadGlass) {
         partial.glass = glass ?? null
       }
-      const hadNoise = (before as Record<string, unknown>).noise != null
-      if (noise !== undefined || hadNoise) {
-        partial.noise = noise ?? null
-      }
-      // Include texture when it has a value or when clearing a previously set texture.
       const hadTexture = (before as Record<string, unknown>).texture != null
       if (texture !== undefined || hadTexture) {
         partial.texture = texture ?? null

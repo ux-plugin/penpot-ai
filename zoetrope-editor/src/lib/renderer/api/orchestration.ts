@@ -6,7 +6,6 @@ import type { WasmModule } from '../wasm-types'
 import type { PendingImageCallback, SetObjectResult } from '../types'
 import type { BoolType, ShapeType, PathContent } from '../types'
 import type { PenpotNode, TextContent } from 'penpot-exporter/types'
-import type { Noise } from '../properties/panel-utils'
 import { checkContext } from './context'
 import { requestRender } from './rendering'
 import { renderFinish } from './viewport'
@@ -33,7 +32,6 @@ import {
 import { setShapeFills } from './fills'
 import { setShapeStrokes } from './strokes'
 import { setShapeShadows } from './shadows'
-import { setShapeNoise } from './noise'
 import { setShapeGlass } from './glass'
 import { setShapeMaterial, type Material } from './material'
 import { setShapeSvgAttrs } from './svg'
@@ -185,9 +183,6 @@ export function setObject(
 
   if (wantsKey('shadow')) {
     setShapeShadows(module, shape.shadow || [])
-  }
-  if (wantsKey('noise')) {
-    setShapeNoise(module, (shape as Record<string, unknown>).noise as Noise | null | undefined)
   }
   if (wantsKey('material')) {
     setShapeMaterial(module, (shape as Record<string, unknown>).material as Material | null | undefined)
