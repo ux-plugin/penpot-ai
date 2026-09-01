@@ -56,24 +56,14 @@ pub fn pass_reach(pass: &EffectPass) -> Reach {
         // mean guessing which slot holds a magnitude, and that answer is per-program.
         EffectPass::Unit { reach, .. } if *reach > 0.0 => Reach::Neighborhood(*reach),
         EffectPass::Unit { .. } => Reach::SamePixel,
-        // A custom's reach is declared, never guessed: the author states how far it samples, so it is
-        // scheduled as tightly as a unit. Global is not a fallback — a shader that samples widely
-        // declares a large `reach`, which the resolution cap bounds like any other.
-        EffectPass::Custom { reach, .. } if *reach > 0.0 => Reach::Neighborhood(*reach),
-        EffectPass::Custom { .. } => Reach::SamePixel,
     }
 }
 
 /// The footprint of one graph pass: `reach` from the pass kind, `reads_dst` from whether it reads the
-/// assembled backdrop. For a custom that is its *declared* class (`reads_backdrop`) — a spread reads
-/// its own body at input 0, not the backdrop, so it does not serialise on the backdrop the way a
-/// gather does. Every other pass reads the backdrop exactly when it binds an `Input`.
+/// assembled backdrop — a pass reads the backdrop exactly when it binds an `Input`.
 #[must_use]
 pub fn footprint(gp: &GraphPass) -> FootprintDescriptor {
-    let reads_dst = match &gp.pass {
-        EffectPass::Custom { reads_backdrop, .. } => *reads_backdrop,
-        _ => gp.inputs.iter().any(|s| matches!(s, Src::Input(_))),
-    };
+    let reads_dst = gp.inputs.iter().any(|s| matches!(s, Src::Input(_)));
     FootprintDescriptor { reads_dst, reach: pass_reach(&gp.pass) }
 }
 
@@ -198,7 +188,7 @@ fn pass_band_limit(pass: &EffectPass) -> f32 {
 /// - A sharp chain (all same-pixel) collapses to a single uniform `min(acceptable_downscale, cap)` — bit-identical
 ///   to today's whole-graph scale, so nothing regresses.
 ///
-/// `cap` and `acceptable_downscale` are the surface-level factors ([`crate::model::CustomShader::acceptable_downscale`] and
+/// `cap` and `acceptable_downscale` are the surface-level factors (the effect's declared quality floor and
 /// the reach-driven `resolution_cap`); pass them clamped to `(0, 1]`.
 #[must_use]
 pub fn chain_scales(graph: &[GraphPass], acceptable_downscale: f32, cap: f32) -> Vec<f32> {
@@ -240,7 +230,7 @@ pub fn chain_scales(graph: &[GraphPass], acceptable_downscale: f32, cap: f32) ->
 mod tests {
     use super::*;
     use crate::effect_graph::{
-        background_blur_graph, custom_graph, lens_graph, LensGeometry,
+        background_blur_graph, lens_graph, LensGeometry,
     };
     use crate::model::Glass;
     use kurbo::{Affine, Point};
@@ -290,28 +280,6 @@ mod tests {
     }
 
     #[test]
-    fn custom_reach_is_declared_not_global() {
-        // Pointwise → SamePixel; a declared extent → Neighborhood. Never Global, regardless of class.
-        assert_eq!(
-            pass_reach(&EffectPass::Custom { u: vec![1.0, 2.0], param_vec4s: 1, reach: 0.0, reads_backdrop: true }),
-            Reach::SamePixel
-        );
-        assert_eq!(
-            pass_reach(&EffectPass::Custom { u: vec![1.0, 2.0], param_vec4s: 1, reach: 12.0, reads_backdrop: false }),
-            Reach::Neighborhood(12.0)
-        );
-    }
-
-    #[test]
-    fn custom_reads_dst_follows_its_declared_class() {
-        // A gather reads the backdrop; a spread reads its own body, so it does not serialise on it.
-        let gather = &custom_graph(vec![1.0, 1.0], 1, 0.0, true)[0];
-        let spread = &custom_graph(vec![1.0, 1.0], 1, 0.0, false)[0];
-        assert!(footprint(gather).reads_dst);
-        assert!(!footprint(spread).reads_dst);
-    }
-
-    #[test]
     fn footprint_reads_dst_when_a_pass_binds_the_backdrop_input() {
         let g = background_blur_graph(4.0);
         assert!(footprint(&g[0]).reads_dst);
@@ -357,14 +325,6 @@ mod tests {
     }
 
     #[test]
-    fn custom_partitions_on_its_declared_reach() {
-        // A pointwise custom (reach 0) fuses like any same-pixel pass; only a declared extent makes it
-        // a barrier. Reach is the axis — reading the backdrop or not does not force materialisation.
-        assert_eq!(partition(&custom_graph(vec![256.0, 256.0], 1, 0.0, true)), vec![Stage::Fused(vec![0])]);
-        assert_eq!(partition(&custom_graph(vec![256.0, 256.0], 1, 8.0, true)), vec![Stage::Barrier(0)]);
-    }
-
-    #[test]
     fn sharp_chain_is_uniform_surface_scale() {
         let g = lens_graph(&glass(), geom(), (100, 100), (0.0, 0.0), Affine::IDENTITY, 1.0);
         let s = chain_scales(&g, 0.6, 0.8);
@@ -372,14 +332,6 @@ mod tests {
         for k in &s {
             assert!((k - 0.6).abs() < 1e-6, "sharp chain must be uniform min(0.6,0.8)=0.6, got {k}");
         }
-    }
-
-    #[test]
-    fn single_custom_uses_its_declared_acceptable_downscale() {
-        let s = chain_scales(&custom_graph(vec![256.0, 256.0], 1, 0.0, true), 0.3, 1.0);
-        assert_eq!(s, vec![0.3]);
-        let s2 = chain_scales(&custom_graph(vec![256.0, 256.0], 1, 0.0, true), 0.8, 0.25);
-        assert_eq!(s2, vec![0.25]);
     }
 
     #[test]

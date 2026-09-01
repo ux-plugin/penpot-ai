@@ -23,7 +23,7 @@ use crate::kurbo::Rect;
 use crate::effect::{effect_stack, Compose, Op as EffectOp};
 use crate::model::Scene;
 use crate::vello::plan::Target;
-use crate::vello::units::{BlurAxis, BlurEdge, UnitOp};
+use crate::vello::units::{BlurAxis, BlurEdge, ComposeMode, RasterSource, UnitOp};
 
 /// The frame's operation alphabet is [`UnitOp`] — the SAME enum the executor runs, so a DAG node *is*
 /// the operation, with no separate scheduler alphabet to translate through. A node carries one atomic
@@ -91,8 +91,8 @@ impl Node {
     pub fn category(&self) -> Category {
         match self.op {
             UnitOp::Reload => Category::Reload,
-            UnitOp::Compose => Category::Compose,
-            UnitOp::Rasterize if self.target == Target::Accumulator => {
+            UnitOp::Compose(_) => Category::Compose,
+            UnitOp::Rasterize(_) if self.target == Target::Accumulator => {
                 if self.inputs.is_empty() {
                     Category::Background
                 } else {
@@ -134,17 +134,75 @@ pub enum Barrier {
     Reload,
 }
 
+/// What one of `fine`'s texture slots holds during a dispatch — the coordinates of a
+/// [`BindingShape`]. `Draft(pool)` names which physical draft pool the value lives in TODAY (0 =
+/// silhouette-rooted scratch, 1 = backdrop-rooted / blur atlas); the pool coordinate disappears when
+/// the shared atlas unifies drafts into lease rects.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Slot {
+    /// Nothing bound.
+    None,
+    /// A rasterized source texture (a silhouette, an SDF).
+    Source,
+    /// The frame accumulator (directly, or via its reload).
+    Backdrop,
+    /// A materialized intermediate, tagged with its physical pool.
+    Draft(u8),
+}
+
+/// The dispatch-binding shape of a node: literally what its pass puts in `fine`'s three texture slots,
+/// plus which pipeline permutation reads slot 10. Two nodes may share a round's single dispatch iff
+/// their shapes are EQUAL — same bindings, physically shared via co-location/aliasing. Compared only
+/// for equality; carries no encoding.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct BindingShape {
+    /// What `base_in` holds. A composite always reads the accumulator; a materialize reads its chain's
+    /// root surface.
+    pub base: Slot,
+    /// What `input_in`/`draft_in` holds.
+    pub input: Slot,
+    /// Where `output` points: a scratch draft (`true`) or the accumulator.
+    pub to_draft: bool,
+    /// A blur's neighbourhood TAPS over a `Draft` input ride the draft-permutation pipeline; a
+    /// pointwise read of the same slot rides the input-permutation — different pipelines, so a tapping
+    /// and a non-tapping node never share a dispatch even with equal slots.
+    pub draft_taps: bool,
+}
+
 /// The barrier-aware schedule: each node's round, where a round is one dispatch and consecutive rounds
 /// are one barrier apart.
 pub struct Schedule {
-    /// `round[i]` — the dispatch node `i` runs in.
+    /// `round[i]` — the dispatch node `i` runs in. This is node `i`'s BIRTH: the round its output is
+    /// written.
     pub round: Vec<u32>,
     /// `barrier[i]` — set when node `i` opens its round across a barrier edge (why it could not fold
     /// into an earlier one); `None` when it shares its inputs' round.
     pub barrier: Vec<Option<Barrier>>,
+    /// `death[i]` — the last round any consumer READS node `i`'s output; the round its memory becomes
+    /// reclaimable. A node with no consumer dies at its own round (`death[i] == round[i]`). This is the
+    /// live interval's end — the allocator packs `[round[i], death[i]]`, and two values may share a slot
+    /// only when their intervals are disjoint. Compile-time only: never emitted to the PTCL.
+    pub death: Vec<u32>,
+    /// `desc[i]` — node `i`'s baked descriptor, the 26 floats `fine` reads. `[0; 26]` for a node that
+    /// carries no marker (a structural `Rasterize`/`Reload`/`Compose`, or a plain band). Filled by
+    /// [`FrameDag::plan`]; empty from [`FrameDag::schedule`] (which computes structure only).
+    pub desc: Vec<[f32; 26]>,
+    /// `lease[i]` — the atlas rect node `i` MATERIALIZES into, or `None` when it composites into the
+    /// accumulator (or carries no scratch). A consumer reads its input's lease. Filled by [`FrameDag::plan`].
+    pub lease: Vec<Option<Lease>>,
+    /// `ctl[i]` — node `i`'s control word: [`Schedule::ATOMIC`] when it chains in `fine`'s register (a
+    /// pointwise unit), plus [`Schedule::BOUNDARY`] when it closes the chain into the accumulator. `0` for
+    /// a materialize pass (a `Blur` axis draft) or a marker-less node. Filled by [`FrameDag::plan`].
+    pub ctl: Vec<u32>,
 }
 
 impl Schedule {
+    /// `ctl` bit: this node's descriptor chains in `fine`'s per-pixel register (a pointwise unit) rather
+    /// than starting fresh.
+    pub const ATOMIC: u32 = 1;
+    /// `ctl` bit: this node closes the register chain — its value composites into the accumulator masked.
+    pub const BOUNDARY: u32 = 2;
+
     /// Round count = one past the deepest round.
     #[must_use]
     pub fn rounds(&self) -> u32 {
@@ -152,16 +210,92 @@ impl Schedule {
     }
 }
 
-/// One effect pass, ready for `draw_effect_marker`: the shape it belongs to, which effect slot, the
-/// round it runs in, its footprint, and the primitive. The Sink maps `(op, gid, slot)` to the
-/// `effect_id` and bakes the unit uniform — the single per-op step this stream does not carry.
-#[derive(Clone, Debug, PartialEq)]
-pub struct EffectMarker {
-    pub gid: u128,
-    pub slot: usize,
-    pub round: u32,
-    pub reach: Option<Rect>,
-    pub op: UnitOp,
+/// A materialized value the allocator must place: its pixel size and the round-interval it is live —
+/// `[birth, death]`, inclusive. The packer's input. `birth`/`death` come straight from
+/// [`Schedule::round`]/[`Schedule::death`]; `w`/`h` from the node's reach (device pixels at wire time).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveRect {
+    pub node: usize,
+    pub w: u32,
+    pub h: u32,
+    pub birth: u32,
+    pub death: u32,
+}
+
+/// The packer's placement for one value: which slab (atlas texture) it lives in and where. `w`/`h` are
+/// the value's true size — the slot it occupies may be a rounded size class, but the shader addresses
+/// only `w`×`h` inside it (the rest is padding). This is the allocator's whole output; `death` shaped
+/// it and is gone. The Sink turns `slab` into a bound texture and `(x, y)` into the fine `scratch_offset`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lease {
+    pub slab: u32,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// The widest atlas a slab may grow to before slots wrap to a new row. A tunable, not a hard limit —
+/// slabs stack rows below it, so a class just gets a taller texture, never a second slab from width.
+pub const SLAB_MAX_WIDTH: u32 = 4096;
+
+fn round_up_pow2(n: u32) -> u32 {
+    n.max(1).next_power_of_two()
+}
+
+/// Place every materialized value into a size-class slab, reusing a slot whose prior occupant died
+/// before this value is born. This is the offline packer: it sees all `[birth, death]` intervals up
+/// front (the schedule is static), so it is interval-graph colouring, not an online gamble. Each value
+/// is rounded up to a power-of-two size class; within a class every slot is identical, so a freed slot
+/// serves any later value of that class with ZERO fragmentation — the reuse the round-over-round size
+/// changes need. One slab (atlas) per class; slots tile left-to-right up to [`SLAB_MAX_WIDTH`], then
+/// wrap. Greedy first-fit in birth order uses exactly `max concurrent live` slots per class (the
+/// interval-graph clique number — the true lower bound). Returns one lease per input, input order.
+#[must_use]
+pub fn pack(items: &[LiveRect]) -> Vec<Lease> {
+    use std::collections::HashMap;
+    // Process births in order so a slot's stored occupant is always the latest-born; a slot is free for
+    // a new value iff that occupant died STRICTLY before this birth (equal rounds share a dispatch — no
+    // barrier between them, so no safe reuse).
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&i| (items[i].birth, items[i].node));
+    // Per class: each slot's occupied-until (its current occupant's death). One slab id per class.
+    let mut slots_of: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    let mut slab_of: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut next_slab = 0u32;
+    let mut slot_of = vec![0usize; items.len()];
+    let mut class_of = vec![(0u32, 0u32); items.len()];
+    for &i in &order {
+        let it = items[i];
+        let class = (round_up_pow2(it.w), round_up_pow2(it.h));
+        class_of[i] = class;
+        slab_of.entry(class).or_insert_with(|| {
+            let s = next_slab;
+            next_slab += 1;
+            s
+        });
+        let slots = slots_of.entry(class).or_default();
+        let slot = match slots.iter().position(|&until| until < it.birth) {
+            Some(s) => {
+                slots[s] = it.death;
+                s
+            }
+            None => {
+                slots.push(it.death);
+                slots.len() - 1
+            }
+        };
+        slot_of[i] = slot;
+    }
+    (0..items.len())
+        .map(|i| {
+            let (cw, ch) = class_of[i];
+            let cols = (SLAB_MAX_WIDTH / cw).max(1);
+            let s = slot_of[i] as u32;
+            let (col, row) = (s % cols, s / cols);
+            Lease { slab: slab_of[&class_of[i]], x: col * cw, y: row * ch, w: items[i].w, h: items[i].h }
+        })
+        .collect()
 }
 
 impl FrameDag {
@@ -197,197 +331,369 @@ impl FrameDag {
                 return Some(Barrier::Materialize);
             }
         }
+        // A barrier op's output is a materialized draft. Its SINGLE-input consumer chains in the same
+        // dispatch's register (the blur's tap loop feeds the fused pointwise tail); but a MULTI-input
+        // consumer (an erase reading the punch beside its flood) binds that draft as a texture, and a
+        // texture read needs the producing dispatch complete — one round later.
+        if src.op.is_barrier() && dst.inputs.len() >= 2 {
+            return Some(Barrier::Materialize);
+        }
+        // A Shade seeded from a materialized head (the scatter/blur draft it reads through slot 10)
+        // binds that draft as a texture, so the producing dispatch must complete one round earlier.
+        if matches!(dst.op, UnitOp::Shade(_)) && matches!(src.op, UnitOp::Scatter(_) | UnitOp::Blur { .. }) {
+            return Some(Barrier::Materialize);
+        }
         None
     }
 
-    /// The barrier-aware round of every node: `round[i] = max_j( round[j] + [edge j→i is a barrier] )`.
-    /// One forward pass, since nodes are pre-sorted. Nodes sharing a round run in one dispatch (the
-    /// composite spine folds into a single fine pass); a new round appears only across a materialize or
-    /// a reload. `tile` is the on-chip tile edge (use [`TILE_PX`]).
+    /// The dispatch-BINDING shape of a node that OWNS a fine dispatch — literally what its pass puts in
+    /// `fine`'s three texture slots, derived purely from op + edges, never a name. One dispatch binds one
+    /// set, so two nodes may share a round's dispatch iff their shapes are EQUAL — their bindings are
+    /// then physically shared (silhouette co-location, draft aliasing). `None` = the node owns no
+    /// dispatch: a structural node, an imperative raster source, or a pointwise unit that chains in
+    /// `fine`'s register inside another node's pass.
     #[must_use]
-    pub fn schedule(&self, tile: f64) -> Schedule {
-        let mut round = vec![0u32; self.nodes.len()];
-        let mut barrier = vec![None; self.nodes.len()];
-        for (i, n) in self.nodes.iter().enumerate() {
-            for &j in &n.inputs {
-                let b = self.edge_barrier(j, i, tile);
-                let r = round[j] + u32::from(b.is_some());
-                if r > round[i] {
-                    round[i] = r;
-                    barrier[i] = b;
+    pub fn binding_shape(&self, i: usize) -> Option<BindingShape> {
+        let n = &self.nodes[i];
+        let mat = self.nodes.iter().any(|m| {
+            m.inputs.contains(&i)
+                && matches!(m.op, UnitOp::Blur { .. } | UnitOp::Scatter(_) | UnitOp::Warp(_) | UnitOp::EraseBy(_))
+        });
+        // The chain's root decides what `base_in` holds — a rasterized source texture, or the (reloaded)
+        // accumulator — and, for a draft input, which pool that draft physically lives in today.
+        let root = |mut j: usize| loop {
+            match self.nodes[j].op {
+                UnitOp::Rasterize(_) => break Slot::Source,
+                UnitOp::Reload => break Slot::Backdrop,
+                _ => match self.nodes[j].inputs.first() {
+                    Some(&k) => j = k,
+                    None => break Slot::Backdrop,
+                },
+            }
+        };
+        let shape = |base: Slot, input: Slot, to_draft: bool, draft_taps: bool| {
+            Some(BindingShape { base, input, to_draft, draft_taps })
+        };
+        match &n.op {
+            UnitOp::Blur { .. } => match &self.nodes[n.inputs[0]].op {
+                UnitOp::Rasterize(_) => shape(Slot::Source, Slot::Source, mat, false),
+                UnitOp::Reload => shape(Slot::Backdrop, Slot::None, mat, false),
+                _ => {
+                    // A materialize reads its chain's root as `base_in`; a composite always reads the
+                    // accumulator. The slot-10 permutation follows the PRODUCER: a blur tapping another
+                    // BLUR's draft rides the draft permutation; one tapping a head's draft (a frost H
+                    // over the warp scratch) rides the input permutation.
+                    let r = root(n.inputs[0]);
+                    let base = if mat { r } else { Slot::Backdrop };
+                    let taps = matches!(self.nodes[n.inputs[0]].op, UnitOp::Blur { .. });
+                    shape(base, Slot::Draft(match r { Slot::Source => 0, _ => 1 }), mat, taps)
+                }
+            },
+            UnitOp::EraseBy(_) => {
+                let punch = n.inputs[1];
+                let input = if matches!(self.nodes[punch].op, UnitOp::Rasterize(_)) {
+                    Slot::Source
+                } else {
+                    Slot::Draft(0)
+                };
+                shape(Slot::Backdrop, input, false, false)
+            }
+            UnitOp::Tint(_) if matches!(self.nodes[n.inputs[0]].op, UnitOp::Rasterize(_)) => {
+                shape(Slot::Backdrop, Slot::Source, false, false)
+            }
+            UnitOp::Warp(_) => {
+                let input = if n.inputs.len() > 1 { Slot::Source } else { Slot::None };
+                shape(Slot::Backdrop, input, mat, false)
+            }
+            UnitOp::ClipToSource(_) => match root(n.inputs[0]) {
+                Slot::Source => shape(Slot::Backdrop, Slot::Source, mat, false),
+                _ => None,
+            },
+            // A body rasterize that carries its OWN mark (a unit-less replaced body): composite the
+            // co-located source over the accumulator.
+            UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
+                if n.inputs.is_empty() && !mat =>
+            {
+                shape(Slot::Backdrop, Slot::Source, false, false)
+            }
+            // A scatter always materializes: its consumer is a Shade head that reads it as a draft.
+            UnitOp::Scatter(_) => shape(Slot::Backdrop, Slot::Draft(1), true, false),
+            // A Shade whose input is a MATERIALIZED link (a scatter or blur draft) heads a new chain in
+            // its own dispatch, seeded from that draft; one reading its head's in-register value
+            // (a warp) chains inside the head's dispatch. MaskMix always chains.
+            UnitOp::Shade(_) if matches!(self.nodes[n.inputs[0]].op, UnitOp::Scatter(_) | UnitOp::Blur { .. }) => {
+                shape(Slot::Backdrop, Slot::Draft(1), false, false)
+            }
+            _ => None,
+        }
+    }
+
+    /// THE scheduler — one call that decides *when* every node runs (`round`), *where* its scratch lives
+    /// (`lease`), and *how* it reads (`desc`/`ctl`). It is a **two-level** schedule of the exact structure
+    /// the DAG has once the accumulator is factored out: a **forest of per-effect trees** threaded by a
+    /// **region-scoped accumulator spine**.
+    ///
+    /// * **Level 1 — the spine (region-z).** Group nodes into components: all of one effect's nodes
+    ///   (`Source::Effect`) form its build-tree; each plain paint band/body/background is a singleton.
+    ///   `fine` walks a tile's effect markers with *strictly-increasing rounds* — two markers a tile sees
+    ///   cannot share a round — so two effect components whose (tile-snapped) reaches overlap must occupy
+    ///   **disjoint round ranges in paint order**. `base[c] = max over earlier reach-overlapping d of
+    ///   base[d] + span[d] + [c is an effect]`. Disjoint components reuse rounds (region-scoping); plain
+    ///   paint folds (it emits no marker), so only effect components consume a fresh round.
+    /// * **Level 2 — the tree.** Inside a component, `off[i]` is the local barrier depth (a separable blur
+    ///   is X then Y one materialize apart; a pointwise chain — glass warp→shade→maskmix — stays at one
+    ///   offset so it fuses in `fine`'s register). `span[c] = max off`. `round[i] = base[comp] + off[i]`.
+    ///
+    /// **Budget.** `budget` (scratch bytes; [`u64::MAX`] = unbounded) caps concurrent live draft scratch:
+    /// batch-then-flush over the spine — a component is deferred to a later `base` until its whole span
+    /// fits under the budget, so `N` (effects in flight) slides with memory instead of OOM-ing at scale.
+    /// Feasibility is free (one effect always fits), so this only ever *raises* rounds; it never fails.
+    ///
+    /// Then the SSA half: `pack` colours the `[round, death]` live intervals into leases (chordal ⇒
+    /// optimal), and each node bakes its `desc` + `ctl`. `tile` is the on-chip edge ([`TILE_PX`]).
+    #[must_use]
+    pub fn schedule(&self, tile: f64, budget: u64) -> Schedule {
+        use crate::vello::bake::{bake_unit, blur_arm, Policy};
+        use std::collections::HashMap;
+        let n = self.nodes.len();
+
+        // ── Components: the accumulator factored out. One effect's nodes group by `(shape, slot)`; every
+        // plain paint node is its own singleton. Inside a component is the effect's build-tree; between
+        // components is the region-scoped accumulator spine.
+        let mut comp = vec![0usize; n];
+        let mut of: HashMap<(u128, usize), usize> = HashMap::new();
+        let mut ncomp = 0usize;
+        for (i, node) in self.nodes.iter().enumerate() {
+            comp[i] = match node.source {
+                Source::Effect { shape, slot } => *of.entry((shape, slot)).or_insert_with(|| {
+                    let c = ncomp;
+                    ncomp += 1;
+                    c
+                }),
+                _ => {
+                    let c = ncomp;
+                    ncomp += 1;
+                    c
+                }
+            };
+        }
+
+        // Per-component: emission rank (first node index), page-space reach (union), whether it emits a
+        // marker (an effect occupies its own round range on its tiles), and its peak draft footprint.
+        let mut first = vec![usize::MAX; ncomp];
+        let mut reach: Vec<Option<Rect>> = vec![None; ncomp];
+        let mut is_effect = vec![false; ncomp];
+        let mut foot = vec![0u64; ncomp];
+        for (i, node) in self.nodes.iter().enumerate() {
+            let c = comp[i];
+            first[c] = first[c].min(i);
+            if matches!(node.source, Source::Effect { .. }) {
+                is_effect[c] = true;
+            }
+            if let Some(r) = node.reach {
+                reach[c] = Some(reach[c].map_or(r, |u| u.union(r)));
+                if !node.writes_accumulator() {
+                    foot[c] += (r.width().max(0.0) * r.height().max(0.0)) as u64 * 4;
                 }
             }
         }
-        Schedule { round, barrier }
+
+        // Level 2 — intra-component barrier depth (only within-component edges; cross-component edges are
+        // the spine, handled by `base`). A separable blur's Y is one materialize past its X; a pointwise
+        // chain shares its head's offset so it fuses.
+        let mut off = vec![0u32; n];
+        for (i, node) in self.nodes.iter().enumerate() {
+            for &j in &node.inputs {
+                if comp[j] == comp[i] {
+                    off[i] = off[i].max(off[j] + u32::from(self.edge_barrier(j, i, tile).is_some()));
+                }
+            }
+        }
+        let mut span = vec![0u32; ncomp];
+        for i in 0..n {
+            span[comp[i]] = span[comp[i]].max(off[i]);
+        }
+
+        // Level 1 — the spine: base round per component, in paint (emission) order. A component starts
+        // after every earlier reach-overlapping component ends; budget defers it further until its span
+        // fits. Processing in emission order means a later component always reads its predecessors' FINAL
+        // base, so region-z holds and the budget only ever adds separation.
+        // Per-component dispatch signature: the (local round, binding class) of every dispatch-owning
+        // node. One dispatch binds one input and one output, so a round accepts only ONE class — two
+        // disjoint components share a round's dispatch iff their classes there agree (their bindings are
+        // then physically shared via co-location/aliasing).
+        let mut sig: Vec<Vec<(u32, BindingShape)>> = vec![Vec::new(); ncomp];
+        for i in 0..n {
+            if let Some(cl) = self.binding_shape(i) {
+                sig[comp[i]].push((off[i], cl));
+            }
+        }
+
+        let mut corder: Vec<usize> = (0..ncomp).collect();
+        corder.sort_by_key(|&c| first[c]);
+        let mut base = vec![0u32; ncomp];
+        let mut load: Vec<u64> = Vec::new();
+        let mut shape_at: HashMap<u32, BindingShape> = HashMap::new();
+        for idx in 0..corder.len() {
+            let c = corder[idx];
+            let mut b = 0u32;
+            for &d in &corder[..idx] {
+                if reach_overlap(reach[c], reach[d], tile) {
+                    // Strictly-increasing rounds bind only between two MARKERS: two effects that share a
+                    // tile need a fresh round between them. If either side is plain paint (no marker), they
+                    // co-exist in one round, ordered by PTCL position — no gap.
+                    let gap = u32::from(is_effect[c] && is_effect[d]);
+                    b = b.max(base[d] + span[d] + gap);
+                }
+            }
+            loop {
+                if !sig[c].iter().all(|&(o, cl)| shape_at.get(&(b + o)).is_none_or(|&e| e == cl)) {
+                    b += 1;
+                    continue;
+                }
+                if budget != u64::MAX && foot[c] > 0 {
+                    let (lo, hi) = (b as usize, (b + span[c]) as usize);
+                    while load.len() <= hi {
+                        load.push(0);
+                    }
+                    // Defer only while something else is already resident in c's span — never past an
+                    // EMPTY round. A single effect whose own footprint exceeds the budget then simply takes
+                    // its own rounds (a requirements problem, not a hang): feasibility stays guaranteed.
+                    let empty = (lo..=hi).all(|r| load[r] == 0);
+                    let fits = (lo..=hi).all(|r| load[r] + foot[c] <= budget);
+                    if !(fits || empty) {
+                        b += 1;
+                        continue;
+                    }
+                }
+                break;
+            }
+            if budget != u64::MAX && foot[c] > 0 {
+                let (lo, hi) = (b as usize, (b + span[c]) as usize);
+                while load.len() <= hi {
+                    load.push(0);
+                }
+                for r in lo..=hi {
+                    load[r] += foot[c];
+                }
+            }
+            for &(o, cl) in &sig[c] {
+                shape_at.insert(b + o, cl);
+            }
+            base[c] = b;
+        }
+
+        let mut round = vec![0u32; n];
+        for i in 0..n {
+            round[i] = base[comp[i]] + off[i];
+        }
+
+        // Per-node barrier tag (display + executor): the strongest incoming edge barrier.
+        let mut barrier = vec![None; n];
+        for (i, node) in self.nodes.iter().enumerate() {
+            for &j in &node.inputs {
+                if let Some(bar) = self.edge_barrier(j, i, tile) {
+                    barrier[i] = Some(match (barrier[i], bar) {
+                        (Some(Barrier::Reload), _) | (_, Barrier::Reload) => Barrier::Reload,
+                        _ => Barrier::Materialize,
+                    });
+                }
+            }
+        }
+
+        // Death — the last round any consumer reads a node's output (its live-interval end).
+        let mut death = round.clone();
+        for (i, node) in self.nodes.iter().enumerate() {
+            for &j in &node.inputs {
+                if round[i] > death[j] {
+                    death[j] = round[i];
+                }
+            }
+        }
+
+        let mut sched = Schedule { round, barrier, death, desc: Vec::new(), lease: Vec::new(), ctl: Vec::new() };
+
+        // The SSA half: colour the live intervals into leases, then bake each node's descriptor + ctl.
+        let lives = self.materialized_lives(&sched);
+        let leases = pack(&lives);
+        let mut lease = vec![None; n];
+        for (lr, le) in lives.iter().zip(&leases) {
+            lease[lr.node] = Some(*le);
+        }
+        let mut feeds_compose = vec![false; n];
+        let mut comp_over = vec![false; ncomp];
+        for (i, node) in self.nodes.iter().enumerate() {
+            if let UnitOp::Compose(mode) = node.op {
+                comp_over[comp[i]] = mode == ComposeMode::Over;
+                for &j in &node.inputs {
+                    feeds_compose[j] = true;
+                }
+            }
+        }
+        let mut desc = vec![[0.0f32; 26]; n];
+        let mut ctl = vec![0u32; n];
+        for (i, node) in self.nodes.iter().enumerate() {
+            if !matches!(node.source, Source::Effect { .. }) || node.op.is_structural() {
+                continue;
+            }
+            let writes_acc = node.writes_accumulator();
+            match node.op {
+                UnitOp::Blur { sigma, linear, axis, edge } => {
+                    let edge_coverage = edge == BlurEdge::Coverage;
+                    let policy = Policy {
+                        colour_over: writes_acc && comp_over[comp[i]],
+                        raw: edge_coverage && !writes_acc,
+                        edge_coverage,
+                        ..Policy::default()
+                    };
+                    desc[i] = blur_arm(sigma, linear, axis == BlurAxis::Y, policy, None);
+                }
+                _ => {
+                    desc[i] = bake_unit(&node.op, Policy::default());
+                    ctl[i] = if lease[i].is_some() {
+                        0
+                    } else {
+                        Schedule::ATOMIC | if feeds_compose[i] { Schedule::BOUNDARY } else { 0 }
+                    };
+                }
+            }
+        }
+        sched.desc = desc;
+        sched.lease = lease;
+        sched.ctl = ctl;
+        sched
     }
 
-    /// The uniform effect-marker stream — ONE emission that replaces the four per-effect-type marker
-    /// builders (`wv_rounds`, `wv_shadow_plan`/`schedule_shadows`, `stack_markers`, `fx_markers`) and
-    /// the scaffolding they need to reconcile (`ShadowMarker`/`ShadowRole`/`WindowRole`, the
-    /// pre-round/span math). Every effect pass — a gather (blur/sample/erase/custom), a backdrop
-    /// reload, or an effect composite — becomes one marker carrying its `gid`, its `round` (straight
-    /// from [`Self::schedule`]), its page-space `reach`, and its `op`. The Sink turns `(op, gid)` into
-    /// the `effect_id` + the baked unit uniform (the one irreducible, per-op step) and calls
-    /// `draw_effect_marker`; there is no per-type builder and no window-role reconciliation left.
+    /// Build the packer's input from a schedule: one [`LiveRect`] per MATERIALIZED value — a node whose
+    /// output lives in a scratch atlas (`!writes_accumulator`) and is read ACROSS A BARRIER (a consumer in
+    /// a LATER round). A node read only within its own round chains in `fine`'s register (glass
+    /// warp→shade→maskmix, an inner band's flood→erase→tint) — it never touches a texture, so it takes no
+    /// lease. Its interval is `[round, death]` straight from the schedule; its size is the reach footprint
+    /// in PAGE units here — a device-scaled caller multiplies by the view and render-scale before packing.
+    /// The accumulator spine carries no lease: it composites in place.
     #[must_use]
-    pub fn effect_markers(&self, tile: f64) -> Vec<EffectMarker> {
-        let sched = self.schedule(tile);
+    pub fn materialized_lives(&self, sched: &Schedule) -> Vec<LiveRect> {
+        let mut crosses_barrier = vec![false; self.nodes.len()];
+        for (i, n) in self.nodes.iter().enumerate() {
+            for &j in &n.inputs {
+                if sched.round[i] > sched.round[j] {
+                    crosses_barrier[j] = true;
+                }
+            }
+        }
         self.nodes
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                let Source::Effect { shape, slot } = n.source else { return None };
-                // The passes that become CMD_EFFECT markers: gathers, the reload, the effect composite,
-                // and the pointwise fragment units that fuse into an arm. A rasterized silhouette is
-                // scene coverage, not a marker.
-                let is_marker = !matches!(n.op, UnitOp::Rasterize);
-                is_marker.then_some(EffectMarker {
-                    gid: shape,
-                    slot,
-                    round: sched.round[i],
-                    reach: n.reach,
-                    op: n.op.clone(),
-                })
+                if n.writes_accumulator() || !crosses_barrier[i] {
+                    return None;
+                }
+                let (w, h) = n.reach.map_or((1, 1), |r| {
+                    (r.width().ceil().max(1.0) as u32, r.height().ceil().max(1.0) as u32)
+                });
+                Some(LiveRect { node: i, w, h, birth: sched.round[i], death: sched.death[i] })
             })
             .collect()
-    }
-
-    /// The fine arms for one shape, straight from the schedule — the direct schedule→`fine` wire, with
-    /// no per-effect planner in the middle. Partition this shape's effect nodes by their scheduled round
-    /// (the round-partition IS the fuse cut — a barrier bumps the round, so units sharing a round are
-    /// exactly one fused arm); each round whose fragment run the scheduler has FILLED becomes one
-    /// 26-float descriptor ([`crate::vello::bake::arm_descriptor`]), its policy derived structurally from
-    /// that round's own nodes. Returns `None` when any round is not yet DAG-drivable — a unit whose
-    /// device uniform [`Self::fill_lens_uniforms`] has not stamped, or a `Blur`/`Custom` whose
-    /// axis/params the arm grouping does not assign yet — so the caller falls back to the planner for
-    /// that shape. Today SHARP glass drives through here byte-identically with the planner; the seam
-    /// widens as the scheduler grows to fill more units.
-    #[must_use]
-    pub fn arms_for(&self, gid: u128, tile: f64) -> Option<Vec<[f32; 26]>> {
-        use crate::vello::bake::{arm_descriptor, Policy};
-        use std::collections::BTreeMap;
-        // Shape-level gate: a lens HEAD together with a BLUR is frosted glass — 4 arms in the DAG vs the
-        // 5 current `fine` expects, so it is not byte-reproducible here and stays on the planner. Pure
-        // glass (a head, no blur) and pure background blur (a blur, no head) each reproduce their planner
-        // descriptors exactly, so both flow through.
-        let (mut has_head, mut has_blur) = (false, false);
-        for n in self.nodes.iter().filter(|n| matches!(n.source, Source::Effect { shape, .. } if shape == gid)) {
-            match n.op {
-                UnitOp::Warp(_) | UnitOp::Scatter(_) => has_head = true,
-                UnitOp::Blur { .. } => has_blur = true,
-                _ => {}
-            }
-        }
-        if has_head && has_blur {
-            return None;
-        }
-        let sched = self.schedule(tile);
-        let mut by_round: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-        for (i, n) in self.nodes.iter().enumerate() {
-            if matches!(n.source, Source::Effect { shape, .. } if shape == gid) {
-                by_round.entry(sched.round[i]).or_default().push(i);
-            }
-        }
-        if by_round.is_empty() {
-            return None;
-        }
-        let mut arms = Vec::new();
-        let mut blur_axis = 0u32; // 0 → the first (X) blur pass of this effect, 1 → the second (Y)
-        for (_round, idxs) in by_round {
-            let run: Vec<UnitOp> = idxs.iter().map(|&i| self.nodes[i].op.clone()).filter(|op| !op.is_structural()).collect();
-            match run.as_slice() {
-                [] => continue, // a reload-only round carries no arm of its own
-                // One axis pass of a separable blur. In the fx_fine wire the materialize (H → draft) and
-                // masked composite (V) are driven by the emitter's round layout, NOT descriptor bits, so
-                // the arm is axis + device sigma only: bits BLUR (+SRGB when it mixes in gamma space).
-                // `units_uniform` skips `Blur`, so `u[0]` (slots 2..5) is written here; the axis comes
-                // from the pass ordinal (the DAG's two positional Blur nodes, X before Y).
-                [UnitOp::Blur { sigma, linear, .. }] => {
-                    arms.push(crate::vello::bake::blur_arm(*sigma, *linear, blur_axis != 0, Policy::default(), None));
-                    blur_axis += 1;
-                }
-                // A fused fragment run (glass = Warp+Shade+MaskMix). Drivable only where every unit is a
-                // FILLED fragment (a non-empty device uniform the scheduler stamped); an unfilled
-                // placeholder means this effect is not on the DAG wire yet → bail to the planner.
-                _ => {
-                    if !run.iter().all(is_filled_fragment) {
-                        return None;
-                    }
-                    arms.push(arm_descriptor(&run, Policy::default(), None));
-                }
-            }
-        }
-        (!arms.is_empty()).then_some(arms)
-    }
-
-    /// The COMPLETE baked fine arms for one shape — the clean [`crate::vello::bake`] emitter that
-    /// replaces the per-effect planners (`wv_shadow_plan`/`stack_markers`/`schedule_shadows`). Partitions
-    /// the shape's effect nodes by scheduled round (the round-partition IS the fuse cut) and bakes each
-    /// round's fused run to one [`crate::vello::bake::Baked`] — the 26-float descriptor plus its `eid`
-    /// (coverage) and `round_off` (round relative to the shape's base). Every policy is derived
-    /// STRUCTURALLY, no tags: `axis_y` = the blur's input is itself a blur; `materialize` = the run
-    /// writes no accumulator node (an intermediate draft); `shadow_edge`/`spread` = the chain sources
-    /// from a silhouette `Rasterize` rather than a `Reload` backdrop; `eid` is the dilated-reach marker
-    /// for a materialize or a drop spread, else the masked (silhouette-clipped) marker.
-    ///
-    /// `None` while any round is a case not yet covered (a bare spread composite — a sharp drop, an inner
-    /// band, or a frost tail) so the caller falls back; coverage grows to total, then the fallback and the
-    /// per-effect planners are deleted.
-    #[must_use]
-    pub fn bake_effect(&self, gid: u128, tile: f64) -> Option<Vec<crate::vello::bake::Baked>> {
-        use crate::vello::bake::{self, Baked, Policy, EID_MASKED, EID_MATERIALIZE};
-        use std::collections::BTreeMap;
-        let sched = self.schedule(tile);
-        let mut by_round: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-        for (i, n) in self.nodes.iter().enumerate() {
-            if matches!(n.source, Source::Effect { shape, .. } if shape == gid)
-                && !matches!(n.op, UnitOp::Rasterize | UnitOp::Reload)
-            {
-                by_round.entry(sched.round[i]).or_default().push(i);
-            }
-        }
-        let &base = by_round.keys().next()?;
-        let mut arms = Vec::new();
-        for (&round, idxs) in &by_round {
-            let round_off = round - base;
-            let run: Vec<UnitOp> =
-                idxs.iter().map(|&i| self.nodes[i].op.clone()).filter(|op| !op.is_structural()).collect();
-            if run.is_empty() {
-                continue; // a reload/compose-only round carries no arm of its own
-            }
-            let writes_acc = idxs.iter().any(|&i| self.nodes[i].writes_accumulator());
-            let materialize = !writes_acc;
-            let has_head = run.iter().any(|op| matches!(op, UnitOp::Warp(_) | UnitOp::Scatter(_)));
-            let blur = idxs.iter().copied().find(|&i| matches!(self.nodes[i].op, UnitOp::Blur { .. }));
-            let baked = if let (Some(bi), false) = (blur, has_head) {
-                // A separable-blur axis pass. Everything is read straight off the op — no graph tracing:
-                // `axis`/`edge` were stamped at build. A background blur (`edge == Backdrop`) carries a
-                // plain BLUR descriptor; a SHADOW blur (`edge == Coverage`) carries the shadow policy in
-                // its bits — the H materialises unmasked, the V spreads its colour.
-                let UnitOp::Blur { sigma, linear, axis, edge } = self.nodes[bi].op else { unreachable!() };
-                let axis_y = axis == BlurAxis::Y;
-                let shadow_edge = edge == BlurEdge::Coverage;
-                let spread = shadow_edge && writes_acc;
-                let materialize = shadow_edge && !writes_acc;
-                let tint = spread.then(|| {
-                    let u = crate::vello::units::units_uniform(&run);
-                    [u[12], u[13], u[14], u[15]]
-                });
-                let params = bake::blur_arm(sigma, linear, axis_y, Policy { spread, materialize, shadow_edge }, tint);
-                let eid = if materialize || spread { EID_MATERIALIZE } else { EID_MASKED };
-                Baked { eid, round_off, params }
-            } else if has_head {
-                // A fused fragment run: a lens/frost head (Warp/Scatter) + its Shade + MaskMix tail, one
-                // masked composite over the materialized backdrop.
-                let params = bake::arm_descriptor(&run, Policy { materialize, ..Policy::default() }, None);
-                let eid = if materialize { EID_MATERIALIZE } else { EID_MASKED };
-                Baked { eid, round_off, params }
-            } else {
-                return None; // a bare spread composite (sharp drop / inner band / frost tail) — TODO
-            };
-            arms.push(baked);
-        }
-        (!arms.is_empty()).then_some(arms)
     }
 
     /// Fill each background-blur node's DEVICE sigma — the blur half of the scheduler's viewport pass,
@@ -525,23 +831,6 @@ impl FrameDag {
     }
 }
 
-/// A fragment unit the scheduler has already stamped with its device uniform — the arm-drivable ones.
-/// A sampling head or pointwise tail whose uniform `Vec` is non-empty; `Blur`/`Custom` carry no fused
-/// uniform (their axis/params are assigned by arm grouping, not here) and structural ops never fuse, so
-/// both read as not-yet-drivable — the gate [`FrameDag::arms_for`] falls back on.
-fn is_filled_fragment(op: &UnitOp) -> bool {
-    matches!(
-        op,
-        UnitOp::Warp(u)
-            | UnitOp::Scatter(u)
-            | UnitOp::Shade(u)
-            | UnitOp::MaskMix(u)
-            | UnitOp::ClipToSource(u)
-            | UnitOp::EraseBy(u)
-            | UnitOp::Tint(u) if !u.is_empty()
-    )
-}
-
 /// Does region `a` overlap region `b`? `None` is the whole frame, which overlaps everything. Two
 /// finite rects overlap only with positive area — touching edges do not, and since reach rects already
 /// include the 3σ blur halo, genuinely-interacting effects have overlapping rects.
@@ -550,6 +839,24 @@ fn overlaps(a: Option<Rect>, b: Option<Rect>) -> bool {
         (Some(x), Some(y)) => x.x0 < y.x1 && y.x0 < x.x1 && x.y0 < y.y1 && y.y0 < x.y1,
         _ => true,
     }
+}
+
+/// Do two regions share a TILE — the round-separation test for the spine. `fine` walks a tile's effect
+/// markers with strictly-increasing rounds, and a marker touches every tile its reach *snapped out to the
+/// tile grid* covers, so two effects conflict exactly when their tile-snapped reaches intersect (not their
+/// exact rects — sub-tile-apart reaches still land on the same tile). `None` is the whole frame.
+fn reach_overlap(a: Option<Rect>, b: Option<Rect>, tile: f64) -> bool {
+    let (Some(a), Some(b)) = (a, b) else { return true };
+    let snap = |r: Rect| {
+        Rect::new(
+            (r.x0 / tile).floor() * tile,
+            (r.y0 / tile).floor() * tile,
+            (r.x1 / tile).ceil() * tile,
+            (r.y1 / tile).ceil() * tile,
+        )
+    };
+    let (a, b) = (snap(a), snap(b));
+    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 
 /// Does region `outer` fully contain `inner`? The whole frame contains everything; a finite region
@@ -641,10 +948,21 @@ impl Builder {
     /// reads `cur`, Y reads X. The schedule puts Y one barrier after X (it gathers a fresh draft); `bake`
     /// assigns the axis from position. Returns the Y tail.
     fn blur(&mut self, radius: f32, linear: bool, cur: usize, reach: Option<Rect>, name: &str, tag: &str) -> usize {
-        // The OOB behaviour is fixed by what the blur reads: a coverage silhouette (a shadow blurs its
-        // own `Rasterize`) fades to transparent; anything else (a `Reload` backdrop, a `Warp` frost
-        // source) is the page. Stamp it here, once, from the direct source — not re-traced at bake.
-        let edge = if matches!(self.dag.nodes[cur].op, UnitOp::Rasterize) { BlurEdge::Coverage } else { BlurEdge::Backdrop };
+        // The OOB behaviour is fixed by what the blur reads: a chain rooted at its own `Rasterize`
+        // (a shadow silhouette, a warped body) fades to transparent; one rooted at a `Reload` (the
+        // backdrop, a frost source) is the page. Stamp it here, once, from the chain root — not
+        // re-traced at bake.
+        let mut r = cur;
+        let edge = loop {
+            match self.dag.nodes[r].op {
+                UnitOp::Rasterize(_) => break BlurEdge::Coverage,
+                UnitOp::Reload => break BlurEdge::Backdrop,
+                _ => match self.dag.nodes[r].inputs.first() {
+                    Some(&j) => r = j,
+                    None => break BlurEdge::Backdrop,
+                },
+            }
+        };
         let x = self.draft(UnitOp::Blur { sigma: radius, linear, axis: BlurAxis::X, edge }, format!("{name} {tag} blur-X r{radius:.0}"), reach, vec![cur]);
         self.draft(UnitOp::Blur { sigma: radius, linear, axis: BlurAxis::Y, edge }, format!("{name} {tag} blur-Y r{radius:.0}"), reach, vec![x])
     }
@@ -659,7 +977,7 @@ impl Builder {
         let label = format!("paint band · {} shape(s)", band.ids.len());
         let inputs = self.acc.readers(reach);
         self.cur = Source::Band(band.take());
-        let id = self.push(UnitOp::Rasterize, Target::Accumulator, label, reach, inputs);
+        let id = self.push(UnitOp::Rasterize(RasterSource::Body { offset: [0.0; 2] }), Target::Accumulator, label, reach, inputs);
         self.acc.write(reach, id);
         self.cur = Source::Background;
     }
@@ -690,7 +1008,7 @@ impl Builder {
                     // silhouette), the warp's second input. The executor bakes the SDF (not coverage)
                     // because a `Warp` reads it; an analytic box lens has no such node.
                     let warp_inputs = if sampled {
-                        let sdf = self.draft(UnitOp::Rasterize, format!("{name} lens sdf"), reach, vec![]);
+                        let sdf = self.draft(UnitOp::Rasterize(RasterSource::Distance { decode: 0.0 }), format!("{name} lens sdf"), reach, vec![]);
                         vec![cur, sdf]
                     } else {
                         vec![cur]
@@ -705,13 +1023,32 @@ impl Builder {
                     let shaded = self.pointwise(UnitOp::Shade(Vec::new()), format!("{name} lens shade"), reach, vec![head]);
                     self.pointwise(UnitOp::MaskMix(Vec::new()), format!("{name} lens mask-mix"), reach, vec![shaded])
                 }
-                EffectOp::Shader(_) => self.draft(
-                    UnitOp::Custom { u: Vec::new(), param_vec4s: 0, reach: 0.0, reads_backdrop: true },
-                    format!("{name} custom pass"),
+                EffectOp::Tint(c) => self.pointwise(
+                    UnitOp::Tint(c.components.to_vec()),
+                    format!("{name} {tag} tint"),
                     reach,
                     vec![cur],
                 ),
-                EffectOp::Tint(_) => self.pointwise(UnitOp::Tint(Vec::new()), format!("{name} {tag} tint"), reach, vec![cur]),
+                EffectOp::FieldTint(c) => {
+                    let tinted = self.pointwise(
+                        UnitOp::Tint(c.components.to_vec()),
+                        format!("{name} {tag} field-tint"),
+                        reach,
+                        vec![cur],
+                    );
+                    let mut u = vec![0.0f32; 24];
+                    u[crate::vello::bake::PAYLOAD_PROGRAM_SLOT] = crate::vello::bake::PROGRAM_RADIAL;
+                    self.pointwise(UnitOp::MaskMix(u), format!("{name} {tag} field-mask"), reach, vec![tinted])
+                }
+                EffectOp::NoiseWarp { magnitude, grain, clip } => {
+                    let mut u = vec![0.0f32; 24];
+                    u[2] = *magnitude;
+                    u[3] = *grain;
+                    u[21] = f32::from(u8::from(*clip));
+                    u[crate::vello::bake::PAYLOAD_PROGRAM_SLOT] = crate::vello::bake::PROGRAM_NOISE;
+                    let warp = self.draft(UnitOp::Warp(u), format!("{name} {tag} noise-warp"), reach, vec![cur]);
+                    self.pointwise(UnitOp::ClipToSource(Vec::new()), format!("{name} {tag} clip"), reach, vec![warp])
+                }
                 EffectOp::Offset(_) => cur, // geometry — baked into which silhouette is rasterized, no unit
             };
         }
@@ -737,14 +1074,40 @@ impl Builder {
             }
             let reach = Some(e.footprint(base));
             self.cur = Source::Effect { shape, slot };
+            // The Compose unit carries HOW the chain lands, straight from the authored compose:
+            // a shadow / replaced body lays its coverage-rooted value source-over; a backdrop
+            // gather mixes in masked. Downstream reads the unit, never re-derives.
+            let mode = match e.compose {
+                Compose::Over | Compose::Under | Compose::Replace => ComposeMode::Over,
+                Compose::ThroughCoverage => ComposeMode::MaskedMix,
+            };
             let tail = match e.compose {
                 // An inner shadow is a two-coverage op — flood MINUS an offset+blurred punch. Both are
                 // plain `Rasterize` nodes (the flood is the shape's UNOFFSET coverage — for a Text that
                 // is its glyphs, drawn by the silhouette rasterizer), so there is no back-sampling
                 // special case: the erase reads the flood and the blurred punch directly.
                 Compose::Over => {
-                    let flood = self.draft(UnitOp::Rasterize, format!("{name} inner flood"), reach, vec![]);
-                    let punch_sil = self.draft(UnitOp::Rasterize, format!("{name} inner punch silhouette"), reach, vec![]);
+                    let analytic = node.text.is_none();
+                    let poff = e
+                        .ops
+                        .iter()
+                        .find_map(|o| match o {
+                            EffectOp::EraseBy { offset, .. } => Some([offset.x as f32, offset.y as f32]),
+                            _ => None,
+                        })
+                        .unwrap_or([0.0; 2]);
+                    let flood = self.draft(
+                        UnitOp::Rasterize(RasterSource::Coverage { offset: [0.0; 2], analytic }),
+                        format!("{name} inner flood"),
+                        reach,
+                        vec![],
+                    );
+                    let punch_sil = self.draft(
+                        UnitOp::Rasterize(RasterSource::Coverage { offset: poff, analytic }),
+                        format!("{name} inner punch silhouette"),
+                        reach,
+                        vec![],
+                    );
                     let blur = e.ops.iter().find_map(|o| match o {
                         EffectOp::EraseBy { blur, .. } => Some(*blur),
                         EffectOp::Blur { radius } => Some(*radius),
@@ -758,12 +1121,44 @@ impl Builder {
                     self.pointwise(UnitOp::Tint(Vec::new()), format!("{name} inner tint"), reach, vec![band])
                 }
                 Compose::Under => {
-                    let sil = self.draft(UnitOp::Rasterize, format!("{name} drop silhouette"), reach, vec![]);
+                    let off = e
+                        .ops
+                        .iter()
+                        .find_map(|o| match o {
+                            EffectOp::Offset(v) => Some([v.x as f32, v.y as f32]),
+                            _ => None,
+                        })
+                        .unwrap_or([0.0; 2]);
+                    let sil = self.draft(
+                        UnitOp::Rasterize(RasterSource::Coverage { offset: off, analytic: node.text.is_none() }),
+                        format!("{name} drop silhouette"),
+                        reach,
+                        vec![],
+                    );
                     self.lower_ops(&e.ops, sil, reach, &name, "drop", false, false)
                 }
                 Compose::Replace => {
-                    let sil = self.draft(UnitOp::Rasterize, format!("{name} body-read"), reach, vec![]);
-                    self.lower_ops(&e.ops, sil, reach, &name, "body", false, false)
+                    // A replaced body rides fine only when every op lowered faithfully. Any other op
+                    // leaves the chain unit-less, which the emitter reads as "the painter renders
+                    // this". `Offset` is geometry: it sums into the body rasterization's own
+                    // translation (it commutes with the blur), exactly as a drop's offset rides its
+                    // `Coverage` payload.
+                    let offset = e.ops.iter().fold([0.0f32; 2], |a, o| match o {
+                        EffectOp::Offset(v) => [a[0] + v.x as f32, a[1] + v.y as f32],
+                        _ => a,
+                    });
+                    let sil = self.draft(UnitOp::Rasterize(RasterSource::Body { offset }), format!("{name} body-read"), reach, vec![]);
+                    let unitable = e.ops.iter().all(|o| {
+                        matches!(
+                            o,
+                            EffectOp::Blur { .. } | EffectOp::NoiseWarp { .. } | EffectOp::Offset(_)
+                        )
+                    });
+                    if unitable {
+                        self.lower_ops(&e.ops, sil, reach, &name, "body", true, false)
+                    } else {
+                        sil
+                    }
                 }
                 Compose::ThroughCoverage => {
                     let reads = self.acc.readers(reach);
@@ -775,7 +1170,7 @@ impl Builder {
                     self.lower_ops(&e.ops, reload, reach, &name, "gather", linear, sampled)
                 }
             };
-            self.compose(format!("{name} → acc"), reach, tail);
+            self.compose(format!("{name} → acc"), reach, tail, mode);
             self.cur = Source::Background;
         }
         if !body_done {
@@ -792,17 +1187,17 @@ impl Builder {
         let reach = Some(base);
         let inputs = self.acc.readers(reach);
         self.cur = Source::Body(shape);
-        let id = self.push(UnitOp::Rasterize, Target::Accumulator, format!("{name} body"), reach, inputs);
+        let id = self.push(UnitOp::Rasterize(RasterSource::Body { offset: [0.0; 2] }), Target::Accumulator, format!("{name} body"), reach, inputs);
         self.acc.write(reach, id);
         self.cur = Source::Background;
     }
 
     /// Land an effect result (`tail`) onto the region-scoped accumulator: read the writers `reach`
     /// overlaps, add the chain tail, emit the compose, and make it the new writer for `reach`.
-    fn compose(&mut self, label: String, reach: Option<Rect>, tail: usize) {
+    fn compose(&mut self, label: String, reach: Option<Rect>, tail: usize, mode: ComposeMode) {
         let mut inputs = self.acc.readers(reach);
         inputs.push(tail);
-        let id = self.push(UnitOp::Compose, Target::Accumulator, label, reach, inputs);
+        let id = self.push(UnitOp::Compose(mode), Target::Accumulator, label, reach, inputs);
         self.acc.write(reach, id);
     }
 
@@ -840,7 +1235,7 @@ impl Builder {
 #[must_use]
 pub fn build_frame_dag(scene: &Scene) -> FrameDag {
     let mut b = Builder { dag: FrameDag::default(), acc: Accumulator::default(), fx_no: 0, cur: Source::Background };
-    let bg = b.push(UnitOp::Rasterize, Target::Accumulator, "BG".to_string(), None, vec![]);
+    let bg = b.push(UnitOp::Rasterize(RasterSource::Body { offset: [0.0; 2] }), Target::Accumulator, "BG".to_string(), None, vec![]);
     b.acc.write(None, bg);
     let mut band = Band::default();
     for &root in scene.roots() {
@@ -907,23 +1302,37 @@ mod tests {
     }
 
     #[test]
-    fn schedule_collapses_the_naive_spine() {
+    fn schedule_serializes_overlapping_effects_and_keeps_the_blur_barrier() {
+        // Two effects on ONE shape (a drop UNDER + an inner OVER) share every tile, so the strictly-
+        // increasing marker law forces them into DISJOINT round ranges — the inner cannot begin until the
+        // drop has finished. And inside the drop, its separable blur is one materialize apart (X then Y).
         crate::vello::abi::load_combined_scene();
         let dag = build_frame_dag_installed();
-
-        let naive = dag.levels().iter().copied().max().unwrap() + 1;
-        let real = dag.schedule(TILE_PX).rounds();
-        assert!(real < naive, "barrier-aware schedule must beat naive ({real} vs {naive})");
-        // silhouette(0) → blur-X(1) → blur-Y(2) → composite(2): a separable blur is two barriers, then
-        // the whole spine folds into the last round.
-        assert_eq!(real, 3, "combined collapses to two blur rounds + a fold round");
+        let sched = dag.schedule(TILE_PX, u64::MAX);
+        let round_of = |needle: &str| -> Vec<u32> {
+            dag.nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.label.starts_with("s1 ") && n.label.contains(needle))
+                .map(|(i, _)| sched.round[i])
+                .collect()
+        };
+        let drop_end = round_of("drop").into_iter().max().expect("s1 has a drop shadow");
+        let inner_start = round_of("inner").into_iter().min().expect("s1 has an inner shadow");
+        assert!(
+            inner_start > drop_end,
+            "overlapping effects serialize: inner starts at {inner_start}, after the drop ends at {drop_end}",
+        );
+        let bx = round_of("drop blur-X").into_iter().next().expect("the drop has a blur-X");
+        let by = round_of("drop blur-Y").into_iter().next().expect("the drop has a blur-Y");
+        assert_eq!(by, bx + 1, "a separable blur's Y is one materialize barrier past its X");
     }
 
     #[test]
     fn glass_reloads_drops_materialize() {
         crate::vello::abi::load_stack_glass_scene(2, 0);
         let dag = build_frame_dag_installed();
-        let sched = dag.schedule(TILE_PX);
+        let sched = dag.schedule(TILE_PX, u64::MAX);
 
         assert!(
             sched.barrier.iter().any(|b| matches!(b, Some(Barrier::Reload))),
@@ -938,37 +1347,75 @@ mod tests {
     }
 
     #[test]
-    fn bake_effect_reproduces_arms_for_on_a_background_blur() {
-        crate::vello::abi::load_vpblur_scene(1, 8.0);
+    fn classes_separate_rounds_and_same_class_shares() {
+        // The one-dispatch-one-binding law, as a scheduler rule: two DISJOINT effects may share a round
+        // only when their dispatch-owning nodes there carry the SAME binding class. The matrix mixes 20
+        // heterogeneous effect cells on a disjoint grid — every scheduled round must hold ONE class, and
+        // the same-kind cells (several pure soft drops) must still share.
+        use std::collections::HashMap;
+        crate::vello::abi::load_matrix_scene();
         let dag = build_frame_dag_installed();
-        let gid = dag
-            .nodes
-            .iter()
-            .find_map(|n| match n.source {
-                Source::Effect { shape, .. } => Some(shape),
-                _ => None,
-            })
-            .expect("the blur is an effect");
-        let baked = dag.bake_effect(gid, TILE_PX).expect("a background blur bakes");
-        let arms = dag.arms_for(gid, TILE_PX).expect("arms_for covers a background blur");
-        assert_eq!(baked.len(), arms.len(), "one Baked per arms_for descriptor");
-        for (i, (b, a)) in baked.iter().zip(&arms).enumerate() {
-            assert_eq!(b.params, *a, "bake_effect arm {i} must reproduce arms_for byte-for-byte");
-            assert_eq!(b.round_off, i as u32, "arm {i} rides round_off {i}");
+        let sched = dag.schedule(TILE_PX, u64::MAX);
+        let mut at: HashMap<u32, BindingShape> = HashMap::new();
+        let mut shared = 0u32;
+        for i in 0..dag.nodes.len() {
+            let Some(cl) = dag.binding_shape(i) else { continue };
+            match at.get(&sched.round[i]) {
+                Some(&e) => {
+                    assert_eq!(e, cl, "round {} mixes binding shapes {e:?} and {cl:?}", sched.round[i]);
+                    shared += 1;
+                }
+                None => {
+                    at.insert(sched.round[i], cl);
+                }
+            }
         }
+        assert!(shared > 0, "disjoint same-class effects share rounds");
+    }
+
+    #[test]
+    fn budget_defers_effects_batch_then_flush() {
+        // The memory lever: with an unbounded budget every disjoint cell batches into the same rounds; a
+        // tight budget can hold only a few drafts at once, so it DEFERS the rest to later rounds (flush).
+        // `N` — effects in flight — slides with the budget, and feasibility never fails (one draft fits any
+        // real budget), so the tight schedule is finite, just deeper.
+        crate::vello::abi::load_matrix_scene();
+        let dag = build_frame_dag_installed();
+        let roomy = dag.schedule(TILE_PX, u64::MAX).rounds();
+        // ~256 KB holds a couple of cell drafts at once but not all of them, so it batches a few then
+        // flushes — deeper than unbounded, nowhere near fully serial.
+        let tight = dag.schedule(TILE_PX, 256 * 1024).rounds();
+        assert!(tight > roomy, "a tight budget defers effects into more rounds ({tight} > {roomy})");
+        assert!(tight < 100_000, "the schedule stays finite under any budget (got {tight})");
     }
 
     #[test]
     fn disjoint_cells_do_not_serialise() {
-        // 20-cell grid of independent effects, each behind its own background rect. Region-scoping the
-        // accumulator keeps the round count at the depth of the deepest single cell — NOT the cell
-        // count. (A whole-frame band would re-chain them and this would blow up.)
+        // 20-cell grid, each cell a shape with its own effect stack. Region-scoping the spine lets cells
+        // that do not share a tile occupy the SAME rounds, so the total stays far below one round-range per
+        // effect (full serialization). It is set by the deepest cell plus the few edge-neighbours whose
+        // blur halos actually touch — NOT by the effect count.
+        use std::collections::HashSet;
         crate::vello::abi::load_matrix_scene();
         let dag = build_frame_dag_installed();
-        let rounds = dag.schedule(TILE_PX).rounds();
-        // The deepest single cell ("everything": drop blur X/Y + bg-blur + inner) sets the count; it
-        // must not grow with the 20 cells.
-        assert!(rounds <= 8, "disjoint grid cells must not chain (got {rounds} rounds for 20 cells)");
+        let rounds = dag.schedule(TILE_PX, u64::MAX).rounds();
+        let effects: HashSet<(u128, usize)> = dag
+            .nodes
+            .iter()
+            .filter_map(|n| match n.source {
+                Source::Effect { shape, slot } => Some((shape, slot)),
+                _ => None,
+            })
+            .collect();
+        // Heterogeneous cells fragment sharing (one class per round), so the honest upper bound is the
+        // fully-serial one — one round per dispatch-owning node — which region-scoping must still beat.
+        let dispatches = (0..dag.nodes.len()).filter(|&i| dag.binding_shape(i).is_some()).count() as u32;
+        assert!(
+            rounds < dispatches,
+            "region-scoping beats fully-serial: {rounds} rounds for {dispatches} dispatch nodes ({} stacks)",
+            effects.len(),
+        );
+        assert!(rounds >= 7, "the deepest cell's own barrier depth is preserved (got {rounds})");
     }
 
     #[test]
@@ -1005,36 +1452,11 @@ mod tests {
     }
 
     #[test]
-    fn effect_markers_are_uniform_and_scheduled() {
-        // One emission for every effect, whatever its type: stack-glass's markers all carry a real
-        // shape, a schedule round, and a footprint — no per-type builder, no window roles.
-        crate::vello::abi::load_stack_glass_scene(2, 0);
-        let dag = build_frame_dag_installed();
-        let markers = dag.effect_markers(TILE_PX);
-        let sched = dag.schedule(TILE_PX);
-
-        assert!(!markers.is_empty(), "glass emits markers");
-        // Each glass layer contributes a reload + a warp. Two layers → two of each.
-        assert_eq!(markers.iter().filter(|m| m.op == UnitOp::Reload).count(), 2);
-        assert_eq!(markers.iter().filter(|m| matches!(m.op, UnitOp::Warp(_))).count(), 2);
-        crate::vello::abi::with_scene(|scene, _, _| {
-            for m in &markers {
-                assert!(scene.get(m.gid).is_some(), "marker names a real shape");
-                assert!(m.round < sched.rounds(), "marker round is within the schedule");
-                assert!(m.reach.is_some(), "an effect marker has a footprint (for binning)");
-            }
-        });
-        // A reload opens a later round than the drop blur it sits over — the schedule, not a window role.
-        let reload_round = markers.iter().find(|m| m.op == UnitOp::Reload).unwrap().round;
-        assert!(reload_round >= 1, "the backdrop reload runs after the drop materializes");
-    }
-
-    #[test]
     fn a_sharp_glass_dag_fills_and_serializes_to_the_descriptor() {
         // The whole scheduler→serialize pipeline on the real DAG: build the sharp-glass graph, let the
         // scheduler fill the lens units' device uniforms, and serialize the arm. It must produce the
         // shipping sharp-glass descriptor shape — bits 56, lens program, real (non-zero) device field.
-        use crate::vello::bake::{arm_descriptor, Policy, PROGRAM_LENS};
+        use crate::vello::bake::{arm_descriptor, Policy, PROGRAM_ROUNDED_BOX};
         crate::vello::abi::load_stack_glass_scene(1, 0);
         let mut dag = build_frame_dag_installed();
         crate::vello::abi::with_scene(|scene, viewport, modifiers| {
@@ -1054,66 +1476,8 @@ mod tests {
         assert_eq!(run.len(), 3, "sharp glass = warp + shade + mask-mix");
         let d = arm_descriptor(&run, Policy::default(), None);
         assert_eq!(d[0], 56.0, "WARP|SHADE|MASKMIX");
-        assert_eq!(d[1], PROGRAM_LENS);
+        assert_eq!(d[1], PROGRAM_ROUNDED_BOX);
         assert!(d[2] > 0.0 && d[3] > 0.0, "the device field was filled (backdrop resolution present)");
-    }
-
-    #[test]
-    fn arms_for_reproduces_the_sharp_glass_arm() {
-        // The direct schedule→fine wire on the real DAG: build sharp glass, fill the lens uniforms, and
-        // let `arms_for` partition by round + serialize. It must yield exactly ONE arm — the fused
-        // `[Warp, Shade, MaskMix]` round — carrying bits 56 (WARP|SHADE|MASKMIX) and the lens program,
-        // the same descriptor the planner emits. This is what the emitter swap sources.
-        use crate::vello::bake::PROGRAM_LENS;
-        // The pure-glass grid — a shadow-less rounded rect carrying only a lens, the `FX_GATHER` shape
-        // the `fx_fine`/`arms_for` wire actually drives (a stack-glass node also has a drop shadow, so
-        // its shadow rounds are not yet fillable and it rides the planner).
-        crate::vello::abi::load_glass_grid_scene(1, 0);
-        let mut dag = build_frame_dag_installed();
-        let gid = dag
-            .nodes
-            .iter()
-            .find_map(|n| match n.source {
-                Source::Effect { shape, .. } => Some(shape),
-                _ => None,
-            })
-            .expect("the glass shape is an effect node");
-        crate::vello::abi::with_scene(|scene, viewport, modifiers| {
-            dag.fill_lens_uniforms(viewport, 400, 400, |id| {
-                let n = scene.get(id)?;
-                let m = modifiers.get(&id).copied().unwrap_or(crate::kurbo::Affine::IDENTITY);
-                crate::effect_graph::lens_geometry(n, m)
-            });
-        });
-        let arms = dag.arms_for(gid, TILE_PX).expect("sharp glass drives through arms_for");
-        assert_eq!(arms.len(), 1, "sharp glass is one fused arm");
-        assert_eq!(arms[0][0], 56.0, "WARP|SHADE|MASKMIX");
-        assert_eq!(arms[0][1], PROGRAM_LENS);
-        assert!(arms[0][2] > 0.0 && arms[0][3] > 0.0, "the device field was filled");
-    }
-
-    #[test]
-    fn arms_for_reproduces_the_background_blur_pair() {
-        // A pure background blur drives through the SAME wire as glass: `arms_for` partitions it into
-        // its two axis rounds and emits the emitter-driven pair the planner (`wv_fine_passes`) does —
-        // both bits BLUR(64), axes (1,0) then (0,1), each carrying the filled device sigma in u[0].z.
-        use crate::vello::bake::bits;
-        crate::vello::abi::load_vpblur_scene(4, 8.0);
-        let mut dag = build_frame_dag_installed();
-        let gid = dag
-            .nodes
-            .iter()
-            .find_map(|n| match n.source {
-                Source::Effect { shape, .. } => Some(shape),
-                _ => None,
-            })
-            .expect("the blurred shape is an effect node");
-        dag.fill_blur_uniforms(|_| Some(3.0));
-        let arms = dag.arms_for(gid, TILE_PX).expect("a pure background blur drives through arms_for");
-        assert_eq!(arms.len(), 2, "separable blur = two axis passes");
-        assert_eq!(arms[0][0], f64::from(bits::BLUR) as f32, "H pass is plain BLUR — materialize is emitter-driven");
-        assert_eq!([arms[0][2], arms[0][3], arms[0][4]], [1.0, 0.0, 3.0], "H axis + device sigma");
-        assert_eq!([arms[1][2], arms[1][3], arms[1][4]], [0.0, 1.0, 3.0], "V axis + device sigma");
     }
 
     #[test]
@@ -1134,6 +1498,178 @@ mod tests {
             if n.writes_accumulator() {
                 assert_eq!(specs[i].target, Target::Accumulator);
                 assert!(colours[i].is_none(), "accumulator stage must not be coloured");
+            }
+        }
+    }
+
+    /// The packer's core invariant: two values whose live intervals overlap (neither dies strictly
+    /// before the other is born) must never occupy overlapping rects in the same slab.
+    fn assert_no_live_overlap(items: &[LiveRect], leases: &[Lease]) {
+        for a in 0..items.len() {
+            for b in (a + 1)..items.len() {
+                let (ia, ib) = (items[a], items[b]);
+                if ia.death < ib.birth || ib.death < ia.birth {
+                    continue; // disjoint in time — sharing a slot is legal
+                }
+                let (la, lb) = (leases[a], leases[b]);
+                if la.slab != lb.slab {
+                    continue;
+                }
+                let overlap = la.x < lb.x + lb.w && lb.x < la.x + la.w && la.y < lb.y + lb.h && lb.y < la.y + la.h;
+                assert!(!overlap, "live values {a} and {b} overlap in slab {}", la.slab);
+            }
+        }
+    }
+
+    #[test]
+    fn pack_reuses_a_freed_slot_and_keeps_live_rects_apart() {
+        let items = vec![
+            LiveRect { node: 0, w: 16, h: 16, birth: 0, death: 2 },
+            LiveRect { node: 1, w: 16, h: 16, birth: 0, death: 2 }, // live WITH 0
+            LiveRect { node: 2, w: 16, h: 16, birth: 3, death: 4 }, // born after 0 and 1 die
+        ];
+        let leases = pack(&items);
+        assert_eq!(leases[0].slab, leases[1].slab, "same size class shares a slab");
+        assert_ne!((leases[0].x, leases[0].y), (leases[1].x, leases[1].y), "co-live values take distinct slots");
+        assert!(
+            (leases[2].x, leases[2].y) == (leases[0].x, leases[0].y)
+                || (leases[2].x, leases[2].y) == (leases[1].x, leases[1].y),
+            "a value born after the cohort dies must REUSE a freed slot, not mint a third",
+        );
+        assert_no_live_overlap(&items, &leases);
+    }
+
+    #[test]
+    fn pack_uses_exactly_max_concurrency_slots() {
+        // Peak of three live at once (rounds 0-1: 0,1,2 — rounds 2-3: 0,3,4) → exactly three slots.
+        let items = vec![
+            LiveRect { node: 0, w: 8, h: 8, birth: 0, death: 5 },
+            LiveRect { node: 1, w: 8, h: 8, birth: 0, death: 1 },
+            LiveRect { node: 2, w: 8, h: 8, birth: 0, death: 1 },
+            LiveRect { node: 3, w: 8, h: 8, birth: 2, death: 3 },
+            LiveRect { node: 4, w: 8, h: 8, birth: 2, death: 3 },
+        ];
+        let leases = pack(&items);
+        let distinct: std::collections::HashSet<(u32, u32)> = leases.iter().map(|l| (l.x, l.y)).collect();
+        assert_eq!(distinct.len(), 3, "peak concurrency is 3, so the packer mints exactly 3 slots");
+        assert_no_live_overlap(&items, &leases);
+    }
+
+    #[test]
+    fn pack_segregates_size_classes_into_distinct_slabs() {
+        let items = vec![
+            LiveRect { node: 0, w: 16, h: 16, birth: 0, death: 1 },
+            LiveRect { node: 1, w: 40, h: 40, birth: 0, death: 1 }, // rounds up to the 64 class
+        ];
+        let leases = pack(&items);
+        assert_ne!(leases[0].slab, leases[1].slab, "different size classes live in different slabs");
+        assert_eq!((leases[1].w, leases[1].h), (40, 40), "the lease reports the TRUE size inside its class slot");
+    }
+
+    #[test]
+    fn schedule_death_tracks_the_last_reader_on_a_real_shadow() {
+        // A drop shadow is silhouette → blur-H (draft) → blur-V: the H draft is a gather source that
+        // spans tiles, so V reads it across a MATERIALIZE barrier one round later. That draft's death is
+        // therefore strictly past its birth — the proof death propagates from a later-round consumer.
+        crate::vello::abi::load_path_shadow_scene();
+        let dag = build_frame_dag_installed();
+        let sched = dag.schedule(TILE_PX, u64::MAX);
+        assert_eq!(sched.death.len(), dag.nodes.len());
+        for (i, n) in dag.nodes.iter().enumerate() {
+            assert!(sched.death[i] >= sched.round[i], "node {i} ({}) dies before it is born", n.label);
+        }
+        let lives = dag.materialized_lives(&sched);
+        assert!(!lives.is_empty(), "a drop shadow has materialized drafts");
+        assert!(
+            lives.iter().any(|l| l.death > l.birth),
+            "the blur H draft must be read a round later than it is written",
+        );
+        // The real drafts pack to valid, non-overlapping leases.
+        let leases = pack(&lives);
+        assert_no_live_overlap(&lives, &leases);
+    }
+
+    #[test]
+    fn plan_folds_descriptor_lease_and_ctl_per_node() {
+        use crate::vello::units::UnitOp;
+        crate::vello::abi::load_path_shadow_scene();
+        let dag = build_frame_dag_installed();
+        let sched = dag.schedule(TILE_PX, u64::MAX);
+        let n = dag.nodes.len();
+        assert_eq!(sched.desc.len(), n);
+        assert_eq!(sched.lease.len(), n);
+        assert_eq!(sched.ctl.len(), n);
+        // A lease sits on exactly the materialized nodes — the same set `materialized_lives` reports.
+        let want: std::collections::HashSet<usize> =
+            dag.materialized_lives(&dag.schedule(TILE_PX, u64::MAX)).iter().map(|l| l.node).collect();
+        for i in 0..n {
+            assert_eq!(sched.lease[i].is_some(), want.contains(&i), "lease presence wrong at node {i}");
+        }
+        // Every Blur is a materialize axis pass (ctl 0, blur bit set); every pointwise unit chains
+        // (ATOMIC); the composite that lays the shadow closes a chain (BOUNDARY).
+        let (mut saw_blur, mut saw_boundary) = (false, false);
+        for (i, node) in dag.nodes.iter().enumerate() {
+            if !matches!(node.source, Source::Effect { .. }) || node.op.is_structural() {
+                continue;
+            }
+            match node.op {
+                UnitOp::Blur { .. } => {
+                    saw_blur = true;
+                    assert_eq!(sched.ctl[i], 0, "a blur axis pass does not chain");
+                    assert_ne!((sched.desc[i][0] as u32) & 64, 0, "blur descriptor carries the blur bit");
+                }
+                _ => {
+                    assert_ne!(sched.ctl[i] & Schedule::ATOMIC, 0, "a pointwise unit chains in the register");
+                    saw_boundary |= sched.ctl[i] & Schedule::BOUNDARY != 0;
+                }
+            }
+        }
+        assert!(saw_blur, "a drop shadow has blur axis passes");
+        assert!(saw_boundary, "the composite that lays the shadow closes a chain");
+    }
+
+    #[test]
+    fn plan_leases_only_barrier_crossing_drafts_and_never_overlaps() {
+        use crate::vello::units::UnitOp;
+        use std::collections::HashMap;
+        crate::vello::abi::load_combined_scene();
+        let dag = build_frame_dag_installed();
+        let sched = dag.schedule(TILE_PX, u64::MAX);
+        assert!(sched.lease.iter().any(Option::is_some), "a drop+inner frame has materialized drafts");
+        // A leased node is read across a barrier (a later round). A same-round register chain — e.g. the
+        // Y-blur's output flowing into its Tint — takes no lease.
+        for (i, l) in sched.lease.iter().enumerate() {
+            if l.is_some() {
+                let later = dag.nodes.iter().enumerate().any(|(ci, c)| c.inputs.contains(&i) && sched.round[ci] > sched.round[i]);
+                assert!(later, "leased node {i} must be read in a later round");
+            }
+        }
+        // Every Blur's INPUT is a leased texture (a neighbourhood tap needs a real surface).
+        for (i, node) in dag.nodes.iter().enumerate() {
+            if matches!(node.op, UnitOp::Blur { .. }) {
+                let src = node.inputs[0];
+                assert!(
+                    sched.lease[src].is_some() || matches!(dag.nodes[src].op, UnitOp::Reload),
+                    "blur node {i} taps node {src} which is neither leased nor the backdrop reload",
+                );
+            }
+        }
+        // No two nodes sharing a rect have overlapping live intervals.
+        let mut by_rect: HashMap<(u32, u32, u32), Vec<usize>> = HashMap::new();
+        for (i, l) in sched.lease.iter().enumerate() {
+            if let Some(le) = l {
+                by_rect.entry((le.slab, le.x, le.y)).or_default().push(i);
+            }
+        }
+        for occupants in by_rect.values() {
+            for a in 0..occupants.len() {
+                for b in (a + 1)..occupants.len() {
+                    let (x, y) = (occupants[a], occupants[b]);
+                    assert!(
+                        sched.death[x] < sched.round[y] || sched.death[y] < sched.round[x],
+                        "nodes {x},{y} share a rect but their live intervals overlap",
+                    );
+                }
             }
         }
     }

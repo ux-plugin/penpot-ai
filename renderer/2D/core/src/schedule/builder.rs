@@ -423,7 +423,7 @@ fn visit(
                 .into_iter()
                 .map(current)
                 .collect();
-            let always_cap = custom_reads_backdrop(node);
+            let always_cap = false;
             let acceptable_downscale = effect_acceptable_downscale(node);
             let tile_mode = node.glass.map(|g| g.tile_mode).unwrap_or_default();
             steps.push(Step::ComposeBackdrop { shape: id, read_from, extent: sample, reach, always_cap, acceptable_downscale, tile_mode, write_to: backdrop });
@@ -564,13 +564,6 @@ fn visit(
     }
 }
 
-/// Whether the shape's custom shader reads the backdrop beneath it (→ a gather) rather than only its
-/// own body (→ a spread). Absent shader → false. Opaque shaders declare `reads_backdrop: true`, so
-/// they land here as gathers — the safe worst case; a shader declared body-only takes the cheap path.
-fn custom_reads_backdrop(node: &Node) -> bool {
-    node.gather_shader().is_some()
-}
-
 /// Whether anything in `id`'s subtree must be rasterized into its own surface — a spread or gather
 /// effect at any depth. Such a shape emits a non-`Paint` step (a `Composite`, `ComposeBackdrop`, …)
 /// that breaks the batch, and a backend layer cannot span two scene renders. So a container may only
@@ -622,7 +615,9 @@ pub fn affected_page_rect(node: &Node, modifier: Affine) -> Rect {
     if let Some(radius) = node.blur {
         reach = reach.max(f64::from(3.0 * radius_to_sigma(radius)));
     }
-    reach = reach.max(f64::from(node.max_spread_reach()));
+    if let Some(t) = live_texture(node) {
+        reach = reach.max(f64::from(t.radius * crate::effect::TEXTURE_RADIUS_SCALE));
+    }
     base.inflate(reach, reach)
 }
 
@@ -711,13 +706,18 @@ fn rects_overlap(a: &Rect, b: &Rect) -> bool {
 /// at every internal tile edge (a grid). An isolated surface holds the whole body, so the filter sees
 /// the true silhouette and the shadow lands only on the real edge.
 pub(crate) fn has_spread_effect(node: &Node) -> bool {
-    node.blur.is_some() || !node.shadows.is_empty() || node.has_spread_shader()
+    node.blur.is_some() || !node.shadows.is_empty() || live_texture(node).is_some()
 }
 
-/// A shape carries a gather effect if it reads the backdrop beneath it — background blur, glass, or a
-/// custom shader declared to sample the backdrop. Distinct from spread: gather forces z-interleaving.
+/// The node's texture effect when it actually renders — hidden or zero-radius is no effect at all.
+pub(crate) fn live_texture(node: &Node) -> Option<crate::model::Texture> {
+    node.texture.filter(|t| !t.hidden && t.radius > 0.0)
+}
+
+/// A shape carries a gather effect if it reads the backdrop beneath it — background blur or glass.
+/// Distinct from spread: gather forces z-interleaving.
 pub(crate) fn has_gather_effect(node: &Node) -> bool {
-    node.background_blur.is_some() || node.glass.is_some() || custom_reads_backdrop(node)
+    node.background_blur.is_some() || node.glass.is_some()
 }
 
 /// The gather effect's page-space **reach**: how far past the shape the kernel can pull content — the
@@ -734,9 +734,6 @@ fn gather_reach(node: &Node) -> f64 {
         let blur = g.total_blur_sigma() * 3.0;
         let frost = g.frost * 6.0;
         reach = reach.max(f64::from(displacement + blur + frost));
-    }
-    if let Some(c) = node.gather_shader() {
-        reach = reach.max(f64::from(c.reach));
     }
     reach
 }
@@ -783,9 +780,6 @@ fn effect_acceptable_downscale(node: &Node) -> f32 {
     if let Some(g) = node.glass {
         floor(g.acceptable_downscale);
     }
-    if let Some(c) = node.gather_shader() {
-        floor(c.acceptable_downscale);
-    }
     k.unwrap_or(1.0).clamp(f32::MIN_POSITIVE, 1.0)
 }
 
@@ -805,7 +799,7 @@ pub fn page_bounds(node: &Node, modifier: Affine) -> Rect {
 /// The shape's page-space `extrect`: `page_bounds` grown by every spread effect's reach — a drop
 /// shadow's `offset` + blur reach (`3σ`) + `spread`, and a layer blur's reach. This is the size the
 /// effect surface must be, so nothing clips at a tile edge.
-fn effect_extent(node: &Node, modifier: Affine) -> Rect {
+pub(crate) fn effect_extent(node: &Node, modifier: Affine) -> Rect {
     let base = page_bounds(node, modifier);
     let mut ext = base;
     for s in node.shadows.iter().filter(|s| !s.inset) {
@@ -821,9 +815,9 @@ fn effect_extent(node: &Node, modifier: Affine) -> Rect {
         let reach = f64::from(3.0 * radius_to_sigma(radius));
         ext = ext.union(base.inflate(reach, reach));
     }
-    let spread_reach = f64::from(node.max_spread_reach());
-    if spread_reach > 0.0 {
-        ext = ext.union(base.inflate(spread_reach, spread_reach));
+    if let Some(t) = live_texture(node) {
+        let reach = f64::from(t.radius * crate::effect::TEXTURE_RADIUS_SCALE);
+        ext = ext.union(base.inflate(reach, reach));
     }
     ext
 }

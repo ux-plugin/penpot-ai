@@ -1229,125 +1229,26 @@ pub extern "C" fn clear_shape_glass() {
     with_current(|node| node.glass = None);
 }
 
-/// A custom WGSL effect on this shape — the raw escape hatch. The staged byte buffer holds
-/// `[nparams: u32 LE][nparams × f32 LE][wgsl UTF-8...]`; `reach` (the author-declared page-space
-/// extent it samples) comes as a direct arg. `reads_backdrop` declares its class: non-zero → it
-/// samples the backdrop beneath (a gather, resolution-capped); zero → it reads only the shape's own
-/// body (a spread, like a layer blur). Pass non-zero for an opaque shader — the safe worst case.
-/// `param_vec4s` is the exact `N` the shader declares in `@binding(0)`'s `array<vec4<f32>, N>`: the
-/// backend sizes the uniform to exactly `N` vec4s (resolution + params, zero-filled), so however many
-/// `params` are staged, the bound buffer always matches the shader — no size mismatch is possible.
-/// `acceptable_downscale` is the effect's declared quality floor `k ∈ (0, 1]` — the fraction of device
-/// resolution it may be rendered at before upscaling (`1.0` = full res, no downscale; `0.5` = half).
-/// The shader must read the resolution uniform rather than assume full res; a value `≤ 0` is treated
-/// as `1.0`. The effective scale is `min(resolution_cap, acceptable_downscale)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn set_shape_custom_shader(reach: f32, reads_backdrop: u32, param_vec4s: u32, acceptable_downscale: f32) {
-    let bytes = take_bytes();
-    if bytes.len() < 4 {
-        return;
-    }
-    let word = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
-    let nparams = word(0) as usize;
-    let params_end = 4 + nparams * 4;
-    if bytes.len() < params_end {
-        return;
-    }
-    let params: Vec<f32> = (0..nparams)
-        .map(|i| {
-            let o = 4 + i * 4;
-            f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
-        })
-        .collect();
-    let wgsl = String::from_utf8_lossy(&bytes[params_end..]).into_owned();
-    with_current(|node| {
-        node.upsert_effect(
-            crate::model::EffectSlot::Custom,
-            crate::model::CustomShader {
-                wgsl,
-                reach,
-                param_vec4s,
-                params,
-                reads_backdrop: reads_backdrop != 0,
-                acceptable_downscale: if acceptable_downscale > 0.0 { acceptable_downscale.min(1.0) } else { 1.0 },
-            },
-        );
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn clear_shape_custom_shader() {
-    with_current(|node| node.remove_effect(crate::model::EffectSlot::Custom));
-}
-
-/// **Texture** effect — a fractal-noise displacement warp of the shape's own body (fill included),
-/// matching render-wasm's `set_shape_texture(noise_size, radius, clip_to_shape, hidden)`. Lowered to a
-/// spread [`CustomShader`] with the built-in [`crate::vello::effects::TEXTURE_WGSL`]; a hidden / zero-radius
-/// texture clears the slot.
-///
-/// Texture and noise are separate [`EffectSlot`]s in the node's ordered effect list, so a shape can
-/// carry both and they **chain** in the order they were set (see [`set_shape_noise`] and the sink's
-/// `custom_over_body`). Setting texture upserts its slot (updating in place on a param edit); a hidden
-/// / zero-radius texture removes it.
+/// The **texture** effect (noise-displacement warp of the body) — a typed effect lowered to units
+/// ([`crate::effect_graph::texture_graph`]), like glass. A hidden or zero-radius texture still
+/// carries its authored params; [`crate::effect::effect_stack`] is what drops it from rendering.
 #[unsafe(no_mangle)]
 pub extern "C" fn set_shape_texture(noise_size: f32, radius: f32, clip_to_shape: u32, hidden: u32) {
-    let shader = crate::vello::effects::texture_shader(noise_size, radius, clip_to_shape != 0, hidden != 0);
-    with_current(|node| match shader {
-        Some(s) => node.upsert_effect(crate::model::EffectSlot::Texture, s),
-        None => node.remove_effect(crate::model::EffectSlot::Texture),
+    with_current(|node| {
+        node.texture = Some(crate::model::Texture {
+            noise_size,
+            radius,
+            clip_to_shape: clip_to_shape != 0,
+            hidden: hidden != 0,
+        });
     });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn clear_shape_texture() {
-    with_current(|node| node.remove_effect(crate::model::EffectSlot::Texture));
+    with_current(|node| node.texture = None);
 }
 
-/// **Noise** effect — coloured fractal-noise grain composited over the shape's body, matching
-/// render-wasm's `set_shape_noise(noise_size, density, softness, apply_to_fill, hidden)`. The slots are
-/// staged in the byte buffer, laid out exactly like render-wasm's writer:
-///   `[u32 count][u8 kind_0..kind_{n-1}][pad to 4B][u32 rgba_0][u32 rgba_1]…` (each color 0xAARRGGBB LE).
-/// Lowered to a spread [`CustomShader`] in the [`EffectSlot::Noise`](crate::model::EffectSlot)
-/// slot with the built-in [`crate::vello::effects::NOISE_WGSL`]; a hidden / slotless noise removes it. Because
-/// it is its own slot, noise composes with texture — the order the two were set is the chain order.
-#[unsafe(no_mangle)]
-pub extern "C" fn set_shape_noise(noise_size: f32, density: f32, softness: f32, apply_to_fill: u32, hidden: u32) {
-    let bytes = take_bytes();
-    let count = if bytes.len() >= 4 {
-        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
-    } else {
-        0
-    }
-    .min(crate::vello::effects::MAX_NOISE_SLOTS);
-
-    let colors_offset = 4 + ((count + 3) & !3);
-    let mut slots: Vec<crate::vello::effects::NoiseSlot> = Vec::with_capacity(count);
-    for i in 0..count {
-        let kind = bytes.get(4 + i).copied().unwrap_or(0);
-        let off = colors_offset + i * 4;
-        if off + 4 > bytes.len() {
-            break;
-        }
-        let rgba = [
-            f32::from(bytes[off + 2]) / 255.0,
-            f32::from(bytes[off + 1]) / 255.0,
-            f32::from(bytes[off]) / 255.0,
-            f32::from(bytes[off + 3]) / 255.0,
-        ];
-        slots.push(crate::vello::effects::NoiseSlot { kind, rgba });
-    }
-
-    let shader = crate::vello::effects::noise_shader(&slots, noise_size, density, softness, apply_to_fill != 0, hidden != 0);
-    with_current(|node| match shader {
-        Some(s) => node.upsert_effect(crate::model::EffectSlot::Noise, s),
-        None => node.remove_effect(crate::model::EffectSlot::Noise),
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn clear_shape_noise() {
-    with_current(|node| node.remove_effect(crate::model::EffectSlot::Noise));
-}
 
 /// Append a shadow. `raw_style` is Penpot's `RawShadowStyle` — `0` drop, `1` inner; `blur` is a
 /// radius, `(x, y)` the offset. Both drop and inner (inset) shadows are carried now that the fork
@@ -1438,13 +1339,12 @@ fn parse_filter_graph(bytes: &[u8]) -> Option<crate::model::FilterGraph> {
                 color: argb_to_color(u32_at(&mut cur)?),
             },
             2 => {
-                let effect = u32_at(&mut cur)?;
+                let _effect = u32_at(&mut cur)?;
                 let param_count = u32_at(&mut cur)? as usize;
-                let mut params = Vec::with_capacity(param_count);
                 for _ in 0..param_count {
-                    params.push(f32_at(&mut cur)?);
+                    f32_at(&mut cur)?;
                 }
-                FilterNode::Shader { effect, params }
+                continue;
             }
             _ => return None,
         };
@@ -2294,6 +2194,27 @@ pub extern "C" fn load_blur_grid_scene(n: u32, radius: u32) -> u32 {
     install_fixture(crate::parity::build_blur_grid_scene(n as usize, radius as f32))
 }
 
+/// Install the **drop grid** ([`crate::parity::build_drop_grid_scene`]) — `n` blobs each with one soft
+/// drop shadow, the shadow counterpart of the blur grid, for scheduler-driven round sharing.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_drop_grid_scene(n: u32, radius: u32) -> u32 {
+    install_fixture(crate::parity::build_drop_grid_scene(n as usize, radius as f32, false))
+}
+
+/// Install the **inner grid** — the same grid with each blob carrying one soft INNER shadow, for the
+/// two-branch (flood ⊕ punch) tree riding scheduler-driven rounds.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_inner_grid_scene(n: u32, radius: u32) -> u32 {
+    install_fixture(crate::parity::build_drop_grid_scene(n as usize, radius as f32, true))
+}
+
+/// Install the **mixed grid** ([`crate::parity::build_mixed_grid_scene`]) — alternating soft drops and
+/// background blurs, the mixed-kind scheduler fixture.
+#[unsafe(no_mangle)]
+pub extern "C" fn load_mixed_grid_scene(n: u32) -> u32 {
+    install_fixture(crate::parity::build_mixed_grid_scene(n as usize))
+}
+
 /// Install the **stack-glass grid** ([`crate::parity::build_stack_glass_scene`]) — `n` glass lenses
 /// that are also stacks (a non-box path with a drop shadow), for glass-in-a-stack riding `fine`.
 #[unsafe(no_mangle)]
@@ -2301,11 +2222,11 @@ pub extern "C" fn load_stack_glass_scene(n: u32, frost: u32) -> u32 {
     install_fixture(crate::parity::build_stack_glass_scene(n as usize, frost != 0))
 }
 
-/// Install the **custom-gather grid** ([`crate::parity::build_custom_gather_grid_scene`]) — `n`
-/// pointwise custom-shader gathers, for the batched masked composite over a per-cell custom fill.
+/// Install the **texture** fixture ([`crate::parity::build_texture_scene`]) — the noise-displacement
+/// warp at several magnitudes and grains, with and without clipping to the original coverage.
 #[unsafe(no_mangle)]
-pub extern "C" fn load_custom_gather_grid_scene(n: u32) -> u32 {
-    install_fixture(crate::parity::build_custom_gather_grid_scene(n as usize))
+pub extern "C" fn load_texture_scene() -> u32 {
+    install_fixture(crate::parity::build_texture_scene())
 }
 
 /// Install the **backdrop-tint grid** ([`crate::parity::build_backdrop_tint_grid_scene`]) — `n`
@@ -2429,13 +2350,6 @@ pub extern "C" fn load_scope_scene_clamp() -> u32 {
     install_fixture(crate::parity::build_scope_test_scene_clamp())
 }
 
-/// Install the **texture/noise effect** fixture ([`crate::parity::build_texture_scene`]) — the
-/// noise-displacement effect at several magnitudes and grains, with and without clipping to the
-/// original coverage, plus the noise overlay and the two chained. Returns the shape count.
-#[unsafe(no_mangle)]
-pub extern "C" fn load_texture_scene() -> u32 {
-    install_fixture(crate::parity::build_texture_scene())
-}
 
 /// Swap a prebuilt fixture in as the live scene and mark everything dirty so the next frame rebuilds.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -2613,7 +2527,7 @@ mod tests {
         let mut payload = Vec::new();
         let push_u32 = |p: &mut Vec<u8>, v: u32| p.extend_from_slice(&v.to_le_bytes());
         let push_f32 = |p: &mut Vec<u8>, v: f32| p.extend_from_slice(&v.to_le_bytes());
-        push_u32(&mut payload, 4);
+        push_u32(&mut payload, 3);
         push_u32(&mut payload, 0);
         push_f32(&mut payload, 4.0);
         push_u32(&mut payload, 1);
@@ -2624,12 +2538,6 @@ mod tests {
         push_f32(&mut payload, 6.0);
         push_f32(&mut payload, 4.0);
         push_u32(&mut payload, 0x80ff_0000);
-        push_u32(&mut payload, 2);
-        push_u32(&mut payload, 0);
-        push_u32(&mut payload, 4);
-        for v in [1.0_f32, 0.45, 0.0, 0.7] {
-            push_f32(&mut payload, v);
-        }
 
         let ptr = alloc_bytes(payload.len());
         assert!(!ptr.is_null());
@@ -2646,7 +2554,6 @@ mod tests {
                 FilterNode::Blur { sigma: 4.0 },
                 FilterNode::Offset { dx: 10.0, dy: 0.0 },
                 FilterNode::InnerShadow { dx: 6.0, dy: 6.0, sigma: 4.0, color: argb_to_color(0x80ff_0000) },
-                FilterNode::Shader { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] },
             ]
         );
 

@@ -26,7 +26,7 @@
 //! list order is preserved within its group.
 
 use crate::kurbo::{Rect, Vec2};
-use crate::model::{CustomShader, Glass, Node};
+use crate::model::{Glass, Node};
 use crate::peniko::Color;
 
 /// What an effect reads as its input.
@@ -67,26 +67,29 @@ pub enum Op {
     Offset(Vec2),
     /// Erase by this effect's own source, offset and blurred — the inner shadow's punch.
     EraseBy { offset: Vec2, blur: f32 },
-    /// A custom WGSL pass.
-    Shader(Box<CustomShader>),
+    /// Warp by a fractal-noise displacement (the texture effect): a `Warp` unit over the noise
+    /// field, optionally clipped back to the source coverage. `magnitude` is the maximum per-axis
+    /// shift in page-space units; `grain` divides the sample position (larger = coarser).
+    NoiseWarp { magnitude: f32, grain: f32, clip: bool },
     /// The glass refraction/frost pipeline.
     Lens(Box<Glass>),
+    /// Tint faded by a radial ramp from the shape's centre (the background-field tint): a `Tint`
+    /// plus a `MaskMix` measuring the radial field. Pointwise — no reach of its own.
+    FieldTint(Color),
 }
 
 /// Lower one authored filter node to the op it runs as.
 ///
 /// A filter graph is the one authoring route where the chain is written directly rather than implied
 /// by a named effect, so it lowers into the *same* body ops a layer blur already uses — no path of
-/// its own. `None` for the two that are not body transforms: an inner shadow composites over the
-/// shape rather than replacing it, and a `Shader` node names its code by index in a table the
-/// neutral model does not carry (the host supplies WGSL through [`crate::model::CustomShader`]
-/// instead). Both are dropped here rather than mis-rendered.
+/// its own. `None` for the one that is not a body transform: an inner shadow composites over the
+/// shape rather than replacing it, so it is dropped here rather than mis-rendered.
 fn filter_op(n: &crate::model::FilterNode) -> Option<Op> {
     use crate::model::FilterNode;
     match n {
         FilterNode::Blur { sigma } => Some(Op::Blur { radius: crate::blur::sigma_to_radius(*sigma) }),
         FilterNode::Offset { dx, dy } => Some(Op::Offset(Vec2::new(f64::from(*dx), f64::from(*dy)))),
-        FilterNode::InnerShadow { .. } | FilterNode::Shader { .. } => None,
+        FilterNode::InnerShadow { .. } => None,
     }
 }
 
@@ -111,9 +114,9 @@ impl Effect {
                     3.0 * crate::blur::radius_to_sigma(*blur) + offset.x.abs().max(offset.y.abs()) as f32
                 }
                 Op::Offset(o) => o.x.abs().max(o.y.abs()) as f32,
-                Op::Shader(s) => s.reach,
+                Op::NoiseWarp { magnitude, .. } => *magnitude,
                 Op::Lens(g) => 3.0 * g.total_blur_sigma(),
-                Op::Tint(_) => 0.0,
+                Op::Tint(_) | Op::FieldTint(_) => 0.0,
             })
             .fold(0.0_f32, f32::max)
     }
@@ -142,12 +145,12 @@ impl Effect {
                     r.union(Rect::new(r.x0 + offset.x, r.y0 + offset.y, r.x1 + offset.x, r.y1 + offset.y))
                         .inflate(reach, reach)
                 }
-                Op::Shader(sh) => r.inflate(f64::from(sh.reach), f64::from(sh.reach)),
+                Op::NoiseWarp { magnitude, .. } => r.inflate(f64::from(*magnitude), f64::from(*magnitude)),
+                Op::Tint(_) | Op::FieldTint(_) => r,
                 Op::Lens(g) => {
                     let reach = f64::from(3.0 * g.total_blur_sigma());
                     r.inflate(reach, reach)
                 }
-                Op::Tint(_) => r,
             };
         }
         r
@@ -163,19 +166,6 @@ impl Effect {
             Op::EraseBy { blur, .. } => Some(*blur),
             _ => None,
         })
-    }
-
-    /// The most restrictive downscale floor its shader ops declare (`1.0` = full resolution). Only
-    /// consulted when no blur governs, since a blur's band limit supersedes it.
-    #[must_use]
-    pub fn shader_downscale_floor(&self) -> f32 {
-        self.ops
-            .iter()
-            .filter_map(|op| match op {
-                Op::Shader(s) => Some(s.acceptable_downscale),
-                _ => None,
-            })
-            .fold(1.0_f32, f32::max)
     }
 
     /// Whether this effect has to wait for the backdrop beneath the shape to be finished.
@@ -196,6 +186,10 @@ impl Effect {
 /// `filter_graph` is deliberately absent: it is a typed chain wrapping the node *and its children*,
 /// which is a layer concern rather than a per-node effect, and it is the one case still routed to the
 /// tiled path.
+/// Authored texture radius → device displacement magnitude: the slider's 0–100 maps to up to 300px
+/// of shift, the scale the effect always shipped with.
+pub const TEXTURE_RADIUS_SCALE: f32 = 3.0;
+
 #[must_use]
 pub fn effect_stack(node: &Node) -> Vec<Effect> {
     let mut out = Vec::new();
@@ -214,12 +208,6 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
             ops: vec![Op::Lens(Box::new(g.clone()))],
             compose: Compose::ThroughCoverage,
         });
-    } else if let Some(shader) = node.gather_shader() {
-        out.push(Effect {
-            source: Source::Backdrop,
-            ops: vec![Op::Shader(Box::new(shader.clone()))],
-            compose: Compose::ThroughCoverage,
-        });
     } else if let Some(radius) = node.background_blur {
         out.push(Effect {
             source: Source::Backdrop,
@@ -227,17 +215,29 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
             compose: Compose::ThroughCoverage,
         });
     } else if let Some(color) = node.background_tint {
-        // A pointwise backdrop gather (no neighbourhood) — the first effect to run inline in `fine`.
+        // A pointwise backdrop gather (no neighbourhood) — runs inline in `fine` at the shape's z.
         out.push(Effect {
             source: Source::Backdrop,
             ops: vec![Op::Tint(color)],
             compose: Compose::ThroughCoverage,
         });
+    } else if let Some(color) = node.background_field {
+        out.push(Effect {
+            source: Source::Backdrop,
+            ops: vec![Op::FieldTint(color)],
+            compose: Compose::ThroughCoverage,
+        });
     }
 
     let body_ops: Vec<Op> = node
-        .spread_shaders()
-        .map(|s| Op::Shader(Box::new(s.clone())))
+        .texture
+        .iter()
+        .filter(|t| !t.hidden && t.radius > 0.0)
+        .map(|t| Op::NoiseWarp {
+            magnitude: t.radius * TEXTURE_RADIUS_SCALE,
+            grain: t.noise_size.max(1.0),
+            clip: t.clip_to_shape,
+        })
         .chain(node.blur.map(|radius| Op::Blur { radius }))
         .chain(node.filter_graph.iter().flat_map(|g| g.nodes.iter()).filter_map(filter_op))
         .collect();
@@ -259,18 +259,7 @@ pub fn effect_stack(node: &Node) -> Vec<Effect> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Shadow, ShapeEffect, ShapeKind};
-
-    fn shader(reach: f32, backdrop: bool) -> CustomShader {
-        CustomShader {
-            wgsl: String::new(),
-            reach,
-            param_vec4s: 1,
-            params: vec![],
-            reads_backdrop: backdrop,
-            acceptable_downscale: 1.0,
-        }
-    }
+    use crate::model::{Shadow, ShapeKind};
 
     fn node() -> Node {
         Node::new(1, ShapeKind::Path)
@@ -294,7 +283,6 @@ mod tests {
         n.shadows = vec![shadow(false, 8.0), shadow(true, 6.0)];
         n.blur = Some(3.0);
         n.background_blur = Some(9.0);
-        n.effects = vec![ShapeEffect { slot: crate::model::EffectSlot::Custom, shader: shader(2.0, false) }];
 
         let stack = effect_stack(&n);
         assert_eq!(stack.len(), 4, "drop, gather, body, inner");
@@ -312,21 +300,6 @@ mod tests {
         n.blur = Some(3.0);
         let order: Vec<Compose> = effect_stack(&n).iter().map(|e| e.compose).collect();
         assert_eq!(order, vec![Compose::Under, Compose::Replace, Compose::Over]);
-    }
-
-    /// A node's authored shader order is the pipeline, so it must survive derivation intact.
-    #[test]
-    fn body_shader_chain_keeps_authored_order_and_blur_lands_last() {
-        let mut n = node();
-        n.effects = vec![
-            ShapeEffect { slot: crate::model::EffectSlot::Texture, shader: shader(1.0, false) },
-            ShapeEffect { slot: crate::model::EffectSlot::Noise, shader: shader(2.0, false) },
-        ];
-        n.blur = Some(4.0);
-        let stack = effect_stack(&n);
-        assert_eq!(stack.len(), 1);
-        assert!(matches!(stack[0].ops.as_slice(), [Op::Shader(a), Op::Shader(b), Op::Blur { .. }]
-            if a.reach == 1.0 && b.reach == 2.0));
     }
 
     /// Two shadows with equal spread read the same pixels — the property that lets a scheduler dedup
@@ -385,17 +358,13 @@ mod tests {
         assert!((f.x1 - (10.0 + 4.0 + blur_reach)).abs() < 1e-9, "shifted side included");
     }
 
-    /// A trailing blur governs the render scale even when a sharper shader precedes it.
+    /// A trailing blur governs the render scale.
     #[test]
     fn a_trailing_blur_governs_the_render_scale() {
         let mut n = node();
-        n.effects = vec![ShapeEffect { slot: crate::model::EffectSlot::Custom, shader: shader(1.0, false) }];
         n.blur = Some(4.0);
         let e = &effect_stack(&n)[0];
         assert_eq!(e.governing_blur(), Some(4.0));
-        n.blur = None;
-        let e2 = &effect_stack(&n)[0];
-        assert_eq!(e2.governing_blur(), None, "no blur -> the shader floor decides instead");
     }
 
     #[test]

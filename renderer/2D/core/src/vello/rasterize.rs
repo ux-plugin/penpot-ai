@@ -118,7 +118,7 @@ pub trait RasterBackend {
     /// budgets at document scale. Default no-op — only the phased (classic) backend emits markers.
     /// `p2` is the marker's third payload word — for an inline effect (`effect_id >= 100`) it is the
     /// float offset of this effect's descriptor in the `effect_params` buffer; `0` otherwise.
-    fn draw_effect_marker(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _effect_id: u32, _seg_after: u32, _round: u32, _p2: u32, _reach: [f32; 4]) {}
+    fn draw_effect_marker(&mut self, _scene: &mut Self::Scene, _transform: Affine, _id: u128, _effect_id: u32, _seg_after: u32, _round: u32, _p2: u32, _reach: [f32; 4], _atomic_ctl: u32) {}
 
     /// Rasterize `scene` into `target` (a `width × height` texture), clearing to `base_color` first.
     ///
@@ -259,6 +259,12 @@ pub trait RasterBackend {
     ) {
         unimplemented!("phased session is classic-only")
     }
+
+    /// Set the reach-crop origins for the NEXT `phased_fine_segment*` call: `scratch_out` shifts where
+    /// the producer writes `output`, `scratch_in` where the consumer samples its scratch (`draft`/
+    /// `input`). Consumed by that one dispatch, then reset — a following full-viewport call is inert, so
+    /// only a cropped call needs to set them. `[0, 0]` = that slot is not cropped. Default: no-op.
+    fn phase_scratch_origins(&mut self, _scratch_out: [u32; 2], _scratch_in: [u32; 2]) {}
 
     /// End the session begun by [`Self::phased_begin`], freeing its shared buffers into `enc` (deferred
     /// until after the sink's submit). Only classic; default is a no-op.

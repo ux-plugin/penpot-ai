@@ -59,8 +59,6 @@ pub enum EffectKey {
     Blur(u32),
     /// Frosted glass, keyed by a hash of every glass parameter.
     Glass(u64),
-    /// A custom backdrop-reading WGSL shader, keyed by a hash of its source + params + reach.
-    Custom(u64),
 }
 
 /// One gather effect found in the schedule, with everything the sink needs to snapshot and scatter it.
@@ -145,7 +143,6 @@ impl GatherPlan {
         keys.sort_by_key(|k| match *k {
             EffectKey::Blur(a) => (0u8, u64::from(a)),
             EffectKey::Glass(a) => (1, a),
-            EffectKey::Custom(a) => (2, a),
         });
         keys.dedup();
         keys.len()
@@ -326,15 +323,6 @@ fn effect_key(node: &Node) -> Option<EffectKey> {
     }
     if let Some(g) = node.glass {
         return Some(EffectKey::Glass(hash_glass(&g)));
-    }
-    if let Some(c) = node.gather_shader() {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        c.wgsl.hash(&mut h);
-        c.reach.to_bits().hash(&mut h);
-        for p in &c.params {
-            p.to_bits().hash(&mut h);
-        }
-        return Some(EffectKey::Custom(h.finish()));
     }
     None
 }

@@ -12,7 +12,7 @@
 use std::time::Instant;
 
 use render_core::kurbo::Affine;
-use render_core::parity::{FX_ALL, FX_BLUR, FX_DROP, FX_INNER, FX_SHADER, FX_SHARP};
+use render_core::parity::{FX_ALL, FX_BLUR, FX_DROP, FX_INNER, FX_SHARP};
 use render_core::vello::sink::Sink;
 use vello_gpu_renderer::ClassicBackend;
 
@@ -90,7 +90,7 @@ fn main() {
     println!("{:<22} {plain:>9.1} {plain_rec:>9.1} {:>9} {plain_g:>8.0}   <- base render floor (no effects)", "plain bodies", format!("-{:.0}", full - plain));
 
     println!();
-    for (name, bit) in [("drop shadows (2)", FX_DROP), ("inner shadow (1)", FX_INNER), ("layer blur", FX_BLUR), ("tint shader", FX_SHADER)] {
+    for (name, bit) in [("drop shadows (2)", FX_DROP), ("inner shadow (1)", FX_INNER), ("layer blur", FX_BLUR)] {
         let (t, r, g) = time_mask(&device, &queue, &mut backend, &target, FX_ALL & !bit);
         println!("{:<22} {t:>9.1} {r:>9.1} {:>9} {g:>8.0}   <- removing it saves {:.0} ms", format!("full minus {name}"), format!("-{:.0}", full - t), full - t);
     }

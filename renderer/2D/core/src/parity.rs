@@ -13,7 +13,7 @@
 use kurbo::{BezPath, Rect, RoundedRectRadii, Vec2};
 
 use crate::model::{
-    Brush, CustomShader, EffectSlot, FilterGraph, FilterNode, Glass, ImageFill, Node, Paint, Scene, Shadow, ShapeEffect,
+    Brush, FilterGraph, FilterNode, Glass, ImageFill, Node, Paint, Scene, Shadow,
     ShapeKind, Stroke, StrokeAlign, TileMode, ROOT_ID,
 };
 
@@ -554,6 +554,21 @@ pub fn build_parity_scene() -> (Scene, Vec<(usize, &'static str)>) {
         n.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 12.0, spread: 0.0, offset: Vec2::new(7.0, 9.0), inset: false }];
         b.root(n);
         b.advance("vector shape + drop shadow");
+    }
+
+    {
+        let r = b.rect();
+        let mut under = Node::new(b.id(), ShapeKind::Rect);
+        under.bounds = Rect::new(r.x0 + 8.0, r.y0 + 8.0, r.x1 - 8.0, r.y1 - 8.0);
+        under.fills = vec![Paint::plain(linear())];
+        b.root(under);
+        let mut n = Node::new(b.id(), ShapeKind::Rect);
+        n.bounds = Rect::new(r.x0 + 34.0, r.y0 + 30.0, r.x1 - 34.0, r.y1 - 40.0);
+        n.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+        n.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 10.0, spread: 0.0, offset: Vec2::new(7.0, 9.0), inset: false }];
+        n.background_tint = Some(cola(216, 90, 48, 120));
+        b.root(n);
+        b.advance("drop + backdrop tint [sink]");
     }
 
     b.finish()
@@ -1447,41 +1462,9 @@ pub fn build_boolean_scene() -> (Scene, Vec<(usize, &'static str)>) {
     b.finish()
 }
 
-/// A minimal body-only (spread) custom shader: tint the shape's own body toward `[r,g,b]` by `amount`.
-/// `reads_backdrop: false` marks it a spread (runs over the body, no backdrop) so the sink chains it in
-/// `custom_over_body` / `wv_composite_body`. `u[0].xy` is the resolution, then the params pack in.
-fn tint_shader(r: f32, g: f32, b: f32, amount: f32) -> CustomShader {
-    let wgsl = r"
-struct P { u: array<vec4<f32>, 2> };
-@group(0) @binding(0) var<uniform> params: P;
-@group(0) @binding(1) var samp: sampler;
-@group(0) @binding(2) var tex: texture_2d<f32>;
-struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
-@vertex
-fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
-    var out: VsOut;
-    let x = f32(vi & 1u);
-    let y = f32(vi >> 1u);
-    out.uv = vec2<f32>(x, y);
-    out.pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    return out;
-}
-@fragment
-fn fs(inp: VsOut) -> @location(0) vec4<f32> {
-    let src = textureSample(tex, samp, inp.uv);
-    let tint = vec3<f32>(params.u[0].z, params.u[0].w, params.u[1].x);
-    let amount = params.u[1].y;
-    // Premultiplied: tint the colour toward `tint * a` by `amount`, keep the coverage alpha.
-    let rgb = mix(src.rgb, tint * src.a, amount);
-    return vec4<f32>(rgb, src.a);
-}
-".to_string();
-    CustomShader { wgsl, reach: 0.0, param_vec4s: 2, params: vec![r, g, b, amount], reads_backdrop: false, acceptable_downscale: 1.0 }
-}
-
-/// Cells over a light page, each stacking several effects on ONE shape: drop + inner shadow together; a
-/// drop shadow under a layer blur; and a custom tint (effects list) under a drop shadow. Verify-only —
-/// the point is that WV composes the whole stack, in the lists' authored order, the way tiled does.
+/// Cells over a light page, each stacking several effects on ONE shape: drop + inner shadow together,
+/// and a drop shadow under a layer blur. Verify-only — the point is that WV composes the whole stack,
+/// in the lists' authored order, the way tiled does.
 #[must_use]
 pub fn build_combined_scene() -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
@@ -1510,14 +1493,6 @@ pub fn build_combined_scene() -> (Scene, Vec<(usize, &'static str)>) {
         n.blur = Some(4.0);
         b.root(n);
         b.advance("drop shadow + layer blur");
-    }
-    {
-        let (_id, _r, mut n) = blob(&mut b);
-        n.fills = vec![Paint::plain(Brush::Solid(col(48, 150, 120)))];
-        n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.8, 0.1, 0.7) }];
-        n.shadows = vec![Shadow { color: cola(0, 0, 0, 160), blur: 10.0, spread: 0.0, offset: Vec2::new(6.0, 8.0), inset: false }];
-        b.root(n);
-        b.advance("tint shader + drop shadow");
     }
     b.finish()
 }
@@ -1565,18 +1540,9 @@ pub fn build_matrix_scene() -> (Scene, Vec<(usize, &'static str)>) {
         ("inner sharp", |n| n.shadows = vec![inner_shadow(0.0, 0.0)]),
         ("drop+inner", |n| n.shadows = vec![drop_shadow(10.0, 0.0), inner_shadow(7.0, 0.0)]),
         ("blur", |n| n.blur = Some(4.0)),
-        ("shader", |n| n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(0.2, 0.9, 1.0, 0.5) }]),
-        ("shader+blur", |n| {
-            n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.5, 0.2, 0.5) }];
-            n.blur = Some(3.0);
-        }),
         ("drop+blur", |n| {
             n.shadows = vec![drop_shadow(10.0, 0.0)];
             n.blur = Some(3.0);
-        }),
-        ("drop+shader", |n| {
-            n.shadows = vec![drop_shadow(10.0, 0.0)];
-            n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(0.3, 1.0, 0.4, 0.5) }];
         }),
         ("inner+blur", |n| {
             n.shadows = vec![inner_shadow(8.0, 0.0)];
@@ -1596,7 +1562,6 @@ pub fn build_matrix_scene() -> (Scene, Vec<(usize, &'static str)>) {
             n.shadows = vec![drop_shadow(11.0, 0.0), drop_shadow(5.0, 2.0), inner_shadow(7.0, 0.0)];
             n.background_blur = Some(10.0);
             n.blur = Some(3.0);
-            n.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.8, 0.3, 0.5) }];
         }),
     ];
     for (label, setup) in cells {
@@ -1669,7 +1634,9 @@ pub fn build_scale_scene_sized(
                 2 => {
                     node.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 7.0, spread: 0.0, offset: Vec2::new(-4.0, -5.0), inset: true }];
                 }
-                3 => node.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.85, 0.3, 0.45) }],
+                3 => {
+                    node.shadows = vec![Shadow { color: cola(0, 0, 0, 150), blur: 8.0, spread: 3.0, offset: Vec2::new(5.0, 6.0), inset: false }];
+                }
                 // A STACK GLASS: a shape-following lens + a light drop shadow (the non-box shadow is what
                 // makes it FX_STACK, where the SDF lens lives). The refracted/magnified backdrop shows
                 // through, so the effect reads over the neighbouring blobs.
@@ -1698,12 +1665,99 @@ pub fn build_scale_scene_sized(
 /// pass), the two shapes the stages implement. `downscale` is each lens's `acceptable_downscale`
 /// (`1.0` = native); a value below `1.0` forces the lens to render at a reduced `k` and be upscaled,
 /// which is the case the batch's scaled-stamp (`stage::SHARP`) path exists for.
-#[must_use]
 /// A grid of `n` **background-blur gathers** — the non-self-clipping counterpart of
 /// [`build_glass_grid_scene`]. Each gather reads the backdrop, blurs it, and composites through its
 /// own silhouette (no SDF self-clip), so it exercises the batched masked composite
 /// (`MASKED`/`SHARP_MASKED`) against the per-shape `blit_masked` oracle. Same disjoint-cell layout so
 /// no reach bridges neighbours.
+/// A grid of `n` blobs each carrying ONE soft shadow (`inset` picks drop vs inner) — the shadow
+/// analogue of the blur grid. The cells are reach-disjoint at small `n` (their blocks can share
+/// scheduler rounds) and their halos start touching as `n` grows (forcing round separation), so the
+/// grid exercises both sides of the scheduler's region-z at once.
+#[must_use]
+pub fn build_drop_grid_scene(n: usize, radius: f32, inset: bool) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    for _ in 0..(cols * rows) {
+        b.advance("drop grid");
+    }
+    let (cw, ch) = canvas_size(cols * rows);
+    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
+    let (lw, lh) = (pitch_x / 2.5, pitch_y / 2.5);
+    for i in 0..n {
+        let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);
+        let x = (gx + 0.5) * pitch_x - lw * 0.5;
+        let y = (gy + 0.5) * pitch_y - lh * 0.5;
+        let r = Rect::new(x, y, x + lw, y + lh);
+        let mut node = Node::new(b.id(), ShapeKind::Path);
+        node.bounds = r;
+        node.path = Some(blob_path(r));
+        node.fills = vec![Paint::plain(Brush::Solid(col(70, 110, 190)))];
+        node.shadows = vec![Shadow {
+            color: cola(0, 0, 0, 170),
+            blur: radius,
+            spread: 0.0,
+            offset: Vec2::new(7.0, 9.0),
+            inset,
+        }];
+        b.root(node);
+    }
+    b.finish()
+}
+
+/// A grid alternating soft-DROP blobs and background-BLUR rects over a checkerboard — the mixed-kind
+/// scheduler fixture. Different binding shapes must land on different rounds; same-kind disjoint cells
+/// still share.
+#[must_use]
+pub fn build_mixed_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
+    let mut b = Build::new();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    for _ in 0..(cols * rows) {
+        b.advance("mixed grid");
+    }
+    let (cw, ch) = canvas_size(cols * rows);
+    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
+    let (lw, lh) = (pitch_x / 2.5, pitch_y / 2.5);
+    let cell = 24.0_f64;
+    let (nx, ny) = ((f64::from(cw) / cell).ceil() as i64, (f64::from(ch) / cell).ceil() as i64);
+    for gy in 0..ny {
+        for gx in 0..nx {
+            let mut node = Node::new(b.id(), ShapeKind::Rect);
+            let (x, y) = (gx as f64 * cell, gy as f64 * cell);
+            node.bounds = Rect::new(x, y, x + cell, y + cell);
+            let dark = (gx + gy) % 2 == 0;
+            node.fills = vec![Paint::plain(Brush::Solid(if dark { col(30, 120, 90) } else { col(230, 210, 80) }))];
+            b.root(node);
+        }
+    }
+    for i in 0..n {
+        let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);
+        let x = (gx + 0.5) * pitch_x - lw * 0.5;
+        let y = (gy + 0.5) * pitch_y - lh * 0.5;
+        let r = Rect::new(x, y, x + lw, y + lh);
+        let mut node = Node::new(b.id(), if i % 2 == 0 { ShapeKind::Path } else { ShapeKind::Rect });
+        node.bounds = r;
+        if i % 2 == 0 {
+            node.path = Some(blob_path(r));
+            node.fills = vec![Paint::plain(Brush::Solid(col(70, 110, 190)))];
+            node.shadows = vec![Shadow {
+                color: cola(0, 0, 0, 170),
+                blur: 10.0,
+                spread: 0.0,
+                offset: Vec2::new(7.0, 9.0),
+                inset: false,
+            }];
+        } else {
+            node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
+            node.background_blur = Some(24.0);
+        }
+        b.root(node);
+    }
+    b.finish()
+}
+
 pub fn build_blur_grid_scene(n: usize, radius: f32) -> (Scene, Vec<(usize, &'static str)>) {
     let mut b = Build::new();
     let cols = (n as f64).sqrt().ceil() as usize;
@@ -1737,44 +1791,6 @@ pub fn build_blur_grid_scene(n: usize, radius: f32) -> (Scene, Vec<(usize, &'sta
         node.bounds = Rect::new(x, y, x + lw, y + lh);
         node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
         node.background_blur = Some(radius);
-        b.root(node);
-    }
-    b.finish()
-}
-
-/// A grid of `n` **custom-shader gathers** — each a pointwise tint of the backdrop (`reach = 0`,
-/// `reads_backdrop = true`). The batch runs the user pipeline PER CELL over the shape's box while the
-/// per-shape oracle runs it over the viewport; a pointwise shader is invariant to that, so the two
-/// agree within the silhouette. Exercises the batched masked composite over a custom fill.
-pub fn build_custom_gather_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static str)>) {
-    let mut b = Build::new();
-    let cols = (n as f64).sqrt().ceil() as usize;
-    let rows = n.div_ceil(cols);
-    for _ in 0..(cols * rows) {
-        b.advance("custom gather grid");
-    }
-    let (cw, ch) = canvas_size(cols * rows);
-    let (pitch_x, pitch_y) = (f64::from(cw) / cols as f64, f64::from(ch) / rows as f64);
-    let (lw, lh) = (pitch_x / 3.0, pitch_y / 3.0);
-    for i in 0..(n * 4) {
-        let (gx, gy) = ((i % (cols * 2)) as f64, (i / (cols * 2)) as f64);
-        let mut node = Node::new(b.id(), ShapeKind::Rect);
-        let (x, y) = (gx * pitch_x * 0.5, gy * pitch_y * 0.5);
-        node.bounds = Rect::new(x, y, x + pitch_x * 0.5, y + pitch_y * 0.5);
-        let hue = (i * 37 % 255) as u8;
-        node.fills = vec![Paint::plain(Brush::Solid(col(40 + hue / 2, 200 - hue / 3, 120 + hue / 4)))];
-        b.root(node);
-    }
-    for i in 0..n {
-        let (gx, gy) = ((i % cols) as f64, (i / cols) as f64);
-        let x = (gx + 0.5) * pitch_x - lw * 0.5;
-        let y = (gy + 0.5) * pitch_y - lh * 0.5;
-        let mut node = Node::new(b.id(), ShapeKind::Rect);
-        node.bounds = Rect::new(x, y, x + lw, y + lh);
-        node.corners = Some(RoundedRectRadii::from_single_radius(12.0));
-        let mut s = tint_shader(0.2, 0.9, 1.0, 0.6);
-        s.reads_backdrop = true;
-        node.effects = vec![ShapeEffect { slot: EffectSlot::Custom, shader: s }];
         b.root(node);
     }
     b.finish()
@@ -1974,49 +1990,50 @@ pub fn build_stack_glass_scene(n: usize, frost: bool) -> (Scene, Vec<(usize, &'s
     b.finish()
 }
 
-/// Every shape the **texture** (noise displacement) effect can produce, plus the **noise** overlay
-/// and the two chained. The fill is a sweep gradient on purpose: a displacement over a solid colour
-/// only shows at the silhouette, so a solid fill would hide a regression across the entire interior.
+/// Every shape the **texture** (noise displacement) effect can produce. The fill is a sweep gradient
+/// on purpose: a displacement over a solid colour only shows at the silhouette, so a solid fill would
+/// hide a regression across the entire interior.
 ///
 /// `clip-off` is the one cell where the warp is allowed to bleed past the original coverage, which
 /// is the difference the `clip_to_shape` flag exists to express.
 #[must_use]
 pub fn build_texture_scene() -> (Scene, Vec<(usize, &'static str)>) {
-    use crate::model::EffectSlot;
-    use crate::vello::effects::{noise_shader, texture_shader, NoiseSlot};
-
     let mut b = Build::new();
-    let cell = |b: &mut Build, tex: Option<(f32, f32, bool)>, noise: bool, label: &'static str| {
+    let cell = |b: &mut Build,
+                tex: Option<(f32, f32, bool)>,
+                blur: Option<f32>,
+                offset: Option<(f32, f32)>,
+                label: &'static str| {
         let r = b.rect();
         let mut node = Node::new(b.id(), ShapeKind::Rect);
         node.bounds = r;
         node.corners = Some(RoundedRectRadii::from_single_radius(10.0));
         node.fills = vec![Paint::plain(angular())];
         if let Some((grain, radius, clip)) = tex {
-            if let Some(s) = texture_shader(grain, radius, clip, false) {
-                node.upsert_effect(EffectSlot::Texture, s);
-            }
+            node.texture = Some(crate::model::Texture {
+                noise_size: grain,
+                radius,
+                clip_to_shape: clip,
+                hidden: false,
+            });
         }
-        if noise {
-            let slots = vec![
-                NoiseSlot { kind: 0, rgba: [0.05, 0.05, 0.08, 0.85] },
-                NoiseSlot { kind: 1, rgba: [1.0, 0.98, 0.9, 0.6] },
-            ];
-            if let Some(s) = noise_shader(&slots, 14.0, 0.52, 0.28, true, false) {
-                node.upsert_effect(EffectSlot::Noise, s);
-            }
+        node.blur = blur;
+        if let Some((dx, dy)) = offset {
+            node.filter_graph =
+                Some(FilterGraph { nodes: vec![FilterNode::Offset { dx, dy }] });
         }
         b.root(node);
         b.advance(label);
     };
 
-    cell(&mut b, None, false, "no effect");
-    cell(&mut b, Some((20.0, 6.0, true)), false, "texture r6");
-    cell(&mut b, Some((20.0, 14.0, true)), false, "texture r14");
-    cell(&mut b, Some((8.0, 14.0, true)), false, "texture fine grain");
-    cell(&mut b, Some((20.0, 14.0, false)), false, "texture clip-off");
-    cell(&mut b, None, true, "noise");
-    cell(&mut b, Some((20.0, 10.0, true)), true, "texture + noise");
+    cell(&mut b, None, None, None, "no effect");
+    cell(&mut b, Some((20.0, 6.0, true)), None, None, "texture r6");
+    cell(&mut b, Some((20.0, 14.0, true)), None, None, "texture r14");
+    cell(&mut b, Some((8.0, 14.0, true)), None, None, "texture fine grain");
+    cell(&mut b, Some((20.0, 14.0, false)), None, None, "texture clip-off");
+    cell(&mut b, Some((20.0, 10.0, true)), Some(4.0), None, "texture + blur");
+    cell(&mut b, Some((20.0, 10.0, true)), Some(4.0), Some((10.0, 8.0)), "texture + blur + offset");
+    cell(&mut b, None, None, Some((10.0, 8.0)), "offset only");
     b.finish()
 }
 
@@ -2025,12 +2042,11 @@ pub fn build_texture_scene() -> (Scene, Vec<(usize, &'static str)>) {
 pub const FX_DROP: u32 = 1;
 pub const FX_INNER: u32 = 2;
 pub const FX_BLUR: u32 = 4;
-pub const FX_SHADER: u32 = 8;
 /// Make every shadow SHARP (blur radius 0). The shadow still rasterizes its silhouette and
 /// composites, but skips the Gaussian pass-graph — so `blurred − sharp` splits a shadow's cost into
 /// raster+composite vs blur.
 pub const FX_SHARP: u32 = 16;
-pub const FX_ALL: u32 = FX_DROP | FX_INNER | FX_BLUR | FX_SHADER;
+pub const FX_ALL: u32 = FX_DROP | FX_INNER | FX_BLUR;
 
 /// [`build_stress_scene`] with an explicit shape count and an effect mask. `mask == 0` is the plain
 /// baseline (bodies only, no effects) — the floor every effect variant is measured against.
@@ -2055,11 +2071,6 @@ pub fn build_stress_scene_mask(n: usize, mask: u32) -> (Scene, Vec<(usize, &'sta
             n.shadows.push(Shadow { color: cola(0, 0, 0, 170), blur: sh_blur(7.0), spread: 0.0, offset: Vec2::new(-5.0, -6.0), inset: true });
         }
         n.blur = if mask & FX_BLUR != 0 { Some(3.0) } else { None };
-        n.effects = if mask & FX_SHADER != 0 {
-            vec![ShapeEffect { slot: EffectSlot::Custom, shader: tint_shader(1.0, 0.9, 0.2, 0.5) }]
-        } else {
-            Vec::new()
-        };
         b.root(n);
         b.advance("stress");
     }

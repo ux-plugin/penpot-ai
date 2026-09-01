@@ -46,12 +46,20 @@ fn install(scene: &str) -> u32 {
             std::env::var("BLUR_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
             std::env::var("BLUR_R").ok().and_then(|v| v.parse().ok()).unwrap_or(24),
         ),
+        "drop-grid" => render_core::vello::abi::load_drop_grid_scene(
+            std::env::var("DROP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+            std::env::var("DROP_R").ok().and_then(|v| v.parse().ok()).unwrap_or(10),
+        ),
+        "inner-grid" => render_core::vello::abi::load_inner_grid_scene(
+            std::env::var("DROP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+            std::env::var("DROP_R").ok().and_then(|v| v.parse().ok()).unwrap_or(10),
+        ),
+        "mixed-grid" => render_core::vello::abi::load_mixed_grid_scene(
+            std::env::var("DROP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+        ),
         "stack-glass" => render_core::vello::abi::load_stack_glass_scene(
             std::env::var("GLASS_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
             u32::from(std::env::var("GLASS_FROST").is_ok()),
-        ),
-        "custom-gather-grid" => render_core::vello::abi::load_custom_gather_grid_scene(
-            std::env::var("CUSTOM_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
         ),
         "backdrop-tint" => render_core::vello::abi::load_backdrop_tint_grid_scene(
             std::env::var("TINT_N").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
@@ -65,9 +73,6 @@ fn install(scene: &str) -> u32 {
         ),
         "scope" => render_core::vello::abi::load_scope_scene(),
         "texture" => render_core::vello::abi::load_texture_scene(),
-        // The one fixture whose stacks SPLIT: a custom shader on the body sits between the drop
-        // shadows and the inner shadow, so the batch takes the drops, hands the body back, and has
-        // to move the inner shadow to a later round to stay on top of it.
         "stress" => render_core::vello::abi::load_stress_scene_mask(
             std::env::var("STRESS_N").ok().and_then(|v| v.parse().ok()).unwrap_or(6),
             render_core::parity::FX_ALL,
@@ -161,18 +166,12 @@ fn main() {
     let wv_target = make_target(&device, w, h, "wv ab whole-viewport");
     let _ = render_core::vello::abi::take_dirty();
     let passes_before_wv = render_core::vello::sink::wv_passes_recorded();
-    let buckets_before = render_core::vello::sink::wv_pass_buckets();
     wv_sink.render_whole_viewport(&mut backend, &device, &queue, &wv_target, root, w, h, true);
     let wv_rgba = read_back(&device, &queue, &wv_target, w, h);
     write_png(&format!("{PROOFS}/{scene}-wv.png"), &wv_rgba, w, h);
 
     let wv_passes = render_core::vello::sink::wv_passes_recorded() - passes_before_wv;
-    let b = render_core::vello::sink::wv_pass_buckets();
-    let d: Vec<u32> = (0..b.len()).map(|i| b[i] - buckets_before[i]).collect();
-    println!(
-        "  wv render passes: {wv_passes} (fine {} batch {} graph {} glass {} blur {} composite {} blit {})",
-        d[0], d[1], d[2], d[3], d[4], d[5], d[6]
-    );
+    println!("  wv render passes: {wv_passes}");
     if let Ok(reps) = std::env::var("WV_DAG_TIME").map(|v| v.parse::<u32>().unwrap_or(60)) {
         // Time the DAG-edge executor (default on) against the forced-legacy WindowRole/batched path.
         // Fresh Sink per config; each frame reinstalls the scene, clears dirty, renders, and polls to

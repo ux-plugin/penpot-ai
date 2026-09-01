@@ -52,18 +52,45 @@ pub enum BlurEdge {
     Coverage,
 }
 
+/// How a [`UnitOp::Compose`] lands its chain on the accumulator. A chain grown from the backdrop
+/// (`Reload` root) mixes in under the effect's mask; one grown from the shape's own coverage
+/// (`Rasterize` root — a shadow) IS a coverage, and its colour lays source-over the accumulator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+pub enum ComposeMode {
+    #[default]
+    MaskedMix,
+    Over,
+}
+
+/// What a [`UnitOp::Rasterize`] draws — the command's payload, stamped at DAG build exactly like a
+/// blur's `axis`/`edge`, never re-derived downstream from the authored effect.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RasterSource {
+    /// The shape's coverage silhouette, translated by `offset` (page units). `analytic` says the
+    /// marker's own rasterised area reproduces this coverage per pixel (false for glyph coverage,
+    /// whose marker area is only a box) — the flood-recovery fold keys on it.
+    Coverage { offset: [f32; 2], analytic: bool },
+    /// The shape's full painted body (fills/strokes/text), translated by `offset` (page units) —
+    /// like `Coverage`, geometry ops bake into the rasterization rather than becoming units.
+    Body { offset: [f32; 2] },
+    /// A signed-distance field of the outline; `decode` is the encoded distance range in device
+    /// pixels, stamped by the per-frame fill (it is view-dependent).
+    Distance { decode: f32 },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnitOp {
-    /// STRUCTURAL: turn scene geometry into pixels — a plain-shape band, a shape body, or a coverage
-    /// silhouette. Not a fragment snippet; the scene rasterizer runs it. Whether it writes the spine or
-    /// a scratch is the DAG node's `target`.
-    Rasterize,
+    /// STRUCTURAL: turn scene geometry into pixels — a plain-shape band, a shape body, a coverage
+    /// silhouette, or a distance field, per its [`RasterSource`]. Not a fragment snippet; the scene
+    /// rasterizer runs it. Whether it writes the spine or a scratch is the DAG node's `target`.
+    Rasterize(RasterSource),
     /// STRUCTURAL: snapshot the accumulator so a gather can sample the composited backdrop. Its own
     /// barrier (the reload); not a fragment snippet.
     Reload,
-    /// STRUCTURAL: source-over the fragment result onto the accumulator (the spine write). Under / over
-    /// / replace is z-order (the node's place on the spine), not a variant.
-    Compose,
+    /// STRUCTURAL: land the chain's result on the accumulator (the spine write). WHERE it lands is
+    /// z-order (the node's place on the spine); HOW it lands is the carried [`ComposeMode`], stamped
+    /// at build from the effect's authored compose — never re-derived downstream.
+    Compose(ComposeMode),
     /// Masked displaced sample + chromatic aberration (a composed pass's sampling head).
     Warp(Vec<f32>),
     /// Jittered sample (a composed pass's sampling head).
@@ -88,12 +115,6 @@ pub enum UnitOp {
     /// (`Coverage` = a shadow silhouette, `Backdrop` = the page) — both stamped at build so `bake`
     /// serializes the op without re-deriving them from the graph.
     Blur { sigma: f32, linear: bool, axis: BlurAxis, edge: BlurEdge },
-    /// A hand-written WGSL pass — the escape hatch, a barrier unit. `u` is the surface resolution plus
-    /// the shader's declared params, sized to exactly `param_vec4s` vec4s; the backend supplies the
-    /// compiled pipeline. `reach`/`reads_backdrop` are the shader's required footprint declaration (see
-    /// [`crate::effect_graph::EffectPass::Custom`]) — carried so the scheduler sizes and batches it from
-    /// the declaration rather than assuming global reach. Never enters `fs_uber`.
-    Custom { u: Vec<f32>, param_vec4s: u32, reach: f32, reads_backdrop: bool },
 }
 
 /// A composed pass's pipeline cache key. Named fields rather than a tuple: the composition grew
@@ -267,7 +288,7 @@ impl UnitPipeline {
     }
 
     fn full_pass(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pipeline: &wgpu::RenderPipeline, bind: &wgpu::BindGroup) {
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::UNITS, 1);
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("unit pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -350,10 +371,10 @@ impl UnitKey {
 impl UnitOp {
     /// A NEIGHBORHOOD/GLOBAL unit — it reads past its own pixel of the *previous* result, so it
     /// cannot share a fragment with the units after it and forces a materialised pass. `Blur` (reads
-    /// a neighborhood) and `Custom` (unknown sampling) are the barriers; every other unit fuses.
+    /// a neighborhood) is the barrier; every other unit fuses.
     #[must_use]
     pub fn is_barrier(&self) -> bool {
-        matches!(self, UnitOp::Blur { .. } | UnitOp::Custom { .. })
+        matches!(self, UnitOp::Blur { .. })
     }
 
     /// A sampling head — it reads an *input texture* at an offset (its own pixel of the input, not the
@@ -368,12 +389,12 @@ impl UnitOp {
     /// treats these as nodes but they never enter a fused fragment.
     #[must_use]
     pub fn is_structural(&self) -> bool {
-        matches!(self, UnitOp::Rasterize | UnitOp::Reload | UnitOp::Compose)
+        matches!(self, UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose(_))
     }
 
     /// A gather reads its input at coordinates other than its own pixel (a neighbourhood or a
     /// displacement), so it can cross tiles — the property the DAG's barrier predicate turns on. A head
-    /// (warp/scatter) or a barrier (blur/custom) gathers; every other fragment unit is pointwise, and
+    /// (warp/scatter) or a barrier (blur) gathers; every other fragment unit is pointwise, and
     /// [`UnitOp::Reload`] is its own barrier handled separately.
     #[must_use]
     pub fn is_gather(&self) -> bool {

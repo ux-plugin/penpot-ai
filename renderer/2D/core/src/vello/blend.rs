@@ -668,7 +668,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(blit.mask) },
             ],
         });
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BLIT, 1);
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor masked blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -720,7 +720,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BLUR, 1);
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor blur pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -784,7 +784,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(blend.backdrop) },
             ],
         });
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::COMPOSITE, 1);
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor blend composite"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -842,7 +842,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BLIT, 1);
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -902,7 +902,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BLIT, 1);
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor sharp blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -959,7 +959,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(blit.mask) },
             ],
         });
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BLIT, 1);
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor masked sharp blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1017,7 +1017,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BLIT, 1);
+        crate::vello::sink::note_passes(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor dstout blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1046,7 +1046,7 @@ impl Compositor {
         color: [f64; 4],
         timestamp: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
-        crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::BLIT, 1);
+        crate::vello::sink::note_passes(1);
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compositor clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

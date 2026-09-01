@@ -485,6 +485,21 @@ fn fieldRefract(t: f32, thick: f32, n2: f32, kind: i32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// `fine.wgsl` carries a verbatim copy of [`super::FIELD_NOISE`] (its build cannot splice the
+    /// host constant in) — the grain fine warps by must be the grain every other executor samples.
+    #[test]
+    fn fine_carries_field_noise_verbatim() {
+        let fine = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vello/vello_shaders/shader/fine.wgsl"
+        ))
+        .expect("fine.wgsl readable from the core crate");
+        assert!(
+            fine.contains(super::FIELD_NOISE.trim()),
+            "fine.wgsl's noise functions drifted from field::FIELD_NOISE"
+        );
+    }
+
     use super::*;
 
     fn box_source() -> FieldSource {
@@ -708,11 +723,6 @@ mod reuse_tests {
         assert!(src.contains("return vec4<f32>(displacement.x, displacement.y, 0.0, 1.0);"));
     }
 
-    /// One noise implementation, shared: the effect shaders and the field programs must not drift.
-    #[test]
-    fn the_effect_shaders_and_field_programs_share_one_noise() {
-        assert_eq!(crate::vello::effects::fractal_noise_wgsl(), FIELD_NOISE);
-    }
 
     /// The gradient differentiates whatever source the program declares, so swapping the source is
     /// the single edit an arbitrary-geometry provider needs.

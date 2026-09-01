@@ -176,11 +176,9 @@ pub struct Shadow {
 /// backends no longer share a shader language, and there are no Skia users of effects — so the
 /// neutral model carries only what render-vello needs and render-wasm projects `None`.
 ///
-/// `Custom` is the raw-shader escape hatch: `effect` selects a WGSL branch in the fork's
-/// `custom_effect` hook (effect 0 = tint, `params = [r, g, b, amount]`). The typed variants
-/// (`Blur`, `Offset`) exist so the engine can reason about them (bounds expansion, algorithm,
-/// caching) rather than treating them as opaque code. Branching/merge nodes come later — they need
-/// the fork's multi-primitive graph, which linear nesting does not.
+/// Every variant is typed so the engine can reason about it (bounds expansion, algorithm, caching)
+/// rather than treating it as opaque code. Branching/merge nodes come later — they need the fork's
+/// multi-primitive graph, which linear nesting does not.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FilterNode {
     /// Gaussian blur by `sigma` (already a sigma, not a radius).
@@ -189,9 +187,6 @@ pub enum FilterNode {
     Offset { dx: f32, dy: f32 },
     /// An inner (inset) shadow: a blurred, offset shadow drawn *inside* the shape.
     InnerShadow { dx: f32, dy: f32, sigma: f32, color: peniko::Color },
-    /// A hand-written shader branch: `effect` indexes the host's shader table, `params` are its flat
-    /// uniforms. Named to match [`crate::effect::Op::Shader`], the op it runs as.
-    Shader { effect: u32, params: Vec<f32> },
 }
 
 /// A linear chain of filter passes wrapping a shape and its children. `nodes` is in **application
@@ -371,71 +366,18 @@ impl Glass {
     }
 }
 
-/// A **custom** gather effect: a hand-written WGSL fragment shader over the backdrop beneath the
-/// shape — the raw escape hatch that sits under the typed presets (blur, glass).
-///
-/// Its footprint is **required to be declared**, never guessed: `reads_backdrop` says whether
-/// `@binding(2)` is the composited backdrop beneath the shape (a **gather** — z-serial, needs a
-/// backdrop surface) or the shape's own body (a **spread**, like a layer blur — no backdrop, cheaper,
-/// batches around it), and `reach` is the page-space extent it samples (0 = pointwise). There is no
-/// worst-case default: every custom must state what it reads and how far, and the scheduler sizes and
-/// batches it from that declaration exactly as it does a built-in unit. A shader that genuinely samples
-/// the backdrop widely says so with a large `reach`, which the resolution cap bounds like any other —
-/// "reads everything" is an explicit declaration a shader opts into, not a fallback the planner assumes.
-/// `params` are the uniform floats the shader reads (packed after the resolution).
-#[derive(Clone, Debug, PartialEq)]
-pub struct CustomShader {
-    /// A complete WGSL module: a `@vertex fn vs` + `@fragment fn fs`, reading `@binding(0)` uniform
-    /// `array<vec4<f32>, N>` (resolution in `u[0].xy`, then `params`), `@binding(1)` sampler,
-    /// `@binding(2)` the input texture (the backdrop if `reads_backdrop`, else the shape's own body).
-    pub wgsl: String,
-    /// Author-declared page-space reach (how far past the shape it samples).
-    pub reach: f32,
-    /// The exact size of `@binding(0)` — the literal `N` in the shader's `array<vec4<f32>, N>`. This is
-    /// the single declaration that makes param-count mismatch impossible: the backend sizes the uniform
-    /// buffer to *exactly* `param_vec4s` vec4s (= `param_vec4s * 4` floats), zero-filling a short
-    /// [`params`](Self::params) and truncating a long one, so the bound buffer always matches what the
-    /// shader declares. No runtime-sized arrays, no robust-access fallbacks — one number, honoured.
-    pub param_vec4s: u32,
-    /// Uniform floats the shader reads, packed after the surface resolution (`u[0].xy`). Need not fill
-    /// `param_vec4s` vec4s exactly; the backend pads/truncates to the declared size.
-    pub params: Vec<f32>,
-    /// Whether the shader samples the backdrop beneath the shape (gather) or only its own body
-    /// (spread). Required — a custom must declare what it reads; there is no worst-case default.
-    pub reads_backdrop: bool,
-    /// Author-declared **quality floor** `k ∈ (0, 1]`: the smallest fraction of device resolution this
-    /// effect can be rendered at (then upscaled ×1/k) with acceptable quality. This is distinct from the
-    /// memory cap — the cap is forced by `reach · zoom` to avoid OOM; `acceptable_downscale` is the *free*
-    /// downsample the effect tolerates. `1.0` = must render at native (assume sharp — the safe default
-    /// for an unknown shader). A blurry effect declares a low value; a crisp one leaves it `1.0`. The
-    /// effective render scale is `min(resolution_cap(reach), acceptable_downscale)`.
-    pub acceptable_downscale: f32,
-}
-
-/// Which authored effect a [`ShapeEffect`] came from — its identity for upsert/clear on the wire.
-/// A shape can carry at most one effect per slot; re-setting a slot updates it in place (keeping its
-/// position in the chain), and clearing removes just that slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EffectSlot {
-    /// The fractal-noise displacement warp (`set_shape_texture`).
-    Texture,
-    /// The coloured fractal-noise grain (`set_shape_noise`).
-    Noise,
-    /// The raw WGSL escape hatch (`set_shape_custom_shader`).
-    Custom,
-}
-
-/// One authored effect on a shape: a [`CustomShader`] plus the [`EffectSlot`] it was set from.
-///
-/// A node's [`effects`](Node::effects) list is **ordered**, and the order *is* the pipeline: each
-/// spread effect reads the previous effect's output, so `[texture, noise]` warps the body then colours
-/// the warped result. This is the "a list of effects is one shader graph, output → next input" model —
-/// the chain is realized as consecutive spread passes (`Src::Pass(n)` feeding the next), fusible into a
-/// single shader later where no blur/gather barrier sits between them.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShapeEffect {
-    pub slot: EffectSlot,
-    pub shader: CustomShader,
+/// The **texture** effect: warp the shape's body by a fractal-noise displacement. A typed spread
+/// effect like [`Glass`] is a gather — it lowers to a `Warp` unit over the noise field program plus
+/// an optional pointwise clip back to the source coverage, never to hand-written shader code.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Texture {
+    /// Grain size: divides the noise sample position, so a larger value is a coarser grain.
+    pub noise_size: f32,
+    /// Displacement radius in page-space units; the device magnitude is `radius × 3`.
+    pub radius: f32,
+    /// Confine the warped result to the coverage it started from (no splotches past the outline).
+    pub clip_to_shape: bool,
+    pub hidden: bool,
 }
 
 /// A single renderable node in neutral form.
@@ -525,12 +467,8 @@ pub struct Node {
     /// A frosted-glass gather effect (refraction lens), `None` when the shape has none. Like
     /// [`background_blur`](Node::background_blur) it reads the backdrop beneath — a gather effect.
     pub glass: Option<Glass>,
-    /// The shape's authored effects, in application order. Each is a [`CustomShader`] (a built-in
-    /// texture/noise preset or the raw WGSL escape hatch) tagged with its [`EffectSlot`]. The order is
-    /// the pipeline: consecutive spread effects chain (output → next input); a backdrop-reading effect
-    /// is a gather. See [`ShapeEffect`] and the accessors below ([`spread_shaders`](Node::spread_shaders),
-    /// [`gather_shader`](Node::gather_shader)).
-    pub effects: Vec<ShapeEffect>,
+    /// The texture effect (noise-displacement warp of the body), `None` when the shape has none.
+    pub texture: Option<Texture>,
     /// Drop shadows, back to front, drawn behind the shape. Inner shadows do not reach here.
     pub shadows: Vec<Shadow>,
     /// A chain of custom filter passes wrapping the shape + children, or `None`. Vello-only —
@@ -567,55 +505,11 @@ impl Node {
             background_tint: None,
             background_field: None,
             glass: None,
-            effects: Vec::new(),
+            texture: None,
             shadows: Vec::new(),
             filter_graph: None,
             hidden: false,
         }
-    }
-
-    /// The spread effects (body-only shaders) in application order — the chain that warps/colours the
-    /// shape's own paint. Each reads the previous one's output.
-    pub fn spread_shaders(&self) -> impl Iterator<Item = &CustomShader> {
-        self.effects.iter().map(|e| &e.shader).filter(|c| !c.reads_backdrop)
-    }
-
-    /// The same body-only spread effects, each with the slot that produced it — the backend needs the
-    /// slot to tell an effect it can lower natively from one it can only run as WGSL.
-    pub fn spread_effects(&self) -> impl Iterator<Item = (EffectSlot, &CustomShader)> {
-        self.effects.iter().filter(|e| !e.shader.reads_backdrop).map(|e| (e.slot, &e.shader))
-    }
-
-    /// The (first) backdrop-reading effect — the custom *gather* shader, if any. A shape carries at
-    /// most one gather custom shader alongside the typed glass/background-blur gathers.
-    pub fn gather_shader(&self) -> Option<&CustomShader> {
-        self.effects.iter().map(|e| &e.shader).find(|c| c.reads_backdrop)
-    }
-
-    /// Whether any effect is a body-only spread shader.
-    pub fn has_spread_shader(&self) -> bool {
-        self.effects.iter().any(|e| !e.shader.reads_backdrop)
-    }
-
-    /// The largest page-space reach over the spread shaders — how far past the silhouette the chain
-    /// samples, so the spread surface is padded to hold it.
-    pub fn max_spread_reach(&self) -> f32 {
-        self.spread_shaders().map(|c| c.reach).fold(0.0, f32::max)
-    }
-
-    /// Insert or update the effect in `slot`, preserving its position in the chain when it already
-    /// exists (a param edit) and appending in call order when it is new.
-    pub fn upsert_effect(&mut self, slot: EffectSlot, shader: CustomShader) {
-        if let Some(e) = self.effects.iter_mut().find(|e| e.slot == slot) {
-            e.shader = shader;
-        } else {
-            self.effects.push(ShapeEffect { slot, shader });
-        }
-    }
-
-    /// Remove the effect in `slot`, if present.
-    pub fn remove_effect(&mut self, slot: EffectSlot) {
-        self.effects.retain(|e| e.slot != slot);
     }
 
     /// The matrix to draw with: the stored transform conjugated by the shape's centre.
@@ -894,20 +788,6 @@ impl Scene {
             None => fnv_u64(hash, 0),
         }
 
-        fnv_u64(hash, node.effects.len() as u64);
-        for e in &node.effects {
-            let c = &e.shader;
-            for b in c.wgsl.as_bytes() {
-                fnv_u64(hash, u64::from(*b));
-            }
-            fnv_f64(hash, f64::from(c.reach));
-            for p in &c.params {
-                fnv_f64(hash, f64::from(*p));
-            }
-            fnv_u64(hash, u64::from(c.reads_backdrop));
-            fnv_f64(hash, f64::from(c.acceptable_downscale));
-        }
-
         fnv_u64(hash, node.shadows.len() as u64);
         for shadow in &node.shadows {
             for component in shadow.color.components {
@@ -918,6 +798,17 @@ impl Scene {
             fnv_f64(hash, shadow.offset.x);
             fnv_f64(hash, shadow.offset.y);
             fnv_u64(hash, u64::from(shadow.inset));
+        }
+
+        match &node.texture {
+            Some(t) => {
+                fnv_u64(hash, 1);
+                fnv_f64(hash, f64::from(t.noise_size));
+                fnv_f64(hash, f64::from(t.radius));
+                fnv_u64(hash, u64::from(t.clip_to_shape));
+                fnv_u64(hash, u64::from(t.hidden));
+            }
+            None => fnv_u64(hash, 0),
         }
 
         match &node.filter_graph {
@@ -942,14 +833,6 @@ impl Scene {
                             fnv_f64(hash, f64::from(*sigma));
                             for c in color.components {
                                 fnv_f64(hash, f64::from(c));
-                            }
-                        }
-                        FilterNode::Shader { effect, params } => {
-                            fnv_u64(hash, 2);
-                            fnv_u64(hash, u64::from(*effect));
-                            fnv_u64(hash, params.len() as u64);
-                            for p in params {
-                                fnv_f64(hash, f64::from(*p));
                             }
                         }
                     }
@@ -1487,7 +1370,6 @@ mod tests {
         };
         let blur = FilterNode::Blur { sigma: 4.0 };
         let offset = FilterNode::Offset { dx: 10.0, dy: 0.0 };
-        let tint = FilterNode::Shader { effect: 0, params: vec![1.0, 0.45, 0.0, 0.7] };
         let inner = FilterNode::InnerShadow {
             dx: 6.0,
             dy: 6.0,
@@ -1495,12 +1377,12 @@ mod tests {
             color: Color::from_rgba8(0, 0, 0, 128),
         };
 
-        let base = with(vec![blur.clone(), offset.clone(), tint.clone()]);
+        let base = with(vec![blur.clone(), offset.clone(), inner.clone()]);
         assert_ne!(none, base, "a graph differs from no graph");
-        assert_ne!(base, with(vec![offset.clone(), blur.clone(), tint.clone()]), "order matters");
-        assert_ne!(base, with(vec![blur.clone(), tint.clone()]), "node count matters");
-        assert_ne!(base, with(vec![FilterNode::Blur { sigma: 9.0 }, offset, tint.clone()]), "params matter");
-        assert_ne!(with(vec![inner.clone()]), with(vec![tint]), "node kind matters");
+        assert_ne!(base, with(vec![offset.clone(), blur.clone(), inner.clone()]), "order matters");
+        assert_ne!(base, with(vec![blur.clone(), inner.clone()]), "node count matters");
+        assert_ne!(base, with(vec![FilterNode::Blur { sigma: 9.0 }, offset, inner.clone()]), "params matter");
+        assert_ne!(with(vec![inner.clone()]), with(vec![blur]), "node kind matters");
         assert_ne!(
             with(vec![inner]),
             with(vec![FilterNode::InnerShadow { dx: 6.0, dy: 6.0, sigma: 9.0, color: Color::from_rgba8(0, 0, 0, 128) }]),

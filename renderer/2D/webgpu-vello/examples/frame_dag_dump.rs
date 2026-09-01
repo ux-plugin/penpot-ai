@@ -45,7 +45,7 @@ fn to_mermaid(dag: &FrameDag) -> String {
 /// dispatch), left-to-right so rounds read as columns. Each round names the barrier that opened it —
 /// a reload or a materialize — so the composite-spine fold is visible against the naive depth.
 fn to_mermaid_scheduled(dag: &FrameDag) -> String {
-    let sched = dag.schedule(TILE_PX);
+    let sched = dag.schedule(TILE_PX, u64::MAX);
     let max = sched.round.iter().copied().max().unwrap_or(0);
     let mut s = String::from("graph LR\n");
     s.push_str(CLASSDEFS);
@@ -95,7 +95,7 @@ fn main() {
 
     let dag = frame_dag::build_frame_dag_installed();
     let naive = dag.levels().iter().copied().max().unwrap_or(0) + 1;
-    let sched = dag.schedule(TILE_PX);
+    let sched = dag.schedule(TILE_PX, u64::MAX);
     let rounds = sched.rounds();
     let specs = dag.to_stage_specs();
     let colours = render_core::vello::plan::colour_stages(&specs);
@@ -123,46 +123,6 @@ fn main() {
             r = sched.round[i],
             label = n.label,
         );
-    }
-
-    // The CLEAN emitter's output: for each effect shape, `bake_effect`'s arms — the descriptors the
-    // executor runs, straight from the DAG (no legacy planner). round_off/eid/bits are structural, so
-    // they need no device fill; the sigma/colour slots would be filled per frame.
-    let names = |b: u32| {
-        use render_core::vello::bake::bits as B;
-        [
-            (B::WARP, "WARP"), (B::SCATTER, "SCATTER"), (B::BLUR, "BLUR"), (B::SHADE, "SHADE"),
-            (B::MASKMIX, "MASKMIX"), (B::TINT, "TINT"), (B::CLIP, "CLIP"), (B::ERASE, "ERASE"),
-            (B::SPREAD, "SPREAD"), (B::MATERIALIZE, "MATERIALIZE"), (B::SRGB, "SRGB"),
-            (B::SHADOW_EDGE, "SHADOW_EDGE"), (B::SCRATCH_COV, "SCRATCH_COV"), (B::FLOOD_ERASE, "FLOOD_ERASE"),
-        ]
-        .iter()
-        .filter(|(bit, _)| b & bit != 0)
-        .map(|(_, n)| *n)
-        .collect::<Vec<_>>()
-        .join("|")
-    };
-    let mut gids: Vec<u128> = dag
-        .nodes
-        .iter()
-        .filter_map(|n| match n.source {
-            frame_dag::Source::Effect { shape, .. } => Some(shape),
-            _ => None,
-        })
-        .collect();
-    gids.sort_unstable();
-    gids.dedup();
-    eprintln!("\n  bake_effect — the clean emitter's arms (what the executor runs), per shape:");
-    for gid in gids {
-        match dag.bake_effect(gid, TILE_PX) {
-            Some(arms) => {
-                eprintln!("    shape {:04x}: {} arm(s)", (gid & 0xffff) as u16, arms.len());
-                for (k, a) in arms.iter().enumerate() {
-                    eprintln!("      arm {k}: round_off={} eid={} bits={:<5} {}", a.round_off, a.eid, a.bits(), names(a.bits()));
-                }
-            }
-            None => eprintln!("    shape {:04x}: bake_effect = None  (a case not yet covered → legacy fallback)", (gid & 0xffff) as u16),
-        }
     }
 
     println!("%% ===== RAW DAG ({scene}) =====");

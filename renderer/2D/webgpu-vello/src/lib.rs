@@ -805,7 +805,7 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         });
     }
 
-    fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, effect_id: u32, seg_after: u32, round: u32, p2: u32, reach: [f32; 4]) {
+    fn draw_effect_marker(&mut self, scene: &mut ClassicCtx, transform: Affine, id: u128, effect_id: u32, seg_after: u32, round: u32, p2: u32, reach: [f32; 4], atomic_ctl: u32) {
         let r = Rect::new(
             f64::from(reach[0]).max(0.0),
             f64::from(reach[1]).max(0.0),
@@ -815,7 +815,7 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         if r.x1 <= r.x0 || r.y1 <= r.y0 {
             return;
         }
-        let params = [f32::from_bits(seg_after), f32::from_bits(round), f32::from_bits(p2), 0.0];
+        let params = [f32::from_bits(seg_after), f32::from_bits(round), f32::from_bits(p2), f32::from_bits(atomic_ctl)];
         // An INLINE effect (effects-in-fine) encodes the node's real silhouette as its shape, so
         // coarse emits that coverage into `area[i]` and fine confines the effect to it. A barrier
         // effect encodes the reach rect: it only needs to bin the z-boundary into its reach tiles.
@@ -978,6 +978,12 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             .phased_fine_segment_rw_into(session, device, queue, enc, seg_lo, seg_target, target)
             .expect("phased_fine_segment_rw_into");
         render_core::vello::prof::add_render(render_core::vello::prof::now() - _trd);
+    }
+
+    fn phase_scratch_origins(&mut self, scratch_out: [u32; 2], scratch_in: [u32; 2]) {
+        if let Some(session) = self.phased_session.as_mut() {
+            session.set_scratch_origins(scratch_out, scratch_in);
+        }
     }
 
     fn phased_finish(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder) {
@@ -1305,7 +1311,7 @@ mod tests {
     fn classic_device_runs_the_shared_effect_executor() {
         use render_core::effect_graph::background_blur_graph;
         use render_core::vello::blend::{Blit, Compositor};
-        use render_core::vello::glass::UnitPipeline;
+        use render_core::vello::units::UnitPipeline;
         use render_core::vello::graph::{lower_graph, run_graph};
 
         let instance = wgpu::Instance::default();

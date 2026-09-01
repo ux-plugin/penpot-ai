@@ -16,7 +16,6 @@
 use std::rc::Rc;
 
 use crate::effect_graph::{EffectPass, GraphPass, Src, UnitKind};
-use wgpu::util::DeviceExt;
 
 use crate::vello::blend::{Blit, BlurPass, Compositor};
 use crate::vello::units::{UnitPipeline, UnitOp};
@@ -30,21 +29,16 @@ use crate::vello::units::{UnitPipeline, UnitOp};
 pub(crate) const BLUR_MAX_SIGMA: f32 = 32.0;
 
 /// One full-screen pass, **lowered** for execution: render-core describes the effect as a neutral
-/// [`GraphPass`]; [`lower_graph`] turns each into this by resolving `Custom` to its compiled wgpu
-/// pipeline. The kind selects the pipeline and carries its uniform; `inputs` (render-core's [`Src`])
-/// binds the texture reads in the order that pipeline expects.
+/// [`GraphPass`]; [`lower_graph`] turns each into this. The units select the pipeline and carry its
+/// uniform; `inputs` (render-core's [`Src`]) binds the texture reads in the order that pipeline
+/// expects.
 #[derive(Clone)]
 pub struct Pass {
     /// The fused unit run this pass draws: a sampling head plus its pointwise tail, or a single
-    /// barrier unit (`Blur`/`Custom`). This is the whole pass — the old `PassKind` triplication
-    /// (Blur / Units / Custom) collapsed, since every one of them is just a run of [`UnitOp`]s.
+    /// `Blur` barrier.
     pub units: Vec<UnitOp>,
-    /// The field the units read; `None` for a barrier pass (a blur or custom measures no field).
+    /// The field the units read; `None` for a barrier pass (a blur measures no field).
     pub field: Option<Rc<crate::field::FieldProgram>>,
-    /// The resolved wgpu pipeline for a `[Custom]` pass. `None` for a non-custom pass, and also `None`
-    /// while a chain is lowered only to be INSPECTED (admission needs the shape, not a compiled
-    /// shader) — a custom pass reaching the executor with `None` here is a loud bug, not a silent drop.
-    pub custom: Option<Rc<wgpu::RenderPipeline>>,
     pub inputs: Vec<Src>,
     /// Render-scale fraction of the graph's surface this pass's target is allocated at (`1.0` =
     /// surface size); carried from [`crate::effect_graph::GraphPass::scale`]. Readers sample
@@ -56,10 +50,8 @@ pub struct Pass {
 /// ([`crate::footprint::execution_groups`]): a fused run of unit passes (a sampling head plus its
 /// pointwise tail) becomes ONE [`PassKind::Units`] draw; a blur or custom barrier stands alone. The
 /// grouping is the same rule the scale assigner used, so every group's members already share the
-/// group's render scale. [`EffectPass::Custom`]'s pipeline the IR does not carry: `custom` supplies
-/// the shape's compiled pipeline (the caller resolved + cached it from the shader source); a
-/// `Custom` pass with no pipeline provided is dropped with a warning rather than panicking mid-frame.
-pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>>) -> Vec<Pass> {
+/// group's render scale.
+pub fn lower_graph(graph: &[GraphPass]) -> Vec<Pass> {
     let mut out = Vec::with_capacity(graph.len());
     for group in crate::footprint::execution_groups(graph) {
         let Some(&head) = group.first() else { continue };
@@ -68,18 +60,10 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                 out.push(Pass {
                     units: vec![UnitOp::Blur { sigma: *sigma, linear: *linear, axis: Default::default(), edge: Default::default() }],
                     field: None,
-                    custom: None,
                     inputs: graph[head].inputs.clone(),
                     scale: graph[head].scale,
                 });
             }
-            EffectPass::Custom { u, param_vec4s, reach, reads_backdrop } => out.push(Pass {
-                units: vec![UnitOp::Custom { u: u.clone(), param_vec4s: *param_vec4s, reach: *reach, reads_backdrop: *reads_backdrop }],
-                field: None,
-                custom: custom.cloned(),
-                inputs: graph[head].inputs.clone(),
-                scale: graph[head].scale,
-            }),
             _ => {
                 let head_src = graph[head].inputs.first().copied();
                 let mut inputs: Vec<Src> = head_src.into_iter().collect();
@@ -120,8 +104,8 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                                 }
                             }
                         }
-                        EffectPass::Blur { .. } | EffectPass::Custom { .. } => {
-                            debug_assert!(false, "blur/custom can never share an execution group");
+                        EffectPass::Blur { .. } => {
+                            debug_assert!(false, "a blur can never share an execution group");
                         }
                     }
                 }
@@ -129,7 +113,6 @@ pub fn lower_graph(graph: &[GraphPass], custom: Option<&Rc<wgpu::RenderPipeline>
                 out.push(Pass {
                     units: ops,
                     field: Some(field),
-                    custom: None,
                     inputs,
                     scale: graph[*group.last().unwrap_or(&head)].scale,
                 });
@@ -188,9 +171,8 @@ pub fn run_graph_into(
 
 /// Execute ONE unit-based [`crate::vello::fx::Op`] into a fresh target — the single-instance core of
 /// the future per-backend executor (`draw_units`). Dispatches on the op's units exactly as
-/// [`run_graph_into`] dispatches on `PassKind`: a lone `Blur`/`Custom` barrier takes its dedicated
-/// path, any other run is one fused `unit_pipeline.units` draw. `custom_pipeline` resolves an
-/// `Op::Custom` (the backend's job in the full executor). Additive — not yet on the frame path; the
+/// [`run_graph_into`] dispatches on `PassKind`: a lone `Blur` barrier takes its dedicated path, any
+/// other run is one fused `unit_pipeline.units` draw. Additive — not yet on the frame path; the
 /// executor-swap slice wires it in and heatmap-verifies it against `pre-unit-collapse`.
 #[expect(clippy::too_many_arguments, reason = "the GPU context travels together")]
 #[allow(dead_code, reason = "wired + heatmap-verified in the executor-swap slice")]
@@ -201,7 +183,6 @@ pub fn run_op(
     device: &wgpu::Device,
     enc: &mut wgpu::CommandEncoder,
     inputs: &[&wgpu::TextureView],
-    custom_pipeline: Option<&Rc<wgpu::RenderPipeline>>,
     w: u32,
     h: u32,
     format: wgpu::TextureFormat,
@@ -209,7 +190,6 @@ pub fn run_op(
     keep_tex: &mut Vec<wgpu::Texture>,
     keep_views: &mut Vec<wgpu::TextureView>,
 ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
-    let sampler = compositor.sampler();
     let tex = pool.acquire_target(device, w, h, format, wgpu::TextureUsages::COPY_SRC, "op target");
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     match op.units.as_slice() {
@@ -217,11 +197,6 @@ pub fn run_op(
             gaussian_blur(
                 compositor, device, enc, &view, inputs[0], w, h, *sigma, *linear, format, pool, keep_tex, keep_views,
             );
-        }
-        [UnitOp::Custom { u, param_vec4s, .. }] => {
-            let pipeline = custom_pipeline?;
-            let owned: Vec<wgpu::TextureView> = inputs.iter().map(|v| (*v).clone()).collect();
-            custom_pass(device, enc, &view, pipeline, sampler, &owned, u, *param_vec4s);
         }
         ops => {
             unit_pipeline.units(device, enc, &view, inputs[0], inputs.get(1).copied(), ops, &op.field);
@@ -256,17 +231,6 @@ pub fn run_unit_chain(
             crate::effect_graph::pass_dim(w, pass.scale),
             crate::effect_graph::pass_dim(h, pass.scale),
         );
-        let custom_pl = pass.custom.clone();
-        let op = crate::vello::fx::Op {
-            units: pass.units.clone(),
-            field: pass.field.clone().unwrap_or_else(|| {
-                Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() })
-            }),
-            inputs: pass.inputs.clone(),
-            target: crate::vello::fx::Target::Transient,
-            instances: Vec::new(),
-            blend: false,
-        };
         let out = {
             let bound: Vec<&wgpu::TextureView> = pass
                 .inputs
@@ -276,10 +240,22 @@ pub fn run_unit_chain(
                     Src::Pass(i) => &outputs[i].1,
                 })
                 .collect();
-            run_op(
-                &op, compositor, unit_pipeline, device, enc, &bound, custom_pl.as_ref(), pw, ph, format,
-                pool, keep_tex, keep_views,
-            )?
+            {
+                let op = crate::vello::fx::Op {
+                    units: pass.units.clone(),
+                    field: pass.field.clone().unwrap_or_else(|| {
+                        Rc::new(crate::field::FieldProgram { nodes: Vec::new(), outputs: Vec::new() })
+                    }),
+                    inputs: pass.inputs.clone(),
+                    target: crate::vello::fx::Target::Transient,
+                    instances: Vec::new(),
+                    blend: false,
+                };
+                run_op(
+                    &op, compositor, unit_pipeline, device, enc, &bound, pw, ph, format,
+                    pool, keep_tex, keep_views,
+                )?
+            }
         };
         outputs.push(out);
     }
@@ -406,143 +382,6 @@ fn gaussian_blur(
     keep_views.push(bv);
 }
 
-/// Compile a custom WGSL module into a render pipeline over one fullscreen quad.
-///
-/// The bind-group layout is declared **explicitly** — binding 0 uniform, 1 sampler, and `n_inputs`
-/// textures at 2.. — rather than inferred from the shader (`layout: None`). Inference drops any slot
-/// the shader doesn't statically reference: a valid shader that never reads the resolution uniform
-/// would get a layout without binding 0, and [`custom_pass`] (which always binds 0/1/2) would then
-/// fail bind-group creation with "binding 0 not present" and render blank. Declaring the layout
-/// pins all the slots the code binds, so an unused uniform is harmless. The sink caches the result
-/// by (source hash, n_inputs), so this runs once per distinct (shader, input-count) pair.
-pub fn build_custom_pipeline(
-    device: &wgpu::Device,
-    wgsl: &str,
-    n_inputs: usize,
-    format: wgpu::TextureFormat,
-) -> Rc<wgpu::RenderPipeline> {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("custom effect"),
-        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-    });
-    let mut entries = vec![
-        wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: 1,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            count: None,
-        },
-    ];
-    for i in 0..n_inputs {
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: 2 + i as u32,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        });
-    }
-    let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("custom effect bind layout"),
-        entries: &entries,
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("custom effect pipeline layout"),
-        bind_group_layouts: &[Some(&bind_layout)],
-        immediate_size: 0,
-    });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("custom effect pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs"),
-            buffers: &[],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    });
-    Rc::new(pipeline)
-}
-
-/// Run a compiled custom pipeline over `inputs` (bound at 2..) with `u` (surface resolution + params),
-/// sharing the effect `sampler` at 1, into `target`. `u` is normalised to *exactly* `param_vec4s`
-/// vec4s — the size the shader declares in `array<vec4<f32>, N>` — by zero-filling a short `u` and
-/// truncating a long one. Because the bound buffer's size is always the shader's declared size, no
-/// param-count mismatch can ever reach wgpu: there is no "too few → validation error" and no
-/// "too many → ignored" to reason about. The effect's one declared number is honoured verbatim.
-fn custom_pass(
-    device: &wgpu::Device,
-    enc: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
-    pipeline: &wgpu::RenderPipeline,
-    sampler: &wgpu::Sampler,
-    inputs: &[wgpu::TextureView],
-    u: &[f32],
-    param_vec4s: u32,
-) {
-    let mut padded = u.to_vec();
-    padded.resize(param_vec4s as usize * 4, 0.0);
-    let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("custom params"),
-        contents: bytemuck::cast_slice(&padded),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let layout = pipeline.get_bind_group_layout(0);
-    let mut entries = vec![
-        wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-    ];
-    for (i, v) in inputs.iter().enumerate() {
-        entries.push(wgpu::BindGroupEntry { binding: 2 + i as u32, resource: wgpu::BindingResource::TextureView(v) });
-    }
-    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("custom bind"), layout: &layout, entries: &entries });
-    crate::vello::sink::note_passes_of(crate::vello::sink::pass_kind::GRAPH, 1);
-    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("custom pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
-            resolve_target: None,
-            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            depth_slice: None,
-        })],
-        depth_stencil_attachment: None,
-        occlusion_query_set: None,
-        timestamp_writes: None,
-        multiview_mask: None,
-    });
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, &bind, &[]);
-    pass.draw(0..4, 0..1);
-}
-
 /// A fresh render-attachment + sampled texture — an effect pass's output (or scratch) surface.
 ///
 /// The graph's own passes are render-pipeline blits/shaders, so `RENDER_ATTACHMENT | TEXTURE_BINDING`
@@ -578,30 +417,23 @@ pub fn new_target_with_usage(
 #[cfg(test)]
 mod bridge_tests {
     use super::lower_graph;
-    use crate::effect_graph::{background_blur_graph, custom_graph, drop_shadow_graph};
+    use crate::effect_graph::{background_blur_graph, drop_shadow_graph};
     use crate::vello::units::{fuse, UnitOp};
 
     /// A background blur lowers to one barrier pass whose unit chain is a single `Blur` — the new
     /// vocabulary reached from the existing, proven builder.
     #[test]
     fn a_blur_pass_is_a_blur_unit() {
-        let passes = lower_graph(&background_blur_graph(4.0), None);
+        let passes = lower_graph(&background_blur_graph(4.0));
         assert_eq!(passes.len(), 1);
         assert!(matches!(passes[0].units.as_slice(), [UnitOp::Blur { .. }]));
-    }
-
-    /// A custom pass is a single `Custom` unit.
-    #[test]
-    fn a_custom_pass_is_a_custom_unit() {
-        let passes = lower_graph(&custom_graph(vec![256.0, 256.0], 1, 0.0, true), None);
-        assert!(matches!(passes[0].units.as_slice(), [UnitOp::Custom { .. }]));
     }
 
     /// A blurred drop shadow lowers to a fused tint pass then a blur pass. Flattening the passes to
     /// their units and re-fusing recovers the two-op split — the pipeline is consistent end to end.
     #[test]
     fn a_drop_shadow_flattens_and_refuses_to_two_ops() {
-        let passes = lower_graph(&drop_shadow_graph(64.0, 64.0, [0.1, 0.2, 0.3, 0.8], 4.0), None);
+        let passes = lower_graph(&drop_shadow_graph(64.0, 64.0, [0.1, 0.2, 0.3, 0.8], 4.0));
         let flat: Vec<UnitOp> = passes.iter().flat_map(|p| p.units.clone()).collect();
         let runs = fuse(flat);
         assert_eq!(runs.len(), 2, "tint stamp | blur barrier");
