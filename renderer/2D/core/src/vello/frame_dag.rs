@@ -409,10 +409,11 @@ impl FrameDag {
                 Slot::Source => shape(Slot::Backdrop, Slot::Source, mat, false),
                 _ => None,
             },
-            // A body rasterize that carries its OWN mark (a unit-less replaced body): composite the
-            // co-located source over the accumulator.
+            // A body rasterize that carries its OWN mark — a unit-less replaced body (no inputs) or a
+            // plain stack body (spine-only inputs, all accumulator writers): composite the co-located
+            // source over the accumulator.
             UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
-                if n.inputs.is_empty() && !mat =>
+                if !mat && n.inputs.iter().all(|&j| self.nodes[j].writes_accumulator()) =>
             {
                 shape(Slot::Backdrop, Slot::Source, false, false)
             }

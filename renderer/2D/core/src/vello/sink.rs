@@ -22,7 +22,7 @@ use crate::atlas::{pack_grid, shelf_pack};
 use crate::model::TileMode;
 use crate::peniko::color::palette::css::TRANSPARENT;
 use crate::peniko::Color;
-use crate::effect::{Compose, Source};
+use crate::effect::Source;
 use crate::schedule::{
     first_write_paints, GatherPlan, LayerPaint, PaintOp, Schedule, Step, SurfaceRef, SurfaceRole,
 };
@@ -73,68 +73,6 @@ fn wv_device_box(page: crate::kurbo::Rect, full_view: Affine, width: u32, height
     (bw > 0 && bh > 0).then_some((bx, by, bw, bh))
 }
 
-
-/// Lower ONE effect to the chain a cell of `kind` runs — the whole reason a cell can carry its
-/// effect at all.
-///
-/// This asks the effect what its ops are. The version this replaces asked the CELL KIND
-/// (`0 → drop_shadow_graph`, `2 → tint_graph`, else `background_blur_graph`), which meant the chain
-/// was a reconstruction: faithful for the three shapes it enumerated and structurally blind to
-/// everything else, so a body carrying a custom shader lowered to a bare blur and the batch admitted
-/// it — stamping the shape with the user's shader silently missing.
-///
-/// `sigma` is the device sigma already scaled by the cell's `k`. Order is the builders' order, not
-/// the ops' order: a shadow tints before it blurs (the two commute — a blur is linear and a tint is a
-/// constant multiply — and the builders' order is the one the per-shape path renders).
-fn wv_cell_graph(e: &crate::effect::Effect, kind: u8, kw: u32, kh: u32, sigma: f32) -> Vec<crate::effect_graph::GraphPass> {
-    use crate::effect::Op;
-    use crate::effect_graph::{unit_pass, EffectPass, GraphPass, Src, UnitKind};
-    let (kwf, khf) = (kw as f32, kh as f32);
-    let tint = e.ops.iter().find_map(|op| match op {
-        Op::Tint(c) => Some(c.components),
-        _ => None,
-    });
-    // A coverage silhouette coloured by a `Tint` unit — the shadow's colour over its own alpha.
-    let coloured = |col: [f32; 4]| GraphPass::new(unit_pass(UnitKind::Tint, kwf, khf, col), vec![Src::Input(0)]);
-    match kind {
-        // A drop shadow is its colour over its coverage, then blurred.
-        0 => tint
-            .map(|col| {
-                let mut g = vec![coloured(col)];
-                if sigma > 0.5 {
-                    g.push(GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Pass(0)]));
-                }
-                g
-            })
-            .unwrap_or_default(),
-        // The inner shadow's FLOOD is never blurred — only its punch (kind 3) is — so the flood
-        // carries the colour and nothing else. The erase that pairs them is the combine stage.
-        2 => tint.map(|col| vec![coloured(col)]).unwrap_or_default(),
-        // The punch: the same silhouette, blurred by the erase's own radius.
-        3 => {
-            if sigma > 0.0 {
-                vec![GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Input(0)])]
-            } else {
-                Vec::new()
-            }
-        }
-        // A body runs its texture warp and then its blur — the chain `wv_composite_body` executes,
-        // now visible before it executes.
-        _ => {
-            let mut passes: Vec<GraphPass> = Vec::new();
-            for op in &e.ops {
-                if let Op::NoiseWarp { magnitude, grain, clip } = *op {
-                    passes = crate::effect_graph::texture_graph(kwf, khf, magnitude, grain, clip);
-                }
-            }
-            if sigma > 0.0 {
-                let src = passes.len().checked_sub(1).map_or(Src::Input(0), Src::Pass);
-                passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![src]));
-            }
-            passes
-        }
-    }
-}
 
 /// Whether the instanced stages can express `graph`. The implemented stage set today is exactly
 /// `{Blur}` at native scale, one node deep, inside the separable cap — everything else keeps the
@@ -287,13 +225,6 @@ fn wv_clamp_reach(r: [f32; 4], width: u32, height: u32) -> [f32; 4] {
 }
 
 
-fn blur_acceptable_downscale(device_sigma: f32) -> f32 {
-    if device_sigma <= f32::EPSILON {
-        return 1.0;
-    }
-    (2.0 / device_sigma).clamp(0.5, 1.0)
-}
-
 /// Distinct custom-shader render pipelines kept before the cache is dropped. Keyed by WGSL source
 /// hash, so live-editing a shader (a new source every keystroke) would otherwise grow this without
 /// bound. A pipeline recompiles cheaply on the next use, so clearing when full is a fine cap.
@@ -332,76 +263,15 @@ impl PoolKey {
     }
 }
 
-/// The device-space geometry shared by every whole-viewport cell, whatever its effect: the device
-/// box it covers, the render scale `k` it is rasterized at, the device blur sigma, and whether the
-/// stamp Catmull-Rom-upscales it (`k < 1`). One bundle so the geometry helpers, the mask transform
-/// and the packer can operate on a cell without knowing whether it is a spread or a gather. The box
-/// is `f32` (integer-valued device pixels) so the reduced-render and atlas math stay one numeric type
-/// across both cell kinds — the shared vocabulary the single planner is built on.
-#[derive(Clone, Copy)]
-struct CellGeom {
-    /// Device box `(x, y, w, h)` in device pixels.
-    dev: (f32, f32, f32, f32),
-    /// Render scale: the cell is rasterized at `dev` size × `k`, and the stamp upscales when `k < 1`.
-    k: f32,
-    /// Device blur sigma of the cell's governing blur (`0` = none).
-    sigma: f32,
-    /// `k < 1` → the composite Catmull-Rom-upscales the reduced cell instead of a plain copy.
-    sharp: bool,
-}
-
-impl CellGeom {
-    fn bx(&self) -> f32 { self.dev.0 }
-    fn by(&self) -> f32 { self.dev.1 }
-    fn bw(&self) -> f32 { self.dev.2 }
-    fn bh(&self) -> f32 { self.dev.3 }
-}
-
-
-/// Effect-node kinds the whole-viewport driver dispatches on. `FX_GATHER` is a pure gather (its body
-/// stays in the shared walk); `FX_STACK` carries a non-box shadow, a layer blur or a spread shader, so
-/// its body is excluded from the walk and its whole ordered stack runs at the boundary.
+/// Effect-node kinds the whole-viewport driver dispatches on. `FX_GATHER` is a pure gather; a
+/// `FX_STACK` node carries a non-box shadow or a replaced body, so it is excluded from the shared
+/// walk and its whole ordered stack — drops, backdrop, body, inners — rides fine as unit marks.
 const FX_GATHER: u8 = 0;
 const FX_STACK: u8 = 1;
 
 /// Vello's fine-rasterization tile, in device pixels. Regions that must not influence one another
 /// have to be tile-disjoint, because `fine` resolves a whole tile at a time.
 const TILE_PX: u32 = 16;
-
-/// One whole-viewport effect surface, resolved to geometry — the SINGLE cell type both the spread
-/// planner ([`Sink::wv_effect_cells`] → [`wv_batch_plan`]) and the gather planner
-/// ([`Sink::wv_lens_plan`]) emit, and both executors ([`Sink::wv_paint_stack`] and
-/// [`Sink::wv_lens_round`]) consume. It carries the union of what a spread stamp and a batched gather
-/// need; a given cell fills only its kind's fields (a spread leaves the gather rects empty and vice
-/// versa). The fields group as: identity + schedule, shared geometry + chain, then the
-/// per-kind placement and compositing metadata.
-#[derive(Clone)]
-struct Cell {
-    /// `(node, kind, index)`. Kind is `0` drop silhouette, `1` body, `2` inner flood, `3` inner
-    /// punch for a spread (the index disambiguates siblings).
-    key: (u128, u8, usize),
-    /// Device box, render scale `k`, device sigma. (`geom.sharp` is always `false` for a spread: a
-    /// stamp never Catmull-Rom-upscales.)
-    geom: CellGeom,
-    /// This cell's effect, LOWERED once to runnable [`Pass`]es — the shared units-IR chain the
-    /// per-shape executor (`wv_effect_blit`) consumes.
-    passes: std::rc::Rc<Vec<Pass>>,
-    /// Reduced surface size (its atlas slot is assigned by an external [`crate::atlas::Packing`]
-    /// keyed on `key`).
-    kw: u32,
-    kh: u32,
-    /// How this cell's source pixels are obtained (see [`CellSource`]).
-    source: CellSource,
-}
-
-/// The one irreducible spread axis: how a cell's source pixels are obtained. This is NOT derivable
-/// from the effect chain, which is why it is a field.
-#[derive(Clone)]
-enum CellSource {
-    /// Spread: rasterise the shape's silhouette into the cell and run the chain over it. `offset` is
-    /// the device translation the chain applies (a filter graph's `Offset`); `(0, 0)` for most.
-    Silhouette { offset: (f32, f32) },
-}
 
 /// Per-key free list buckets are capped so a burst of one-off sizes can't grow the pool without bound.
 const MAX_POOL_PER_KEY: usize = 32;
@@ -414,9 +284,7 @@ const MAX_POOL_PER_KEY: usize = 32;
 const MAX_POOL_BYTES: u64 = 512 * 1024 * 1024;
 
 /// A free-list of reusable GPU textures keyed by [`PoolKey`]. Fed at frame boundaries (drained before
-/// this frame renders), on tile eviction/replacement, AND — for the whole-viewport effect path — at
-/// each effect-node boundary MID-frame (see [`Sink::recycle_node_transient`]), so a node's scratch is
-/// reused by the next node instead of every node's intermediates staying resident until the one submit.
+/// this frame renders) and on tile eviction/replacement.
 /// Handing a texture back out as a fresh render target needs no extra synchronisation: a target is
 /// always fully overwritten (its render pass clears or the effect graph writes every texel), and wgpu's
 /// automatic hazard tracking serialises the write-after-read against any still-pending prior use —
@@ -570,20 +438,10 @@ pub struct Sink {
     /// the accumulate scratch): held here until the next frame drains them into [`Self::pool`], so
     /// their in-flight GPU work has flushed before they are reused.
     frame_transient: Vec<wgpu::Texture>,
-    /// Effect-graph scratch VIEWS that must outlive the frame's single submit (their textures ride in
-    /// `frame_transient`). Only used by the folded whole-viewport gather path, where `run_graph_into`
-    /// records into the frame encoder instead of self-submitting. Dropped (cleared) each frame.
+    /// Frame-scratch VIEWS that must outlive the frame's single submit (their textures ride in
+    /// `frame_transient`): the co-located silhouette/body sources the round loop binds. Dropped
+    /// (cleared) each frame.
     frame_transient_views: Vec<wgpu::TextureView>,
-
-    /// Whole-viewport effect surfaces materialised from the strip by [`Self::wv_atlas_copy_out`]
-    /// (only for shapes the batch cannot express), keyed by
-    /// `(node, kind, index)` — kind `0` a drop-shadow silhouette, `1` the node's isolated body.
-    ///
-    /// Every one of these used to be its own `backend.rasterize`, i.e. its own full vello front-end
-    /// (~13 dispatches) for a handful of geometry. The prepass draws them all into ONE shelf-packed
-    /// atlas with a single front-end and copies each cell out, so the per-surface cost collapses to a
-    /// texture copy. Rebuilt every frame; drained into `frame_transient` when the frame ends.
-    wv_atlas: HashMap<(u128, u8, usize), (wgpu::Texture, wgpu::TextureView)>,
 
     /// DEBUG: an atlas captured this frame (view, w, h) to blit over the swapchain so the batched
     /// gather's intermediates can be inspected. Selected by `abi::debug_atlas()`.
@@ -646,7 +504,6 @@ impl Sink {
             pool: TexturePool::default(),
             frame_transient: Vec::new(),
             frame_transient_views: Vec::new(),
-            wv_atlas: HashMap::new(),
             dbg_atlas: None,
             gpu_timer: None,
             gpu_timer_tried: false,
@@ -1070,21 +927,7 @@ impl Sink {
             p.begin();
         }
         let _tenc = crate::vello::prof::now();
-        // The stack-effect sources ride in a strip below the viewport inside ONE enlarged
-        // accumulator, so the whole frame — document plus every source surface — is a single tile
-        // grid and therefore a single front-end run. They are encoded FIRST, ahead of every
-        // CMD_EFFECT marker, which puts their (marker-free) tiles in the first fine window and
-        // excludes them from all later ones. `None` = the strip did not fit or is disabled, and the
-        // separate prepass render below fills the sources instead.
-        let strip = self.wv_strip_plan(&gathers, device, full_view, width, height);
-        // The strip starts on a TILE boundary, not directly under the viewport. `fine` works a tile
-        // at a time, so a viewport whose height is not a multiple of the tile size leaves its last
-        // tile row straddling the boundary — the first strip cell would then share tiles with the
-        // frame's bottom rows, and a cell drawn with `Copy` reaches them. Rounding up costs at most
-        // one tile row of texture and makes the two regions tile-disjoint by construction.
-        let strip_y = strip.as_ref().map_or(height, |_| height.next_multiple_of(TILE_PX));
-        let strip_h = strip.as_ref().map_or(0, |(p, _)| p.height);
-        let acc_h = strip_y + strip_h;
+        let acc_h = height;
         let acc_sz = (width as f32, acc_h as f32);
         let mut scene = backend.new_scene(width as u16, acc_h as u16);
 
@@ -1521,7 +1364,7 @@ impl Sink {
                             .inputs
                             .iter()
                             .any(|j| arm_style.get(j).copied().unwrap_or(false));
-                        let (mut desc, src, ctl, masked, band) = if i == anchor {
+                        let (desc, src, ctl, masked, band) = if i == anchor {
                             match op(i) {
                                 UnitOp::Blur { .. } if body_rooted => {
                                     let p = Policy { value_over: true, edge_coverage: true, ..Policy::default() };
@@ -1567,7 +1410,7 @@ impl Sink {
                                 ..Policy::default()
                             };
                             let run = walk_back(i);
-                            let mut d = if run.len() == 1 {
+                            let d = if run.len() == 1 {
                                 bake_unit(op(i), p)
                             } else {
                                 let ops: Vec<crate::vello::units::UnitOp> =
@@ -1654,38 +1497,97 @@ impl Sink {
                 }
             }
         }
+        // A mark that COMPOSES the accumulator when it runs — not an inner band (over the body) and
+        // not a materialize into draft scratch. These are the marks the body must land after: drops
+        // (under → before the body in z), a glass/backdrop composite, a backdrop tint. Punch/blur
+        // materializes never touch the accumulator, so they impose no ordering on the body.
+        let composes_acc = |m: &UnitMark| {
+            !m.band
+                && !matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
+                && !dag.binding_shape(m.node).is_some_and(|s| s.to_draft)
+        };
+        // A plain stack body rides fine like everything else: one bare VALUE_OVER mark on its
+        // `Source::Body` DAG node (the sil collector co-locates the render, the dispatch composites
+        // it over the accumulator). A stack whose Replace chain already emitted a VALUE_OVER mark
+        // has its body in fine; a body-less stack (no paint) has nothing to composite. The body
+        // lands after the last accumulator-composing pre-body mark; with none (an inner-only
+        // stack), before every mark.
+        {
+            use crate::vello::bake::bits;
+            use crate::vello::frame_dag::Source as DagSource;
+            for &(_, gid, kind) in &gathers {
+                if kind != FX_STACK {
+                    continue;
+                }
+                if marks.get(&gid).is_some_and(|ms| {
+                    ms.iter().any(|m| (m.desc[0] as u32) & bits::VALUE_OVER != 0)
+                }) {
+                    continue;
+                }
+                let Some(body_idx) = dag
+                    .nodes
+                    .iter()
+                    .position(|n| n.source == DagSource::Body(gid))
+                else {
+                    continue;
+                };
+                let ms = marks.entry(gid).or_default();
+                let pre = ms.iter().filter(|m| composes_acc(m)).map(|m| m.round).max();
+                let round = pre.or_else(|| ms.iter().map(|m| m.round).min()).unwrap_or(0);
+                let key_round = pre.map_or_else(|| i64::from(round) - 1, i64::from);
+                let mut desc = [0.0f32; 26];
+                desc[0] = bits::VALUE_OVER as f32;
+                let mut rec = [[0.0f32; 4]; 4];
+                rec[0][0] = 2.0;
+                let pos = ms.iter().position(|m| i64::from(m.round) > key_round).unwrap_or(ms.len());
+                ms.insert(pos, UnitMark {
+                    node: body_idx,
+                    round,
+                    desc,
+                    rec,
+                    ctl: 0,
+                    masked: false,
+                    band: false,
+                    off: 0,
+                });
+            }
+        }
+        for &(_, gid, kind) in &gathers {
+            assert!(
+                kind == FX_STACK || marks.contains_key(&gid),
+                "gid {gid:x}: every gather chain lowers to unit marks — a gather with none is a planner bug"
+            );
+        }
         // Dense renumbering: scheduler order → executor rounds, gap-free from 1 (the window walk stalls
-        // on an empty round). A stack's BODY takes its own key between its pre-body marks and its bands.
-        let mut round_keys: std::collections::BTreeSet<(u32, u8)> = std::collections::BTreeSet::new();
+        // on an empty round). Keys order as (round, class): a stack's BODY mark (class 1) takes its own
+        // key AFTER the last accumulator-composing pre-body mark and BEFORE its bands; a body with no
+        // such mark (an inner-only stack) keys one raw round early, ahead of every mark. Everything
+        // else is class 0 at its raw round.
+        let body_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
+            if ms.iter().any(&composes_acc) {
+                (i64::from(m.round), 1)
+            } else {
+                (i64::from(m.round) - 1, 1)
+            }
+        };
+        let is_body = |m: &UnitMark| {
+            matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
+        };
+        let mark_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
+            if is_body(m) { body_key(m, ms) } else { (i64::from(m.round), 0) }
+        };
+        let mut round_keys: std::collections::BTreeSet<(i64, u8)> = std::collections::BTreeSet::new();
         for ms in marks.values() {
             for m in ms {
-                round_keys.insert((m.round, 0));
+                round_keys.insert(mark_key(m, ms));
             }
         }
-        // Stacks whose replaced body rides fine (a LAYER composite mark): the painter neither
-        // composites their body nor takes a body round of its own.
-        let replace_fine: HashSet<u128> = marks
-            .iter()
-            .filter(|(_, ms)| {
-                ms.iter().any(|m| (m.desc[0] as u32) & crate::vello::bake::bits::VALUE_OVER != 0)
-            })
-            .map(|(&g, _)| g)
-            .collect();
-        let mut body_raw: HashMap<u128, (u32, u8)> = HashMap::new();
-        for &(_, gid, kind) in &gathers {
-            if kind != FX_STACK || replace_fine.contains(&gid) {
-                continue;
-            }
-            let Some(ms) = marks.get(&gid) else { continue };
-            let Some(pre) = ms.iter().filter(|m| !m.band).map(|m| m.round).max() else { continue };
-            body_raw.insert(gid, (pre, 1));
-            round_keys.insert((pre, 1));
-        }
-        let exec: HashMap<(u32, u8), u32> =
+        let exec: HashMap<(i64, u8), u32> =
             round_keys.iter().enumerate().map(|(k, &key)| (key, k as u32 + 1)).collect();
         for ms in marks.values_mut() {
-            for m in ms {
-                m.round = exec[&(m.round, 0)];
+            let keys: Vec<(i64, u8)> = ms.iter().map(|m| mark_key(m, ms)).collect();
+            for (m, key) in ms.iter_mut().zip(keys) {
+                m.round = exec[&key];
             }
         }
         let rounds: Vec<u32> = gathers
@@ -1695,13 +1597,6 @@ impl Sink {
                     .get(&gid)
                     .and_then(|ms| ms.iter().map(|m| m.round).min())
                     .unwrap_or(1)
-            })
-            .collect();
-        let stack_reload_sub: HashMap<u128, u32> = body_raw
-            .iter()
-            .filter_map(|(&gid, key)| {
-                let base = marks.get(&gid)?.iter().map(|m| m.round).min()?;
-                Some((gid, exec[key] - base))
             })
             .collect();
         #[cfg(not(target_arch = "wasm32"))]
@@ -1719,8 +1614,7 @@ impl Sink {
         let mut max_round = 0u32;
         for (j, &(_, gid, _)) in gathers.iter().enumerate() {
             let hi = marks.get(&gid).and_then(|ms| ms.iter().map(|m| m.round).max()).unwrap_or(rounds[j]);
-            let body = stack_reload_sub.get(&gid).map_or(0, |s| rounds[j] + s);
-            max_round = max_round.max(hi).max(body);
+            max_round = max_round.max(hi);
         }
         // Reach-crop background-blur drafts into ONE packed atlas, reused across rounds (temporally
         // disjoint intervals). Each blur's device→lease origin is baked into its H (u[1].xy, the store)
@@ -1843,9 +1737,6 @@ impl Sink {
             backend.draw_scene_range(&mut scene, root, cursor, usize::MAX);
             (b, mb, z)
         };
-        if let Some((packing, cells)) = strip.as_ref() {
-            self.wv_strip_encode(backend, &mut scene, packing, cells, root, strip_y);
-        }
         let total_draws = backend.draw_object_count(&scene);
         crate::vello::prof::dbg_add(30, crate::vello::prof::now() - _tenc);
 
@@ -1891,9 +1782,6 @@ impl Sink {
             v
         });
 
-        for (_, (tex, _)) in std::mem::take(&mut self.wv_atlas) {
-            self.pool.release(tex);
-        }
         if passes_recorded().wrapping_sub(flush_mark) >= WV_PASS_FLUSH_BUDGET {
             Self::submit_batch(&mut enc, device, queue, backend);
             flush_mark = passes_recorded();
@@ -1990,6 +1878,13 @@ impl Sink {
                 let sv = sil.create_view(&wgpu::TextureViewDescriptor::default());
                 let mut sscene = backend.new_scene(width as u16, acc_h as u16);
                 for &s in group {
+                    // A plain stack body (its own bare mark): render the shape at its device place.
+                    if let DagSource::Body(shape) = dag.nodes[s].source {
+                        if let Some(&gi) = root_index.get(&shape) {
+                            backend.draw_scene_range(&mut sscene, root, gi, gi + 1);
+                        }
+                        continue;
+                    }
                     let DagSource::Effect { shape, slot } = dag.nodes[s].source else { continue };
                     if let UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset }) =
                         dag.nodes[s].op
@@ -2073,19 +1968,20 @@ impl Sink {
         let draws_after = |j: usize| -> u32 {
             total_draws.saturating_sub(boundaries[j]).saturating_sub(n_markers - markers_before[j])
         };
-        // Every executor round that carries work: a unit mark, a gather's base window, or a stack body.
+        // Every executor round that carries work: a unit mark, or a gather's base window.
         let active_rounds: std::collections::HashSet<u32> = marks
             .values()
             .flatten()
             .map(|m| m.round)
-            .chain(gathers.iter().enumerate().flat_map(|(j, &(_, gid, _))| {
-                let body = stack_reload_sub.get(&gid).map(|s| rounds[j] + s);
-                std::iter::once(rounds[j]).chain(body)
-            }))
+            .chain(gathers.iter().enumerate().map(|(j, _)| rounds[j]))
             .collect();
         let window_has_draws = |lo: u32, hi: u32| -> bool {
             if lo == 0 {
-                return real_draws > 0;
+                // The base window must open (seeding the accumulator and advancing the window
+                // cursor) whenever ANY later round carries a mark — a scene whose only content is
+                // stack shapes has zero base draws, but skipping [0, 1) would leave the cursor at 0
+                // and starve every mark window behind the base-only special case.
+                return real_draws > 0 || !active_rounds.is_empty();
             }
             let hit = |r: u32| r >= lo && (hi == crate::vello::rasterize::SEG_ALL || r < hi);
             (0..gathers.len()).any(|j| hit(rounds[j]) && draws_after(j) > 0)
@@ -2093,8 +1989,6 @@ impl Sink {
         };
         let mut window_lo = 0u32;
         let mut cur: Option<usize> = None;
-        let mut strip_filled = false;
-        let (tex_cp, view_cp) = (self.frame_transient.len(), self.frame_transient_views.len());
         let seed_clear = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
             let bg = crate::vello::abi::background().components;
             Compositor::clear(enc, view,
@@ -2105,6 +1999,8 @@ impl Sink {
             let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
             if window_has_draws(window_lo, hi) {
                 note_passes(2);
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} cur={cur:?}", round_nodes.get(&window_lo)); }
                 if let Some(unit_nodes) = round_nodes.get(&window_lo) {
                     // Shape-driven dispatch: the round's binding shape — not a winner node's op —
                     // decides the pass: what fills fine's three slots and which permutation reads slot
@@ -2277,40 +2173,9 @@ impl Sink {
                 seed_clear(&mut enc, &views[0]);
                 cur = Some(0);
             }
-            let ci = cur.expect("accumulator seeded");
-            // The first window is the one that rasterized the strip (its tiles carry no marker, so
-            // they belong to no later window). Materialise every cell NOW, in one contiguous run of
-            // copies — issued back-to-back they cost ~3 ms where per-consumer copies cost ~45 ms.
-            if let Some((packing, cells)) = strip.as_ref().filter(|_| !strip_filled) {
-                self.wv_atlas_copy_out(device, &mut enc, &texs[ci], packing, cells, 0, strip_y, format, None);
-                strip_filled = true;
-            }
-            for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
-                // A stack spans its body sub too: R (first marks) through R+reload (body). Its effects
-                // ride fine, so the whole stack runs per-shape here.
-                let extra = stack_reload_sub.get(&gid).copied().unwrap_or(0);
-                if r < rounds[j] || r > rounds[j] + extra {
-                    continue;
-                }
-                let sub = r - rounds[j];
-                #[cfg(not(target_arch = "wasm32"))]
-                if std::env::var("WV_TRACE").is_ok() {
-                    eprintln!("wv trace: round={r} j={j} gi={gi} kind={kind} transient={}", self.frame_transient.len());
-                }
-                if passes_recorded().wrapping_sub(flush_mark) >= WV_PASS_FLUSH_BUDGET {
-                    Self::submit_batch(&mut enc, device, queue, backend);
-                    flush_mark = passes_recorded();
-                }
-                match kind {
-                    FX_STACK => self.wv_paint_stack(backend, device, queue, &mut enc, &views[ci], root, full_view, gid, gi, width, height, format, acc_sz, sub, stack_reload_sub.get(&gid).copied(), replace_fine.contains(&gid)),
-                    _ if sub > 0 => {}
-                    // An inline effect ran in fine at its CMD_EFFECT marker(s); no post-fine pass.
-                    _ if marks.contains_key(&gid) => {}
-                    _ => unreachable!(
-                        "gid {gid:x}: every effect chain lowers to unit marks or an inline descriptor — a gather with neither is a planner bug"
-                    ),
-                }
-                self.recycle_node_transient(tex_cp, view_cp);
+            if passes_recorded().wrapping_sub(flush_mark) >= WV_PASS_FLUSH_BUDGET {
+                Self::submit_batch(&mut enc, device, queue, backend);
+                flush_mark = passes_recorded();
             }
         }
         let final_slot = match cur {
@@ -2320,6 +2185,21 @@ impl Sink {
                 0
             }
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(v) = std::env::var("WV_DUMP_SCRATCH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .and_then(|n| node_scratch.get(&n))
+        {
+            Compositor::clear(&mut enc, &views[final_slot], [0.0, 0.0, 0.0, 0.0], None);
+            self.compositor.blit(device, &mut enc, &views[final_slot], acc_sz, &Blit {
+                src: v,
+                dst: (0.0, 0.0, acc_sz.0, acc_sz.1),
+                src_rect: (0.0, 0.0, acc_sz.0, acc_sz.1),
+                src_size: acc_sz,
+                alpha: 1.0,
+            });
+        }
         // The blur drafts lived across the whole round loop (like the batch atlases); hand them to the
         // frame-transient list so they return to the pool after the frame, not at a per-node recycle.
         self.frame_transient.extend(draft_texs);
@@ -2329,46 +2209,7 @@ impl Sink {
         if let Some(p) = self.pass_prof.as_mut() {
             p.stamp(&mut enc, &views[final_slot], crate::vello::graph::prof_bucket::OTHER);
         }
-        // With a strip below it the accumulator is taller than the frame, and presenting from it
-        // would sample across the boundary: a viewport-sized target gives the present blit
-        // clamp-to-edge on its last row, and a taller one silently replaces that clamp with the
-        // strip. Lift the viewport into a target of exactly its own size first — a copy, not a
-        // sample, so the pixels are untouched and the present sees precisely what it always saw.
-        #[cfg(not(target_arch = "wasm32"))]
-        let dbg_strip = std::env::var("WV_DEBUG_STRIP").is_ok();
-        #[cfg(target_arch = "wasm32")]
-        let dbg_strip = false;
-        let present_tex = (strip.is_some() && !dbg_strip).then(|| {
-            let t = self.pool.acquire_target(
-                device, width, height, format,
-                self.raster_usage | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-                "wv present",
-            );
-            enc.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texs[final_slot],
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &t,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            );
-            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
-            (t, v)
-        });
-        let (present_view, present_sz) =
-            present_tex.as_ref().map_or((&views[final_slot], acc_sz), |(_, v)| (v, sz));
-        self.present_final(&mut enc, device, &sw_view, present_view, width, height, format, sz, present_sz, full_view);
-        if let Some((t, v)) = present_tex {
-            self.frame_transient.push(t);
-            self.frame_transient_views.push(v);
-        }
+        self.present_final(&mut enc, device, &sw_view, &views[final_slot], width, height, format, sz, acc_sz, full_view);
         if let Some(p) = self.pass_prof.as_mut() {
             p.stamp(&mut enc, &sw_view, crate::vello::graph::prof_bucket::SWAP_BLIT);
         }
@@ -2408,28 +2249,6 @@ impl Sink {
         }
         for t in texs {
             self.frame_transient.push(t);
-        }
-    }
-
-    /// Release every frame-transient texture (and its view) acquired since the `tex_cp`/`view_cp`
-    /// checkpoint back into the pool. Called at each whole-viewport effect-node boundary, once the
-    /// node's result is already composited into the accumulator so all of its scratch is dead.
-    ///
-    /// Without this, the frame keeps EVERY node's intermediates resident until the single submit — a
-    /// node fully loaded with effects allocates ~19 full-viewport textures, so peak memory is Σ(nodes)
-    /// (~7 GB at 4K × 12 heavy nodes, which spills GPU memory). With it, the next node REUSES the same
-    /// GPU textures via the pool free-list, so peak is `accumulator + one node`.
-    ///
-    /// Safe because the node's last read of each scratch texture is already RECORDED (the composite
-    /// into the accumulator) before the next node re-acquires and writes it: wgpu's hazard tracking —
-    /// in-encoder for the collapsed path, cross-submit on the same queue for the per-segment path —
-    /// serialises the write-after-read on the recycled texture. The pool holds the handle between
-    /// release and re-acquire, so the resource is never dropped while commands still reference it.
-    fn recycle_node_transient(&mut self, tex_cp: usize, view_cp: usize) {
-        crate::vello::prof::note_node_scratch(self.frame_transient.len().saturating_sub(tex_cp));
-        self.frame_transient_views.truncate(view_cp);
-        for tex in self.frame_transient.drain(tex_cp..) {
-            self.pool.release(tex);
         }
     }
 
@@ -2485,24 +2304,10 @@ impl Sink {
         acc_sz: (f32, f32),
         full_view: Affine,
     ) {
-        // DEBUG (native): present the WHOLE accumulator, source strip included, squeezed into the
-        // viewport — the only way to actually look at the surfaces the effects consume rather than
-        // infer their contents from the frame they produce.
-        #[cfg(not(target_arch = "wasm32"))]
-        let show_all = std::env::var("WV_DEBUG_STRIP").ok();
-        #[cfg(target_arch = "wasm32")]
-        let show_all: Option<String> = None;
-        // `all` squeezes the entire accumulator into the frame; a number presents the accumulator
-        // from that y at 1:1, which is how the source cells get inspected at their real size.
-        let src_rect = match show_all.as_deref() {
-            Some("all") => (0.0, 0.0, acc_sz.0, acc_sz.1),
-            Some(v) if v.parse::<f32>().is_ok() => (0.0, v.parse::<f32>().unwrap(), sz.0, sz.1),
-            _ => (0.0, 0.0, sz.0, sz.1),
-        };
         let viewport = Blit {
             src: final_view,
             dst: (0.0, 0.0, sz.0, sz.1),
-            src_rect,
+            src_rect: (0.0, 0.0, sz.0, sz.1),
             src_size: acc_sz,
             alpha: 1.0,
         };
@@ -2518,9 +2323,6 @@ impl Sink {
         }
     }
 
-    /// The device box and render scale one scoped lens reads and writes — the same derivation
-    /// [`Self::wv_stamp_gather_scoped`] does, factored out so the batch planner and the per-shape
-    /// path can never disagree about a lens's geometry.
     /// The lens shape's outline as DEVICE-space line segments for the SDF bake — `Some` only for a path
     /// (a non-box shape whose glass must follow the real outline, not the analytic rounded box). The
     /// outline is `full_view · modifier · local`, exactly the device transform the shape is drawn under,
@@ -2578,119 +2380,79 @@ impl Sink {
         Some((bx, by, bw, bh, k))
     }
 
-    /// `3` inner punch, because that is what the consuming helpers look up.
-    fn wv_effect_cells(&self, id: u128, full_view: Affine, width: u32, height: u32) -> Vec<Cell> {
-        let Some((base, stack)) = crate::vello::abi::with_scene(|live, _, modifiers| {
-            let node = live.get(id)?;
-            let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
-            Some((crate::schedule::page_bounds(node, m), crate::effect::effect_stack(node)))
-        }) else {
-            return Vec::new();
-        };
-        let c = full_view.as_coeffs();
-        let view_scale = (c[0] * c[0] + c[1] * c[1]).sqrt() as f32;
-        let (mut drop_i, mut inner_i) = (0usize, 0usize);
-        let mut out = Vec::new();
-        let mut has_body = false;
-        for effect in &stack {
-            if effect.reads_backdrop() {
-                continue;
-            }
-            let kinds: &[u8] = match (&effect.source, effect.compose) {
-                (Source::Coverage { .. }, Compose::Under) => &[0],
-                (Source::Coverage { .. }, Compose::Over) => &[2, 3],
-                (Source::Body, _) => &[1],
-                _ => continue,
-            };
-            let Some((bx, by, bw, bh)) = wv_device_box(effect.footprint(base), full_view, width, height) else {
-                continue;
-            };
-            // ONLY the body carries its chain's translation here. A shadow's silhouette is
-            // rasterized already offset (`build_shadow_silhouette` takes `apply_offset`), so adding
-            // it again would move every drop shadow twice — measured as a 10% frame diff before this
-            // guard existed.
-            let dev_offset = if !matches!(effect.source, Source::Body) {
-                (0.0, 0.0)
-            } else {
-                effect.ops.iter().fold((0.0_f32, 0.0_f32), |(x, y), op| match op {
-                    crate::effect::Op::Offset(o) => {
-                        let c = full_view.as_coeffs();
-                        (x + (c[0] * o.x + c[2] * o.y) as f32, y + (c[1] * o.x + c[3] * o.y) as f32)
-                    }
-                    _ => (x, y),
-                })
-            };
-            let device_sigma = effect
-                .governing_blur()
-                .map(|r| crate::blur::radius_to_sigma(r) * view_scale)
-                .filter(|s| *s >= 0.5);
-            let k = match device_sigma {
-                Some(sigma) => (tiling::resolution_cap(full_view, 3.0 * f64::from(sigma / view_scale))
-                    .min(f64::from(blur_acceptable_downscale(sigma)))) as f32,
-                None => tiling::resolution_cap(full_view, 0.0) as f32,
-            };
-            let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
-            let index = match kinds[0] {
-                0 => drop_i,
-                2 => inner_i,
-                _ => 0,
-            };
-            let sigma = device_sigma.unwrap_or(0.0);
-            for &kind in kinds {
-                let graph = wv_cell_graph(effect, kind, kw, kh, sigma * k);
-                out.push(Cell {
-                    key: (id, kind, index),
-                    geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma, sharp: false },
-                    passes: std::rc::Rc::new(lower_graph(&graph)),
-                    kw, kh,
-                    source: CellSource::Silhouette { offset: dev_offset },
-                });
-            }
-            match kinds[0] {
-                0 => drop_i += 1,
-                2 => inner_i += 1,
-                _ => has_body = true,
-            }
-        }
-        if !has_body {
-            if let Some((bx, by, bw, bh)) = wv_device_box(base, full_view, width, height) {
-                let k = tiling::resolution_cap(full_view, 0.0) as f32;
-                let (kw, kh) = (((bw as f32 * k).round() as u32).max(1), ((bh as f32 * k).round() as u32).max(1));
-                out.push(Cell {
-                    key: (id, 1, 0),
-                    geom: CellGeom { dev: (bx as f32, by as f32, bw as f32, bh as f32), k, sigma: 0.0, sharp: false },
-                    passes: std::rc::Rc::new(Vec::new()),
-                    kw, kh,
-                    source: CellSource::Silhouette { offset: (0.0, 0.0) },
-                });
-            }
-        }
-        out
-    }
-
     /// The device-space box an effect node's whole-viewport stamp (and its blur neighbourhood) can
     /// touch — the region whose tiles need this node's `CMD_EFFECT` boundary marker. A stack node's
-    /// stamps composite at its effect cells' boxes; a gather stamps inside its lens bbox expanded by
-    /// the blur reach (lens adds refraction slack — same margins as `wv_stamp_gather_scoped`); a
-    /// custom backdrop shader may sample and stamp anywhere, so it keeps the full viewport, as do all
-    /// gathers when `wvScope` is off (the unscoped stamp blits the whole viewport). Padded a tile so
-    /// partially-covered edge tiles are included.
+    /// marks composite inside the union of its effects' device footprints (plus the body's own box);
+    /// a gather stamps inside its lens bbox expanded by the blur reach (lens adds refraction slack);
+    /// a custom backdrop shader may sample and stamp anywhere, so it keeps the full viewport, as do
+    /// all gathers when `wvScope` is off (the unscoped stamp blits the whole viewport). Padded a tile
+    /// so partially-covered edge tiles are included.
+    /// Feed the drag-resolution probe (`wv_scale_probe`) while a stack shape is being dragged: its
+    /// body's device box and render width. Bodies render at device scale on the marks path, so the
+    /// probe's scale slot reports a constant 1.0.
+    fn wv_drag_probe(id: u128, bx: u32, by: u32, bw: u32, bh: u32) {
+        let dragged = crate::vello::abi::with_scene(|_, _, modifiers| {
+            modifiers.get(&id).is_some_and(|m| *m != Affine::IDENTITY)
+        });
+        if dragged {
+            crate::vello::prof::dbg_set(16, f64::from(bx));
+            crate::vello::prof::dbg_set(17, f64::from(by));
+            crate::vello::prof::dbg_set(18, f64::from(bw));
+            crate::vello::prof::dbg_set(19, f64::from(bh));
+            crate::vello::prof::dbg_set(23, f64::from(bw));
+            crate::vello::prof::dbg_set(29, 1000.0);
+        }
+    }
+
     fn wv_marker_reach(&self, id: u128, kind: u8, full_view: Affine, width: u32, height: u32) -> [f32; 4] {
         let full = [0.0, 0.0, width as f32, height as f32];
         const NONE: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
         const PAD: f32 = 16.0;
         if kind == FX_STACK {
-            let cells = self.wv_effect_cells(id, full_view, width, height);
-            if cells.is_empty() {
+            let Some((base, stack)) = crate::vello::abi::with_scene(|live, _, modifiers| {
+                let node = live.get(id)?;
+                let m = modifiers.get(&id).copied().unwrap_or(Affine::IDENTITY);
+                Some((crate::schedule::page_bounds(node, m), crate::effect::effect_stack(node)))
+            }) else {
                 return NONE;
-            }
+            };
             let (mut x0, mut y0, mut x1, mut y1) =
                 (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-            for c in &cells {
-                x0 = x0.min(c.geom.bx());
-                y0 = y0.min(c.geom.by());
-                x1 = x1.max(c.geom.bx() + c.geom.bw());
-                y1 = y1.max(c.geom.by() + c.geom.bh());
+            let mut any = false;
+            let mut has_body = false;
+            let mut union = |bx: u32, by: u32, bw: u32, bh: u32| {
+                x0 = x0.min(bx as f32);
+                y0 = y0.min(by as f32);
+                x1 = x1.max((bx + bw) as f32);
+                y1 = y1.max((by + bh) as f32);
+            };
+            for effect in &stack {
+                if effect.reads_backdrop()
+                    || !matches!(effect.source, Source::Coverage { .. } | Source::Body)
+                {
+                    continue;
+                }
+                let Some((bx, by, bw, bh)) =
+                    wv_device_box(effect.footprint(base), full_view, width, height)
+                else {
+                    continue;
+                };
+                union(bx, by, bw, bh);
+                any = true;
+                if matches!(effect.source, Source::Body) {
+                    has_body = true;
+                    Self::wv_drag_probe(id, bx, by, bw, bh);
+                }
+            }
+            if !has_body {
+                if let Some((bx, by, bw, bh)) = wv_device_box(base, full_view, width, height) {
+                    union(bx, by, bw, bh);
+                    any = true;
+                    Self::wv_drag_probe(id, bx, by, bw, bh);
+                }
+            }
+            if !any {
+                return NONE;
             }
             return [x0 - PAD, y0 - PAD, x1 + PAD, y1 + PAD];
         }
@@ -2734,452 +2496,6 @@ impl Sink {
             return full;
         }
         [minx as f32 - PAD, miny as f32 - PAD, maxx as f32 + PAD, maxy as f32 + PAD]
-    }
-
-    /// Rasterize EVERY effect surface in the frame in one go.
-    ///
-    /// Each surface is a cell of one shelf-packed atlas, drawn by a single scene and so a single vello
-    /// front-end, then copied out into its own pooled texture. That replaces one full front-end per
-    /// surface (~13 dispatches each) with one for the whole frame plus N cheap texture copies. Cells are
-    /// sized to their own device extent and separated by `GAP`, so neither geometry nor a blur kernel
-    /// can reach a neighbouring cell — the same containment `atlas_effects` relies on.
-    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
-    /// Plan every stack-effect source surface this frame needs and shelf-pack them into one atlas
-    /// rectangle: the shared half of the two fill strategies — the separate prepass render
-    /// and the in-scene strip ([`Self::wv_strip_encode`]). Pure apart
-    /// from reading the live model, so the caller may run it before the main scene is built (the
-    /// strip needs each cell's packed origin at encode time).
-    ///
-    /// `target_w` is the shelf-wrap width; gathers are skipped (they crop the accumulator and have no
-    /// source render), cells larger than `max_dim` are dropped, and fewer than two surviving cells
-    /// returns `None` — one cell would cost the same render either way and only add a pack and a copy.
-    fn wv_atlas_plan(
-        &self,
-        gathers: &[(usize, u128, u8)],
-        full_view: Affine,
-        width: u32,
-        height: u32,
-        target_w: u32,
-        align: u32,
-        max_dim: u32,
-    ) -> Option<(crate::atlas::Packing, Vec<(Cell, usize)>)> {
-        const GAP: u32 = 4;
-        let mut cells: Vec<(Cell, usize)> = Vec::new();
-        for &(gi, gid, kind) in gathers {
-            if kind != FX_STACK {
-                continue;
-            }
-            for c in self.wv_effect_cells(gid, full_view, width, height) {
-                cells.push((c, gi));
-            }
-        }
-        cells.retain(|(c, _)| c.kw <= max_dim && c.kh <= max_dim);
-        if cells.len() < 2 {
-            return None;
-        }
-        let sizes: Vec<(u32, u32)> = cells
-            .iter()
-            .map(|(c, _)| (c.kw.next_multiple_of(align), c.kh.next_multiple_of(align)))
-            .collect();
-        // A5: the batch's blur clamps every tap to the instance's own rect, so no gap at all is
-        // required for correctness. `GAP` is the slack that keeps a sampler grazing half a texel past
-        // a cell in transparent black rather than in its neighbour's ink — and an aligned packing
-        // already has that slack inside the alignment.
-        let gap = if align > 1 { 0 } else { GAP };
-        let packing = crate::vello::plan::pack_groups(&sizes, gap, target_w, max_dim)?;
-        Some((packing, cells))
-    }
-
-    /// The page→cell transform for one packed source surface: place the cell's device-space box at
-    /// `(ox + cell.x, oy + cell.y)`, at the surface's render scale `k`. Shared by both fill
-    /// strategies so a cell lands on the same texels whichever one runs.
-    ///
-    /// The cell's own translation (a spread's [`CellSource::Silhouette`] offset, a filter graph's
-    /// `Offset`) is applied
-    /// here rather than at the stamp, because the cell's box already moved with it — its footprint
-    /// walks the same ops — so rendering at the unmoved position and stamping at the moved box would
-    /// cancel exactly, which is what made a filter offset a silent no-op. Zero for every chain
-    /// without one, so every other cell is byte-identical.
-    fn wv_cell_transform(c: &Cell, place: &crate::atlas::Placement, ox: u32, oy: u32, root: Affine) -> Affine {
-        let (dox, doy) = match &c.source {
-            CellSource::Silhouette { offset } => *offset,
-        };
-        Affine::translate((f64::from(ox + place.x), f64::from(oy + place.y)))
-            * Affine::scale(f64::from(c.geom.k))
-            * Affine::translate((
-                f64::from(dox) - f64::from(c.geom.bx()),
-                f64::from(doy) - f64::from(c.geom.by()),
-            ))
-            * root
-    }
-
-    /// Split a packed source atlas at `(ox, oy)` in `src` into the standalone per-cell textures the
-    /// effect stages look up by key.
-    #[expect(clippy::too_many_arguments, reason = "GPU context plus the packing travel together")]
-    fn wv_atlas_copy_out(
-        &mut self,
-        device: &wgpu::Device,
-        enc: &mut wgpu::CommandEncoder,
-        src: &wgpu::Texture,
-        packing: &crate::atlas::Packing,
-        cells: &[(Cell, usize)],
-        ox: u32,
-        oy: u32,
-        format: wgpu::TextureFormat,
-        skip: Option<&HashSet<(u128, u8, usize)>>,
-    ) {
-        for place in &packing.cells {
-            let (c, _) = &cells[place.index];
-            // Per CELL, not per shape: a partially batched stack still needs its declined cells
-            // materialised for the per-shape painter.
-            if skip.is_some_and(|set| set.contains(&c.key)) {
-                continue;
-            }
-            let tex = self.pool.acquire_target(
-                device, c.kw, c.kh, format,
-                self.raster_usage | wgpu::TextureUsages::COPY_DST,
-                "wv atlas cell",
-            );
-            enc.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: src,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: ox + place.x, y: oy + place.y, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d { width: c.kw, height: c.kh, depth_or_array_layers: 1 },
-            );
-            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            self.wv_atlas.insert(c.key, (tex, view));
-        }
-    }
-
-    /// Plan the in-scene source **strip**: pack every stack-effect source below the viewport inside
-    /// one enlarged accumulator, so the frame keeps a single tile grid and one front-end run. `None`
-    /// when nothing needs a source, a cell is wider than the viewport, or the combined height would
-    /// exceed the device's max texture dimension — those shapes then rasterize their sources on
-    /// demand through the per-shape consumers' atlas-miss fallbacks.
-    fn wv_strip_plan(
-        &self,
-        gathers: &[(usize, u128, u8)],
-        device: &wgpu::Device,
-        full_view: Affine,
-        width: u32,
-        height: u32,
-    ) -> Option<(crate::atlas::Packing, Vec<(Cell, usize)>)> {
-        if !crate::vello::abi::wv_atlas() {
-            return None;
-        }
-        let max_dim = device.limits().max_texture_dimension_2d;
-        let (packing, cells) = self.wv_atlas_plan(gathers, full_view, width, height, width, TILE_PX, max_dim)?;
-        if packing.width > width || height.checked_add(packing.height)? > max_dim {
-            return None;
-        }
-        Some((packing, cells))
-    }
-
-    /// Encode every planned source surface into the MAIN scene, at its packed place in the strip
-    /// below the viewport. Encoded LAST, after every other draw: the document is drawn unclipped, so
-    /// whatever falls below the viewport's bottom edge lands in these very tiles, and drawing the
-    /// cells afterwards is what lets `Copy` erase it. The strip's tiles carry no `CMD_EFFECT` marker
-    /// — [`wv_clamp_reach`] keeps every marker inside the frame — so their whole command list runs in
-    /// the first fine window, complete before any effect reads it.
-    ///
-    /// Each cell is wrapped in a `Compose::Copy` layer clipped to its own rectangle, which makes the
-    /// cell's pixels REPLACE whatever the accumulator holds there rather than composite over it. That
-    /// buys both properties a source surface needs and the shared accumulator cannot otherwise give:
-    /// the transparent ground an effect requires (`fine` clears the whole target to the page colour,
-    /// which would otherwise smear the page into every blurred shadow), and isolation from the
-    /// document content underneath.
-    ///
-    /// The clip is snapped OUT to whole tiles. A clip that ends inside a tile drops that tile from
-    /// the layer entirely — the cell then loses every pixel past the last tile boundary it fully
-    /// covers, which is where the source's blurred tail lives. Snapping out is only safe because the
-    /// packing is tile-aligned and tile-padded, so no two cells ever share a tile and one cell's
-    /// snapped-out clip can never erase its neighbour.
-    fn wv_strip_encode<B: RasterBackend>(
-        &self,
-        backend: &mut B,
-        scene: &mut B::Scene,
-        packing: &crate::atlas::Packing,
-        cells: &[(Cell, usize)],
-        root: Affine,
-        strip_y: u32,
-    ) {
-        let replace = peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Copy);
-        for place in &packing.cells {
-            let (c, root_index) = &cells[place.index];
-            let m = Self::wv_cell_transform(c, place, 0, strip_y, root);
-            #[cfg(not(target_arch = "wasm32"))]
-            if std::env::var("WV_TRACE_CELLS").is_ok() {
-                eprintln!("strip key={:?} place=({},{}) k={}x{} b=({},{},{},{}) scale={} sigma={}",
-                    c.key, place.x, strip_y + place.y, c.kw, c.kh, c.geom.bx(), c.geom.by(), c.geom.bw(), c.geom.bh(), c.geom.k, c.geom.sigma);
-            }
-            let rect = Rect::new(
-                f64::from(place.x),
-                f64::from(strip_y + place.y),
-                f64::from((place.x + c.kw).next_multiple_of(TILE_PX)),
-                f64::from((strip_y + place.y + c.kh).next_multiple_of(TILE_PX)),
-            );
-            scene.set_transform(Affine::IDENTITY);
-            scene.push_layer(Some(&rect.to_path(0.1)), Some(replace), None, None, None);
-            Self::wv_cell_source_into(backend, scene, c, m, *root_index);
-            scene.pop_layer();
-        }
-    }
-
-    /// Draw one cell's SOURCE into `scene` at `m` — the silhouette a shadow cell rasterises, or the
-    /// shape itself for a body cell. The one place that knows what a cell of each kind is made of.
-    ///
-    /// It was four places: the strip prepass and the three per-shape painters each spelled the same
-    /// match out, and each was a place `build_shadow_silhouette`'s three booleans could be flipped
-    /// independently of the others.
-    fn wv_cell_source_into<B: RasterBackend>(backend: &mut B, scene: &mut B::Scene, c: &Cell, m: Affine, root_index: usize) {
-        match c.key.1 {
-            0 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, false, true, false),
-            2 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, false, false),
-            3 => backend.build_shadow_silhouette(scene, m, c.key.0, c.key.2, true, true, false),
-            _ => backend.draw_scene_range(scene, m, root_index, root_index + 1),
-        }
-    }
-
-    /// This cell's source as a texture: the one the strip prepass already packed if it is there, and
-    /// a freshly rasterised one otherwise. Both halves of the fallback lived three times over, once
-    /// per painter, each with its own label and its own copy of the crop.
-    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
-    fn wv_cell_source<B: RasterBackend>(
-        &mut self,
-        c: &Cell,
-        backend: &mut B,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        root: Affine,
-        root_index: usize,
-        format: wgpu::TextureFormat,
-    ) -> wgpu::TextureView {
-        if let Some(v) = self.wv_atlas.get(&c.key).map(|(_, v)| v.clone()) {
-            return v;
-        }
-        // A body chain may translate its result; its cell box moved with it, so the render has to
-        // move by the same device vector or the two cancel out. Zero for every cell without one.
-        let (odx, ody) = match &c.source {
-            CellSource::Silhouette { offset } => (f64::from(offset.0), f64::from(offset.1)),
-        };
-        let m = Affine::scale(f64::from(c.geom.k))
-            * Affine::translate((odx - f64::from(c.geom.bx()), ody - f64::from(c.geom.by())))
-            * root;
-        let tex = self.pool.acquire_target(device, c.kw, c.kh, format, self.raster_usage, "wv cell source");
-        let v = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut scene = backend.new_scene(c.kw as u16, c.kh as u16);
-        Self::wv_cell_source_into(backend, &mut scene, c, m, root_index);
-        backend.rasterize(&scene, device, queue, enc, &v, c.kw, c.kh, TRANSPARENT);
-        self.frame_transient.push(tex);
-        self.frame_transient_views.push(v.clone());
-        v
-    }
-
-    /// Run one lowered chain over the whole-viewport accumulator's world: the sink's pool, its
-    /// frame-transient lists and its profiler, bound once here so the three WV callers do not each
-    /// thread twelve arguments through [`run_graph_into`] by hand.
-    ///
-    /// This is the WHOLE-VIEWPORT executor. It is deliberately a method beside `run_graph_into`
-    /// rather than a change to it: the tiled and WebGL paths call `run_graph_into` directly and must
-    /// not move, so the two share the per-op dispatch inside `run_graph_into` while the WV path owns
-    /// its own binding of the sink's state. A custom shader is just a unit whose pipeline is
-    /// user-authored — the dispatch does not special-case it, and neither does this.
-    fn wv_run_chain(
-        &mut self,
-        device: &wgpu::Device,
-        enc: &mut wgpu::CommandEncoder,
-        inputs: &[&wgpu::TextureView],
-        passes: &[Pass],
-        w: u32,
-        h: u32,
-        format: wgpu::TextureFormat,
-    ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
-        // The WV path runs entirely on the unit-based executor now: every chain — multi-op, reduced
-        // scale, custom — goes through `run_unit_chain`, which dispatches on each pass's UNITS. Verified
-        // byte-identical against `pre-unit-collapse` on the fixtures. `run_graph_into` remains only for
-        // the tiled/WebGL callers until they move too.
-        crate::vello::graph::run_unit_chain(
-            &self.compositor, &self.unit_pipeline, device, enc, inputs, passes, w, h, format,
-            &mut self.pool, &mut self.frame_transient, &mut self.frame_transient_views,
-        )
-    }
-
-    /// Run `passes` over `inputs` at the cell's own size and stamp the result at the cell's box —
-    /// the tail every per-shape painter ends with. An empty chain stamps the source unchanged, which
-    /// is what a cell whose effect is the identity means.
-    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
-    fn wv_effect_blit(
-        &mut self,
-        c: &Cell,
-        inputs: &[&wgpu::TextureView],
-        passes: &[Pass],
-        device: &wgpu::Device,
-        enc: &mut wgpu::CommandEncoder,
-        acc_view: &wgpu::TextureView,
-        format: wgpu::TextureFormat,
-        sz: (f32, f32),
-    ) {
-        let (kwf, khf) = (c.kw as f32, c.kh as f32);
-        let out = self.wv_run_chain(device, enc, inputs, passes, c.kw, c.kh, format);
-        let src = out.as_ref().map_or(inputs[0], |(_, v)| v);
-        self.compositor.blit(device, enc, acc_view, sz, &Blit {
-            src,
-            dst: (c.geom.bx(), c.geom.by(), c.geom.bw(), c.geom.bh()),
-            src_rect: (0.0, 0.0, kwf, khf),
-            src_size: (kwf, khf),
-            alpha: 1.0,
-        });
-        if let Some((tex, view)) = out {
-            self.frame_transient.push(tex);
-            self.frame_transient_views.push(view);
-        }
-    }
-
-    /// Run a stack node's WHOLE ordered effect stack over the whole-viewport accumulator, at the node's
-    /// z. Its body is excluded from the shared walk, so this composites the full stack in the same order
-    /// the tiled path does — **drops (under) → gather lens → body[+spread shaders +layer blur] (over) →
-    /// inner shadows (over)** — which is what lets several effects on ONE shape (and several of the same
-    /// kind) combine correctly. Each sub-effect reuses the same building block the single-effect path did.
-    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
-    fn wv_paint_stack<B: RasterBackend>(
-        &mut self,
-        backend: &mut B,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        acc_view: &wgpu::TextureView,
-        root: Affine,
-        full_view: Affine,
-        id: u128,
-        root_index: usize,
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-        sz: (f32, f32),
-        sub: u32,
-        reload_sub: Option<u32>,
-        body_rides_fine: bool,
-    ) {
-        let stack = crate::vello::abi::with_scene(|live, _, _| {
-            live.get(id).map(crate::effect::effect_stack).unwrap_or_default()
-        });
-        let cells = self.wv_effect_cells(id, full_view, width, height);
-        let dragged = crate::vello::abi::with_scene(|_, _, modifiers| {
-            modifiers.get(&id).is_some_and(|m| *m != Affine::IDENTITY)
-        });
-        if dragged {
-            if let Some(c) = cells.iter().find(|c| c.key.1 == 1) {
-                crate::vello::prof::dbg_set(16, f64::from(c.geom.bx()));
-                crate::vello::prof::dbg_set(17, f64::from(c.geom.by()));
-                crate::vello::prof::dbg_set(18, f64::from(c.geom.bw()));
-                crate::vello::prof::dbg_set(19, f64::from(c.geom.bh()));
-                crate::vello::prof::dbg_set(23, f64::from(c.kw));
-                crate::vello::prof::dbg_set(29, f64::from(c.geom.k) * 1000.0);
-            }
-        }
-        // When the backdrop rides fine (`reload_sub` = Some), the stack FRACTURES across rounds and
-        // `sub` is the z-PHASE relative to the fine glass marker(s): the layers BEFORE the backdrop
-        // paint at sub 0, the layers AFTER it (the body) at sub == reload_sub (1 for a sharp glass
-        // marker, 5 for the frosted chain's tail), with the glass reloading the materialised backdrop
-        // on the rounds between. Without a fine backdrop the whole stack paints in one round (sub 0).
-        // A stack whose replaced body rides fine has NO painter layers left at all — its backdrop
-        // marks ride fine like everything else, even though `reload_sub` (a body-copy round) is
-        // absent for it.
-        let fine_backdrop = reload_sub.is_some() || body_rides_fine;
-        let body_sub = reload_sub.unwrap_or(0);
-        let body = || {
-            if body_rides_fine {
-                return None;
-            }
-            cells
-                .iter()
-                .find(|c| c.key.1 == 1 && c.key.2 == 0)
-                .cloned()
-                .filter(|_| fine_backdrop || sub == 0)
-        };
-
-        let mut body_done = false;
-        // z-phase relative to the fine glass marker(s): 0 before them (drops paint at sub 0), 1 after
-        // (body/inner paint at sub == body_sub). With no fine backdrop `here` is always true, so the whole
-        // stack paints in one round.
-        let mut phase = 0u32;
-        let here_at = |phase: u32| !fine_backdrop || sub == if phase == 0 { 0 } else { body_sub };
-        for effect in &stack {
-            let here = here_at(phase);
-            match (&effect.source, effect.compose) {
-                (Source::Coverage { .. }, Compose::Under) => {
-                    // Drops ride fine. Their marker is the fracture point (its own round, one before
-                    // the body), so — like a glass backdrop — everything after it is phase 1 and
-                    // composites at `body_sub`. Without a Backdrop effect nothing else would advance
-                    // the phase, so the body would wrongly paint in the drop's round and land under it.
-                    phase = 1;
-                }
-                (Source::Backdrop, _) => {
-                    // The backdrop rides fine at the reload round; everything after it is phase 1.
-                    phase = 1;
-                }
-                (Source::Body, _) => {
-                    if here {
-                        if let Some(c) = body() {
-                            self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
-                        }
-                    }
-                    body_done = true;
-                }
-                (Source::Coverage { .. }, Compose::Over) => {
-                    // Inners ride fine (the InnerBand marker, over the body); only the body composite
-                    // is the painter's, and only before the first inner.
-                    if !body_done {
-                        if here {
-                            if let Some(c) = body() {
-                                self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
-                            }
-                        }
-                        body_done = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if !body_done && here_at(phase) {
-            if let Some(c) = body() {
-                self.wv_composite_body(c, backend, device, queue, enc, acc_view, root, root_index, format, sz);
-            }
-        }
-    }
-
-    /// Render a stack node's subtree isolated, run its body-only custom (spread) shaders and its layer
-    /// blur over it in order, then SrcOver-composite the result onto the accumulator. The front-end-once
-    /// analogue of the tiled `build_bodies` → `custom_over_body` → `layer_blur_over_body` chain. Each
-    /// transform threads the running body texture through `run_graph_into` into the frame encoder;
-    /// intermediates go to the frame keepalive. Full-viewport; extent-crop is a later opt.
-    #[expect(clippy::too_many_arguments, reason = "GPU context threaded through the sink")]
-    fn wv_composite_body<B: RasterBackend>(
-        &mut self,
-        cell: Cell,
-        backend: &mut B,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        enc: &mut wgpu::CommandEncoder,
-        acc_view: &wgpu::TextureView,
-        root: Affine,
-        root_index: usize,
-        format: wgpu::TextureFormat,
-        sz: (f32, f32),
-    ) {
-        let src = self.wv_cell_source(&cell, backend, device, queue, enc, root, root_index, format);
-        let passes = cell.passes.clone();
-        self.wv_effect_blit(&cell, &[&src], &passes, device, enc, acc_view, format, sz);
     }
 
     /// the handled step indices; empty (falls through to the per-paint path) below the batch threshold

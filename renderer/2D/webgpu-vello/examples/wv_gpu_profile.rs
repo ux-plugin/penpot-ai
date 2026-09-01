@@ -89,7 +89,6 @@ fn main() {
         render_core::vello::abi::set_prof_passes(1);
     }
     if std::env::var("WV_ATLAS").as_deref() == Ok("0") {
-        render_core::vello::abi::set_wv_atlas(0);
         println!("effect-surface atlas: OFF (per-node front-ends)");
     }
     println!("scene: {n} shapes, effect every {every} ({cells} effect cells), {w}x{h}\n");

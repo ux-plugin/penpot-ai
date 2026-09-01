@@ -479,6 +479,7 @@ pub(crate) fn lens_field_program() -> crate::field::FieldProgram {
 /// rounded box. `centre`/`half` still describe the bake's box, so every operator downstream — the ramp,
 /// the refraction, the specular, the mask — follows the shape without a single change; `decode` reuses
 /// the corner-radius slot (a sampled lens has no corner) to map the stored value back to device pixels.
+#[cfg(test)]
 pub(crate) fn lens_field_program_sampled() -> crate::field::FieldProgram {
     use crate::field::{FieldSource, Slot, Slot2};
     lens_field_program_with(FieldSource::Sampled {

@@ -204,6 +204,7 @@ pub fn inner_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<G
     passes
 }
 
+#[cfg(test)]
 pub(crate) fn tint_unit(w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
     unit_pass(UnitKind::Tint, w, h, colour)
 }
@@ -212,6 +213,7 @@ pub(crate) fn tint_unit(w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
 /// (`fieldU(gi, 3u)` = u[12..16] — none of which the scale solver multiplies, because a colour is
 /// not a length). Shadows measure no field, so the program is empty and `computeField` degenerates to
 /// full coverage.
+#[cfg(test)]
 pub(crate) fn unit_pass(op: UnitKind, w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
     let mut u = vec![0.0_f32; 24];
     u[0] = w;

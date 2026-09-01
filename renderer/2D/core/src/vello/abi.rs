@@ -889,9 +889,6 @@ thread_local! {
     /// full-viewport effect for A/B.
     static WV_SCOPE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 
-    /// Whole-viewport atlas prepass gate — see [`set_wv_atlas`]. Default on.
-    static WV_ATLAS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
-
 
 
     /// Per-pass GPU profiling: stamp a timestamp boundary between each effect-graph pass (glass
@@ -952,19 +949,6 @@ pub fn prof_passes() -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn set_wv_scope(on: u32) {
     WV_SCOPE.with(|c| c.set(on != 0));
-}
-
-/// Whole-viewport effect-surface atlas prepass gate. Default ON (one shared front-end for every
-/// effect surface). `set_wv_atlas(0)` forces the per-node fallback front-ends — the A/B lever for
-/// isolating atlas-specific rendering bugs (browser-only artifact hunts).
-#[unsafe(no_mangle)]
-pub extern "C" fn set_wv_atlas(on: u32) {
-    WV_ATLAS.with(|c| c.set(on != 0));
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub fn wv_atlas() -> bool {
-    WV_ATLAS.with(std::cell::Cell::get)
 }
 
 
