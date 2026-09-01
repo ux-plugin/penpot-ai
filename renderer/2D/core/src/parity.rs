@@ -1825,7 +1825,7 @@ pub fn build_backdrop_tint_grid_scene(n: usize) -> (Scene, Vec<(usize, &'static 
         let y = (gy + 0.5) * pitch_y - lh * 0.5;
         let mut node = Node::new(b.id(), ShapeKind::Circle);
         node.bounds = Rect::new(x, y, x + lw, y + lh);
-        node.background_tint = Some(col(60, 90, 230));
+        node.background_tint = Some(cola(60, 90, 230, 150));
         b.root(node);
     }
     b.finish()
