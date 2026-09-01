@@ -470,12 +470,6 @@ pub struct Sink {
     /// canvas; a frame whose view matches it has settled, so the real render runs and re-sharpens.
     last_view: Option<Affine>,
 
-    /// The whole-viewport gathers list (effect roots, z-indexed) cached across frames: it is a pure
-    /// function of the scene, so it stays valid while [`crate::host::scene_epoch`] is unchanged —
-    /// which covers idle, pan, zoom and modifier-driven drags, exactly the frames where recomputing
-    /// it (a full-scene hash-lookup sweep, ~7ms at 20k shapes on wasm) was pure waste.
-    wv_gathers_cache: Option<(u64, Vec<(usize, u128, u8)>, usize)>,
-
     /// A reusable `TILE_BUFFER²` scratch for the non-`SrcOver` `Composite` path: the target tile buffer
     /// is copied here so the blend shader can sample the destination it is about to overwrite (WebGL2
     /// forbids reading the live render target). Persists across frames (kept, not pooled); a run of
@@ -511,7 +505,6 @@ impl Sink {
             canvas: None,
             canvas_view: None,
             last_view: None,
-            wv_gathers_cache: None,
             blend_scratch: None,
             sdf_baker: None,
         }
@@ -857,42 +850,24 @@ impl Sink {
         self.last_view = Some(full_view);
 
         let _tgd = crate::vello::prof::now();
-        let epoch = crate::host::scene_epoch();
-        let (gathers, root_count) = match &self.wv_gathers_cache {
-            Some((e, g, rc)) if *e == epoch => (g.clone(), *rc),
-            _ => {
-                let gathers: Vec<(usize, u128, u8)> = crate::vello::abi::with_scene(|live, _, _| {
-                    live.roots()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, &id)| {
-                            let n = live.get(id)?;
-                            let non_box = matches!(n.kind, crate::model::ShapeKind::Path | crate::model::ShapeKind::Text);
-                            let has_gather = n.background_blur.is_some() || n.glass.is_some() || n.background_tint.is_some() || n.background_field.is_some();
-                            let has_silhouette_shadow = non_box && !n.shadows.is_empty();
-                            // Ask what the node LOWERS TO, not which authoring fields it happens to
-                            // set: any effect that replaces the body runs through the stack path, so
-                            // a filter graph gets there the same way a layer blur does. Re-listing
-                            // the fields here is what kept filter graphs from rendering at all.
-                            let replaces_body = crate::effect::effect_stack(n)
-                                .iter()
-                                .any(|e| e.compose == crate::effect::Compose::Replace);
-                            let needs_stack = has_silhouette_shadow || replaces_body;
-                            if needs_stack {
-                                Some((i, id, FX_STACK))
-                            } else if has_gather {
-                                Some((i, id, FX_GATHER))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                });
-                let root_count = crate::vello::abi::with_scene(|live, _, _| live.roots().len());
-                self.wv_gathers_cache = Some((epoch, gathers.clone(), root_count));
-                (gathers, root_count)
-            }
-        };
+        // THE scheduler's front half: build the whole-frame DAG first — the gathers list and each
+        // shape's kind DERIVE from what the lowering produced ([`FrameDag::effect_shapes`]), never
+        // from re-asking the model which fields it set.
+        let mut dag = crate::vello::frame_dag::build_frame_dag_installed();
+        let classes = dag.effect_shapes();
+        let (gathers, root_count) = crate::vello::abi::with_scene(|live, _, _| {
+            let gathers: Vec<(usize, u128, u8)> = live
+                .roots()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &id)| {
+                    classes
+                        .get(&id)
+                        .map(|&stack| (i, id, if stack { FX_STACK } else { FX_GATHER }))
+                })
+                .collect();
+            (gathers, live.roots().len())
+        });
         crate::vello::prof::dbg_add(26, crate::vello::prof::now() - _tgd);
 
         if gathers.is_empty() && root_count == 0 {
@@ -937,9 +912,8 @@ impl Sink {
                 wv_clamp_reach(self.wv_marker_reach(gid, kind, full_view, width, height), width, height)
             })
             .collect();
-        // THE scheduler: build + fill the whole-frame DAG, stamp each effect's DEVICE reach onto its
+        // Fill the DAG's view-dependent uniforms, stamp each effect's DEVICE reach onto its
         // nodes (the marker contract lives on device tiles), and let `schedule()` decide every round.
-        let mut dag = crate::vello::frame_dag::build_frame_dag_installed();
         crate::vello::abi::with_scene(|scene, _viewport, modifiers| {
             dag.fill_lens_uniforms(full_view, width, height, |id| {
                 let n = scene.get(id)?;

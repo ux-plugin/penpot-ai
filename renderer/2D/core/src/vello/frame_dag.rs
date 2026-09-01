@@ -429,6 +429,30 @@ impl FrameDag {
         }
     }
 
+    /// Per-shape effect classification, derived from the lowered chains — never from the model. A
+    /// shape whose chains include a rasterized VALUE root (`Rasterize(Coverage | Body)` under
+    /// `Source::Effect`: a silhouette shadow, a replaced body) is a STACK (`true`): its body leaves
+    /// the scene walk and the whole ordered stack rides fine. A shape whose chains are all
+    /// `Reload`-rooted (glass, background blur/tint/field — a `Rasterize(Distance)` is a sampled
+    /// FIELD operand, not a value root) is a pure GATHER (`false`). Shapes with no effect chains
+    /// are absent.
+    #[must_use]
+    pub fn effect_shapes(&self) -> std::collections::HashMap<u128, bool> {
+        let mut m = std::collections::HashMap::new();
+        for n in &self.nodes {
+            let Source::Effect { shape, .. } = n.source else { continue };
+            let stack = matches!(
+                n.op,
+                UnitOp::Rasterize(
+                    crate::vello::units::RasterSource::Coverage { .. }
+                        | crate::vello::units::RasterSource::Body { .. }
+                )
+            );
+            *m.entry(shape).or_insert(false) |= stack;
+        }
+        m
+    }
+
     /// THE scheduler — one call that decides *when* every node runs (`round`), *where* its scratch lives
     /// (`lease`), and *how* it reads (`desc`/`ctl`). It is a **two-level** schedule of the exact structure
     /// the DAG has once the accumulator is factored out: a **forest of per-effect trees** threaded by a
@@ -1066,9 +1090,22 @@ impl Builder {
         let stack = effect_stack(node);
         let has_replace = stack.iter().any(|e| e.compose == Compose::Replace);
         let has_paint = !node.fills.is_empty() || node.text.is_some() || !node.strokes.is_empty();
+        // A box shape's shadows are native scene primitives (the blurred-rounded-rect encoding) —
+        // no chain to run, so none lowers. A silhouette shape (path/text) has no native encoding,
+        // and a replaced body pulls the WHOLE stack through the chains (the shape leaves the scene
+        // walk, so nothing would draw its native shadows). This is THE stack/gather decision: it
+        // lives here, in the lowering, and the executor derives it back from the chains' roots
+        // ([`FrameDag::effect_shapes`]) instead of re-asking the model.
+        let native_coverage = !matches!(
+            node.kind,
+            crate::model::ShapeKind::Path | crate::model::ShapeKind::Text
+        ) && !has_replace;
 
         let mut body_done = false;
         for (slot, e) in stack.iter().enumerate() {
+            if native_coverage && matches!(e.source, crate::effect::Source::Coverage { .. }) {
+                continue;
+            }
             if !body_done && e.compose != Compose::Under {
                 self.emit_body(shape, base, has_replace, has_paint, &name);
                 body_done = true;
