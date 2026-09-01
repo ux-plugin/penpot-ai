@@ -131,10 +131,10 @@ pub fn bits_of(run: &[UnitOp]) -> u32 {
             UnitOp::Blur { .. } => bits::BLUR,
             UnitOp::Shade(_) => bits::SHADE,
             UnitOp::MaskMix(_) => bits::MASKMIX,
-            UnitOp::Tint(_) => bits::TINT,
+            UnitOp::Colour(_) => bits::TINT,
             UnitOp::ClipToSource(_) => bits::CLIP,
             UnitOp::EraseBy(_) => bits::ERASE,
-            UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose(_) => 0,
+            UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose { .. } => 0,
         }
     })
 }
@@ -259,7 +259,7 @@ mod tests {
     fn scatter() -> UnitOp { UnitOp::Scatter(Vec::new()) }
     fn shade() -> UnitOp { UnitOp::Shade(Vec::new()) }
     fn maskmix() -> UnitOp { UnitOp::MaskMix(Vec::new()) }
-    fn tint() -> UnitOp { UnitOp::Tint(Vec::new()) }
+    fn colour() -> UnitOp { UnitOp::Colour(Vec::new()) }
 
     /// Sharp glass — the one fused arm `[Warp, Shade, MaskMix]` bakes to exactly the descriptor
     /// `wv_lens_fine_uniform`/`wv_fine_passes` emits today: bits 56.
@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(bake_unit(&warp(), Policy::default())[0] as u32, bits::WARP);
         assert_eq!(bake_unit(&shade(), Policy::default())[0] as u32, bits::SHADE);
         assert_eq!(bake_unit(&maskmix(), Policy::default())[0] as u32, bits::MASKMIX);
-        assert_eq!(bake_unit(&tint(), Policy::default())[0] as u32, bits::TINT);
+        assert_eq!(bake_unit(&colour(), Policy::default())[0] as u32, bits::TINT);
         let blur = UnitOp::Blur { sigma: 6.0, linear: true, axis: Default::default(), edge: Default::default() };
         let d = bake_unit(&blur, Policy { edge_coverage: true, ..Policy::default() });
         assert_eq!(d[0] as u32, bits::BLUR);
@@ -319,11 +319,11 @@ mod tests {
     /// over a radial ramp. Reproduces `bg_tint_desc`'s bits 4 and 20.
     #[test]
     fn bits_of_reproduces_the_background_tints() {
-        assert_eq!(bits_of(&[tint()]), bits::TINT);
-        assert_eq!(bits_of(&[tint()]), 4);
-        assert_eq!(program_of(&[tint()]), PROGRAM_NONE, "a plain tint measures no field");
-        assert_eq!(bits_of(&[tint(), maskmix()]), bits::TINT | bits::MASKMIX);
-        assert_eq!(bits_of(&[tint(), maskmix()]), 20);
+        assert_eq!(bits_of(&[colour()]), bits::TINT);
+        assert_eq!(bits_of(&[colour()]), 4);
+        assert_eq!(program_of(&[colour()]), PROGRAM_NONE, "a plain tint measures no field");
+        assert_eq!(bits_of(&[colour(), maskmix()]), bits::TINT | bits::MASKMIX);
+        assert_eq!(bits_of(&[colour(), maskmix()]), 20);
     }
 
     /// `blur_arm` is the ONE serializer for every axis pass. It reproduces both conventions byte-for-byte:
@@ -366,7 +366,7 @@ mod tests {
     /// Structural ops carry no bit — they are never part of a fused fragment run.
     #[test]
     fn structural_ops_contribute_no_bits() {
-        assert_eq!(bits_of(&[UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset: [0.0; 2] }), UnitOp::Reload, UnitOp::Compose(Default::default())]), 0);
+        assert_eq!(bits_of(&[UnitOp::Rasterize(crate::vello::units::RasterSource::Body { offset: [0.0; 2] }), UnitOp::Reload, UnitOp::Compose { mode: Default::default(), colour: None }]), 0);
     }
 
     /// End to end for one arm: take the REAL production lens lowering (`lens_graph` at device scale),

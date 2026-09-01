@@ -89,8 +89,9 @@ pub enum UnitOp {
     Reload,
     /// STRUCTURAL: land the chain's result on the accumulator (the spine write). WHERE it lands is
     /// z-order (the node's place on the spine); HOW it lands is the carried [`ComposeMode`], stamped
-    /// at build from the effect's authored compose — never re-derived downstream.
-    Compose(ComposeMode),
+    /// at build from the effect's authored compose — never re-derived downstream. `colour` is the
+    /// slot's folded Tint (normalization dissolves the Tint nodes into the compose that lands them).
+    Compose { mode: ComposeMode, colour: Option<[f32; 4]> },
     /// Masked displaced sample + chromatic aberration (a composed pass's sampling head).
     Warp(Vec<f32>),
     /// Jittered sample (a composed pass's sampling head).
@@ -105,9 +106,12 @@ pub enum UnitOp {
     /// Pointwise erase by a second input's alpha (`DestOut`) — what is left of this input where the
     /// other one is not. The inner-shadow band is this applied to a silhouette and its blurred punch.
     EraseBy(Vec<f32>),
-    /// Pointwise multiply by a straight colour, premultiplied on the way out — turns a coverage
-    /// silhouette into a coloured one without re-rasterising the geometry.
-    Tint(Vec<f32>),
+    /// The chain's straight-colour parameter. EXECUTED only by the über path (`units_body`), as a
+    /// pointwise multiply that turns a coverage silhouette into a coloured one without
+    /// re-rasterising the geometry (colour × coverage — the in-register form of `COLOUR_OVER`).
+    /// On the whole-viewport path it never executes: normalization folds it into the slot's
+    /// `Compose { colour }`. Distinct from fine's TINT bit, which is a content-recolouring WASH.
+    Colour(Vec<f32>),
     /// A separable Gaussian of `sigma` device pixels — a NEIGHBORHOOD unit, so it is a fusion
     /// barrier: it reads the whole prior result and cannot share a fragment with the units after it.
     /// Runs as its own pass(es), never through `fs_uber`. `linear` blurs in linear light. `axis` is the
@@ -128,7 +132,7 @@ pub(crate) struct UnitKey {
     pub maskmix: bool,
     pub clip: bool,
     pub erase: bool,
-    pub tint: bool,
+    pub colour: bool,
     /// Binds a second texture — the mask-mix backdrop or the erase punch.
     pub two_tex: bool,
 }
@@ -362,7 +366,7 @@ impl UnitKey {
             maskmix: ops.iter().any(|o| matches!(o, UnitOp::MaskMix(_))),
             clip: ops.iter().any(|o| matches!(o, UnitOp::ClipToSource(_))),
             erase: ops.iter().any(|o| matches!(o, UnitOp::EraseBy(_))),
-            tint: ops.iter().any(|o| matches!(o, UnitOp::Tint(_))),
+            colour: ops.iter().any(|o| matches!(o, UnitOp::Colour(_))),
             two_tex,
         }
     }
@@ -389,7 +393,7 @@ impl UnitOp {
     /// treats these as nodes but they never enter a fused fragment.
     #[must_use]
     pub fn is_structural(&self) -> bool {
-        matches!(self, UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose(_))
+        matches!(self, UnitOp::Rasterize(_) | UnitOp::Reload | UnitOp::Compose { .. })
     }
 
     /// A gather reads its input at coordinates other than its own pixel (a neighbourhood or a
@@ -441,7 +445,7 @@ pub(crate) fn units_uniform(ops: &[UnitOp]) -> [f32; 24] {
         // Blur/Custom are barrier units — they never appear inside a fused run, so they carry no
         // field uniform to merge here.
         let (UnitOp::Warp(u) | UnitOp::Scatter(u) | UnitOp::Shade(u) | UnitOp::MaskMix(u)
-        | UnitOp::ClipToSource(u) | UnitOp::EraseBy(u) | UnitOp::Tint(u)) = op
+        | UnitOp::ClipToSource(u) | UnitOp::EraseBy(u) | UnitOp::Colour(u)) = op
         else {
             continue;
         };
@@ -631,11 +635,13 @@ fn hash2(p: vec2<f32>) -> vec2<f32> {
 /// omits the field preamble entirely, so it never touches the field buffer and a batched stamp can
 /// bind the one-element placeholder.
 ///
-/// `Tint` is self-disabling: a colour whose alpha is below zero leaves `value` where it was. One arm
-/// therefore serves a coloured silhouette and an uncoloured body, which is what keeps the batch from
-/// needing a second stamp pipeline for the shapes that carry no colour of their own.
+/// `Colour` is self-disabling: a colour whose alpha is below zero leaves `value` where it was. One
+/// arm therefore serves a coloured silhouette and an uncoloured body, which is what keeps the batch
+/// from needing a second stamp pipeline for the shapes that carry no colour of their own. This is
+/// the REPLACE (colour × coverage) op — deliberately not fine's TINT wash, which recolours content;
+/// a wash here would bleed the silhouette's white into every shadow.
 pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String {
-    let UnitKey { head, shade, maskmix, clip, erase, tint, .. } = key;
+    let UnitKey { head, shade, maskmix, clip, erase, colour, .. } = key;
     let mut fs = String::new();
     if head != 0 || shade || maskmix {
         fs.push_str(
@@ -716,12 +722,12 @@ pub(crate) fn units_body(key: UnitKey, p: &crate::field::FieldProgram) -> String
 "#,
         );
     }
-    if tint {
+    if colour {
         fs.push_str(
             r#"
-    let tintColor = unitParam(gi, 3u);
-    let tinted = vec4<f32>(tintColor.rgb * tintColor.a, tintColor.a) * value.a;
-    value = mix(value, tinted, select(0.0, 1.0, tintColor.a >= 0.0));
+    let unitColour = unitParam(gi, 3u);
+    let coloured = vec4<f32>(unitColour.rgb * unitColour.a, unitColour.a) * value.a;
+    value = mix(value, coloured, select(0.0, 1.0, unitColour.a >= 0.0));
 "#,
         );
     }
@@ -871,7 +877,7 @@ mod fuse_tests {
     fn scatter() -> UnitOp { UnitOp::Scatter(vec![]) }
     fn shade() -> UnitOp { UnitOp::Shade(vec![]) }
     fn maskmix() -> UnitOp { UnitOp::MaskMix(vec![]) }
-    fn tint() -> UnitOp { UnitOp::Tint(vec![]) }
+    fn colour() -> UnitOp { UnitOp::Colour(vec![]) }
     fn blur() -> UnitOp { UnitOp::Blur { sigma: 4.0, linear: false, axis: Default::default(), edge: Default::default() } }
 
     /// Sharp glass — the scatter is dropped as identity at lower time, so `[Warp, Shade, MaskMix]`
@@ -897,7 +903,7 @@ mod fuse_tests {
     /// A headless pointwise chain — a plain tint stamp (a drop shadow with no blur) — is one op.
     #[test]
     fn a_pointwise_only_chain_is_one_stamp() {
-        let runs = fuse(vec![tint()]);
+        let runs = fuse(vec![colour()]);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].len(), 1);
     }
@@ -906,7 +912,7 @@ mod fuse_tests {
     /// two ops. (The blur-less case is the stamp above.)
     #[test]
     fn a_blurred_drop_shadow_is_stamp_then_blur() {
-        let runs = fuse(vec![tint(), blur()]);
+        let runs = fuse(vec![colour(), blur()]);
         assert_eq!(runs.len(), 2);
         assert!(!runs[0][0].is_barrier());
         assert!(runs[1][0].is_barrier());
@@ -919,9 +925,9 @@ mod fuse_tests {
         let k = UnitKey::from_ops(&[warp(), shade(), maskmix()], false);
         assert_eq!(k.head, 1);
         assert!(k.shade && k.maskmix);
-        assert!(!k.tint && !k.clip && !k.erase);
-        let stamp = UnitKey::from_ops(&[tint()], false);
+        assert!(!k.colour && !k.clip && !k.erase);
+        let stamp = UnitKey::from_ops(&[colour()], false);
         assert_eq!(stamp.head, 0);
-        assert!(stamp.tint);
+        assert!(stamp.colour);
     }
 }

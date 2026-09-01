@@ -91,7 +91,7 @@ impl Node {
     pub fn category(&self) -> Category {
         match self.op {
             UnitOp::Reload => Category::Reload,
-            UnitOp::Compose(_) => Category::Compose,
+            UnitOp::Compose { .. } => Category::Compose,
             UnitOp::Rasterize(_) if self.target == Target::Accumulator => {
                 if self.inputs.is_empty() {
                     Category::Background
@@ -398,9 +398,6 @@ impl FrameDag {
                 };
                 shape(Slot::Backdrop, input, false, false)
             }
-            UnitOp::Tint(_) if matches!(self.nodes[n.inputs[0]].op, UnitOp::Rasterize(_)) => {
-                shape(Slot::Backdrop, Slot::Source, false, false)
-            }
             UnitOp::Warp(_) => {
                 let input = if n.inputs.len() > 1 { Slot::Source } else { Slot::None };
                 shape(Slot::Backdrop, input, mat, false)
@@ -427,6 +424,64 @@ impl FrameDag {
             }
             _ => None,
         }
+    }
+
+    /// Mark STYLE per fragment of one effect slot — the planner's decision of which fragment OWNS
+    /// a mark/dispatch (an "arm") versus chaining in-register inside another arm's pass, derived
+    /// from op class + what feeds it, never from what effect the chain came from:
+    ///   Blur      → its own arm dispatch (taps, scratch), always.
+    ///   head      → an arm when it feeds or is fed by a materialised draft, else a chained
+    ///               in-round step.
+    ///   pointwise → a chained in-round step over the backdrop; over a coverage root it only ever
+    ///               marks as the composite arm.
+    #[must_use]
+    pub fn arm_style(
+        &self,
+        frags: &[usize],
+        coverage_rooted: bool,
+    ) -> std::collections::HashMap<usize, bool> {
+        let mut style = std::collections::HashMap::new();
+        for &i in frags {
+            let arm_in = self.nodes[i]
+                .inputs
+                .iter()
+                .any(|j| style.get(j).copied().unwrap_or(false));
+            let arm = match &self.nodes[i].op {
+                UnitOp::Blur { .. } => true,
+                u if u.is_head() => {
+                    arm_in
+                        || frags.iter().any(|&j| {
+                            self.nodes[j].inputs.contains(&i) && self.nodes[j].op.is_gather()
+                        })
+                }
+                _ => coverage_rooted,
+            };
+            style.insert(i, arm);
+        }
+        style
+    }
+
+    /// An arm's RUN: the in-register units feeding it (its input spine back to the previous
+    /// arm/structural node), oldest first — the head a materialize or composite arm executes
+    /// before its own unit, fused into one descriptor.
+    #[must_use]
+    pub fn arm_run(
+        &self,
+        i: usize,
+        arm_style: &std::collections::HashMap<usize, bool>,
+    ) -> Vec<usize> {
+        let mut run = vec![i];
+        let mut c = i;
+        loop {
+            let Some(&j) = self.nodes[c].inputs.first() else { break };
+            if self.nodes[j].op.is_structural() || arm_style.get(&j).copied().unwrap_or(true) {
+                break;
+            }
+            run.push(j);
+            c = j;
+        }
+        run.reverse();
+        run
     }
 
     /// Per-shape effect classification, derived from the lowered chains — never from the model. A
@@ -480,6 +535,10 @@ impl FrameDag {
     pub fn schedule(&self, tile: f64, budget: u64) -> Schedule {
         use crate::vello::bake::{bake_unit, blur_arm, Policy};
         use std::collections::HashMap;
+        debug_assert!(
+            self.liveness().iter().all(|&l| l),
+            "schedule assumes a normalized DAG — run normalize() first (dead nodes present)"
+        );
         let n = self.nodes.len();
 
         // ── Components: the accumulator factored out. One effect's nodes group by `(shape, slot)`; every
@@ -648,7 +707,7 @@ impl FrameDag {
         let mut feeds_compose = vec![false; n];
         let mut comp_over = vec![false; ncomp];
         for (i, node) in self.nodes.iter().enumerate() {
-            if let UnitOp::Compose(mode) = node.op {
+            if let UnitOp::Compose { mode, .. } = node.op {
                 comp_over[comp[i]] = mode == ComposeMode::Over;
                 for &j in &node.inputs {
                     feeds_compose[j] = true;
@@ -737,14 +796,24 @@ impl FrameDag {
         }
     }
 
+    /// THE normalization pass — every DAG-structure optimization, in one place, run once after the
+    /// device-sigma fills and before [`Self::schedule`]. The contract downstream: the scheduler and
+    /// the emitter assume a FULLY OPTIMIZED DAG — no negligible ops, no dead nodes — and never
+    /// re-derive or re-check these facts (schedule debug-asserts liveness). New optimizations
+    /// (fusion folds, constant folds) accrete HERE, never in the scheduler or the emitter.
+    pub fn normalize(&mut self) {
+        self.elide_negligible_blurs();
+        self.fold_colours();
+        self.prune_dead();
+    }
+
     /// Elide every `Blur` whose device sigma is negligible (< 0.5 px) — a sub-pixel blur is visually a
-    /// no-op, so its consumers are rewired to read the blur's own input instead, and the blur node is left
-    /// an orphan (no consumer → no scheduled pass). This is the SCHEDULER's per-frame simplification that
-    /// dissolves the sharp-vs-soft-shadow split: a "sharp" shadow is just a soft one whose blur elided, so
-    /// its composite's edge lands on the silhouette and it flows through the SAME edge-driven dispatch — no
-    /// separate lane. Run AFTER the sigma fills (the sigmas must be device-space). Node indices are
-    /// preserved (orphans stay in place), so anything holding an index stays valid.
-    pub fn elide_negligible_blurs(&mut self) {
+    /// no-op, so its consumers are rewired to read the blur's own input instead. This dissolves the
+    /// sharp-vs-soft-shadow split: a "sharp" shadow is just a soft one whose blur elided, so its
+    /// composite's edge lands on the silhouette and it flows through the SAME edge-driven dispatch — no
+    /// separate lane. Runs AFTER the sigma fills (the sigmas must be device-space); the orphaned blur
+    /// node is removed by [`Self::prune_dead`].
+    fn elide_negligible_blurs(&mut self) {
         for i in 0..self.nodes.len() {
             let UnitOp::Blur { sigma, .. } = self.nodes[i].op else { continue };
             if sigma >= 0.5 {
@@ -757,6 +826,84 @@ impl FrameDag {
                         *inp = src;
                     }
                 }
+            }
+        }
+    }
+
+    /// Fold each effect slot's Tint into the `Compose` that lands the chain: the colour is a fact
+    /// of HOW the slot composites, so it rides the compose's payload; the Tint node splices out of
+    /// the spine (consumers rewired to its input) and prunes away. Downstream nothing walks past
+    /// trailing Tints, filters them out of fused runs, or skips them when marking — Tint nodes do
+    /// not exist in a normalized DAG. Runs AFTER the colour fills. The slot's first coloured Tint
+    /// wins (one colour per authored effect).
+    fn fold_colours(&mut self) {
+        for i in 0..self.nodes.len() {
+            let UnitOp::Colour(ref u) = self.nodes[i].op else { continue };
+            let folded: Option<[f32; 4]> = (u.len() >= 4).then(|| [u[0], u[1], u[2], u[3]]);
+            let src = self.nodes[i].source.clone();
+            let Some(&input) = self.nodes[i].inputs.first() else { continue };
+            for n in &mut self.nodes {
+                for inp in &mut n.inputs {
+                    if *inp == i {
+                        *inp = input;
+                    }
+                }
+            }
+            let Some(c) = folded else { continue };
+            for n in &mut self.nodes {
+                if n.source == src {
+                    if let UnitOp::Compose { ref mut colour, .. } = n.op {
+                        if colour.is_none() {
+                            *colour = Some(c);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Liveness per node: reached from an accumulator write by following `inputs`. One reverse pass
+    /// suffices — the node vec is topological, so every consumer sits after its inputs.
+    fn liveness(&self) -> Vec<bool> {
+        let mut lv = vec![false; self.nodes.len()];
+        for i in (0..self.nodes.len()).rev() {
+            if self.nodes[i].writes_accumulator() {
+                lv[i] = true;
+            }
+            if lv[i] {
+                for &j in &self.nodes[i].inputs {
+                    lv[j] = true;
+                }
+            }
+        }
+        lv
+    }
+
+    /// Remove every node that no longer reaches the accumulator (an elided blur's orphan, an
+    /// unreferenced chain) and compact the indices; `inputs` are remapped, topological order is
+    /// preserved. Downstream nothing schedules, marks, or co-locates a node that will never execute.
+    fn prune_dead(&mut self) {
+        let lv = self.liveness();
+        if lv.iter().all(|&l| l) {
+            return;
+        }
+        let mut remap = vec![usize::MAX; self.nodes.len()];
+        let mut kept = 0usize;
+        for (i, &live) in lv.iter().enumerate() {
+            if live {
+                remap[i] = kept;
+                kept += 1;
+            }
+        }
+        let mut idx = 0usize;
+        self.nodes.retain(|_| {
+            let keep = lv[idx];
+            idx += 1;
+            keep
+        });
+        for n in &mut self.nodes {
+            for inp in &mut n.inputs {
+                *inp = remap[*inp];
             }
         }
     }
@@ -779,9 +926,9 @@ impl FrameDag {
                         node.op = UnitOp::Blur { sigma, linear, axis, edge };
                     }
                 }
-                UnitOp::Tint(_) => {
+                UnitOp::Colour(_) => {
                     if let Some(c) = tint_of(shape, slot) {
-                        node.op = UnitOp::Tint(c.to_vec());
+                        node.op = UnitOp::Colour(c.to_vec());
                     }
                 }
                 _ => {}
@@ -1049,14 +1196,14 @@ impl Builder {
                     self.pointwise(UnitOp::MaskMix(Vec::new()), format!("{name} lens mask-mix"), reach, vec![shaded])
                 }
                 EffectOp::Tint(c) => self.pointwise(
-                    UnitOp::Tint(c.components.to_vec()),
+                    UnitOp::Colour(c.components.to_vec()),
                     format!("{name} {tag} tint"),
                     reach,
                     vec![cur],
                 ),
                 EffectOp::FieldTint(c) => {
                     let tinted = self.pointwise(
-                        UnitOp::Tint(c.components.to_vec()),
+                        UnitOp::Colour(c.components.to_vec()),
                         format!("{name} {tag} field-tint"),
                         reach,
                         vec![cur],
@@ -1156,7 +1303,7 @@ impl Builder {
                         _ => punch_sil,
                     };
                     let band = self.pointwise(UnitOp::EraseBy(Vec::new()), format!("{name} inner band"), reach, vec![flood, punch]);
-                    self.pointwise(UnitOp::Tint(Vec::new()), format!("{name} inner tint"), reach, vec![band])
+                    self.pointwise(UnitOp::Colour(Vec::new()), format!("{name} inner tint"), reach, vec![band])
                 }
                 Compose::Under => {
                     let off = e
@@ -1235,7 +1382,7 @@ impl Builder {
     fn compose(&mut self, label: String, reach: Option<Rect>, tail: usize, mode: ComposeMode) {
         let mut inputs = self.acc.readers(reach);
         inputs.push(tail);
-        let id = self.push(UnitOp::Compose(mode), Target::Accumulator, label, reach, inputs);
+        let id = self.push(UnitOp::Compose { mode, colour: None }, Target::Accumulator, label, reach, inputs);
         self.acc.write(reach, id);
     }
 
@@ -1337,6 +1484,74 @@ mod tests {
         let bands = dag.nodes.iter().filter(|n| n.label.starts_with("paint band")).count();
         assert_eq!(bands, 1, "the checker ground must be ONE band");
         assert!(count(&dag, Category::Reload) > 0, "glass must read the backdrop");
+    }
+
+    #[test]
+    fn normalize_elides_and_prunes_sharp_blurs() {
+        // A blur whose DEVICE sigma lands under threshold (a zoomed-out soft shadow) elides: its
+        // consumer rewires to the blur's own input, the orphan prunes away, indices compact, and
+        // what remains is fully live (schedule's precondition) and topological.
+        crate::vello::abi::load_combined_scene();
+        let mut dag = build_frame_dag_installed();
+        let before = dag.nodes.len();
+        let (h, h_input) = dag
+            .nodes
+            .iter()
+            .enumerate()
+            .find_map(|(i, n)| {
+                matches!(n.op, UnitOp::Blur { .. }).then(|| (i, n.inputs[0]))
+            })
+            .expect("fixture carries a blur chain");
+        let UnitOp::Blur { ref mut sigma, .. } = dag.nodes[h].op else { unreachable!() };
+        *sigma = 0.1;
+        let consumer = dag
+            .nodes
+            .iter()
+            .position(|n| n.inputs.contains(&h))
+            .expect("the H pass has a consumer");
+        let consumer_label = dag.nodes[consumer].label.clone();
+        let input_label = dag.nodes[h_input].label.clone();
+
+        let tints = dag.nodes.iter().filter(|n| matches!(n.op, UnitOp::Colour(_))).count();
+        assert!(tints > 0, "fixture carries Tint nodes to fold");
+
+        dag.normalize();
+
+        assert_topological(&dag);
+        assert_eq!(
+            dag.nodes.len(),
+            before - 1 - tints,
+            "the elided blur and every folded Tint prune away"
+        );
+        assert!(
+            dag.nodes.iter().all(|n| !matches!(n.op, UnitOp::Colour(_))),
+            "no Tint node survives normalize"
+        );
+        // A backdrop tint carries its colour at lowering (shadow tints are filled by the sink), so
+        // the fold must land it on the slot's compose.
+        crate::vello::abi::load_backdrop_tint_grid_scene(1);
+        let mut tinted = build_frame_dag_installed();
+        tinted.normalize();
+        assert!(
+            tinted
+                .nodes
+                .iter()
+                .any(|n| matches!(n.op, UnitOp::Compose { colour: Some(_), .. })),
+            "a compose carries its slot's folded colour"
+        );
+        let rewired = dag
+            .nodes
+            .iter()
+            .find(|n| n.label == consumer_label)
+            .expect("consumer survives");
+        let src = dag
+            .nodes
+            .iter()
+            .position(|n| n.label == input_label)
+            .expect("blur input survives");
+        assert!(rewired.inputs.contains(&src), "consumer reads the blur's input");
+        assert!(dag.liveness().iter().all(|&l| l), "a normalized DAG is fully live");
+        let _ = dag.schedule(TILE_PX, u64::MAX);
     }
 
     #[test]

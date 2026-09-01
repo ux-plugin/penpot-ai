@@ -84,7 +84,7 @@ pub fn lower_graph(graph: &[GraphPass]) -> Vec<Pass> {
                                 }
                                 UnitKind::Shade => ops.push(UnitOp::Shade(u.clone())),
                                 UnitKind::ClipToSource => ops.push(UnitOp::ClipToSource(u.clone())),
-                                UnitKind::Tint => ops.push(UnitOp::Tint(u.clone())),
+                                UnitKind::Colour => ops.push(UnitOp::Colour(u.clone())),
                                 // The punch is a second texture, exactly like a mask-mix backdrop.
                                 UnitKind::EraseBy => {
                                     ops.push(UnitOp::EraseBy(u.clone()));

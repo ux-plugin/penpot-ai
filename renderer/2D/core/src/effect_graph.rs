@@ -70,9 +70,11 @@ pub enum UnitKind {
     ClipToSource,
     /// Erase by a second input's alpha (`DestOut`) — what survives where the other input is not.
     EraseBy,
-    /// Multiply a coverage silhouette by a straight colour. Colouring in a shader rather than at
-    /// raster time is what lets one rasterised silhouette serve shadows of different colours.
-    Tint,
+    /// Multiply a coverage silhouette by a straight colour (colour × coverage — the in-register
+    /// form of the `COLOUR_OVER` composite). Colouring in a shader rather than at raster time is
+    /// what lets one rasterised silhouette serve shadows of different colours. Distinct from
+    /// fine's TINT bit, which is a content-recolouring wash.
+    Colour,
 }
 
 /// A pass plus the texture reads it binds, in the order the pipeline expects.
@@ -165,15 +167,15 @@ pub fn background_blur_sigma(radius: f32, scale: f32) -> f32 {
 /// blur at all.
 #[must_use]
 #[cfg(test)]
-pub fn tint_graph(w: f32, h: f32, colour: [f32; 4]) -> Vec<GraphPass> {
-    vec![GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)])]
+pub fn colour_graph(w: f32, h: f32, colour: [f32; 4]) -> Vec<GraphPass> {
+    vec![GraphPass::new(colour_unit(w, h, colour), vec![Src::Input(0)])]
 }
 
 
 #[must_use]
 #[cfg(test)]
 pub fn drop_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<GraphPass> {
-    let mut passes = tint_graph(w, h, colour);
+    let mut passes = colour_graph(w, h, colour);
     if sigma > 0.5 {
         passes.push(GraphPass::new(EffectPass::Blur { sigma, linear: true }, vec![Src::Pass(0)]));
     }
@@ -196,7 +198,7 @@ pub fn inner_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<G
         Src::Input(1)
     };
     let band = passes.len();
-    passes.push(GraphPass::new(tint_unit(w, h, colour), vec![Src::Input(0)]));
+    passes.push(GraphPass::new(colour_unit(w, h, colour), vec![Src::Input(0)]));
     passes.push(GraphPass::new(
         unit_pass(UnitKind::EraseBy, w, h, colour),
         vec![Src::Pass(band), punch],
@@ -205,8 +207,8 @@ pub fn inner_shadow_graph(w: f32, h: f32, colour: [f32; 4], sigma: f32) -> Vec<G
 }
 
 #[cfg(test)]
-pub(crate) fn tint_unit(w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
-    unit_pass(UnitKind::Tint, w, h, colour)
+pub(crate) fn colour_unit(w: f32, h: f32, colour: [f32; 4]) -> EffectPass {
+    unit_pass(UnitKind::Colour, w, h, colour)
 }
 
 /// A shadow unit's uniform: resolution in slot 0, the straight colour in vec4 slot 3

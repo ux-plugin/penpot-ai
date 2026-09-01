@@ -960,7 +960,7 @@ impl Sink {
                 })
             },
         );
-        dag.elide_negligible_blurs();
+        dag.normalize();
         {
             let dev: HashMap<u128, [f32; 4]> =
                 gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
@@ -1097,21 +1097,6 @@ impl Sink {
             band: bool,
             off: u32,
         }
-        // Liveness: an elided blur leaves orphans; only nodes that still reach the accumulator emit.
-        let node_live = {
-            let mut lv = vec![false; dag.nodes.len()];
-            for i in (0..dag.nodes.len()).rev() {
-                if dag.nodes[i].writes_accumulator() {
-                    lv[i] = true;
-                }
-                if lv[i] {
-                    for &j in &dag.nodes[i].inputs {
-                        lv[j] = true;
-                    }
-                }
-            }
-            lv
-        };
         let mut marks: HashMap<u128, Vec<UnitMark>> = HashMap::new();
         {
             use crate::vello::bake::{bake_unit, bits, spread_arm, Policy};
@@ -1121,7 +1106,7 @@ impl Sink {
                 let mut by_slot: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
                 for (i, n) in dag.nodes.iter().enumerate() {
                     if let DagSource::Effect { shape, slot } = n.source {
-                        if shape == gid && node_live[i] {
+                        if shape == gid {
                             by_slot.entry(slot).or_default().push(i);
                         }
                     }
@@ -1130,13 +1115,9 @@ impl Sink {
                 for nodes in by_slot.values() {
                     let op = |i: usize| &dag.nodes[i].op;
                     let Some(&compose_idx) =
-                        nodes.iter().find(|&&i| matches!(op(i), UnitOp::Compose(_))) else { continue };
-                    let UnitOp::Compose(mode) = *op(compose_idx) else { continue };
+                        nodes.iter().find(|&&i| matches!(op(i), UnitOp::Compose { .. })) else { continue };
+                    let UnitOp::Compose { mode, colour } = *op(compose_idx) else { continue };
                     let over = mode == crate::vello::units::ComposeMode::Over;
-                    let colour = nodes.iter().find_map(|&i| match op(i) {
-                        UnitOp::Tint(u) if u.len() >= 4 => Some([u[0], u[1], u[2], u[3]]),
-                        _ => None,
-                    });
                     let frags: Vec<usize> =
                         nodes.iter().copied().filter(|&i| !op(i).is_structural()).collect();
                     // The chain's root source: walk the composite's input spine down to the node that
@@ -1151,21 +1132,18 @@ impl Sink {
                             },
                         }
                     };
-                    // The composite ANCHOR: the last non-`Tint` fragment on the path from the
-                    // `Compose` down — a trailing `Tint` folds into the anchor's colour (`u[3]`)
-                    // rather than marking on its own.
-                    let mut anchor = *dag.nodes[compose_idx]
+                    // The composite ANCHOR: the chain's tail — normalization has already folded
+                    // the slot's Tint into the compose's colour, so the tail is a real fragment
+                    // or the structural root.
+                    let anchor = *dag.nodes[compose_idx]
                         .inputs
                         .last()
                         .expect("a compose reads its chain tail");
-                    while matches!(op(anchor), UnitOp::Tint(_)) {
-                        anchor = dag.nodes[anchor].inputs[0];
-                    }
                     if frags.is_empty() || op(anchor).is_structural() {
-                        // A chain with NO fragment units past the trailing Tints. Backdrop-rooted
-                        // it is a pointwise backdrop tint — one fused mark, colour in u[3],
-                        // running inline at the shape's z. Body-rooted it is a body replaced by
-                        // pure geometry — one bare source-over mark.
+                        // A chain with NO fragment units. Backdrop-rooted it is a pointwise
+                        // backdrop tint — one fused mark, colour in u[3], running inline at the
+                        // shape's z. Body-rooted it is a body replaced by pure geometry — one
+                        // bare source-over mark.
                         let root = root_of(anchor);
                         if matches!(op(root), UnitOp::Reload) {
                             if let Some(c) = colour {
@@ -1219,13 +1197,10 @@ impl Sink {
                     let has_gather = frags.iter().any(|&i| op(i).is_gather());
                     if !has_gather && backdrop_rooted {
                         // A pointwise backdrop chain (backdrop tint, field tint) is ONE fused mark
-                        // running inline at the shape's z: trailing Tints fold into the colour,
-                        // the rest of the run bakes as-is.
-                        let run: Vec<crate::vello::units::UnitOp> = frags
-                            .iter()
-                            .filter(|&&i| !matches!(op(i), UnitOp::Tint(_)))
-                            .map(|&i| op(i).clone())
-                            .collect();
+                        // running inline at the shape's z: the compose carries the folded colour,
+                        // the run bakes as-is.
+                        let run: Vec<crate::vello::units::UnitOp> =
+                            frags.iter().map(|&i| op(i).clone()).collect();
                         let mut desc = if run.is_empty() {
                             [0.0f32; 26]
                         } else {
@@ -1266,51 +1241,11 @@ impl Sink {
                         .nodes
                         .iter()
                         .position(|n| n.source == crate::vello::frame_dag::Source::Body(gid));
-                    // Mark STYLE per fragment, from op class + what feeds it — never from what effect
-                    // the chain came from:
-                    //   Blur          → its own arm dispatch (taps, scratch), always.
-                    //   head          → an arm when it feeds or is fed by a materialised draft, else a
-                    //                   chained in-round step.
-                    //   pointwise     → a chained in-round step over the backdrop; over a coverage
-                    //                   root it only ever marks as the composite arm.
-                    let is_arm = |i: usize, arm_in: bool| match op(i) {
-                        UnitOp::Blur { .. } => true,
-                        u if u.is_head() => {
-                            arm_in
-                                || frags
-                                    .iter()
-                                    .any(|&j| dag.nodes[j].inputs.contains(&i) && op(j).is_gather())
-                        }
-                        _ => coverage_rooted,
-                    };
-                    let mut arm_style: HashMap<usize, bool> = HashMap::new();
-                    for &i in &frags {
-                        let arm_in = dag.nodes[i]
-                            .inputs
-                            .iter()
-                            .any(|j| arm_style.get(j).copied().unwrap_or(false));
-                        arm_style.insert(i, is_arm(i, arm_in));
-                    }
-                    // An arm's RUN: the in-register units feeding it (its input spine back to the
-                    // previous arm/structural node), oldest first — the head a materialize or
-                    // composite arm executes before its own unit, fused into one descriptor.
-                    let walk_back = |i: usize| -> Vec<usize> {
-                        let mut run = vec![i];
-                        let mut c = i;
-                        loop {
-                            let Some(&j) = dag.nodes[c].inputs.first() else { break };
-                            if op(j).is_structural()
-                                || arm_style.get(&j).copied().unwrap_or(true)
-                                || matches!(op(j), UnitOp::Tint(_))
-                            {
-                                break;
-                            }
-                            run.push(j);
-                            c = j;
-                        }
-                        run.reverse();
-                        run
-                    };
+                    // The arm partition and each arm's fused run are the PLANNER's decisions
+                    // ([`crate::vello::frame_dag::FrameDag::arm_style`] / [`arm_run`]); the emitter
+                    // only serializes them.
+                    let arm_style = dag.arm_style(&frags, coverage_rooted);
+                    let walk_back = |i: usize| dag.arm_run(i, &arm_style);
                     let sampled = frags.iter().find_map(|&i| {
                         if !op(i).is_head() {
                             return None;
@@ -1330,9 +1265,6 @@ impl Sink {
                         }
                     };
                     for &i in &frags {
-                        if matches!(op(i), UnitOp::Tint(_)) && i != anchor {
-                            continue;
-                        }
                         let arm = arm_style[&i];
                         let draft_in = dag.nodes[i]
                             .inputs
@@ -1787,7 +1719,7 @@ impl Sink {
                 for &nd in nodes {
                     let n = &dag.nodes[nd];
                     match &n.op {
-                        UnitOp::Blur { .. } | UnitOp::Tint(_) => {
+                        UnitOp::Blur { .. } => {
                             if let Some(&s) = n.inputs.first() {
                                 if matches!(
                                     dag.nodes[s].op,
@@ -3967,7 +3899,7 @@ impl Sink {
 #[cfg(test)]
 mod batch_admission_tests {
     use super::{batch_admit, BatchShape};
-    use crate::effect_graph::{drop_shadow_graph, inner_shadow_graph, tint_graph, GraphPass};
+    use crate::effect_graph::{colour_graph, drop_shadow_graph, inner_shadow_graph, GraphPass};
     use crate::vello::graph::lower_graph;
 
     const C: [f32; 4] = [0.1, 0.2, 0.3, 0.8];
@@ -3983,7 +3915,7 @@ mod batch_admission_tests {
         for g in [
             drop_shadow_graph(64.0, 64.0, C, 4.0),
             drop_shadow_graph(64.0, 64.0, C, 0.0),
-            tint_graph(64.0, 64.0, C),
+            colour_graph(64.0, 64.0, C),
             inner_shadow_graph(64.0, 64.0, C, 4.0),
         ] {
             assert!(matches!(admit(&g), Some(BatchShape::Stamp { .. })), "expected a stamp");

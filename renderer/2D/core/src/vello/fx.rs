@@ -190,7 +190,7 @@ mod coalesce_tests {
     /// "batch across shapes" idea, as an outcome of matching keys.
     #[test]
     fn same_key_ops_merge_into_one_instanced_op() {
-        let ops = vec![op(vec![UnitOp::Tint(vec![])], 0.0), op(vec![UnitOp::Tint(vec![])], 20.0), op(vec![UnitOp::Tint(vec![])], 40.0)];
+        let ops = vec![op(vec![UnitOp::Colour(vec![])], 0.0), op(vec![UnitOp::Colour(vec![])], 20.0), op(vec![UnitOp::Colour(vec![])], 40.0)];
         let out = coalesce(ops, no_cap());
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].instances.len(), 3);
@@ -199,7 +199,7 @@ mod coalesce_tests {
     /// Different unit chains keep separate draws.
     #[test]
     fn different_keys_stay_separate() {
-        let ops = vec![op(vec![UnitOp::Tint(vec![])], 0.0), op(vec![UnitOp::Blur { sigma: 4.0, linear: true, axis: Default::default(), edge: Default::default() }], 20.0)];
+        let ops = vec![op(vec![UnitOp::Colour(vec![])], 0.0), op(vec![UnitOp::Blur { sigma: 4.0, linear: true, axis: Default::default(), edge: Default::default() }], 20.0)];
         let out = coalesce(ops, no_cap());
         assert_eq!(out.len(), 2);
     }
@@ -208,7 +208,7 @@ mod coalesce_tests {
     /// expressed as data, not a special case.
     #[test]
     fn an_over_cap_group_splits() {
-        let ops = vec![op(vec![UnitOp::Tint(vec![])], 0.0), op(vec![UnitOp::Tint(vec![])], 20.0), op(vec![UnitOp::Tint(vec![])], 40.0)];
+        let ops = vec![op(vec![UnitOp::Colour(vec![])], 0.0), op(vec![UnitOp::Colour(vec![])], 20.0), op(vec![UnitOp::Colour(vec![])], 40.0)];
         let out = coalesce(ops, Caps { max_instances: 2 });
         assert_eq!(out.len(), 2, "3 instances at cap 2 => 2+1");
         assert_eq!(out[0].instances.len(), 2);
