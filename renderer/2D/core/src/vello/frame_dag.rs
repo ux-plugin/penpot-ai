@@ -335,11 +335,14 @@ impl FrameDag {
         // texture read of it needs that dispatch complete: one round later, always — including the
         // tiny-reach case on-chip fusion used to absorb, and the sharp-punch EraseBy edge that
         // carries no other barrier.
-        if matches!(
+        let fold_src = matches!(
             src.op,
             UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
-        ) && ((matches!(dst.op, UnitOp::Blur { .. }) && dst.inputs.first() == Some(&from))
-            || (matches!(dst.op, UnitOp::EraseBy(_)) && dst.inputs.get(1) == Some(&from)))
+        ) || (matches!(src.op, UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. }))
+            && matches!(src.source, Source::Effect { .. }));
+        if fold_src
+            && ((matches!(dst.op, UnitOp::Blur { .. }) && dst.inputs.first() == Some(&from))
+                || (matches!(dst.op, UnitOp::EraseBy(_)) && dst.inputs.get(1) == Some(&from)))
         {
             return Some(Barrier::Materialize);
         }
@@ -414,11 +417,14 @@ impl FrameDag {
         // side-2 atlas, so reads of it class as `Slot::Draft(2)` — co-location then holds for any
         // two folded readers sharing a round, and never pairs a folded reader with a JIT-source
         // one (whose texture is a device-coordinate layer).
-        let folded = |j: usize| {
-            matches!(
-                self.nodes[j].op,
-                UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
-            )
+        let folded = |j: usize| match self.nodes[j].op {
+            UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. }) => {
+                true
+            }
+            UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. }) => {
+                tex_read[j] && matches!(self.nodes[j].source, Source::Effect { .. })
+            }
+            _ => false,
         };
         let root = |mut j: usize| loop {
             match self.nodes[j].op {
@@ -476,25 +482,38 @@ impl FrameDag {
                 Slot::Source => shape(Slot::Backdrop, Slot::Source, mat, false),
                 _ => None,
             },
-            // A TEXTURE-READ analytic coverage silhouette rides fine: its round's window
-            // rasterizes the fenced silhouette draws into a packed lease — transparent init, no
-            // input bindings, OOB store default overridden by the mark's OUTPUT record. Texture-
-            // read means a Blur taps it or an EraseBy binds it as the punch; an erase's FLOOD
-            // input is read analytically (the marker's own area) and must NOT fold — its mark
-            // would share the punch window's tiles and hijack the store origin. Glyph
-            // (non-analytic) coverage and SDF sources keep their out-of-band producers.
+            // A TEXTURE-READ analytic coverage silhouette OR body source rides fine: its round's
+            // window rasterizes the fenced draws into a packed lease — transparent init, no input
+            // bindings, OOB store default overridden by the mark's OUTPUT record. Texture-read
+            // means a Blur taps it or an EraseBy binds it as the punch; an erase's FLOOD input is
+            // read analytically (the marker's own area) and must NOT fold — its mark would share
+            // the punch window's tiles and hijack the store origin. A bare body mark (not
+            // tex-read) keeps its co-located composite; glyph (non-analytic) coverage and SDF
+            // sources keep their out-of-band producers.
             UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
                 if tex_read[i] =>
             {
                 shape(Slot::None, Slot::None, true, false)
             }
-            // A body rasterize that carries its OWN mark — a unit-less replaced body (no inputs) or a
-            // plain stack body (spine-only inputs, all accumulator writers): composite the co-located
-            // source over the accumulator.
+            UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
+                if tex_read[i] && matches!(n.source, Source::Effect { .. }) =>
+            {
+                shape(Slot::None, Slot::None, true, false)
+            }
+            // A body rasterize that carries its OWN mark. A REPLACED body (a unit-less replace
+            // chain, `Source::Effect`) composites its co-located JIT source over the accumulator.
+            // A plain STACK body (`Source::Body`) has no texture any more — its mark is a
+            // boundary marker followed by the body's inline draws, and its shape is the plain
+            // accumulator window (no input): the class keeps its round off every materialize
+            // round in the scheduler while letting bodies share rounds with each other.
             UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. })
                 if !mat && n.inputs.iter().all(|&j| self.nodes[j].writes_accumulator()) =>
             {
-                shape(Slot::Backdrop, Slot::Source, false, false)
+                if matches!(n.source, Source::Effect { .. }) {
+                    shape(Slot::Backdrop, Slot::Source, false, false)
+                } else {
+                    shape(Slot::Backdrop, Slot::None, false, false)
+                }
             }
             // A scatter always materializes: its consumer is a Shade head that reads it as a draft.
             UnitOp::Scatter(_) => shape(Slot::Backdrop, Slot::Draft(1), true, false),

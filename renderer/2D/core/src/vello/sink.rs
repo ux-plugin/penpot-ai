@@ -1295,7 +1295,10 @@ impl Sink {
                         for &sn in nodes {
                             if matches!(
                                 *op(sn),
-                                UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { .. })
+                                UnitOp::Rasterize(
+                                    crate::vello::units::RasterSource::Coverage { .. }
+                                        | crate::vello::units::RasterSource::Body { .. }
+                                )
                             ) && dag.binding_shape(sn).is_some_and(|sh| {
                                 sh.to_draft
                                     && sh.base == crate::vello::frame_dag::Slot::None
@@ -1452,12 +1455,14 @@ impl Sink {
                 && !matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
                 && !dag.binding_shape(m.node).is_some_and(|s| s.to_draft)
         };
-        // A plain stack body rides fine like everything else: one bare VALUE_OVER mark on its
-        // `Source::Body` DAG node (the sil collector co-locates the render, the dispatch composites
-        // it over the accumulator). A stack whose Replace chain already emitted a VALUE_OVER mark
-        // has its body in fine; a body-less stack (no paint) has nothing to composite. The body
-        // lands after the last accumulator-composing pre-body mark; with none (an inner-only
-        // stack), before every mark.
+        // A plain stack body still owns a ROUND (its composite must land between the under-marks
+        // and the bands, in an accumulator window — never inside a materialize window's draft),
+        // but no longer a TEXTURE: its zero-desc mark emits as a boundary marker followed by the
+        // body's draws inline, and its window is a plain rw window that composites them in PTCL
+        // order. No VALUE_OVER, no JIT render, no lease. A stack whose Replace chain already
+        // emitted a VALUE_OVER mark has its body in fine; a body-less stack has nothing to
+        // composite. The body lands after the last accumulator-composing pre-body mark; with none
+        // (an inner-only stack), before every mark.
         {
             use crate::vello::bake::bits;
             use crate::vello::frame_dag::Source as DagSource;
@@ -1481,16 +1486,12 @@ impl Sink {
                 let pre = ms.iter().filter(|m| composes_acc(m)).map(|m| m.round).max();
                 let round = pre.or_else(|| ms.iter().map(|m| m.round).min()).unwrap_or(0);
                 let key_round = pre.map_or_else(|| i64::from(round) - 1, i64::from);
-                let mut desc = [0.0f32; 26];
-                desc[0] = bits::VALUE_OVER as f32;
-                let mut rec = [[0.0f32; 4]; 5];
-                rec[0][0] = 2.0;
                 let pos = ms.iter().position(|m| i64::from(m.round) > key_round).unwrap_or(ms.len());
                 ms.insert(pos, UnitMark {
                     node: body_idx,
                     round,
-                    desc,
-                    rec,
+                    desc: [0.0f32; 26],
+                    rec: [[0.0f32; 4]; 5],
                     ctl: 0,
                     masked: false,
                     band: false,
@@ -1530,8 +1531,10 @@ impl Sink {
                     dag.nodes[m.node].op,
                     crate::vello::units::UnitOp::Rasterize(
                         crate::vello::units::RasterSource::Coverage { analytic: true, .. }
+                            | crate::vello::units::RasterSource::Body { .. }
                     )
                 )
+                && !matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
         };
         #[cfg(not(target_arch = "wasm32"))]
         let hoist_on = sil_fold
@@ -2032,9 +2035,27 @@ impl Sink {
         // resolution the JIT builder used.
         let _tplan = crate::vello::prof::now();
         let sil_emit_ms = std::cell::Cell::new(0.0f64);
+        let gi_of: HashMap<u128, usize> = gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
         let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize| {
             let _ts = crate::vello::prof::now();
             use crate::vello::frame_dag::Source as DagSource;
+            // A folded BODY source is the shape's own paint, not a shadow silhouette: draw its
+            // scene range (offset for a displaced body), same as the JIT layer builder did.
+            if let crate::vello::units::UnitOp::Rasterize(
+                crate::vello::units::RasterSource::Body { offset },
+            ) = dag.nodes[s].op
+            {
+                let shape = match dag.nodes[s].source {
+                    DagSource::Effect { shape, .. } | DagSource::Body(shape) => shape,
+                    _ => return,
+                };
+                if let Some(&gi) = gi_of.get(&shape) {
+                    let t = root * Affine::translate((f64::from(offset[0]), f64::from(offset[1])));
+                    backend.draw_scene_range(scene, t, gi, gi + 1);
+                }
+                sil_emit_ms.set(sil_emit_ms.get() + (crate::vello::prof::now() - _ts));
+                return;
+            }
             let DagSource::Effect { shape, slot } = dag.nodes[s].source else { return };
             let inset = dag.nodes.iter().any(|m| {
                 matches!(m.op, crate::vello::units::UnitOp::EraseBy(_))
@@ -2109,15 +2130,24 @@ impl Sink {
                 b.push(backend.draw_object_count(&scene));
                 mb.push(z);
                 if kind == FX_STACK {
-                    // The stack's window marker (eid 6) opens its first round; its unit marks follow;
-                    // the body paints imperatively at its own round. The stack shape is skipped from the
-                    // scene draws (its layers paint per-round).
+                    // The stack's window marker (eid 6) opens its first round; its unit marks
+                    // follow. The BODY's mark (zero desc, `Source::Body`) emits as a boundary
+                    // marker plus the body's draws inline — its round's plain rw window
+                    // composites them in PTCL order. The stack shape is skipped from the scene
+                    // draws (its layers paint per-round).
                     z += 1;
                     backend.draw_effect_marker(&mut scene, root, gid, 6u32, z, rounds[j], 0, reaches[j], 0);
                     marker_rects.push((rounds[j], reaches[j]));
                     if let Some(ms) = marks.get(&gid) {
                         for m in ms {
                             if is_hoisted(m) {
+                                continue;
+                            }
+                            if matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_)) {
+                                z += 1;
+                                backend.draw_effect_marker(&mut scene, root, gid, 6u32, z, m.round, 0, reaches[j], 0);
+                                marker_rects.push((m.round, reaches[j]));
+                                backend.draw_scene_range(&mut scene, root, gi, gi + 1);
                                 continue;
                             }
                             z += 1;
@@ -2128,7 +2158,7 @@ impl Sink {
                             };
                             backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
                             marker_rects.push((m.round, reaches[j]));
-                            if matches!(dag.nodes[m.node].op, crate::vello::units::UnitOp::Rasterize(_)) {
+                            if is_fence(m) {
                                 emit_sil_draws(backend, &mut scene, m.node);
                             }
                         }
@@ -2147,7 +2177,7 @@ impl Sink {
                         };
                         backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
                         marker_rects.push((m.round, reaches[j]));
-                        if matches!(dag.nodes[m.node].op, crate::vello::units::UnitOp::Rasterize(_)) {
+                        if is_fence(m) {
                             emit_sil_draws(backend, &mut scene, m.node);
                         }
                     }
@@ -2468,7 +2498,7 @@ impl Sink {
                             }
                         }
                         UnitOp::Rasterize(crate::vello::units::RasterSource::Body { .. }) => {
-                            if seen.insert(nd) {
+                            if matches!(n.source, DagSource::Effect { .. }) && seen.insert(nd) {
                                 sil_groups.entry(round).or_default().push(nd);
                             }
                         }
@@ -2650,8 +2680,24 @@ impl Sink {
             }
             #[cfg(not(target_arch = "wasm32"))]
             if std::env::var("WV_DBG_ROUNDS").is_ok() {
+                use crate::vello::units::RasterSource;
                 let members: usize = sil_layers.iter().map(|l| l.nodes.len()).sum();
-                eprintln!("WV_DBG_SIL: layers={} silhouettes={members}", sil_layers.len());
+                let (mut glyph, mut analytic, mut body_fx, mut body_stack, mut other) = (0, 0, 0, 0, 0);
+                for l in &sil_layers {
+                    for &s in &l.nodes {
+                        match (&dag.nodes[s].op, &dag.nodes[s].source) {
+                            (UnitOp::Rasterize(RasterSource::Coverage { analytic: false, .. }), _) => glyph += 1,
+                            (UnitOp::Rasterize(RasterSource::Coverage { analytic: true, .. }), _) => analytic += 1,
+                            (UnitOp::Rasterize(RasterSource::Body { .. }), DagSource::Effect { .. }) => body_fx += 1,
+                            (UnitOp::Rasterize(RasterSource::Body { .. }), _) => body_stack += 1,
+                            _ => other += 1,
+                        }
+                    }
+                }
+                eprintln!(
+                    "WV_DBG_SIL: layers={} silhouettes={members} (glyph={glyph} analytic={analytic} body_fx={body_fx} body_stack={body_stack} other={other})",
+                    sil_layers.len(),
+                );
             }
             if !sdf_jobs.is_empty() {
                 if self.sdf_baker.is_none() {
@@ -2751,10 +2797,12 @@ impl Sink {
                         let folded_rz = |j: usize| {
                             matches!(
                                 dag.nodes[j].op,
-                                UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage {
-                                    analytic: true,
-                                    ..
-                                })
+                                UnitOp::Rasterize(
+                                    crate::vello::units::RasterSource::Coverage {
+                                        analytic: true,
+                                        ..
+                                    } | crate::vello::units::RasterSource::Body { .. }
+                                )
                             )
                         };
                         let direct = dag.nodes[n].inputs.iter().copied().find(|&j| match shp.input {
