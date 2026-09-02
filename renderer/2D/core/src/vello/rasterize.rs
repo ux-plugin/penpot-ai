@@ -276,6 +276,21 @@ pub trait RasterBackend {
         unimplemented!("phased session is classic-only")
     }
 
+    /// Dispatch a RASTERIZE window (`fine_area_draft`): transparent init, no base or slot-10
+    /// bindings — the window's fenced silhouette draws paint the rgba8 draft `out`, the zero-bit
+    /// mark's OUTPUT record shifting the stores into its lease. Classic-only; default panics.
+    fn phased_fine_segment_draftonly(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _enc: &mut wgpu::CommandEncoder,
+        _seg_lo: u32,
+        _seg_target: u32,
+        _out: &wgpu::TextureView,
+    ) {
+        unimplemented!("phased session is classic-only")
+    }
+
     /// Dispatch an in-place COMPOSITE window over the packed accumulator (`fine_area_rwu*`):
     /// `target` is read-modified-written per own pixel — an untouched tile keeps its pixels, so a
     /// sparse window costs only its listed tiles. `snap` is the round's packed backdrop SNAPSHOT

@@ -996,6 +996,22 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
             .expect("phased_fine_segment_seed_u_into");
     }
 
+    fn phased_fine_segment_draftonly(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        seg_lo: u32,
+        seg_target: u32,
+        out: &wgpu::TextureView,
+    ) {
+        let session = self.phased_session.as_mut().expect("phased_fine_segment_draftonly without phased_begin");
+        self.renderer
+            .inner
+            .phased_fine_segment_draftonly_into(session, device, queue, enc, seg_lo, seg_target, out)
+            .expect("phased_fine_segment_draftonly_into");
+    }
+
     fn phased_fine_segment_rwu(
         &mut self,
         device: &wgpu::Device,

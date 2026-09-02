@@ -325,6 +325,19 @@ impl FrameDag {
         if dst.op == UnitOp::Reload {
             return Some(Barrier::Reload);
         }
+        // A FOLDED silhouette (texture-read analytic coverage — the fold predicate in
+        // `binding_shape`, seen here per edge) is produced by an in-frame dispatch now, so every
+        // texture read of it needs that dispatch complete: one round later, always — including the
+        // tiny-reach case on-chip fusion used to absorb, and the sharp-punch EraseBy edge that
+        // carries no other barrier.
+        if matches!(
+            src.op,
+            UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
+        ) && ((matches!(dst.op, UnitOp::Blur { .. }) && dst.inputs.first() == Some(&from))
+            || (matches!(dst.op, UnitOp::EraseBy(_)) && dst.inputs.get(1) == Some(&from)))
+        {
+            return Some(Barrier::Materialize);
+        }
         if dst.op.is_gather() && src.op != UnitOp::Reload {
             // On-chip fusion (a gather sharing its source's round) is only real when the source is
             // a RASTERIZED texture the taps can read directly. A gather over another gather's value
@@ -367,9 +380,19 @@ impl FrameDag {
         });
         // The chain's root decides what `base_in` holds — a rasterized source texture, or the (reloaded)
         // accumulator — and, for a draft input, which pool that draft physically lives in today.
+        // A FOLDED silhouette (texture-read analytic coverage) physically lives in the dedicated
+        // side-2 atlas, so reads of it class as `Slot::Draft(2)` — co-location then holds for any
+        // two folded readers sharing a round, and never pairs a folded reader with a JIT-source
+        // one (whose texture is a device-coordinate layer).
+        let folded = |j: usize| {
+            matches!(
+                self.nodes[j].op,
+                UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
+            )
+        };
         let root = |mut j: usize| loop {
             match self.nodes[j].op {
-                UnitOp::Rasterize(_) => break Slot::Source,
+                UnitOp::Rasterize(_) => break if folded(j) { Slot::Draft(2) } else { Slot::Source },
                 UnitOp::Reload => break Slot::Backdrop,
                 _ => match self.nodes[j].inputs.first() {
                     Some(&k) => j = k,
@@ -382,6 +405,9 @@ impl FrameDag {
         };
         match &n.op {
             UnitOp::Blur { .. } => match &self.nodes[n.inputs[0]].op {
+                UnitOp::Rasterize(_) if folded(n.inputs[0]) => {
+                    shape(Slot::Source, Slot::Draft(2), mat, false)
+                }
                 UnitOp::Rasterize(_) => shape(Slot::Source, Slot::Source, mat, false),
                 UnitOp::Reload => shape(Slot::Backdrop, Slot::None, mat, false),
                 _ => {
@@ -392,13 +418,21 @@ impl FrameDag {
                     let r = root(n.inputs[0]);
                     let base = if mat { r } else { Slot::Backdrop };
                     let taps = matches!(self.nodes[n.inputs[0]].op, UnitOp::Blur { .. });
-                    shape(base, Slot::Draft(match r { Slot::Source => 0, _ => 1 }), mat, taps)
+                    shape(
+                        base,
+                        Slot::Draft(match r {
+                            Slot::Source | Slot::Draft(2) => 0,
+                            _ => 1,
+                        }),
+                        mat,
+                        taps,
+                    )
                 }
             },
             UnitOp::EraseBy(_) => {
                 let punch = n.inputs[1];
                 let input = if matches!(self.nodes[punch].op, UnitOp::Rasterize(_)) {
-                    Slot::Source
+                    if folded(punch) { Slot::Draft(2) } else { Slot::Source }
                 } else {
                     Slot::Draft(0)
                 };
@@ -412,6 +446,21 @@ impl FrameDag {
                 Slot::Source => shape(Slot::Backdrop, Slot::Source, mat, false),
                 _ => None,
             },
+            // A TEXTURE-READ analytic coverage silhouette rides fine: its round's window
+            // rasterizes the fenced silhouette draws into a packed lease — transparent init, no
+            // input bindings, OOB store default overridden by the mark's OUTPUT record. Texture-
+            // read means a Blur taps it or an EraseBy binds it as the punch; an erase's FLOOD
+            // input is read analytically (the marker's own area) and must NOT fold — its mark
+            // would share the punch window's tiles and hijack the store origin. Glyph
+            // (non-analytic) coverage and SDF sources keep their out-of-band producers.
+            UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
+                if self.nodes.iter().any(|m| {
+                    (matches!(m.op, UnitOp::Blur { .. }) && m.inputs.first() == Some(&i))
+                        || (matches!(m.op, UnitOp::EraseBy(_)) && m.inputs.get(1) == Some(&i))
+                }) =>
+            {
+                shape(Slot::None, Slot::None, true, false)
+            }
             // A body rasterize that carries its OWN mark — a unit-less replaced body (no inputs) or a
             // plain stack body (spine-only inputs, all accumulator writers): composite the co-located
             // source over the accumulator.

@@ -1117,6 +1117,10 @@ impl Sink {
             off: u32,
         }
         let mut marks: HashMap<u128, Vec<UnitMark>> = HashMap::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let sil_fold = std::env::var("WV_SIL_FOLD").map_or(true, |v| v != "0");
+        #[cfg(target_arch = "wasm32")]
+        let sil_fold = true;
         {
             use crate::vello::bake::{bake_unit, bits, spread_arm, Policy};
             use crate::vello::frame_dag::Source as DagSource;
@@ -1280,6 +1284,34 @@ impl Sink {
                             r[3][3] = decode;
                         }
                     };
+                    // Fold-eligible silhouette sources (shape (None, None, to_draft) — analytic
+                    // coverage consumed by a gather) get their OWN zero-bit mark: the marker fences
+                    // the silhouette draws to the source's round and its OUTPUT record shifts the
+                    // window's stores into the packed lease. Emitted BEFORE the consumers so marker
+                    // rounds stay per-tile monotone.
+                    if sil_fold {
+                        for &sn in nodes {
+                            if matches!(
+                                *op(sn),
+                                UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { .. })
+                            ) && dag.binding_shape(sn).is_some_and(|sh| {
+                                sh.to_draft
+                                    && sh.base == crate::vello::frame_dag::Slot::None
+                                    && sh.input == crate::vello::frame_dag::Slot::None
+                            }) {
+                                out.push(UnitMark {
+                                    node: sn,
+                                    round: sched.round[sn],
+                                    desc: [0.0f32; 26],
+                                    rec: [[0.0f32; 4]; 5],
+                                    ctl: 0,
+                                    masked: false,
+                                    band: false,
+                                    off: 0,
+                                });
+                            }
+                        }
+                    }
                     for &i in &frags {
                         let arm = arm_style[&i];
                         let draft_in = dag.nodes[i]
@@ -1540,7 +1572,7 @@ impl Sink {
         // un-cropping. WV_SCRATCH_CROP=0 remains as the manual byte-parity A/B lever, and
         // WV_CROP_NOREUSE gives every draft its own slot — the bisect lever separating layout bugs
         // from stale-tenant reads.
-        let mut scratch_atlas_dims: [Option<(u32, u32)>; 2] = [None, None];
+        let mut scratch_atlas_dims: [Option<(u32, u32)>; 3] = [None, None, None];
         let mut atlas_of: HashMap<usize, usize> = HashMap::new();
         {
             use crate::vello::frame_dag::{pack, LiveRect};
@@ -1650,17 +1682,39 @@ impl Sink {
                 // exists; a contradiction is a planner bug surfaced loudly, never designed around.
                 let birth_of: HashMap<usize, u32> =
                     jobs.iter().zip(&lives).map(|(&(n, _, _), l)| (n, l.birth)).collect();
+                // FOLDED silhouette leases live on their own THIRD side: their windows only write
+                // it and their readers only read it, so it can never join a dispatch's read+write
+                // conflict — and their edges stay out of the two-side parity colouring (a V pass
+                // reading its H draft AND its sil root would otherwise need three colours).
+                let fold_nodes: std::collections::HashSet<usize> = jobs
+                    .iter()
+                    .map(|&(n, _, _)| n)
+                    .filter(|&n| {
+                        matches!(dag.nodes[n].op, UnitOp::Rasterize(_))
+                            && dag.binding_shape(n).is_some_and(|sh| {
+                                sh.to_draft
+                                    && sh.base == crate::vello::frame_dag::Slot::None
+                                    && sh.input == crate::vello::frame_dag::Slot::None
+                            })
+                    })
+                    .collect();
                 let mut reads: std::collections::BTreeMap<u32, Vec<u32>> =
                     std::collections::BTreeMap::new();
                 for ms in marks.values() {
                     for m in ms {
-                        if let Some(&p) = read_input(m.node).and_then(|e| birth_of.get(&e)) {
+                        if let Some(&p) = read_input(m.node)
+                            .filter(|e| !fold_nodes.contains(e))
+                            .and_then(|e| birth_of.get(&e))
+                        {
                             reads.entry(m.round).or_default().push(p);
                         }
                     }
                 }
-                let producer_rounds: std::collections::BTreeSet<u32> =
-                    birth_of.values().copied().collect();
+                let producer_rounds: std::collections::BTreeSet<u32> = birth_of
+                    .iter()
+                    .filter(|&(n, _)| !fold_nodes.contains(n))
+                    .map(|(_, &b)| b)
+                    .collect();
                 let all_rounds: Vec<u32> = producer_rounds
                     .iter()
                     .copied()
@@ -1686,9 +1740,12 @@ impl Sink {
                 );
                 debug_assert!(round_side.is_some(), "round colouring is always 2-colourable");
                 let side_of = |node: usize| -> usize {
+                    if fold_nodes.contains(&node) {
+                        return 2;
+                    }
                     round_side
                         .as_ref()
-                        .map_or(0, |c| usize::from(c[rid[&birth_of[&node]]]))
+                        .map_or(0, |c| c.get(rid.get(&birth_of[&node]).copied().unwrap_or(usize::MAX)).copied().map_or(0, usize::from))
                 };
                 if round_side.is_none() {
                     eprintln!(
@@ -1720,7 +1777,7 @@ impl Sink {
                 }
                 let mut origin: HashMap<usize, (f32, f32)> = HashMap::new();
                 if round_side.is_some() {
-                    for side in 0..2usize {
+                    for side in 0..3usize {
                         let picked: Vec<usize> =
                             (0..jobs.len()).filter(|&k| side_of(jobs[k].0) == side).collect();
                         if picked.is_empty() {
@@ -1879,6 +1936,32 @@ impl Sink {
                 }
             }
         }
+        // Silhouette draws for a FOLDED source mark: the geometry is emitted into the MAIN scene
+        // right after the mark's marker, so it lands in the source's own round on the marker's
+        // tiles and the round's window rasterizes it into the packed lease. Same inset/class
+        // resolution the JIT builder used.
+        let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize| {
+            use crate::vello::frame_dag::Source as DagSource;
+            let DagSource::Effect { shape, slot } = dag.nodes[s].source else { return };
+            let inset = dag.nodes.iter().any(|m| {
+                matches!(m.op, crate::vello::units::UnitOp::EraseBy(_))
+                    && matches!(m.source, DagSource::Effect { shape: s2, slot: sl2 } if s2 == shape && sl2 == slot)
+            });
+            let class_idx = crate::vello::abi::with_scene(|live, _, _| {
+                live.get(shape).map(|n| {
+                    crate::effect::effect_stack(n)
+                        .iter()
+                        .take(slot)
+                        .filter(|e| {
+                            matches!(e.source, crate::effect::Source::Coverage { .. })
+                                && (e.compose == crate::effect::Compose::Over) == inset
+                        })
+                        .count()
+                })
+            })
+            .unwrap_or(slot);
+            backend.build_shadow_silhouette(scene, root, shape, class_idx, inset, true, false);
+        };
         // Every marker's (round, reach quad), collected as they are drawn: a window's work on a tile
         // exists only where a marker with an in-window round advanced that tile, so these quads are an
         // EXACT cover of every non-base window's active tiles (the sparse dispatch lists below).
@@ -1915,6 +1998,9 @@ impl Sink {
                             };
                             backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
                             marker_rects.push((m.round, reaches[j]));
+                            if matches!(dag.nodes[m.node].op, crate::vello::units::UnitOp::Rasterize(_)) {
+                                emit_sil_draws(backend, &mut scene, m.node);
+                            }
                         }
                     }
                     cursor = gi + 1;
@@ -1928,6 +2014,9 @@ impl Sink {
                         };
                         backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
                         marker_rects.push((m.round, reaches[j]));
+                        if matches!(dag.nodes[m.node].op, crate::vello::units::UnitOp::Rasterize(_)) {
+                            emit_sil_draws(backend, &mut scene, m.node);
+                        }
                     }
                 } else {
                     unreachable!(
@@ -1985,7 +2074,10 @@ impl Sink {
         let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
         // The two packed draft atlases every materialize writes its lease into (alternating along
         // draft→draft chains so a dispatch never reads and writes one texture), reused across rounds.
-        let scratch_atlas_views: [Option<wgpu::TextureView>; 2] = scratch_atlas_dims.map(|dims| {
+        let mut atlas_side_idx = 0usize;
+        let scratch_atlas_views: [Option<wgpu::TextureView>; 3] = scratch_atlas_dims.map(|dims| {
+            let side = atlas_side_idx;
+            atlas_side_idx += 1;
             dims.map(|(aw, ah)| {
                 let t = self.pool.acquire_target(
                     device,
@@ -1996,6 +2088,10 @@ impl Sink {
                     "wv scratch atlas",
                 );
                 let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var("WV_DBG_SILATLAS").is_ok() && side == 2 {
+                    self.dbg_atlas = Some((v.clone(), aw, ah));
+                }
                 // Guard bands and slot padding are read by escaped taps and must hold transparent
                 // 0 — a pooled texture holds whatever the previous frame left in it.
                 Compositor::clear(&mut enc, &v, [0.0, 0.0, 0.0, 0.0], None);
@@ -2080,6 +2176,9 @@ impl Sink {
             for (gid, ms) in &marks {
                 let Some(&q) = dev.get(gid) else { continue };
                 for mk in ms {
+                    if mk.desc[0] as u32 == 0 {
+                        continue;
+                    }
                     let pad = tap_pad(mk.node);
                     m.entry(mk.round).or_default().push([q[0] - pad, q[1] - pad, q[2] + pad, q[3] + pad]);
                 }
@@ -2179,7 +2278,23 @@ impl Sink {
             use crate::vello::units::UnitOp;
             let mut sil_groups: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
             let mut sdf_jobs: Vec<(usize, u128, f32)> = Vec::new();
-            let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            // A FOLDED source (it owns a mark and its window rasterizes into a lease) never joins
+            // the JIT groups — its texture is the atlas the round loop already writes. Only the
+            // fold shape counts: bare-body composite marks are Rasterize marks too, and their
+            // textures still come from the JIT path.
+            let mut seen: std::collections::HashSet<usize> = marks
+                .values()
+                .flatten()
+                .map(|m| m.node)
+                .filter(|&n| {
+                    matches!(dag.nodes[n].op, UnitOp::Rasterize(_))
+                        && dag.binding_shape(n).is_some_and(|sh| {
+                            sh.to_draft
+                                && sh.base == crate::vello::frame_dag::Slot::None
+                                && sh.input == crate::vello::frame_dag::Slot::None
+                        })
+                })
+                .collect();
             for (&round, nodes) in &round_nodes {
                 for &nd in nodes {
                     let n = &dag.nodes[nd];
@@ -2460,8 +2575,8 @@ impl Sink {
                     #[cfg(not(target_arch = "wasm32"))]
                     if std::env::var("WV_DBG_DISPATCH").is_ok() {
                         eprintln!(
-                            "WV_DBG_DISPATCH: window_lo={window_lo} nodes={unit_nodes:?} rep_op={:?} shp={shp:?}",
-                            dag.nodes[rep].op,
+                            "WV_DBG_DISPATCH: window_lo={window_lo} nodes={unit_nodes:?} ops={:?} shp={shp:?}",
+                            unit_nodes.iter().map(|&n| &dag.nodes[n].op).collect::<Vec<_>>(),
                         );
                     }
                     debug_assert!(
@@ -2479,8 +2594,18 @@ impl Sink {
                         if matches!(dag.nodes[n].op, UnitOp::Rasterize(_)) {
                             return Some(n);
                         }
+                        let folded_rz = |j: usize| {
+                            matches!(
+                                dag.nodes[j].op,
+                                UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage {
+                                    analytic: true,
+                                    ..
+                                })
+                            )
+                        };
                         let direct = dag.nodes[n].inputs.iter().copied().find(|&j| match shp.input {
                             Slot::Source => matches!(dag.nodes[j].op, UnitOp::Rasterize(_)),
+                            Slot::Draft(2) => folded_rz(j),
                             Slot::Draft(_) => {
                                 !matches!(dag.nodes[j].op, UnitOp::Rasterize(_) | UnitOp::Reload)
                             }
@@ -2555,6 +2680,13 @@ impl Sink {
                     }
                     if shp.to_draft {
                         let dv = match (shp.base, shp.input) {
+                            (Slot::None, Slot::None) => {
+                                // A rasterize window: the fenced silhouette draws paint the lease;
+                                // nothing is bound but the draft.
+                                let dv = draft_target(backend, rep);
+                                backend.phased_fine_segment_draftonly(device, queue, &mut enc, window_lo, hi, &dv);
+                                dv
+                            }
                             (Slot::Backdrop, Slot::None) => {
                                 let dv = draft_target(backend, rep);
                                 backend.phased_fine_segment_loadu(device, queue, &mut enc, window_lo, hi, &snap, None, &dv);
@@ -2592,7 +2724,7 @@ impl Sink {
                                     .clone();
                                 let dv = draft_target(backend, rep);
                                 match shp.base {
-                                    Slot::Source => {
+                                    Slot::Source | Slot::Draft(2) => {
                                         let base = dag_base_rasterize(&dag, rep)
                                             .and_then(|rz| node_scratch.get(&rz))
                                             .cloned()
