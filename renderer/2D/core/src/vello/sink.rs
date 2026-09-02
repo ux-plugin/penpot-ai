@@ -1534,14 +1534,68 @@ impl Sink {
                 )
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let hoist = sil_fold
+        let hoist_on = sil_fold
             && std::env::var("WV_SIL_HOIST").map_or(true, |v| v != "0")
-            && std::env::var("WV_SCRATCH_CROP").map_or(true, |v| v != "0")
-            && marks.values().flatten().any(|m| is_fence(m));
+            && std::env::var("WV_SCRATCH_CROP").map_or(true, |v| v != "0");
         #[cfg(target_arch = "wasm32")]
-        let hoist = sil_fold && marks.values().flatten().any(|m| is_fence(m));
+        let hoist_on = sil_fold;
+        // The hoist SPENDS memory the scheduler never modelled: schedule() approved the scratch
+        // budget against scattered sil lifetimes, and moving every birth to round 1 makes all fold
+        // leases co-live until their last reader. So the hoist is budget-capped HERE: fences join
+        // the round-1 window greedily (deterministic gid order) while their tile-aligned lease
+        // areas fit min(scratch budget, half the 8192² side texture — rowing waste headroom); the
+        // overflow keeps its scheduled round and costs windows, never a dropped silhouette.
+        let hoist_set: std::collections::HashSet<usize> = if hoist_on {
+            let reach_by_gid: HashMap<u128, [f32; 4]> =
+                gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
+            #[cfg(not(target_arch = "wasm32"))]
+            let hoist_budget = std::env::var("WV_SIL_HOIST_MB")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map_or(scratch_budget, |mb| mb.saturating_mul(1024 * 1024).max(1));
+            #[cfg(target_arch = "wasm32")]
+            let hoist_budget = scratch_budget;
+            let cap_px = (hoist_budget / 4).min(scratch_budget / 4).min(8192 * 8192 / 2);
+            let mut fences: Vec<(u128, usize, u64)> = marks
+                .iter()
+                .flat_map(|(&gid, ms)| {
+                    ms.iter().filter(|m| is_fence(m)).map(move |m| (gid, m.node))
+                })
+                .map(|(gid, node)| {
+                    let r = reach_by_gid[&gid];
+                    let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
+                    let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
+                    let x1 = ((r[2].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
+                    let y1 = ((r[3].max(0.0).ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
+                    (gid, node, u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0)))
+                })
+                .collect();
+            fences.sort_unstable_by_key(|&(gid, node, _)| (gid, node));
+            let mut px = 0u64;
+            fences
+                .into_iter()
+                .filter(|&(_, _, a)| {
+                    if px + a <= cap_px {
+                        px += a;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .map(|(_, node, _)| node)
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let hoist = !hoist_set.is_empty();
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_HOIST").is_ok() {
+            let total = marks.values().flatten().filter(|m| is_fence(m)).count();
+            eprintln!("WV_DBG_HOIST: hoisted={}/{total}", hoist_set.len());
+        }
+        let is_hoisted = |m: &UnitMark| hoist_set.contains(&m.node) && is_fence(m);
         let mark_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
-            if hoist && is_fence(m) {
+            if is_hoisted(m) {
                 return (i64::MIN, 0);
             }
             if is_body(m) { body_key(m, ms) } else { (i64::from(m.round), 0) }
@@ -1558,7 +1612,7 @@ impl Sink {
             let keys: Vec<(i64, u8)> = ms.iter().map(|m| mark_key(m, ms)).collect();
             for (m, key) in ms.iter_mut().zip(keys) {
                 m.round = exec[&key];
-                if hoist && !is_fence(m) {
+                if hoist && !is_hoisted(m) {
                     m.round += 1;
                 }
             }
@@ -1570,7 +1624,7 @@ impl Sink {
                     .get(&gid)
                     .and_then(|ms| {
                         ms.iter()
-                            .filter(|m| !is_fence(m))
+                            .filter(|m| !is_hoisted(m))
                             .map(|m| m.round)
                             .min()
                             .or_else(|| ms.iter().map(|m| m.round).min())
@@ -2023,7 +2077,7 @@ impl Sink {
                 for (j, &(_, gid, _)) in gathers.iter().enumerate() {
                     let Some(ms) = marks.get(&gid) else { continue };
                     for m in ms {
-                        if !is_fence(m) {
+                        if !is_hoisted(m) {
                             continue;
                         }
                         z += 1;
@@ -2063,7 +2117,7 @@ impl Sink {
                     marker_rects.push((rounds[j], reaches[j]));
                     if let Some(ms) = marks.get(&gid) {
                         for m in ms {
-                            if hoist && is_fence(m) {
+                            if is_hoisted(m) {
                                 continue;
                             }
                             z += 1;
@@ -2082,7 +2136,7 @@ impl Sink {
                     cursor = gi + 1;
                 } else if let Some(ms) = marks.get(&gid) {
                     for m in ms {
-                        if hoist && is_fence(m) {
+                        if is_hoisted(m) {
                             continue;
                         }
                         z += 1;
