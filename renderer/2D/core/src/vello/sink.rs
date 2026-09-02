@@ -1099,7 +1099,9 @@ impl Sink {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .map_or(256 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
+        let _tsched0 = crate::vello::prof::now();
         let sched = dag.schedule(16.0, scratch_budget);
+        let _tsched1 = crate::vello::prof::now();
 
         /// One CMD_EFFECT mark per dispatch-relevant DAG node — desc, chain control, coverage choice —
         /// authored straight from the node's op + edges. `round` starts as the RAW scheduler round and
@@ -1517,7 +1519,31 @@ impl Sink {
         let is_body = |m: &UnitMark| {
             matches!(dag.nodes[m.node].source, crate::vello::frame_dag::Source::Body(_))
         };
+        // A FENCE mark: the zero-desc mark a folded silhouette source owns (the only Rasterize
+        // Coverage mark ever pushed). Independent producers, so the HOIST collapses every one of
+        // them into executor round 1 — one rasterize window, one dispatch — with the fence-flush in
+        // fine multiplexing overlapping tiles across leases. Round 2 is reserved for the restore
+        // marker that returns every tile to the base segment; all other rounds shift past it.
+        let is_fence = |m: &UnitMark| {
+            m.desc[0] == 0.0
+                && matches!(
+                    dag.nodes[m.node].op,
+                    crate::vello::units::UnitOp::Rasterize(
+                        crate::vello::units::RasterSource::Coverage { analytic: true, .. }
+                    )
+                )
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let hoist = sil_fold
+            && std::env::var("WV_SIL_HOIST").map_or(true, |v| v != "0")
+            && std::env::var("WV_SCRATCH_CROP").map_or(true, |v| v != "0")
+            && marks.values().flatten().any(|m| is_fence(m));
+        #[cfg(target_arch = "wasm32")]
+        let hoist = sil_fold && marks.values().flatten().any(|m| is_fence(m));
         let mark_key = |m: &UnitMark, ms: &[UnitMark]| -> (i64, u8) {
+            if hoist && is_fence(m) {
+                return (i64::MIN, 0);
+            }
             if is_body(m) { body_key(m, ms) } else { (i64::from(m.round), 0) }
         };
         let mut round_keys: std::collections::BTreeSet<(i64, u8)> = std::collections::BTreeSet::new();
@@ -1532,6 +1558,9 @@ impl Sink {
             let keys: Vec<(i64, u8)> = ms.iter().map(|m| mark_key(m, ms)).collect();
             for (m, key) in ms.iter_mut().zip(keys) {
                 m.round = exec[&key];
+                if hoist && !is_fence(m) {
+                    m.round += 1;
+                }
             }
         }
         let rounds: Vec<u32> = gathers
@@ -1539,7 +1568,13 @@ impl Sink {
             .map(|&(_, gid, _)| {
                 marks
                     .get(&gid)
-                    .and_then(|ms| ms.iter().map(|m| m.round).min())
+                    .and_then(|ms| {
+                        ms.iter()
+                            .filter(|m| !is_fence(m))
+                            .map(|m| m.round)
+                            .min()
+                            .or_else(|| ms.iter().map(|m| m.round).min())
+                    })
                     .unwrap_or(1)
             })
             .collect();
@@ -1572,6 +1607,7 @@ impl Sink {
         // un-cropping. WV_SCRATCH_CROP=0 remains as the manual byte-parity A/B lever, and
         // WV_CROP_NOREUSE gives every draft its own slot — the bisect lever separating layout bugs
         // from stale-tenant reads.
+        let _tlease0 = crate::vello::prof::now();
         let mut scratch_atlas_dims: [Option<(u32, u32)>; 3] = [None, None, None];
         let mut atlas_of: HashMap<usize, usize> = HashMap::new();
         {
@@ -1940,7 +1976,10 @@ impl Sink {
         // right after the mark's marker, so it lands in the source's own round on the marker's
         // tiles and the round's window rasterizes it into the packed lease. Same inset/class
         // resolution the JIT builder used.
+        let _tplan = crate::vello::prof::now();
+        let sil_emit_ms = std::cell::Cell::new(0.0f64);
         let emit_sil_draws = |backend: &mut B, scene: &mut B::Scene, s: usize| {
+            let _ts = crate::vello::prof::now();
             use crate::vello::frame_dag::Source as DagSource;
             let DagSource::Effect { shape, slot } = dag.nodes[s].source else { return };
             let inset = dag.nodes.iter().any(|m| {
@@ -1961,6 +2000,7 @@ impl Sink {
             })
             .unwrap_or(slot);
             backend.build_shadow_silhouette(scene, root, shape, class_idx, inset, true, false);
+            sil_emit_ms.set(sil_emit_ms.get() + (crate::vello::prof::now() - _ts));
         };
         // Every marker's (round, reach quad), collected as they are drawn: a window's work on a tile
         // exists only where a marker with an in-window round advanced that tile, so these quads are an
@@ -1974,6 +2014,39 @@ impl Sink {
             let mut mb = Vec::with_capacity(gathers.len());
             let mut cursor = 0usize;
             let mut z = 0u32;
+            // The HOIST's front block: every fence + its silhouette draws first in the scene (all
+            // at round 1 — one rasterize window), then a full-viewport boundary marker at round 2
+            // returning every tile to the base segment. The seed window [0,1) breaks at the first
+            // front-block marker on every tile, so the base content it used to composite rides the
+            // round-2 window instead.
+            if hoist {
+                for (j, &(_, gid, _)) in gathers.iter().enumerate() {
+                    let Some(ms) = marks.get(&gid) else { continue };
+                    for m in ms {
+                        if !is_fence(m) {
+                            continue;
+                        }
+                        z += 1;
+                        backend.draw_effect_marker(
+                            &mut scene,
+                            root,
+                            gid,
+                            crate::vello::bake::EID_MATERIALIZE,
+                            z,
+                            m.round,
+                            m.off,
+                            reaches[j],
+                            m.ctl,
+                        );
+                        marker_rects.push((m.round, reaches[j]));
+                        emit_sil_draws(backend, &mut scene, m.node);
+                    }
+                }
+                z += 1;
+                let full = [0.0, 0.0, width as f32, acc_h as f32];
+                backend.draw_effect_marker(&mut scene, root, 0, 6, z, 2, 0, full, 0);
+                marker_rects.push((2, full));
+            }
             for (j, &(gi, gid, kind)) in gathers.iter().enumerate() {
                 if gi > cursor {
                     backend.draw_scene_range(&mut scene, root, cursor, gi);
@@ -1990,6 +2063,9 @@ impl Sink {
                     marker_rects.push((rounds[j], reaches[j]));
                     if let Some(ms) = marks.get(&gid) {
                         for m in ms {
+                            if hoist && is_fence(m) {
+                                continue;
+                            }
                             z += 1;
                             let eid = if m.masked {
                                 crate::vello::bake::EID_MASKED
@@ -2006,6 +2082,9 @@ impl Sink {
                     cursor = gi + 1;
                 } else if let Some(ms) = marks.get(&gid) {
                     for m in ms {
+                        if hoist && is_fence(m) {
+                            continue;
+                        }
                         z += 1;
                         let eid = if m.masked {
                             crate::vello::bake::EID_MASKED
@@ -2028,6 +2107,21 @@ impl Sink {
             (b, mb, z)
         };
         let total_draws = backend.draw_object_count(&scene);
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_ENC").is_ok() {
+            let t = crate::vello::prof::now();
+            eprintln!(
+                "WV_DBG_ENC: pre={:.2} sched={:.2} marks={:.2} lease={:.2} plan={:.2}ms emit={:.2}ms (sil_draws={:.2}ms) total={:.2}ms",
+                _tsched0 - _tenc,
+                _tsched1 - _tsched0,
+                _tlease0 - _tsched1,
+                _tplan - _tlease0,
+                _tplan - _tenc,
+                t - _tplan,
+                sil_emit_ms.get(),
+                t - _tenc,
+            );
+        }
         crate::vello::prof::dbg_add(30, crate::vello::prof::now() - _tenc);
 
         let phase_usage = self.raster_usage
@@ -2137,6 +2231,12 @@ impl Sink {
                 // stack shapes has zero base draws, but skipping [0, 1) would leave the cursor at 0
                 // and starve every mark window behind the base-only special case.
                 return real_draws > 0 || !active_rounds.is_empty();
+            }
+            // The hoist's restore marker parks every tile's base content at segment 2 — a round no
+            // mark owns, invisible to the clauses below — so its window opens whenever the scene
+            // has real draws at all.
+            if hoist && lo == 2 && real_draws > 0 {
+                return true;
             }
             let hit = |r: u32| r >= lo && (hi == crate::vello::rasterize::SEG_ALL || r < hi);
             (0..gathers.len()).any(|j| hit(rounds[j]) && draws_after(j) > 0)

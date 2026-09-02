@@ -115,6 +115,11 @@ impl Node {
 #[derive(Clone, Debug, Default)]
 pub struct FrameDag {
     pub nodes: Vec<Node>,
+    /// Lazily-built reverse indexes for [`Self::binding_shape`]: per node, whether a gather
+    /// (Blur/Scatter/Warp/EraseBy) reads it, and whether it is texture-read (a Blur's first or an
+    /// EraseBy's second input). Structure-only — valid as long as ops/edges are frozen once the
+    /// first shape is queried; uniform fills don't invalidate it.
+    bind_idx: std::cell::OnceCell<(Vec<bool>, Vec<bool>)>,
 }
 
 /// The on-chip tile edge in page units. A gather whose source fits inside one tile blurs entirely
@@ -374,10 +379,35 @@ impl FrameDag {
     #[must_use]
     pub fn binding_shape(&self, i: usize) -> Option<BindingShape> {
         let n = &self.nodes[i];
-        let mat = self.nodes.iter().any(|m| {
-            m.inputs.contains(&i)
-                && matches!(m.op, UnitOp::Blur { .. } | UnitOp::Scatter(_) | UnitOp::Warp(_) | UnitOp::EraseBy(_))
+        let (mat_set, tex_read) = self.bind_idx.get_or_init(|| {
+            let mut mat = vec![false; self.nodes.len()];
+            let mut tex = vec![false; self.nodes.len()];
+            for m in &self.nodes {
+                match m.op {
+                    UnitOp::Blur { .. } => {
+                        if let Some(&j) = m.inputs.first() {
+                            tex[j] = true;
+                        }
+                    }
+                    UnitOp::EraseBy(_) => {
+                        if let Some(&j) = m.inputs.get(1) {
+                            tex[j] = true;
+                        }
+                    }
+                    _ => {}
+                }
+                if matches!(
+                    m.op,
+                    UnitOp::Blur { .. } | UnitOp::Scatter(_) | UnitOp::Warp(_) | UnitOp::EraseBy(_)
+                ) {
+                    for &j in &m.inputs {
+                        mat[j] = true;
+                    }
+                }
+            }
+            (mat, tex)
         });
+        let mat = mat_set[i];
         // The chain's root decides what `base_in` holds — a rasterized source texture, or the (reloaded)
         // accumulator — and, for a draft input, which pool that draft physically lives in today.
         // A FOLDED silhouette (texture-read analytic coverage) physically lives in the dedicated
@@ -454,10 +484,7 @@ impl FrameDag {
             // would share the punch window's tiles and hijack the store origin. Glyph
             // (non-analytic) coverage and SDF sources keep their out-of-band producers.
             UnitOp::Rasterize(crate::vello::units::RasterSource::Coverage { analytic: true, .. })
-                if self.nodes.iter().any(|m| {
-                    (matches!(m.op, UnitOp::Blur { .. }) && m.inputs.first() == Some(&i))
-                        || (matches!(m.op, UnitOp::EraseBy(_)) && m.inputs.get(1) == Some(&i))
-                }) =>
+                if tex_read[i] =>
             {
                 shape(Slot::None, Slot::None, true, false)
             }
