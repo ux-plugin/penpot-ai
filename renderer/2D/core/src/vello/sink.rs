@@ -2273,7 +2273,66 @@ impl Sink {
                     }
                 }
             }
+            // Layer merge: one full-pipeline render per SILHOUETTE was the dominant frame cost at
+            // effect density (460 front-ends/frame at 500 effects) — but silhouettes whose reach
+            // quads are device-DISJOINT can share one texture at device coordinates with zero
+            // change to any consumer (every read stays inside its own quad — the scheduler's own
+            // round-sharing invariant). Greedily pack the groups (in round order) into layers; a
+            // node with no known quad, or with WV_SIL_MERGE=0, keeps a private layer. The JIT
+            // rasterize/release loop below is unchanged — it just sees fewer, fatter entries.
+            #[cfg(not(target_arch = "wasm32"))]
+            let sil_merge = std::env::var("WV_SIL_MERGE").map_or(true, |v| v != "0");
+            #[cfg(target_arch = "wasm32")]
+            let sil_merge = true;
+            let sil_dev: HashMap<u128, [f32; 4]> =
+                gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
+            let node_quad = |s: usize| -> Option<[f32; 4]> {
+                match dag.nodes[s].source {
+                    DagSource::Effect { shape, .. } | DagSource::Body(shape) => {
+                        sil_dev.get(&shape).copied()
+                    }
+                    _ => None,
+                }
+            };
+            let quads_overlap = |a: &[f32; 4], b: &[f32; 4]| {
+                a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+            };
+            struct SilLayer {
+                round: u32,
+                nodes: Vec<usize>,
+                rects: Vec<[f32; 4]>,
+                sealed: bool,
+            }
+            let mut sil_layers: Vec<SilLayer> = Vec::new();
             for (&round, group) in &sil_groups {
+                // A round's group is ATOMIC: the round's single dispatch binds ONE source texture
+                // for all its nodes, so the whole group joins a layer together or not at all.
+                let quads: Option<Vec<[f32; 4]>> = group.iter().map(|&s| node_quad(s)).collect();
+                let joined = sil_merge
+                    && quads.as_ref().is_some_and(|qs| {
+                        for l in &mut sil_layers {
+                            if !l.sealed
+                                && qs.iter().all(|q| l.rects.iter().all(|r| !quads_overlap(r, q)))
+                            {
+                                l.nodes.extend_from_slice(group);
+                                l.rects.extend_from_slice(qs);
+                                return true;
+                            }
+                        }
+                        false
+                    });
+                if !joined {
+                    sil_layers.push(SilLayer {
+                        round,
+                        nodes: group.clone(),
+                        rects: quads.clone().unwrap_or_default(),
+                        sealed: quads.is_none(),
+                    });
+                }
+            }
+            for layer in &sil_layers {
+                let group = &layer.nodes;
+                let round = layer.round;
                 let mut sscene = backend.new_scene(width as u16, acc_h as u16);
                 for &s in group {
                     // A plain stack body (its own bare mark): render the shape at its device place.
@@ -2319,6 +2378,11 @@ impl Sink {
                 }
                 let last_use = group.iter().filter_map(|s| sil_last.get(s)).copied().max().unwrap_or(round);
                 sil_pending.push((round, sscene, group.clone(), last_use));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var("WV_DBG_ROUNDS").is_ok() {
+                let members: usize = sil_layers.iter().map(|l| l.nodes.len()).sum();
+                eprintln!("WV_DBG_SIL: layers={} silhouettes={members}", sil_layers.len());
             }
             if !sdf_jobs.is_empty() {
                 if self.sdf_baker.is_none() {
