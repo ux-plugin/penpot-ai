@@ -986,6 +986,12 @@ impl render_core::vello::rasterize::RasterBackend for ClassicBackend {
         }
     }
 
+    fn phase_sparse_window(&mut self, base: u32, n: u32) {
+        if let Some(session) = self.phased_session.as_mut() {
+            session.set_sparse(base, n);
+        }
+    }
+
     fn phased_finish(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder) {
         if let Some(session) = self.phased_session.take() {
             self.renderer

@@ -266,6 +266,12 @@ pub trait RasterBackend {
     /// only a cropped call needs to set them. `[0, 0]` = that slot is not cropped. Default: no-op.
     fn phase_scratch_origins(&mut self, _scratch_out: [u32; 2], _scratch_in: [u32; 2]) {}
 
+    /// Set the sparse tile list for the NEXT `phased_fine_segment*` call: the fine grid becomes
+    /// `(n, 1, 1)` workgroups, workgroup `i` reading its tile coordinate from
+    /// `effect_params[base + i]` (packed `y<<16 | x`, biased by `0x40000000`). Consumed by that one
+    /// dispatch, then reset — a following full-viewport call is inert. Default: no-op.
+    fn phase_sparse_window(&mut self, _base: u32, _n: u32) {}
+
     /// End the session begun by [`Self::phased_begin`], freeing its shared buffers into `enc` (deferred
     /// until after the sink's submit). Only classic; default is a no-op.
     fn phased_finish(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _enc: &mut wgpu::CommandEncoder) {}

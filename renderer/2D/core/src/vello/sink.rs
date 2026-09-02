@@ -1879,8 +1879,10 @@ impl Sink {
                 }
             }
         }
-        let fx_bytes: Vec<u8> = fx_params.iter().flat_map(|f| f.to_le_bytes()).collect();
-
+        // Every marker's (round, reach quad), collected as they are drawn: a window's work on a tile
+        // exists only where a marker with an in-window round advanced that tile, so these quads are an
+        // EXACT cover of every non-base window's active tiles (the sparse dispatch lists below).
+        let mut marker_rects: Vec<(u32, [f32; 4])> = Vec::new();
         // `boundaries[j]` = draw count before gather j's marker(s); `markers_before[j]` = markers emitted
         // before it; `total_markers` = all of them. A gather emits one marker per unit mark, each at its
         // own z ordinal.
@@ -1902,6 +1904,7 @@ impl Sink {
                     // scene draws (its layers paint per-round).
                     z += 1;
                     backend.draw_effect_marker(&mut scene, root, gid, 6u32, z, rounds[j], 0, reaches[j], 0);
+                    marker_rects.push((rounds[j], reaches[j]));
                     if let Some(ms) = marks.get(&gid) {
                         for m in ms {
                             z += 1;
@@ -1911,6 +1914,7 @@ impl Sink {
                                 crate::vello::bake::EID_MATERIALIZE
                             };
                             backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
+                            marker_rects.push((m.round, reaches[j]));
                         }
                     }
                     cursor = gi + 1;
@@ -1923,6 +1927,7 @@ impl Sink {
                             crate::vello::bake::EID_MATERIALIZE
                         };
                         backend.draw_effect_marker(&mut scene, root, gid, eid, z, m.round, m.off, reaches[j], m.ctl);
+                        marker_rects.push((m.round, reaches[j]));
                     }
                 } else {
                     unreachable!(
@@ -2013,6 +2018,92 @@ impl Sink {
             }
             m
         };
+        let n_markers = total_markers;
+        let real_draws = total_draws.saturating_sub(n_markers);
+        let draws_after = |j: usize| -> u32 {
+            total_draws.saturating_sub(boundaries[j]).saturating_sub(n_markers - markers_before[j])
+        };
+        // Every executor round that carries work: a unit mark, or a gather's base window.
+        let active_rounds: std::collections::HashSet<u32> = marks
+            .values()
+            .flatten()
+            .map(|m| m.round)
+            .chain(gathers.iter().enumerate().map(|(j, _)| rounds[j]))
+            .collect();
+        let window_has_draws = |lo: u32, hi: u32| -> bool {
+            if lo == 0 {
+                // The base window must open (seeding the accumulator and advancing the window
+                // cursor) whenever ANY later round carries a mark — a scene whose only content is
+                // stack shapes has zero base draws, but skipping [0, 1) would leave the cursor at 0
+                // and starve every mark window behind the base-only special case.
+                return real_draws > 0 || !active_rounds.is_empty();
+            }
+            let hit = |r: u32| r >= lo && (hi == crate::vello::rasterize::SEG_ALL || r < hi);
+            (0..gathers.len()).any(|j| hit(rounds[j]) && draws_after(j) > 0)
+                || active_rounds.iter().any(|&r| hit(r))
+        };
+        // Sparse dispatch lists: replay the loop's window partition, and for every materialize
+        // window whose round owns a packed lease, emit the exact tiles its in-window markers cover
+        // (a window has work on a tile ONLY where such a marker advanced it — see `marker_rects`).
+        // The list rides the tail of `effect_params`; the dispatch shrinks to one workgroup per
+        // listed tile (`phase_sparse_window`). Composite windows stay full-grid: under the ping-pong
+        // every tile must copy the backdrop forward. A window whose round fell back to a
+        // full-viewport draft also stays full-grid — its unstamped records read the draft anywhere.
+        #[cfg(not(target_arch = "wasm32"))]
+        let sparse_on = std::env::var("WV_SPARSE").map_or(true, |v| v != "0");
+        #[cfg(target_arch = "wasm32")]
+        let sparse_on = true;
+        let sparse_windows: HashMap<u32, (u32, u32)> = {
+            let wt = width.div_ceil(TILE_PX);
+            let ht = acc_h.div_ceil(TILE_PX);
+            let full = (wt as usize) * (ht as usize);
+            let mut map = HashMap::new();
+            let mut lo = 0u32;
+            for r in 1..=max_round + 1 {
+                let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
+                if !window_has_draws(lo, hi) {
+                    continue;
+                }
+                let eligible = sparse_on
+                    && lo != 0
+                    && round_nodes.get(&lo).is_some_and(|nodes| {
+                        dag.binding_shape(nodes[0]).is_some_and(|shp| shp.to_draft)
+                            && atlas_of.contains_key(&nodes[0])
+                    });
+                if eligible {
+                    let mut tiles: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+                    for &(round, rect) in &marker_rects {
+                        if round >= lo && (hi == crate::vello::rasterize::SEG_ALL || round < hi) {
+                            let tx0 = ((rect[0].max(0.0) as u32) / TILE_PX).min(wt.saturating_sub(1));
+                            let ty0 = ((rect[1].max(0.0) as u32) / TILE_PX).min(ht.saturating_sub(1));
+                            let tx1 = ((rect[2].max(0.0).ceil() as u32).div_ceil(TILE_PX)).clamp(tx0 + 1, wt);
+                            let ty1 = ((rect[3].max(0.0).ceil() as u32).div_ceil(TILE_PX)).clamp(ty0 + 1, ht);
+                            for ty in ty0..ty1 {
+                                for tx in tx0..tx1 {
+                                    tiles.insert(0x4000_0000 | (ty << 16) | tx);
+                                }
+                            }
+                        }
+                    }
+                    if !tiles.is_empty() && tiles.len() < full {
+                        map.insert(lo, (fx_params.len() as u32, tiles.len() as u32));
+                        fx_params.extend(tiles.iter().map(|&p| f32::from_bits(p)));
+                    }
+                }
+                lo = r;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var("WV_DBG_ROUNDS").is_ok() {
+                let listed: usize = map.values().map(|&(_, n)| n as usize).sum();
+                eprintln!(
+                    "WV_DBG_SPARSE: windows={} listed_tiles={listed} full_grid={full} avg={:.1}",
+                    map.len(),
+                    if map.is_empty() { 0.0 } else { listed as f64 / map.len() as f64 },
+                );
+            }
+            map
+        };
+        let fx_bytes: Vec<u8> = fx_params.iter().flat_map(|f| f.to_le_bytes()).collect();
         // Rasterized sources (silhouettes / SDFs), co-located per consuming round: the round's single
         // dispatch binds ONE source texture, and reach-disjointness (the very thing that let the
         // scheduler share the round) keeps their device regions disjoint inside it.
@@ -2199,30 +2290,6 @@ impl Sink {
         backend.phased_frontend_full(device, queue, &mut enc);
 
         let _tpl = crate::vello::prof::now();
-        let n_markers = total_markers;
-        let real_draws = total_draws.saturating_sub(n_markers);
-        let draws_after = |j: usize| -> u32 {
-            total_draws.saturating_sub(boundaries[j]).saturating_sub(n_markers - markers_before[j])
-        };
-        // Every executor round that carries work: a unit mark, or a gather's base window.
-        let active_rounds: std::collections::HashSet<u32> = marks
-            .values()
-            .flatten()
-            .map(|m| m.round)
-            .chain(gathers.iter().enumerate().map(|(j, _)| rounds[j]))
-            .collect();
-        let window_has_draws = |lo: u32, hi: u32| -> bool {
-            if lo == 0 {
-                // The base window must open (seeding the accumulator and advancing the window
-                // cursor) whenever ANY later round carries a mark — a scene whose only content is
-                // stack shapes has zero base draws, but skipping [0, 1) would leave the cursor at 0
-                // and starve every mark window behind the base-only special case.
-                return real_draws > 0 || !active_rounds.is_empty();
-            }
-            let hit = |r: u32| r >= lo && (hi == crate::vello::rasterize::SEG_ALL || r < hi);
-            (0..gathers.len()).any(|j| hit(rounds[j]) && draws_after(j) > 0)
-                || active_rounds.iter().any(|&r| hit(r))
-        };
         let mut window_lo = 0u32;
         let mut cur: Option<usize> = None;
         let seed_clear = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
@@ -2326,6 +2393,9 @@ impl Sink {
                         }
                     };
                     if shp.to_draft {
+                        if let Some(&(sb, sn)) = sparse_windows.get(&window_lo) {
+                            backend.phase_sparse_window(sb, sn);
+                        }
                         let dv = match (shp.base, shp.input) {
                             (Slot::Backdrop, Slot::None) => {
                                 let base = cur.map(|c| views[c].clone()).expect("a backdrop materialize reads the accumulator");
