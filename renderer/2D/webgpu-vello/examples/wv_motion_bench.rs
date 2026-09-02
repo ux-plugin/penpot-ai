@@ -35,9 +35,13 @@ fn main() {
         .expect("adapter");
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("wv_motion_bench"),
+        required_limits: adapter.limits(),
         ..Default::default()
     }))
     .expect("device");
+    device.set_device_lost_callback(|reason, msg| {
+        eprintln!("DEVICE LOST: {reason:?} — {msg}");
+    });
 
     let mut backend = ClassicBackend::new(&device);
     let root = Affine::IDENTITY;

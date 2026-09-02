@@ -326,7 +326,13 @@ impl FrameDag {
             return Some(Barrier::Reload);
         }
         if dst.op.is_gather() && src.op != UnitOp::Reload {
-            let on_chip = src.reach.is_some_and(|r| r.width() <= tile && r.height() <= tile);
+            // On-chip fusion (a gather sharing its source's round) is only real when the source is
+            // a RASTERIZED texture the taps can read directly. A gather over another gather's value
+            // has nothing to tap in the same dispatch — the value lives in a register — so it always
+            // materialises, whatever its reach; tiny-reach chains once fused here and the second
+            // gather silently tapped the wrong surface.
+            let on_chip = src.reach.is_some_and(|r| r.width() <= tile && r.height() <= tile)
+                && matches!(src.op, UnitOp::Rasterize(_));
             if !on_chip {
                 return Some(Barrier::Materialize);
             }
@@ -778,6 +784,52 @@ impl FrameDag {
                 Some(LiveRect { node: i, w, h, birth: sched.round[i], death: sched.death[i] })
             })
             .collect()
+    }
+
+    /// Two-colour rounds under the executor's texture constraints — union-find with PARITY. Items
+    /// are (dense) round ids; `union(a, b, diff)` merges them with `diff = true` for "must take
+    /// opposite atlas sides" (a materialize round versus a round it reads) and `false` for "must
+    /// share a side" (two producer rounds co-read by one dispatch, which binds a single source
+    /// texture). Read edges always point to earlier rounds, so the constraint graph is acyclic and
+    /// a colouring always exists; `union` returning `false` (an odd cycle) is therefore a planner
+    /// bug surfaced, not a case to design around.
+    pub fn parity_colours(n: usize, eq: &[(usize, usize)], neq: &[(usize, usize)]) -> Option<Vec<u8>> {
+        let mut parent: Vec<usize> = (0..n).collect();
+        let mut par = vec![0u8; n];
+        fn find(parent: &mut [usize], par: &mut [u8], i: usize) -> (usize, u8) {
+            if parent[i] == i {
+                return (i, 0);
+            }
+            let (root, p) = find(parent, par, parent[i]);
+            parent[i] = root;
+            par[i] ^= p;
+            (root, par[i])
+        }
+        let mut union = |a: usize, b: usize, diff: u8| -> bool {
+            let (ra, pa) = find(&mut parent, &mut par, a);
+            let (rb, pb) = find(&mut parent, &mut par, b);
+            if ra == rb {
+                return pa ^ pb == diff;
+            }
+            parent[ra] = rb;
+            par[ra] = pa ^ pb ^ diff;
+            true
+        };
+        for &(a, b) in eq {
+            if !union(a, b, 0) {
+                return None;
+            }
+        }
+        for &(a, b) in neq {
+            if !union(a, b, 1) {
+                return None;
+            }
+        }
+        Some(
+            (0..n)
+                .map(|i| find(&mut parent, &mut par, i).1)
+                .collect(),
+        )
     }
 
     /// The scratch-VRAM curve a set of live intervals implies: for each round, the bytes of every
@@ -1793,6 +1845,20 @@ mod tests {
                 assert!(!overlap, "live values {a} and {b} overlap in slab {}", la.slab);
             }
         }
+    }
+
+    #[test]
+    fn parity_colours_solve_chains_and_expose_odd_cycles() {
+        let c = FrameDag::parity_colours(4, &[], &[(0, 1), (1, 2), (2, 3)]).expect("a chain 2-colours");
+        assert_eq!(c[0], c[2]);
+        assert_eq!(c[1], c[3]);
+        assert_ne!(c[0], c[1]);
+        let c = FrameDag::parity_colours(3, &[(0, 2)], &[(0, 1), (1, 2)]).expect("eq closing an even path");
+        assert_eq!(c[0], c[2]);
+        assert!(
+            FrameDag::parity_colours(3, &[], &[(0, 1), (1, 2), (2, 0)]).is_none(),
+            "an odd cycle has no 2-colouring and must be surfaced"
+        );
     }
 
     #[test]

@@ -397,7 +397,17 @@ pub(crate) fn passes_recorded() -> u32 {
 /// Flush the whole-viewport frame encoder once this many passes piled up since the last flush.
 /// Each pass costs ~2 outstanding Metal command buffers, so 768 keeps a comfortable margin under
 /// the 4096 device budget even with the front-end's own uncounted dispatches.
-const WV_PASS_FLUSH_BUDGET: u32 = 768;
+/// Passes recorded before the frame's encoder is submitted and a fresh one begins. The ceiling is
+/// WALL TIME, not memory: Metal's GPU watchdog kills a command buffer that runs multi-second, and
+/// at 4K a heavy scene's passes are milliseconds each — 768 crossed the threshold near 6000 shapes
+/// (device lost, every later creation invalid). 128 keeps the heaviest measured buffers far under
+/// the watchdog at negligible submit overhead; WV_PASS_FLUSH_BUDGET overrides for experiments.
+fn wv_pass_flush_budget() -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("WV_PASS_FLUSH_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(128)
+    })
+}
 
 /// The scheduler's GPU production sink. Owns the per-frame surface map and the SrcOver compositor.
 pub struct Sink {
@@ -1080,7 +1090,16 @@ impl Sink {
             }
         }
         let dag = dag;
-        let sched = dag.schedule(16.0, u64::MAX);
+        // The scratch BUDGET — the upstream capacity valve. The scheduler defers whole effects to
+        // later rounds until their concurrent draft footprint fits, so the lease planner below is
+        // handed a working set that always packs; capacity pressure trades rounds for memory here,
+        // never cropping for full-viewport drafts downstream. Tunable while the per-draft
+        // render-scale (downscale) lever is unwired; u64::MAX restores the old unbounded plan.
+        let scratch_budget = std::env::var("WV_SCRATCH_BUDGET_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map_or(256 * 1024 * 1024, |mb| mb.saturating_mul(1024 * 1024).max(1));
+        let sched = dag.schedule(16.0, scratch_budget);
 
         /// One CMD_EFFECT mark per dispatch-relevant DAG node — desc, chain control, coverage choice —
         /// authored straight from the node's op + edges. `round` starts as the RAW scheduler round and
@@ -1514,10 +1533,13 @@ impl Sink {
         // device→lease origin rides its OUTPUT record (record 4, the store shift); each consumer's
         // record-0 (and register-orig record-1) window carries the same origin for the read, and the
         // producer's device rect rides the record params so escaped taps resolve by the blur's edge
-        // policy instead of reading a neighbouring lease. A scene whose packed atlas would exceed
-        // the texture limit (or WV_SCRATCH_CROP=0) falls back to full-viewport per-round drafts with
-        // identity mapping — no records stamped. WV_CROP_NOREUSE gives every draft its own slot
-        // (no interval reuse) — the bisect lever separating layout bugs from stale-tenant reads.
+        // policy instead of reading a neighbouring lease. This is the ONE strategy — there is no
+        // runtime fallback: atlas sides come from a round-parity colouring that always exists, slabs
+        // meta-pack up to the texture limit, and capacity pressure is answered UPSTREAM by the
+        // scheduler's scratch budget (effects defer rounds until their drafts fit) — never by
+        // un-cropping. WV_SCRATCH_CROP=0 remains as the manual byte-parity A/B lever, and
+        // WV_CROP_NOREUSE gives every draft its own slot — the bisect lever separating layout bugs
+        // from stale-tenant reads.
         let mut scratch_atlas_dims: [Option<(u32, u32)>; 2] = [None, None];
         let mut atlas_of: HashMap<usize, usize> = HashMap::new();
         {
@@ -1566,14 +1588,18 @@ impl Sink {
                 lives = order.iter().enumerate().map(|(i, &k)| LiveRect { node: i, ..lives[k] }).collect();
                 jobs = order.iter().map(|&k| jobs[k]).collect();
             }
-            // The register a mark's slot-10 read actually binds, planner-side: an erase reads its
-            // punch (inputs[1]); everything else follows its FIRST-input spine down through the
-            // in-register links (pointwise units fused between two materialised values) to the first
-            // leased draft, stopping at a structural root. Mirrors the loop's `read_edge` — a
-            // shallow first-input check here once left composites past a fused tail reading the
-            // atlas at raw device coordinates, straight into a neighbouring lease.
+            // The register a mark's slot-10 read actually binds, planner-side: a bare rasterize
+            // mark is its own (never-leased) edge; an erase reads its punch (inputs[1]); everything
+            // else follows its FIRST-input spine down through the in-register links to the first
+            // leased draft, stopping at a structural root OR at any accumulator-writing node (a
+            // spine value is read from the accumulator, never a draft — walking through one once
+            // fabricated read edges into other chains and made rounds appear to read themselves).
+            // Mirrors the loop's `read_edge` exactly.
             let leased: std::collections::HashSet<usize> = jobs.iter().map(|&(n, _, _)| n).collect();
             let read_input = |node: usize| -> Option<usize> {
+                if matches!(dag.nodes[node].op, UnitOp::Rasterize(_)) {
+                    return None;
+                }
                 let mut cur = if matches!(dag.nodes[node].op, UnitOp::EraseBy(_)) {
                     dag.nodes[node].inputs.get(1).copied()?
                 } else {
@@ -1583,7 +1609,9 @@ impl Sink {
                     if leased.contains(&cur) {
                         return Some(cur);
                     }
-                    if matches!(dag.nodes[cur].op, UnitOp::Rasterize(_) | UnitOp::Reload) {
+                    if matches!(dag.nodes[cur].op, UnitOp::Rasterize(_) | UnitOp::Reload)
+                        || dag.nodes[cur].writes_accumulator()
+                    {
                         return None;
                     }
                     cur = dag.nodes[cur].inputs.first().copied()?;
@@ -1614,38 +1642,87 @@ impl Sink {
                 }
             }
             if !lives.is_empty() {
-                // Two atlases, coloured by materialize-chain DEPTH: a draft→draft link's producer
-                // and consumer alternate, so no dispatch ever reads and writes one texture (an
-                // exclusive-usage conflict in wgpu). Chains are linear, so depth-parity 2-colours
-                // them exactly; birth order guarantees a producer is coloured before its consumer.
-                let mut order: Vec<usize> = (0..jobs.len()).collect();
-                order.sort_by_key(|&k| lives[k].birth);
-                let mut colour: HashMap<usize, usize> = HashMap::new();
-                for &k in &order {
-                    let node = jobs[k].0;
-                    let c = read_input(node)
-                        .and_then(|e| colour.get(&e))
-                        .map_or(0, |&pc| 1 - pc);
-                    colour.insert(node, c);
-                }
-                // A round's peers share ONE dispatch and one output binding, so they must agree on
-                // colour; a scene where they don't keeps the full-viewport path.
-                let mut round_colour: HashMap<u32, usize> = HashMap::new();
-                let coherent = lives.iter().zip(&jobs).all(|(l, &(node, _, _))| {
-                    match round_colour.entry(l.birth) {
-                        std::collections::hash_map::Entry::Occupied(e) => *e.get() == colour[&node],
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(colour[&node]);
-                            true
+                // Atlas SIDES by ROUND-parity 2-colouring. The executor's own invariants are the
+                // constraints: a materialize round writes ONE texture while reading ONE source
+                // texture, so it must take the opposite side from the round(s) it reads (neq), and
+                // any round's leased inputs must share a side (eq — one bound source). Read edges
+                // point strictly earlier, the constraint graph is acyclic, and a colouring always
+                // exists; a contradiction is a planner bug surfaced loudly, never designed around.
+                let birth_of: HashMap<usize, u32> =
+                    jobs.iter().zip(&lives).map(|(&(n, _, _), l)| (n, l.birth)).collect();
+                let mut reads: std::collections::BTreeMap<u32, Vec<u32>> =
+                    std::collections::BTreeMap::new();
+                for ms in marks.values() {
+                    for m in ms {
+                        if let Some(&p) = read_input(m.node).and_then(|e| birth_of.get(&e)) {
+                            reads.entry(m.round).or_default().push(p);
                         }
                     }
-                });
+                }
+                let producer_rounds: std::collections::BTreeSet<u32> =
+                    birth_of.values().copied().collect();
+                let all_rounds: Vec<u32> = producer_rounds
+                    .iter()
+                    .copied()
+                    .chain(reads.keys().copied())
+                    .collect::<std::collections::BTreeSet<u32>>()
+                    .into_iter()
+                    .collect();
+                let rid: HashMap<u32, usize> =
+                    all_rounds.iter().enumerate().map(|(i, &r)| (r, i)).collect();
+                let (mut eq, mut neq) = (Vec::new(), Vec::new());
+                for (&r, ps) in &reads {
+                    for &p in &ps[1..] {
+                        eq.push((rid[&ps[0]], rid[&p]));
+                    }
+                    if producer_rounds.contains(&r) {
+                        neq.push((rid[&r], rid[&ps[0]]));
+                    }
+                }
+                let round_side = crate::vello::frame_dag::FrameDag::parity_colours(
+                    all_rounds.len(),
+                    &eq,
+                    &neq,
+                );
+                debug_assert!(round_side.is_some(), "round colouring is always 2-colourable");
+                let side_of = |node: usize| -> usize {
+                    round_side
+                        .as_ref()
+                        .map_or(0, |c| usize::from(c[rid[&birth_of[&node]]]))
+                };
+                if round_side.is_none() {
+                    eprintln!(
+                        "wv scratch: round-colouring contradiction — planner bug, frame renders uncropped"
+                    );
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if std::env::var("WV_DBG_ALLOC").is_ok() {
+                        for ms in marks.values() {
+                            for m in ms {
+                                if let Some(e) = read_input(m.node) {
+                                    if birth_of.get(&e) == Some(&m.round) {
+                                        eprintln!(
+                                            "  SELF-READ: mark node={} op={:?} round={} ctl={} -> edge node={} op={:?}",
+                                            m.node, dag.nodes[m.node].op, m.round, m.ctl, e, dag.nodes[e].op,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        for (&r, ps) in &reads {
+                            let mut u: Vec<u32> = ps.clone();
+                            u.sort_unstable();
+                            u.dedup();
+                            if u.len() > 1 || producer_rounds.contains(&r) {
+                                eprintln!("  round {r} (producer={}) reads {u:?}", producer_rounds.contains(&r));
+                            }
+                        }
+                    }
+                }
                 let mut origin: HashMap<usize, (f32, f32)> = HashMap::new();
-                let mut fits = coherent;
-                if coherent {
-                    for side in 0..2 {
+                if round_side.is_some() {
+                    for side in 0..2usize {
                         let picked: Vec<usize> =
-                            (0..jobs.len()).filter(|&k| colour[&jobs[k].0] == side).collect();
+                            (0..jobs.len()).filter(|&k| side_of(jobs[k].0) == side).collect();
                         if picked.is_empty() {
                             continue;
                         }
@@ -1655,77 +1732,140 @@ impl Sink {
                             .map(|(i, &k)| LiveRect { node: i, ..lives[k] })
                             .collect();
                         let leases = pack(&side_lives);
-                        let mut slab_h: std::collections::BTreeMap<u32, u32> =
+                        // Meta-pack the slabs into the one side texture, using its full 8192×8192.
+                        // A slab's slot rows can stack far past the height cap (thousands of
+                        // sequential drafts reuse a handful of slots but the packer still rows
+                        // co-live ones), so each slab is first CHUNKED into row groups of at most
+                        // 8192, and the chunks flow into columns: down a column to the cap, then a
+                        // new column to the right. Capacity pressure beyond the full texture is the
+                        // scheduler budget's job upstream; a chunk that still cannot place keeps its
+                        // drafts full-viewport for their own rounds — bounded, per-round, and
+                        // unreachable once the budget binds.
+                        let mut slab_leases: std::collections::BTreeMap<u32, Vec<usize>> =
                             std::collections::BTreeMap::new();
-                        for le in &leases {
-                            let e = slab_h.entry(le.slab).or_insert(0);
-                            *e = (*e).max(le.y + le.h);
+                        for (i, le) in leases.iter().enumerate() {
+                            slab_leases.entry(le.slab).or_default().push(i);
                         }
-                        let (mut slab_y, mut cursor) = (std::collections::BTreeMap::new(), 0u32);
-                        for (&slab, &h) in &slab_h {
-                            slab_y.insert(slab, cursor);
-                            cursor += h;
+                        let mut blocks: std::collections::BTreeMap<(u32, u32), (u32, u32)> =
+                            std::collections::BTreeMap::new();
+                        let mut lease_pos: Vec<((u32, u32), u32)> = vec![((0, 0), 0); leases.len()];
+                        for (&slab, idxs) in &slab_leases {
+                            let ch = idxs
+                                .iter()
+                                .map(|&i| leases[i].h)
+                                .max()
+                                .unwrap_or(1)
+                                .max(1)
+                                .next_power_of_two();
+                            let rows_per_chunk = (8192 / ch).max(1);
+                            for &i in idxs {
+                                let le = &leases[i];
+                                let row = le.y / ch;
+                                let chunk = row / rows_per_chunk;
+                                let local_y = (row % rows_per_chunk) * ch;
+                                let b = blocks.entry((slab, chunk)).or_insert((0, 0));
+                                b.0 = b.0.max(le.x + le.w);
+                                b.1 = b.1.max(local_y + le.h);
+                                lease_pos[i] = ((slab, chunk), local_y);
+                            }
                         }
-                        let atlas_w =
-                            leases.iter().map(|l| l.x + l.w).max().unwrap_or(TILE_PX).max(TILE_PX);
-                        let atlas_h = cursor.max(TILE_PX);
-                        // The device 2D-texture floor; a scene whose drafts cannot pack under it
-                        // keeps the full-viewport path rather than failing texture creation.
-                        if atlas_w > 8192 || atlas_h > 8192 {
-                            fits = false;
-                            break;
+                        let mut block_pos: std::collections::BTreeMap<(u32, u32), (u32, u32)> =
+                            std::collections::BTreeMap::new();
+                        let (mut col_x, mut col_w, mut cur_y) = (0u32, 0u32, 0u32);
+                        let (mut atlas_w, mut atlas_h) = (0u32, 0u32);
+                        for (&key, &(w, h)) in &blocks {
+                            if cur_y + h > 8192 && cur_y > 0 {
+                                col_x += col_w;
+                                col_w = 0;
+                                cur_y = 0;
+                            }
+                            if col_x + w > 8192 || h > 8192 {
+                                #[cfg(not(target_arch = "wasm32"))]
+                                eprintln!(
+                                    "wv scratch: side {side} block {key:?} overflows the texture limit — its drafts render full-viewport (raise the scratch budget's pressure)"
+                                );
+                                continue;
+                            }
+                            block_pos.insert(key, (col_x, cur_y));
+                            cur_y += h;
+                            col_w = col_w.max(w);
+                            atlas_w = atlas_w.max(col_x + w);
+                            atlas_h = atlas_h.max(cur_y);
                         }
-                        scratch_atlas_dims[side] = Some((atlas_w, atlas_h));
-                        for (le, &k) in leases.iter().zip(&picked) {
+                        if block_pos.is_empty() {
+                            continue;
+                        }
+                        scratch_atlas_dims[side] =
+                            Some((atlas_w.max(TILE_PX), atlas_h.max(TILE_PX)));
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if std::env::var("WV_DBG_ALLOC").is_ok() {
+                            eprintln!(
+                                "WV_DBG_ALLOC side {side}: {} leases, {} blocks, atlas {}x{}",
+                                picked.len(),
+                                blocks.len(),
+                                atlas_w.max(TILE_PX),
+                                atlas_h.max(TILE_PX),
+                            );
+                        }
+                        // A round's peers share ONE dispatch and one output texture, so an
+                        // overflowed block drops its WHOLE rounds — half-leased rounds would store
+                        // shifted coords into the wrong texture.
+                        let dropped_rounds: std::collections::HashSet<u32> = leases
+                            .iter()
+                            .enumerate()
+                            .zip(&picked)
+                            .filter(|((i, _), _)| !block_pos.contains_key(&lease_pos[*i].0))
+                            .map(|(_, &k)| lives[k].birth)
+                            .collect();
+                        for ((i, le), &k) in leases.iter().enumerate().zip(&picked) {
+                            if dropped_rounds.contains(&lives[k].birth) {
+                                continue;
+                            }
+                            let Some(&(sx, sy)) = block_pos.get(&lease_pos[i].0) else { continue };
                             let (node, dx0, dy0) = jobs[k];
-                            let ly = slab_y[&le.slab] + le.y;
+                            let (lx, ly) = (sx + le.x, sy + lease_pos[i].1);
                             #[cfg(not(target_arch = "wasm32"))]
                             if std::env::var("WV_DBG_ALLOC").is_ok() {
                                 eprintln!(
-                                    "WV_DBG_ALLOC lease: node={} side={side} dev=({dx0},{dy0} {}x{}) atlas=({},{ly}) rounds=[{}..{}]",
-                                    node, le.w, le.h, le.x, lives[k].birth, lives[k].death,
+                                    "WV_DBG_ALLOC lease: node={} side={side} dev=({dx0},{dy0} {}x{}) atlas=({lx},{ly}) rounds=[{}..{}]",
+                                    node, le.w, le.h, lives[k].birth, lives[k].death,
                                 );
                             }
                             origin.insert(
                                 node,
-                                ((dx0 as i32 - le.x as i32) as f32, (dy0 as i32 - ly as i32) as f32),
+                                ((dx0 as i32 - lx as i32) as f32, (dy0 as i32 - ly as i32) as f32),
                             );
                             atlas_of.insert(node, side);
                         }
                     }
                 }
-                if fits {
-                    let extent: HashMap<usize, (f32, f32)> = lives
-                        .iter()
-                        .zip(&jobs)
-                        .map(|(l, &(node, dx0, dy0))| {
-                            let lo = (dx0 / TILE_PX * 1024 + dy0 / TILE_PX) as f32;
-                            let hi = ((dx0 + l.w).div_ceil(TILE_PX) * 1024
-                                + (dy0 + l.h).div_ceil(TILE_PX)) as f32;
-                            (node, (lo, hi))
-                        })
-                        .collect();
-                    for ms in marks.values_mut() {
-                        for m in ms.iter_mut() {
-                            if let Some(&(ox, oy)) = origin.get(&m.node) {
-                                m.rec[4] = [1.0, ox, oy, 0.0];
-                            }
-                            if let Some(e) = read_input(m.node).filter(|e| origin.contains_key(e)) {
-                                let (ox, oy) = origin[&e];
-                                m.rec[0][1] = ox;
-                                m.rec[0][2] = oy;
-                                m.rec[0][3] = extent[&e].0;
-                                m.rec[1][3] = extent[&e].1;
-                                if m.rec[1][0] == 2.0 {
-                                    m.rec[1][1] = ox;
-                                    m.rec[1][2] = oy;
-                                }
+                let extent: HashMap<usize, (f32, f32)> = lives
+                    .iter()
+                    .zip(&jobs)
+                    .map(|(l, &(node, dx0, dy0))| {
+                        let lo = (dx0 / TILE_PX * 1024 + dy0 / TILE_PX) as f32;
+                        let hi = ((dx0 + l.w).div_ceil(TILE_PX) * 1024
+                            + (dy0 + l.h).div_ceil(TILE_PX)) as f32;
+                        (node, (lo, hi))
+                    })
+                    .collect();
+                for ms in marks.values_mut() {
+                    for m in ms.iter_mut() {
+                        if let Some(&(ox, oy)) = origin.get(&m.node) {
+                            m.rec[4] = [1.0, ox, oy, 0.0];
+                        }
+                        if let Some(e) = read_input(m.node).filter(|e| origin.contains_key(e)) {
+                            let (ox, oy) = origin[&e];
+                            m.rec[0][1] = ox;
+                            m.rec[0][2] = oy;
+                            m.rec[0][3] = extent[&e].0;
+                            m.rec[1][3] = extent[&e].1;
+                            if m.rec[1][0] == 2.0 {
+                                m.rec[1][1] = ox;
+                                m.rec[1][2] = oy;
                             }
                         }
                     }
-                } else {
-                    scratch_atlas_dims = [None, None];
-                    atlas_of.clear();
                 }
             }
         }
@@ -1829,6 +1969,10 @@ impl Sink {
         // reader binds it by following its `inputs` edge. Same-round peers alias one physical texture —
         // the round's single dispatch wrote all their regions.
         let mut node_scratch: std::collections::HashMap<usize, wgpu::TextureView> = std::collections::HashMap::new();
+        let mut sil_pending: Vec<(u32, B::Scene, Vec<usize>, u32)> = Vec::new();
+        let mut sil_next = 0usize;
+        let mut sil_live: Vec<(wgpu::Texture, u32)> = Vec::new();
+        let mut sil_peak = 0usize;
         let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
         // The two packed draft atlases every materialize writes its lease into (alternating along
         // draft→draft chains so a dispatch never reads and writes one texture), reused across rounds.
@@ -1851,7 +1995,7 @@ impl Sink {
             })
         });
 
-        if passes_recorded().wrapping_sub(flush_mark) >= WV_PASS_FLUSH_BUDGET {
+        if passes_recorded().wrapping_sub(flush_mark) >= wv_pass_flush_budget() {
             Self::submit_batch(&mut enc, device, queue, backend);
             flush_mark = passes_recorded();
         }
@@ -1942,9 +2086,36 @@ impl Sink {
             }
             let root_index: HashMap<u128, usize> =
                 gathers.iter().map(|&(gi, gid, _)| (gid, gi)).collect();
-            for group in sil_groups.values() {
-                let sil = self.pool.acquire_target(device, width, acc_h, format, self.raster_usage, "wv unit silhouette");
-                let sv = sil.create_view(&wgpu::TextureViewDescriptor::default());
+            // A silhouette is read only during its consumers' windows, so its texture must not
+            // live for the whole frame: each group's LAST-use round comes from the same walks the
+            // executor binds by (the mark's rasterized root, and its base rasterize), and the loop
+            // below rasterizes each group just in time and releases its texture to the pool right
+            // after its last reader — live silhouettes are bounded by actual overlap, never by the
+            // frame's group count.
+            let walk_rz = |node: usize| -> Option<usize> {
+                let mut cur = if matches!(dag.nodes[node].op, UnitOp::EraseBy(_)) {
+                    dag.nodes[node].inputs.get(1).copied()?
+                } else {
+                    dag.nodes[node].inputs.first().copied()?
+                };
+                loop {
+                    match dag.nodes[cur].op {
+                        UnitOp::Rasterize(_) => return Some(cur),
+                        UnitOp::Reload => return None,
+                        _ => cur = dag.nodes[cur].inputs.first().copied()?,
+                    }
+                }
+            };
+            let mut sil_last: HashMap<usize, u32> = HashMap::new();
+            for ms in marks.values() {
+                for m in ms {
+                    for src in [walk_rz(m.node), dag_base_rasterize(&dag, m.node)].into_iter().flatten() {
+                        let e = sil_last.entry(src).or_insert(0);
+                        *e = (*e).max(m.round);
+                    }
+                }
+            }
+            for (&round, group) in &sil_groups {
                 let mut sscene = backend.new_scene(width as u16, acc_h as u16);
                 for &s in group {
                     // A plain stack body (its own bare mark): render the shape at its device place.
@@ -1988,12 +2159,8 @@ impl Sink {
                     .unwrap_or(slot);
                     backend.build_shadow_silhouette(&mut sscene, root, shape, class_idx, inset, true, false);
                 }
-                backend.rasterize(&sscene, device, queue, &mut enc, &sv, width, acc_h, TRANSPARENT);
-                self.frame_transient.push(sil);
-                self.frame_transient_views.push(sv.clone());
-                for &s in group {
-                    node_scratch.insert(s, sv.clone());
-                }
+                let last_use = group.iter().filter_map(|s| sil_last.get(s)).copied().max().unwrap_or(round);
+                sil_pending.push((round, sscene, group.clone(), last_use));
             }
             if !sdf_jobs.is_empty() {
                 if self.sdf_baker.is_none() {
@@ -2067,6 +2234,19 @@ impl Sink {
             // The extra iteration is the FINAL window ([last, SEG_ALL)) — same dispatch, open end.
             let hi = if r > max_round { crate::vello::rasterize::SEG_ALL } else { r };
             if window_has_draws(window_lo, hi) {
+                while sil_next < sil_pending.len() && sil_pending[sil_next].0 < hi {
+                    let (_, ref sscene, ref group, last_use) = sil_pending[sil_next];
+                    let sil = self.pool.acquire_target(device, width, acc_h, format, self.raster_usage, "wv unit silhouette");
+                    let sv = sil.create_view(&wgpu::TextureViewDescriptor::default());
+                    backend.rasterize(sscene, device, queue, &mut enc, &sv, width, acc_h, TRANSPARENT);
+                    for &s in group {
+                        node_scratch.insert(s, sv.clone());
+                    }
+                    self.frame_transient_views.push(sv);
+                    sil_live.push((sil, last_use));
+                    sil_peak = sil_peak.max(sil_live.len());
+                    sil_next += 1;
+                }
                 note_passes(2);
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("WV_DBG_WIN").is_ok() { eprintln!("WV_DBG_WIN: [{window_lo},{hi}) nodes={:?} cur={cur:?}", round_nodes.get(&window_lo)); }
@@ -2246,10 +2426,22 @@ impl Sink {
                 seed_clear(&mut enc, &views[0]);
                 cur = Some(0);
             }
-            if passes_recorded().wrapping_sub(flush_mark) >= WV_PASS_FLUSH_BUDGET {
+            let mut i = 0;
+            while i < sil_live.len() {
+                if sil_live[i].1 < r {
+                    let (t, _) = sil_live.swap_remove(i);
+                    self.pool.release(t);
+                } else {
+                    i += 1;
+                }
+            }
+            if passes_recorded().wrapping_sub(flush_mark) >= wv_pass_flush_budget() {
                 Self::submit_batch(&mut enc, device, queue, backend);
                 flush_mark = passes_recorded();
             }
+        }
+        for (t, _) in sil_live.drain(..) {
+            self.pool.release(t);
         }
         let final_slot = match cur {
             Some(c) => c,
@@ -2284,7 +2476,7 @@ impl Sink {
             let draft_bytes: u64 =
                 draft_texs.iter().map(|t| u64::from(t.width()) * u64::from(t.height()) * 4).sum();
             eprintln!(
-                "WV_DBG_ALLOC: planned lives={} peak={:.1}MB@r{} | executor: slots={}x{}x{} ({:.1}MB) loop-drafts={} ({:.1}MB, atlas={:?})",
+                "WV_DBG_ALLOC: planned lives={} peak={:.1}MB@r{} | executor: slots={}x{}x{} ({:.1}MB) loop-drafts={} ({:.1}MB, atlas={:?}) sil-groups={} sil-peak={sil_peak}",
                 lives.len(),
                 mb(peak),
                 peak_round,
@@ -2295,6 +2487,7 @@ impl Sink {
                 draft_texs.len(),
                 mb(draft_bytes),
                 scratch_atlas_dims,
+                sil_pending.len(),
             );
             for l in &lives {
                 eprintln!(
