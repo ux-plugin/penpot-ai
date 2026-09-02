@@ -4,10 +4,17 @@ Normative companion to the contract in `renderer/2D/core/src/vello/bake.rs` (mod
 One rule at every size: **an arm's inputs are a list of fixed-stride records; structure lives in
 the contract, only sources live in the data.**
 
-**Status: LIVE (2026-08-31).** The migration below is complete: every mark packs 26 header floats
-plus 4 records (`REC_COUNT`/`REC_STRIDE` in bake.rs), `fx_load_desc` is the single parser building
-the whole arm (header + records), and header bits 15+ are free. The battery was byte-identical
-across all 24 scenes on the switch.
+**Status: LIVE (2026-08-31; record 4 added 2026-09-02).** The migration below is complete: every
+mark packs 26 header floats plus 5 records (`REC_COUNT`/`REC_STRIDE` in bake.rs), `fx_load_desc`
+is the single parser building the whole arm (header + records), and header bits 15+ are free. The
+battery was byte-identical across all 24 scenes on the switch.
+
+Record roles: 0 = value, 1 = reference (`orig`), 2 = coverage, 3 = field distance, **4 = OUTPUT**.
+The output record is where the arm's result goes: `source` 1 = a reach-cropped scratch lease whose
+`window` is the device→lease origin the tile's store shifts by (`active_scratch_out` in fine);
+`source` 0 = the accumulator / an uncropped target, window ignored. It replaced the blur-only
+`u1.xy` store-origin slot, so a warp, scatter, or source materialize can be cropped exactly like a
+blur draft.
 
 ## Target layout
 

@@ -70,14 +70,16 @@ pub mod bits {
 }
 
 /// The number of operand records every arm carries after its 26-float header.
-pub const REC_COUNT: usize = 4;
+pub const REC_COUNT: usize = 5;
 /// Floats per operand record: `[source, window x, window y, param]`. Record `i` sits at
 /// `off + 26 + i * REC_STRIDE`. Roles: record 0 = the VALUE the arm transforms, record 1 = the
 /// REFERENCE (`orig`) binary pointwise units compare against, record 2 = the composite's COVERAGE,
-/// record 3 = the FIELD's distance input. Source codes are role-typed: 0 = default (backdrop /
-/// `area[i]` / generated), 2 = the input register (a source, draft, scratch, or baked SDF); the
-/// window is the input's coordinate-frame origin in device px (a texture region's start, or a
-/// generated field's anchor); param is per-source (an SDF decode range).
+/// record 3 = the FIELD's distance input, record 4 = the arm's OUTPUT. Source codes are role-typed:
+/// 0 = default (backdrop / `area[i]` / generated / the accumulator), 2 = the input register (a
+/// source, draft, scratch, or baked SDF); for the OUTPUT record, 1 = a reach-cropped scratch lease;
+/// the window is the operand's coordinate-frame origin in device px (a texture region's start, a
+/// generated field's anchor, or the lease origin the store shifts by); param is per-source (an SDF
+/// decode range).
 pub const REC_STRIDE: usize = 4;
 
 /// The FIELD operand's MATH (`program`, slot 1) — which analytic assembly the arm's field runs.
@@ -244,7 +246,7 @@ pub fn bake_unit(op: &UnitOp, policy: Policy) -> [f32; 26] {
 /// declared fact ([`crate::vello::fine_field::programs`], the source's centre slot), so this is a
 /// table lookup, never a per-program branch; a program with no anchor (or no field at all) leaves
 /// the record untouched.
-pub fn stamp_field_anchor(desc: &[f32; 26], rec: &mut [[f32; 4]; 4]) {
+pub fn stamp_field_anchor(desc: &[f32; 26], rec: &mut [[f32; 4]; 5]) {
     static ANCHORS: std::sync::OnceLock<Vec<(u32, usize)>> = std::sync::OnceLock::new();
     let table = ANCHORS.get_or_init(|| {
         crate::vello::fine_field::programs()

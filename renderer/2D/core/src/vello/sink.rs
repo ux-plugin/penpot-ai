@@ -1091,7 +1091,7 @@ impl Sink {
             node: usize,
             round: u32,
             desc: [f32; 26],
-            rec: [[f32; 4]; 4],
+            rec: [[f32; 4]; 5],
             ctl: u32,
             masked: bool,
             band: bool,
@@ -1154,7 +1154,7 @@ impl Sink {
                                     node: compose_idx,
                                     round: sched.round[compose_idx],
                                     desc,
-                                    rec: [[0.0f32; 4]; 4],
+                                    rec: [[0.0f32; 4]; 5],
                                     ctl: 0,
                                     masked: true,
                                     band: false,
@@ -1173,7 +1173,7 @@ impl Sink {
                         {
                             let mut desc = [0.0f32; 26];
                             desc[0] = bits::VALUE_OVER as f32;
-                            let mut rec = [[0.0f32; 4]; 4];
+                            let mut rec = [[0.0f32; 4]; 5];
                             rec[0][0] = 2.0;
                             out.push(UnitMark {
                                 node: root,
@@ -1210,7 +1210,7 @@ impl Sink {
                             desc[0] += bits::TINT as f32;
                             desc[14..18].copy_from_slice(&c);
                         }
-                        let mut rec = [[0.0f32; 4]; 4];
+                        let mut rec = [[0.0f32; 4]; 5];
                         crate::vello::bake::stamp_field_anchor(&desc, &mut rec);
                         out.push(UnitMark {
                             node: compose_idx,
@@ -1255,7 +1255,7 @@ impl Sink {
                             _ => None,
                         }
                     });
-                    let stamp_program = |r: &mut [[f32; 4]; 4]| {
+                    let stamp_program = |r: &mut [[f32; 4]; 5]| {
                         if let Some(decode) = sampled {
                             r[3][0] = 2.0;
                             r[3][3] = decode;
@@ -1328,7 +1328,7 @@ impl Sink {
                         } else {
                             continue;
                         };
-                        let mut rec = [[0.0f32; 4]; 4];
+                        let mut rec = [[0.0f32; 4]; 5];
                         rec[0][0] = src[0];
                         rec[1][0] = src[1];
                         rec[2][0] = src[2];
@@ -1430,7 +1430,7 @@ impl Sink {
                 let key_round = pre.map_or_else(|| i64::from(round) - 1, i64::from);
                 let mut desc = [0.0f32; 26];
                 desc[0] = bits::VALUE_OVER as f32;
-                let mut rec = [[0.0f32; 4]; 4];
+                let mut rec = [[0.0f32; 4]; 5];
                 rec[0][0] = 2.0;
                 let pos = ms.iter().position(|m| i64::from(m.round) > key_round).unwrap_or(ms.len());
                 ms.insert(pos, UnitMark {
@@ -1509,60 +1509,223 @@ impl Sink {
             let hi = marks.get(&gid).and_then(|ms| ms.iter().map(|m| m.round).max()).unwrap_or(rounds[j]);
             max_round = max_round.max(hi);
         }
-        // Reach-crop background-blur drafts into ONE packed atlas, reused across rounds (temporally
-        // disjoint intervals). Each blur's device→lease origin is baked into its H (u[1].xy, the store)
-        // and V (u[1].zw, the tap) descs.
-        let mut blur_atlas_dims: Option<(u32, u32)> = None;
+        // Reach-crop EVERY fine materialize draft into packed scratch atlases, reused across rounds
+        // (chordal interval colouring over each draft's [birth, last-read] rounds). A producer's
+        // device→lease origin rides its OUTPUT record (record 4, the store shift); each consumer's
+        // record-0 (and register-orig record-1) window carries the same origin for the read, and the
+        // producer's device rect rides the record params so escaped taps resolve by the blur's edge
+        // policy instead of reading a neighbouring lease. A scene whose packed atlas would exceed
+        // the texture limit (or WV_SCRATCH_CROP=0) falls back to full-viewport per-round drafts with
+        // identity mapping — no records stamped. WV_CROP_NOREUSE gives every draft its own slot
+        // (no interval reuse) — the bisect lever separating layout bugs from stale-tenant reads.
+        let mut scratch_atlas_dims: [Option<(u32, u32)>; 2] = [None, None];
+        let mut atlas_of: HashMap<usize, usize> = HashMap::new();
         {
             use crate::vello::frame_dag::{pack, LiveRect};
             use crate::vello::units::UnitOp;
+            let reach_of: HashMap<u128, [f32; 4]> =
+                gathers.iter().enumerate().map(|(j, &(_, gid, _))| (gid, reaches[j])).collect();
             let mut lives: Vec<LiveRect> = Vec::new();
-            let mut jobs: Vec<(u128, usize, u32, u32)> = Vec::new();
-            for (j, &(_, gid, _)) in gathers.iter().enumerate() {
-                let Some(ms) = marks.get(&gid) else { continue };
-                for m in ms {
-                    if !(matches!(dag.nodes[m.node].op, UnitOp::Blur { .. })
-                        && matches!(dag.nodes[dag.nodes[m.node].inputs[0]].op, UnitOp::Reload))
-                    {
-                        continue;
+            let mut jobs: Vec<(usize, u32, u32)> = Vec::new();
+            let crop_on = std::env::var("WV_SCRATCH_CROP").map_or(true, |v| v != "0");
+            if crop_on {
+                // A consumer's blur taps ESCAPE the draft's reach (3σ past its outermost marked
+                // pixel). The lease is tight, so an escaped tap is answered by the blur's own
+                // out-of-bounds policy (page for a backdrop blur, transparent for a coverage one) —
+                // the consumer knows the producer's DEVICE rect via the record params (corners in
+                // tile units, x*1024+y, low in record 0's param / high in record 1's) and bounds its
+                // taps against it, never against the atlas (a neighbouring lease is not content).
+                for (&gid, ms) in &marks {
+                    for m in ms {
+                        if !dag.binding_shape(m.node).is_some_and(|s| s.to_draft) {
+                            continue;
+                        }
+                        let r = reach_of[&gid];
+                        let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
+                        let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
+                        let x1 = ((r[2].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
+                        let y1 = ((r[3].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
+                        lives.push(LiveRect {
+                            node: jobs.len(),
+                            w: x1 - x0,
+                            h: y1 - y0,
+                            birth: m.round,
+                            death: if std::env::var("WV_CROP_NOREUSE").is_ok() {
+                                m.round + 100_000
+                            } else {
+                                m.round + 1
+                            },
+                        });
+                        jobs.push((m.node, x0, y0));
                     }
-                    let r = reaches[j];
-                    let x0 = (r[0].max(0.0) as u32 / TILE_PX) * TILE_PX;
-                    let y0 = (r[1].max(0.0) as u32 / TILE_PX) * TILE_PX;
-                    let x1 = ((r[2].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(width);
-                    let y1 = ((r[3].ceil() as u32).div_ceil(TILE_PX) * TILE_PX).min(acc_h);
-                    lives.push(LiveRect { node: lives.len(), w: x1 - x0, h: y1 - y0, birth: m.round, death: m.round + 1 });
-                    jobs.push((gid, m.node, x0, y0));
+                }
+                // HashMap iteration is per-process random; the packer's layout (and therefore which
+                // texels an escaped read lands on) must not be.
+                let mut order: Vec<usize> = (0..jobs.len()).collect();
+                order.sort_by_key(|&k| (lives[k].birth, jobs[k].0));
+                lives = order.iter().enumerate().map(|(i, &k)| LiveRect { node: i, ..lives[k] }).collect();
+                jobs = order.iter().map(|&k| jobs[k]).collect();
+            }
+            // The register a mark's slot-10 read actually binds, planner-side: an erase reads its
+            // punch (inputs[1]); everything else follows its FIRST-input spine down through the
+            // in-register links (pointwise units fused between two materialised values) to the first
+            // leased draft, stopping at a structural root. Mirrors the loop's `read_edge` — a
+            // shallow first-input check here once left composites past a fused tail reading the
+            // atlas at raw device coordinates, straight into a neighbouring lease.
+            let leased: std::collections::HashSet<usize> = jobs.iter().map(|&(n, _, _)| n).collect();
+            let read_input = |node: usize| -> Option<usize> {
+                let mut cur = if matches!(dag.nodes[node].op, UnitOp::EraseBy(_)) {
+                    dag.nodes[node].inputs.get(1).copied()?
+                } else {
+                    dag.nodes[node].inputs.first().copied()?
+                };
+                loop {
+                    if leased.contains(&cur) {
+                        return Some(cur);
+                    }
+                    if matches!(dag.nodes[cur].op, UnitOp::Rasterize(_) | UnitOp::Reload) {
+                        return None;
+                    }
+                    cur = dag.nodes[cur].inputs.first().copied()?;
+                }
+            };
+            // A draft is live until its LAST reader's round — through the same walk, so a composite
+            // past a fused pointwise tail still extends its draft's life.
+            {
+                let mut death_of: HashMap<usize, u32> = HashMap::new();
+                for ms in marks.values() {
+                    for m2 in ms {
+                        for &e in &dag.nodes[m2.node].inputs {
+                            if leased.contains(&e) {
+                                let d = death_of.entry(e).or_insert(0);
+                                *d = (*d).max(m2.round);
+                            }
+                        }
+                        if let Some(e) = read_input(m2.node) {
+                            let d = death_of.entry(e).or_insert(0);
+                            *d = (*d).max(m2.round);
+                        }
+                    }
+                }
+                for (l, &(node, _, _)) in lives.iter_mut().zip(&jobs) {
+                    if let Some(&d) = death_of.get(&node) {
+                        l.death = l.death.max(d);
+                    }
                 }
             }
             if !lives.is_empty() {
-                let leases = pack(&lives);
-                let mut slab_h: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
-                for le in &leases {
-                    let e = slab_h.entry(le.slab).or_insert(0);
-                    *e = (*e).max(le.y + le.h);
+                // Two atlases, coloured by materialize-chain DEPTH: a draft→draft link's producer
+                // and consumer alternate, so no dispatch ever reads and writes one texture (an
+                // exclusive-usage conflict in wgpu). Chains are linear, so depth-parity 2-colours
+                // them exactly; birth order guarantees a producer is coloured before its consumer.
+                let mut order: Vec<usize> = (0..jobs.len()).collect();
+                order.sort_by_key(|&k| lives[k].birth);
+                let mut colour: HashMap<usize, usize> = HashMap::new();
+                for &k in &order {
+                    let node = jobs[k].0;
+                    let c = read_input(node)
+                        .and_then(|e| colour.get(&e))
+                        .map_or(0, |&pc| 1 - pc);
+                    colour.insert(node, c);
                 }
-                let (mut slab_y, mut cursor) = (std::collections::BTreeMap::new(), 0u32);
-                for (&slab, &h) in &slab_h {
-                    slab_y.insert(slab, cursor);
-                    cursor += h;
+                // A round's peers share ONE dispatch and one output binding, so they must agree on
+                // colour; a scene where they don't keeps the full-viewport path.
+                let mut round_colour: HashMap<u32, usize> = HashMap::new();
+                let coherent = lives.iter().zip(&jobs).all(|(l, &(node, _, _))| {
+                    match round_colour.entry(l.birth) {
+                        std::collections::hash_map::Entry::Occupied(e) => *e.get() == colour[&node],
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(colour[&node]);
+                            true
+                        }
+                    }
+                });
+                let mut origin: HashMap<usize, (f32, f32)> = HashMap::new();
+                let mut fits = coherent;
+                if coherent {
+                    for side in 0..2 {
+                        let picked: Vec<usize> =
+                            (0..jobs.len()).filter(|&k| colour[&jobs[k].0] == side).collect();
+                        if picked.is_empty() {
+                            continue;
+                        }
+                        let side_lives: Vec<LiveRect> = picked
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &k)| LiveRect { node: i, ..lives[k] })
+                            .collect();
+                        let leases = pack(&side_lives);
+                        let mut slab_h: std::collections::BTreeMap<u32, u32> =
+                            std::collections::BTreeMap::new();
+                        for le in &leases {
+                            let e = slab_h.entry(le.slab).or_insert(0);
+                            *e = (*e).max(le.y + le.h);
+                        }
+                        let (mut slab_y, mut cursor) = (std::collections::BTreeMap::new(), 0u32);
+                        for (&slab, &h) in &slab_h {
+                            slab_y.insert(slab, cursor);
+                            cursor += h;
+                        }
+                        let atlas_w =
+                            leases.iter().map(|l| l.x + l.w).max().unwrap_or(TILE_PX).max(TILE_PX);
+                        let atlas_h = cursor.max(TILE_PX);
+                        // The device 2D-texture floor; a scene whose drafts cannot pack under it
+                        // keeps the full-viewport path rather than failing texture creation.
+                        if atlas_w > 8192 || atlas_h > 8192 {
+                            fits = false;
+                            break;
+                        }
+                        scratch_atlas_dims[side] = Some((atlas_w, atlas_h));
+                        for (le, &k) in leases.iter().zip(&picked) {
+                            let (node, dx0, dy0) = jobs[k];
+                            let ly = slab_y[&le.slab] + le.y;
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if std::env::var("WV_DBG_ALLOC").is_ok() {
+                                eprintln!(
+                                    "WV_DBG_ALLOC lease: node={} side={side} dev=({dx0},{dy0} {}x{}) atlas=({},{ly}) rounds=[{}..{}]",
+                                    node, le.w, le.h, le.x, lives[k].birth, lives[k].death,
+                                );
+                            }
+                            origin.insert(
+                                node,
+                                ((dx0 as i32 - le.x as i32) as f32, (dy0 as i32 - ly as i32) as f32),
+                            );
+                            atlas_of.insert(node, side);
+                        }
+                    }
                 }
-                let atlas_w = leases.iter().map(|l| l.x + l.w).max().unwrap_or(TILE_PX).max(TILE_PX);
-                blur_atlas_dims = Some((atlas_w, cursor.max(TILE_PX)));
-                for (le, &(gid, h_node, dx0, dy0)) in leases.iter().zip(&jobs) {
-                    let ly = slab_y[&le.slab] + le.y;
-                    let (ox, oy) = (dx0 as i32 - le.x as i32, dy0 as i32 - ly as i32);
-                    if let Some(ms) = marks.get_mut(&gid) {
+                if fits {
+                    let extent: HashMap<usize, (f32, f32)> = lives
+                        .iter()
+                        .zip(&jobs)
+                        .map(|(l, &(node, dx0, dy0))| {
+                            let lo = (dx0 / TILE_PX * 1024 + dy0 / TILE_PX) as f32;
+                            let hi = ((dx0 + l.w).div_ceil(TILE_PX) * 1024
+                                + (dy0 + l.h).div_ceil(TILE_PX)) as f32;
+                            (node, (lo, hi))
+                        })
+                        .collect();
+                    for ms in marks.values_mut() {
                         for m in ms.iter_mut() {
-                            if m.node == h_node {
-                                m.desc[6] = ox as f32;
-                                m.desc[7] = oy as f32;
-                            } else if dag.nodes[m.node].inputs.first() == Some(&h_node) {
-                                m.rec[0][1] = ox as f32;
-                                m.rec[0][2] = oy as f32;
+                            if let Some(&(ox, oy)) = origin.get(&m.node) {
+                                m.rec[4] = [1.0, ox, oy, 0.0];
+                            }
+                            if let Some(e) = read_input(m.node).filter(|e| origin.contains_key(e)) {
+                                let (ox, oy) = origin[&e];
+                                m.rec[0][1] = ox;
+                                m.rec[0][2] = oy;
+                                m.rec[0][3] = extent[&e].0;
+                                m.rec[1][3] = extent[&e].1;
+                                if m.rec[1][0] == 2.0 {
+                                    m.rec[1][1] = ox;
+                                    m.rec[1][2] = oy;
+                                }
                             }
                         }
                     }
+                } else {
+                    scratch_atlas_dims = [None, None];
+                    atlas_of.clear();
                 }
             }
         }
@@ -1667,12 +1830,25 @@ impl Sink {
         // the round's single dispatch wrote all their regions.
         let mut node_scratch: std::collections::HashMap<usize, wgpu::TextureView> = std::collections::HashMap::new();
         let mut draft_texs: Vec<wgpu::Texture> = Vec::new();
-        // The ONE background-blur draft atlas, reused across every blur round (temporally disjoint).
-        let blur_atlas_view: Option<wgpu::TextureView> = blur_atlas_dims.map(|(aw, ah)| {
-            let t = self.pool.acquire_target(device, aw, ah, format, phase_usage, "wv blur atlas");
-            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
-            draft_texs.push(t);
-            v
+        // The two packed draft atlases every materialize writes its lease into (alternating along
+        // draft→draft chains so a dispatch never reads and writes one texture), reused across rounds.
+        let scratch_atlas_views: [Option<wgpu::TextureView>; 2] = scratch_atlas_dims.map(|dims| {
+            dims.map(|(aw, ah)| {
+                let t = self.pool.acquire_target(
+                    device,
+                    aw,
+                    ah,
+                    format,
+                    phase_usage | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    "wv scratch atlas",
+                );
+                let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+                // Guard bands and slot padding are read by escaped taps and must hold transparent
+                // 0 — a pooled texture holds whatever the previous frame left in it.
+                Compositor::clear(&mut enc, &v, [0.0, 0.0, 0.0, 0.0], None);
+                draft_texs.push(t);
+                v
+            })
         });
 
         if passes_recorded().wrapping_sub(flush_mark) >= WV_PASS_FLUSH_BUDGET {
@@ -1954,24 +2130,28 @@ impl Sink {
                         draft_texs.push(t);
                         v
                     };
+                    // A materialize writes its packed lease in the shared atlas (per-mark OUTPUT
+                    // records shift the stores; the dispatch default is the OOB sentinel so a tile
+                    // with no cropped marker drops its store instead of clobbering a lease). The
+                    // fallback — no atlas, records unstamped — is a fresh full-viewport draft with
+                    // identity mapping.
+                    const OOB: u32 = 1 << 24;
+                    let mut draft_target = |backend: &mut B, node: usize| {
+                        match atlas_of.get(&node).and_then(|&c| scratch_atlas_views[c].clone()) {
+                            Some(v) => {
+                                backend.phase_scratch_origins([OOB, OOB], [0, 0]);
+                                v
+                            }
+                            None => acquire(),
+                        }
+                    };
                     if shp.to_draft {
                         let dv = match (shp.base, shp.input) {
                             (Slot::Backdrop, Slot::None) => {
                                 let base = cur.map(|c| views[c].clone()).expect("a backdrop materialize reads the accumulator");
-                                if matches!(dag.nodes[rep].op, UnitOp::Blur { .. }) {
-                                    // A blur materializing from the backdrop writes the packed atlas;
-                                    // the OOB sentinel stops a tile with no marker clobbering a lease.
-                                    let dv = blur_atlas_view.clone().unwrap_or_else(&mut acquire);
-                                    const OOB: u32 = 1 << 24;
-                                    backend.phase_scratch_origins([OOB, OOB], [0, 0]);
-                                    backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&base), &dv);
-                                    dv
-                                } else {
-                                    // A head (frost warp) materializing its refracted sample.
-                                    let dv = acquire();
-                                    backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&base), &dv);
-                                    dv
-                                }
+                                let dv = draft_target(backend, rep);
+                                backend.phased_fine_segment(device, queue, &mut enc, window_lo, hi, Some(&base), &dv);
+                                dv
                             }
                             (Slot::Backdrop, Slot::Source) => {
                                 // A frost warp over a sampled (SDF) field: base = the backdrop, slot 10
@@ -1981,7 +2161,7 @@ impl Sink {
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("SDF baked for the round")
                                     .clone();
-                                let dv = acquire();
+                                let dv = draft_target(backend, rep);
                                 backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
                                 dv
                             }
@@ -1992,7 +2172,7 @@ impl Sink {
                                     .and_then(|e| node_scratch.get(&e))
                                     .expect("source co-located for the round")
                                     .clone();
-                                let dv = acquire();
+                                let dv = draft_target(backend, rep);
                                 backend.phased_fine_segment_input(device, queue, &mut enc, window_lo, hi, &sil, &sil, &dv);
                                 dv
                             }
@@ -2008,7 +2188,7 @@ impl Sink {
                                     _ => cur.map(|c| views[c].clone()),
                                 }
                                 .expect("materialize base bound");
-                                let dv = acquire();
+                                let dv = draft_target(backend, rep);
                                 if shp.draft_taps {
                                     backend.phased_fine_segment_draft(device, queue, &mut enc, window_lo, hi, &base, &src, &dv);
                                 } else {
@@ -2092,6 +2272,42 @@ impl Sink {
                 src_size: acc_sz,
                 alpha: 1.0,
             });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("WV_DBG_ALLOC").is_ok() {
+            let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+            let sched_dbg = dag.schedule(f64::from(TILE_PX), u64::MAX);
+            let lives = dag.materialized_lives(&sched_dbg);
+            let (peak, peak_round) =
+                crate::vello::frame_dag::FrameDag::peak_scratch_bytes(&lives);
+            let slot_bytes = (n_slots as u64) * u64::from(width) * u64::from(acc_h) * 4;
+            let draft_bytes: u64 =
+                draft_texs.iter().map(|t| u64::from(t.width()) * u64::from(t.height()) * 4).sum();
+            eprintln!(
+                "WV_DBG_ALLOC: planned lives={} peak={:.1}MB@r{} | executor: slots={}x{}x{} ({:.1}MB) loop-drafts={} ({:.1}MB, atlas={:?})",
+                lives.len(),
+                mb(peak),
+                peak_round,
+                n_slots,
+                width,
+                acc_h,
+                mb(slot_bytes),
+                draft_texs.len(),
+                mb(draft_bytes),
+                scratch_atlas_dims,
+            );
+            for l in &lives {
+                eprintln!(
+                    "  live node={} {:?} {}x{} [{}..{}] ({:.1}MB)",
+                    l.node,
+                    dag.nodes[l.node].op,
+                    l.w,
+                    l.h,
+                    l.birth,
+                    l.death,
+                    mb(u64::from(l.w) * u64::from(l.h) * 4),
+                );
+            }
         }
         // The blur drafts lived across the whole round loop (like the batch atlases); hand them to the
         // frame-transient list so they return to the pool after the frame, not at a per-node recycle.

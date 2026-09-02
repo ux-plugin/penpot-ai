@@ -780,6 +780,27 @@ impl FrameDag {
             .collect()
     }
 
+    /// The scratch-VRAM curve a set of live intervals implies: for each round, the bytes of every
+    /// value live there (RGBA8, 4 bytes/px); returns the peak and the round it occurs at. This is
+    /// the MEASURABLE quantity the allocator's budget caps — the planned counterpart to what the
+    /// executor actually acquires, printed side by side by the sink's `WV_DBG_ALLOC` readout.
+    #[must_use]
+    pub fn peak_scratch_bytes(lives: &[LiveRect]) -> (u64, u32) {
+        let rounds = lives.iter().map(|l| l.death + 1).max().unwrap_or(0);
+        let mut per_round = vec![0u64; rounds as usize];
+        for l in lives {
+            let bytes = u64::from(l.w) * u64::from(l.h) * 4;
+            for r in l.birth..=l.death {
+                per_round[r as usize] += bytes;
+            }
+        }
+        per_round
+            .iter()
+            .enumerate()
+            .max_by_key(|&(_, b)| *b)
+            .map_or((0, 0), |(r, &b)| (b, r as u32))
+    }
+
     /// Fill each background-blur node's DEVICE sigma — the blur half of the scheduler's viewport pass,
     /// the sibling to [`Self::fill_lens_uniforms`]. For every `Source::Effect` `Blur` node whose shape
     /// `sigma_of` resolves (a pure background blur; the caller returns `None` for a frost blur so it
@@ -1772,6 +1793,19 @@ mod tests {
                 assert!(!overlap, "live values {a} and {b} overlap in slab {}", la.slab);
             }
         }
+    }
+
+    #[test]
+    fn peak_scratch_bytes_finds_the_worst_round() {
+        let lives = vec![
+            LiveRect { node: 0, w: 10, h: 10, birth: 0, death: 2 },
+            LiveRect { node: 1, w: 20, h: 10, birth: 1, death: 1 },
+            LiveRect { node: 2, w: 10, h: 10, birth: 3, death: 4 },
+        ];
+        let (peak, round) = FrameDag::peak_scratch_bytes(&lives);
+        assert_eq!(round, 1, "round 1 holds nodes 0 and 1 together");
+        assert_eq!(peak, (10 * 10 + 20 * 10) * 4);
+        assert_eq!(FrameDag::peak_scratch_bytes(&[]), (0, 0));
     }
 
     #[test]

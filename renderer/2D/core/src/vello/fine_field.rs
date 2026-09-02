@@ -282,7 +282,7 @@ mod tests {
             .flatten()
             .collect();
         let src = format!(
-            "struct FxDesc {{\n    bits: u32,\n    program: u32,\n    u: array<vec4<f32>, 6>,\n    rec: array<vec4<f32>, 4>,\n}}\n{body}\n@fragment\nfn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{\n    var d: FxDesc;\n    return fx_computeField(d, pos.xy);\n}}\n"
+            "struct FxDesc {{\n    bits: u32,\n    program: u32,\n    u: array<vec4<f32>, 6>,\n    rec: array<vec4<f32>, 5>,\n}}\n{body}\n@fragment\nfn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {{\n    var d: FxDesc;\n    return fx_computeField(d, pos.xy);\n}}\n"
         );
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("WGSL parse failed: {}\n{src}", e.emit_to_string(&src)));
